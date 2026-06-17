@@ -280,7 +280,7 @@ input set. Each gets adversarial differential coverage.
       constant context element naming a `.drv`; error conditions must match.
       - Introduced relatively recently (Nix ≥ 2.16-era) as the supported
         replacement for context-manipulation hacks; note for the version pin.
-- [ ] `appendContext` (s context) — merge a reflected context (the
+- [x] `appendContext` (s context) — merge a reflected context (the
       `getContext`-shaped attrset) back into `s`'s context. The inverse pairing
       with `getContext`; the merge must be a context **union**.
 - [ ] `storePath` (path) — turn a path that is *already* in the store into a

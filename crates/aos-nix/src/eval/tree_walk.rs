@@ -382,6 +382,70 @@ fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsErr
     Ok(normalized)
 }
 
+fn is_valid_store_path(path: &[u8], store_dir: &[u8]) -> bool {
+    if path.len() <= store_dir.len() + 34 || !path.starts_with(store_dir) {
+        return false;
+    }
+    if path.get(store_dir.len()) != Some(&b'/') {
+        return false;
+    }
+    let name = &path[store_dir.len() + 1..];
+    if name.len() < 34 || name.get(32) != Some(&b'-') {
+        return false;
+    }
+    let store_name = &name[33..];
+    if store_name.is_empty() || store_name.len() > 211 || store_name == b"." || store_name == b".."
+    {
+        return false;
+    }
+    name[..32].iter().all(|byte| is_nix_base32_byte(*byte))
+        && store_name.iter().all(|byte| is_store_name_byte(*byte))
+}
+
+fn is_nix_base32_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'0'..=b'9'
+            | b'a'
+            | b'b'
+            | b'c'
+            | b'd'
+            | b'f'
+            | b'g'
+            | b'h'
+            | b'i'
+            | b'j'
+            | b'k'
+            | b'l'
+            | b'm'
+            | b'n'
+            | b'p'
+            | b'q'
+            | b'r'
+            | b's'
+            | b'v'
+            | b'w'
+            | b'x'
+            | b'y'
+            | b'z'
+    )
+}
+
+fn is_store_name_byte(byte: u8) -> bool {
+    matches!(
+        byte,
+        b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'+'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'?'
+            | b'='
+    )
+}
+
 fn file_type_name(file_type: fs::FileType) -> &'static [u8] {
     if file_type.is_file() {
         b"regular"
@@ -2611,6 +2675,275 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_append_context_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        string: IrId,
+        context: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let string_span = self.node(string)?.span;
+        let string_value = self.eval_node(string)?;
+        let (bytes, base_context) =
+            self.append_context_base_string(string, string_span, string_value)?;
+        let context_span = self.node(context)?.span;
+        let context_value = self.eval_node(context)?;
+        self.finish_append_context_primop(
+            id,
+            span,
+            bytes,
+            base_context,
+            context,
+            context_span,
+            context_value,
+        )
+    }
+
+    fn eval_append_context_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        string: EvalPrimOpArg,
+        context: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let string_value = self.force_value(string.id(), string.span(), string.value())?;
+        let (bytes, base_context) =
+            self.append_context_base_string(string.id(), string.span(), string_value)?;
+        let context_value = self.force_value(context.id(), context.span(), context.value())?;
+        self.finish_append_context_primop(
+            id,
+            span,
+            bytes,
+            base_context,
+            context.id(),
+            context.span(),
+            context_value,
+        )
+    }
+
+    fn append_context_base_string(
+        &self,
+        string_id: IrId,
+        string_span: Span,
+        string_value: Value,
+    ) -> Result<(Vec<u8>, StringContext), TreeWalkError> {
+        if string_value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: string_id,
+                    expected: "string",
+                    actual: string_value.tag(),
+                },
+                string_span,
+            ));
+        }
+
+        let string = self.heap.get_string(string_value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: string_id,
+                    source,
+                },
+                string_span,
+            )
+        })?;
+        let bytes = Self::copy_bytes_for_node(string_id, string_span, string.bytes())?;
+        let base_context = string
+            .context()
+            .union(&StringContext::empty())
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::String {
+                        id: string_id,
+                        source,
+                    },
+                    string_span,
+                )
+            })?;
+        Ok((bytes, base_context))
+    }
+
+    fn finish_append_context_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        bytes: Vec<u8>,
+        base_context: StringContext,
+        context_id: IrId,
+        context_span: Span,
+        context_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if context_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: context_id,
+                    expected: "attrs",
+                    actual: context_value.tag(),
+                },
+                context_span,
+            ));
+        }
+
+        let appended_context =
+            self.context_from_reflected_attrs(context_id, context_span, context_value)?;
+        let context = base_context
+            .union(&appended_context)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        let result = NixString::new(bytes, context);
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn context_from_reflected_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<StringContext, TreeWalkError> {
+        let path_key = self.intern_builtin_attr_symbol(id, b"path", span)?;
+        let all_outputs_key = self.intern_builtin_attr_symbol(id, b"allOutputs", span)?;
+        let outputs_key = self.intern_builtin_attr_symbol(id, b"outputs", span)?;
+        let reflected_entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: attrs.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs.iter_source_order() {
+                let path = self.symbols.resolve(entry.key).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id,
+                            symbol: entry.key,
+                        },
+                        span,
+                    )
+                })?;
+                entries.push((Self::copy_bytes_for_node(id, span, path)?, entry.value));
+            }
+            entries
+        };
+
+        let mut elements = Vec::new();
+        for (path, entry_value) in reflected_entries {
+            if !is_valid_store_path(&path, self.options.store_dir()) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextKeyNotStorePath {
+                        id,
+                        path: path.clone(),
+                    },
+                    span,
+                ));
+            }
+            let entry_value = self.force_value(id, span, entry_value)?;
+            if entry_value.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: entry_value.tag(),
+                    },
+                    span,
+                ));
+            }
+            let (path_marker, all_outputs_marker, outputs_marker) = {
+                let attrs = self.heap.get_attrs(entry_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                (
+                    attrs.get(path_key),
+                    attrs.get(all_outputs_key),
+                    attrs.get(outputs_key),
+                )
+            };
+
+            if let Some(marker) = path_marker {
+                let marker = self.force_value(id, span, marker)?;
+                if self.expect_bool(id, marker, span)? {
+                    elements.push(ContextElement::opaque_path(path.clone()).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                    })?);
+                }
+            }
+            if let Some(marker) = all_outputs_marker {
+                let marker = self.force_value(id, span, marker)?;
+                if self.expect_bool(id, marker, span)? {
+                    if !path.ends_with(b".drv") {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::StringContextPathNotDerivation {
+                                id,
+                                path: path.clone(),
+                            },
+                            span,
+                        ));
+                    }
+                    elements.push(ContextElement::deep_derivation(path.clone()).map_err(
+                        |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+                    )?);
+                }
+            }
+            if let Some(marker) = outputs_marker {
+                let marker = self.force_value(id, span, marker)?;
+                if marker.tag() != ValueTag::List {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "list",
+                            actual: marker.tag(),
+                        },
+                        span,
+                    ));
+                }
+                let outputs = {
+                    let list = self.heap.get_list(marker).map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })?;
+                    let mut outputs = Vec::new();
+                    outputs.try_reserve_exact(list.len()).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed {
+                                id,
+                                len: list.len(),
+                            },
+                            span,
+                        )
+                    })?;
+                    outputs.extend_from_slice(list.as_slice());
+                    outputs
+                };
+                if !outputs.is_empty() && !path.ends_with(b".drv") {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::StringContextPathNotDerivation {
+                            id,
+                            path: path.clone(),
+                        },
+                        span,
+                    ));
+                }
+                for output in outputs {
+                    let output = self.force_value(id, span, output)?;
+                    let output =
+                        self.context_free_string_bytes(id, span, output, "appendContext")?;
+                    elements.push(ContextElement::single_output(path.clone(), output).map_err(
+                        |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+                    )?);
+                }
+            }
+        }
+        Ok(StringContext::new(elements))
     }
 
     fn eval_get_env_primop(
@@ -8808,6 +9141,9 @@ impl<'ir> TreeWalk<'ir> {
         second: IrId,
     ) -> Result<Value, TreeWalkError> {
         match primop {
+            StrictBinaryPrimOp::AppendContext => {
+                self.eval_append_context_primop(call.id, call.span, first, second)
+            }
             StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop(first, second),
             StrictBinaryPrimOp::LessThan => {
                 self.eval_comparison(call.id, node, ComparisonOp::Lt, first, second)
@@ -9606,6 +9942,9 @@ impl<'ir> TreeWalk<'ir> {
         second: EvalPrimOpArg,
     ) -> Result<Value, TreeWalkError> {
         match primop {
+            StrictBinaryPrimOp::AppendContext => {
+                self.eval_append_context_primop_value(id, span, first, second)
+            }
             StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop_value(first, second),
             StrictBinaryPrimOp::HashString => {
                 let left = self.force_value(first.id(), first.span(), first.value())?;
@@ -12900,6 +13239,14 @@ pub enum TreeWalkErrorKind {
         /// The observed context element count.
         len: usize,
     },
+    /// A reflected string-context attrset key was not a valid store path.
+    #[error("string context key at node {id:?} is not a store path: {path:?}")]
+    StringContextKeyNotStorePath {
+        /// The reflected context attrset node.
+        id: IrId,
+        /// The rejected context key bytes.
+        path: Vec<u8>,
+    },
     /// A context-transforming primop required a derivation path context.
     #[error("string context path at node {id:?} is not a derivation: {path:?}")]
     StringContextPathNotDerivation {
@@ -14389,6 +14736,95 @@ mod tests {
             "let deepSeq = builtins.deepSeq [ 1 ]; in deepSeq 2",
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_string_context_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.getContext (builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+            })"#,
+            r#"builtins.getContext (builtins.appendContext "x" {
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                    path = true;
+                    allOutputs = true;
+                    outputs = [ "out" "dev" "" "out" ];
+                };
+            })"#,
+            r#"builtins.hasContext (builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+            })"#,
+            r#"builtins.getContext (builtins.appendContext
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                })
+                {
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other" = { path = true; };
+                    "/nix/store/cccccccccccccccccccccccccccccccc-empty" = {
+                        path = false;
+                        allOutputs = false;
+                        outputs = [];
+                    };
+                })"#,
+            r#"builtins.getContext (builtins.unsafeDiscardStringContext
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                }))"#,
+            r#"let append = builtins.appendContext "x"; in
+               builtins.getContext (append {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+               })"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            "builtins.appendContext 1 {}",
+            r#"builtins.appendContext { outPath = "abc"; } {}"#,
+            r#"builtins.appendContext "x" 1"#,
+            r#"builtins.appendContext "x" { "not-a-store-path" = { path = true; }; }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = 1;
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = 1; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-." = { path = true; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-.." = { path = true; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { allOutputs = true; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { outputs = [ "out" ]; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = { outputs = [ 1 ]; };
+            }"#,
+            r#"builtins.appendContext "x" {
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                    outputs = [
+                      (builtins.appendContext "out" {
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                      })
+                    ];
+                };
+            }"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
     }
 
@@ -18787,6 +19223,286 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn append_context_primop_round_trips_reflected_context() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.getContext (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                        allOutputs = true;
+                        outputs = [ "out" "dev" "" "out" ];
+                    };
+                })"#
+            ),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv":{"allOutputs":true,"outputs":["","dev","out"]}}"#.to_vec()
+        );
+        assert_eq!(
+            eval(
+                r#"let append = builtins.appendContext "x"; in
+                   builtins.hasContext (append {
+                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                   })"#
+            )
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                r#"let builtins = { appendContext = string: context: "shadow"; };
+                   in builtins.appendContext "x" {}"#
+            ),
+            b"shadow"
+        );
+    }
+
+    #[test]
+    fn append_context_primop_unions_context_and_ignores_false_unknown_markers() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.getContext (
+                    builtins.appendContext
+                      (builtins.appendContext "x" {
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                      })
+                      {
+                        "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other" = {
+                          path = true;
+                          extra = 1 / 0;
+                        };
+                        "/nix/store/cccccccccccccccccccccccccccccccc-empty" = {
+                          path = false;
+                          allOutputs = false;
+                          outputs = [];
+                          extra = 1 / 0;
+                        };
+                      }
+                  )"#
+            ),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other":{"path":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn append_context_primop_forcing_order_matches_cpp_nix() {
+        let error = eval_whnf_owned(&lower(r#"builtins.appendContext 1 (throw "boom")"#))
+            .expect_err("appendContext checks first argument before context argument");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"let f = builtins.appendContext 1; in f (builtins.throw "boom")"#,
+        ))
+        .expect_err("curried appendContext checks first argument before context argument");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-z" = builtins.throw "z";
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a" = builtins.throw "a";
+            }"#,
+        ))
+        .expect_err("appendContext forces reflected entries in source order");
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::Thrown {
+                    message,
+                    ..
+                } if message.as_slice() == b"z"
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    #[test]
+    fn append_context_primop_rejects_invalid_reflected_contexts() {
+        let error = eval_whnf_owned(&lower("builtins.appendContext 1 {}"))
+            .expect_err("appendContext requires a string first argument");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.appendContext { outPath = "abc"; } {}"#))
+            .expect_err("appendContext does not coerce attrsets for its first argument");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Attrs,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.appendContext "x" 1"#))
+            .expect_err("appendContext requires reflected context attrs");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        for path in [
+            "not-a-store-path",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src/child",
+            "/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-src",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bad name",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-.",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-..",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            let source =
+                format!(r#"builtins.appendContext "x" {{ "{path}" = {{ path = true; }}; }}"#);
+            let error = eval_whnf_owned(&lower(&source))
+                .expect_err("appendContext rejects invalid reflected context keys");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::StringContextKeyNotStorePath { .. }
+                ),
+                "unexpected error for {path}: {error:?}"
+            );
+        }
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = 1;
+            }"#,
+        ))
+        .expect_err("reflected context entries must be attrs");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = 1; };
+            }"#,
+        ))
+        .expect_err("path marker must be a bool");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { allOutputs = 1; };
+            }"#,
+        ))
+        .expect_err("allOutputs marker must be a bool");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { outputs = 1; };
+            }"#,
+        ))
+        .expect_err("outputs marker must be a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { outputs = [ (1 / 0) ]; };
+            }"#,
+        ))
+        .expect_err("non-empty outputs require a derivation path before forcing outputs");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextPathNotDerivation { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { allOutputs = true; };
+            }"#,
+        ))
+        .expect_err("allOutputs requires a derivation path");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextPathNotDerivation { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = { outputs = [ 1 ]; };
+            }"#,
+        ))
+        .expect_err("output names must be strings");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.appendContext "x" {
+                "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                    outputs = [
+                      (builtins.appendContext "out" {
+                        "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                      })
+                    ];
+                };
+            }"#,
+        ))
+        .expect_err("output names must not carry string context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "appendContext",
+                ..
+            }
+        ));
     }
 
     #[test]

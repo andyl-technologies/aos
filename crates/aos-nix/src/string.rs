@@ -27,8 +27,7 @@ pub enum ContextKind {
 /// Elements are ordered by raw path bytes, then by [`ContextKind`], then by
 /// output name for [`ContextKind::SingleOutput`]. The path syntax is validated
 /// by store-path aware layers; this type only enforces the structural invariant
-/// that paths are non-empty and single-output elements have a non-empty output
-/// name.
+/// that paths are non-empty.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContextElement {
     path: Vec<u8>,
@@ -59,13 +58,9 @@ impl ContextElement {
     /// # Errors
     ///
     /// Returns [`NixStringError::EmptyContextPath`] when `path` is empty.
-    /// Returns [`NixStringError::EmptyOutputName`] when `output` is empty.
     pub fn single_output(path: Vec<u8>, output: Vec<u8>) -> Result<Self, NixStringError> {
         if path.is_empty() {
             return Err(NixStringError::EmptyContextPath);
-        }
-        if output.is_empty() {
-            return Err(NixStringError::EmptyOutputName);
         }
 
         Ok(Self {
@@ -407,9 +402,6 @@ pub enum NixStringError {
     /// A context element was constructed with no store-path bytes.
     #[error("string context path is empty")]
     EmptyContextPath,
-    /// A single-output context element was constructed with no output name.
-    #[error("string context output name is empty")]
-    EmptyOutputName,
     /// The resulting byte string would be too large to address.
     #[error("string byte length overflow: {left} + {right}")]
     StringLengthOverflow {
@@ -475,11 +467,8 @@ mod tests {
             ContextElement::opaque_path(Vec::new()).expect_err("empty path is invalid"),
             NixStringError::EmptyContextPath
         );
-        assert_eq!(
-            ContextElement::single_output(b"/nix/store/a.drv".to_vec(), Vec::new())
-                .expect_err("empty output is invalid"),
-            NixStringError::EmptyOutputName
-        );
+        ContextElement::single_output(b"/nix/store/a.drv".to_vec(), Vec::new())
+            .expect("empty output names are accepted by C++ Nix string contexts");
 
         let element = output(b"/nix/store/a.drv", b"dev");
         assert_eq!(element.kind(), ContextKind::SingleOutput);

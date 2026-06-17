@@ -173,7 +173,9 @@ impl BuiltinInfo for AnyBuiltin {
 pub(crate) struct AppendContextBuiltin;
 impl BuiltinInfo for AppendContextBuiltin {
     const NAME: &'static [u8] = b"appendContext";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution =
+        BuiltinExecution::strict_binary(StrictBinaryPrimOp::AppendContext);
+    const DOCS: &'static BuiltinDocs = &APPEND_CONTEXT_DOCS;
 }
 
 pub(crate) struct AttrNamesBuiltin;
@@ -1162,6 +1164,7 @@ pub(crate) enum StrictTernaryPrimOp {
 /// Strict binary primitive operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StrictBinaryPrimOp {
+    AppendContext,
     Add,
     Sub,
     Mul,
@@ -1215,6 +1218,10 @@ impl BuiltinDocs {
 
 static TODO_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Builtin documentation has not been imported yet.",
+};
+
+static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns a string with reflected string context appended.",
 };
 
 static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1403,6 +1410,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"appendContext"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"match"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure
@@ -1511,6 +1524,12 @@ mod tests {
             Some(2)
         );
         assert_eq!(
+            builtin_metadata(b"appendContext")
+                .unwrap()
+                .first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
             builtin_metadata(b"hashFile").unwrap().first_class_arity(),
             Some(2)
         );
@@ -1601,6 +1620,10 @@ mod tests {
 
     #[test]
     fn custom_builtin_docs_stay_attached_to_metadata() {
+        assert_eq!(
+            builtin_metadata(b"appendContext").unwrap().docs().summary(),
+            "Returns a string with reflected string context appended."
+        );
         assert_eq!(
             builtin_metadata(b"pathExists").unwrap().docs().summary(),
             "Returns whether a path exists at evaluation time."

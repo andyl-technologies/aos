@@ -1957,6 +1957,10 @@ mod tests {
     #[test]
     fn lowers_pure_strict_binary_primops_directly() {
         for (source, name) in [
+            (
+                "builtins.appendContext \"x\" {}",
+                b"appendContext".as_slice(),
+            ),
             ("builtins.elemAt [ 1 ] 0", b"elemAt".as_slice()),
             ("builtins.getAttr \"a\" { a = 1; }", b"getAttr".as_slice()),
             ("builtins.hasAttr \"a\" { a = 1; }", b"hasAttr".as_slice()),
