@@ -78,13 +78,14 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
-    FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
-    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig,
-    RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket,
-    validate_branch_name, validate_channel_name, validate_expose_artifact_meta,
-    validate_expose_meta, validate_git_ref_name, validate_package_name, validate_permissions_meta,
-    validate_platform_name, validate_registry_name,
+    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
+    RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
+    package_name_bucket, validate_branch_name, validate_channel_name,
+    validate_expose_artifact_meta, validate_expose_meta, validate_git_ref_name,
+    validate_package_name, validate_permissions_meta, validate_platform_name,
+    validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -1708,6 +1709,7 @@ fn build_package_toml(
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
     let platform_table = package_platform_table(
+        name,
         info,
         image_infos,
         source_drv,
@@ -2809,6 +2811,7 @@ fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbF
 }
 
 fn package_platform_table(
+    name: &str,
     info: &StorePathInfo,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
@@ -2910,6 +2913,10 @@ fn package_platform_table(
             required_features.push(toml::Value::String(
                 FEATURE_CAPABILITY_ROUTES_V1.to_string(),
             ));
+        }
+        let ebpf_unit = format!("aos-pkg-{name}-ebpf.service");
+        if manifest.expose.units.iter().any(|unit| unit == &ebpf_unit) {
+            required_features.push(toml::Value::String(FEATURE_EBPF_NET_POLICY_V1.to_string()));
         }
         if manifest.mac.is_some() {
             required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
@@ -10075,7 +10082,11 @@ mod tests {
         let manifest = PublishExposeManifest {
             expose: ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
-                units: vec!["webapp.service".into()],
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
                 images: Vec::new(),
                 requires: vec!["zlib".into()],
                 config: crate::types::ExposeConfigMeta {
@@ -10168,6 +10179,7 @@ mod tests {
                 FEATURE_CONFIG_V1,
                 FEATURE_RELOAD_V1,
                 FEATURE_CAPABILITY_ROUTES_V1,
+                FEATURE_EBPF_NET_POLICY_V1,
                 FEATURE_MAC_PROFILE_V1,
             ]
         );
@@ -10256,6 +10268,81 @@ mod tests {
         );
         assert_eq!(parsed.permissions.tcp_bind, vec![8080]);
         assert_eq!(parsed.permissions.tcp_connect, vec![443]);
+    }
+
+    #[test]
+    fn build_package_toml_detects_ebpf_feature_from_package_name_not_target() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-custom.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let features = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .and_then(|platform| platform.get("requires-features"))
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_EBPF_NET_POLICY_V1));
     }
 
     #[test]

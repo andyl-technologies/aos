@@ -1079,10 +1079,12 @@ in
 
           unit="$exposePath/units/expose-smoke.service"
           target="$exposePath/units/aos-pkg-expose-smoke.target"
+          slice="$exposePath/units/aos-pkg-expose-smoke.slice"
           modules="$exposePath/units/aos-pkg-expose-smoke-modules.service"
           sysctl="$exposePath/units/aos-pkg-expose-smoke-sysctl.service"
           firewall="$exposePath/units/aos-pkg-expose-smoke-firewall.service"
           netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
+          ebpf="$exposePath/units/aos-pkg-expose-smoke-ebpf.service"
           manifest="$exposePath/manifest.json"
           policy="$exposePath/network-policy.json"
           mac_profile="$exposePath/mac-profile.json"
@@ -1091,10 +1093,12 @@ in
           test -d "$exposePath/units"
           test -f "$unit"
           test -f "$target"
+          test -f "$slice"
           test -f "$modules"
           test -f "$sysctl"
           test -f "$firewall"
           test ! -f "$netns"
+          test -f "$ebpf"
           test -f "$manifest"
           test -f "$policy"
           test -f "$mac_profile"
@@ -1103,8 +1107,8 @@ in
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
-          grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
+          grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-ebpf.service' "$unit"
+          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-ebpf.service' "$unit"
           grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
           grep -q "RootDirectory=$payload" "$unit"
           grep -q 'MountAPIVFS=true' "$unit"
@@ -1142,16 +1146,19 @@ in
           grep -q 'RestrictSUIDSGID=true' "$unit"
           grep -q 'LockPersonality=true' "$unit"
           grep -q 'MemoryDenyWriteExecute=true' "$unit"
+          grep -q 'Slice=aos-pkg-expose-smoke.slice' "$unit"
           grep -q 'Where=/var/lib/exposesmoke' "$exposePath/units/var-lib-exposesmoke.mount"
 
           grep -q 'Description=Activation target for expose-smoke' "$target"
-          grep -q 'Wants=expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$target"
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke.service var-lib-exposesmoke.mount aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-ebpf.service' "$target"
           test ! -e "$exposePath/units/multi-user.target.wants/aos-pkg-expose-smoke.target"
+          test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke.slice"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/expose-smoke.service"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/var-lib-exposesmoke.mount"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-modules.service"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-sysctl.service"
           test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-firewall.service"
+          test -L "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-ebpf.service"
           test ! -e "$exposePath/units/aos-pkg-expose-smoke.target.wants/aos-pkg-expose-smoke-netns.service"
           test ! -e "$exposePath/units/multi-user.target.wants/expose-smoke.service"
           test ! -e "$exposePath/units/multi-user.target.requires/expose-smoke.service"
@@ -1199,15 +1206,48 @@ in
           grep -q 'aos-pkg-expose-smoke-firewall-forward-start' "$firewall"
           grep -q 'aos-pkg-expose-smoke-firewall-forward-stop' "$firewall"
 
+          grep -q 'Description=Attach eBPF network policy for expose-smoke' "$ebpf"
+          if grep -q 'RootDirectory=' "$ebpf"; then
+            echo "host-side eBPF policy service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
+          if grep -q 'aos-landlock' "$ebpf"; then
+            echo "host-side eBPF policy service must not run through aos-landlock" >&2
+            exit 1
+          fi
+          grep -q 'PartOf=aos-pkg-expose-smoke.target' "$ebpf"
+          grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$ebpf"
+          grep -q 'Before=expose-smoke.service var-lib-exposesmoke.mount' "$ebpf"
+          grep -q 'Type=notify' "$ebpf"
+          grep -q 'NotifyAccess=main' "$ebpf"
+          grep -q 'Slice=aos-pkg-expose-smoke.slice' "$ebpf"
+          grep -q 'NoNewPrivileges=true' "$ebpf"
+          grep -q 'CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_RESOURCE' "$ebpf"
+          grep -q '^AmbientCapabilities=$' "$ebpf"
+          grep -q 'LimitMEMLOCK=infinity' "$ebpf"
+          grep -q 'PrivateDevices=true' "$ebpf"
+          grep -q 'DevicePolicy=closed' "$ebpf"
+          grep -q 'PrivateNetwork=true' "$ebpf"
+          grep -q 'ProtectSystem=strict' "$ebpf"
+          grep -q 'ProtectHome=true' "$ebpf"
+          grep -q 'RestrictAddressFamilies=AF_UNIX' "$ebpf"
+          grep -q 'RestrictNamespaces=true' "$ebpf"
+          grep -q 'MemoryDenyWriteExecute=true' "$ebpf"
+          grep -Fq "ExecStart=${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy $exposePath/network-policy.json --cgroup /sys/fs/cgroup/aos.slice/aos-pkg.slice/aos-pkg-expose.slice/aos-pkg-expose-smoke.slice --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o" "$ebpf"
+
           grep -q '"target":"aos-pkg-expose-smoke.target"' "$manifest"
           grep -q '"aos-pkg-expose-smoke.target"' "$manifest"
+          grep -q '"aos-pkg-expose-smoke.slice"' "$manifest"
           grep -q '"aos-pkg-expose-smoke-modules.service"' "$manifest"
           grep -q '"aos-pkg-expose-smoke-sysctl.service"' "$manifest"
           grep -q '"aos-pkg-expose-smoke-firewall.service"' "$manifest"
+          grep -q '"aos-pkg-expose-smoke-ebpf.service"' "$manifest"
           grep -q '"expose-smoke.service"' "$manifest"
           grep -q '"var-lib-exposesmoke.mount"' "$manifest"
           grep -q '"modules":\["br_netfilter"\]' "$manifest"
           grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke"\]}' \
+            "$policy"
+          grep -q '"ebpf":{"hooks":\["socket_bind","socket_connect"\],"identity":"aos.expose-smoke","tcp":{"bind":\[\],"connect":\[\]}}' \
             "$policy"
           grep -q '"sysctl":{"net.ipv4.ip_forward":"1"}' "$manifest"
           grep -q '"allowedTCP":\[8000,8443\]' "$manifest"
@@ -1230,23 +1270,28 @@ in
 
           minimal_unit="$minimalExposePath/units/expose-minimal.service"
           minimal_target="$minimalExposePath/units/aos-pkg-expose-minimal.target"
+          minimal_slice="$minimalExposePath/units/aos-pkg-expose-minimal.slice"
           minimal_modules="$minimalExposePath/units/aos-pkg-expose-minimal-modules.service"
           minimal_sysctl="$minimalExposePath/units/aos-pkg-expose-minimal-sysctl.service"
           minimal_firewall="$minimalExposePath/units/aos-pkg-expose-minimal-firewall.service"
+          minimal_ebpf="$minimalExposePath/units/aos-pkg-expose-minimal-ebpf.service"
           minimal_manifest="$minimalExposePath/manifest.json"
           minimal_mac_profile="$minimalExposePath/mac-profile.json"
           minimal_apparmor_profile="$minimalExposePath/mac/apparmor/aos-pkg-expose-minimal.profile"
           test -f "$minimal_unit"
           test -f "$minimal_target"
+          test -f "$minimal_slice"
           test -f "$minimal_modules"
           test -f "$minimal_sysctl"
           test -f "$minimal_firewall"
+          test -f "$minimal_ebpf"
           test ! -f "$minimalExposePath/units/aos-pkg-expose-minimal-netns.service"
           test -f "$minimal_manifest"
           test -f "$minimal_mac_profile"
           test -f "$minimal_apparmor_profile"
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
+          grep -q 'Slice=aos-pkg-expose-minimal.slice' "$minimal_unit"
           grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
             "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
@@ -1257,6 +1302,8 @@ in
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_modules"
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_sysctl"
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_firewall"
+          grep -q 'Type=notify' "$minimal_ebpf"
+          grep -Fq "ExecStart=${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy $minimalExposePath/network-policy.json --cgroup /sys/fs/cgroup/aos.slice/aos-pkg.slice/aos-pkg-expose.slice/aos-pkg-expose-minimal.slice --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o" "$minimal_ebpf"
           grep -q '"modules":\[\]' "$minimal_manifest"
           grep -q '"sysctl":{}' "$minimal_manifest"
           grep -q '"allowedTCP":\[\]' "$minimal_manifest"
@@ -1400,6 +1447,10 @@ in
             echo "unconfined package must not render a default-deny AppArmor profile" >&2
             exit 1
           fi
+          test -f "$unconfinedExposePath/units/aos-pkg-expose-smoke.slice"
+          test ! -f "$unconfinedExposePath/units/aos-pkg-expose-smoke-ebpf.service"
+          grep -q 'Slice=aos-pkg-expose-smoke.slice' \
+            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
           if grep -q 'aos-landlock' "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
             echo "unconfined host path package must not run through aos-landlock" >&2
             exit 1
@@ -1423,16 +1474,19 @@ in
             "$privilegedSyscallsExposePath/units/expose-smoke-privileged-syscalls.service"
           private_outbound_unit="$privateOutboundExposePath/units/expose-smoke-private-outbound.service"
           private_outbound_netns="$privateOutboundExposePath/units/aos-pkg-expose-smoke-netns.service"
+          private_outbound_ebpf="$privateOutboundExposePath/units/aos-pkg-expose-smoke-ebpf.service"
           private_outbound_target="$privateOutboundExposePath/units/aos-pkg-expose-smoke.target"
           private_outbound_manifest="$privateOutboundExposePath/manifest.json"
           private_outbound_policy="$privateOutboundExposePath/network-policy.json"
           test -f "$private_outbound_unit"
           test -f "$private_outbound_netns"
+          test -f "$private_outbound_ebpf"
           test -f "$private_outbound_policy"
-          grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+          grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
-          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+          grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_unit"
+          grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
           grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
@@ -1440,7 +1494,7 @@ in
           grep -q 'ExecReload=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
-          grep -q 'Wants=expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
+          grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-ebpf.service' \
             "$private_outbound_target"
           grep -q 'Description=Create outbound network namespace for expose-smoke' \
             "$private_outbound_netns"
@@ -1462,6 +1516,12 @@ in
           grep -q 'aos-pkg-expose-smoke-netns-reload' "$private_outbound_netns"
           grep -q 'aos-pkg-expose-smoke-netns-stop' "$private_outbound_netns"
           grep -q 'ExecStopPost=.*aos-pkg-expose-smoke-netns-stop' "$private_outbound_netns"
+          grep -q 'Description=Attach eBPF network policy for expose-smoke' \
+            "$private_outbound_ebpf"
+          grep -q 'Type=notify' "$private_outbound_ebpf"
+          grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_ebpf"
+          grep -Fq "ExecStart=${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy $privateOutboundExposePath/network-policy.json --cgroup /sys/fs/cgroup/aos.slice/aos-pkg.slice/aos-pkg-expose.slice/aos-pkg-expose-smoke.slice --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o" \
+            "$private_outbound_ebpf"
           private_outbound_start=$(
             sed -n 's|^ExecStart=||p' "$private_outbound_netns"
           )
@@ -1494,6 +1554,8 @@ in
             exit 1
           fi
           grep -q '"aos-pkg-expose-smoke-netns.service"' "$private_outbound_manifest"
+          grep -q '"aos-pkg-expose-smoke.slice"' "$private_outbound_manifest"
+          grep -q '"aos-pkg-expose-smoke-ebpf.service"' "$private_outbound_manifest"
           grep -q '"network":"private-outbound"' "$private_outbound_manifest"
           grep -q '"tcp-bind":\[8000\]' "$private_outbound_manifest"
           grep -q '"tcp-connect":\[443\]' "$private_outbound_manifest"
@@ -1680,7 +1742,7 @@ in
             echo "k3s worker privileged syscall profile must not render a restrictive SystemCallFilter" >&2
             exit 1
           fi
-          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-worker-host-paths.service aos-pkg-k3s-worker-modules.service aos-pkg-k3s-worker-sysctl.service aos-pkg-k3s-worker-firewall.service' \
+          grep -q 'Wants=aos-pkg-k3s-worker.slice k3s-preflight.service k3s.service aos-pkg-k3s-worker-host-paths.service aos-pkg-k3s-worker-modules.service aos-pkg-k3s-worker-sysctl.service aos-pkg-k3s-worker-firewall.service' \
             "$k3s_worker_target"
           test -L "$k3sWorkerExposePath/units/aos-pkg-k3s-worker.target.wants/k3s.service"
           grep -q 'Description=Prepare host path directories for k3s-worker' \
@@ -1712,7 +1774,7 @@ in
             echo "k3s control-plane package must not bind kubelet state" >&2
             exit 1
           fi
-          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-control-plane-host-paths.service aos-pkg-k3s-control-plane-modules.service aos-pkg-k3s-control-plane-sysctl.service aos-pkg-k3s-control-plane-firewall.service' \
+          grep -q 'Wants=aos-pkg-k3s-control-plane.slice k3s-preflight.service k3s.service aos-pkg-k3s-control-plane-host-paths.service aos-pkg-k3s-control-plane-modules.service aos-pkg-k3s-control-plane-sysctl.service aos-pkg-k3s-control-plane-firewall.service' \
             "$k3s_control_plane_target"
           grep -q 'Description=Prepare host path directories for k3s-control-plane' \
             "$k3s_control_plane_host_paths"
@@ -1730,7 +1792,7 @@ in
           grep -q 'BindPaths=/var/lib/kubelet' "$k3s_combined_unit"
           grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_combined_unit"
           grep -q 'BindPaths=/etc/rancher/node' "$k3s_combined_unit"
-          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-combined-host-paths.service aos-pkg-k3s-combined-modules.service aos-pkg-k3s-combined-sysctl.service aos-pkg-k3s-combined-firewall.service' \
+          grep -q 'Wants=aos-pkg-k3s-combined.slice k3s-preflight.service k3s.service aos-pkg-k3s-combined-host-paths.service aos-pkg-k3s-combined-modules.service aos-pkg-k3s-combined-sysctl.service aos-pkg-k3s-combined-firewall.service' \
             "$k3s_combined_target"
           grep -q 'Description=Prepare host path directories for k3s-combined' \
             "$k3s_combined_host_paths"

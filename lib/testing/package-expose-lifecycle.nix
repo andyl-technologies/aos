@@ -410,6 +410,7 @@
           uidCheckerPackage.expose
           seedPackageProfile
           pkgs.aos
+          pkgs.aos-ebpf-net-policy
           pkgs.curl
           pkgs.iproute2
           pkgs.nftables
@@ -424,11 +425,125 @@ in
     system = testSystem;
     timeout = 300;
     testScript = ''
+      import textwrap
+
       host_netns = vm.succeed("readlink /proc/1/ns/net").strip()
       host_userns = vm.succeed("readlink /proc/1/ns/user").strip()
       initial_ip_forward = vm.succeed("cat /proc/sys/net/ipv4/ip_forward").strip()
 
       vm.succeed("systemctl is-active nftables.service")
+      vm.succeed("mkdir -p /sys/fs/cgroup/aos-ebpf-probe")
+      vm.succeed(
+          textwrap.dedent(
+              """\
+              cat >/tmp/aos-ebpf-probe-policy.json <<'JSON'
+              {
+                "version": 1,
+                "package": "aos-ebpf-probe",
+                "mode": "host",
+                "securityLabel": "aos-pkg-aos-ebpf-probe",
+                "tcp": {
+                  "bind": [19080, 19081],
+                  "connect": [19081]
+                },
+                "landlock": {
+                  "abi": 4,
+                  "tcp": {
+                    "bind": [19080, 19081],
+                    "connect": [19081]
+                  }
+                },
+                "ebpf": {
+                  "identity": "aos-pkg-aos-ebpf-probe",
+                  "hooks": ["socket_bind", "socket_connect"],
+                  "tcp": {
+                    "bind": [19080, 19081],
+                    "connect": [19081]
+                  }
+                }
+              }
+              JSON"""
+          )
+      )
+      vm.succeed("${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy /tmp/aos-ebpf-probe-policy.json --cgroup /sys/fs/cgroup/aos-ebpf-probe --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o >/tmp/aos-ebpf-probe.log 2>&1 & echo $! >/tmp/aos-ebpf-probe.pid")
+      vm.wait_until_succeeds(
+          "grep -q 'attached policy' /tmp/aos-ebpf-probe.log",
+          timeout=30,
+      )
+      vm.succeed(
+          textwrap.dedent(
+              """\
+              cat >/tmp/aos-ebpf-probe.py <<'PY'
+              import errno
+              import pathlib
+              import socket
+              import threading
+
+              state = pathlib.Path("/tmp")
+              denied = []
+
+              def listener(port):
+                  sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                  sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                  sock.bind(("127.0.0.1", port))
+                  return sock
+
+              def expect_denied(name, action):
+                  try:
+                      action()
+                  except OSError as err:
+                      if err.errno in (errno.EACCES, errno.EPERM):
+                          denied.append(f"{name}:{err.errno}")
+                          return
+                      raise
+                  raise SystemExit(f"{name} unexpectedly succeeded")
+
+              allowed_bind = listener(19080)
+              allowed_bind.close()
+              expect_denied("bind", lambda: listener(19082).close())
+
+              server = listener(19081)
+              server.listen(1)
+
+              def accept_once():
+                  conn, _ = server.accept()
+                  with conn:
+                      conn.recv(1)
+                      conn.sendall(b"x")
+
+              thread = threading.Thread(target=accept_once)
+              thread.start()
+              client = socket.create_connection(("127.0.0.1", 19081), timeout=5)
+              with client:
+                  client.sendall(b"?")
+                  if client.recv(1) != b"x":
+                      raise SystemExit("allowed connect returned unexpected data")
+              thread.join(timeout=5)
+              if thread.is_alive():
+                  raise SystemExit("allowed connect listener did not finish")
+              server.close()
+
+              def denied_connect():
+                  conn = socket.create_connection(("127.0.0.1", 19082), timeout=1)
+                  conn.close()
+
+              expect_denied("connect", denied_connect)
+              state.joinpath("aos-ebpf-probe-denied").write_text("\\n".join(denied))
+              state.joinpath("aos-ebpf-probe-result").write_text("ebpf-ok")
+              PY"""
+          )
+      )
+      vm.succeed("${pkgs.bash}/bin/bash -c 'echo $$ > /sys/fs/cgroup/aos-ebpf-probe/cgroup.procs; exec ${pkgs.python3}/bin/python3 /tmp/aos-ebpf-probe.py'")
+      assert "ebpf-ok" in vm.succeed("cat /tmp/aos-ebpf-probe-result")
+      assert "bind:" in vm.succeed("cat /tmp/aos-ebpf-probe-denied")
+      assert "connect:" in vm.succeed("cat /tmp/aos-ebpf-probe-denied")
+      vm.succeed("kill \"$(cat /tmp/aos-ebpf-probe.pid)\"")
+      vm.wait_until_succeeds(
+          "test \"$(cat /sys/fs/cgroup/aos-ebpf-probe/cgroup.procs)\" = \"\"",
+          timeout=30,
+      )
+      vm.succeed("rmdir /sys/fs/cgroup/aos-ebpf-probe")
+
       vm.succeed("${seedPackageProfile}/bin/seed-expose-lifecycle-profile")
       vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
       vm.succeed("systemctl cat expose-lifecycle-private.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-private.service'")

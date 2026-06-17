@@ -32,6 +32,8 @@ const ATTACHED_REL: &str = "systemd/system.attached";
 const GENERATED_CREDSTORE_REL: &str = "run/credstore.encrypted/aos";
 const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
+const EBPF_NET_POLICY_ENV: &str = "AOS_EBPF_NET_POLICY";
+const EBPF_NET_POLICY_OBJECT_ENV: &str = "AOS_EBPF_NET_POLICY_OBJECT";
 const LANDLOCK_EXEC_KEYS: &[&str] = &[
     "ExecStart",
     "ExecStartPre",
@@ -300,6 +302,14 @@ fn exposed_packages_from_expose_dir(
         }
         validate_socket_listener_permissions(&apm.name, &artifact_root, &units, &apm.permissions)?;
         validate_landlock_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
+        validate_ebpf_policy_service(
+            &apm.name,
+            &expose.target,
+            Path::new(&artifact.store_path),
+            &artifact_root,
+            &units,
+            &apm.permissions,
+        )?;
 
         let credential_blobs =
             generated_credential_blobs(&apm.name, Path::new(&artifact.store_path), expose)
@@ -804,6 +814,370 @@ fn validate_landlock_wrappers(
     Ok(())
 }
 
+fn validate_ebpf_policy_service(
+    package_name: &str,
+    target: &str,
+    artifact_store_path: &Path,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    let permissions = normalized_permissions(package_name, permissions);
+    let package_slice = expected_package_slice(package_name);
+    if !units.contains(&package_slice) {
+        bail!(
+            "eBPF network policy for package '{}' is missing required package slice {}",
+            package_name,
+            package_slice
+        );
+    }
+    validate_package_slice_membership(package_name, artifact_root, units, &package_slice)?;
+
+    let ebpf_unit = expected_ebpf_unit(package_name);
+    let unconfined = permissions
+        .confinement
+        .as_ref()
+        .context("normalized permissions have no confinement summary")?
+        .class
+        == ConfinementClass::Unconfined;
+    if unconfined {
+        if units.contains(&ebpf_unit) {
+            bail!(
+                "unconfined package '{}' must not declare eBPF network policy service {}",
+                package_name,
+                ebpf_unit
+            );
+        }
+        return Ok(());
+    }
+    if !units.contains(&ebpf_unit) {
+        bail!(
+            "eBPF network policy for package '{}' is missing required service {}",
+            package_name,
+            ebpf_unit
+        );
+    }
+    validate_ebpf_target_membership(package_name, target, artifact_root, &ebpf_unit)?;
+    validate_workload_ebpf_ordering(package_name, artifact_root, units, &ebpf_unit)?;
+
+    let path = artifact_root.join(&ebpf_unit);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading eBPF policy unit {}", path.display()))?;
+    let parsed = Parsed::parse(&text);
+    let service = parsed
+        .sections
+        .get("Service")
+        .with_context(|| format!("eBPF policy unit '{}' is missing [Service]", ebpf_unit))?;
+
+    require_service_value(package_name, &ebpf_unit, service, "Type", "notify")?;
+    require_service_value(package_name, &ebpf_unit, service, "NotifyAccess", "main")?;
+    require_service_value(package_name, &ebpf_unit, service, "Slice", &package_slice)?;
+    require_section_word(package_name, &ebpf_unit, &parsed, "Unit", "PartOf", target)?;
+    require_section_word(
+        package_name,
+        &ebpf_unit,
+        &parsed,
+        "Install",
+        "WantedBy",
+        target,
+    )?;
+    require_service_value(package_name, &ebpf_unit, service, "NoNewPrivileges", "true")?;
+    require_service_value(
+        package_name,
+        &ebpf_unit,
+        service,
+        "CapabilityBoundingSet",
+        "CAP_BPF CAP_NET_ADMIN CAP_SYS_RESOURCE",
+    )?;
+    require_service_value(
+        package_name,
+        &ebpf_unit,
+        service,
+        "LimitMEMLOCK",
+        "infinity",
+    )?;
+    require_service_value(package_name, &ebpf_unit, service, "PrivateDevices", "true")?;
+    require_service_value(package_name, &ebpf_unit, service, "DevicePolicy", "closed")?;
+    require_service_value(package_name, &ebpf_unit, service, "PrivateNetwork", "true")?;
+    require_service_value(package_name, &ebpf_unit, service, "ProtectSystem", "strict")?;
+    require_service_value(package_name, &ebpf_unit, service, "ProtectHome", "true")?;
+    require_service_value(
+        package_name,
+        &ebpf_unit,
+        service,
+        "RestrictAddressFamilies",
+        "AF_UNIX",
+    )?;
+    require_service_value(
+        package_name,
+        &ebpf_unit,
+        service,
+        "RestrictNamespaces",
+        "true",
+    )?;
+    require_service_value(
+        package_name,
+        &ebpf_unit,
+        service,
+        "MemoryDenyWriteExecute",
+        "true",
+    )?;
+    if service.contains_key("RootDirectory") {
+        bail!(
+            "eBPF network policy service '{}' for package '{}' must run host-side",
+            ebpf_unit,
+            package_name
+        );
+    }
+
+    let exec_start = single_service_value(package_name, &ebpf_unit, service, "ExecStart")?;
+    let expected = expected_ebpf_exec_command(package_name, artifact_store_path)?;
+    let actual = exec_start
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if actual != expected {
+        bail!(
+            "eBPF network policy service '{}' for package '{}' has invalid aos-ebpf-net-policy command",
+            ebpf_unit,
+            package_name
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_ebpf_target_membership(
+    package_name: &str,
+    target: &str,
+    artifact_root: &Path,
+    ebpf_unit: &str,
+) -> Result<()> {
+    let path = artifact_root.join(target);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading exposed target unit {}", path.display()))?;
+    let parsed = Parsed::parse(&text);
+    require_section_word(package_name, target, &parsed, "Unit", "Wants", ebpf_unit)?;
+    Ok(())
+}
+
+fn validate_package_slice_membership(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    package_slice: &str,
+) -> Result<()> {
+    for unit in units {
+        if !unit.ends_with(".service")
+            || is_generated_expose_side_effect_service(package_name, unit)
+        {
+            continue;
+        }
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        let service = parsed
+            .sections
+            .get("Service")
+            .with_context(|| format!("exposed service unit '{}' is missing [Service]", unit))?;
+        require_service_value(package_name, unit, service, "Slice", package_slice)?;
+    }
+    Ok(())
+}
+
+fn validate_workload_ebpf_ordering(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    ebpf_unit: &str,
+) -> Result<()> {
+    for unit in units {
+        if !unit.ends_with(".service")
+            || is_generated_expose_side_effect_service(package_name, unit)
+        {
+            continue;
+        }
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        require_section_word(package_name, unit, &parsed, "Unit", "After", ebpf_unit)?;
+        require_section_word(package_name, unit, &parsed, "Unit", "Requires", ebpf_unit)?;
+    }
+    Ok(())
+}
+
+fn expected_package_slice(package_name: &str) -> String {
+    format!("aos-pkg-{package_name}.slice")
+}
+
+fn expected_ebpf_unit(package_name: &str) -> String {
+    format!("aos-pkg-{package_name}-ebpf.service")
+}
+
+fn expected_ebpf_exec_command(
+    package_name: &str,
+    artifact_store_path: &Path,
+) -> Result<Vec<String>> {
+    Ok(vec![
+        trusted_ebpf_net_policy_path()?,
+        "run".to_string(),
+        "--policy".to_string(),
+        artifact_store_path
+            .join("network-policy.json")
+            .display()
+            .to_string(),
+        "--cgroup".to_string(),
+        expected_ebpf_cgroup_path(package_name),
+        "--object".to_string(),
+        trusted_ebpf_net_policy_object_path()?,
+    ])
+}
+
+fn expected_ebpf_cgroup_path(package_name: &str) -> String {
+    format!(
+        "/sys/fs/cgroup/{}",
+        systemd_slice_cgroup_path(&expected_package_slice(package_name))
+    )
+}
+
+fn systemd_slice_cgroup_path(slice: &str) -> String {
+    let stem = slice.strip_suffix(".slice").unwrap_or(slice);
+    let mut prefix = String::new();
+    let mut components = Vec::new();
+    for part in stem.split('-') {
+        if prefix.is_empty() {
+            prefix.push_str(part);
+        } else {
+            prefix.push('-');
+            prefix.push_str(part);
+        }
+        components.push(format!("{prefix}.slice"));
+    }
+    components.join("/")
+}
+
+fn trusted_ebpf_net_policy_path() -> Result<String> {
+    if let Ok(path) = std::env::var(EBPF_NET_POLICY_ENV) {
+        if path.is_empty() {
+            bail!("{EBPF_NET_POLICY_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/aos-ebpf-net-policy") {
+            bail!("{EBPF_NET_POLICY_ENV} must point to an absolute aos-ebpf-net-policy binary");
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-aos-ebpf-net-policy-0/bin/aos-ebpf-net-policy".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{EBPF_NET_POLICY_ENV} is not configured for network policy validation");
+    }
+}
+
+fn trusted_ebpf_net_policy_object_path() -> Result<String> {
+    if let Ok(path) = std::env::var(EBPF_NET_POLICY_OBJECT_ENV) {
+        if path.is_empty() {
+            bail!("{EBPF_NET_POLICY_OBJECT_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/lib/bpf/aos-ebpf-net-policy.bpf.o") {
+            bail!(
+                "{EBPF_NET_POLICY_OBJECT_ENV} must point to an absolute aos-ebpf-net-policy BPF object"
+            );
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok(
+            "/nix/store/hash-aos-ebpf-net-policy-0/lib/bpf/aos-ebpf-net-policy.bpf.o".to_string(),
+        );
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{EBPF_NET_POLICY_OBJECT_ENV} is not configured for network policy validation");
+    }
+}
+
+fn single_service_value<'a>(
+    package_name: &str,
+    unit: &str,
+    service: &'a BTreeMap<String, Vec<String>>,
+    key: &str,
+) -> Result<&'a str> {
+    let values = service.get(key).with_context(|| {
+        format!("service unit '{unit}' for package '{package_name}' is missing {key}")
+    })?;
+    if values.len() != 1 {
+        bail!(
+            "service unit '{}' for package '{}' must contain exactly one {} entry",
+            unit,
+            package_name,
+            key
+        );
+    }
+    Ok(&values[0])
+}
+
+fn require_service_value(
+    package_name: &str,
+    unit: &str,
+    service: &BTreeMap<String, Vec<String>>,
+    key: &str,
+    expected: &str,
+) -> Result<()> {
+    let actual = single_service_value(package_name, unit, service, key)?;
+    if actual != expected {
+        bail!(
+            "service unit '{}' for package '{}' has invalid {} value: expected '{}', got '{}'",
+            unit,
+            package_name,
+            key,
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn require_section_word(
+    package_name: &str,
+    unit: &str,
+    parsed: &Parsed,
+    section: &str,
+    key: &str,
+    expected: &str,
+) -> Result<()> {
+    let values = parsed
+        .sections
+        .get(section)
+        .and_then(|section| section.get(key))
+        .with_context(|| {
+            format!("unit '{unit}' for package '{package_name}' is missing {section}.{key}")
+        })?;
+    if !values
+        .iter()
+        .any(|value| value.split_whitespace().any(|word| word == expected))
+    {
+        bail!(
+            "unit '{}' for package '{}' must include {} in {}.{}",
+            unit,
+            package_name,
+            expected,
+            section,
+            key
+        );
+    }
+    Ok(())
+}
+
 fn requires_landlock_wrapper(package_name: &str, permissions: &PermissionsMeta) -> Result<bool> {
     let permissions = normalized_permissions(package_name, permissions);
     Ok(permissions
@@ -978,9 +1352,16 @@ fn trusted_landlock_wrapper_path() -> Result<String> {
 }
 
 fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bool {
-    ["host-paths", "modules", "sysctl", "firewall", "netns"]
-        .into_iter()
-        .any(|suffix| unit == format!("aos-pkg-{package_name}-{suffix}.service"))
+    [
+        "host-paths",
+        "modules",
+        "sysctl",
+        "firewall",
+        "netns",
+        "ebpf",
+    ]
+    .into_iter()
+    .any(|suffix| unit == format!("aos-pkg-{package_name}-{suffix}.service"))
 }
 
 fn validate_landlock_exec_command(
@@ -1966,6 +2347,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn systemd_slice_cgroup_paths_follow_hyphen_hierarchy() {
+        assert_eq!(
+            systemd_slice_cgroup_path("aos-pkg-web-worker.slice"),
+            "aos.slice/aos-pkg.slice/aos-pkg-web.slice/aos-pkg-web-worker.slice"
+        );
+        assert_eq!(
+            systemd_slice_cgroup_path("aos-pkg-expose.smoke.regex.slice"),
+            "aos.slice/aos-pkg.slice/aos-pkg-expose.smoke.regex.slice"
+        );
+    }
+
     fn installed_with_expose(
         tmp: &TempDir,
         name: &str,
@@ -1978,12 +2371,33 @@ mod tests {
             artifact
                 .join("units")
                 .join(format!("aos-pkg-{name}.target")),
-            "[Unit]\n",
+            format!(
+                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-ebpf.service\n"
+            ),
         )
         .unwrap();
         std::fs::write(
+            artifact.join("units").join(format!("aos-pkg-{name}.slice")),
+            "[Slice]\n",
+        )
+        .unwrap();
+        let ebpf = trusted_ebpf_net_policy_for_test();
+        let ebpf_object = trusted_ebpf_net_policy_object_for_test();
+        let ebpf_cgroup = expected_ebpf_cgroup_path(name);
+        let ebpf_exec_start = format!(
+            "{ebpf} run --policy {}/network-policy.json --cgroup {ebpf_cgroup} --object {ebpf_object}",
+            artifact.display()
+        );
+        std::fs::write(
             artifact.join("units").join(format!("{name}.service")),
-            "[Unit]\n",
+            workload_service_text(name, &format!("[Service]\nSlice=aos-pkg-{name}.slice\n")),
+        )
+        .unwrap();
+        std::fs::write(
+            artifact
+                .join("units")
+                .join(format!("aos-pkg-{name}-ebpf.service")),
+            ebpf_policy_service_text(name, &ebpf_exec_start),
         )
         .unwrap();
 
@@ -2006,7 +2420,11 @@ mod tests {
                 source_nar_hash: String::new(),
                 expose: Some(ExposeMeta {
                     target: format!("aos-pkg-{name}.target"),
-                    units: vec![format!("{name}.service")],
+                    units: vec![
+                        format!("{name}.service"),
+                        format!("aos-pkg-{name}.slice"),
+                        format!("aos-pkg-{name}-ebpf.service"),
+                    ],
                     images: Vec::new(),
                     requires: Vec::new(),
                     config: Default::default(),
@@ -2271,6 +2689,18 @@ mod tests {
         std::fs::remove_file(Path::new(&artifact).join("network-policy.json")).unwrap();
     }
 
+    fn remove_ebpf_policy_service(installed: &mut InstalledMeta) {
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let unit = format!("aos-pkg-{}-ebpf.service", apm.name);
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|candidate| candidate != &unit);
+        let _ = std::fs::remove_file(Path::new(&artifact).join("units").join(unit));
+    }
+
     fn grant_tcp_bind(installed: &mut InstalledMeta, port: u16) {
         installed.apm.as_mut().unwrap().permissions.tcp_bind = vec![port];
         write_network_policy_file(installed, &[port], &[]);
@@ -2279,6 +2709,12 @@ mod tests {
     fn write_service_unit(installed: &InstalledMeta, text: &str) {
         let apm = installed.apm.as_ref().unwrap();
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let text = if text.contains("Slice=") {
+            text.to_string()
+        } else {
+            format!("{text}Slice=aos-pkg-{}.slice\n", apm.name)
+        };
+        let text = workload_service_text(&apm.name, &text);
         std::fs::write(
             Path::new(&artifact)
                 .join("units")
@@ -2288,8 +2724,65 @@ mod tests {
         .unwrap();
     }
 
+    fn workload_service_text(package_name: &str, text: &str) -> String {
+        if text.contains("[Unit]") {
+            text.to_string()
+        } else {
+            format!(
+                "[Unit]\nAfter=aos-pkg-{package_name}-ebpf.service\nRequires=aos-pkg-{package_name}-ebpf.service\n{text}"
+            )
+        }
+    }
+
     fn trusted_landlock_wrapper_for_test() -> String {
         trusted_landlock_wrapper_path().unwrap()
+    }
+
+    fn trusted_ebpf_net_policy_for_test() -> String {
+        trusted_ebpf_net_policy_path().unwrap()
+    }
+
+    fn trusted_ebpf_net_policy_object_for_test() -> String {
+        trusted_ebpf_net_policy_object_path().unwrap()
+    }
+
+    fn ebpf_policy_service_text(name: &str, exec_start: &str) -> String {
+        format!(
+            "[Unit]\n\
+             PartOf=aos-pkg-{name}.target\n\
+             Before={name}.service\n\
+             [Service]\n\
+             Type=notify\n\
+             NotifyAccess=main\n\
+             Slice=aos-pkg-{name}.slice\n\
+             ExecStart={exec_start}\n\
+             NoNewPrivileges=true\n\
+             CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_RESOURCE\n\
+             AmbientCapabilities=\n\
+             LimitMEMLOCK=infinity\n\
+             PrivateDevices=true\n\
+             DevicePolicy=closed\n\
+             PrivateNetwork=true\n\
+             PrivateTmp=true\n\
+             ProtectSystem=strict\n\
+             ProtectHome=true\n\
+             ProtectClock=true\n\
+             ProtectHostname=true\n\
+             ProtectKernelLogs=true\n\
+             ProtectKernelModules=true\n\
+             ProtectProc=invisible\n\
+             ProcSubset=pid\n\
+             SystemCallArchitectures=native\n\
+             RestrictAddressFamilies=AF_UNIX\n\
+             RestrictNamespaces=true\n\
+             RestrictRealtime=true\n\
+             RestrictSUIDSGID=true\n\
+             LockPersonality=true\n\
+             MemoryDenyWriteExecute=true\n\
+             UMask=0077\n\
+             [Install]\n\
+             WantedBy=aos-pkg-{name}.target\n"
+        )
     }
 
     #[test]
@@ -2783,6 +3276,194 @@ mod tests {
     }
 
     #[test]
+    fn exposed_packages_rejects_missing_ebpf_policy_service() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        remove_ebpf_policy_service(&mut installed);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing required service aos-pkg-web-ebpf.service"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_untrusted_ebpf_policy_helper() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let ebpf_object = trusted_ebpf_net_policy_object_for_test();
+        let ebpf_cgroup = expected_ebpf_cgroup_path("web");
+        let exec_start = format!(
+            "/nix/store/fake-aos-ebpf-net-policy-0/bin/aos-ebpf-net-policy run --policy {artifact}/network-policy.json --cgroup {ebpf_cgroup} --object {ebpf_object}"
+        );
+        std::fs::write(
+            Path::new(&artifact).join("units/aos-pkg-web-ebpf.service"),
+            ebpf_policy_service_text("web", &exec_start),
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid aos-ebpf-net-policy command"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_ebpf_policy_wrong_cgroup() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let ebpf = trusted_ebpf_net_policy_for_test();
+        let ebpf_object = trusted_ebpf_net_policy_object_for_test();
+        let wrong_cgroup = expected_ebpf_cgroup_path("other");
+        let exec_start = format!(
+            "{ebpf} run --policy {artifact}/network-policy.json --cgroup {wrong_cgroup} --object {ebpf_object}"
+        );
+        std::fs::write(
+            Path::new(&artifact).join("units/aos-pkg-web-ebpf.service"),
+            ebpf_policy_service_text("web", &exec_start),
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid aos-ebpf-net-policy command"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_ebpf_policy_missing_target_wants() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        std::fs::write(
+            Path::new(&artifact).join("units/aos-pkg-web.target"),
+            "[Unit]\nWants=aos-pkg-web.slice web.service\n",
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must include aos-pkg-web-ebpf.service in Unit.Wants"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_workload_missing_ebpf_after() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        std::fs::write(
+            Path::new(&artifact).join("units/web.service"),
+            "[Unit]\nRequires=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(err.to_string().contains("Unit.After"), "{err:?}");
+    }
+
+    #[test]
+    fn exposed_packages_rejects_workload_missing_ebpf_requires() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        std::fs::write(
+            Path::new(&artifact).join("units/web.service"),
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(err.to_string().contains("Unit.Requires"), "{err:?}");
+    }
+
+    #[test]
+    fn exposed_packages_rejects_workload_outside_package_slice() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let wrapper = trusted_landlock_wrapper_for_test();
+        std::fs::write(
+            Path::new(&artifact).join("units/web.service"),
+            workload_service_text(
+                "web",
+                &format!(
+                    "[Service]\nExecStart={wrapper} --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web -- /bin/true\n"
+                ),
+            ),
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(err.to_string().contains("missing Slice"), "{err:?}");
+    }
+
+    #[test]
     fn exposed_packages_accepts_package_state_paths_for_all_landlock_wrappers() {
         let tmp = TempDir::new().unwrap();
         let profile = Profile {
@@ -2800,7 +3481,10 @@ mod tests {
             .push("web-worker.service".into());
         std::fs::write(
             Path::new(&artifact).join("units/web-worker.service"),
-            "[Service]\nStateDirectory=aos-pkg-web-worker\n",
+            workload_service_text(
+                "web",
+                "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\n",
+            ),
         )
         .unwrap();
         write_network_policy_file(&installed, &[], &[]);
@@ -2814,8 +3498,11 @@ mod tests {
         );
         std::fs::write(
             Path::new(&artifact).join("units/web-worker.service"),
-            format!(
-                "[Service]\nStateDirectory=aos-pkg-web-worker\nExecStart={wrapper} --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web -- /bin/true\n"
+            workload_service_text(
+                "web",
+                &format!(
+                    "[Service]\nStateDirectory=aos-pkg-web-worker\nSlice=aos-pkg-web.slice\nExecStart={wrapper} --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web-worker --fs-rw /var/lib/aos-pkg-web -- /bin/true\n"
+                ),
             ),
         )
         .unwrap();
@@ -2957,6 +3644,7 @@ mod tests {
         }];
         write_network_policy_file(&installed, &[], &[]);
         write_mac_profile_file(&installed);
+        remove_ebpf_policy_service(&mut installed);
         write_service_unit(&installed, "[Service]\nExecStart=/bin/true\n");
         link_expose_artifact(&profile, &installed);
 

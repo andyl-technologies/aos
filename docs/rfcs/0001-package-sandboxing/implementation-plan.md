@@ -94,7 +94,7 @@ reframes how the phases below are read:
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☑ |
-| **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
+| **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☑ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
@@ -446,7 +446,7 @@ the prior generation's units.
       expose services set `RootDirectory=` to the payload store path, install /
       upgrade root those artifacts and `expose.images`, and the lifecycle VM
       asserts the active package root.
-- [ ] **Networking modes (D3).** *inbound-only private* (default): host-owned
+- [x] **Networking modes (D3).** *inbound-only private* (default): host-owned
       socket units pass **named** fds into the sandboxed `PrivateNetwork=`
       service; the socket unit intentionally stays in the host namespace.
       `PrivateNetwork=` + `JoinsNamespaceOf=` on the socket is only for the
@@ -468,11 +468,18 @@ the prior generation's units.
       enforcement for those grants is applied by generated `aos-landlock`
       prefixes on package-authored service exec directives and revalidated by
       `apm` against the Nix-built trusted helper path before unit attach. The
-      eBPF loader remains before this item is complete.
-- [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
-      only host-global nftables base-set mutation — the SOTA for per-package L3/L4.
-      The signed `network-policy.json` contract exists; loading/enforcing it
-      remains ([`container-model.md`](container-model.md) networking).
+      generated cgroup eBPF policy service now attaches before package
+      workloads and enforces the same TCP bind/connect grants against the
+      package slice cgroup.
+- [x] **Per-package network policy via eBPF** for static TCP bind/connect grants,
+      not only host-global nftables base-set mutation.
+      The signed `network-policy.json` contract is loaded by the Nix-built
+      `aos-ebpf-net-policy` helper, validated by APM against the trusted helper
+      and BPF object paths, attached to the package slice cgroup with
+      `socket_bind` / `socket_connect` programs, and covered by renderer,
+      eval, Rust, kernel-config, and lifecycle checks
+      ([`container-model.md`](container-model.md) networking). UDP and fuller
+      L3 policy remain outside this P6 slice.
 - [x] **Naming without `nss-mymachines`** (not shipped): default NSS host
       lookup uses explicit `/etc/hosts`, `nss-myhostname`, systemd-resolved, and
       DNS only; fleet metadata already writes `/etc/hosts` entries for host

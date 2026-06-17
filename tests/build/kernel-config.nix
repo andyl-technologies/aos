@@ -41,6 +41,7 @@
     "BPF_SYSCALL"
     "BPF_JIT"
     "BPF_EVENTS"
+    "CGROUP_BPF"
     "BPF_LSM"
     "SECURITY_LANDLOCK"
     "DEBUG_KERNEL"
