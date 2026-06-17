@@ -20,6 +20,8 @@
 
 use rand::Rng;
 
+use crate::backend::BackendBounds;
+
 /// How long a magic link stays valid, in seconds (15 minutes).
 pub const MAGIC_LINK_TTL_SECS: i64 = 15 * 60;
 
@@ -38,15 +40,22 @@ pub fn new_magic_secret() -> String {
 /// Implementations send the URL however their runtime allows; the hub
 /// holds a `dyn Mailer` and calls [`Mailer::send_magic_link`] after
 /// `Database::create_magic_link` returns the secret.
-pub trait Mailer: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Mailer: BackendBounds {
     /// Sends `link_url` (a fully-formed magic-link URL) to `email`.
+    ///
+    /// `async` so a deployment can deliver over the network (the Cloudflare
+    /// Worker `fetch`es an email relay; a native impl may call an SMTP/HTTP
+    /// provider). The bound is [`BackendBounds`]: `Send + Sync` natively,
+    /// unbounded on the single-threaded Worker.
     ///
     /// # Errors
     ///
     /// Returns an error if delivery fails; the hub surfaces this as a
     /// transient failure to the caller without leaking whether the address
     /// is known.
-    fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()>;
+    async fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()>;
 }
 
 /// A [`Mailer`] that logs the link instead of sending it.
@@ -57,8 +66,10 @@ pub trait Mailer: Send + Sync {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LogMailer;
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Mailer for LogMailer {
-    fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()> {
+    async fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()> {
         tracing::info!(%email, %link_url, "magic link issued (LogMailer: not actually emailed)");
         Ok(())
     }
@@ -76,11 +87,12 @@ mod tests {
         assert_ne!(s, new_magic_secret());
     }
 
-    #[test]
-    fn log_mailer_is_infallible() {
+    #[tokio::test]
+    async fn log_mailer_is_infallible() {
         let mailer = LogMailer;
         assert!(mailer
             .send_magic_link("a@b.com", "https://h/login/magic?token=x")
+            .await
             .is_ok());
     }
 }
