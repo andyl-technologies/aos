@@ -11853,27 +11853,72 @@ impl<'ir> TreeWalk<'ir> {
                 let rhs_span = self.node(rhs)?.span;
                 let right = self.eval_node(rhs)?;
                 let right = self.force_demanded_value(rhs, rhs_span, right)?;
-                if right.tag() != ValueTag::String {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::Type {
-                            id: rhs,
-                            expected: "string",
-                            actual: right.tag(),
-                        },
-                        rhs_span,
-                    ));
-                }
+                let right = self.coerce_to_interpolation_string(rhs, right, rhs_span)?;
                 self.concat_strings(id, node, left, right)
             }
+            ValueTag::Path => self.eval_path_add(id, node, lhs, lhs_span, left, rhs),
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: lhs,
-                    expected: "number or string",
+                    expected: "number, string, or path",
                     actual,
                 },
                 lhs_span,
             )),
         }
+    }
+
+    fn eval_path_add(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        lhs_span: Span,
+        left: Value,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
+        let right = self.coerce_to_string(rhs, right, rhs_span)?;
+        let left = self.heap.get_path(left).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id: lhs, source }, lhs_span)
+        })?;
+        let right = self.heap.get_string(right).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id: rhs, source }, rhs_span)
+        })?;
+        if right.has_context() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::StringContextNotAllowed {
+                    id: rhs,
+                    op: "path addition",
+                },
+                rhs_span,
+            ));
+        }
+
+        let len = left.len().checked_add(right.len()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                node.span,
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len },
+                node.span,
+            )
+        })?;
+        bytes.extend_from_slice(left.bytes());
+        bytes.extend_from_slice(right.bytes());
+        let bytes = Self::absolute_path_bytes_for_node(id, node.span, &bytes)?;
+        self.heap
+            .alloc_path(NixString::from_bytes(bytes))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
     fn eval_equality(
@@ -27373,6 +27418,90 @@ mod tests {
                 .bytes(),
             b"a\nb"
         );
+    }
+
+    #[test]
+    fn string_add_store_coerces_path_rhs() {
+        let (dir, path) = temp_file_with_bytes("string-add-path", b"abc");
+        let path = path_source(&path);
+        let store_path = "/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt";
+
+        assert_eq!(
+            eval_string_bytes(&format!("\"prefix-\" + {path}")),
+            format!("prefix-{store_path}").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.toJSON (builtins.getContext (\"prefix-\" + {path}))"
+            )),
+            br#"{"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt":{"path":true}}"#
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "\"prefix-\" + {{ __toString = self: {path}; outPath = 1 / 0; }}"
+            )),
+            format!("prefix-{store_path}").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("\"prefix-\" + {{ outPath = {path}; }}")),
+            format!("prefix-{store_path}").as_bytes()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_add_concatenates_raw_paths_and_context_free_strings() {
+        let dir = unique_temp_dir("path-add");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("base directory creates");
+        let suffix = dir.join("suffix.txt");
+        fs::write(&suffix, b"abc").expect("suffix file writes");
+        let base = path_source(&base);
+        let suffix = path_source(&suffix);
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.typeOf ({base} + \"/child\")")),
+            b"path"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString ({base} + \"/child\")")),
+            format!("{base}/child").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString ({base} + \"child\")")),
+            format!("{base}child").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString ({base} + \"/../sibling\")")),
+            path_source(&dir.join("sibling")).as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString ({base} + {suffix})")),
+            format!("{base}{suffix}").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.toString ({base} + {{ __toString = self: \"/hook\"; outPath = 1 / 0; }})"
+            )),
+            format!("{base}/hook").as_bytes()
+        );
+
+        let ir = lower(&format!(
+            r#"{base} + (builtins.appendContext "/child" {{
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = {{ path = true; }};
+            }})"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("path append rejects string context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "path addition",
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
     }
 
     #[test]

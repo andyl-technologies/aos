@@ -256,10 +256,10 @@ search paths, and store coercion.
       `a/b` (no spaces) is a path. **The whitespace around `/` is the
       disambiguator** — reproduce the lexer rule exactly. Verify the precise
       whitespace rule against pinned Nix.
-- [ ] **path + path** — `+` on two paths yields a path (§6).
-- [ ] **path + string** — yields a **path**; the string must not carry store-path
+- [x] **path + path** — `+` on two paths yields a path (§6).
+- [x] **path + string** — yields a **path**; the string must not carry store-path
       context. Verify against pinned Nix (manual: "Path + String → path").
-- [ ] **string + path** — yields a **string**; the path's file/dir **must exist**
+- [x] **string + path** — yields a **string**; the path's file/dir **must exist**
       and is **copied into the store** (adds source path + context). Verify the
       existence requirement and the copy/coercion asymmetry vs `path + string`
       against pinned Nix — this asymmetry is a classic foot-gun.
