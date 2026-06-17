@@ -15416,17 +15416,8 @@ mod tests {
         assert_cpp_nix_string_path_builtins_match_tree_walk(&oracle);
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_json_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_json_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
             r#"builtins.fromJSON ''{"b":1,"a":[true,false,null,"x"],"c":{"n":2.5}}''"#,
             r#"builtins.attrNames (builtins.fromJSON ''{"b":1,"a":2}'')"#,
@@ -15450,6 +15441,8 @@ mod tests {
             r#""\t\r\n\\\"""#,
             r#"builtins.fromJSON "\"\\b\"""#,
             r#"builtins.fromJSON "\"\\f\"""#,
+            r#"builtins.fromJSON "\"\\u0001\"""#,
+            r#"builtins.fromJSON "\"\\u001f\"""#,
             r#"{ b = 1; a = [ true false null "x" ]; }"#,
             r#"{ "10" = 10; "2" = 2; A = 1; a = 2; }"#,
             "1.0",
@@ -15476,6 +15469,22 @@ mod tests {
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_json_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_json_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_json_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix JSON check");
+            return;
+        };
+        assert_cpp_nix_json_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
@@ -23467,6 +23476,14 @@ mod tests {
         assert_eq!(
             eval_string_bytes(r#"builtins.toJSON (builtins.fromJSON "\"\\f\"")"#),
             br#""\f""#
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toJSON (builtins.fromJSON "\"\\u0001\"")"#),
+            br#""\u0001""#
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toJSON (builtins.fromJSON "\"\\u001f\"")"#),
+            br#""\u001f""#
         );
         assert_eq!(
             eval_string_bytes("builtins.toJSON { b = 1; a = [ true false null \"x\" ]; }"),

@@ -916,7 +916,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 
 - [ ] `derivationStrict` — env coercion order, context partition, hash-modulo,
       output back-patching, `__structuredAttrs`/`__ignoreNulls`/fixed-output/CA.
-- [ ] `toJSON` — key order, number/float formatting, escape set, deep forcing.
+- [x] `toJSON` — key order, number/float formatting, escape set, deep forcing.
 - [x] `hashString` / `hashFile` / `convertHash` — algorithm set, hex/base32
       output, the Nix base32 alphabet.
 - [x] String-context primops (§5) — every union/discard/upgrade bit.
