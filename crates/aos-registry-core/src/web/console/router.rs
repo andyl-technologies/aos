@@ -6,12 +6,13 @@
 //! Cloudflare Worker both merge this router into their top-level router, so the
 //! producer console is served from one code path.
 //!
-//! The routes that stay in the native hub are *not* registered here: the
-//! pre-auth rate-limited login/activation paths (which read the connecting peer
-//! address and a reverse-proxy trust flag), the OIDC flow (which makes outbound
-//! `reqwest` calls), and the git-backed config/change-request flows (which use
-//! the hub's `gitwrite`/`surface` modules). The hub mounts those alongside this
-//! router on the same top-level router, so no path is registered twice.
+//! The OIDC flow is shared here too (RFC-0004 Phase 5, console-dedup stage F):
+//! its two network calls go through the
+//! [`HttpClient`](super::ports::HttpClient) port, so it is wasm-clean. The only
+//! routes that stay in the native hub are the git-backed config/change-request
+//! flows (which use the hub's `gitwrite`/`surface` modules). The hub mounts
+//! those alongside this router on the same top-level router, so no path is
+//! registered twice.
 //!
 //! # The wasm `Send` bridge
 //!
@@ -95,9 +96,13 @@ fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
 /// login paths they rate-limit on the runtime-neutral
 /// [`CLIENT_IP_HEADER`](handlers::CLIENT_IP_HEADER) each shell stamps on ingress.
 ///
-/// Routes intentionally omitted (served by the native hub): `/auth/sso`,
-/// `/auth/oidc/start`, `/auth/oidc/callback`, `/{slug}/-/settings/config`, and
-/// `/{slug}/-/changes`.
+/// The OIDC flow (`/auth/sso` POST, `/auth/oidc/start` GET, `/auth/oidc/callback`
+/// GET) is served here too (RFC-0004 Phase 5, console-dedup stage F): its token
+/// exchange and JWKS fetch go through the
+/// [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
+///
+/// Routes intentionally omitted (served by the native hub): the git-backed
+/// `/{slug}/-/settings/config` and `/{slug}/-/changes` flows.
 #[must_use]
 pub fn console_router(deps: ConsoleDeps) -> Router {
     // Each route is a thin closure that recovers `ConsoleDeps` from the
@@ -125,6 +130,24 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             "/auth/magic",
             get(|State(s): State<SharedState>, q: Query<_>| {
                 send_bridge(handlers::magic_consume(from_state(s), q))
+            }),
+        )
+        .route(
+            "/auth/sso",
+            post(|State(s): State<SharedState>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_sso(from_state(s), f))
+            }),
+        )
+        .route(
+            "/auth/oidc/start",
+            get(|State(s): State<SharedState>, q: Query<_>| {
+                send_bridge(handlers::oidc_start(from_state(s), q))
+            }),
+        )
+        .route(
+            "/auth/oidc/callback",
+            get(|State(s): State<SharedState>, q: Query<_>| {
+                send_bridge(handlers::oidc_callback(from_state(s), q))
             }),
         )
         .route(

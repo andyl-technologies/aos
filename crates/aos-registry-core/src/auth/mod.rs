@@ -11,6 +11,9 @@
 //! - [`magic`] — single-use email magic-link secrets and the [`magic::Mailer`]
 //!   delivery trait.
 //! - [`device`] — RFC 8628 device-code and user-code minting.
+//! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow and
+//!   JWKS-backed RS256 id_token verification, over the
+//!   [`HttpClient`](crate::web::console::ports::HttpClient) port.
 //! - [`password`] — Argon2id password hashing and constant-time verification.
 //! - [`seal`] — the [`SecretSealer`](seal::SecretSealer) seam (AES-256-GCM
 //!   production sealer + the dev/test XOR placeholder) for at-rest secrets.
@@ -20,7 +23,7 @@
 //! - [`permission_from_str`] — the inverse of `Permission::as_str`.
 //!
 //! The HTTP-bound and database-bound halves (axum extractors, JWT minting, the
-//! OIDC/SSO flow, the sealed-secret envelope, the WebAuthn verifier, and the
+//! sealed-secret envelope, the WebAuthn verifier, and the
 //! session/token row queries) currently stay in the deployment crates; later
 //! phases move the runtime-agnostic ones here too. The on-disk system of record
 //! for every credential is the hub's `db` layer; only secret *hashes* are
@@ -30,6 +33,7 @@
 pub mod device;
 pub mod jwt;
 pub mod magic;
+pub mod oidc;
 pub mod password;
 pub mod seal;
 pub mod session;

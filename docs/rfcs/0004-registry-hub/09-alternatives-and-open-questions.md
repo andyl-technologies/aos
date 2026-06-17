@@ -58,13 +58,19 @@
    ranged GETs; the facade should always redirect/proxy ranges to R2
    rather than slicing — verify this covers `apm`'s delta-fetch access
    patterns.
-5. **JWT minting on Workers.** `jsonwebtoken` historically depends on
+5. ~~**JWT minting on Workers.** `jsonwebtoken` historically depends on
    ring; confirm a RustCrypto path or hand-roll HS256 (`hmac` + `sha2`)
-   / EdDSA via `ed25519-dalek`. Also: `getrandom` needs its js feature
-   on `wasm32-unknown-unknown`, and `openidconnect` — assessed
-   wasm-clean from its dependency structure — has not yet been
-   *compiled* for the target with the Fetch adapter; do so in the
-   phase-2 spike.
+   / EdDSA via `ed25519-dalek`.~~ **Resolved (RFC-0004 Phase 5, console-dedup
+   stage F).** The hub's session/bearer HS256 JWTs are minted/verified with
+   pure-Rust `hmac` + `sha2` (`core::auth::jwt`), and the OIDC id_token RS256
+   verification uses `jwt-rustcrypto` over the RustCrypto `rsa` crate — no ring,
+   no C — so `core` (and the Worker) build to `wasm32-unknown-unknown` with no C
+   toolchain. (`ring`/`jsonwebtoken` *can* be made to compile to wasm by giving
+   AOS clang the WebAssembly target, but the pure-Rust path makes that
+   unnecessary for the registry.) `getrandom`'s js feature + the
+   `getrandom_backend="wasm_js"` rustflag are wired in `crates/.cargo/config.toml`.
+   `openidconnect` was not adopted; the OIDC flow is the hand-written PKCE +
+   `jwt-rustcrypto` verifier in `core::auth::oidc`.
 6. **The in-house passkey verifier spike.** Attestation-`none` RP
    verification is ~500–800 lines on RustCrypto crates with W3C test
    vectors; if it overruns, magic links carry phase 2 alone and

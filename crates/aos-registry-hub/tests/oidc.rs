@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use aos_registry_hub::auth::oidc::{
     self, begin_login, code_challenge_s256, complete_login, dev_sealer, CallbackParams, IdpConfig,
 };
+use aos_registry_hub::coreports::HubHttpClient;
 use aos_registry_hub::db::{Database, IdentityLink, IdpConfigRecord};
 use aos_registry_hub::domain::{Principal, Role, Scope};
 use axum::extract::{Query, State};
@@ -236,10 +237,23 @@ async fn seed_org(
     .unwrap();
 }
 
+/// A `HubHttpClient` over a plain (non-SSRF-resolving) reqwest client, so the
+/// `127.0.0.1` fake IdP is reachable in tests.
+///
+/// `complete_login` now takes the `HttpClient` port instead of a bare
+/// `reqwest::Client` (RFC-0004 Phase 5, console-dedup stage F); the hub's
+/// [`HubHttpClient`] is that port. It wraps whatever client it is given, so a
+/// plain client here keeps the loopback IdP reachable while still exercising the
+/// real `post_form`/`get` (error-for-status + body-cap) path the production code
+/// runs.
+fn test_http() -> HubHttpClient {
+    HubHttpClient::new(reqwest::Client::new())
+}
+
 /// Run the full flow: begin_login → fake authorize → callback → complete_login.
 async fn run_flow(
     db: &Database,
-    http: &reqwest::Client,
+    http: &HubHttpClient,
     external_url: &str,
     org_id: i64,
 ) -> anyhow::Result<aos_registry_hub::auth::oidc::OidcLogin> {
@@ -284,7 +298,7 @@ async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
         .await
@@ -303,7 +317,7 @@ async fn second_login_same_iss_sub_does_not_create_new_user() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     let first = run_flow(&db, &http, "http://hub.example.com", org_id)
         .await
@@ -330,7 +344,7 @@ async fn group_claim_maps_to_role_at_org_scope() {
     seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.groups.lock().unwrap() = vec!["acme-admins".into()];
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
         .await
@@ -354,7 +368,7 @@ async fn default_role_granted_when_no_group_maps() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
         .await
@@ -374,7 +388,7 @@ async fn forged_or_replayed_state_is_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     // A callback with a state that was never staged.
     let err = complete_login(
@@ -434,7 +448,7 @@ async fn bad_nonce_is_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
 
     // Begin a real flow to capture a valid state, but force the IdP to mint a
     // token with a nonce that does not match the staged one.
@@ -471,7 +485,7 @@ async fn aud_mismatch_is_rejected() {
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.aud_override.lock().unwrap() = Some("someone-else".into());
-    let http = reqwest::Client::new();
+    let http = test_http();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
     assert!(err.is_err(), "an aud mismatch must be rejected");
 }
@@ -483,7 +497,7 @@ async fn iss_mismatch_is_rejected() {
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.iss_override.lock().unwrap() = Some("https://evil.example".into());
-    let http = reqwest::Client::new();
+    let http = test_http();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
     assert!(err.is_err(), "an iss mismatch must be rejected");
 }
@@ -495,7 +509,7 @@ async fn tampered_signature_is_rejected() {
     seed_org(&db, &idp_base, false, true, "{}").await;
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
     *idp.tamper.lock().unwrap() = true;
-    let http = reqwest::Client::new();
+    let http = test_http();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
     assert!(
         err.is_err(),
@@ -509,7 +523,7 @@ async fn jit_disabled_rejects_unknown_identity() {
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, false, "{}").await; // allow_jit = false
     let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
-    let http = reqwest::Client::new();
+    let http = test_http();
     let err = run_flow(&db, &http, "http://hub.example.com", org_id).await;
     assert!(
         err.is_err(),
