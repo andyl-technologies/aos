@@ -146,7 +146,8 @@ async fn unreachable_source_marks_stale_not_failed() {
         .await
         .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    let fetch = fetch_for_url(&registry.source_url).await.unwrap();
+    let fetch =
+        aos_registry_hub::coreports::into_core_fetch(fetch_for_url(&registry.source_url).await.unwrap());
 
     let err = index_and_record(&db, fetch.as_ref(), &registry)
         .await

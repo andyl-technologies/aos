@@ -21,6 +21,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
+use aos_registry_hub::coreports::into_core_fetch;
 use aos_registry_hub::db::{Database, RegistryRecord};
 use aos_registry_hub::fetch::{fetch_for_url, LocalFsFetch, SurfaceFetch};
 use aos_registry_hub::indexer::index_and_record;
@@ -711,7 +712,7 @@ async fn main() -> Result<()> {
                         .registry_by_slug(&slug)
                         .await?
                         .context("registry vanished after registration")?;
-                    let fetch = fetch_for_url(&source_url).await?;
+                    let fetch = into_core_fetch(fetch_for_url(&source_url).await?);
                     match index_and_record(&db, fetch.as_ref(), &registry).await {
                         Ok(outcome) => {
                             println!(
@@ -1085,7 +1086,7 @@ async fn main() -> Result<()> {
                 None => db.list_registries().await?,
             };
             for registry in registries {
-                let fetch = fetch_for_registry(&db, &registry).await?;
+                let fetch = into_core_fetch(fetch_for_registry(&db, &registry).await?);
                 match index_and_record(&db, fetch.as_ref(), &registry).await {
                     Ok(outcome) => {
                         println!(
@@ -1788,7 +1789,7 @@ async fn index_all(db: &Database) {
     };
     for registry in registries {
         let fetch = match fetch_for_registry(db, &registry).await {
-            Ok(fetch) => fetch,
+            Ok(fetch) => into_core_fetch(fetch),
             Err(err) => {
                 tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "bad source url");
                 continue;

@@ -67,17 +67,22 @@
 //! Pure, native-testable (compile on every target):
 //!
 //! - [`keymap`] — R2 key mapping and the facade cache/content classification.
-//! - [`model`] — the serde `Registry` row the Cron indexer projects from D1.
-//! - [`indexlogic`] — the Cron indexer's pure verification decisions (partition
-//!   target checks, channel anti-rollback floors, href-scheme safety), factored
-//!   out of the wasm-only [`indexer`] so they are unit-tested natively against
-//!   the same rules the native hub indexer enforces.
+//!
+//! The Cron indexer no longer carries a bespoke `Registry` row model or a
+//! `indexlogic` rules module: it projects the core
+//! [`RegistryRecord`](aos_registry_core::db::RegistryRecord) from D1 and runs the
+//! shared [`aos_registry_core::indexer`] (the partition target checks, the
+//! channel anti-rollback floor, and the snapshot write all live there now), so
+//! the Worker's Cron index is byte-identical to the native hub's (RFC-0004
+//! Phase 5).
 //!
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
 //! - `d1backend` — the [`aos_registry_core::backend::Backend`] over D1.
 //! - `handlers` — the one-shot `GET /_init` D1 schema setup.
-//! - `indexer` — the Cron-trigger indexer over R2 + D1.
+//! - `indexer` — the Cron-trigger indexer: lists public registries from D1 and
+//!   runs the shared [`aos_registry_core::indexer`] over each registry's R2
+//!   [`surface`] fetcher.
 //! - `bridge` — the hand-rolled `worker`⇄`axum` bridge that runs the shared
 //!   Connect-JSON router for the RPC surface (no `axum-cloudflare-adapter`).
 //! - `surface` — the R2-backed [`aos_registry_core::fetch::SurfaceProvider`]
@@ -101,9 +106,7 @@
 //! is wasm-only, exactly like the sibling `aos-registry-spa` crate, so adding
 //! this crate to the workspace members never breaks the native build.
 
-pub mod indexlogic;
 pub mod keymap;
-pub mod model;
 
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;
@@ -119,6 +122,7 @@ pub mod indexer;
 pub mod surface;
 #[cfg(target_arch = "wasm32")]
 pub mod workerlease;
+#[cfg(target_arch = "wasm32")]
 pub mod workerlimit;
 
 #[cfg(target_arch = "wasm32")]
@@ -342,9 +346,10 @@ mod entry {
             }
         };
         // Drive the indexer's D1 access through the shared D1Backend (f64 binds,
-        // NULL-tolerant reads), the same engine the read path uses.
+        // NULL-tolerant reads), the same engine the read path uses; the surface
+        // read goes through the R2-backed SurfaceProvider.
         let backend = crate::d1backend::D1Backend::new(db);
-        if let Err(err) = crate::indexer::index_all(&backend, &bucket).await {
+        if let Err(err) = crate::indexer::index_all(backend, bucket).await {
             worker::console_error!("scheduled index failed: {err:#}");
         }
     }

@@ -13,3 +13,8 @@ semver = { workspace = true }
 flate2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 serde = { workspace = true }
+# The committed-file TOML schemas (registry.toml root config, keys.toml trust
+# roster) and the package-TOML document parser used by the wasm-clean indexer
+# (RFC-0004 Phase 5). Pure-Rust and wasm32-clean; `aos-package` re-exports these
+# so its native git-CLI path keeps the same paths.
+toml = { workspace = true }

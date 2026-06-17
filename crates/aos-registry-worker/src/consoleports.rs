@@ -241,14 +241,17 @@ impl HttpClient for WorkerHttpClient {
 ///
 /// The shared facade-write handler re-indexes a registry inline when a
 /// publish-completing pointer (`info/refs`/`nix-cache-info`) lands, so the native
-/// hub's browse pages are consistent the instant the final `PUT` returns. The
-/// Worker's single-registry indexer ([`crate::indexer::index_one`]) is tightly
-/// coupled to its concrete D1/R2/[`model::Registry`](crate::model) types and is
-/// not cleanly callable from a core port over a
-/// [`RegistryRecord`](aos_registry_core::db::RegistryRecord), so this impl is a
-/// logged no-op: the Worker already runs a Cron-trigger indexer
-/// ([`crate::indexer::index_all`]) that re-walks every registry's R2 surface on a
-/// schedule, which reconciles the D1 index after the publish.
+/// hub's browse pages are consistent the instant the final `PUT` returns. On the
+/// Worker, running a full R2 re-index inline on every per-request console advance
+/// would risk the isolate's per-request CPU/time limit on a large registry, so
+/// this impl is a logged no-op: the Worker's Cron-trigger indexer
+/// ([`crate::indexer::index_all`]) re-walks every public registry's R2 surface on
+/// a schedule through the *shared* core indexer
+/// ([`aos_registry_core::indexer::index_and_record`]), reconciling the D1 index
+/// after the publish. The synchronous anti-rollback floor raise in
+/// [`advance_channel`](aos_registry_core::signing::advance_channel) makes the
+/// deferral safe, and because the Cron now runs the same indexer as the native
+/// hub, the Worker's eventual index is byte-identical to the hub's.
 ///
 /// **Consistency implication:** a Worker publish becomes browse-visible only at
 /// the next Cron run, not synchronously on the final `PUT`. The read *facade* is

@@ -27,8 +27,12 @@
 //! - [`db`] — the [`Database`](db::Database) handle: the schema `MIGRATIONS`
 //!   and every read/write query method, written once over the [`Backend`](backend::Backend)
 //!   trait so the native hub and the Worker share one implementation.
+//! - [`indexer`] — the canonical fetch → verify → load → index orchestration,
+//!   pure logic over the [`SurfaceFetch`](fetch::SurfaceFetch) read port and the
+//!   [`Database`](db::Database) write side, so the native hub's reindex and the
+//!   Worker's Cron job run byte-identical indexing.
 //!
-//! Later phases move the indexer and the HTTP handlers here too, leaving the
+//! Later phases move the remaining HTTP handlers here too, leaving the
 //! deployment crates as thin shells around their concrete backend (sqlx for
 //! native, D1 for the Worker).
 //!
@@ -48,6 +52,7 @@ pub mod domain;
 pub mod fetch;
 pub mod filter;
 pub mod git;
+pub mod indexer;
 pub mod gitwrite;
 pub mod keymap;
 pub mod lease;

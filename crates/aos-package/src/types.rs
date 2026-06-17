@@ -162,52 +162,12 @@ fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Resu
     Ok(())
 }
 
-/// Validate a package name before using it in registry package paths.
-///
-/// Package names are used as filenames under
-/// `packages/<first-letter>/<name>.toml` and are commonly derived from Nix
-/// store path names. Accept the ASCII path-safe characters Nix permits in
-/// store path names, require an alphanumeric leading character so bucketing
-/// stays stable, and reject anything that could be interpreted as a path,
-/// shell word, or TOML delimiter.
-///
-/// # Errors
-///
-/// Returns an error when `name` is empty, starts with a non-alphanumeric
-/// character, or contains any byte outside ASCII letters, digits, `+`, `.`,
-/// `_`, `=`, and `-`.
-pub fn validate_package_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        bail!("package name must not be empty");
-    }
-
-    if !name
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphanumeric())
-        || !name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '.' | '_' | '=' | '-'))
-    {
-        bail!(
-            "invalid package name '{name}': use only ASCII letters, digits, '+', '.', '_', '=' and '-', starting with a letter or digit"
-        );
-    }
-
-    Ok(())
-}
-
-/// Return the registry package bucket for a validated package name.
-///
-/// Package metadata files live under `packages/<bucket>/<name>.toml`, where
-/// the bucket is the lowercase first ASCII character of the package name.
-/// Call [`validate_package_name`] before using this for path construction.
-pub fn package_name_bucket(name: &str) -> String {
-    name.chars()
-        .next()
-        .map(|ch| ch.to_ascii_lowercase().to_string())
-        .unwrap_or_else(|| "_".to_string())
-}
+// Package-name validation and bucketing moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker share the exact rules without pulling `aos-package`.
+// Re-exported here so `aos_package::types::{validate_package_name,
+// package_name_bucket}` paths are unchanged.
+pub use aos_registry_surface::manifest::{package_name_bucket, validate_package_name};
 
 /// Validate a platform/system name before using it as a package TOML key.
 ///
@@ -1222,54 +1182,14 @@ pub struct ApmConfFile {
 // Registry root config — from `registry.toml` inside a registry repo
 // ---------------------------------------------------------------------------
 
-/// Top-level structure of a registry's `registry.toml` file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootConfig {
-    /// The `[registry]` metadata table.
-    pub registry: RegistryRootMeta,
-    /// Committed `[[caches]]` entries: binary caches every consumer of this
-    /// registry should use.
-    #[serde(default)]
-    pub caches: Vec<CacheEntry>,
-    /// Optional committed `[cache_stack]` expression: the nestable
-    /// try/mirror cache stack (RFC-0004). Carried as a raw [`toml::Value`]
-    /// so stack-unaware tooling round-trips it untouched while the hub
-    /// parses it into its own model; absent for registries that only use the
-    /// flat `[[caches]]` list. The section, when present, flattens to the
-    /// same priority list `[[caches]]` would carry, keeping old clients
-    /// working unchanged.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_stack: Option<toml::Value>,
-}
-
-/// Registry metadata in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RegistryRootMeta {
-    /// Canonical registry name.
-    pub name: String,
-    /// Optional one-line human-readable description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Optional longer README-style preamble (a paragraph or three), shown
-    /// above the registry home. Blank lines separate paragraphs.
-    #[serde(default)]
-    pub readme: Option<String>,
-}
-
-/// A binary cache entry in `registry.toml`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CacheEntry {
-    /// Base URL of the binary cache.
-    pub url: String,
-    /// Cache selection priority — higher is tried first (default 100).
-    #[serde(default = "default_cache_priority")]
-    pub priority: u32,
-}
-
-/// Serde default for [`CacheEntry::priority`].
-fn default_cache_priority() -> u32 {
-    100
-}
+// The committed `registry.toml` root-config schema (`RegistryRootConfig`, its
+// `[registry]` metadata, and the `[[caches]]` entry) moved to the wasm-clean
+// `aos-registry-surface` crate (RFC-0004 Phase 5) so the registry hub's indexer
+// and the Cloudflare Worker can deserialize a committed root config without
+// pulling `aos-package` (which is native-only). Re-exported here so
+// `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry}` paths
+// are unchanged.
+pub use aos_registry_surface::manifest::{CacheEntry, RegistryRootConfig, RegistryRootMeta};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
