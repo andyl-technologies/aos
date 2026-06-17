@@ -14151,6 +14151,40 @@ mod tests {
         eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
     }
 
+    fn assert_cpp_nix_and_tree_walk_throw_message(
+        oracle: &str,
+        source: &str,
+        expected_message: &str,
+    ) {
+        let output = Command::new(oracle)
+            .args(["--eval", "--strict", "--json", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let actual_message = stderr.lines().rev().find_map(|line| {
+            line.trim_start()
+                .strip_prefix("error: ")
+                .filter(|message| !message.is_empty())
+        });
+        assert_eq!(
+            actual_message,
+            Some(expected_message),
+            "C++ Nix oracle error for {source:?} did not end with {expected_message:?}: {stderr}"
+        );
+
+        let ir = lower(source);
+        let error = eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown tree-walk error for {source:?}, got {error:?}");
+        };
+        assert_eq!(message, expected_message.as_bytes());
+    }
+
     fn assert_cpp_nix_and_tree_walk_reject_json(oracle: &str, source: &str) {
         let output = Command::new(oracle)
             .args(["--eval", "--strict", "--json", "--expr", source])
@@ -15172,6 +15206,70 @@ mod tests {
             return;
         };
         assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_sort_and_less_than_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+        for source in [
+            "builtins.lessThan 1 1.5",
+            "builtins.lessThan [ 1 ] [ 1 0 ]",
+            "builtins.lessThan [ 1 [ 2 ] ] [ 1 [ 3 ] ]",
+            "builtins.lessThan [ 1 2.0 ] [ 1 3 ]",
+            "builtins.lessThan [ 1 3 ] [ 1 2 ]",
+            "builtins.lessThan [ 1 2 ] [ 1 2 ]",
+            "builtins.lessThan [ 1 (1 / 0) ] [ 2 (1 / 0) ]",
+            "builtins.sort builtins.lessThan [ 3 1 2 1 ]",
+            "let sort = builtins.sort builtins.lessThan; in sort [ 3 1 2 ]",
+            "builtins.sort (a: b: builtins.lessThan b a) [ 3 1 2 ]",
+            "builtins.map (x: x.name) (builtins.sort (a: b: a.key < b.key) [ { key = 1; name = \"a\"; } { key = 1; name = \"b\"; } { key = 0; name = \"c\"; } ])",
+            "builtins.map (x: x.name) (builtins.sort (a: b: false) [ { name = \"a\"; } { name = \"b\"; } { name = \"c\"; } ])",
+            "builtins.map (x: x.name) (builtins.sort (a: b: false) (builtins.genList (i: { name = builtins.toString i; }) 129))",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            "builtins.lessThan 1 \"1\"",
+            "builtins.lessThan true false",
+            "builtins.lessThan [ 1 true ] [ 1 false ]",
+            "builtins.lessThan [ 1 \"x\" ] [ 1 2 ]",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
+        }
+
+        assert_cpp_nix_and_tree_walk_throw_message(
+            oracle,
+            "builtins.sort (a: b:
+              if a == 2 && b == 1 then builtins.throw \"wrong-order\"
+              else if a == 2 && b == 3 then builtins.throw \"2<3\"
+              else a < b)
+            [ 3 1 2 ]",
+            "2<3",
+        );
+        assert_cpp_nix_and_tree_walk_throw_message(
+            oracle,
+            "builtins.sort (a: b:
+              if a == 1 && b == 66 then builtins.throw \"top-merge\"
+              else a < b)
+            (builtins.genList (i: 129 - i) 129)",
+            "top-merge",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_sort_and_less_than_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_sort_and_less_than_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_sort_and_less_than_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix sort check");
+            return;
+        };
+        assert_cpp_nix_sort_and_less_than_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
