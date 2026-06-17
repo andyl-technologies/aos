@@ -419,7 +419,7 @@ Byte-exact output is mandatory for `toJSON` (it feeds `__structuredAttrs` env
 blobs and derivation attributes — see
 [derivation and store compatibility](11-derivation-and-store-compatibility.md) §3.2).
 
-- [ ] `toJSON` (e) — serialize `e` to a JSON string. **Byte-parity target.**
+- [x] `toJSON` (e) — serialize `e` to a JSON string. **Byte-parity target.**
       - Object keys emitted in **sorted (attr) order** (§6); no insignificant
         whitespace beyond C++ Nix's exact formatting; number formatting matches
         the int/float rules (§2); strings escaped per Nix's JSON escaper (which
@@ -431,8 +431,8 @@ blobs and derivation attributes — see
       - Forces `e` deeply (it must, to serialize).
       - An attrset with `__toString` or `outPath` follows the coercion rules,
         not a literal object dump — verify which wins.
-      - Current tree-walk gap: path values still need C++ Nix's store-coercion
-        bytes before this item can be checked.
+      - Tree-walk coverage includes direct path values, `outPath = path`
+        store-coercion, and the raw-path `__toString` asymmetry.
 - [x] `fromJSON` (e) — parse a JSON string to a Nix value. Numbers become int or
       float per JSON syntax; objects become attrsets (duplicate-key behavior must
       match); result strings carry **no** context.

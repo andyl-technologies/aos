@@ -18,6 +18,7 @@ use std::{
     ffi::OsStr,
     fs, io,
     os::unix::ffi::OsStrExt,
+    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
 };
@@ -1692,7 +1693,7 @@ impl<'ir> TreeWalk<'ir> {
             IrData::Node(child) => {
                 let span = self.node(child)?.span;
                 let value = self.eval_node(child)?;
-                self.coerce_to_string(child, value, span)
+                self.coerce_to_interpolation_string(child, value, span)
             }
             IrData::Children(children) => {
                 let children = self.ir.arena.child_slice(children).ok_or_else(|| {
@@ -1715,13 +1716,13 @@ impl<'ir> TreeWalk<'ir> {
                 let first_span = self.node(*first)?.span;
                 let mut current = {
                     let value = self.eval_node(*first)?;
-                    self.coerce_to_string(*first, value, first_span)?
+                    self.coerce_to_interpolation_string(*first, value, first_span)?
                 };
                 for child in rest {
                     let child_span = self.node(*child)?.span;
                     let next = {
                         let value = self.eval_node(*child)?;
-                        self.coerce_to_string(*child, value, child_span)?
+                        self.coerce_to_interpolation_string(*child, value, child_span)?
                     };
                     current = self.concat_strings(id, node, current, next)?;
                 }
@@ -1756,6 +1757,59 @@ impl<'ir> TreeWalk<'ir> {
             }
             _ => Err(self.invalid_payload(id, node, "interpolation payload")),
         }
+    }
+
+    fn coerce_to_interpolation_string(
+        &mut self,
+        id: IrId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => Ok(value),
+            ValueTag::Path => {
+                let path = self.source_path_store_string(id, span, value)?;
+                self.heap.alloc_string(path).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
+            ValueTag::Attrs => self.coerce_attrs_to_interpolation_string(id, value, span),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn coerce_attrs_to_interpolation_string(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(hook) = self.attr_value_by_name(id, attrs_value, TO_STRING_ATTR, span)? {
+            let hook = self.force_value(id, span, hook)?;
+            let value = self.apply_lambda_value(id, span, id, hook, span, id, attrs_value)?;
+            return self.coerce_to_interpolation_string(id, value, span);
+        }
+
+        if let Some(out_path) = self.attr_value_by_name(id, attrs_value, OUT_PATH_ATTR, span)? {
+            let value = self.force_value(id, span, out_path)?;
+            return self.coerce_to_interpolation_string(id, value, span);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            span,
+        ))
     }
 
     fn coerce_to_string(
@@ -6255,6 +6309,239 @@ impl<'ir> TreeWalk<'ir> {
         Ok(NixString::from_bytes(bytes))
     }
 
+    fn source_path_store_string(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let path = self
+            .heap
+            .get_path(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let bytes = path_without_trailing_path_markers(path.bytes());
+        let source_path = Path::new(OsStr::from_bytes(bytes));
+        if !source_path.is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute {
+                    id,
+                    path: bytes.to_vec(),
+                },
+                span,
+            ));
+        }
+        let Some(name) = source_path.file_name().map(OsStrExt::as_bytes) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::SourcePathStoreName {
+                    id,
+                    path: bytes.to_vec(),
+                    message: "source path has no store name component".to_owned(),
+                },
+                span,
+            ));
+        };
+        let name = nix_compat::store_path::validate_name(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SourcePathStoreName {
+                    id,
+                    path: bytes.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
+        let nar_digest = self.source_path_nar_sha256(id, span, source_path)?;
+        let store_path = self.source_store_path_bytes(id, span, bytes, name, &nar_digest)?;
+        let context =
+            StringContext::singleton(ContextElement::opaque_path(store_path.clone()).map_err(
+                |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+            )?)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(NixString::new(store_path, context))
+    }
+
+    fn source_path_nar_sha256(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &Path,
+    ) -> Result<[u8; 32], TreeWalkError> {
+        let mut nar = Vec::new();
+        {
+            let node = nix_compat::nar::writer::open(&mut nar)
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+            self.write_source_path_nar_node(id, span, path, node, true)?;
+        }
+        let digest = Sha256::digest(&nar);
+        let mut fixed = [0_u8; 32];
+        fixed.copy_from_slice(&digest);
+        Ok(fixed)
+    }
+
+    fn write_source_path_nar_node<W: io::Write>(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &Path,
+        node: nix_compat::nar::writer::Node<'_, W>,
+        follow_root_symlink: bool,
+    ) -> Result<(), TreeWalkError> {
+        let metadata = if follow_root_symlink {
+            fs::metadata(path)
+        } else {
+            fs::symlink_metadata(path)
+        }
+        .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+        let file_type = metadata.file_type();
+        if file_type.is_file() {
+            let file = fs::File::open(path)
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+            let mut reader = io::BufReader::new(file);
+            return node
+                .file(
+                    metadata.permissions().mode() & 0o111 != 0,
+                    metadata.len(),
+                    &mut reader,
+                )
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source));
+        }
+        if file_type.is_symlink() {
+            let target = fs::read_link(path)
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+            return node
+                .symlink(target.as_os_str().as_bytes())
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source));
+        }
+        if file_type.is_dir() {
+            let mut entries = Vec::new();
+            let read_dir = fs::read_dir(path)
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+            for entry in read_dir {
+                let entry = entry
+                    .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+                entries.push((entry.file_name().as_bytes().to_vec(), entry.path()));
+            }
+            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+            let mut directory = node
+                .directory()
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+            for (name, child_path) in entries {
+                let child = directory.entry(&name).map_err(|source| {
+                    Self::source_path_archive_error(id, span, &child_path, source)
+                })?;
+                self.write_source_path_nar_node(id, span, &child_path, child, false)?;
+            }
+            return directory
+                .close()
+                .map_err(|source| Self::source_path_archive_error(id, span, path, source));
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedSourcePathType {
+                id,
+                path: path.as_os_str().as_bytes().to_vec(),
+            },
+            span,
+        ))
+    }
+
+    fn source_store_path_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        source_path: &[u8],
+        name: &str,
+        nar_digest: &[u8; 32],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let digest = Self::lower_hex_bytes(id, span, nar_digest)?;
+        let store_dir = self.options.store_dir();
+        let len = b"source:sha256:"
+            .len()
+            .checked_add(digest.len())
+            .and_then(|len| len.checked_add(1))
+            .and_then(|len| len.checked_add(store_dir.len()))
+            .and_then(|len| len.checked_add(1))
+            .and_then(|len| len.checked_add(name.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut fingerprint = Vec::new();
+        fingerprint.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        fingerprint.extend_from_slice(b"source:sha256:");
+        fingerprint.extend_from_slice(&digest);
+        fingerprint.push(b':');
+        fingerprint.extend_from_slice(store_dir);
+        fingerprint.push(b':');
+        fingerprint.extend_from_slice(name.as_bytes());
+
+        let fingerprint_hash = Sha256::digest(&fingerprint);
+        let digest = nix_compat::store_path::compress_hash::<{ nix_compat::store_path::DIGEST_SIZE }>(
+            &fingerprint_hash,
+        );
+        let store_path =
+            nix_compat::store_path::StorePath::<&str>::from_name_and_digest_fixed(name, digest)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::SourcePathStoreName {
+                            id,
+                            path: source_path.to_vec(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?
+                .to_string();
+        let needs_slash = !store_dir.ends_with(b"/");
+        let len = store_dir
+            .len()
+            .checked_add(usize::from(needs_slash))
+            .and_then(|len| len.checked_add(store_path.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        bytes.extend_from_slice(store_dir);
+        if needs_slash {
+            bytes.push(b'/');
+        }
+        bytes.extend_from_slice(store_path.as_bytes());
+        Ok(bytes)
+    }
+
+    fn source_path_archive_error(
+        id: IrId,
+        span: Span,
+        path: &Path,
+        source: impl std::fmt::Display,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::SourcePathArchive {
+                id,
+                path: path.as_os_str().as_bytes().to_vec(),
+                message: source.to_string(),
+            },
+            span,
+        )
+    }
+
     fn to_string_float_bytes(value: f64) -> Vec<u8> {
         if value.is_nan() {
             return b"nan".to_vec();
@@ -6315,6 +6602,9 @@ impl<'ir> TreeWalk<'ir> {
             ValueTag::Float => self.write_json_float(id, span, value, out),
             ValueTag::String => {
                 self.write_json_string_value(id, span, value_id, value_span, value, out, context)
+            }
+            ValueTag::Path => {
+                self.write_json_path_value(id, span, value_id, value_span, value, out, context)
             }
             ValueTag::List => {
                 self.write_json_list(id, span, value_id, value_span, value, out, context)
@@ -6393,6 +6683,24 @@ impl<'ir> TreeWalk<'ir> {
         Self::write_json_string_bytes(id, span, string.bytes(), out)?;
         *context = context
             .union(string.context())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(())
+    }
+
+    fn write_json_path_value(
+        &self,
+        id: IrId,
+        span: Span,
+        path_id: IrId,
+        path_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        let path = self.source_path_store_string(path_id, path_span, value)?;
+        Self::write_json_string_bytes(id, span, path.bytes(), out)?;
+        *context = context
+            .union(path.context())
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
         Ok(())
     }
@@ -13989,6 +14297,34 @@ pub enum TreeWalkErrorKind {
         path: Vec<u8>,
         /// The filesystem diagnostic.
         message: String,
+    },
+    /// A source path could not be assigned a valid Nix store path name.
+    #[error("failed to derive store path name at node {id:?} path {path:?}: {message}")]
+    SourcePathStoreName {
+        /// The path-valued node being coerced.
+        id: IrId,
+        /// The source path bytes.
+        path: Vec<u8>,
+        /// The store-name diagnostic.
+        message: String,
+    },
+    /// A source path could not be serialized as a Nix archive.
+    #[error("failed to serialize source path at node {id:?} path {path:?}: {message}")]
+    SourcePathArchive {
+        /// The path-valued node being coerced.
+        id: IrId,
+        /// The source path bytes.
+        path: Vec<u8>,
+        /// The archive or filesystem diagnostic.
+        message: String,
+    },
+    /// A source path names a filesystem node kind Nix cannot copy into the store.
+    #[error("unsupported source path type at node {id:?} path {path:?}")]
+    UnsupportedSourcePathType {
+        /// The path-valued node being coerced.
+        id: IrId,
+        /// The source path bytes.
+        path: Vec<u8>,
     },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
@@ -23628,7 +23964,7 @@ mod tests {
     }
 
     #[test]
-    fn path_literals_evaluate_as_paths_without_store_coercion() {
+    fn path_literals_remain_paths_until_json_store_coercion() {
         let (dir, path) = temp_file_with_bytes("path-literal", b"abc");
         let path = path_source(&path);
 
@@ -23638,25 +23974,10 @@ mod tests {
         );
         assert_eq!(eval(&format!("builtins.isPath {path}")).as_bool(), Ok(true));
         assert_eq!(eval(&format!("{path} == {path}")).as_bool(), Ok(true));
-
-        let ir = lower(&format!("builtins.toJSON {path}"));
-        let root = ir.arena.node(ir.root).expect("root exists");
-        let IrData::PrimOp { args, .. } = root.data else {
-            panic!("root is a primop");
-        };
-        let args = ir.arena.child_slice(args).expect("primop args exist");
-        let path_id = args[0];
-        let path_span = ir.arena.node(path_id).expect("path exists").span;
-        let error = eval_whnf_owned(&ir).expect_err("store-path JSON coercion is unsupported");
-
         assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::JsonUnsupportedValue {
-                id: path_id,
-                actual: ValueTag::Path,
-            }
+            eval_string_bytes(&format!("builtins.toJSON {path}")),
+            br#""/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt""#
         );
-        assert_eq!(error.span(), path_span);
 
         let ir = lower("./relative-file");
         let path_span = ir.arena.node(ir.root).expect("path exists").span;
@@ -23670,6 +23991,106 @@ mod tests {
             }
         );
         assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_interpolation_copies_sources_to_store_contexts() {
+        let (dir, path) = temp_file_with_bytes("path-interpolation", b"abc");
+        let path = path_source(&path);
+        let store_path = "/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt";
+        let context_json =
+            br#"{"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt":{"path":true}}"#;
+
+        assert_eq!(
+            eval_string_bytes(&format!("\"${{{path}}}\"")),
+            store_path.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.toJSON (builtins.getContext \"${{{path}}}\")"
+            )),
+            context_json
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.toJSON (builtins.getContext (builtins.toJSON {path}))"
+            )),
+            context_json
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.toJSON {{ nested = [ {{ path = {path}; }} ]; }}"
+            )),
+            br#"{"nested":[{"path":"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt"}]}"#
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_store_coercion_serializes_source_trees_and_symlinks() {
+        let dir = unique_temp_dir("path-source-tree");
+        let tree = dir.join("tree");
+        fs::create_dir(&tree).expect("tree directory creates");
+        fs::write(tree.join("data.txt"), b"abc").expect("tree file writes");
+        std::os::unix::fs::symlink("data.txt", tree.join("link.txt"))
+            .expect("tree symlink creates");
+        fs::write(dir.join("data.txt"), b"abc").expect("symlink target writes");
+        let link = dir.join("link.txt");
+        std::os::unix::fs::symlink("data.txt", &link).expect("temp symlink creates");
+        let executable = dir.join("tool.sh");
+        fs::write(&executable, b"abc").expect("executable file writes");
+        let mut permissions = fs::metadata(&executable)
+            .expect("executable file stats")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).expect("executable mode sets");
+        let tree = path_source(&tree);
+        let link = path_source(&link);
+        let executable = path_source(&executable);
+
+        assert_eq!(
+            eval_string_bytes(&format!("\"${{{tree}}}\"")),
+            b"/nix/store/nl7y1ns16db5c34f34mlfizf6g3lxll3-tree"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toJSON {tree}")),
+            br#""/nix/store/nl7y1ns16db5c34f34mlfizf6g3lxll3-tree""#
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("\"${{{link}}}\"")),
+            b"/nix/store/r8q4lajdsk010slx81y3yc6zzclarwpl-link.txt"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toJSON {link}")),
+            br#""/nix/store/r8q4lajdsk010slx81y3yc6zzclarwpl-link.txt""#
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("\"${{{executable}}}\"")),
+            b"/nix/store/4fgv55agm9sz9yxqvqbm8b5s483bmldn-tool.sh"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_store_coercion_rejects_invalid_source_store_names() {
+        let dir = unique_temp_dir("invalid-store-name");
+        let path = dir.join("a b.txt");
+        fs::write(&path, b"abc").expect("temp file writes");
+        let source = format!(
+            r#"let p = builtins.findFile [ {{ path = {}; }} ] "a b.txt"; in "${{p}}""#,
+            nix_string_literal(&path_source(&dir))
+        );
+        let ir = lower(&source);
+        let error = eval_whnf_owned(&ir).expect_err("invalid source names reject store coercion");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::SourcePathStoreName { .. }
+        ));
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }
@@ -24492,6 +24913,9 @@ mod tests {
 
     #[test]
     fn to_json_primop_coerces_special_attrsets() {
+        let (dir, path) = temp_file_with_bytes("json-path-attr-coercion", b"abc");
+        let path = path_source(&path);
+
         assert_eq!(
             eval_string_bytes(
                 "builtins.toJSON { __toString = self: \"hook\"; outPath = \"out\"; }"
@@ -24510,7 +24934,17 @@ mod tests {
             eval_string_bytes("builtins.toJSON { outPath = \"out\"; a = 1; }"),
             br#""out""#
         );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toJSON {{ __toString = self: {path}; }}")),
+            format!("{path:?}").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toJSON {{ outPath = {path}; }}")),
+            br#""/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt""#
+        );
         assert_eq!(eval_string_bytes("builtins.toJSON {}"), b"{}");
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
     }
 
     #[test]
