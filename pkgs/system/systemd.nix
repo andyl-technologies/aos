@@ -70,10 +70,13 @@ in
     #   0003 — Remove install_emptydir(systemdstatedir) from meson.build
     #          (resolves to /var/lib/systemd which can't be created in the
     #          sandbox; created at system activation time instead).
+    #   0004 — Skip creating /run/systemd for test-run managers so offline
+    #          analysis tools can run inside the Nix sandbox.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0003-remove-install-emptydir-systemdstatedir.patch
+      ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
     ];
 
     buildDeps = [

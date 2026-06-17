@@ -119,11 +119,11 @@ the dynamic counterpart to the static MAC of layer 5. MVP-optional; the
 kernel-config + signed-policy channel land in Phase 9, enforcement content is
 fleet-authored.
 
-## The systemd hardening baseline (apply to every generated unit)
+## The systemd hardening baseline (apply to every generated workload service)
 
-Beyond the manifest-derived directives, every unit the renderer emits carries the
-full consensus hardening set (what `systemd-analyze security` rewards), unless a
-granted permission specifically requires relaxing one:
+Beyond the manifest-derived directives, every workload service the renderer
+emits carries the full consensus hardening set (what `systemd-analyze security`
+rewards), unless a granted permission specifically requires relaxing one:
 
 ```
 NoNewPrivileges=yes
@@ -155,14 +155,16 @@ isolation under the MAC domain.
 
 ## The CI gate (objective, per-package)
 
-Gate **every** generated unit on a `systemd-analyze security --threshold=<N>`
-score in `checks.eval` (use `--offline`/`--root`/`--profile` for image-based
-review). A package whose manifest forces a worse score than its tier allows
-**fails the build**. This is a concrete, measurable SOTA bar enforced *per
-package* — which no other package system does. The threshold per tier
-(`restricted`/`baseline`/`privileged`) lives in the policy file
-([permissions.md](permissions.md)); k3s (`unconfined`) is the documented
-exception, not a silent pass.
+Gate every generated **workload service** on a
+`systemd-analyze security --threshold=<N>` score in `checks.eval` using
+`--offline`/`--root` review. A package whose workload manifest forces a worse
+score than the gate allows **fails the build**. Generated host-side side-effect
+services (`host-paths`, `modules`, `sysctl`, `firewall`, `netns`) are not
+workload services; they stay outside the workload sandbox and are covered by
+their explicit render checks and narrow generated commands. This is a concrete,
+measurable SOTA bar enforced *per package*. The default gate uses the policy
+threshold from [permissions.md](permissions.md), currently 5.5; k3s
+(`unconfined`) is an explicit allowlisted exception, not a silent pass.
 
 ## Where each layer is enforced (summary)
 
