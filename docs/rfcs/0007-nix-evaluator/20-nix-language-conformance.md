@@ -248,7 +248,7 @@ are language-level and live here.
 Path handling is subtle because of the `/`-disambiguation, home expansion,
 search paths, and store coercion.
 
-- [ ] **Relative path literal** — `./foo`, `../bar`, `foo/bar` (must contain at
+- [x] **Relative path literal** — `./foo`, `../bar`, `foo/bar` (must contain at
       least one `/` to be recognized as a path). Resolved relative to the
       *directory of the file being evaluated* (the base directory), producing an
       absolute path value.

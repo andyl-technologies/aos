@@ -318,6 +318,7 @@ impl EvalWarningOutput {
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
     search_path_base: Vec<u8>,
+    path_literal_base: Option<Vec<u8>>,
     eval_mode: EvalMode,
     allowed_paths: Vec<Vec<u8>>,
     current_system: Option<Vec<u8>>,
@@ -333,6 +334,7 @@ impl Default for TreeWalkOptions {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             search_path_base: b"/".to_vec(),
+            path_literal_base: None,
             eval_mode: EvalMode::default(),
             allowed_paths: Vec::new(),
             current_system: None,
@@ -441,6 +443,24 @@ impl TreeWalkOptions {
         Ok(options)
     }
 
+    /// Creates evaluator options with a configured path-literal base directory.
+    ///
+    /// Relative syntactic path literals such as `./foo`, `../bar`, and `foo/bar`
+    /// are resolved against this base directory. Leaving it unset keeps
+    /// expression evaluation independent from any ambient current directory and
+    /// rejects relative path literals.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `path_literal_base` is relative.
+    pub fn with_path_literal_base(
+        path_literal_base: impl Into<Vec<u8>>,
+    ) -> Result<Self, TreeWalkOptionsError> {
+        let mut options = Self::default();
+        options.set_path_literal_base(path_literal_base)?;
+        Ok(options)
+    }
+
     /// Creates evaluator options with an explicit evaluation mode.
     pub fn with_eval_mode(eval_mode: EvalMode) -> Self {
         let mut options = Self::default();
@@ -541,6 +561,32 @@ impl TreeWalkOptions {
             TreeWalkOptionsError::RelativeSearchPathBase,
         )?;
         Ok(())
+    }
+
+    /// Replaces the base directory used for relative syntactic path literals.
+    ///
+    /// This setting models C++ Nix's file-evaluation base directory. It is not
+    /// used for string-to-path coercion, `builtins.toPath`, or search-path
+    /// lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `path_literal_base` is relative.
+    pub fn set_path_literal_base(
+        &mut self,
+        path_literal_base: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.path_literal_base = Some(normalize_absolute_path(
+            path_literal_base.into(),
+            b"/",
+            TreeWalkOptionsError::RelativePathLiteralBase,
+        )?);
+        Ok(())
+    }
+
+    /// Clears the base directory used for relative syntactic path literals.
+    pub fn clear_path_literal_base(&mut self) {
+        self.path_literal_base = None;
     }
 
     /// Replaces the evaluation mode.
@@ -685,6 +731,11 @@ impl TreeWalkOptions {
         &self.search_path_base
     }
 
+    /// Returns the base directory for relative syntactic path literals.
+    pub fn path_literal_base(&self) -> Option<&[u8]> {
+        self.path_literal_base.as_deref()
+    }
+
     /// Returns the configured evaluation mode.
     pub const fn eval_mode(&self) -> EvalMode {
         self.eval_mode
@@ -751,6 +802,10 @@ pub enum TreeWalkOptionsError {
     /// The configured search-path base directory is not an absolute path.
     #[error("Nix search-path base directory must be absolute")]
     RelativeSearchPathBase,
+
+    /// The configured path-literal base directory is not an absolute path.
+    #[error("Nix path-literal base directory must be absolute")]
+    RelativePathLiteralBase,
 
     /// A configured allowed filesystem path is not absolute.
     #[error("Nix allowed filesystem paths must be absolute")]
@@ -999,6 +1054,18 @@ fn join_search_path(
     }
 
     append_search_path_component(id, span, &mut joined, suffix)?;
+    TreeWalk::absolute_path_bytes_for_node(id, span, &joined)
+}
+
+fn join_path_literal(
+    id: IrId,
+    span: Span,
+    base: &[u8],
+    path: &[u8],
+) -> Result<Vec<u8>, TreeWalkError> {
+    let mut joined = Vec::new();
+    append_search_path_component(id, span, &mut joined, base)?;
+    append_search_path_component(id, span, &mut joined, path)?;
     TreeWalk::absolute_path_bytes_for_node(id, span, &joined)
 }
 
@@ -2347,7 +2414,7 @@ impl<'ir> TreeWalk<'ir> {
         let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
-        let path = Self::absolute_path_bytes_for_node(id, node.span, bytes)?;
+        let path = self.path_literal_bytes_for_node(id, node.span, bytes)?;
         self.heap
             .alloc_path(NixString::from_bytes(path))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
@@ -2764,7 +2831,7 @@ impl<'ir> TreeWalk<'ir> {
             bytes.extend_from_slice(&fragment);
         }
 
-        let path = Self::absolute_path_bytes_for_node(id, node.span, &bytes)?;
+        let path = self.path_literal_bytes_for_node(id, node.span, &bytes)?;
         self.heap
             .alloc_path(NixString::from_bytes(path))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
@@ -4359,7 +4426,7 @@ impl<'ir> TreeWalk<'ir> {
                         node.span,
                     )
                 })?;
-                let path = Self::absolute_path_bytes_for_node(body, node.span, bytes)?;
+                let path = self.path_literal_bytes_for_node(body, node.span, bytes)?;
                 Self::extend_bytes_for_node(id, span, out, &path)?;
             }
             _ => return Ok(false),
@@ -5474,6 +5541,21 @@ impl<'ir> TreeWalk<'ir> {
         }
         let path = Self::normalize_path(raw.to_path_buf());
         Self::copy_bytes_for_node(id, span, path.as_os_str().as_bytes())
+    }
+
+    fn path_literal_bytes_for_node(
+        &self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if Path::new(OsStr::from_bytes(bytes)).is_absolute() {
+            return Self::absolute_path_bytes_for_node(id, span, bytes);
+        }
+        let Some(base) = self.options.path_literal_base() else {
+            return Self::absolute_path_bytes_for_node(id, span, bytes);
+        };
+        join_path_literal(id, span, base, bytes)
     }
 
     fn normalize_path(path: PathBuf) -> PathBuf {
@@ -18334,6 +18416,16 @@ mod tests {
         string.bytes().to_vec()
     }
 
+    fn eval_path_bytes_with_options(source: &str, options: TreeWalkOptions) -> Vec<u8> {
+        let outcome =
+            eval_whnf_owned_with_options(&lower(source), options).expect("source evaluates");
+        let path = outcome
+            .heap()
+            .get_path(outcome.value())
+            .expect("result is a heap-owned path");
+        path.bytes().to_vec()
+    }
+
     fn eval_json_bytes(source: &str) -> Vec<u8> {
         eval_string_bytes(&format!("builtins.toJSON ({source})"))
     }
@@ -19250,6 +19342,31 @@ mod tests {
             TreeWalkOptions::with_search_path_base(b"relative/search".to_vec())
                 .expect_err("relative search-path base is rejected"),
             TreeWalkOptionsError::RelativeSearchPathBase
+        );
+
+        let path_base = TreeWalkOptions::with_path_literal_base(b"//tmp//aos-source/./".to_vec())
+            .expect("absolute path-literal base normalizes");
+        assert_eq!(
+            path_base.path_literal_base(),
+            Some(b"/tmp/aos-source".as_slice())
+        );
+
+        let mut options = TreeWalkOptions::new();
+        assert_eq!(options.path_literal_base(), None);
+        options
+            .set_path_literal_base(b"/var//aos/source//".to_vec())
+            .expect("absolute path-literal base sets");
+        assert_eq!(
+            options.path_literal_base(),
+            Some(b"/var/aos/source".as_slice())
+        );
+        options.clear_path_literal_base();
+        assert_eq!(options.path_literal_base(), None);
+
+        assert_eq!(
+            TreeWalkOptions::with_path_literal_base(b"relative/source".to_vec())
+                .expect_err("relative path-literal base is rejected"),
+            TreeWalkOptionsError::RelativePathLiteralBase
         );
     }
 
@@ -29319,6 +29436,44 @@ mod tests {
             }
         );
         assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn relative_path_literals_resolve_against_path_literal_base() {
+        let dir = unique_temp_dir("relative-path-literals");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("source base directory creates");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(base.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options("./foo", options.clone()),
+            base.join("foo").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options("../bar", options.clone()),
+            dir.join("bar").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options("foo/bar", options.clone()),
+            base.join("foo/bar").as_os_str().as_bytes()
+        );
+        let mut expected_trace = b"trace: [ ".to_vec();
+        expected_trace.extend_from_slice(base.join("foo").as_os_str().as_bytes());
+        expected_trace.extend_from_slice(b" ]\n");
+        assert_eq!(
+            eval_captured_stderr_with_options("builtins.trace [ ./foo ] null", options.clone()),
+            expected_trace
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.typeOf foo/bar", options),
+            b"path"
+        );
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }
