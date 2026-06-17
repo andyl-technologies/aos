@@ -261,23 +261,25 @@ single-output `!out!…`, and deep `=…`). These primops are the *explicit* con
 manipulators; getting their bit-semantics wrong silently changes a derivation's
 input set. Each gets adversarial differential coverage.
 
-- [ ] `getContext` (s) — reflect `s`'s context into an inspectable attrset
+- [x] `getContext` (s) — reflect `s`'s context into an inspectable attrset
       keyed by store path, each value `{ path = bool; allOutputs = bool;
-      outputs = [ … ]; }`. The exact key/flag encoding must match so a
-      round-trip through `appendContext` reproduces the same context.
-- [ ] `hasContext` (s) — `true` iff `s` carries any context element. Cheap with
+      outputs = [ … ]; }` with false/empty markers omitted. The exact key/flag
+      encoding must match so a round-trip through `appendContext` reproduces the
+      same context.
+- [x] `hasContext` (s) — `true` iff `s` carries any context element. Cheap with
       our interned-bitset representation (see
       [derivation and store compatibility](11-derivation-and-store-compatibility.md) §8.3).
-- [ ] `unsafeDiscardStringContext` (s) — same bytes, **empty** context. Used
+- [x] `unsafeDiscardStringContext` (s) — same bytes, **empty** context. Used
       deliberately to name a store path without forcing it to be built. Must
       return a string equal byte-wise to `s` but with no context bits.
-- [ ] `unsafeDiscardOutputDependency` (s) — downgrade `=`/deep (whole-closure)
-      context elements to plain `!out!` single-output dependencies. Narrow,
-      rare, but its exact effect on the bitset is parity-critical.
-- [ ] `addDrvOutputDependencies` (s) — upgrade a *constant* element naming a
-      `.drv` path into a *deep* (`=`) element. The dual of
-      `unsafeDiscardOutputDependency`. Requires `s` to carry exactly one
-      constant context element naming a `.drv`; error conditions must match.
+- [x] `unsafeDiscardOutputDependency` (s) — downgrade `=`/deep (whole-closure)
+      context elements to opaque path dependencies. Narrow, rare, but its exact
+      effect on the bitset is parity-critical.
+- [x] `addDrvOutputDependencies` (s) — upgrade an opaque element naming a `.drv`
+      path into a *deep* (`=`) element, and leave an already-deep `.drv` element
+      deep. The dual of `unsafeDiscardOutputDependency`. Requires `s` to carry
+      exactly one non-output context element naming a `.drv`; error conditions
+      must match.
       - Introduced relatively recently (Nix ≥ 2.16-era) as the supported
         replacement for context-manipulation hacks; note for the version pin.
 - [x] `appendContext` (s context) — merge a reflected context (the
@@ -677,7 +679,7 @@ Here we enumerate only the *builtin surface* and the attributes it consumes.
         discrepancy (NixOS/nix#7569) is a known wart to reproduce, not fix.
 - [ ] `outputOf` (drv-ref output-name) — (also §5) deriving-path indirection for
       dynamic derivations; experimental, conditional scope (§17).
-- [ ] `unsafeDiscardOutputDependency` / `addDrvOutputDependencies` — (the §5
+- [x] `unsafeDiscardOutputDependency` / `addDrvOutputDependencies` — (the §5
       context primops) are the explicit knobs nixpkgs uses to shape what a
       derivation depends on; relisted here as derivation-adjacent.
 

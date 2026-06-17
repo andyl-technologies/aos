@@ -15116,6 +15116,16 @@ mod tests {
                 (builtins.appendContext "x" {
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
                 }))"#,
+            r#"builtins.getContext (builtins.unsafeDiscardOutputDependency
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { allOutputs = true; };
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-out.drv" = { outputs = [ "out" ]; };
+                    "/nix/store/cccccccccccccccccccccccccccccccc-src" = { path = true; };
+                }))"#,
+            r#"builtins.getContext (builtins.addDrvOutputDependencies
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { path = true; };
+                }))"#,
             r#"let append = builtins.appendContext "x"; in
                builtins.getContext (append {
                  "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
@@ -15159,6 +15169,21 @@ mod tests {
                     ];
                 };
             }"#,
+            r#"builtins.addDrvOutputDependencies "x""#,
+            r#"builtins.addDrvOutputDependencies
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                })"#,
+            r#"builtins.addDrvOutputDependencies
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { outputs = [ "out" ]; };
+                })"#,
+            r#"builtins.addDrvOutputDependencies
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a.drv" = { path = true; };
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b.drv" = { path = true; };
+                })"#,
+            r#"builtins.unsafeDiscardOutputDependency 1"#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
