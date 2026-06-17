@@ -12,10 +12,17 @@
 //! Every handler carries a [`ConsoleDeps`] as its `axum` `State` and reaches
 //! each platform capability through a port (see [`super::ports`]), so the module
 //! compiles to `wasm32-unknown-unknown` and the native hub and the Cloudflare
-//! Worker mount the same [`console_router`](super::console_router). Handlers that
-//! need the connecting peer address or a reverse-proxy trust flag (the pre-auth
-//! rate-limited login/activation paths) and the git-backed config/change-request
-//! flows stay in the native hub, which mounts them alongside this router.
+//! Worker mount the same [`console_router`](super::console_router).
+//!
+//! The pre-auth rate-limited login paths ([`login_form`], [`login_submit`],
+//! [`login_password`]) live here too: instead of the native `ConnectInfo` peer
+//! socket and a reverse-proxy trust flag, they read the connecting client's IP
+//! from the runtime-neutral [`CLIENT_IP_HEADER`] each shell stamps on ingress
+//! (RFC-0004 Phase 5, console-dedup stage D). The remaining native-only handlers
+//! — the device-approval `/activate` surface and passkey assertion `begin` (both
+//! still keyed on the native peer), the OIDC flow (outbound `reqwest`), and the
+//! git-backed config/change-request flows — stay in the native hub, which mounts
+//! them alongside this router.
 //!
 //! # CSRF
 //!
@@ -274,6 +281,239 @@ fn urlencode(text: &str) -> String {
     url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
 }
 
+/// The request header carrying the deployment-resolved client IP.
+///
+/// The pre-auth login handlers ([`login_submit`], [`login_password`]) rate-limit
+/// on the connecting client's IP, but the connecting peer address and the
+/// reverse-proxy trust model are *runtime-specific* (a native `ConnectInfo`
+/// socket on the hub, a `cf-connecting-ip` header on the Worker) and so are not
+/// available to these wasm-clean handlers. Each shell resolves the trusted IP in
+/// its own ingress layer and stamps it onto this header; the handlers read it
+/// back through [`resolved_client_ip`].
+///
+/// # Security invariant
+///
+/// This header's value is **shell-controlled, not client-controlled**. Each
+/// deployment MUST *overwrite* this header on ingress — inserting the
+/// shell-resolved value and replacing any inbound value of the same name —
+/// *before* the shared console handlers run. If a deployment merely appended (or
+/// trusted an inbound value), a client could forge its own IP string and so mint
+/// an arbitrary rate-limit bucket, defeating the per-IP abuse bound on the
+/// pre-auth login paths.
+///
+/// An **absent** value (a misconfigured deployment that never stamps the header)
+/// is treated as the empty string by [`resolved_client_ip`]: every caller then
+/// shares one rate-limit bucket. That fails *safe* for abuse (the bound still
+/// applies, just coarsely) rather than failing open.
+pub const CLIENT_IP_HEADER: &str = "x-aos-client-ip";
+
+/// The deployment-resolved client IP from the request headers, or `""` when the
+/// header is absent.
+///
+/// Reads the [`CLIENT_IP_HEADER`] the ingress layer stamped. See that constant's
+/// documentation for the security invariant: the value is shell-controlled, and
+/// an absent value (a misconfiguration) collapses every caller into one shared
+/// rate-limit bucket rather than failing open.
+pub(crate) fn resolved_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get(CLIENT_IP_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+// -- login (email magic link + password) ------------------------------------
+
+/// `GET /login` — the email-first login form, plus the passkey sign-in button.
+///
+/// Sets a per-request `script-src 'nonce-…'` CSP (via [`passkey_html_response`])
+/// so the page's first-party passkey script (driving `navigator.credentials.get`)
+/// runs while every other inline script stays blocked.
+pub(crate) async fn login_form(_deps: ConsoleDeps) -> Response {
+    let nonce = crate::auth::webauthn::new_challenge();
+    let html = console::login_page(None, Some(&nonce), Instant::now());
+    passkey_html_response(html, &nonce)
+}
+
+/// `POST /login` body: the email to send a magic link to.
+#[derive(serde::Deserialize)]
+pub(crate) struct LoginForm {
+    email: String,
+}
+
+/// `POST /login` — route to SSO or issue a magic link.
+///
+/// Email-first routing (RFC-0004 "domain capture"): when the typed email's
+/// domain is captured by an org with an OIDC IdP, the response depends on the
+/// org's `enforce_sso`:
+///
+/// - **enforced** — redirect straight into the OIDC flow (`/auth/oidc/start`);
+///   magic links are not offered.
+/// - **not enforced** — show a two-step page offering a "Sign in with SSO"
+///   button *and* a magic link, keeping the no-JS floor.
+///
+/// Otherwise a magic link is issued and the "check your email" page shown. The
+/// address is never revealed as known/unknown.
+///
+/// Rate-limited on both the target email and the source IP (the
+/// [`resolved_client_ip`] the ingress layer stamped — see [`CLIENT_IP_HEADER`]).
+pub(crate) async fn login_submit(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    let email = form.email.trim().to_lowercase();
+    if email.is_empty() || !email.contains('@') {
+        return Html(console::login_page(
+            Some("Enter a valid email address."),
+            None,
+            Instant::now(),
+        ))
+        .into_response();
+    }
+    // Rate-limit magic-link issuance on both the target email (the email-bomb
+    // victim) and the source IP (the sender) — see [`crate::ratelimit`].
+    let now = crate::clock::now_unix_secs();
+    let ip = resolved_client_ip(&headers);
+    use crate::ratelimit::RateClass;
+    for (class, key) in [
+        (RateClass::MagicLinkEmail, email.as_str()),
+        (RateClass::MagicLinkIp, ip.as_str()),
+    ] {
+        if let crate::ratelimit::RateDecision::Limited { retry_after } =
+            deps.ratelimit.check(class, key, now).await
+        {
+            return too_many_requests(retry_after);
+        }
+    }
+    // Domain capture: route to the org's IdP when one is configured.
+    if let Some((org_slug, enforce_sso)) = sso_target(&deps, &email).await {
+        let start = sso_start_path(&org_slug);
+        if enforce_sso {
+            return Redirect::to(&start).into_response();
+        }
+        return Html(console::login_sso_page(
+            &email,
+            &org_slug,
+            &start,
+            Instant::now(),
+        ))
+        .into_response();
+    }
+    let secret = match deps.db.create_magic_link(&email).await {
+        Ok(secret) => secret,
+        Err(err) => return internal(err),
+    };
+    let link = format!(
+        "{}/auth/magic?token={secret}",
+        deps.external_url.trim_end_matches('/'),
+    );
+    if let Err(err) = deps.mailer.send_magic_link(&email, &link) {
+        tracing::warn!(error = %format!("{err:#}"), "magic link delivery failed");
+    }
+    // In `--dev` mode the mailer only logs, so surface the link on the page so a
+    // local operator can follow it (the native hub keyed this off `LogMailer`).
+    let dev_link = deps.dev.then_some(link.as_str());
+    Html(console::login_sent_page(&email, dev_link, Instant::now())).into_response()
+}
+
+/// `POST /login/password` body: the email and password to authenticate.
+#[derive(serde::Deserialize)]
+pub(crate) struct PasswordLoginForm {
+    email: String,
+    password: String,
+}
+
+/// `POST /login/password` — authenticate an email + password, sign the user in.
+///
+/// This is a **pre-auth** endpoint (the caller has no session cookie yet), so it
+/// carries no CSRF token — there is no ambient credential to forge against. It
+/// *is* rate-limited on both the target email (online password guessing against
+/// one account) and the source IP (credential-stuffing sprays), reusing the
+/// [`RateClass::PasswordEmail`]/[`RateClass::PasswordIp`] classes keyed on the
+/// [`resolved_client_ip`] the ingress layer stamped (see [`CLIENT_IP_HEADER`]).
+///
+/// On a correct password it creates a sudo-capable session (a fresh password
+/// sign-in is a re-authentication, `auth_level 1`), sets the `__Host-` cookie,
+/// and redirects to `/`. On *any* failure — unknown email, no password set, or a
+/// wrong password — it re-renders `/login` with one generic "invalid email or
+/// password" message, never revealing whether the email is registered.
+///
+/// [`RateClass::PasswordEmail`]: crate::ratelimit::RateClass::PasswordEmail
+/// [`RateClass::PasswordIp`]: crate::ratelimit::RateClass::PasswordIp
+pub(crate) async fn login_password(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<PasswordLoginForm>,
+) -> Response {
+    let email = form.email.trim().to_lowercase();
+    // The single generic failure render, used for every rejection path so the
+    // endpoint is not an account-existence oracle.
+    let invalid = || {
+        Html(console::login_page(
+            Some("Invalid email or password."),
+            None,
+            Instant::now(),
+        ))
+        .into_response()
+    };
+    if email.is_empty() || !email.contains('@') || form.password.is_empty() {
+        return invalid();
+    }
+    // Rate-limit on both the target email and the source IP before doing the
+    // (deliberately expensive) Argon2 verify, so a spray cannot burn CPU.
+    let now = crate::clock::now_unix_secs();
+    let ip = resolved_client_ip(&headers);
+    use crate::ratelimit::RateClass;
+    for (class, key) in [
+        (RateClass::PasswordEmail, email.as_str()),
+        (RateClass::PasswordIp, ip.as_str()),
+    ] {
+        if let crate::ratelimit::RateDecision::Limited { retry_after } =
+            deps.ratelimit.check(class, key, now).await
+        {
+            return too_many_requests(retry_after);
+        }
+    }
+    let (user_id, hash) = match deps.db.user_for_password(&email).await {
+        Ok(Some(found)) => found,
+        // No such user, or no password set. Still spend an Argon2id verify
+        // against a fixed dummy hash before failing, so the wall-clock time of
+        // this miss matches that of an existing account — otherwise the
+        // short-circuit leaks account existence as a timing oracle (M10).
+        Ok(None) => {
+            crate::auth::password::spend_dummy_verify(&form.password);
+            return invalid();
+        }
+        Err(err) => return internal(err),
+    };
+    if !crate::auth::password::verify_password(&form.password, &hash) {
+        return invalid();
+    }
+    // Even with a correct password, a user subject to `enforce_sso` must come
+    // through the IdP — a local password must not bypass IdP deprovisioning,
+    // MFA, or conditional access (H-4). The credential already verified, so the
+    // account is known to exist; redirecting to SSO leaks nothing a successful
+    // password login would not, and matches the magic-link path's UX. (Reaching
+    // here with the password verified means an SSO-enforced user had a password
+    // set before enforcement was turned on; refuse the local session anyway.)
+    match sso_enforced_for(&deps, &email, Some(user_id)).await {
+        Ok(Some(org_slug)) => return Redirect::to(&sso_start_path(&org_slug)).into_response(),
+        Ok(None) => {}
+        Err(err) => return internal(err),
+    }
+    // A correct password is a re-authentication: the session is sudo-capable.
+    let cookie = match deps
+        .db
+        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
+    {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+        Err(err) => return internal(err),
+    };
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
+}
+
 /// Decode an `application/x-www-form-urlencoded` body into a field map.
 fn parse_form(body: &str) -> std::collections::HashMap<String, String> {
     url::form_urlencoded::parse(body.as_bytes())
@@ -391,7 +631,7 @@ pub(crate) struct CsrfForm {
     csrf: String,
 }
 
-// -- login (GET form only; POST stays in the hub) ---------------------------
+// -- magic-link / logout ----------------------------------------------------
 
 /// `GET /auth/magic?token=` query.
 #[derive(serde::Deserialize)]

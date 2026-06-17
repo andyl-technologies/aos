@@ -54,10 +54,31 @@ pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
 
     let body_bytes = req.bytes().await?;
 
+    // Resolve the trusted client IP from Cloudflare's `cf-connecting-ip` header,
+    // which the edge sets to the real client address and a client cannot forge.
+    // (Empty when absent — e.g. a non-edge invocation — which the shared login
+    // handlers treat as a single shared rate-limit bucket rather than failing
+    // open.)
+    let client_ip = header_pairs
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("cf-connecting-ip"))
+        .map(|(_, value)| value.clone())
+        .unwrap_or_default();
+
     let mut builder = http::Request::builder().method(method.as_str()).uri(target);
     for (name, value) in &header_pairs {
+        // Drop any inbound `x-aos-client-ip`: only the edge-resolved value below
+        // is trusted (see the invariant on
+        // `aos_registry_core::web::console::CLIENT_IP_HEADER`).
+        if name.eq_ignore_ascii_case(aos_registry_core::web::console::CLIENT_IP_HEADER) {
+            continue;
+        }
         builder = builder.header(name, value);
     }
+    // Stamp (overwrite) the runtime-neutral client-IP header the shared console's
+    // pre-auth login handlers meter on. Overwrite — not append — is load-bearing:
+    // a client must not be able to forge its own rate-limit bucket.
+    builder = builder.header(aos_registry_core::web::console::CLIENT_IP_HEADER, &client_ip);
     builder
         .body(Body::from(body_bytes))
         .map_err(|err| worker::Error::RustError(format!("building axum request: {err}")))

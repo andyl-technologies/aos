@@ -63,10 +63,13 @@ use crate::ui::console;
 /// handlers into the shared core crate. The routes that remain native are the
 /// ones this router registers:
 ///
-/// - the **pre-auth rate-limited** login/activation paths (`/login`,
-///   `/login/password`, `/auth/passkey/begin`, `/activate`), which read the
-///   connecting peer address ([`crate::server::PeerAddr`]) and the
-///   reverse-proxy trust flag — neither available to a wasm handler;
+/// - the **pre-auth rate-limited** activation/passkey paths
+///   (`/auth/passkey/begin`, `/activate`), which read the connecting peer
+///   address ([`crate::server::PeerAddr`]) and the reverse-proxy trust flag —
+///   neither available to a wasm handler. (The `/login` and `/login/password`
+///   paths moved to the shared core router in RFC-0004 Phase 5 stage D: they now
+///   meter on the runtime-neutral `x-aos-client-ip` header the hub stamps in
+///   [`crate::server::inject_client_ip`].)
 /// - the **OIDC flow** (`/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`),
 ///   which makes outbound [`reqwest`] calls through [`crate::auth::oidc`];
 /// - the **git-backed config** surface (`/{slug}/-/settings/config`,
@@ -78,8 +81,6 @@ use crate::ui::console;
 /// the private handler helpers below for slugs whose canonical path has slashes.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/login", get(login_form).post(login_submit))
-        .route("/login/password", post(login_password))
         .route("/auth/sso", post(login_sso))
         .route("/auth/oidc/start", get(oidc_start))
         .route("/auth/oidc/callback", get(oidc_callback))
@@ -197,294 +198,14 @@ fn require_sudo(session: &Session) -> Result<(), Box<Response>> {
     }
 }
 
-// -- login + magic link -----------------------------------------------------
-
-/// `GET /login` — the email-first login form, plus the passkey sign-in button.
-///
-/// Sets a per-request `script-src 'nonce-…'` CSP so the page's first-party
-/// passkey script (driving `navigator.credentials.get`) runs while every other
-/// inline script stays blocked.
-async fn login_form(State(_state): State<Arc<AppState>>) -> Response {
-    let nonce = crate::auth::webauthn::new_challenge();
-    let html = console::login_page(None, Some(&nonce), Instant::now());
-    passkey_html_response(html, &nonce)
-}
-
-/// `POST /login` body: the email to send a magic link to.
-#[derive(serde::Deserialize)]
-struct LoginForm {
-    email: String,
-}
-
-/// Resolve the org whose **verified** domain captures `email`, together with
-/// whether that org has an OIDC IdP configured and enforces SSO.
-///
-/// Returns `(org_slug, enforce_sso)` when the email's domain is captured by an
-/// org *and* that org has an IdP; `None` otherwise (no capture, or a captured
-/// domain whose org has no IdP — which falls back to magic links).
-async fn sso_target(state: &AppState, email: &str) -> Option<(String, bool)> {
-    let domain = email.rsplit_once('@').map(|(_, d)| d.to_lowercase())?;
-    let org_id = state.db.org_for_domain(&domain).await.ok().flatten()?;
-    let config = state.db.idp_config(org_id).await.ok().flatten()?;
-    let org = state.db.org_by_id(org_id).await.ok().flatten()?;
-    Some((org.slug, config.enforce_sso))
-}
-
-/// Decide whether a user is **subject to SSO enforcement**, returning the org
-/// slug to redirect them into when they are.
-///
-/// A user is captured by an org two ways — and *either* binds them to the IdP:
-///
-/// 1. **Verified domain.** The org's verified email domain matches the user's
-///    address (the same rule [`sso_target`] uses for the magic-link path).
-/// 2. **Membership.** The user holds a membership grant under the org — the
-///    top-level segment of each membership scope is the org slug.
-///
-/// If *any* such org has `enforce_sso = true` on its OIDC IdP config, the user
-/// must authenticate through that IdP: this returns `Some(org_slug)`, the org
-/// to begin OIDC against (feed it to [`sso_start_path`]). Otherwise it returns
-/// `None` and the local credential paths (magic link, password, passkey) stay
-/// available.
-///
-/// This is the single source of truth shared by every credential path so the
-/// invariant holds uniformly: the users forced to SSO at the magic-link entry
-/// point are forced everywhere, and cannot mint a local credential that would
-/// outlive their IdP account (defeating deprovisioning / conditional access).
-///
-/// `user_id` is the membership anchor; pass `None` on the pre-auth email-only
-/// paths where the user row may not exist yet (the verified-domain rule still
-/// applies, and a brand-new user holds no memberships).
-///
-/// # Errors
-///
-/// Returns an error only on an unexpected database failure while listing the
-/// user's memberships; a missing org or IdP config is not an error (the org
-/// simply does not enforce SSO for this user).
-async fn sso_enforced_for(
-    state: &AppState,
-    email: &str,
-    user_id: Option<i64>,
-) -> anyhow::Result<Option<String>> {
-    // Rule 1: the user's verified email domain captures an SSO-enforcing org.
-    if let Some((org_slug, true)) = sso_target(state, email).await {
-        return Ok(Some(org_slug));
-    }
-    // Rule 2: any org the user is a member of enforces SSO. The org slug is the
-    // top-level segment of the membership scope (e.g. `acme` for `acme/cdn`).
-    if let Some(user_id) = user_id {
-        let principal = Principal::user(user_id);
-        let mut seen_slugs = std::collections::HashSet::new();
-        for (scope, _role) in state
-            .db
-            .list_memberships_for(principal.kind.as_str(), principal.id)
-            .await?
-        {
-            let Some(org_slug) = Scope::parse(&scope)
-                .as_str()
-                .split('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-            else {
-                continue;
-            };
-            if !seen_slugs.insert(org_slug.clone()) {
-                continue;
-            }
-            let Some(org) = state.db.org_by_slug(&org_slug).await? else {
-                continue;
-            };
-            if let Some(config) = state.db.idp_config(org.id).await? {
-                if config.enforce_sso {
-                    return Ok(Some(org_slug));
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// The OIDC start path that redirects a browser into an org's IdP login.
-///
-/// This is the exact target the magic-link path ([`login_submit`]) sends an
-/// SSO-enforced user to; the password and passkey paths reuse it so an enforced
-/// user lands in the same IdP flow regardless of which credential they tried.
-fn sso_start_path(org_slug: &str) -> String {
-    format!("/auth/oidc/start?org={}", urlencode(org_slug))
-}
-
-/// `POST /login` — route to SSO or issue a magic link.
-///
-/// Email-first routing (RFC-0004 "domain capture"): when the typed email's
-/// domain is captured by an org with an OIDC IdP, the response depends on the
-/// org's `enforce_sso`:
-///
-/// - **enforced** — redirect straight into the OIDC flow (`/auth/oidc/start`);
-///   magic links are not offered.
-/// - **not enforced** — show a two-step page offering an "Sign in with SSO"
-///   button *and* a magic link, keeping the no-JS floor.
-///
-/// Otherwise a magic link is issued and the "check your email" page shown. The
-/// address is never revealed as known/unknown.
-///
-/// [`LogMailer`]: crate::auth::magic::LogMailer
-async fn login_submit(
-    State(state): State<Arc<AppState>>,
-    crate::server::PeerAddr(peer): crate::server::PeerAddr,
-    headers: HeaderMap,
-    Form(form): Form<LoginForm>,
-) -> Response {
-    let email = form.email.trim().to_lowercase();
-    if email.is_empty() || !email.contains('@') {
-        return Html(console::login_page(
-            Some("Enter a valid email address."),
-            None,
-            Instant::now(),
-        ))
-        .into_response();
-    }
-    // Rate-limit magic-link issuance on both the target email (the email-bomb
-    // victim) and the source IP (the sender) — see [`crate::ratelimit`].
-    let now = crate::server::now_secs();
-    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
-    use crate::ratelimit::RateClass;
-    for (class, key) in [
-        (RateClass::MagicLinkEmail, email.as_str()),
-        (RateClass::MagicLinkIp, ip.as_str()),
-    ] {
-        if let crate::ratelimit::RateDecision::Limited { retry_after } =
-            state.ratelimit.check(class, key, now)
-        {
-            return crate::server::too_many_requests(retry_after);
-        }
-    }
-    // Domain capture: route to the org's IdP when one is configured.
-    if let Some((org_slug, enforce_sso)) = sso_target(&state, &email).await {
-        let start = sso_start_path(&org_slug);
-        if enforce_sso {
-            return Redirect::to(&start).into_response();
-        }
-        return Html(console::login_sso_page(
-            &email,
-            &org_slug,
-            &start,
-            Instant::now(),
-        ))
-        .into_response();
-    }
-    let secret = match state.db.create_magic_link(&email).await {
-        Ok(secret) => secret,
-        Err(err) => return internal(err),
-    };
-    let link = format!(
-        "{}/auth/magic?token={secret}",
-        state.external_url.trim_end_matches('/'),
-    );
-    if let Err(err) = state.mailer.send_magic_link(&email, &link) {
-        tracing::warn!(error = %format!("{err:#}"), "magic link delivery failed");
-    }
-    let dev_link = state.dev.then_some(link.as_str());
-    Html(console::login_sent_page(&email, dev_link, Instant::now())).into_response()
-}
-
-// -- password login ---------------------------------------------------------
-
-/// `POST /login/password` body: the email and password to authenticate.
-#[derive(serde::Deserialize)]
-struct PasswordLoginForm {
-    email: String,
-    password: String,
-}
-
-/// `POST /login/password` — authenticate an email + password, sign the user in.
-///
-/// This is a **pre-auth** endpoint (the caller has no session cookie yet), so
-/// it carries no CSRF token — there is no ambient credential to forge against.
-/// It *is* rate-limited on both the target email (online password guessing
-/// against one account) and the source IP (credential-stuffing sprays),
-/// reusing the [`RateClass::PasswordEmail`]/[`RateClass::PasswordIp`] classes.
-///
-/// On a correct password it creates a sudo-capable session (a fresh password
-/// sign-in is a re-authentication, `auth_level 1`), sets the `__Host-` cookie,
-/// and redirects to `/`. On *any* failure — unknown email, no password set, or
-/// a wrong password — it re-renders `/login` with one generic "invalid email
-/// or password" message, never revealing whether the email is registered.
-///
-/// [`RateClass::PasswordEmail`]: crate::ratelimit::RateClass::PasswordEmail
-/// [`RateClass::PasswordIp`]: crate::ratelimit::RateClass::PasswordIp
-async fn login_password(
-    State(state): State<Arc<AppState>>,
-    crate::server::PeerAddr(peer): crate::server::PeerAddr,
-    headers: HeaderMap,
-    Form(form): Form<PasswordLoginForm>,
-) -> Response {
-    let email = form.email.trim().to_lowercase();
-    // The single generic failure render, used for every rejection path so the
-    // endpoint is not an account-existence oracle.
-    let invalid = || {
-        Html(console::login_page(
-            Some("Invalid email or password."),
-            None,
-            Instant::now(),
-        ))
-        .into_response()
-    };
-    if email.is_empty() || !email.contains('@') || form.password.is_empty() {
-        return invalid();
-    }
-    // Rate-limit on both the target email and the source IP before doing the
-    // (deliberately expensive) Argon2 verify, so a spray cannot burn CPU.
-    let now = crate::server::now_secs();
-    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
-    use crate::ratelimit::RateClass;
-    for (class, key) in [
-        (RateClass::PasswordEmail, email.as_str()),
-        (RateClass::PasswordIp, ip.as_str()),
-    ] {
-        if let crate::ratelimit::RateDecision::Limited { retry_after } =
-            state.ratelimit.check(class, key, now)
-        {
-            return crate::server::too_many_requests(retry_after);
-        }
-    }
-    let (user_id, hash) = match state.db.user_for_password(&email).await {
-        Ok(Some(found)) => found,
-        // No such user, or no password set. Still spend an Argon2id verify
-        // against a fixed dummy hash before failing, so the wall-clock time of
-        // this miss matches that of an existing account — otherwise the
-        // short-circuit leaks account existence as a timing oracle (M10).
-        Ok(None) => {
-            crate::auth::password::spend_dummy_verify(&form.password);
-            return invalid();
-        }
-        Err(err) => return internal(err),
-    };
-    if !crate::auth::password::verify_password(&form.password, &hash) {
-        return invalid();
-    }
-    // Even with a correct password, a user subject to `enforce_sso` must come
-    // through the IdP — a local password must not bypass IdP deprovisioning,
-    // MFA, or conditional access (H-4). The credential already verified, so the
-    // account is known to exist; redirecting to SSO leaks nothing a successful
-    // password login would not, and matches the magic-link path's UX. (Reaching
-    // here with the password verified means an SSO-enforced user had a password
-    // set before enforcement was turned on; refuse the local session anyway.)
-    match sso_enforced_for(&state, &email, Some(user_id)).await {
-        Ok(Some(org_slug)) => return Redirect::to(&sso_start_path(&org_slug)).into_response(),
-        Ok(None) => {}
-        Err(err) => return internal(err),
-    }
-    // A correct password is a re-authentication: the session is sudo-capable.
-    let cookie = match state
-        .db
-        .create_session(user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
-        Err(err) => return internal(err),
-    };
-    ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
-}
+// -- login + magic link ----------------------------------------------------
+//
+// The `/login` (GET form + POST magic link) and `/login/password` (POST)
+// handlers moved to the shared core router in RFC-0004 Phase 5 (console-dedup
+// stage D). They rate-limit on the runtime-neutral `x-aos-client-ip` header the
+// hub stamps in [`crate::server::inject_client_ip`] instead of the native peer
+// socket, so they are wasm-clean and serve both shells. `login_sso` and the
+// OIDC flow below stay native (outbound `reqwest`).
 
 // -- OIDC single sign-on ----------------------------------------------------
 
@@ -598,17 +319,6 @@ fn sso_error(message: &str) -> Response {
 // `default-src 'self'`), so only that exact `<script nonce=…>` runs — no other
 // inline or third-party script is permitted. The script exchanges JSON with the
 // begin/finish endpoints, base64url-encoding the binary credential fields.
-
-/// Build an `Html` response carrying the per-request passkey CSP.
-///
-/// The CSP keeps the global `default-src 'self'` and adds `script-src 'self'
-/// 'nonce-<nonce>'` so the page's single inline script runs while every other
-/// inline script stays blocked. The [`security_headers`](crate::server) layer
-/// honors this handler-set CSP instead of overwriting it.
-fn passkey_html_response(html: String, nonce: &str) -> Response {
-    let csp = format!("default-src 'self'; script-src 'self' 'nonce-{nonce}'");
-    ([(header::CONTENT_SECURITY_POLICY, csp)], Html(html)).into_response()
-}
 
 /// `POST /auth/passkey/begin` — stage a usernameless assertion challenge (JSON).
 ///
