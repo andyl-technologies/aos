@@ -464,8 +464,11 @@ the prior generation's units.
       AOS route drop-ins, and the VM performs a real private-outbound netns HTTP
       request. The default socket namespace shape is now verified and covered;
       the renderer now signs explicit `tcp-bind` / `tcp-connect` grants and
-      emits `network-policy.json` for Landlock/eBPF consumers. The kernel
-      enforcement loaders remain before this item is complete.
+      emits `network-policy.json` for Landlock/eBPF consumers. TCP Landlock
+      enforcement for those grants is applied by generated `aos-landlock`
+      prefixes on package-authored service exec directives and revalidated by
+      `apm` against the Nix-built trusted helper path before unit attach. The
+      eBPF loader remains before this item is complete.
 - [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
       only host-global nftables base-set mutation — the SOTA for per-package L3/L4.
       The signed `network-policy.json` contract exists; loading/enforcing it
@@ -541,13 +544,16 @@ Full spec: [`enforcement.md`](enforcement.md).
 
 **Deliverables.**
 
-- [ ] **Landlock layer (D20).** The `expose` renderer emits a Landlock ruleset
-      from the manifest (`host-paths` → `LANDLOCK_ACCESS_FS_*`, `network` →
-      `LANDLOCK_ACCESS_NET_{BIND,CONNECT}_TCP`); empty manifest = deny-all-but-own
-      root. Applied via an `aos-landlock` exec-prefix wrapper (or the upstream
-      `LandlockPaths=` directive — pin in the spike). ABI feature-detect
-      (`LANDLOCK_CREATE_RULESET_VERSION`); target ≥ ABI 4. Holds even when a
-      namespace is shared — the layer for `sandboxed-with-holes` packages.
+- [ ] **Landlock layer (D20).** The `expose` renderer emits Landlock policy from
+      the manifest. Current coverage: `tcp-bind` /
+      `tcp-connect` are rendered into `network-policy.json`, workload
+      service exec commands are prefixed with the AOS-built `aos-landlock`
+      wrapper, the helper requires ABI 4 and probes
+      `LANDLOCK_CREATE_RULESET_VERSION`, and `apm` validates the exact trusted
+      wrapper path and arguments before attaching a unit artifact. Remaining coverage:
+      `host-paths` → `LANDLOCK_ACCESS_FS_*` and empty-manifest
+      deny-all-but-own-root filesystem behavior. Holds even when a namespace is
+      shared — the layer for `sandboxed-with-holes` packages.
 - [ ] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
       for MVP unless an SELinux base policy ships); loaded by `apm` at install.
@@ -774,9 +780,10 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       machined/portabled/importd disable flags, the kernel namespace configs, and
       the exact `aos-seed-profiles` ordering were read once and should be
       re-confirmed against the tree before the MVP lands.
-- [ ] **Landlock apply mechanism (P8).** Whether to use an `aos-landlock`
-      exec-prefix wrapper or the upstream `LandlockPaths=` directive (if present in
-      the AOS systemd build); the built kernel's max Landlock ABI.
+- [ ] **Landlock apply mechanism (P8).** The TCP policy apply point uses the
+      AOS-built `aos-landlock` service exec wrapper rather than waiting for an
+      upstream systemd directive; still verify the built kernel's max Landlock
+      ABI in a VM and extend the wrapper/policy to filesystem rules.
       ([`enforcement.md`](enforcement.md))
 - [ ] **MAC backend choice (P8).** SELinux vs AppArmor for the generated
       per-package profile — depends on whether the kernel ships an SELinux base

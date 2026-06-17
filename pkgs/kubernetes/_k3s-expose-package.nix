@@ -63,9 +63,10 @@ in
         mode = "read-only";
       }
     ],
-    prepareHostPathDirectories ? builtins.map (hostPath: hostPath.path) (
-      builtins.filter (hostPath: hostPath.mode == "rw") hostPaths
-    ),
+    prepareHostPathDirectories ?
+      builtins.map (hostPath: hostPath.path) (
+        builtins.filter (hostPath: hostPath.mode == "rw") hostPaths
+      ),
   }: let
     stateDirectoryText = builtins.concatStringsSep " " stateDirectories;
   in

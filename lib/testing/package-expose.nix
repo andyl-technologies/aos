@@ -86,7 +86,6 @@
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${pkgs.bash}/bin/bash -c true";
-          ExecReload = "${pkgs.bash}/bin/bash -c true";
         };
       };
       config = {
@@ -670,6 +669,32 @@
     if privilegedExecPrefix.success
     then throw "expose renderer must reject systemd privileged Exec* prefixes on workload services"
     else "ok";
+  landlockScriptDerivedExec = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-landlock-script-derived.service" = {
+          preStart = ''
+            true
+          '';
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions = {
+          network = "private";
+          tcp-connect = [443];
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  landlockScriptDerivedExecRejected =
+    if landlockScriptDerivedExec.success
+    then throw "expose renderer must reject script-derived Exec* commands for TCP Landlock services"
+    else "ok";
   kernelModulePermissionMismatch = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -784,6 +809,7 @@
         serviceConfig = {
           Type = "oneshot";
           ExecStart = "${pkgs.bash}/bin/bash -c true";
+          ExecReload = "${pkgs.bash}/bin/bash -c true";
         };
       };
       permissions = {
@@ -886,6 +912,7 @@ in
     inherit
       reservedCollisionRejected
       privilegedExecPrefixRejected
+      landlockScriptDerivedExecRejected
       kernelModulePermissionMismatchRejected
       unknownConfigUnitRejected
       credentialNonServiceUnitRejected
@@ -1182,6 +1209,7 @@ in
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
+          test "$landlockScriptDerivedExecRejected" = ok
           test "$kernelModulePermissionMismatchRejected" = ok
           test "$undeclaredPreparedHostPathDirectoryRejected" = ok
           test "$readOnlyPreparedHostPathDirectoryRejected" = ok
@@ -1232,12 +1260,21 @@ in
             "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+            "$private_outbound_unit"
+          grep -q 'ExecReload=.*/bin/aos-landlock --require-abi 4 --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+            "$private_outbound_unit"
+          grep -q 'aos-landlock' "$private_outbound_unit"
           grep -q 'Wants=expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
             "$private_outbound_target"
           grep -q 'Description=Create outbound network namespace for expose-smoke' \
             "$private_outbound_netns"
           if grep -q 'RootDirectory=' "$private_outbound_netns"; then
             echo "host-side netns service must not be RootDirectory-sandboxed" >&2
+            exit 1
+          fi
+          if grep -q 'aos-landlock' "$private_outbound_netns"; then
+            echo "host-side netns service must not run through aos-landlock" >&2
             exit 1
           fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$private_outbound_netns"

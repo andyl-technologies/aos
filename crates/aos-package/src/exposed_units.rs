@@ -18,8 +18,8 @@ use crate::profile::meta::list_meta;
 use crate::profile::{Generation, Profile};
 use crate::registry::store_path_hash;
 use crate::types::{
-    CapabilityKind, CredentialMeta, ExposeMeta, InstalledMeta, NetworkPermission, PermissionsMeta,
-    ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
+    CapabilityKind, ConfinementClass, CredentialMeta, ExposeMeta, InstalledMeta, NetworkPermission,
+    PermissionsMeta, ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
 };
 use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
@@ -30,6 +30,16 @@ const APM_PRESET_REL: &str = "systemd/system-preset/30-aos-apm.preset";
 const ATTACHED_REL: &str = "systemd/system.attached";
 const GENERATED_CREDSTORE_REL: &str = "run/credstore.encrypted/aos";
 const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
+const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
+const LANDLOCK_EXEC_KEYS: &[&str] = &[
+    "ExecStart",
+    "ExecStartPre",
+    "ExecStartPost",
+    "ExecReload",
+    "ExecStop",
+    "ExecStopPost",
+    "ExecCondition",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExposedPackage {
@@ -280,6 +290,7 @@ fn exposed_packages_from_expose_dir(
             }
             unit_owners.insert(unit.clone(), apm.name.clone());
         }
+        validate_landlock_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
 
         let credential_blobs =
             generated_credential_blobs(&apm.name, Path::new(&artifact.store_path), expose)
@@ -460,6 +471,145 @@ fn normalized_permissions(package_name: &str, permissions: &PermissionsMeta) -> 
         normalized.confinement = Some(normalized.computed_confinement());
     }
     normalized
+}
+
+fn validate_landlock_wrappers(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    if !permissions.has_network_policy() {
+        return Ok(());
+    }
+
+    let permissions = normalized_permissions(package_name, permissions);
+    if permissions
+        .confinement
+        .as_ref()
+        .context("normalized permissions have no confinement summary")?
+        .class
+        == ConfinementClass::Unconfined
+    {
+        return Ok(());
+    }
+
+    let expected_args = expected_landlock_args(&permissions);
+    let trusted_wrapper = trusted_landlock_wrapper_path()?;
+    for unit in units {
+        if !unit.ends_with(".service")
+            || is_generated_expose_side_effect_service(package_name, unit)
+        {
+            continue;
+        }
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        let Some(service) = parsed.sections.get("Service") else {
+            continue;
+        };
+        for key in LANDLOCK_EXEC_KEYS {
+            let Some(commands) = service.get(*key) else {
+                continue;
+            };
+            for command in commands {
+                validate_landlock_exec_command(
+                    package_name,
+                    unit,
+                    key,
+                    command,
+                    &trusted_wrapper,
+                    &expected_args,
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn expected_landlock_args(permissions: &PermissionsMeta) -> Vec<String> {
+    let mut args = vec!["--require-abi".to_string(), "4".to_string()];
+    for port in &permissions.tcp_bind {
+        args.push("--tcp-bind".to_string());
+        args.push(port.to_string());
+    }
+    for port in &permissions.tcp_connect {
+        args.push("--tcp-connect".to_string());
+        args.push(port.to_string());
+    }
+    args.push("--".to_string());
+    args
+}
+
+fn trusted_landlock_wrapper_path() -> Result<String> {
+    if let Ok(path) = std::env::var(LANDLOCK_WRAPPER_ENV) {
+        if path.is_empty() {
+            bail!("{LANDLOCK_WRAPPER_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/aos-landlock") {
+            bail!("{LANDLOCK_WRAPPER_ENV} must point to an absolute aos-landlock binary");
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-aos-landlock-0/bin/aos-landlock".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{LANDLOCK_WRAPPER_ENV} is not configured for network policy validation");
+    }
+}
+
+fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bool {
+    ["host-paths", "modules", "sysctl", "firewall", "netns"]
+        .into_iter()
+        .any(|suffix| unit == format!("aos-pkg-{package_name}-{suffix}.service"))
+}
+
+fn validate_landlock_exec_command(
+    package_name: &str,
+    unit: &str,
+    key: &str,
+    command: &str,
+    trusted_wrapper: &str,
+    expected_args: &[String],
+) -> Result<()> {
+    let tokens = command.split_whitespace().collect::<Vec<_>>();
+    let Some((wrapper, rest)) = tokens.split_first() else {
+        return Ok(());
+    };
+    if wrapper
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| matches!(byte, b'-' | b'@' | b':' | b'!' | b'+'))
+        || *wrapper != trusted_wrapper
+    {
+        bail!(
+            "network policy service '{}' {} for package '{}' is missing required aos-landlock wrapper",
+            unit,
+            key,
+            package_name
+        );
+    }
+    if rest.len() <= expected_args.len()
+        || !rest
+            .iter()
+            .zip(expected_args)
+            .all(|(actual, expected)| *actual == expected)
+    {
+        bail!(
+            "network policy service '{}' {} for package '{}' has invalid aos-landlock arguments",
+            unit,
+            key,
+            package_name
+        );
+    }
+    Ok(())
 }
 
 fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> {
@@ -1648,6 +1798,22 @@ mod tests {
         .unwrap();
     }
 
+    fn write_service_unit(installed: &InstalledMeta, text: &str) {
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        std::fs::write(
+            Path::new(&artifact)
+                .join("units")
+                .join(format!("{}.service", apm.name)),
+            text,
+        )
+        .unwrap();
+    }
+
+    fn trusted_landlock_wrapper_for_test() -> String {
+        trusted_landlock_wrapper_path().unwrap()
+    }
+
     #[test]
     fn rebuild_generation_expose_roots_links_artifacts_once() {
         let tmp = TempDir::new().unwrap();
@@ -1737,6 +1903,139 @@ mod tests {
 
         let err = exposed_packages(&profile, &[installed]).unwrap_err();
         assert!(err.to_string().contains("TCP grants differ"), "{err:?}");
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_landlock_wrapper_for_network_policy() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+        write_service_unit(&installed, "[Service]\nExecStart=/bin/true\n");
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing required aos-landlock wrapper"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_unwrapped_landlock_exec_start_pre() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStartPre=/bin/true\nExecStart={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string().contains("ExecStartPre")
+                && err
+                    .to_string()
+                    .contains("missing required aos-landlock wrapper"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_landlock_wrapper_with_wrong_ports() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStart={wrapper} --require-abi 4 --tcp-connect 8443 -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string().contains("invalid aos-landlock arguments"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_untrusted_landlock_wrapper_path() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+        write_service_unit(
+            &installed,
+            "[Service]\nExecStart=/nix/store/fake-aos-landlock-0/bin/aos-landlock --require-abi 4 --tcp-connect 443 -- /bin/true\n",
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing required aos-landlock wrapper"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_accepts_landlock_wrapper_for_network_policy() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStartPre={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\nExecStart={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
     }
 
     #[test]

@@ -50,12 +50,20 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   `network-policy.json` against the admitted package metadata before attaching
   exposed units, so the JSON is not a second policy source. An **empty manifest
   yields no TCP grants**.
-- **Apply point.** Landlock self-restriction must run in the service's own
-  process before `execve`. Use a tiny `aos-landlock` exec wrapper (set as the
-  unit's `ExecStart` prefix, or via a generated drop-in) that loads the ruleset
-  then `execve`s the real binary, OR contribute/await the systemd
-  `LandlockPaths=`-style directive (integration PR exists upstream) — pin the
-  approach in the Phase-9 spike.
+- **Apply point.** Landlock self-restriction runs in each service command's own
+  process before `execve`. For TCP policy, the renderer prefixes every
+  package-authored workload service exec directive (`ExecStart=`,
+  `ExecStartPre=`, `ExecStartPost=`, `ExecReload=`, `ExecStop=`,
+  `ExecStopPost=`, `ExecCondition=`) with the AOS-built `aos-landlock` wrapper,
+  passing `--require-abi 4` plus the admitted `tcp-bind` / `tcp-connect` ports.
+  The wrapper probes the kernel ABI, loads the TCP ruleset, sets `no_new_privs`,
+  and then `execve`s the real command. The Nix-built `aos`/`apm` wrapper exports
+  the trusted helper path as `AOS_LANDLOCK_WRAPPER`; `apm` validates every
+  workload service's wrapper identity and arguments against that exact path
+  before attaching the unit artifact, while generated host-side side-effect
+  units stay outside the wrapper. A future
+  `LandlockPaths=`-style systemd directive can replace the wrapper only after it
+  preserves the same fail-closed validation point.
 - **ABI feature-detect, never hardcode.** Query
   `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` and
   best-effort downgrade. ABI→kernel: v1/5.13 (fs), v2/5.19 (`FS_REFER`), v3/6.2

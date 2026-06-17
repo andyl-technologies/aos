@@ -10,6 +10,7 @@
   openssh,
   perl,
   openssl,
+  aos-landlock,
   pkg-config,
   protobuf,
   systemd,
@@ -63,7 +64,7 @@ in
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    runtimeDeps = [openssl] ++ runtimeTools;
+    runtimeDeps = [openssl aos-landlock] ++ runtimeTools;
 
     preBuild = ''
       export OPENSSL_DIR="${openssl}"
@@ -72,6 +73,7 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
+      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
     '';
 
     doCheck = true;
@@ -93,6 +95,7 @@ in
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
+      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER
