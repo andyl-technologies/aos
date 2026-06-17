@@ -374,11 +374,34 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // The fallback handles every method so nested-canonical registries
     // (slugs with slashes) accept the upload facade's PUT/HEAD too.
     router = router.fallback(nested_catch_all);
+    // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
+    // B): the wasm-clean management handlers, built over the hub's database,
+    // JWT keys, rate limiter, mailer, sealer, and the two native ports (the
+    // hardened reqwest `HttpClient` and the `signing`-backed `ChannelAdvancer`).
+    // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
+    // merged after `with_state` below. The hub's own `console::router()`
+    // registers only the native-only routes (pre-auth login/activation, OIDC,
+    // git-backed config/changes), so the two never register the same path.
+    let console_deps = aos_registry_core::web::console::ConsoleDeps {
+        db: Arc::clone(&state.db),
+        jwt_keys: state.auth.jwt_keys.clone(),
+        external_url: state.external_url.clone(),
+        dev: state.dev,
+        ratelimit: Arc::clone(&state.ratelimit)
+            as Arc<dyn aos_registry_core::ratelimit::RateLimiter>,
+        mailer: Arc::clone(&state.mailer),
+        sealer: Arc::clone(&state.sealer),
+        http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
+        advancer: Arc::new(crate::coreports::HubChannelAdvancer::new(
+            Arc::clone(&state.db),
+            Arc::clone(&state.sealer),
+        )),
+    };
+    let console_router = aos_registry_core::web::console::console_router(console_deps);
     router
-        // The producer console: session login, account, device approval, org
-        // dashboards, and per-registry management. Its static prefixes
-        // (/login, /account, /activate, /-/org…, /{slug}/-/settings…) win
-        // over the registry catch-all by static-over-dynamic precedence.
+        // The native-only producer-console routes (pre-auth login/activation,
+        // OIDC, git-backed config/changes). Its static prefixes win over the
+        // registry catch-all by static-over-dynamic precedence.
         .merge(crate::console::router())
         .merge(oauth2)
         // Resolve the request's session once and put the user's email in a
@@ -398,6 +421,15 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // handler on merge. The outer layers below (body cap, panic catcher,
         // security headers) still wrap its responses.
         .merge(rpc_router)
+        // The shared producer-console router carries its own `ConsoleDeps`
+        // state, so — like `rpc_router` — it is merged after `with_state`. Its
+        // static console paths (/account, /-/org…, /{slug}/-/settings…) win over
+        // the hub's `/{slug}/{*path}` facade wildcard by static-over-dynamic
+        // precedence, and it shares no path with the native `console::router()`
+        // above, so neither merge collides. The outer layers below (body cap,
+        // panic catcher, security headers) wrap its responses too, so a console
+        // handler that sets its own CSP (the passkey pages) is still honored.
+        .merge(console_router)
         // Router-wide inbound body cap. The RPC surface is already bounded to
         // the smaller `RPC_MAX_BODY_BYTES` by its own sub-router layer above
         // (which, being closer to the handler, wins for those routes). This
