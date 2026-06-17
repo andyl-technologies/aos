@@ -123,7 +123,7 @@ PrivateTmp=disconnected         PrivateDevices=yes
 ProtectKernelTunables=yes       ProtectKernelModules=yes      ProtectKernelLogs=yes
 ProtectControlGroups=private    ProtectClock=yes
 ProtectProc=invisible           ProcSubset=pid
-ProtectHostname=private
+ProtectHostname=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6   # widened only if declared
 RestrictNamespaces=yes          RestrictRealtime=yes          RestrictSUIDSGID=yes
 LockPersonality=yes             MemoryDenyWriteExecute=yes    # relaxed for JIT runtimes
@@ -132,6 +132,8 @@ CapabilityBoundingSet=          # empty unless caps declared
 DynamicUser=yes                 PrivateUsers=identity         # per-package UID identity (see below)
 ```
 
+`PrivateDevices=` is relaxed only for declared device grants,
+`ProtectProc=` / `ProcSubset=` are omitted for root-equivalent manifests,
 `MemoryDenyWriteExecute=` is relaxed only for declared JIT runtimes (Java/Node);
 `RestrictAddressFamilies=`/`PrivateNetwork=`/`CapabilityBoundingSet=` widen only
 where the manifest grants it. The renderer computes the relaxations from the

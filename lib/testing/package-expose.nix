@@ -995,6 +995,7 @@ in
           grep -q 'DynamicUser=true' "$unit"
           grep -q 'PrivateUsers=identity' "$unit"
           grep -q 'PrivateNetwork=true' "$unit"
+          grep -q 'PrivateDevices=true' "$unit"
           grep -q 'DevicePolicy=closed' "$unit"
           grep -q '^CapabilityBoundingSet=$' "$unit"
           grep -q '^AmbientCapabilities=$' "$unit"
@@ -1002,6 +1003,10 @@ in
           grep -q 'SystemCallFilter=@system-service' "$unit"
           grep -q 'SystemCallErrorNumber=EPERM' "$unit"
           grep -q 'SystemCallArchitectures=native' "$unit"
+          grep -q 'ProtectClock=true' "$unit"
+          grep -q 'ProtectProc=invisible' "$unit"
+          grep -q 'ProcSubset=pid' "$unit"
+          grep -q 'ProtectHostname=true' "$unit"
           grep -q 'RestrictAddressFamilies=AF_UNIX' "$unit"
           grep -q 'RestrictAddressFamilies=AF_INET' "$unit"
           grep -q 'RestrictAddressFamilies=AF_INET6' "$unit"
@@ -1099,6 +1104,7 @@ in
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
+          grep -q 'PrivateDevices=true' "$minimal_unit"
           grep -q '^CapabilityBoundingSet=$' "$minimal_unit"
           grep -q '^AmbientCapabilities=$' "$minimal_unit"
           grep -q 'DevicePolicy=closed' "$minimal_unit"
@@ -1476,6 +1482,15 @@ in
           grep -q 'DeviceAllow=/dev/net/tun rwm' "$k3s_worker_unit"
           grep -q 'DeviceAllow=/dev/kmsg rwm' "$k3s_worker_unit"
           grep -q 'DeviceAllow=/dev/fuse rwm' "$k3s_worker_unit"
+          grep -q 'PrivateDevices=false' "$k3s_worker_unit"
+          if grep -q 'ProtectProc=' "$k3s_worker_unit"; then
+            echo "root-equivalent k3s worker must not get ProtectProc= hardening" >&2
+            exit 1
+          fi
+          if grep -q 'ProcSubset=' "$k3s_worker_unit"; then
+            echo "root-equivalent k3s worker must not get ProcSubset= hardening" >&2
+            exit 1
+          fi
           grep -q 'BindPaths=/var/lib/rancher' "$k3s_worker_unit"
           grep -q 'BindPaths=/var/lib/kubelet' "$k3s_worker_unit"
           grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_worker_unit"
