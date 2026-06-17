@@ -2493,6 +2493,33 @@ mod tests {
     }
 
     #[test]
+    fn slash_whitespace_disambiguates_division_from_paths() {
+        let ast = parse("1/2");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, ast.root), b"1/2");
+
+        for source in ["1/ 2", "1 / 2", "1\t/\t2", "1\n/\n2"] {
+            let ast = parse(source);
+            let root = node(&ast, ast.root);
+            let NodeData::Binary { op, .. } = root.data else {
+                panic!("division payload expected for {source:?}");
+            };
+            assert_eq!(root.kind, NodeKind::BinOp);
+            assert_eq!(op, BinOpKind::Div);
+        }
+
+        let ast = parse("1 /2");
+        let root = node(&ast, ast.root);
+        let NodeData::Pair { first, second } = root.data else {
+            panic!("application payload expected");
+        };
+        assert_eq!(root.kind, NodeKind::Apply);
+        assert_eq!(node(&ast, first).kind, NodeKind::Int);
+        assert_eq!(node(&ast, second).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, second), b"/2");
+    }
+
+    #[test]
     fn home_slash_requires_path_segment() {
         let ast = parse("~/foo");
         assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);

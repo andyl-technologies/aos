@@ -29747,6 +29747,54 @@ mod tests {
     }
 
     #[test]
+    fn slash_whitespace_disambiguates_division_from_path_literals() {
+        let dir = unique_temp_dir("slash-path-disambiguation");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("source base directory creates");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(base.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options("1/2", options.clone()),
+            base.join("1/2").as_os_str().as_bytes()
+        );
+
+        for source in ["1/ 2", "1 / 2", "1\t/\t2", "1\n/\n2", "1/*x*/ / 2"] {
+            assert_eq!(
+                eval_with_options(source, options.clone()).as_int(),
+                Ok(0),
+                "{source:?} should parse as integer division"
+            );
+        }
+
+        let error = eval_whnf_owned_with_options(&lower("1 /2"), options.clone())
+            .expect_err("whitespace before an absolute path parses as application");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+        let error = eval_whnf_owned_with_options(&lower("1/**//2"), options)
+            .expect_err("comment before an absolute path parses as application");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn path_interpolation_copies_sources_to_store_contexts() {
         let (dir, path) = temp_file_with_bytes("path-interpolation", b"abc");
         let path = path_source(&path);

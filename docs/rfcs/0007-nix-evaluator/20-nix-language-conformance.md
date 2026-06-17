@@ -262,10 +262,10 @@ search paths, and store coercion.
 - [x] **Path interpolation** — `./a/${e}` (see §2.3): at least one `/` before any
       `${}` for path recognition. Relative interpolated paths resolve against
       the configured path-literal base and remain path values.
-- [ ] **`/` division-vs-path disambiguation** — `a / b` (spaces) is division;
-      `a/b` (no spaces) is a path. **The whitespace around `/` is the
-      disambiguator** — reproduce the lexer rule exactly. Verify the precise
-      whitespace rule against pinned Nix.
+- [x] **`/` division-vs-path disambiguation** — `a / b` and `a/ b` are
+      division; `a/b` is a path; `a /b` is application to the absolute path
+      `/b`. A slash contributes to a path token only when immediately followed
+      by a path segment or interpolation.
 - [x] **path + path** — `+` on two paths yields a path (§6).
 - [x] **path + string** — yields a **path**; the string must not carry store-path
       context. Verify against pinned Nix (manual: "Path + String → path").

@@ -903,7 +903,7 @@ impl<'a> Lexer<'a> {
                 if cursor == self.cursor && !self.path_segment_starts_after_slash(cursor) {
                     return false;
                 }
-                saw_slash = true;
+                saw_slash |= self.path_segment_starts_after_slash(cursor);
                 cursor += 1;
                 continue;
             }
@@ -1321,6 +1321,58 @@ mod tests {
                 TokenKind::Whitespace,
                 TokenKind::Path,
                 TokenKind::Whitespace,
+                TokenKind::Path,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn slash_whitespace_disambiguates_division_from_paths() {
+        let kinds = lex_kinds("1/2 1/ 2 1 /2 1 / 2 a/2 a/ 2").expect("lexes");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Slash,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Whitespace,
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Whitespace,
+                TokenKind::Slash,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Whitespace,
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Ident,
+                TokenKind::Slash,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Eof,
+            ]
+        );
+
+        let kinds = lex_kinds("1/*x*/ / 2 1/**//2").expect("lexes");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Int,
+                TokenKind::BlockComment,
+                TokenKind::Whitespace,
+                TokenKind::Slash,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::Whitespace,
+                TokenKind::Int,
+                TokenKind::BlockComment,
                 TokenKind::Path,
                 TokenKind::Eof,
             ]
