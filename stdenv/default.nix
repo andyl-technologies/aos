@@ -3,8 +3,8 @@
 # Imports the full bootstrap chain and toolchain ladder internally, then
 # wraps the latest tier into a complete stdenv.
 #
-# The latest toolchain (currently GCC 14.3.0) is recompiled with itself
-# as the last step to ensure optimal code generation in the output.
+# The latest toolchain (currently GCC 14.3.0) uses GCC's stock bootstrap for
+# the final compiler while the rest of the tier is built once.
 #
 # Usage:
 #   stdenv.mkDerivation { ... }       # build with the latest GCC
@@ -32,7 +32,7 @@
   bootstrap = import ./bootstrap {inherit buildPlatform;};
 
   # ── Toolchain ladder: GCC 3.4 → 4.1 → 4.4 → 4.8 → 8 → 11 → 14 ───
-  # Returns the latest tier (recompiled with itself for optimal output).
+  # Returns the latest tier, whose final GCC is bootstrapped internally.
   tier = import ./toolchains {
     inherit
       bootstrap
