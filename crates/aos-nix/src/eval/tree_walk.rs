@@ -9027,6 +9027,38 @@ impl Builtin for StoreDirBuiltin {
     }
 }
 
+impl Builtin for NixVersionBuiltin {
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
+    }
+
+    fn select(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        id: IrId,
+        span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        eval.alloc_static_string(id, span, PINNED_NIX_VERSION)
+    }
+}
+
+impl Builtin for LangVersionBuiltin {
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
+    }
+
+    fn select(
+        &self,
+        _eval: &mut TreeWalk<'_>,
+        _id: IrId,
+        _span: Span,
+        _symbol: Symbol,
+    ) -> Result<Value, TreeWalkError> {
+        Ok(Value::int(PINNED_NIX_LANG_VERSION))
+    }
+}
+
 impl Builtin for PathExistsBuiltin {
     fn metadata(&self) -> BuiltinMetadata {
         <Self as BuiltinInfo>::METADATA
@@ -10633,6 +10665,39 @@ mod tests {
             eval_string_bytes("builtins.typeOf builtins.storeDir"),
             b"string"
         );
+        assert_eq!(eval_string_bytes("builtins.nixVersion"), PINNED_NIX_VERSION);
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.nixVersion"),
+            b"string"
+        );
+        assert_eq!(
+            eval("builtins.langVersion").as_int(),
+            Ok(PINNED_NIX_LANG_VERSION)
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.langVersion"),
+            b"int"
+        );
+        assert!(matches!(
+            eval_whnf(&lower("builtins.nixVersion null"))
+                .expect_err("nixVersion is a value, not a function")
+                .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::String,
+                ..
+            }
+        ));
+        assert!(matches!(
+            eval_whnf(&lower("builtins.langVersion null"))
+                .expect_err("langVersion is a value, not a function")
+                .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
         assert_eq!(
             eval_string_bytes_with_options(
                 "builtins.currentSystem",
@@ -10675,6 +10740,8 @@ mod tests {
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? break").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? nixVersion").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? langVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
         assert_eq!(
             eval_with_options(
@@ -10761,6 +10828,14 @@ mod tests {
             b"/nix/store"
         );
         assert_eq!(
+            eval_string_bytes("builtins.nixVersion or \"fallback\""),
+            PINNED_NIX_VERSION
+        );
+        assert_eq!(
+            eval("builtins.langVersion or 42").as_int(),
+            Ok(PINNED_NIX_LANG_VERSION)
+        );
+        assert_eq!(
             eval_string_bytes("builtins.currentSystem or \"fallback\""),
             b"fallback"
         );
@@ -10789,7 +10864,6 @@ mod tests {
             ("builtins.elemAt or 42", b"elemAt".as_slice()),
             ("builtins.exec or 42", b"exec".as_slice()),
             ("builtins.fetchClosure or 42", b"fetchClosure".as_slice()),
-            ("builtins.langVersion or 42", b"langVersion".as_slice()),
             ("builtins.outputOf or 42", b"outputOf".as_slice()),
             ("builtins.scopedImport or 42", b"scopedImport".as_slice()),
             ("builtins.toHashFormat or 42", b"toHashFormat".as_slice()),

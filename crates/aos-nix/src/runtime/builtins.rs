@@ -78,7 +78,7 @@ macro_rules! builtin_definitions {
             strict_unary IsNullBuiltin, b"isNull", StrictUnaryPrimOp::IsNull;
             strict_unary IsPathBuiltin, b"isPath", StrictUnaryPrimOp::IsPath;
             strict_unary IsStringBuiltin, b"isString", StrictUnaryPrimOp::IsString;
-            unsupported LangVersionBuiltin, b"langVersion";
+            custom_value LangVersionBuiltin, b"langVersion";
             strict_unary LengthBuiltin, b"length", StrictUnaryPrimOp::Length;
             strict_binary LessThanBuiltin, b"lessThan", StrictBinaryPrimOp::LessThan;
             strict_unary ListToAttrsBuiltin, b"listToAttrs", StrictUnaryPrimOp::ListToAttrs;
@@ -87,7 +87,7 @@ macro_rules! builtin_definitions {
             unsupported MatchBuiltin, b"match";
             strict_binary MulBuiltin, b"mul", StrictBinaryPrimOp::Mul;
             unsupported NixPathBuiltin, b"nixPath";
-            unsupported NixVersionBuiltin, b"nixVersion";
+            custom_value NixVersionBuiltin, b"nixVersion";
             custom_value NullBuiltin, b"null";
             unsupported OutputOfBuiltin, b"outputOf";
             strict_unary ParseDrvNameBuiltin, b"parseDrvName", StrictUnaryPrimOp::ParseDrvName;
@@ -134,6 +134,12 @@ macro_rules! builtin_definitions {
 }
 
 pub(crate) use builtin_definitions;
+
+/// The C++ Nix version whose observable builtin surface this evaluator targets.
+pub(crate) const PINNED_NIX_VERSION: &[u8] = b"2.24.12";
+
+/// The Nix language version reported by the pinned C++ Nix evaluator.
+pub(crate) const PINNED_NIX_LANG_VERSION: i64 = 6;
 
 /// The observable effect class for a direct builtin boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -453,6 +459,27 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(names.len(), BUILTIN_METADATA.len());
+    }
+
+    #[test]
+    fn pinned_nix_version_matches_packaged_cpp_nix() {
+        let package = include_str!("../../../../pkgs/tools/nix.nix");
+        let version = package
+            .lines()
+            .find_map(|line| {
+                let line = line.trim();
+                let version = line.strip_prefix("version = \"")?;
+                version.strip_suffix("\";")
+            })
+            .expect("pkgs/tools/nix.nix declares a version");
+
+        let expected_lang_version = match version {
+            "2.24.12" => 6,
+            other => panic!("re-check builtins.langVersion for pinned Nix {other}"),
+        };
+
+        assert_eq!(PINNED_NIX_VERSION, version.as_bytes());
+        assert_eq!(PINNED_NIX_LANG_VERSION, expected_lang_version);
     }
 
     #[test]

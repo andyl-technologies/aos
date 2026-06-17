@@ -364,11 +364,12 @@ target so OS-specific code paths are parity-checked, not just compiled.
 
 ## 4. `nixVersion` / `langVersion` spoofing is a parity requirement
 
-> **Decision.** aos-nix MUST report, via `builtins.nixVersion` and
-> `builtins.langVersion`, the **exact pinned C++ Nix version** it targets — not
-> a version of its own, and not a sentinel. This is a **parity requirement, not
-> a cosmetic courtesy**: version-gated code in nixpkgs and AOS branches on these
-> values, and a different branch yields a different `.drv`.
+> **Decision.** aos-nix MUST report the **exact pinned C++ Nix version** via
+> `builtins.nixVersion` and that version's language-version integer via
+> `builtins.langVersion` — not an aos-nix version of its own, and not a sentinel.
+> This is a **parity requirement, not a cosmetic courtesy**: version-gated code
+> in nixpkgs and AOS branches on these values, and a different branch yields a
+> different `.drv`.
 
 ### 4.1 Why a wrong version string silently corrupts the `.drv`
 
@@ -416,7 +417,7 @@ invisible until it changes a branch, then catastrophic.
       the version `builtins.nixVersion` reports. Bumping the pin moves both the
       oracle and the reported string together and re-validates the whole closure,
       so the version string can never drift from the behavior it advertises.
-- [ ] `langVersion` is spoofed in lockstep: any expression that branches on the
+- [x] `langVersion` is spoofed in lockstep: any expression that branches on the
       language version (rarer than `nixVersion`, but it exists) must see the
       pinned value so it selects the pinned-version code path.
 
@@ -480,7 +481,7 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### `nixVersion` / `langVersion` spoofing (§4)
 
-- [ ] `builtins.nixVersion` and `builtins.langVersion` report the **exact pinned C++ Nix version** aos-nix targets — a parity requirement, not cosmetic: `lib.versionAtLeast builtins.nixVersion "2.x"` gates must take identical branches or the `.drv` diverges and fans out to a from-source rebuild (§4.1, §4.2) — **P1**, `C-25`; single source of truth shared with the harness oracle (`C-9`), so the string can never drift from the behavior it advertises.
+- [ ] `builtins.nixVersion` reports the **exact pinned C++ Nix version** aos-nix targets, and `builtins.langVersion` reports that version's language-version integer — a parity requirement, not cosmetic: `lib.versionAtLeast builtins.nixVersion "2.x"` gates must take identical branches or the `.drv` diverges and fans out to a from-source rebuild (§4.1, §4.2) — **P1**, `C-25`; single source of truth shared with the harness oracle (`C-9`), so the string can never drift from the behavior it advertises.
 
 ## References
 

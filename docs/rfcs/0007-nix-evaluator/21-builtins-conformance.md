@@ -745,14 +745,14 @@ on them.
 - [ ] `true` / `false` / `null` — present both as language keywords and as
       members of `builtins`. Must exist as members so `attrNames builtins`
       matches.
-- [ ] `nixVersion` (string) — the reported Nix version, e.g. `"2.32.0"`.
+- [x] `nixVersion` (string) — the reported Nix version, e.g. `"2.32.0"`.
       **PARITY DECISION (flag):** nixpkgs has version-gated code paths
       (`lib.versionAtLeast builtins.nixVersion …`). To take the *same* branches
       the pinned C++ Nix takes, **aos-nix must report the pinned C++ Nix version
       string verbatim**, not an aos-nix version. Reporting our own version would
       silently flip feature gates and diverge `.drv` output. Decision: spoof the
       pinned version; record it in [the decision register](19-decision-register.md).
-- [ ] `langVersion` (integer) — the Nix *language* version (an integer, e.g.
+- [x] `langVersion` (integer) — the Nix *language* version (an integer, e.g.
       `6`). **Same parity decision** as `nixVersion`: report the pinned value so
       any `langVersion`-gated code matches.
 - [ ] `nixPath` (list) — reflected `NIX_PATH` search entries (list of
@@ -819,7 +819,7 @@ version reports**. Concretely:
       `convertHash` ≥ 2.19, `readFileType` ≥ 2.14, `addDrvOutputDependencies`
       ≥ 2.16-era, `warn` ≥ 2.23, `fetchTree` stabilized ≥ 2.19) is present **iff**
       the pinned version includes it.
-- [ ] `nixVersion` / `langVersion` are spoofed to the pinned values (§14).
+- [x] `nixVersion` / `langVersion` are spoofed to the pinned values (§14).
 - [ ] Experimental-feature-gated builtins (`fetchClosure`, `outputOf`,
       `fetchTree` where still experimental, CA-derivation attributes) follow the
       pinned version's *enabled experimental features* — present and functional
