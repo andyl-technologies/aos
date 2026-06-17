@@ -13,10 +13,11 @@
 //! - [`WorkerHttpClient`] — the OIDC outbound [`HttpClient`], over the Workers
 //!   global Fetch API. It applies the literal-IP SSRF rejection
 //!   ([`url_guard::is_safe_remote_url`](aos_registry_core::url_guard::is_safe_remote_url))
-//!   and a 1 MiB body cap (a `Content-Length` pre-check plus a post-read bound).
-//!   Unlike the native hub it cannot run a connect-time validating resolver, so
-//!   *hostname*-based SSRF is delegated to Cloudflare's egress policy rather than
-//!   blocked in code (see [`WorkerHttpClient`]).
+//!   and a 1 MiB body cap enforced by a `Content-Length` pre-check plus a
+//!   running cap over the streamed body (aborting an unbounded chunked
+//!   response). Unlike the native hub it cannot run a connect-time validating
+//!   resolver, so *hostname*-based SSRF is delegated to Cloudflare's egress
+//!   policy rather than blocked in code (see [`WorkerHttpClient`]).
 //! - [`WorkerReindexer`] — the [`Reindexer`] a hosted-key channel advance runs
 //!   after its signed partitions land. A channel advance is no longer a port:
 //!   the shared [`advance_channel`](aos_registry_core::signing::advance_channel)
@@ -40,6 +41,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use futures_util::StreamExt;
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 /// Maximum response-body size for an OIDC outbound call: 1 MiB.
@@ -95,35 +97,25 @@ impl Mailer for WorkerMailer {
 /// The Worker's OIDC outbound [`HttpClient`], over the Workers global Fetch API.
 ///
 /// Both methods reject literal-IP internal hosts and non-http(s) schemes up
-/// front ([`url_guard::is_safe_remote_url`]) and bound the response at 1 MiB (a
-/// `Content-Length` pre-check before reading plus a post-read length bound).
-/// Two properties differ from the native hub's `HubHttpClient` and are *not*
-/// closed in code here:
+/// front ([`url_guard::is_safe_remote_url`]) and bound the response at 1 MiB:
+/// a `Content-Length` pre-check rejects an honestly-declared oversized body
+/// before reading, and the body is then drained from the `Response` stream with
+/// a running cap that aborts the instant the accumulated total exceeds the
+/// limit — so a chunked response that declares no `Content-Length` cannot stream
+/// an unbounded body into the isolate. This matches the native hub's streaming
+/// abort.
+///
+/// One property still differs from the native hub's `HubHttpClient`:
 ///
 /// - **Hostname SSRF.** The hub runs a connect-time validating resolver that
 ///   refuses a domain resolving to an internal address; the Workers runtime
 ///   exposes no such hook, so a hostile IdP config using a *hostname* (rather
 ///   than a literal internal IP) is bounded only by Cloudflare's egress policy,
 ///   not by this guard.
-/// - **Streaming abort.** The hub aborts mid-stream the instant the running
-///   body total exceeds the cap; [`worker::Response::bytes`] buffers the whole
-///   body, so a chunked response that declares no `Content-Length` is bounded
-///   only after the fact. The `Content-Length` pre-check covers the common and
-///   the honest-but-oversized cases.
 ///
-/// It holds no state: the Fetch API is global.
-///
-/// This client is live: as of the OIDC move into shared `core` (console-dedup
-/// stage F), the Worker mounts the OIDC routes, whose token-exchange and JWKS
-/// fetch reach this client. The residual streaming-abort gap is bounded: a
-/// chunked response that declares no `Content-Length` is read in full by
-/// [`worker::Response::bytes`], so a hostile IdP endpoint could try to OOM the
-/// isolate — but the endpoint is the *tenant's own* admin-configured IdP, the
-/// blast radius is that tenant's own login request (a fresh per-request isolate
-/// capped at the Workers memory limit, no cross-tenant effect), and the
-/// `Content-Length` pre-check already rejects an honestly-declared oversized
-/// body. Closing it fully (a streamed read with a running cap via the Workers
-/// `Response` stream API) is a documented hardening follow-up.
+/// It holds no state: the Fetch API is global. The client is live: as of the
+/// OIDC move into shared `core` (console-dedup stage F), the Worker mounts the
+/// OIDC routes, whose token-exchange and JWKS fetch reach this client.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WorkerHttpClient;
 
@@ -149,17 +141,21 @@ impl WorkerHttpClient {
                 }
             }
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| anyhow::anyhow!("{what}: read body: {err}"))?;
-        if bytes.len() > MAX_OIDC_BODY_BYTES {
-            bail!(
-                "{what}: response body {} bytes exceeds {MAX_OIDC_BODY_BYTES}-byte cap",
-                bytes.len()
-            );
+        // Drain the body stream with a running cap, aborting the instant the
+        // accumulated total exceeds it — so a chunked response that declares no
+        // `Content-Length` cannot stream an unbounded body into the isolate.
+        let mut stream = response
+            .stream()
+            .map_err(|err| anyhow::anyhow!("{what}: opening body stream: {err}"))?;
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| anyhow::anyhow!("{what}: read body: {err}"))?;
+            if buf.len() + chunk.len() > MAX_OIDC_BODY_BYTES {
+                bail!("{what}: response body exceeds {MAX_OIDC_BODY_BYTES}-byte cap");
+            }
+            buf.extend_from_slice(&chunk);
         }
-        Ok(bytes)
+        Ok(buf)
     }
 }
 

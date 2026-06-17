@@ -465,6 +465,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "form_urlencoded",
+ "futures-util",
  "hex",
  "http 1.4.1",
  "js-sys",
