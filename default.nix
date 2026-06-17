@@ -292,6 +292,7 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     package-expose = import ./lib/testing/package-expose.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
     };

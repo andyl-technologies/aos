@@ -710,6 +710,10 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       portabled disabled; if not, use `/var/etc/systemd/system/` directly — same
       mechanism, less tidy. Verified by the `package-expose-lifecycle` VM check.
       ([`apm-integration.md`](apm-integration.md) §4.1, D16.)
+- [x] **systemd credential substrate (P5).** Whether the AOS systemd build
+      exposes `systemd-creds`, signed-PCR TPM2 encryption flags, credstore
+      tmpfiles entries, `systemd-measure`, TPM2 setup units and generator, and the
+      cryptsetup TPM2 token plugin. Verified by `checks.systemd-credentials`.
 - [ ] **Exact `expose` schema (P0/P1).** The precise units / permissions /
       `requires` / container-root-reference shape, co-designed with the registry
       metadata ([`apm-integration.md`](apm-integration.md) §2) and gated on D19.
