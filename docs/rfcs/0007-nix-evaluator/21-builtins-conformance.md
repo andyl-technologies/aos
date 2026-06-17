@@ -620,9 +620,9 @@ eval (network access is disabled unless explicitly allowed).
       as a context-carrying string; gated under restricted/pure eval.
 - [x] `storeDir` (value) — the store directory string (`"/nix/store"`). A
       constant; feeds path computation. (Listed also in §14 as a constant.)
-- [ ] `toPath` (s) — **deprecated** coercion of a string to a path; retained for
-      compatibility. Implement to match (likely an alias-ish to coercion) only if
-      present in the pinned `builtins`; otherwise omit.
+- [x] `toPath` (s) — **deprecated** coercion of an absolute path-like value to a
+      normalized string; retained for compatibility because it is present in the
+      pinned `builtins`.
 
 ---
 
@@ -875,8 +875,8 @@ feature disabled:
       restricted/pure eval. nixpkgs does not use it on the build path. **Out of
       scope / stubbed**; present only if the pinned `builtins` exposes it, and
       then erroring under the AOS eval mode exactly as upstream does.
-- [ ] `toPath` (s) — **deprecated**; implement only if present in the pinned set
-      (§11).
+- [x] `toPath` (s) — **deprecated**; implemented because it is present in the
+      pinned set (§11).
 
 **`lib`, NOT `builtins` — must NOT appear in the `builtins` set.** These are
 nixpkgs `lib` functions implemented in Nix on top of real primops. They work

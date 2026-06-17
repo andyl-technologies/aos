@@ -2801,6 +2801,9 @@ impl<'ir> TreeWalk<'ir> {
             StrictUnaryPrimOp::FromToml => {
                 self.eval_from_toml_primop(argument, argument_span, value)
             }
+            StrictUnaryPrimOp::ToPath => {
+                self.eval_to_path_primop(id, span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::ToString => {
                 self.eval_to_string_primop(id, span, argument, argument_span, value)
             }
@@ -3832,6 +3835,40 @@ impl<'ir> TreeWalk<'ir> {
                 TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
             })?;
             NixString::new(full_path, context)
+        };
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_to_path_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string_value = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let bytes =
+                Self::absolute_path_bytes_for_node(argument, argument_span, string.bytes())?;
+            let context = string
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
+            NixString::new(bytes, context)
         };
         self.heap
             .alloc_string(result)
@@ -16608,6 +16645,10 @@ mod tests {
             r#"builtins.baseNameOf "//a""#,
             r#"builtins.dirOf "//a""#,
             r#"builtins.dirOf { __toString = self: "/a/b"; }"#,
+            r#"builtins.toPath "/tmp/../var/./tmp//""#,
+            r#"let toPath = builtins.toPath; in toPath "/tmp/foo//bar""#,
+            r#"builtins.typeOf (builtins.toPath "/tmp")"#,
+            r#"builtins.toPath { __toString = self: "/tmp/from-to-string"; }"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
@@ -16635,6 +16676,8 @@ mod tests {
             r#"builtins.split "\\n" "n""#,
             r#"builtins.split "a*?" "aaa""#,
             r#"builtins.split "a{1,2}?" "aa""#,
+            r#"builtins.toPath "relative/path""#,
+            r#"builtins.toPath 1"#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
@@ -25097,6 +25140,74 @@ mod tests {
         assert_eq!(string.bytes(), b"a 1 b");
         assert!(string.context().contains(&first_context));
         assert!(string.context().contains(&second_context));
+    }
+
+    #[test]
+    fn to_path_primop_returns_normalized_absolute_strings() {
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toPath "/tmp/../var/./tmp//""#),
+            b"/var/tmp"
+        );
+        assert_eq!(eval_string_bytes(r#"builtins.toPath "/""#), b"/");
+        assert_eq!(eval_string_bytes("builtins.toPath /tmp"), b"/tmp");
+        assert_eq!(
+            eval_string_bytes(r#"let f = builtins.toPath; in f "/tmp/foo//bar""#),
+            b"/tmp/foo/bar"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.typeOf (builtins.toPath "/tmp")"#),
+            b"string"
+        );
+    }
+
+    #[test]
+    fn to_path_primop_coerces_attrsets_and_preserves_context() {
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toPath { outPath = "/tmp/from-out-path"; }"#),
+            b"/tmp/from-out-path"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toPath { __toString = self: "/tmp/from-to-string"; }"#),
+            b"/tmp/from-to-string"
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.getContext (
+                    builtins.toPath (
+                        builtins.appendContext "/tmp/from-context" {
+                            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = {
+                                path = true;
+                            };
+                        }
+                    )
+                )"#
+            ),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn to_path_primop_rejects_non_absolute_or_non_coercible_values() {
+        let error = eval_whnf_owned(&lower(r#"builtins.toPath "relative/path""#))
+            .expect_err("toPath rejects relative strings");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathNotAbsolute {
+                path,
+                ..
+            } if path.as_slice() == b"relative/path"
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.toPath 1"))
+            .expect_err("toPath coerces through string rules");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
     }
 
     #[test]

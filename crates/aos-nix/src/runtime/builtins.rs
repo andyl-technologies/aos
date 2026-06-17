@@ -716,7 +716,8 @@ builtin_registry! {
     pub(crate) struct ToPathBuiltin;
     impl BuiltinDefinition for ToPathBuiltin {
         const NAME: &'static [u8] = b"toPath";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::ToPath);
+        const DOCS: &'static BuiltinDocs = &TO_PATH_DOCS;
     }
 
     pub(crate) struct ToStringBuiltin;
@@ -1051,6 +1052,7 @@ pub(crate) enum StrictUnaryPrimOp {
     SplitVersion,
     FromJson,
     FromToml,
+    ToPath,
     ToString,
     ToJson,
     ConvertHash,
@@ -1165,6 +1167,10 @@ static STORE_DIR_DOCS: BuiltinDocs = BuiltinDocs {
 
 static STORE_PATH_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a store path as a context-carrying string.",
+};
+
+static TO_PATH_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Coerces an absolute path-like value to a normalized string.",
 };
 
 static TRY_EVAL_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1455,6 +1461,12 @@ mod tests {
                 effect: BuiltinEffect::Pure
             })
         );
+        assert_eq!(
+            direct_builtin(b"toPath"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
     }
 
     #[test]
@@ -1631,6 +1643,14 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"storeDir").unwrap().docs().summary(),
             "Returns the configured Nix store directory."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"storePath").unwrap().docs().summary(),
+            "Returns a store path as a context-carrying string."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"toPath").unwrap().docs().summary(),
+            "Coerces an absolute path-like value to a normalized string."
         );
         assert_eq!(
             BUILTINS.lookup(b"tryEval").unwrap().docs().summary(),
