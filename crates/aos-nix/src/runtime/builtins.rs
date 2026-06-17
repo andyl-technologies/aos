@@ -534,6 +534,7 @@ builtin_registry! {
     impl BuiltinDefinition for NixPathBuiltin {
         const NAME: &'static [u8] = b"nixPath";
         const EXECUTION: BuiltinExecution = BuiltinExecution::NixPathValue;
+        const DOCS: &'static BuiltinDocs = &NIX_PATH_DOCS;
     }
 
     pub(crate) struct NixVersionBuiltin;
@@ -1151,6 +1152,10 @@ static NIX_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the pinned C++ Nix version string.",
 };
 
+static NIX_PATH_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the configured Nix search path entries.",
+};
+
 static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns whether a path exists at evaluation time.",
 };
@@ -1637,6 +1642,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"nixVersion").unwrap().docs().summary(),
             "Returns the pinned C++ Nix version string."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"nixPath").unwrap().docs().summary(),
+            "Returns the configured Nix search path entries."
         );
         assert_eq!(
             BUILTINS.lookup(b"pathExists").unwrap().docs().summary(),

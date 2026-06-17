@@ -769,9 +769,10 @@ on them.
 - [x] `langVersion` (integer) — the Nix *language* version (an integer, e.g.
       `6`). **Same parity decision** as `nixVersion`: report the pinned value so
       any `langVersion`-gated code matches.
-- [ ] `nixPath` (list) — reflected `NIX_PATH` search entries (list of
-      `{ prefix; path; }`). Must match the configured/pinned search path so
-      `<nixpkgs>` resolution and any nixpkgs introspection of `nixPath` agree.
+- [x] `nixPath` (list) — reflected configured search-path entries (list of
+      `{ prefix; path; }`). The evaluator never reads ambient `NIX_PATH`; callers
+      provide the entries through `TreeWalkOptions` so `<nixpkgs>` resolution and
+      nixpkgs introspection agree with the configured/pinned search path.
 - [ ] `currentSystem` (string) — (also §10) the host system; constant per config.
 - [ ] `currentTime` (integer) — (also §10) start-of-eval Unix time; the one
       genuinely non-deterministic constant.
