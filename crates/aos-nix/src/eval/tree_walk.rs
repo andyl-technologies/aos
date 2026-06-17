@@ -13049,6 +13049,32 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_seq_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            "builtins.seq { x = 1 / 0; } 2",
+            "builtins.length (builtins.seq 1 [ (1 / 0) ])",
+            "let seq = builtins.seq 1; in seq 2",
+            "builtins.deepSeq [ 1 [ 2 ] ] 3",
+            "builtins.deepSeq { a = { b = 1; }; } 3",
+            "builtins.deepSeq (x: x) 3",
+            "let x = { a = x; }; in builtins.deepSeq x 3",
+            "let x = [ x ]; in builtins.deepSeq x 3",
+            "let deepSeq = builtins.deepSeq [ 1 ]; in deepSeq 2",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
             ("builtins.exec or 42", b"exec".as_slice()),
@@ -16699,6 +16725,10 @@ mod tests {
         assert_eq!(eval("builtins.deepSeq (x: x) 3").as_int(), Ok(3));
         assert_eq!(
             eval("let x = { a = x; }; in builtins.deepSeq x 3").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let x = [ x ]; in builtins.deepSeq x 3").as_int(),
             Ok(3)
         );
         assert_eq!(

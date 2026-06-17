@@ -439,9 +439,9 @@ blobs and derivation attributes — see
         quirks); pin via harness.
       - **There is NO `builtins.toTOML`** — only `fromTOML`. Do not implement a
         `toTOML`; it is a long-standing unfilled feature request, not a primop.
-- [ ] `seq` (e1 e2) — force `e1` to **WHNF** (shallow), then return `e2`.
+- [x] `seq` (e1 e2) — force `e1` to **WHNF** (shallow), then return `e2`.
       Strict only in `e1` to head-normal form.
-- [ ] `deepSeq` (e1 e2) — force `e1` **deeply** (recursively, fully), then return
+- [x] `deepSeq` (e1 e2) — force `e1` **deeply** (recursively, fully), then return
       `e2`. The recursion order/termination must match (it is how nixpkgs forces
       errors out of lazy structures, e.g. after `tryEval`).
 
