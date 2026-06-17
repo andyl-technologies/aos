@@ -525,7 +525,7 @@ a given mode does so identically.
       - nixpkgs reads `NIX_PATH`-adjacent vars and `IN_NIX_SHELL`-style vars via
         this; the empty-in-pure-mode behavior is what keeps pure eval
         reproducible.
-- [ ] `currentTime` (value) — the Unix time at the *start of evaluation* (a
+- [x] `currentTime` (value) — the Unix time at the *start of evaluation* (a
       constant for the whole eval, not re-read per call). Effect: the clock.
       **Not soundly cacheable**; nixpkgs avoids it in pure paths. aos-nix must
       treat any memo that observed `currentTime` as non-reusable across runs
@@ -776,7 +776,7 @@ on them.
       nixpkgs introspection agree with the configured/pinned search path.
 - [x] `currentSystem` (string) — (also §10) the configured target system;
       constant per evaluator config and unavailable when unset.
-- [ ] `currentTime` (integer) — (also §10) start-of-eval Unix time; the one
+- [x] `currentTime` (integer) — (also §10) start-of-eval Unix time; the one
       genuinely non-deterministic constant.
 - [x] `storeDir` (string) — (also §11) `"/nix/store"`.
 
