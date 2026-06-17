@@ -38,11 +38,14 @@
   working identically against either deployment. No application logic is
   duplicated across the two.
 
-  **Remaining:** relocate the read-path **facade + browse UI + producer console**
-  into the shared router (so the Worker's read handlers and the hub's
-  console/facade dedup), the `Mailer` Worker impl, install-time root bootstrap,
-  and the VM/Nix tests exercising the unified surface. Gated on the D1
-  batch-only transaction audit recorded in that file.
+  **Phase 5 complete:** the read-path **facade + browse UI + producer console**
+  now live in the shared router (the Worker's read handlers and the hub's
+  console/facade are one codebase); the async `Mailer` Worker impl (HTTP relay),
+  install-time root bootstrap, the unified `core::indexer`, and the
+  `SurfaceWrite`/`PublishLease` (D1) write ports all ship. The deployed Worker
+  is exercised end-to-end by `pkgs.aos-registry-worker-e2e` (`just
+  test-worker-e2e`), booting the real wasm artifact under workerd + miniflare —
+  the gap `cargo test` (native-only) can't cover.
 
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
@@ -74,4 +77,4 @@ is a live proposal and its own file carries its working status.
 | [07-data-ops-and-testing.md](07-data-ops-and-testing.md) | Database schema sketch, operations (migrations/backup/quotas/observability), testing, changes outside the hub crate |
 | [08-sequencing.md](08-sequencing.md) | Implementation sequencing of the shipped phases |
 | [09-alternatives-and-open-questions.md](09-alternatives-and-open-questions.md) | Alternatives considered and open questions |
-| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (In progress):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + Connect-JSON transport decision, the D1 transaction audit |
+| [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (Complete):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + Connect-JSON transport decision, the D1 transaction audit, the workerd+miniflare e2e |
