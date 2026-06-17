@@ -15434,6 +15434,94 @@ mod tests {
         assert_cpp_nix_string_context_builtins_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_string_coercion_contexts_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+        for source in [
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                 b = withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+               in builtins.getContext (builtins.toString [ a 1 b ])"#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                 b = withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+               in builtins.getContext "${a}${b}""#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                 b = withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+                 sep = withCtx ":" "/nix/store/cccccccccccccccccccccccccccccccc-sep";
+               in builtins.getContext (builtins.concatStringsSep sep [ a b ])"#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                 sep = withCtx ":" "/nix/store/cccccccccccccccccccccccccccccccc-sep";
+               in {
+                 single = builtins.getContext (builtins.concatStringsSep sep [ a ]);
+                 empty = builtins.getContext (builtins.concatStringsSep sep []);
+               }"#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 source = withCtx "x" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source";
+                 used = withCtx "X" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-used";
+                 unused = withCtx "Z" "/nix/store/cccccccccccccccccccccccccccccccc-unused";
+                 pattern = withCtx "x" "/nix/store/dddddddddddddddddddddddddddddddd-pattern";
+               in {
+                 used = builtins.getContext
+                   (builtins.replaceStrings [ "x" "z" ] [ used unused ] source);
+                 unused = builtins.getContext
+                   (builtins.replaceStrings [ "y" ] [ used ] source);
+                 patternContext = builtins.getContext
+                   (builtins.replaceStrings [ pattern ] [ used ] source);
+               }"#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 hook = withCtx "hook" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-hook";
+                 out = withCtx "out" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-out";
+               in {
+                 toStringHook = builtins.getContext
+                   (builtins.toString { __toString = self: hook; });
+                 toStringOut = builtins.getContext
+                   (builtins.toString { outPath = out; });
+                 interpolationHook = builtins.getContext
+                   "${{ __toString = self: hook; }}";
+                 interpolationOut = builtins.getContext
+                   "${{ outPath = out; }}";
+               }"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_string_coercion_contexts_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_string_coercion_contexts_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_string_coercion_contexts_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix coercion check");
+            return;
+        };
+        assert_cpp_nix_string_coercion_contexts_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_string_path_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [

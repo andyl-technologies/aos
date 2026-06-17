@@ -920,7 +920,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [x] `hashString` / `hashFile` / `convertHash` — algorithm set, hex/base32
       output, the Nix base32 alphabet.
 - [x] String-context primops (§5) — every union/discard/upgrade bit.
-- [ ] String coercion (`toString`, interpolation, `concatStringsSep`,
+- [x] String coercion (`toString`, interpolation, `concatStringsSep`,
       `replaceStrings`) context union.
 - [x] `attrNames` / `attrValues` / `mapAttrs` / `groupBy` sorted-by-name order.
 - [x] `sort` stability and tie-breaking; `lessThan` cross-type/list ordering.
