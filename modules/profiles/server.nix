@@ -44,6 +44,19 @@ in {
     # Remote access (SSH module opens its own firewall port)
     aos.services.ssh.enable = lib.mkDefault true;
 
+    aos.users.users.aos-gitd = {
+      uid = 800;
+      group = "aos-gitd";
+      home = "/var/lib/aos-registry-server/registries";
+      shell = "/sbin/nologin";
+      description = "AOS registry server";
+      extraGroups = [];
+    };
+    aos.users.groups.aos-gitd = {
+      gid = 800;
+      members = [];
+    };
+
     # Security: standard level (SELinux enforcing, audit, firewall)
     aos.security.level = lib.mkDefault "standard";
 
@@ -56,10 +69,20 @@ in {
         pkgs.ethtool
         pkgs.curl
         pkgs.jq
+        pkgs.git
+        pkgs.socat
+        pkgs.sqlite
+        pkgs.zstd
+        pkgs.nix
       ]
       ++ k3sCommon.runtimePath;
 
-    aos.roles.aos-registry-server.bundle = true;
+    aos.packages.aos-registry-server = {
+      package = pkgs.aos-registry-server;
+      bundle = true;
+      preset = false;
+    };
+
     aos.packages.aos-test-agent = {
       package = pkgs.aos-test-agent;
       bundle = true;

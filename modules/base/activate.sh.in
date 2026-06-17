@@ -150,35 +150,10 @@ fi
 @util-linux@/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
-# Re-run ignition's fetch + files stages with the new gen's role bundle
-# visible at the canonical /etc/aos/ignition-roles path.
-#
-# WHY unshare --mount + mount --make-rprivate /:
-#   The role merge entries in the instance metadata are fixed URLs of
-#   the form `file:///etc/aos/ignition-roles/<role>`. Ignition resolves
-#   them against that literal path. But on the live system
-#   /etc/aos/ignition-roles currently points at the OLD gen's bundle
-#   (it's an environment.etc entry → the live /etc overlay). We need
-#   ignition to read the NEW gen's bundle without disturbing the live
-#   system's view of that path — other processes, and the rest of this
-#   very script, must keep seeing the real live /etc.
-#
-#   `unshare --mount` gives the ignition child its own mount namespace:
-#   the bind-mount of $new_top/ignition-roles over
-#   /etc/aos/ignition-roles is visible ONLY to that child, and vanishes
-#   when it exits. The live mount table is untouched.
-#
-#   `mount --make-rprivate /` severs mount-event propagation across the
-#   namespace boundary in BOTH directions. systemd marks `/` as
-#   MS_SHARED by default, so without this a mount or (worse) an unmount
-#   inside the child could propagate back to the host and either briefly
-#   repoint or tear down the live binding. util-linux `unshare --mount`
-#   already defaults to --propagation=private (equivalent to rprivate);
-#   the explicit call is belt-and-suspenders in case that default ever
-#   changes.
-#
-# A fresh --config-cache avoids colliding with /run/ignition.json
-# written by the first-boot fetch.
+# Re-run ignition's fetch + files stages to render this generation's
+# per-host /etc writes into the candidate ignition lower. A fresh
+# --config-cache avoids colliding with /run/ignition.json written by
+# the first-boot fetch.
 #
 # IGNITION_CONFIG_FILE is forwarded explicitly: for `platform=file` it
 # carries /run/aos-metadata/config.json (see
@@ -186,30 +161,21 @@ fi
 # it from the environment. `env` uses an absolute path so it doesn't
 # rely on the inherited PATH (which we cleared).
 @coreutils@/bin/env -i \
-    new_top="$new_top" \
-    ign="$ign" \
-    N="$N" \
     PLATFORM_ID="$PLATFORM_ID" \
     IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
-    MOUNT="@util-linux@/bin/mount" \
-    IGNITION="@ignition@/bin/ignition" \
     PATH="@coreutils@/bin" \
-  @util-linux@/bin/unshare --mount \
-  @bash@/bin/bash -eu <<'EOF'
-  "$MOUNT" --make-rprivate /
-  "$MOUNT" --bind --read-only \
-    "$new_top/ignition-roles" \
-    /etc/aos/ignition-roles
-
-  "$IGNITION" --root="$ign" \
-              --config-cache="/run/aos-ignition-$N.json" \
-              --platform="$PLATFORM_ID" --stage=fetch \
-              --log-to-stdout
-  "$IGNITION" --root="$ign" \
-              --config-cache="/run/aos-ignition-$N.json" \
-              --platform="$PLATFORM_ID" --stage=files \
-              --log-to-stdout
-EOF
+  @ignition@/bin/ignition --root="$ign" \
+                          --config-cache="/run/aos-ignition-$N.json" \
+                          --platform="$PLATFORM_ID" --stage=fetch \
+                          --log-to-stdout
+@coreutils@/bin/env -i \
+    PLATFORM_ID="$PLATFORM_ID" \
+    IGNITION_CONFIG_FILE="${IGNITION_CONFIG_FILE:-}" \
+    PATH="@coreutils@/bin" \
+  @ignition@/bin/ignition --root="$ign" \
+                          --config-cache="/run/aos-ignition-$N.json" \
+                          --platform="$PLATFORM_ID" --stage=files \
+                          --log-to-stdout
 
 # --- compose ---
 # From here a failure maps to activate exit 2 (EX_COMPOSE: the candidate

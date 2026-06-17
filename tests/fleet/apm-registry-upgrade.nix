@@ -25,7 +25,8 @@
 #      apm-system-upgrade.nix (same assertion battery), then rollback.
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=192.168.50.11):
-#   registry: aos-registry-server (gitd :9418) + static-cache package (:8000)
+#   registry: aos-registry-server package (gitd :9418, cache :15000)
+#             + static-cache package (:8000)
 #             + extraClosures = [server2Top] (the producer owns the
 #             closure) + a /var big enough for the compressed full-closure
 #             static cache (~540 MiB).
@@ -70,8 +71,7 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server"];
-      packages = ["test-static-cache-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top];
       # `apr cache generate` writes a compressed static cache of the FULL
       # system closure under /var/lib/sysreg-cache, and `apr publish` may
@@ -97,11 +97,14 @@ in {
       import json
       import textwrap
 
-      # -- 1. Both machines up; registry roles active --------------------
+      # -- 1. Both machines up; registry packages active -----------------
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("aos-registry-server-firewall.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
       )

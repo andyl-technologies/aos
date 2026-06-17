@@ -83,7 +83,7 @@ from) the test.
 
 A two-node fleet test modeled on `tests/fleet/apm-registry-upgrade.nix`:
 
-- **Node A** (existing boot path): runs the `aos-registry-server` role,
+- **Node A** (existing boot path): runs the `aos-registry-server` package,
   publishing a package and a newer system generation to a registry +
   binary cache reachable over the fleet L2.
 - **Node B** (new boot path): boots the raw server image under OVMF —

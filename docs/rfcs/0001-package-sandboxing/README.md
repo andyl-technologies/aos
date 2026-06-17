@@ -42,15 +42,15 @@ AOS already has a **registry/apm** system: a package is fetched and imported
 into `/nix/store`, then merged into a profile generation under
 `/var/lib/profiles/`. This lives in `crates/aos-package/` (`PackageMeta`,
 `install.rs`, the profile/generation model) and ships on every image via
-`modules/base/apm.nix`. Today, software that needs systemd units + kernel
-modules + sysctls + firewall openings is declared in the module system under
+`modules/base/apm.nix`. The legacy path for software that needed systemd units
++ kernel modules + sysctls + firewall openings was the module system under
 `modules/roles/` (the `roleType` submodule, `render-role.nix`,
-`system.build.ignitionRolesBundle`) and shipped as a per-host Ignition fragment.
+`system.build.ignitionRolesBundle`), shipped as a per-host Ignition fragment.
 
 This RFC makes the package the single deployable unit: software's units,
 targets, privilege manifest, and dependencies travel **with the package** as
 build artifacts, so a package can be installed *at runtime* from a registry —
-not only baked into the image. The `modules/roles/` machinery dissolves into
+not only baked into the image. The `modules/roles/` machinery has dissolved into
 `pkgs/` `expose` blocks plus a thin host-policy layer
 ([`authoring.md`](authoring.md), [`migration.md`](migration.md)).
 
@@ -150,7 +150,7 @@ In scope:
 - Install-at-boot: Ignition lists packages; apm installs them; the target is
   enabled — [`boot-activation.md`](boot-activation.md),
   [`apm-integration.md`](apm-integration.md).
-- Dissolving the `modules/roles/` machinery into `pkgs/` `expose` blocks +
+- Dissolved `modules/roles/` machinery into `pkgs/` `expose` blocks +
   policy — [`migration.md`](migration.md).
 - Surveying config-delivery options without choosing one —
   [`config.md`](config.md).
@@ -212,10 +212,10 @@ In scope:
   package `/etc/aos/<pkg>/` overlays, apm config artifacts, kernel cmdline,
   registry-hosted config, confext — with a tradeoffs matrix and decision
   criteria. **No decision made.**
-- [`migration.md`](migration.md) — the cutover: dissolving the `modules/roles/`
-  machinery into `pkgs/` `expose` blocks + a thin policy module, the current-tree
+- [`migration.md`](migration.md) — the cutover: dissolved `modules/roles/`
+  machinery into `pkgs/` `expose` blocks + a thin policy module, the legacy
   touchpoints, and the validation gates (`aos fmt --check`, `checks.eval`,
-  `checks.vm.boot`, fleet tests).
+  `systems.server.checks.system-boot`, package/fleet tests).
 - [`open-questions.md`](open-questions.md) — the decision register: all 23
   tracked decisions with disposition, evidence, and owner.
 - [`state-of-the-art.md`](state-of-the-art.md) — the comparison against other

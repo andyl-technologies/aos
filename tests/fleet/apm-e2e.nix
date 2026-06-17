@@ -1,11 +1,11 @@
 # tests/fleet/apm-e2e.nix — End-to-end fleet test for apm + registry + cache.
 #
 # Two machines:
-#   server (192.168.50.11): aos-registry-server role — git daemon on :9418,
-#                            aos serve on :15000. Bootstrap socket on
-#                            /run/aos-registry-server/bootstrap.sock.
-#   client (192.168.50.10): roleless — relies on modules/base/apm.nix
-#                            for `apm` and friends.
+#   server (192.168.50.11): aos-registry-server package — git daemon on
+#                            :9418, aos serve on :15000. Bootstrap socket
+#                            on /run/aos-registry-server/bootstrap.sock.
+#   client (192.168.50.10): relies on modules/base/apm.nix for `apm`
+#                            and friends.
 #
 # The test drives the full apm flow over the fleet's multicast L2:
 #   1. Server stands up; both units active; cache responds.
@@ -39,7 +39,7 @@
     version = "1.0";
     storeHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   };
-  # AOS_ROOT-relative store path. The server's role exports
+  # AOS_ROOT-relative store path. The server package exports
   # AOS_ROOT=/var/lib/aos-registry-server/store-root, so the
   # fabricated package lives at $AOS_ROOT/store/<hash>-name-version.
   # The client materialises the same string after `apm install` —
@@ -98,7 +98,7 @@
   };
 in {
   name = "apm-e2e";
-  # 600s budget: two VM boots + role activation + server-side seeding
+  # 600s budget: two VM boots + package activation + server-side seeding
   # (git init, NAR push, narinfo readback, commit/push) + client sync
   # + install. The original 240s was tight even before the FileHash
   # narinfo computation got wired in (server compresses the path
@@ -110,12 +110,12 @@ in {
     # Lexicographic order → client=192.168.50.10, server=192.168.50.11.
     client = {
       system = systems.server;
-      # No role. `apm` ships via modules/base/apm.nix.
+      # No registry package. `apm` ships via modules/base/apm.nix.
     };
 
     server = {
       system = systems.server;
-      roles = ["aos-registry-server"];
+      packages = ["aos-registry-server"];
     };
   };
 
@@ -139,8 +139,9 @@ in {
       # though the client-side curl works fine. Diagnosed once;
       # documenting here so it doesn't get rediscovered.
       server.wait_for_unit("aos-registry-server-gitd.service", timeout=60)
-      server.wait_for_unit("aos-registry-server-firewall.service", timeout=60)
+      server.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=60)
       server.wait_for_unit("aos-registry-server-cache.service", timeout=60)
+      server.wait_until_succeeds("systemctl is-active aos-pkg-aos-registry-server.target", timeout=60)
       client.wait_until_succeeds(
           "curl -sf --max-time 5 http://server:15000/default/nix-cache-info",
           timeout=60,
@@ -193,9 +194,10 @@ in {
           # 3.2 Drop the pre-rendered registry.toml.
           echo '{registry_toml_b64}' | base64 -d > registry.toml
 
-          # 3.3 Fabricate the AOS_ROOT-rooted store path. The role's
+          # 3.3 Fabricate the AOS_ROOT-rooted store path. The package's
           # StateDirectory= already created $AOS_ROOT (mode 0755,
-          # owned by root since DynamicUser is off).
+          # owned by aos-gitd since the cache service runs under a
+          # stable non-root user).
           mkdir -p ${storePath}/bin
           printf '%s\\n%s\\n' '#!/bin/sh' 'echo "${testPkg.name} ${testPkg.version}"' \\
               > ${storePath}/bin/${testPkg.name}
@@ -290,6 +292,7 @@ in {
           # `anonymous_read = true`.
           ${pkgs.aos}/bin/aos cache push ${storePath} \\
             --to http://127.0.0.1:15000/default --token "$PROV" 2>&1
+          chown -R aos-gitd:aos-gitd "$AOS_ROOT/store" "$AOS_ROOT/var/nix"
           NARINFO=$(curl -sf \\
             "http://127.0.0.1:15000/default/${testPkg.storeHash}.narinfo")
           NAR_HASH=$(echo "$NARINFO" | awk '/^NarHash:/ {{print $2}}')

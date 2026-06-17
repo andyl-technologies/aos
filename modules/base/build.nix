@@ -206,8 +206,7 @@ in {
           # AOS's writeTextFile produces a directory output (stdenv/
           # setup.sh pre-creates $out as a dir, then cp puts the file
           # inside). Use destination="/<basename>" and reference the
-          # inner path. Mirrors the pattern at
-          # modules/roles/default.nix:75-83.
+          # inner path.
           textDrv = pkgs.writeTextFile {
             name = safe;
             text = config.text;
@@ -295,17 +294,15 @@ in {
       };
 
       ## composefs-dump(5) text describing the EROFS metadata image's
-      ## inode table. First-class output so the merge-safety check
-      ## (etcMergeSafetyCheck) can inspect it as plain text without
-      ## mounting the EROFS in the Nix sandbox.
+      ## inode table. First-class output so checks can inspect it as
+      ## plain text without mounting the EROFS in the Nix sandbox.
       etcDump = lib.mkOption {
         type = lib.types.package;
         description = ''
           The composefs-dump(5) text describing the EROFS metadata
           image: one line per inode (path + filetype/mode + uid + gid
-          + payload). Consumed by `etcMetadataImage` and by
-          `etcMergeSafetyCheck`. Plain text, no privileged mount
-          required.
+          + payload). Consumed by `etcMetadataImage`. Plain text, no
+          privileged mount required.
         '';
       };
 
@@ -318,21 +315,6 @@ in {
           `environment.etc` entry. Mounted read-only at
           `/run/etc/system-<gen>/metadata` and stacked above
           `etcBasedir` via overlayfs `metacopy=on` + `redirect_dir=on`.
-        '';
-      };
-
-      ## Build-time invariant check between every role's storage
-      ## writes and the EROFS image (spec v12 §5.7).
-      etcMergeSafetyCheck = lib.mkOption {
-        type = lib.types.package;
-        description = ''
-          A derivation that asserts (at build time) the merge-safety
-          invariants between each enabled role's ignition
-          `storage.{links,files,directories}` writes and the system
-          EROFS image: every parent directory of a role write must be
-          absent or a real directory in EROFS, and every `links`/
-          `files` write path itself must be absent. Forces evaluation
-          of `etcDump`.
         '';
       };
     };
@@ -401,108 +383,6 @@ in {
       ${pkgs.erofs-utils}/bin/fsck.erofs $out
     '';
 
-    # `etcMergeSafetyCheck` — spec v12 §5.7. Walks every role's
-    # ignition `storage.{links,files,directories}` writes and asserts:
-    #   (1) every parent directory must be absent or a real directory
-    #       in the EROFS image (composefs filetype `4`);
-    #   (2) every `links`/`files` self-path must be absent in EROFS.
-    # Pure text inspection of `etcDump`; no privileged mount required.
-    system.build.etcMergeSafetyCheck = let
-      # Eval-time path enumeration. parentsOf walks each path from
-      # the root toward the leaf, returning every intermediate dir
-      # (but not the leaf itself). For "/etc/systemd/system/foo" we
-      # get ["/etc", "/etc/systemd", "/etc/systemd/system"].
-      parentsOf = p: let
-        parts = lib.splitString "/" (lib.removePrefix "/" p);
-      in
-        builtins.genList (
-          i: "/" + lib.concatStringsSep "/" (lib.take (i + 1) (lib.init parts))
-        ) (builtins.length parts - 1);
-
-      pathsAndParents = role: let
-        s = role.ignitionConfig.storage or {};
-        allPaths =
-          builtins.map (l: l.path) (s.links or [])
-          ++ builtins.map (f: f.path) (s.files or [])
-          ++ builtins.map (d: d.path) (s.directories or []);
-        dirSelves = builtins.map (d: d.path) (s.directories or []);
-      in
-        lib.concatMap parentsOf allPaths ++ dirSelves;
-
-      selfAbsent = role: let
-        s = role.ignitionConfig.storage or {};
-      in
-        builtins.map (l: l.path) (s.links or [])
-        ++ builtins.map (f: f.path) (s.files or []);
-
-      stripEtc = p: lib.removePrefix "/etc" p;
-
-      allDirs = lib.unique (
-        lib.concatLists (
-          lib.mapAttrsToList (
-            _: role: builtins.map stripEtc (pathsAndParents role)
-          )
-          (config.aos.roles or {})
-        )
-      );
-
-      allSelves = lib.unique (
-        lib.concatLists (
-          lib.mapAttrsToList (
-            _: role: builtins.map stripEtc (selfAbsent role)
-          )
-          (config.aos.roles or {})
-        )
-      );
-    in
-      pkgs.runCommand "etc-merge-safety" {
-        hazardDirs = lib.concatStringsSep "\n" allDirs;
-        hazardAbsent = lib.concatStringsSep "\n" allSelves;
-        passAsFile = ["hazardDirs" "hazardAbsent"];
-        dump = config.system.build.etcDump;
-      } ''
-        set -euo pipefail
-
-        # Pass 1: every hazardDirs entry must be absent or directory
-        # (composefs filetype `4`).
-        while IFS= read -r p; do
-          [ -z "$p" ] && continue
-          if ! ${pkgs.gawk}/bin/awk \
-                -v p="$p" \
-                'BEGIN { found = 0 }
-                 $1 == p {
-                   if (substr($3, 1, 1) != "4") {
-                     printf "merge hazard: %s exists in EROFS image but is not a directory (filetype %s)\n", \
-                            p, substr($3, 1, 2) > "/dev/stderr";
-                     found = 1; exit;
-                   }
-                 }
-                 END { exit found }' \
-                "$dump"; then
-            exit 1
-          fi
-        done < "$hazardDirsPath"
-
-        # Pass 2: every hazardAbsent entry must be absent.
-        while IFS= read -r p; do
-          [ -z "$p" ] && continue
-          if ! ${pkgs.gawk}/bin/awk \
-                -v p="$p" \
-                'BEGIN { found = 0 }
-                 $1 == p {
-                   printf "merge hazard: %s exists in EROFS image (filetype %s); a role would silently shadow it\n", \
-                          p, substr($3, 1, 2) > "/dev/stderr";
-                   found = 1; exit;
-                 }
-                 END { exit found }' \
-                "$dump"; then
-            exit 1
-          fi
-        done < "$hazardAbsentPath"
-
-        touch "$out"
-      '';
-
     # Enforce `config.assertions` and surface `config.warnings` at
     # `system.build.toplevel` construction time. Matches the nixpkgs
     # convention (`nixos/modules/system/activation/top-level.nix`):
@@ -545,10 +425,8 @@ in {
               # mounted as the bottom lower of the /etc overlay at
               # boot. Consumers read named-output paths directly:
               #   etc-metadata.erofs, etc-basedir/, etc-dump,
-              #   systemd-units/, ignition-roles/, os-release,
+              #   systemd-units/, os-release,
               #   meta/{package-name,version}, kernel, initrd.
-              # `nix-support/etc-merge-safety-check` forces the
-              # merge-safety check whenever the toplevel materialises.
               # `activate` is the live install/upgrade/rollback driver
               # (`activate <gen>`); apm invokes it after swinging the
               # `current → gen-N` profile pointer.
@@ -560,7 +438,6 @@ in {
                 ln -sfn ${config.system.build.etcDump} $out/etc-dump
                 ln -sfn ${config.system.build.systemdSystemUnits} $out/systemd-units
                 ln -sfn ${config.system.build.systemdSystemPresets} $out/systemd-presets
-                ln -sfn ${config.system.build.ignitionRolesBundle} $out/ignition-roles
                 ln -sfn ${config.environment.etc."os-release".source} $out/os-release
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
@@ -571,10 +448,6 @@ in {
                 # in the service script strips the trailing newline.
                 printf '%s' "${config.aos.system.name}" > $out/meta/package-name
                 printf '%s' "${config.aos.system.version}" > $out/meta/version
-
-                # Force the build-time merge-safety check by pulling
-                # its derivation into the toplevel's closure.
-                ln -sfn ${config.system.build.etcMergeSafetyCheck} $out/nix-support/etc-merge-safety-check
 
                 # Closure tracking: list every systemPackage as a
                 # /nix/store path so Nix's reference scanner pulls

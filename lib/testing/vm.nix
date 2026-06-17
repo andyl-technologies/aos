@@ -57,7 +57,7 @@
   #              announce a partition that doesn't exist.
   #   4  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
-  #              test units) and role state used by fleet tests.
+  #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
   #
@@ -66,8 +66,8 @@
   # widen that scope: the test units (aos-test.target,
   # aos-test-agent.service) and the per-test fallbacks (nsswitch.conf,
   # etc.) also live there. This is a deliberate test-only deviation;
-  # production roles must use the `environment.etc` route through the
-  # EROFS image.
+  # production package policy must use the `environment.etc` route
+  # through the EROFS image.
   #
   # `mkTestDisk` is a function of `{system, extraClosures, varSizeMiB}`:
   # two callers passing identical inputs reference the same Nix derivation,

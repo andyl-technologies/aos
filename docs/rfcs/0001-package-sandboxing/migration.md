@@ -1,24 +1,23 @@
-# Cutover: dissolving the current tree into packages
+# Cutover: dissolving the legacy role tree into packages
 
-Status: planning
+Status: implemented through the module-tree dissolve
 
 This doc is the concrete cutover plan for the package-sandboxing design: how the
-current `aos.roles.<name>` module tree becomes the **packages** concept in the
-running source tree. It inventories every current-tree touchpoint that changes
-(the **option tree**, the **build/bundle surface**, the **fleet-test surface**,
-and the **synthesized systemd unit names**) with real `file:line` facts,
-classifies which packages get which privilege manifest, states the
-backward-compatibility stance, and lays out an ordered, individually-reviewable
-increment plan.
+legacy `aos.roles.<name>` module tree became the **packages** concept in the
+running source tree. It inventories every touched surface (the **option tree**,
+the **build/bundle surface**, the **fleet-test surface**, and the **synthesized
+systemd unit names**), classifies which packages get which privilege manifest,
+states the backward-compatibility stance, and records the ordered,
+individually-reviewable increment plan that was used.
 
 Package definitions do **not** live in a central `modules/packages/` tree.
 Service integration is an optional **`expose` attribute on package derivations
 in `pkgs/`**, rendered at build time to eval-free artifacts, with `modules/`
 shrinking to host policy (bake list, presets, permission policy) — see
-[`authoring.md`](authoring.md). The current `modules/roles/` machinery is
+[`authoring.md`](authoring.md). The legacy `modules/roles/` machinery was
 therefore *dissolved* into `pkgs/` `expose` blocks, not relocated wholesale. The
 touchpoint tables below remain the accurate inventory of every identifier and
-path that moves; the increment plan dissolves them in order:
+path that moved; the increment plan records the order used:
 
 1. Extend `mkDerivation` with the filtered `expose` attribute + the
    build-time unit/manifest renderer (reusing the pure
@@ -27,12 +26,13 @@ path that moves; the increment plan dissolves them in order:
 2. Define `test-http-server` via `expose` end-to-end (build → image bake →
    preset enable → VM check) while the role tree still exists.
 3. Dissolve `modules/roles/*` one package at a time into `pkgs/` `expose`
-   blocks (k3s via meta-packages), deleting the `roleType` machinery last.
+   blocks (k3s via meta-packages), then delete the `roleType` machinery and
+   role loader.
 4. Land the thin `modules/packages.nix` policy module + preset wiring
    ([`boot-activation.md`](boot-activation.md) §3.2).
 
 Validation gates per increment are constant (`aos fmt --check`, `checks.eval`,
-`checks.vm.boot`, fleet suite).
+`systems.server.checks.system-boot`, package checks, and fleet suite).
 
 This is one of the package docs. Siblings:
 [README.md](README.md), [permissions.md](permissions.md),
@@ -41,102 +41,93 @@ This is one of the package docs. Siblings:
 [config.md](config.md), [open-questions.md](open-questions.md),
 [authoring.md](authoring.md).
 
-Audience: anyone working on `modules/roles/`, `lib/testing/fleet-spec.nix`,
-`lib/testing/fleet.nix`, `lib/modules/systemd/render-role.nix`, `tests/fleet/`,
-and the `aos.roles` consumers across the tree.
+Audience: anyone working on package exposure in `pkgs/`,
+`lib/testing/fleet-spec.nix`, `lib/testing/fleet.nix`,
+`lib/modules/systemd/render-role.nix`, `tests/fleet/`, and the former
+`aos.roles` consumers across the tree.
 
 ## Scope
 
 This doc covers the mechanical cutover: dissolving the existing typed-role
-machinery into the `packages` surface, sequenced so each step keeps `master`
-green. The semantic features each have their own doc and land in later
-increments:
+machinery into the `packages` surface, sequenced so each step kept `master`
+green. Semantic features such as registry installability, install-at-boot,
+config/credential delivery, and the per-unit sandbox substrate are tracked in
+their own topic docs and in [`implementation-plan.md`](implementation-plan.md).
 
-- Registry installability of packages (`apm install`) — [`apm-integration.md`](apm-integration.md).
-- `systemd-nspawn` containers for packages, with privilege declared in a
-  signed `[permissions]` manifest — [`container-model.md`](container-model.md),
-  [`permissions.md`](permissions.md).
-- Install-at-boot via Ignition + apm — [`boot-activation.md`](boot-activation.md).
-- Config/credential delivery — [`config.md`](config.md) (decision **TBD**).
+The naming we adopt here (`aos.packages.<name>`,
+`aos-pkg-<name>.target`, package config under `/etc/aos/packages/<name>/`, and
+fleet package seeding under `/etc/aos/packages.d/`) is the surface those later
+docs already assume.
 
-The naming we adopt here (`aos.packages.<name>`, `aos-pkg-<name>.target`,
-`/etc/aos/packages/<name>`) is the surface those later docs already assume.
+## Legacy touchpoints that changed
 
-## Current-tree touchpoints that change
-
-The current typed-role machinery lives under `modules/roles/`. The cutover has
+The former typed-role machinery lived under `modules/roles/`. The cutover had
 four moving parts: the **option tree**, the **build/bundle surface**, the
 **fleet-test surface**, and the **synthesized systemd unit names**. The tables
 below are the authoritative inventory of every identifier, directory, and path
-that moves.
+that moved.
 
 ### 1. Option tree (`modules/roles/default.nix`)
 
-| Current | Becomes |
+| Legacy | Final state |
 |---|---|
-| `aos.roles.<name>` | `aos.packages.<name>` |
+| `aos.roles.<name>` | `pkgs.<name>.expose` plus optional `aos.packages.<name>` host policy |
 | `aos.roles.<name>.bundle` | `aos.packages.<name>.bundle` |
-| `aos.roles.<name>.systemd.*` | `aos.packages.<name>.systemd.*` |
-| `aos.roles.<name>.kernel.*` | `aos.packages.<name>.kernel.*` |
-| `aos.roles.<name>.firewall.*` | `aos.packages.<name>.firewall.*` |
-| `aos.roles.<name>.ignitionExtras` | `aos.packages.<name>.ignitionExtras` |
-| `roleType` (submodule binding) | `packageType` |
+| `aos.roles.<name>.systemd.*` | `pkgs.<name>.expose.units` |
+| `aos.roles.<name>.kernel.*` | `pkgs.<name>.expose.kernel` plus signed `permissions.kernel-modules` |
+| `aos.roles.<name>.firewall.*` | `pkgs.<name>.expose.firewall` plus signed TCP/UDP permission grants |
+| `aos.roles.<name>.ignitionExtras` | package expose/config artifacts or test machine `instanceMetadata` |
+| `roleType` (submodule binding) | removed; package policy lives in `modules/packages.nix` |
 
-The submodule's internal structure (`systemd`, `kernel`, `firewall`,
-`ignitionExtras`, the computed `ignitionConfig` / `ignitionConfigDrv` /
-`driftCheck`) is unchanged — only the option path and the binding name move.
-
-`modules/roles/default.nix`'s header comment documents the tree it owns
-("Declares the `aos.roles.<name>` option tree…"); that comment and the
-assertion messages (e.g. `aos.roles."${name}": role names must match …` near
-line 400) move with it.
+The old submodule did not move wholesale. Runtime integration now comes from
+each package derivation's `expose` attribute, while `modules/packages.nix`
+contains only host policy for bundling and image preset emission. The old
+`modules/roles/default.nix` assertion messages and `roleType` binding are gone.
 
 ### 2. Build / bundle surface
 
-| Current | Becomes |
+| Legacy | Final state |
 |---|---|
-| `system.build.ignitionRolesBundle` | `system.build.packagesBundle` |
-| `/etc/aos/ignition-roles/<name>` (fragment path) | `/etc/aos/packages/<name>` |
-| `environment.etc."aos/ignition-roles"` | `environment.etc."aos/packages"` |
-| `lib/modules/systemd/render-role.nix` | `lib/modules/systemd/render-package.nix` |
+| `system.build.ignitionRolesBundle` | removed |
+| `/etc/aos/ignition-roles/<name>` (fragment path) | removed; fleet package selection writes `/etc/aos/packages.d/fleet-seed` |
+| `environment.etc."aos/ignition-roles"` | removed |
+| `lib/modules/systemd/render-role.nix` | kept as a pure systemd renderer consumed by `pkgs/build-support/_expose-renderer.nix` |
 
-`ignitionRolesBundle` is defined once in `modules/roles/default.nix` and is
-referenced from the initrd builder (`modules/base/_initrd-builder.nix`), the
-stage-2 `environment.etc` mirror, and the fleet spec (which resolves
-`file:///etc/aos/ignition-roles/<name>` merge entries). All three move together.
-
-`render-role.nix`'s rename to `render-package.nix` is not load-bearing — the
-helper's logic is identical. Its import in `default.nix` updates either way.
+The old role bundle was referenced from the initrd builder, stage-2 toplevel,
+activation, and fleet spec. Those references are deleted rather than renamed:
+selected bundled packages are seeded into the package profile, and exposed unit
+artifacts are attached by the package path.
 
 ### 3. Fleet-test surface (`lib/testing/fleet-spec.nix`, `lib/testing/fleet.nix`)
 
-`fleet-spec.nix` derives a per-machine `roles` enum from the chosen system's
-bundled roles. The relevant lines today:
+`fleet-spec.nix` derives a per-machine `packages` enum from the chosen system's
+bundled packages. The relevant shape today:
 
 ```nix
-roles = mkOption {
+packages = mkOption {
   type = let
-    availableRoles = builtins.attrNames (
+    availablePackages = builtins.attrNames (
       lib.filterAttrs (_: r: r.bundle or false)
-        (config.system.config.aos.roles or {}));
-  in types.listOf (types.enum availableRoles);
-  # … "file:///etc/aos/ignition-roles/<name>" for the synthesised merge entry …
+        (config.system.config.aos.packages or {}));
+  in types.listOf (types.enum availablePackages);
+  # … writes selected package names into /etc/aos/packages.d/fleet-seed …
 };
 ```
 
-| Current | Becomes |
+| Legacy | Final state |
 |---|---|
 | `fleetMachineType.options.roles` | `fleetMachineType.options.packages` |
 | `availableRoles` (internal binding) | `availablePackages` |
 | `config.system.config.aos.roles` (filter source) | `config.system.config.aos.packages` |
-| merge target `file:///etc/aos/ignition-roles/<name>` | `file:///etc/aos/packages/<name>` |
+| merge target `file:///etc/aos/ignition-roles/<name>` | package-profile seed file `/etc/aos/packages.d/fleet-seed` |
 | per-machine `roles = ["…"]` (in `tests/fleet/*.nix`) | `packages = ["…"]` |
 
 The `bundle = true` filter semantics are unchanged: only bundled packages are
-listable in a machine's `packages = […]`, because only bundled packages have a
-fragment at `/etc/aos/packages/<name>` for the synthesized
-`ignition.config.merge` entry to resolve. The comment block at the top of
-`fleet-spec.nix` (lines ~10–15) that explains this contract moves verbatim.
+listable in a machine's `packages = […]`, because only bundled packages have the
+payload and rendered expose artifact in the image. The fleet harness writes the
+selected names into `/etc/aos/packages.d/fleet-seed`; APM reconciliation seeds
+the package profile, attaches the artifacts, presets the selected target, and
+starts it.
 
 ### 4. Synthesized systemd unit names
 
@@ -166,17 +157,16 @@ adds a second unit family, the `aos-package@.service` template with instance
 
 ## What does NOT change
 
-- **Per-package authoring.** Each package keeps declaring `systemd.services`,
-  `kernel.*`, and `firewall.*` exactly as today. The only edit is the
-  `cfg = config.aos.roles.<name>` → `config.aos.packages.<name>` binding and the
-  `aos.roles.<name> = { … }` → `aos.packages.<name> = { … }` block header.
-- **Ignition fragment format.** `ignition.generate` output is byte-identical;
-  only the on-disk path of the fragment changes.
+- **Per-package integration semantics.** Package units, module loads, sysctls,
+  firewall openings, and target-gated activation keep the same behavioral
+  contract, but they are authored in `pkgs/` `expose` blocks rather than
+  `modules/roles`.
 - **The sandbox model.** The target + gated-service synthesis, the eval-time
   sandbox assertion, and the drift check are carried over unchanged (just
   renamed). The teardown semantics (strict-when-disabled, cheap-revert firewall,
   sticky modules/sysctls) are unchanged.
-- **`render-role.nix` logic.** Renamed at most; not rewritten.
+- **`render-role.nix` logic.** The pure systemd rendering helper is reused by
+  the expose renderer rather than rewritten.
 
 ## Which packages get which privilege manifest
 
@@ -189,7 +179,7 @@ split — only an empty manifest (full sandbox) vs. a long one (k3s).
 | Package | Likely manifest | Disposition |
 |---|---|---|
 | `test-http-server` | empty (`network = "private"`) | **Tightly-sandboxed.** Single Python `http.server` unit, no host privilege, no kernel modules — the canonical first `expose` package. |
-| `aos-registry-server` | minimal (host port exposure only) | **Tightly-sandboxed.** git-daemon + `aos serve` cache; host net exposure but no kernel/sysctl needs. Good second target. |
+| `aos-registry-server` | host network, TCP bind 9418/15000, static `aos-gitd` user, `CAP_CHOWN`, selected runtime host paths | **Sandboxed with declared holes.** git-daemon + `aos serve` cache; no kernel/sysctl needs, but the stable service UID and cache/bootstrap paths are explicit. |
 | `apm-systemd-client-test` | empty | Sandboxed; it exists to exercise apm/systemd D-Bus, not to need privilege. |
 | `k3s-worker` | high-privilege (host net + caps + cgroup-delegate + host-paths + kernel-modules) | **High-privilege host unit** (see below). |
 | `k3s-control-plane` | high-privilege | **High-privilege host unit.** |
@@ -247,50 +237,52 @@ should be deleted in the increment that follows. The default plan is no shim.
 
 ## Ordered, reviewable increment plan
 
-Each increment is a single PR that keeps `master` green
-(`aos fmt --check`, `nix-build -A checks.eval`, `nix-build -A checks.vm.boot`,
-and the fleet suite).
+Each increment was kept reviewable and green with the matching gate set
+(`aos fmt --check`, `nix-build -A checks.eval`,
+`nix-build -A systems.server.checks.system-boot`, package checks, and the
+affected fleet tests).
 
 ### Increment 1 — `expose` attribute + build-time renderer
 
-- Extend `mkDerivation` with the filtered `expose` attribute and the build-time
-  unit/manifest renderer, reusing the pure `systemdLib` / `render-role.nix`
-  functions (verified pure — [`authoring.md`](authoring.md)).
+- Completed: extended `mkDerivation` with the filtered `expose` attribute and
+  the build-time unit/manifest renderer, reusing the pure `systemdLib` /
+  `render-role.nix` functions (verified pure —
+  [`authoring.md`](authoring.md)).
 - At this historical increment, no package was migrated yet; the role tree
   still drove every system.
 - **Reviewable as:** "does `expose` render the same units/manifest the role tree
   would, at build time?"
-- **Gate:** `checks.eval` + `checks.vm.boot` pass; the renderer output matches
-  the role tree's `ignitionConfig` byte-for-byte for an equivalent input.
+- **Gate:** `checks.eval` + `systems.server.checks.system-boot` pass; the
+  renderer output matches the role tree's `ignitionConfig` byte-for-byte for an
+  equivalent input.
 
 ### Increment 2 — `test-http-server` via `expose`, end-to-end
 
-- Define `test-http-server`'s service integration through `expose` on its
-  `pkgs/` derivation, and wire it through build → image bake → preset enable →
-  VM check, while `modules/roles/*` still exists for everything else.
-- The fragment path moves to `/etc/aos/packages/test-http-server`; the boot/VM
-  test must still find it.
+- Completed: defined `test-http-server`'s service integration through `expose`
+  on its `pkgs/` derivation, and wired it through build → image bake → preset
+  enable → VM check, while `modules/roles/*` still existed for everything else.
+- The package is seeded into the package profile and attached from its rendered
+  expose artifact; no role fragment is involved.
 - **Gate:** the `test-http-server` fleet check passes against the `expose`-driven
   package, with no behavior change.
 
 ### Increment 3 — dissolve `modules/roles/*` into `pkgs/` `expose`
 
-- Convert each `modules/roles/*.nix` and `modules/roles/kubernetes/*.nix`
-  package one at a time into a `pkgs/` `expose` block:
+- Completed: converted each `modules/roles/*.nix` and
+  `modules/roles/kubernetes/*.nix` package one at a time into a `pkgs/`
+  `expose` block:
   - `aos.roles.<name>` consumers → `aos.packages.<name>`;
-  - `system.build.ignitionRolesBundle` → `packagesBundle`,
-    `environment.etc."aos/ignition-roles"` → `"aos/packages"`;
+  - `system.build.ignitionRolesBundle` and
+    `environment.etc."aos/ignition-roles"` were deleted;
   - k3s via meta-packages (the `kubernetes/k3s-*` set), materialized as host
     units per Decision 17;
   - fleet-test surface: `lib/testing/fleet-spec.nix` `roles` option →
     `packages`, `availableRoles` → `availablePackages`, filter source
-    `aos.roles` → `aos.packages`, merge target
-    `file:///etc/aos/ignition-roles/<n>` → `file:///etc/aos/packages/<n>`, and
-    the explanatory comment block; `lib/testing/fleet.nix` reads the renamed key
-    and emits the new path; `tests/fleet/*.nix` `roles = ["…"]` → `packages =
-    ["…"]`.
-  - Delete the `roleType` machinery and `git mv lib/modules/systemd/render-role.nix
-    render-package.nix` **last**, once no role-tree consumer remains.
+    `aos.roles` → `aos.packages`, and the explanatory comment block;
+    `lib/testing/fleet.nix` reads the renamed key and emits
+    `/etc/aos/packages.d/fleet-seed`; `tests/fleet/*.nix` `roles = ["…"]` →
+    `packages = ["…"]`.
+  - Deleted the `roleType` machinery last, once no role-tree consumer remained.
 - **Gate:** the full fleet suite (`test-http-server`, `k3s-control-plane-worker`,
   `apm-e2e`, …) passes unchanged in behavior after each package is dissolved;
   emitted units are `aos-pkg-<name>.target` /
@@ -298,25 +290,19 @@ and the fleet suite).
 
 ### Increment 4 — policy module + preset wiring
 
-- Land the thin `modules/packages.nix` policy module (bake list, presets,
-  permission policy) and preset wiring
+- Completed: landed the thin `modules/packages.nix` policy module (bake list,
+  presets, permission policy) and preset wiring
   ([`boot-activation.md`](boot-activation.md) §3.2).
-- **Gate:** `aos fmt --check`, `checks.eval`, `checks.vm.boot`, and the eval
-  guard (target + gated services present, no global scan-dir storage entry)
-  pass.
+- **Gate:** `aos fmt --check`, `checks.eval`,
+  `systems.server.checks.system-boot`, package checks, and the eval guard
+  (target + gated services present, no global scan-dir storage entry) pass.
 
-### Increment 5+ — the actual feature (separate docs)
+### Later semantic phases
 
-- Registry installability → [`apm-integration.md`](apm-integration.md).
-- The `[permissions]` manifest and its nspawn-flag generation →
-  [`permissions.md`](permissions.md).
-- nspawn containers, starting with the empty-manifest `test-http-server` then
-  `aos-registry-server` → [`container-model.md`](container-model.md).
-- Install-at-boot via Ignition + apm → [`boot-activation.md`](boot-activation.md).
-- Config delivery (**TBD**) → [`config.md`](config.md).
-
-These are intentionally left as separate increments because they carry real
-design risk, unlike 1–4.
+The mechanical cutover deliberately stayed separate from the higher-risk
+semantic phases. Registry installability, permission metadata, per-unit
+sandboxing, install-at-boot, and config/credential delivery are tracked in the
+topic docs and summarized in [`implementation-plan.md`](implementation-plan.md).
 
 ## Honest limits of this cutover
 
@@ -324,9 +310,8 @@ design risk, unlike 1–4.
   its manifest declares host network, broad caps, and global kernel modules, so
   its boundary is nominal. The cutover must not be read as implying it is
   isolated.
-- **Config is untouched and still open.** k3s continues to read
-  `/etc/rancher/k3s/k3s.env` via `EnvironmentFile=` exactly as today; this doc
-  picks **no** new config mechanism — that is [`config.md`](config.md)'s open
-  decision.
-- **The `render-role.nix` → `render-package.nix` rename is mechanical** and
-  happens last in Increment 3, once the role tree has no remaining consumer.
+- **Config mechanics live elsewhere.** k3s continues to read
+  `/etc/rancher/k3s/k3s.env` via `EnvironmentFile=`, while the general
+  config/credential design is owned by [`config.md`](config.md) and Phase 5.
+- **`render-role.nix` was not renamed.** It remains a pure systemd rendering
+  helper and is consumed by the package expose renderer.

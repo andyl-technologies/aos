@@ -47,7 +47,7 @@
   sbUki = systems.server-secureboot.config.system.build.uki;
 in {
   name = "registry-sb-catalog";
-  # Two boots + registry role/static-cache package activation + full-closure
+  # Two boots + registry/static-cache package activation + full-closure
   # static cache + one ~270 MiB cross-VM NAR transfer (the first refused
   # upgrade still downloads) + two further validation passes over the cached
   # closure + three catalog re-syncs. Budgeted like install-from-image.
@@ -56,8 +56,7 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server"];
-      packages = ["test-static-cache-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.
       extraClosures = [sbTop sbUki pkgs.sbsigntools pkgs.binutils pkgs.systemd];
@@ -83,11 +82,14 @@ in {
       import json
       import textwrap
 
-      # ════ 0. Both machines up; registry roles active ══════════════════
+      # ════ 0. Both machines up; registry packages active ═══════════════
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("aos-registry-server-firewall.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
       )

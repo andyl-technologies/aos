@@ -3,17 +3,16 @@
 # Each spec file under `tests/fleet/` is a function of `{ lib, pkgs,
 # systems }` returning one attrset; the discoverer in `default.nix`
 # evaluates the attrset against `fleetSpecType` here so eval-time
-# mistakes (typos in field names, malformed ignition, role-name typos)
+# mistakes (typos in field names, malformed ignition, package-name typos)
 # surface as `evalModules` errors rather than runtime failures inside
 # the harness.
 #
-# `fleetMachineType.options.roles` and `packages` derive their enums from this
-# machine's chosen system config, filtered to entries where `bundle = true` on
-# that system. Only bundled entries are listable: a role must have an ignition
-# fragment at `/etc/aos/ignition-roles/<name>`, and a package must have its
-# payload plus expose artifact baked into the machine image. The types are
-# forced lazily — only when a value is type-checked, by which time
-# `config.system` has been merged from the user's definition.
+# `fleetMachineType.options.packages` derives its enum from this machine's
+# chosen system config, filtered to entries where `bundle = true` on that
+# system. Only bundled packages are listable: the payload and rendered expose
+# artifact must already be baked into the machine image. The type is forced
+# lazily — only when a value is type-checked, by which time `config.system` has
+# been merged from the user's definition.
 {
   lib,
   pkgs,
@@ -55,38 +54,9 @@
         description = ''
           The evaluated system attrset (e.g. `systems.server` in the
           discovered top-level `systems` attrset). The harness reads
-          `.config.system.build.{kernel,initrd}` and `.config.aos.roles`
+          `.config.system.build.{kernel,initrd}` and `.config.aos.packages`
           off this value; passing anything else fails fast with a clear
           message at the use site.
-        '';
-      };
-
-      roles = mkOption {
-        # Type-level enum derived from this machine's chosen system,
-        # restricted to roles where `bundle = true` — only bundled
-        # roles have a fragment at `/etc/aos/ignition-roles/<name>` on
-        # the running host for the synthesised
-        # `ignition.config.merge` entry to resolve. `availableRoles`
-        # is forced lazily — only when a `roles` value is type-checked,
-        # by which time `config.system` has been merged from the
-        # user's definition.
-        type = let
-          availableRoles = builtins.attrNames (
-            lib.filterAttrs
-            (_: role: role.bundle)
-            (config.system.config.aos.roles or {})
-          );
-        in
-          types.listOf (types.enum availableRoles);
-        default = [];
-        description = ''
-          Names of `aos.roles.<name>` to activate at runtime on this
-          machine. Each name is converted into a
-          `{ source = "file:///etc/aos/ignition-roles/<name>"; }`
-          entry on the machine's `ignition.config.merge` list. The
-          listed roles must have `bundle = true` on the chosen system
-          — otherwise the fragment is not on disk and the merge would
-          fail at first boot.
         '';
       };
 
@@ -202,10 +172,7 @@
         default = null;
         description = ''
           Raw ignition config delivered to this machine via the
-          `aos-metadata` ISO. If both `roles` and
-          `instanceMetadata.config.ignition.config.merge` are populated,
-          the harness prepends role merge entries to the
-          test-supplied merge list.
+          `aos-metadata` ISO.
         '';
       };
     };
