@@ -469,9 +469,11 @@
           then "/run/credstore.encrypted/aos/${packageName}/${name}"
           else null;
         generatedSource =
-          source != null
+          source
+          != null
           && (
-            source == "/run/credstore.encrypted/aos"
+            source
+            == "/run/credstore.encrypted/aos"
             || lib.hasPrefix "/run/credstore.encrypted/aos/" source
           );
         ciphertext =
@@ -541,12 +543,11 @@
     );
 
   validateCredentialSource = encrypted: source: let
-    checked =
-      validateCredentialSourceChars (
-        validatePathHasNoParent "credential source path" (
-          validateAbsolutePath "credential source path" source
-        )
-      );
+    checked = validateCredentialSourceChars (
+      validatePathHasNoParent "credential source path" (
+        validateAbsolutePath "credential source path" source
+      )
+    );
     prefixes =
       if encrypted
       then encryptedCredentialSourcePrefixes
@@ -574,13 +575,12 @@
     credentials = builtins.map (credential: credential.manifest) checkedCredentials;
     credentialBlobs = builtins.filter (blob: blob != null) (builtins.map (credential: credential.blob) checkedCredentials);
     credentialNames = builtins.map (credential: credential.name) credentials;
-    duplicateCredentialNames =
-      lib.unique (
-        builtins.filter (
-          name: builtins.length (builtins.filter (candidate: candidate == name) credentialNames) > 1
-        )
-        credentialNames
-      );
+    duplicateCredentialNames = lib.unique (
+      builtins.filter (
+        name: builtins.length (builtins.filter (candidate: candidate == name) credentialNames) > 1
+      )
+      credentialNames
+    );
   in
     throwIfNot
     (extraKeys == [])
@@ -802,6 +802,33 @@
     "ExecCondition"
   ];
 
+  scriptExecFields = [
+    {
+      option = "script";
+      key = "ExecStart";
+    }
+    {
+      option = "preStart";
+      key = "ExecStartPre";
+    }
+    {
+      option = "postStart";
+      key = "ExecStartPost";
+    }
+    {
+      option = "reload";
+      key = "ExecReload";
+    }
+    {
+      option = "preStop";
+      key = "ExecStop";
+    }
+    {
+      option = "postStop";
+      key = "ExecStopPost";
+    }
+  ];
+
   asList = value:
     if builtins.isList value
     then value
@@ -851,6 +878,17 @@
     (violations == [])
     "mkDerivation expose.units.${unitName} for package '${packageName}' uses systemd privileged exec prefixes that bypass generated sandboxing: ${builtins.concatStringsSep ", " violations}"
     serviceConfig;
+
+  hasAnyExecPrefix = command:
+    builtins.match "[-@:!+].*" (builtins.toString command) != null;
+
+  validateNoLandlockExecPrefixes = packageName: unitName: key: command: let
+    text = builtins.toString command;
+  in
+    throwIfNot
+    (!hasAnyExecPrefix text)
+    "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} prefix that cannot be preserved by aos-landlock: ${text}"
+    command;
 in rec {
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
     violations =
@@ -1007,6 +1045,12 @@ in rec {
         security-label = permissions.security-label or "aos-pkg-${packageName}";
         inherit confinement;
       };
+    landlockTcpEnabled = !rootEquivalent && (tcpBind != [] || tcpConnect != []);
+    landlockArgs =
+      ["--require-abi" "4"]
+      ++ lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
+      ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect;
+    landlockPrefix = "${pkgs.aos-landlock}/bin/aos-landlock ${builtins.concatStringsSep " " landlockArgs} --";
     readOnlyHostPaths = builtins.map (hostPath: hostPath.path) (
       builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
     );
@@ -1129,18 +1173,15 @@ in rec {
           ++ authoredSetEncryptedCredentials
         )
         ++ builtins.concatMap credentialImportSpecNames authoredImportCredentials;
-      loadCredentials =
-        builtins.map credentialLoadSpec (
-          builtins.filter (credential: !credential.encrypted && !(credential ? ciphertext)) credentials
-        );
-      loadEncryptedCredentials =
-        builtins.map credentialLoadSpec (
-          builtins.filter (credential: credential.encrypted && !(credential ? ciphertext)) credentials
-        );
-      setEncryptedCredentials =
-        builtins.map credentialSetEncryptedSpec (
-          builtins.filter (credential: credential ? ciphertext) credentials
-        );
+      loadCredentials = builtins.map credentialLoadSpec (
+        builtins.filter (credential: !credential.encrypted && !(credential ? ciphertext)) credentials
+      );
+      loadEncryptedCredentials = builtins.map credentialLoadSpec (
+        builtins.filter (credential: credential.encrypted && !(credential ? ciphertext)) credentials
+      );
+      setEncryptedCredentials = builtins.map credentialSetEncryptedSpec (
+        builtins.filter (credential: credential ? ciphertext) credentials
+      );
       credentialIdsAvailable =
         assertNoCredentialDirectiveCollisions
         unitName
@@ -1164,7 +1205,38 @@ in rec {
         )
       );
 
-    sandboxServiceConfig = unitName: authoredServiceConfig: let
+    wrapLandlockExecCommand = unitName: key: value:
+      if builtins.isList value
+      then builtins.map (command: wrapLandlockExecCommand unitName key command) value
+      else let
+        checkedCommand = validateNoLandlockExecPrefixes packageName unitName key value;
+      in "${landlockPrefix} ${builtins.toString checkedCommand}";
+
+    landlockServiceConfigFor = unitName: unit: authoredServiceConfig: let
+      scriptDerivedExecs =
+        builtins.filter (field: (unit.${field.option} or "") != "") scriptExecFields;
+      scriptDerivedExecText =
+        builtins.map (field: "${field.option} -> ${field.key}") scriptDerivedExecs;
+      presentExecKeys = builtins.filter (key: authoredServiceConfig ? ${key}) execKeys;
+      wrappedExecConfig = builtins.listToAttrs (
+        builtins.map (key: {
+          name = key;
+          value = wrapLandlockExecCommand unitName key authoredServiceConfig.${key};
+        })
+        presentExecKeys
+      );
+      scriptSupported =
+        throwIfNot
+        (!(landlockTcpEnabled && scriptDerivedExecs != []))
+        "mkDerivation expose.units.${unitName} for package '${packageName}' uses script-derived service commands with TCP Landlock policy (${builtins.concatStringsSep ", " scriptDerivedExecText}); use explicit serviceConfig.Exec* commands so the generated wrapper can preserve the sandbox boundary"
+        true;
+    in
+      builtins.seq scriptSupported (
+        lib.optionalAttrs landlockTcpEnabled wrappedExecConfig
+      );
+
+    sandboxServiceConfig = unitName: unit: let
+      authoredServiceConfig = unit.serviceConfig or {};
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
     in
@@ -1204,6 +1276,7 @@ in rec {
         MemoryDenyWriteExecute = true;
       }
       // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
+      // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
       // syscallFilterFor syscallProfile
       // lib.optionalAttrs (network == "private-outbound") {
         PrivateNetwork = false;
@@ -1303,7 +1376,7 @@ in rec {
         reloadIfChanged = (unit.reloadIfChanged or false) || reloadableArtifacts != [];
       }
       // lib.optionalAttrs (lib.hasSuffix ".service" name) {
-        serviceConfig = sandboxServiceConfig name (unit.serviceConfig or {});
+        serviceConfig = sandboxServiceConfig name unit;
       };
 
     trueCommand = "${pkgs.coreutils}/bin/true";
@@ -1532,8 +1605,7 @@ in rec {
           };
         };
       }
-      //
-      {
+      // {
         "${modulesUnit}" = {
           description = "Apply kernel modules for ${packageName}";
           wantedBy = [target];
