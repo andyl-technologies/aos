@@ -512,6 +512,7 @@ impl<'ir> TreeWalk<'ir> {
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
             IrKind::WithVar => self.eval_with_var(id, &node),
+            IrKind::GlobalVar => self.eval_global_var(id, &node),
             IrKind::List => self.eval_list(id, &node),
             IrKind::AttrSet => self.eval_attrset(id, &node),
             IrKind::Lambda => self.eval_lambda(id, &node),
@@ -896,6 +897,87 @@ impl<'ir> TreeWalk<'ir> {
                 TreeWalkErrorKind::InvalidSymbol { id, symbol },
                 span,
             )),
+        }
+    }
+
+    fn eval_global_var(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "global symbol payload"));
+        };
+        let Some(name) = self.symbols.resolve(symbol) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol { id, symbol },
+                node.span,
+            ));
+        };
+        if name == b"builtins" {
+            return self.eval_builtins_attrset(id, node.span);
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedNode {
+                id,
+                kind: node.kind,
+            },
+            node.span,
+        ))
+    }
+
+    fn eval_builtins_attrset(&mut self, id: IrId, span: Span) -> Result<Value, TreeWalkError> {
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(BUILTIN_METADATA.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: BUILTIN_METADATA.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+
+        for builtin in BUILTIN_METADATA {
+            if !builtin_is_available(self, *builtin) {
+                continue;
+            }
+            let symbol = self.intern_builtin_attr_symbol(id, builtin.name(), span)?;
+            let value = if builtin.name() == b"builtins" {
+                self.alloc_thunk_for_node(id, id, span)?
+            } else {
+                self.eval_builtin_attrset_value(id, span, symbol, *builtin)?
+            };
+            entries.push(AttrEntry::new(symbol, value));
+        }
+
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_builtin_attrset_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+        builtin: BuiltinMetadata,
+    ) -> Result<Value, TreeWalkError> {
+        match builtin.execution() {
+            BuiltinExecution::TrueValue
+            | BuiltinExecution::FalseValue
+            | BuiltinExecution::NullValue
+            | BuiltinExecution::CurrentSystemValue
+            | BuiltinExecution::CurrentTimeValue
+            | BuiltinExecution::StoreDirValue
+            | BuiltinExecution::NixVersionValue
+            | BuiltinExecution::LangVersionValue => select_builtin(self, builtin, id, span, symbol),
+            _ => self
+                .heap
+                .alloc_primop(EvalPrimOp::new(symbol))
+                .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)),
         }
     }
 
@@ -10757,6 +10839,10 @@ fn select_builtin(
     span: Span,
     symbol: Symbol,
 ) -> Result<Value, TreeWalkError> {
+    if builtin.name() == b"builtins" {
+        return eval.eval_builtins_attrset(id, span);
+    }
+
     match builtin.execution() {
         BuiltinExecution::TrueValue => Ok(Value::bool(true)),
         BuiltinExecution::FalseValue => Ok(Value::bool(false)),
@@ -11904,6 +11990,7 @@ mod tests {
         collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
+        process::Command,
         ptr::NonNull,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -11951,6 +12038,61 @@ mod tests {
         string.bytes().to_vec()
     }
 
+    fn eval_json_bytes(source: &str) -> Vec<u8> {
+        eval_string_bytes(&format!("builtins.toJSON ({source})"))
+    }
+
+    fn eval_json_bytes_with_options(source: &str, options: TreeWalkOptions) -> Vec<u8> {
+        eval_string_bytes_with_options(&format!("builtins.toJSON ({source})"), options)
+    }
+
+    fn cpp_nix_oracle() -> String {
+        std::env::var("AOS_NIX_ORACLE").unwrap_or_else(|_| "nix-instantiate".to_owned())
+    }
+
+    fn trim_command_stdout(mut stdout: Vec<u8>) -> Vec<u8> {
+        while matches!(stdout.last(), Some(b'\n' | b'\r')) {
+            let _ = stdout.pop();
+        }
+        stdout
+    }
+
+    fn cpp_nix_version(oracle: &str) -> String {
+        let output = Command::new(oracle)
+            .arg("--version")
+            .output()
+            .expect("C++ Nix oracle runs");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle version failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(trim_command_stdout(output.stdout)).expect("version is UTF-8")
+    }
+
+    fn cpp_nix_eval_json(oracle: &str, source: &str) -> Vec<u8> {
+        let output = Command::new(oracle)
+            .args(["--eval", "--strict", "--json", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        trim_command_stdout(output.stdout)
+    }
+
+    fn assert_cpp_nix_json_matches_tree_walk(oracle: &str, source: &str) {
+        let reference = cpp_nix_eval_json(oracle, source);
+        let candidate = eval_json_bytes(source);
+        assert_eq!(
+            String::from_utf8_lossy(&candidate),
+            String::from_utf8_lossy(&reference),
+            "expression diverged: {source}"
+        );
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -11991,6 +12133,25 @@ mod tests {
 
     fn eval_list_string_bytes(source: &str) -> Vec<Vec<u8>> {
         let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
+        let list = outcome
+            .heap()
+            .get_list(outcome.value())
+            .expect("result is a heap-owned list");
+        list.iter()
+            .map(|value| {
+                outcome
+                    .heap()
+                    .get_string(*value)
+                    .expect("element is a heap-owned string")
+                    .bytes()
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    fn eval_list_string_bytes_with_options(source: &str, options: TreeWalkOptions) -> Vec<Vec<u8>> {
+        let outcome =
+            eval_whnf_owned_with_options(&lower(source), options).expect("source evaluates");
         let list = outcome
             .heap()
             .get_list(outcome.value())
@@ -12641,6 +12802,103 @@ mod tests {
     }
 
     #[test]
+    fn builtins_global_evaluates_to_metadata_backed_attrset() {
+        fn expected_builtin_names(include_system: bool, include_time: bool) -> Vec<Vec<u8>> {
+            let mut names = BUILTIN_METADATA
+                .iter()
+                .filter(|metadata| {
+                    include_system
+                        || !matches!(metadata.execution(), BuiltinExecution::CurrentSystemValue)
+                })
+                .filter(|metadata| {
+                    include_time
+                        || !matches!(metadata.execution(), BuiltinExecution::CurrentTimeValue)
+                })
+                .map(|metadata| metadata.name().to_vec())
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        }
+
+        assert_eq!(eval("builtins ? builtins").as_bool(), Ok(true));
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.builtins"),
+            b"set"
+        );
+        assert_eq!(
+            eval_string_bytes("let b = builtins; in builtins.typeOf b.builtins"),
+            b"set"
+        );
+        assert_eq!(
+            eval("let b = builtins; in builtins.isFunction b.genericClosure").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames builtins"),
+            expected_builtin_names(false, false)
+        );
+
+        let mut options =
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
+        options.set_current_time(1_700_000_000).expect("time valid");
+        assert_eq!(
+            eval_list_string_bytes_with_options("builtins.attrNames builtins", options),
+            expected_builtin_names(true, true)
+        );
+    }
+
+    #[test]
+    #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
+    fn pinned_cpp_nix_builtin_surface_matches_registry() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.ends_with(" 2.24.12") || version.ends_with("(Nix) 2.24.12"),
+            "expected pinned C++ Nix 2.24.12 oracle, got {version}"
+        );
+
+        let mut options =
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
+        options.set_current_time(1_700_000_000).expect("time valid");
+        assert_eq!(
+            String::from_utf8_lossy(&eval_json_bytes_with_options(
+                "builtins.attrNames builtins",
+                options
+            )),
+            String::from_utf8_lossy(&cpp_nix_eval_json(&oracle, "builtins.attrNames builtins"))
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_attrset_builtin_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.getAttr "a" { a = "x"; b = 1; }"#,
+            r#"let get = builtins.getAttr "a"; in get { a = "x"; }"#,
+            r#"builtins.hasAttr "a" { a = 1; }"#,
+            r#"builtins.hasAttr "missing" { a = 1; }"#,
+            r#"builtins.removeAttrs { z = 1; a = 2; b = 3; } [ "z" "missing" "z" ]"#,
+            r#"builtins.listToAttrs [ { name = "b"; value = 2; } { name = "a"; value = 1; } { name = "a"; value = 9; } ]"#,
+            r#"let f = builtins.listToAttrs; in f [ { name = "a"; value = 1; } ]"#,
+            r#"builtins.intersectAttrs { z = 0; a = 0; } { z = 4; a = 5; c = 6; }"#,
+            r#"builtins.catAttrs "a" [ { a = 1; } { b = 2; } { a = 3; } ]"#,
+            r#"builtins.functionArgs ({ b ? 1, a, ... }@args: a)"#,
+            r#"let f = builtins.functionArgs; in f ({ a, b ? 1 }: a)"#,
+            r#"builtins.functionArgs builtins.length"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
             ("builtins.exec or 42", b"exec".as_slice()),
@@ -13236,6 +13494,11 @@ mod tests {
                 .as_bool(),
             Ok(true)
         );
+        assert_eq!(
+            eval("let f = builtins.functionArgs; r = f ({ a, b ? 1 }: a); in r.a == false && r.b")
+                .as_bool(),
+            Ok(true)
+        );
 
         assert_eq!(
             eval("let builtins = { functionArgs = f: { local = true; }; }; in (builtins.functionArgs (x: x)).local")
@@ -13283,6 +13546,11 @@ mod tests {
         );
         assert_eq!(
             eval("(builtins.listToAttrs [ { name = \"a\"; value = 1; } { name = \"a\"; } ]).a")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let f = builtins.listToAttrs; in (f [ { name = \"a\"; value = 1; } ]).a")
                 .as_int(),
             Ok(1)
         );

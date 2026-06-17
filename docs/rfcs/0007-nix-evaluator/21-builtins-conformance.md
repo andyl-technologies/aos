@@ -89,7 +89,7 @@ never error on a "wrong" type — they answer the question. `typeOf` and
       - Returns one of exactly: `"int"`, `"float"`, `"bool"`, `"string"`,
         `"path"`, `"null"`, `"set"`, `"list"`, `"lambda"`. Note the type of an
         attrset is `"set"` (not `"attrs"`) and a function is `"lambda"`.
-- [ ] `functionArgs` (f) — returns an attrset mapping each formal of a
+- [x] `functionArgs` (f) — returns an attrset mapping each formal of a
       `{ a, b ? …, … }`-pattern lambda to a bool (`true` iff it has a default).
       - On a non-pattern lambda (`x: …`) returns `{}`.
       - On a primop / partially-applied primop the behavior follows C++ Nix
@@ -312,18 +312,18 @@ emit them in this sorted order, not insertion order.
       `derivationStrict` env coercion order.
 - [x] `attrValues` (set) — list of values in the **same sorted-by-name order**
       as `attrNames` (not insertion order). Must agree with `attrNames` exactly.
-- [ ] `getAttr` (s set) — `set.${s}`; throws if absent. Strict in `s` and the
+- [x] `getAttr` (s set) — `set.${s}`; throws if absent. Strict in `s` and the
       set spine.
-- [ ] `hasAttr` (s set) — `set ? ${s}` as a primop; `true`/`false`.
-- [ ] `removeAttrs` (set list) — `set` minus every name in `list`. Names not
+- [x] `hasAttr` (s set) — `set ? ${s}` as a primop; `true`/`false`.
+- [x] `removeAttrs` (set list) — `set` minus every name in `list`. Names not
       present are ignored (no error). Result order is the sorted remainder.
-- [ ] `listToAttrs` (list) — build an attrset from a list of
+- [x] `listToAttrs` (list) — build an attrset from a list of
       `{ name = …; value = …; }`. **First occurrence wins** on duplicate names
       (C++ Nix keeps the first); reproduce that, not last-wins.
-- [ ] `intersectAttrs` (e1 e2) — attrset of the keys present in **both**, taking
+- [x] `intersectAttrs` (e1 e2) — attrset of the keys present in **both**, taking
       **values from `e2`**. (Direction is a classic confusion: the *names* come
       from the intersection, the *values* from the second argument.)
-- [ ] `catAttrs` (attr list) — for a list of attrsets, collect `set.${attr}`
+- [x] `catAttrs` (attr list) — for a list of attrsets, collect `set.${attr}`
       from each set **that has it**, in list order, skipping those that lack it.
 - [ ] `mapAttrs` (f set) — apply `f name value` to each attribute, producing a
       new attrset with the same names. `f` is called lazily per value; forcing
@@ -335,7 +335,7 @@ emit them in this sorted order, not insertion order.
       - This *is* a `builtins` primop (sometimes mistaken for `lib`-only);
         `lib.zipAttrsWith` wraps it but the primop exists. Verify presence
         against the pinned `builtins` and pin the value-list ordering.
-- [ ] `functionArgs` (f) — (also listed under introspection §1) reflects a
+- [x] `functionArgs` (f) — (also listed under introspection §1) reflects a
       lambda's formal arguments; placed here too because nixpkgs uses it for
       attrset-driven auto-calling (`callPackage`).
 - [ ] `unsafeGetAttrPos` (s set) — return `{ file; line; column; }` of where
@@ -917,7 +917,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [ ] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
 - [ ] `match` / `split` regex dialect (named risk vs. Rust `regex`).
 - [ ] `div` truncate-toward-zero; int/float promotion and float rendering.
-- [ ] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
+- [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
 - [ ] `placeholder` byte-identical placeholder scheme.
