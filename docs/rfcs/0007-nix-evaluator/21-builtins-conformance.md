@@ -403,7 +403,7 @@ Forcing order is observable and must match (see
 - [x] `groupBy` (f list) — attrset grouping elements by the **string** key
       `f elem` returns; each value is the list of elements (input order) in that
       group. Result attr order is sorted by group-key (attrset rule §6).
-- [ ] `genericClosure` (arg) — fixpoint/worklist primop. `arg` is
+- [x] `genericClosure` (arg) — fixpoint/worklist primop. `arg` is
       `{ startSet = [ {key=…; …} … ]; operator = item: [ {key=…; …} … ]; }`;
       it transitively closes `startSet` under `operator`, **deduplicating by the
       `key` attribute**. The dedup-by-`key` and the work-order are precise and

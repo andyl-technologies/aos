@@ -54,6 +54,9 @@ const NAME_ATTR: &[u8] = b"name";
 const PATH_ATTR: &[u8] = b"path";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
+const KEY_ATTR: &[u8] = b"key";
+const OPERATOR_ATTR: &[u8] = b"operator";
+const START_SET_ATTR: &[u8] = b"startSet";
 const HASH_ATTR: &[u8] = b"hash";
 const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
@@ -10176,6 +10179,253 @@ impl<'ir> TreeWalk<'ir> {
         Ok(accumulator)
     }
 
+    fn eval_generic_closure_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(argument, argument_span, value)?;
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "attrs",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        let start_set =
+            self.required_attr_value_by_name(argument, value, START_SET_ATTR, argument_span)?;
+        let start_set = self.force_value(argument, argument_span, start_set)?;
+        if start_set.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "list",
+                    actual: start_set.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let start_items = {
+            let start_set = self.heap.get_list(start_set).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            Self::clone_list_elements(argument, argument_span, start_set)?
+        };
+
+        if start_items.is_empty() {
+            return self
+                .heap
+                .alloc_list(NixList::new(Vec::new()))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        let operator =
+            self.required_attr_value_by_name(argument, value, OPERATOR_ATTR, argument_span)?;
+        let operator = self.force_value(argument, argument_span, operator)?;
+        if !matches!(operator.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "function",
+                    actual: operator.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        let mut work_items = start_items;
+        let mut items = Vec::new();
+        let mut keys = Vec::new();
+
+        let mut cursor = 0usize;
+        while cursor < work_items.len() {
+            let item = work_items[cursor];
+            cursor += 1;
+            let Some(item) = self.accept_generic_closure_item(
+                id,
+                argument,
+                argument_span,
+                item,
+                &mut items,
+                &mut keys,
+            )?
+            else {
+                continue;
+            };
+            let produced = self.apply_lambda_value(
+                id,
+                span,
+                argument,
+                operator,
+                argument_span,
+                argument,
+                item,
+            )?;
+            let produced = self.force_value(argument, argument_span, produced)?;
+            if produced.tag() != ValueTag::List {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: argument,
+                        expected: "list",
+                        actual: produced.tag(),
+                    },
+                    argument_span,
+                ));
+            }
+            let produced_items = {
+                let produced = self.heap.get_list(produced).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+                Self::clone_list_elements(argument, argument_span, produced)?
+            };
+            self.enqueue_generic_closure_generated_items(
+                id,
+                argument,
+                argument_span,
+                produced_items,
+                &mut work_items,
+            )?;
+        }
+
+        self.heap
+            .alloc_list(NixList::new(items))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn accept_generic_closure_item(
+        &mut self,
+        id: IrId,
+        item_id: IrId,
+        item_span: Span,
+        candidate: Value,
+        items: &mut Vec<Value>,
+        keys: &mut Vec<Value>,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        let item = self.force_value(item_id, item_span, candidate)?;
+        if item.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: item_id,
+                    expected: "attrs",
+                    actual: item.tag(),
+                },
+                item_span,
+            ));
+        }
+        let key = self.required_attr_value_by_name(item_id, item, KEY_ATTR, item_span)?;
+        let key = self.force_value(item_id, item_span, key)?;
+        if self.generic_closure_key_seen(id, key, keys)? {
+            return Ok(None);
+        }
+
+        let len = items.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListLengthOverflow {
+                    id,
+                    len: usize::MAX,
+                },
+                item_span,
+            )
+        })?;
+        items.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len },
+                item_span,
+            )
+        })?;
+        keys.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len },
+                item_span,
+            )
+        })?;
+        items.push(item);
+        keys.push(key);
+        Ok(Some(item))
+    }
+
+    fn enqueue_generic_closure_generated_items(
+        &mut self,
+        id: IrId,
+        item_id: IrId,
+        item_span: Span,
+        candidates: Vec<Value>,
+        work_items: &mut Vec<Value>,
+    ) -> Result<(), TreeWalkError> {
+        for candidate in candidates {
+            let item = self.force_value(item_id, item_span, candidate)?;
+            let len = work_items.len().checked_add(1).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListLengthOverflow {
+                        id,
+                        len: usize::MAX,
+                    },
+                    item_span,
+                )
+            })?;
+            work_items.try_reserve_exact(1).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len },
+                    item_span,
+                )
+            })?;
+            work_items.push(item);
+        }
+        Ok(())
+    }
+
+    fn generic_closure_key_seen(
+        &mut self,
+        id: IrId,
+        key: Value,
+        keys: &[Value],
+    ) -> Result<bool, TreeWalkError> {
+        let node = *self.node(id)?;
+        for existing in keys {
+            if self.generic_closure_keys_equal(id, &node, key, *existing)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn generic_closure_keys_equal(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let mut guard = EqualityPairGuard::default();
+        let left_is_less =
+            self.compare_values_for_ordering(id, node, ComparisonOp::Lt, left, right, &mut guard)?;
+        let mut guard = EqualityPairGuard::default();
+        let right_is_less =
+            self.compare_values_for_ordering(id, node, ComparisonOp::Lt, right, left, &mut guard)?;
+        Ok(!left_is_less && !right_is_less)
+    }
+
     fn eval_function_args_primop(
         &mut self,
         id: IrId,
@@ -12744,6 +12994,19 @@ impl<'ir> TreeWalk<'ir> {
                 }
                 self.compare_strings(id, node, op, left, right)
             }
+            ValueTag::Path => {
+                if right.tag() != ValueTag::Path {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: rhs,
+                            expected: "path",
+                            actual: right.tag(),
+                        },
+                        rhs_span,
+                    ));
+                }
+                self.compare_paths(id, node, op, left, right)
+            }
             ValueTag::List => {
                 if right.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
@@ -12761,7 +13024,7 @@ impl<'ir> TreeWalk<'ir> {
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: lhs,
-                    expected: "number, string, or list",
+                    expected: "number, string, path, or list",
                     actual,
                 },
                 lhs_span,
@@ -12781,6 +13044,23 @@ impl<'ir> TreeWalk<'ir> {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         let right = self.heap.get_string(right).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
+    }
+
+    fn compare_paths(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        op: ComparisonOp,
+        left: Value,
+        right: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.heap.get_path(left).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+        })?;
+        let right = self.heap.get_path(right).map_err(|source| {
             TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
         })?;
         Ok(Value::bool(op.compare_bytes(left.bytes(), right.bytes())))
@@ -12884,6 +13164,20 @@ impl<'ir> TreeWalk<'ir> {
                 self.compare_strings(id, node, op, left, right)
                     .and_then(|value| self.expect_bool(id, value, node.span))
             }
+            ValueTag::Path => {
+                if right.tag() != ValueTag::Path {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "path",
+                            actual: right.tag(),
+                        },
+                        node.span,
+                    ));
+                }
+                self.compare_paths(id, node, op, left, right)
+                    .and_then(|value| self.expect_bool(id, value, node.span))
+            }
             ValueTag::List => {
                 if right.tag() != ValueTag::List {
                     return Err(TreeWalkError::new(
@@ -12900,7 +13194,7 @@ impl<'ir> TreeWalk<'ir> {
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id,
-                    expected: "number, string, or list",
+                    expected: "number, string, path, or list",
                     actual,
                 },
                 node.span,
@@ -13986,6 +14280,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_try_eval_direct(call.id, call.span, args[0])
             }
+            BuiltinExecution::GenericClosure => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_generic_closure_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::PathExists => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -14102,6 +14403,17 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::TryEval => {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_try_eval_value(call.id, call.span, args[0])
+            }
+            BuiltinExecution::GenericClosure => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_generic_closure_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
             }
             BuiltinExecution::PathExists => {
                 check_builtin_arity(call, 1, args.len())?;
@@ -17395,10 +17707,6 @@ mod tests {
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
             ("builtins.fetchGit or 42", b"fetchGit".as_slice()),
-            (
-                "builtins.genericClosure or 42",
-                b"genericClosure".as_slice(),
-            ),
             ("builtins.getFlake or 42", b"getFlake".as_slice()),
             ("builtins.scopedImport or 42", b"scopedImport".as_slice()),
         ] {
@@ -19470,6 +19778,262 @@ mod tests {
     }
 
     #[test]
+    fn generic_closure_primop_computes_discovery_order_closure() {
+        let source = r#"builtins.genericClosure {
+            startSet = [
+              { key = 1; value = "one"; }
+              { key = 2; value = "two"; }
+            ];
+            operator = item:
+              if item.key == 1 then [ { key = 3; value = "three"; } ]
+              else if item.key == 2 then [ { key = 4; value = "four"; } ]
+              else [];
+        }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"[{"key":1,"value":"one"},{"key":2,"value":"two"},{"key":3,"value":"three"},{"key":4,"value":"four"}]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"let f = builtins.genericClosure; in f {
+                    startSet = [ { key = 1; value = "start"; } ];
+                    operator = item:
+                      if item.key == 1 then [
+                        { key = 2; value = "two"; }
+                        { key = 3; value = "three"; }
+                      ]
+                      else if item.key == 2 then [ { key = 4; value = "four"; } ]
+                      else if item.key == 3 then [ { key = 5; value = "five"; } ]
+                      else [];
+                }"#
+            ),
+            br#"[{"key":1,"value":"start"},{"key":2,"value":"two"},{"key":3,"value":"three"},{"key":4,"value":"four"},{"key":5,"value":"five"}]"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn generic_closure_primop_keeps_first_item_for_duplicate_keys() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.genericClosure {
+                    startSet = [
+                      { key = 1; value = "first"; }
+                      { key = 1; value = "second"; }
+                      { key = 2; value = "third"; }
+                    ];
+                    operator = item: [];
+                }"#
+            ),
+            br#"[{"key":1,"value":"first"},{"key":2,"value":"third"}]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.genericClosure {
+                    startSet = [ { key = [ 1 2 ]; value = "start"; } ];
+                    operator = item: [
+                      { key = [ 1 2 ]; value = "duplicate"; }
+                      { key = [ 1 3 ]; value = "next"; }
+                    ];
+                }"#
+            ),
+            br#"[{"key":[1,2],"value":"start"},{"key":[1,3],"value":"next"}]"#.to_vec()
+        );
+
+        let dir = unique_temp_dir("generic-closure-path-keys");
+        let first_path = dir.join("first.txt");
+        let second_path = dir.join("second.txt");
+        fs::write(&first_path, b"first").expect("first temp file writes");
+        fs::write(&second_path, b"second").expect("second temp file writes");
+        let first_path = path_source(&first_path);
+        let second_path = path_source(&second_path);
+        let source = format!(
+            r#"builtins.map (item: item.value) (builtins.genericClosure {{
+                startSet = [
+                  {{ key = {first_path}; value = "first"; }}
+                  {{ key = {first_path}; value = "duplicate"; }}
+                  {{ key = {second_path}; value = "second"; }}
+                ];
+                operator = item: [];
+            }})"#
+        );
+        assert_eq!(eval_json_bytes(&source), br#"["first","second"]"#.to_vec());
+    }
+
+    #[test]
+    fn generic_closure_primop_does_not_force_operator_for_empty_start_set() {
+        assert_eq!(
+            eval("builtins.length (builtins.genericClosure { startSet = []; })").as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.genericClosure { startSet = []; operator = 1; })")
+                .as_int(),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn generic_closure_primop_checks_start_items_operator_and_results() {
+        let error = eval_whnf_owned(&lower("builtins.genericClosure 1"))
+            .expect_err("genericClosure requires an attrset");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.genericClosure { operator = item: []; }"))
+            .expect_err("genericClosure requires startSet");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = 1; operator = item: []; }",
+        ))
+        .expect_err("genericClosure startSet must be a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ 1 ]; operator = 1; }",
+        ))
+        .expect_err("genericClosure checks nonempty operator before start items");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ 1 ]; operator = item: []; }",
+        ))
+        .expect_err("genericClosure start items must be attrsets");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.genericClosure {
+                startSet = [ { value = "missing"; } ];
+                operator = item: [];
+            }"#,
+        ))
+        .expect_err("genericClosure items require key attributes");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ { key = 1; } ]; }",
+        ))
+        .expect_err("genericClosure requires operator after nonempty startSet");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ { key = 1; } ]; operator = 1; }",
+        ))
+        .expect_err("genericClosure operator must be a function");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ { key = 1; } ]; operator = item: 1; }",
+        ))
+        .expect_err("genericClosure operator must return lists");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.genericClosure { startSet = [ { key = 1; } ]; operator = item: [ 2 ]; }",
+        ))
+        .expect_err("genericClosure generated items must be attrsets");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.genericClosure {
+                startSet = [
+                  { key = { a = 1; }; value = "first"; }
+                  { key = { a = 1; }; value = "second"; }
+                ];
+                operator = item: [];
+            }"#,
+        ))
+        .expect_err("genericClosure rejects incomparable duplicate keys");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "number, string, path, or list",
+                actual: ValueTag::Attrs,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn generic_closure_primop_checks_generated_keys_when_popped() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.genericClosure {
+                startSet = [ { key = 1; } ];
+                operator = item:
+                  if item.key == 1 then [
+                    { key = 2; }
+                    { value = "missing"; }
+                  ]
+                  else if item.key == 2 then builtins.throw "visited two"
+                  else [];
+            }"#,
+        ))
+        .expect_err("generated key validation waits until work item is popped");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected generated work item to run before later missing key");
+        };
+        assert_eq!(message, b"visited two");
+    }
+
+    #[test]
     fn gen_list_primop_builds_lazy_indexed_elements() {
         assert_eq!(
             eval("builtins.length (builtins.genList (x: builtins.throw \"generated\") 2)").as_int(),
@@ -20500,7 +21064,7 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: lhs,
-                expected: "number, string, or list",
+                expected: "number, string, path, or list",
                 actual: ValueTag::Bool
             }
         );
@@ -29896,6 +30460,34 @@ mod tests {
     }
 
     #[test]
+    fn path_comparisons_use_byte_order() {
+        let dir = unique_temp_dir("path-ordering");
+        let first_path = dir.join("first.txt");
+        let second_path = dir.join("second.txt");
+        fs::write(&first_path, b"first").expect("first temp file writes");
+        fs::write(&second_path, b"second").expect("second temp file writes");
+        let first_path = path_source(&first_path);
+        let second_path = path_source(&second_path);
+
+        assert_eq!(
+            eval(&format!("{first_path} < {second_path}")).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!("{second_path} > {first_path}")).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!("{first_path} <= {first_path}")).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval(&format!("builtins.lessThan {first_path} {second_path}")).as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
     fn string_comparisons_use_bytes_not_contexts() {
         let ir = lower("1");
         let mut evaluator = TreeWalk::new(&ir);
@@ -30074,7 +30666,7 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: lhs,
-                expected: "number, string, or list",
+                expected: "number, string, path, or list",
                 actual: ValueTag::Bool,
             }
         );

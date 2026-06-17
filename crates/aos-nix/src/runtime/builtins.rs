@@ -340,7 +340,8 @@ builtin_registry! {
     pub(crate) struct GenericClosureBuiltin;
     impl BuiltinDefinition for GenericClosureBuiltin {
         const NAME: &'static [u8] = b"genericClosure";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::GenericClosure;
+        const DOCS: &'static BuiltinDocs = &GENERIC_CLOSURE_DOCS;
     }
 
     pub(crate) struct GetAttrBuiltin;
@@ -902,6 +903,8 @@ pub(crate) enum BuiltinExecution {
     DeepSeq,
     /// The builtin evaluates `findFile`.
     FindFile,
+    /// The builtin evaluates `genericClosure`.
+    GenericClosure,
 }
 
 impl BuiltinExecution {
@@ -949,6 +952,9 @@ impl BuiltinExecution {
             Self::FindFile => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
             }),
+            Self::GenericClosure => Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure,
+            }),
             Self::DirectBinary(_) => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure,
             }),
@@ -990,6 +996,7 @@ impl BuiltinExecution {
         match self {
             Self::StrictUnary { .. }
             | Self::LazyUnary
+            | Self::GenericClosure
             | Self::TryEval
             | Self::PathExists
             | Self::ReadDir
@@ -1147,6 +1154,10 @@ static HASH_FILE_DOCS: BuiltinDocs = BuiltinDocs {
 
 static GET_ENV_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a configured environment variable or an empty string.",
+};
+
+static GENERIC_CLOSURE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Computes the transitive closure of keyed attribute sets.",
 };
 
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1516,6 +1527,13 @@ mod tests {
             Some(1)
         );
         assert_eq!(
+            BUILTINS
+                .lookup(b"genericClosure")
+                .unwrap()
+                .first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
             BUILTINS.lookup(b"import").unwrap().first_class_arity(),
             None
         );
@@ -1635,6 +1653,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"currentSystem").unwrap().docs().summary(),
             "Returns the configured target system when available."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"genericClosure").unwrap().docs().summary(),
+            "Computes the transitive closure of keyed attribute sets."
         );
         assert_eq!(
             BUILTINS.lookup(b"hashFile").unwrap().docs().summary(),
