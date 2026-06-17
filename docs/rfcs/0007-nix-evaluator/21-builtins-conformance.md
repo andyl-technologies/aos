@@ -200,11 +200,13 @@ of its string inputs; context is string-granular, never byte-granular.
         a documented edge case used in nixpkgs; reproduce the exact insertion
         behavior.
       - Unions contexts of `s` **and** of every `to[i]` that gets used.
-- [ ] `concatStringsSep` (separator list) — join `list` (coerced element-wise to
+- [x] `concatStringsSep` (separator list) — join `list` (coerced element-wise to
       strings) with `separator`.
       - Unions the separator's context and every element's context.
-      - Element coercion follows `toString` rules (so a list element that is a
-        derivation contributes its `outPath` + context).
+      - Element coercion follows C++ Nix string coercion for this primop:
+        strings, paths, and attrsets via `__toString`/`outPath` are accepted;
+        ints, booleans, nulls, and lists are rejected rather than rendered like
+        `builtins.toString`.
 - [x] `splitVersion` (s) — split a version string into its component parts
       (digit runs and non-digit runs become elements; separators dropped).
       Returns a list of strings.
