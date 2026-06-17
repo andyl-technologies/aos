@@ -45,9 +45,10 @@
 //! anyone; `internal` requires a session member of the owning org; `private`
 //! (and any unknown visibility, fail-closed) requires `Read` at the registry
 //! scope from a session *or* a bearer JWT. A hidden registry renders as `404`,
-//! never `403`, so its existence is not disclosed. The JSON `/-/api/…` reads
-//! stay anonymous bearer-only (via [`RpcService`]'s own read gate), matching the
-//! machine surface.
+//! never `403`, so its existence is not disclosed. The JSON `/-/api/…` reads are
+//! **public-only**: they pass no auth to [`RpcService`] (neither session cookie
+//! nor bearer), so only `public` registries resolve and everything else is a
+//! `404` — the same shape the Worker served before.
 
 use std::time::Instant;
 
@@ -754,9 +755,9 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
 
 // -- JSON read API ------------------------------------------------------------
 //
-// The machine `/-/api/…` reads stay bearer-only via the service's own gate
-// (the same shape the Worker served before): no session cookie, public or
-// granted-by-token visibility only.
+// The machine `/-/api/…` reads are public-only: each passes `None` auth to the
+// service read methods (no session cookie and no bearer is forwarded), so only
+// `public` registries resolve — the same shape the Worker served before.
 
 /// Fetch one registry by slug for the JSON API, or a browse miss.
 async fn registry(svc: &RpcService, slug: &str) -> Option<pb::Registry> {
