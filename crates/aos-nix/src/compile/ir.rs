@@ -844,8 +844,9 @@ impl IrLowerer {
         let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
             return Ok(None);
         };
-        let Some(BuiltinDirect::StrictBinary { effect }) = self.direct_builtin(symbol) else {
-            return Ok(None);
+        let effect = match self.direct_builtin(symbol) {
+            Some(BuiltinDirect::StrictBinary { effect } | BuiltinDirect::Sort { effect }) => effect,
+            _ => return Ok(None),
         };
         Ok(Some((symbol, Self::effect_class(effect), first_argument)))
     }

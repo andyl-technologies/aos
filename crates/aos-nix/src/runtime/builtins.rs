@@ -743,7 +743,7 @@ impl BuiltinInfo for SeqBuiltin {
 pub(crate) struct SortBuiltin;
 impl BuiltinInfo for SortBuiltin {
     const NAME: &'static [u8] = b"sort";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::Sort;
 }
 
 pub(crate) struct SplitBuiltin;
@@ -930,6 +930,8 @@ pub(crate) enum BuiltinDirect {
     StrictBinary { effect: BuiltinEffect },
     /// The builtin lowers after a strict first argument and lazy second argument.
     StrictLazyBinary { effect: BuiltinEffect },
+    /// The builtin lowers as a two-argument sort boundary with Nix-specific forcing.
+    Sort { effect: BuiltinEffect },
     /// The builtin lowers after three strict arguments.
     StrictTernary { effect: BuiltinEffect },
 }
@@ -979,6 +981,8 @@ pub(crate) enum BuiltinExecution {
     DirectBinary(DirectBinaryPrimOp),
     /// The builtin has direct-only ternary execution.
     DirectTernary(StrictTernaryPrimOp),
+    /// The builtin evaluates `sort`.
+    Sort,
     /// The builtin evaluates `tryEval`.
     TryEval,
     /// The builtin evaluates `pathExists`.
@@ -1040,6 +1044,9 @@ impl BuiltinExecution {
             Self::DirectBinary(_) => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure,
             }),
+            Self::Sort => Some(BuiltinDirect::Sort {
+                effect: BuiltinEffect::Pure,
+            }),
             Self::DirectTernary(_) => Some(BuiltinDirect::StrictTernary {
                 effect: BuiltinEffect::Pure,
             }),
@@ -1078,9 +1085,11 @@ impl BuiltinExecution {
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType => Some(1),
-            Self::StrictBinary { .. } | Self::DirectBinary(_) | Self::Seq | Self::DeepSeq => {
-                Some(2)
-            }
+            Self::StrictBinary { .. }
+            | Self::DirectBinary(_)
+            | Self::Sort
+            | Self::Seq
+            | Self::DeepSeq => Some(2),
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
@@ -1394,6 +1403,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"sort"),
+            Some(BuiltinDirect::Sort {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"pathExists"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -1514,6 +1529,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"any").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"sort").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

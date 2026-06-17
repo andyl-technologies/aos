@@ -376,7 +376,7 @@ Forcing order is observable and must match (see
       [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md)).
 - [x] `genList` (generator length) — `[ (generator 0) … (generator (length-1)) ]`,
       elements as thunks. Negative length throws.
-- [ ] `sort` (comparator list) — sort with a binary `comparator` (`a: b: bool`,
+- [x] `sort` (comparator list) — sort with a binary `comparator` (`a: b: bool`,
       true iff `a` strictly before `b`).
       - Nix's sort is a **stable** sort and the comparator-tie behavior is
         observable; the exact algorithm/stability must match C++ Nix or sorted

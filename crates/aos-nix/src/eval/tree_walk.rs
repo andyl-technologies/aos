@@ -6971,6 +6971,537 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_sort_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            if list.is_empty() {
+                return Ok(list_value);
+            }
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        let comparator_span = self.node(comparator_id)?.span;
+        let comparator = self.eval_node(comparator_id)?;
+        let comparator = self.force_value(comparator_id, comparator_span, comparator)?;
+        self.eval_sort_elements(
+            id,
+            span,
+            comparator_id,
+            comparator_span,
+            comparator,
+            list_id,
+            list_span,
+            elements,
+        )
+    }
+
+    fn eval_sort_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let forced_list = self.force_value(list.id(), list.span(), list.value())?;
+        if forced_list.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: forced_list.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(forced_list).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            if list_value.is_empty() {
+                return Ok(forced_list);
+            }
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+
+        let comparator_value =
+            self.force_value(comparator.id(), comparator.span(), comparator.value())?;
+        self.eval_sort_elements(
+            id,
+            span,
+            comparator.id(),
+            comparator.span(),
+            comparator_value,
+            list.id(),
+            list.span(),
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_elements(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        list_span: Span,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        if !matches!(comparator.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: comparator_id,
+                    expected: "function",
+                    actual: comparator.tag(),
+                },
+                comparator_span,
+            ));
+        }
+
+        let mut elements = self.force_sort_elements(list_id, list_span, elements)?;
+        self.eval_sort_libcxx_stable(
+            id,
+            span,
+            comparator_id,
+            comparator_span,
+            comparator,
+            list_id,
+            &mut elements,
+        )?;
+
+        self.heap
+            .alloc_list(NixList::new(elements))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn force_sort_elements(
+        &mut self,
+        list_id: IrId,
+        list_span: Span,
+        elements: Vec<Value>,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let mut forced = Vec::new();
+        forced.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: list_id,
+                    len: elements.len(),
+                },
+                list_span,
+            )
+        })?;
+        for element in elements {
+            forced.push(self.force_value(list_id, list_span, element)?);
+        }
+        Ok(forced)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_libcxx_stable(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        elements: &mut [Value],
+    ) -> Result<(), TreeWalkError> {
+        const LIBCXX_STABLE_SORT_SWITCH_FOR_POINTERS: usize = 128;
+
+        match elements.len() {
+            0 | 1 => Ok(()),
+            2 => {
+                if self.eval_sort_comparator(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    elements[1],
+                    elements[0],
+                )? {
+                    elements.swap(0, 1);
+                }
+                Ok(())
+            }
+            len if len <= LIBCXX_STABLE_SORT_SWITCH_FOR_POINTERS => self.eval_sort_insertion(
+                id,
+                span,
+                comparator_id,
+                comparator_span,
+                comparator,
+                list_id,
+                elements,
+            ),
+            len => {
+                let middle = len / 2;
+                let left = self.eval_sort_libcxx_stable_move(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &mut elements[..middle],
+                )?;
+                let right = self.eval_sort_libcxx_stable_move(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &mut elements[middle..],
+                )?;
+                self.eval_sort_merge(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &left,
+                    &right,
+                    elements,
+                )
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_libcxx_stable_move(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        elements: &mut [Value],
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        match elements.len() {
+            0 => Ok(Vec::new()),
+            1 => {
+                let mut sorted = Self::sort_vec_with_capacity(id, span, 1)?;
+                sorted.push(elements[0]);
+                Ok(sorted)
+            }
+            2 => {
+                let mut sorted = Self::sort_vec_with_capacity(id, span, 2)?;
+                if self.eval_sort_comparator(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    elements[1],
+                    elements[0],
+                )? {
+                    sorted.push(elements[1]);
+                    sorted.push(elements[0]);
+                } else {
+                    sorted.push(elements[0]);
+                    sorted.push(elements[1]);
+                }
+                Ok(sorted)
+            }
+            len if len <= 8 => self.eval_sort_insertion_moved(
+                id,
+                span,
+                comparator_id,
+                comparator_span,
+                comparator,
+                list_id,
+                elements,
+            ),
+            len => {
+                let middle = len / 2;
+                self.eval_sort_libcxx_stable(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &mut elements[..middle],
+                )?;
+                self.eval_sort_libcxx_stable(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &mut elements[middle..],
+                )?;
+                let mut merged = Vec::new();
+                merged.try_reserve_exact(len).map_err(|_| {
+                    TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+                })?;
+                self.eval_sort_merge_to_vec(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    &elements[..middle],
+                    &elements[middle..],
+                    &mut merged,
+                )?;
+                Ok(merged)
+            }
+        }
+    }
+
+    fn sort_vec_with_capacity(
+        id: IrId,
+        span: Span,
+        len: usize,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+        })?;
+        Ok(values)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_insertion(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        elements: &mut [Value],
+    ) -> Result<(), TreeWalkError> {
+        for index in 1..elements.len() {
+            let candidate = elements[index];
+            let mut insert_at = index;
+            while insert_at > 0 {
+                let previous = elements[insert_at - 1];
+                if !self.eval_sort_comparator(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    candidate,
+                    previous,
+                )? {
+                    break;
+                }
+                elements[insert_at] = previous;
+                insert_at -= 1;
+            }
+            elements[insert_at] = candidate;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_insertion_moved(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        elements: &[Value],
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let mut sorted = Vec::new();
+        sorted.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements.iter().copied() {
+            let mut insert_at = sorted.len();
+            while insert_at > 0 {
+                let previous = sorted[insert_at - 1];
+                if !self.eval_sort_comparator(
+                    id,
+                    span,
+                    comparator_id,
+                    comparator_span,
+                    comparator,
+                    list_id,
+                    element,
+                    previous,
+                )? {
+                    break;
+                }
+                insert_at -= 1;
+            }
+            sorted.insert(insert_at, element);
+        }
+        Ok(sorted)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_merge(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        left: &[Value],
+        right: &[Value],
+        out: &mut [Value],
+    ) -> Result<(), TreeWalkError> {
+        let mut merged = Vec::new();
+        merged.try_reserve_exact(out.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len: out.len() },
+                span,
+            )
+        })?;
+        self.eval_sort_merge_to_vec(
+            id,
+            span,
+            comparator_id,
+            comparator_span,
+            comparator,
+            list_id,
+            left,
+            right,
+            &mut merged,
+        )?;
+        out.copy_from_slice(&merged);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_merge_to_vec(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        left: &[Value],
+        right: &[Value],
+        out: &mut Vec<Value>,
+    ) -> Result<(), TreeWalkError> {
+        let mut left_index = 0;
+        let mut right_index = 0;
+        while left_index < left.len() && right_index < right.len() {
+            if self.eval_sort_comparator(
+                id,
+                span,
+                comparator_id,
+                comparator_span,
+                comparator,
+                list_id,
+                right[right_index],
+                left[left_index],
+            )? {
+                out.push(right[right_index]);
+                right_index += 1;
+            } else {
+                out.push(left[left_index]);
+                left_index += 1;
+            }
+        }
+        out.extend_from_slice(&left[left_index..]);
+        out.extend_from_slice(&right[right_index..]);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_sort_comparator(
+        &mut self,
+        id: IrId,
+        span: Span,
+        comparator_id: IrId,
+        comparator_span: Span,
+        comparator: Value,
+        list_id: IrId,
+        left: Value,
+        right: Value,
+    ) -> Result<bool, TreeWalkError> {
+        let step = self.apply_lambda_value(
+            id,
+            span,
+            comparator_id,
+            comparator,
+            comparator_span,
+            list_id,
+            left,
+        )?;
+        let result = self.apply_lambda_value(
+            id,
+            span,
+            comparator_id,
+            step,
+            comparator_span,
+            list_id,
+            right,
+        )?;
+        let result = self.force_value(comparator_id, comparator_span, result)?;
+        let actual = result.tag();
+        let ValueTag::Bool = actual else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: comparator_id,
+                    expected: "bool",
+                    actual,
+                },
+                comparator_span,
+            ));
+        };
+        self.expect_bool(comparator_id, result, comparator_span)
+    }
+
     fn eval_foldl_strict_primop(
         &mut self,
         id: IrId,
@@ -10298,6 +10829,10 @@ fn apply_builtin_direct(
             check_builtin_arity(call, 3, args.len())?;
             eval.eval_strict_ternary_primop_direct(call, primop, args[0], args[1], args[2])
         }
+        BuiltinExecution::Sort => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_sort_primop(call.id, call.span, args[0], args[1])
+        }
         BuiltinExecution::TryEval => {
             check_builtin_arity(call, 1, args.len())?;
             eval.eval_try_eval_direct(call.id, call.span, args[0])
@@ -10392,6 +10927,10 @@ fn apply_builtin(
             eval.eval_strict_ternary_primop_value(
                 call.id, call.span, primop, args[0], args[1], args[2],
             )
+        }
+        BuiltinExecution::Sort => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_sort_primop_value(call.id, call.span, args[0], args[1])
         }
         BuiltinExecution::TryEval => {
             check_builtin_arity(call, 1, args.len())?;
@@ -12021,6 +12560,10 @@ mod tests {
         );
         assert_eq!(
             eval("builtins.isFunction builtins.replaceStrings").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.sort").as_bool(),
             Ok(true)
         );
         assert_eq!(
@@ -14719,6 +15262,185 @@ mod tests {
                 .as_int(),
             Ok(42)
         );
+    }
+
+    #[test]
+    fn sort_primop_orders_stably_with_comparator() {
+        assert_eq!(
+            eval_list_ints("builtins.sort builtins.lessThan [ 3 1 2 1 ]"),
+            vec![1, 1, 2, 3]
+        );
+        assert_eq!(
+            eval_list_ints("builtins.sort (a: b: builtins.lessThan b a) [ 3 1 2 ]"),
+            vec![3, 2, 1]
+        );
+        assert_eq!(
+            eval_list_ints("let sort = builtins.sort builtins.lessThan; in sort [ 3 1 2 ]"),
+            vec![1, 2, 3]
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.concatStringsSep \",\" (builtins.map (x: x.name) (builtins.sort (a: b: a.key < b.key) [ { key = 1; name = \"a\"; } { key = 1; name = \"b\"; } { key = 0; name = \"c\"; } ]))"
+            ),
+            b"c,a,b"
+        );
+        assert_eq!(
+            eval("let builtins = { sort = comparator: list: [ 42 ]; }; in builtins.sort (a: b: false) [] == [ 42 ]")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn sort_primop_checks_comparator_list_and_result_types() {
+        assert_eq!(
+            eval_list_ints("builtins.sort (1 / 0) []"),
+            Vec::<i64>::new()
+        );
+        assert_eq!(eval_list_ints("builtins.sort 1 []"), Vec::<i64>::new());
+        assert_eq!(
+            eval_list_ints("let sort = builtins.sort 1; in sort []"),
+            Vec::<i64>::new()
+        );
+
+        let ir = lower("builtins.sort (1 / 0) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+        let error = eval_whnf_owned(&ir).expect_err("sort checks the list before comparator");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.sort 1 [ 1 ]");
+        let error = eval_whnf_owned(&ir).expect_err("sort requires a comparator function");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("let sort = builtins.sort; in sort 1 []");
+        let result =
+            eval_whnf_owned(&ir).expect("first-class sort skips comparator for empty list");
+        let list = result
+            .heap()
+            .get_list(result.value())
+            .expect("result is a list");
+        assert!(list.is_empty());
+
+        let ir = lower(
+            "let sort = builtins.sort; in sort (builtins.throw \"comparator\") (builtins.throw \"list\")",
+        );
+        let error =
+            eval_whnf_owned(&ir).expect_err("first-class sort forces list before comparator");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"list");
+
+        let ir = lower("builtins.sort (a: b: false) 1");
+        let error = eval_whnf_owned(&ir).expect_err("sort requires a list");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.sort (a: b: 1) [ 1 2 ]");
+        let error = eval_whnf_owned(&ir).expect_err("sort comparator must return bool");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.sort (a: b: false) [ (1 / 0) true ]");
+        let error = eval_whnf_owned(&ir).expect_err("sort forces elements before comparison");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower("builtins.sort 1 [ (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("sort validates comparator before elements");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.sort builtins.lessThan [ 1 (1 / 0) ]");
+        let error = eval_whnf_owned(&ir).expect_err("sort forces elements");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn sort_primop_matches_libcxx_small_range_comparator_order() {
+        let ir = lower(
+            "builtins.sort (a: b:
+              if a == 2 && b == 1 then builtins.throw \"wrong-order\"
+              else if a == 2 && b == 3 then builtins.throw \"2<3\"
+              else a < b)
+            [ 3 1 2 ]",
+        );
+        let error =
+            eval_whnf_owned(&ir).expect_err("sort reaches the libc++ second comparison first");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"2<3");
+    }
+
+    #[test]
+    fn sort_primop_matches_libcxx_large_range_merge_order() {
+        // libc++ insertion-sorts pointer-like values up to 128 elements; 129
+        // elements reaches the recursive stable-sort merge path. C++ Nix
+        // 2.24 observes this top-level merge comparison for the descending fixture.
+        let ir = lower(
+            "builtins.sort (a: b:
+              if a == 1 && b == 66 then builtins.throw \"top-merge\"
+              else a < b)
+            (builtins.genList (i: 129 - i) 129)",
+        );
+        let error =
+            eval_whnf_owned(&ir).expect_err("sort reaches the libc++ large-range merge path");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"top-merge");
     }
 
     #[test]

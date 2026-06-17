@@ -1438,6 +1438,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
         | BuiltinDirect::LazyUnary { effect }
         | BuiltinDirect::StrictBinary { effect }
         | BuiltinDirect::StrictLazyBinary { effect }
+        | BuiltinDirect::Sort { effect }
         | BuiltinDirect::StrictTernary { effect } => effect,
     };
     Some(match effect {
