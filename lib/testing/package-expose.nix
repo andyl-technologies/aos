@@ -1085,6 +1085,8 @@ in
           netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
           manifest="$exposePath/manifest.json"
           policy="$exposePath/network-policy.json"
+          mac_profile="$exposePath/mac-profile.json"
+          apparmor_profile="$exposePath/mac/apparmor/aos.expose-smoke.profile"
 
           test -d "$exposePath/units"
           test -f "$unit"
@@ -1095,6 +1097,8 @@ in
           test ! -f "$netns"
           test -f "$manifest"
           test -f "$policy"
+          test -f "$mac_profile"
+          test -f "$apparmor_profile"
 
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$unit"
@@ -1214,6 +1218,15 @@ in
           grep -q '"network":"private"' "$manifest"
           grep -q '"security-label":"aos.expose-smoke"' "$manifest"
           grep -q '"syscalls":"restricted"' "$manifest"
+          grep -Fq '"mac":' "$manifest"
+          grep -Fq '"backend":"apparmor"' "$mac_profile"
+          grep -Fq '"defaultDeny":true' "$mac_profile"
+          grep -Fq '"package":"expose-smoke"' "$mac_profile"
+          grep -Fq '"profilePath":"mac/apparmor/aos.expose-smoke.profile"' "$mac_profile"
+          grep -Fq '"securityLabel":"aos.expose-smoke"' "$mac_profile"
+          grep -Fq 'profile aos.expose-smoke flags=(attach_disconnected,mediate_deleted)' \
+            "$apparmor_profile"
+          grep -Fq 'deny /** rwklx,' "$apparmor_profile"
 
           minimal_unit="$minimalExposePath/units/expose-minimal.service"
           minimal_target="$minimalExposePath/units/aos-pkg-expose-minimal.target"
@@ -1221,6 +1234,8 @@ in
           minimal_sysctl="$minimalExposePath/units/aos-pkg-expose-minimal-sysctl.service"
           minimal_firewall="$minimalExposePath/units/aos-pkg-expose-minimal-firewall.service"
           minimal_manifest="$minimalExposePath/manifest.json"
+          minimal_mac_profile="$minimalExposePath/mac-profile.json"
+          minimal_apparmor_profile="$minimalExposePath/mac/apparmor/aos-pkg-expose-minimal.profile"
           test -f "$minimal_unit"
           test -f "$minimal_target"
           test -f "$minimal_modules"
@@ -1228,6 +1243,8 @@ in
           test -f "$minimal_firewall"
           test ! -f "$minimalExposePath/units/aos-pkg-expose-minimal-netns.service"
           test -f "$minimal_manifest"
+          test -f "$minimal_mac_profile"
+          test -f "$minimal_apparmor_profile"
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
           grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
@@ -1247,6 +1264,8 @@ in
           grep -q '"forwardPolicy":"drop"' "$minimal_manifest"
           grep -q '"confinement":{"class":"sandboxed","holes":\[\],"label":"sandboxed"}' "$minimal_manifest"
           grep -q '"security-label":"aos-pkg-expose-minimal"' "$minimal_manifest"
+          grep -Fq '"securityLabel":"aos-pkg-expose-minimal"' "$minimal_mac_profile"
+          grep -Fq '"profilePath":"mac/apparmor/aos-pkg-expose-minimal.profile"' "$minimal_mac_profile"
           if grep -q '"kernel-modules"\|"capabilities"\|"devices"\|"host-paths"\|"cgroup-delegate"\|"privileged-users"\|"network"' \
             "$minimal_manifest"; then
             echo "minimal expose manifest must not request explicit permission grants" >&2
@@ -1374,6 +1393,13 @@ in
             "$unconfined_policy"
           grep -q '"landlock":{"abi":4,"fs":{"readOnly":\[\],"readWrite":\[\]}' \
             "$unconfined_policy"
+          test -f "$unconfinedExposePath/mac-profile.json"
+          grep -Fq '"defaultDeny":false' "$unconfinedExposePath/mac-profile.json"
+          grep -Fq '"profilePath":null' "$unconfinedExposePath/mac-profile.json"
+          if test -d "$unconfinedExposePath/mac/apparmor"; then
+            echo "unconfined package must not render a default-deny AppArmor profile" >&2
+            exit 1
+          fi
           if grep -q 'aos-landlock' "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
             echo "unconfined host path package must not run through aos-landlock" >&2
             exit 1

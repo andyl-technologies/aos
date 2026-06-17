@@ -77,13 +77,13 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_NETWORK_POLICY_V1,
-    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
-    PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
-    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
-    validate_channel_name, validate_expose_artifact_meta, validate_expose_meta,
-    validate_git_ref_name, validate_package_name, validate_permissions_meta,
+    CacheEntry, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_CONFIG_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
+    FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
+    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig,
+    RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket,
+    validate_branch_name, validate_channel_name, validate_expose_artifact_meta,
+    validate_expose_meta, validate_git_ref_name, validate_package_name, validate_permissions_meta,
     validate_platform_name, validate_registry_name,
 };
 use crate::{
@@ -100,6 +100,28 @@ use crate::{
 struct PublishExposeManifest {
     expose: ExposeMeta,
     permissions: PermissionsMeta,
+    #[serde(default)]
+    mac: Option<PublishMacProfileManifest>,
+    #[serde(default, rename = "kernel")]
+    _kernel: Option<Value>,
+    #[serde(default, rename = "firewall")]
+    _firewall: Option<Value>,
+    #[serde(default, rename = "confinement")]
+    _confinement: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishMacProfileManifest {
+    version: u32,
+    package: String,
+    backend: String,
+    #[serde(rename = "securityLabel")]
+    security_label: String,
+    #[serde(rename = "defaultDeny")]
+    default_deny: bool,
+    #[serde(rename = "profilePath")]
+    profile_path: Option<String>,
 }
 
 /// Resolve the registry storage directory for a given registry name.
@@ -1811,8 +1833,169 @@ fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<Publis
     }
     validate_permissions_meta(package_name, &manifest.permissions)
         .with_context(|| format!("validating permissions manifest for package '{package_name}'"))?;
+    if let Some(mac) = &manifest.mac {
+        validate_publish_mac_profile_manifest(package_name, &manifest.permissions, mac)
+            .with_context(|| {
+                format!("validating MAC profile manifest for package '{package_name}'")
+            })?;
+        validate_publish_mac_profile_artifacts(Path::new(path), package_name, mac)?;
+    }
 
     Ok(manifest)
+}
+
+fn validate_publish_mac_profile_manifest(
+    package_name: &str,
+    permissions: &PermissionsMeta,
+    mac: &PublishMacProfileManifest,
+) -> Result<()> {
+    let expected_label = permissions
+        .security_label
+        .clone()
+        .unwrap_or_else(|| format!("aos-pkg-{package_name}"));
+    let expected_default_deny = permissions
+        .confinement
+        .as_ref()
+        .map(|confinement| confinement.class != ConfinementClass::Unconfined)
+        .unwrap_or_else(|| {
+            permissions.computed_confinement().class != ConfinementClass::Unconfined
+        });
+    let expected_profile_path =
+        expected_default_deny.then(|| format!("mac/apparmor/{expected_label}.profile"));
+
+    if mac.version != 1 {
+        bail!(
+            "MAC profile manifest for package '{}' has unsupported version {}",
+            package_name,
+            mac.version
+        );
+    }
+    if mac.package != package_name {
+        bail!(
+            "MAC profile manifest package mismatch: expected '{}', got '{}'",
+            package_name,
+            mac.package
+        );
+    }
+    if mac.backend != "apparmor" {
+        bail!(
+            "MAC profile manifest backend mismatch for package '{}'",
+            package_name
+        );
+    }
+    if mac.security_label != expected_label {
+        bail!(
+            "MAC profile manifest security label mismatch for package '{}'",
+            package_name
+        );
+    }
+    if mac.default_deny != expected_default_deny
+        || mac.profile_path.as_deref() != expected_profile_path.as_deref()
+    {
+        bail!(
+            "MAC profile manifest confinement mode mismatch for package '{}'",
+            package_name
+        );
+    }
+    Ok(())
+}
+
+fn validate_publish_mac_profile_artifacts(
+    manifest_path: &Path,
+    package_name: &str,
+    mac: &PublishMacProfileManifest,
+) -> Result<()> {
+    let artifact_root = manifest_path.parent().with_context(|| {
+        format!(
+            "expose manifest path has no parent: {}",
+            manifest_path.display()
+        )
+    })?;
+    let mac_path = artifact_root.join("mac-profile.json");
+    let artifact_mac: PublishMacProfileManifest = read_publish_mac_profile_file(&mac_path)
+        .with_context(|| {
+            format!(
+                "validating MAC profile artifact for package '{}' at {}",
+                package_name,
+                mac_path.display()
+            )
+        })?;
+    if &artifact_mac != mac {
+        bail!(
+            "MAC profile artifact for package '{}' does not match manifest.mac",
+            package_name
+        );
+    }
+
+    let Some(profile_path) = &mac.profile_path else {
+        return Ok(());
+    };
+    let profile_text =
+        read_artifact_regular_file_no_symlink(artifact_root, Path::new(profile_path))
+            .with_context(|| format!("reading MAC profile file {}", profile_path))?;
+    let expected_profile = expected_publish_apparmor_profile(&mac.security_label);
+    if profile_text.trim_end() != expected_profile.trim_end() {
+        bail!(
+            "MAC profile file for package '{}' does not match the expected default-deny scaffold",
+            package_name
+        );
+    }
+    Ok(())
+}
+
+fn read_publish_mac_profile_file(path: &Path) -> Result<PublishMacProfileManifest> {
+    let content = read_regular_file_no_symlink(path)?;
+    serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<String> {
+    let mut components = relative_path.components().peekable();
+    if components.peek().is_none() {
+        bail!("artifact-relative path is empty");
+    }
+
+    let mut current = root.to_path_buf();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(component) = component else {
+            bail!(
+                "artifact-relative path contains unsupported component: {}",
+                relative_path.display()
+            );
+        };
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current)
+            .with_context(|| format!("checking {}", current.display()))?;
+        if components.peek().is_some() {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                bail!(
+                    "artifact path component is not a non-symlink directory: {}",
+                    current.display()
+                );
+            }
+        } else if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            bail!(
+                "artifact path is not a non-symlink regular file: {}",
+                current.display()
+            );
+        }
+    }
+
+    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn read_regular_file_no_symlink(path: &Path) -> Result<String> {
+    let metadata =
+        std::fs::symlink_metadata(path).with_context(|| format!("checking {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        bail!("path is not a regular file: {}", path.display());
+    }
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
+fn expected_publish_apparmor_profile(label: &str) -> String {
+    format!(
+        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package MAC profile scaffold.\n#include <tunables/global>\n\nprofile {label} flags=(attach_disconnected,mediate_deleted) {{\n  # Default deny until the backend-specific allow-rule renderer lands.\n  deny /** rwklx,\n  deny network,\n  deny capability,\n}}\n"
+    )
 }
 
 /// Infer the rendered expose artifact from a manifest produced by
@@ -2727,6 +2910,9 @@ fn package_platform_table(
             required_features.push(toml::Value::String(
                 FEATURE_CAPABILITY_ROUTES_V1.to_string(),
             ));
+        }
+        if manifest.mac.is_some() {
+            required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
         }
         table.insert(
             "requires-features".into(),
@@ -9713,6 +9899,156 @@ mod tests {
     }
 
     #[test]
+    fn read_publish_expose_manifest_accepts_renderer_mac_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "apparmor",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "kernel": {
+                "modules": [],
+            },
+            "firewall": {
+                "enabled": false,
+            },
+            "mac": mac,
+            "confinement": {
+                "class": "sandboxed",
+                "label": "sandboxed",
+                "holes": [],
+            },
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        let profile_path = tmp.path().join("mac/apparmor/aos-pkg-webapp.profile");
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::write(
+            &profile_path,
+            expected_publish_apparmor_profile("aos-pkg-webapp"),
+        )
+        .unwrap();
+
+        let parsed = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap();
+        let mac = parsed.mac.as_ref().unwrap();
+
+        assert_eq!(mac.backend, "apparmor");
+        assert_eq!(mac.security_label, "aos-pkg-webapp");
+        assert_eq!(
+            mac.profile_path.as_deref(),
+            Some("mac/apparmor/aos-pkg-webapp.profile")
+        );
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_rejects_missing_mac_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": {
+                "version": 1,
+                "package": "webapp",
+                "backend": "apparmor",
+                "securityLabel": "aos-pkg-webapp",
+                "defaultDeny": true,
+                "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+            },
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("validating MAC profile artifact for package 'webapp'")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_publish_expose_manifest_rejects_mac_profile_parent_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "apparmor",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": mac,
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        let external_mac = tmp.path().join("external-mac");
+        let external_profile = external_mac.join("apparmor/aos-pkg-webapp.profile");
+        fs::create_dir_all(external_profile.parent().unwrap()).unwrap();
+        fs::write(
+            &external_profile,
+            expected_publish_apparmor_profile("aos-pkg-webapp"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&external_mac, tmp.path().join("mac")).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("not a non-symlink directory"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn build_package_toml_records_expose_manifest_metadata() {
         let info = StorePathInfo {
             path: "/nix/store/abc123-webapp-1.0.0".into(),
@@ -9768,6 +10104,17 @@ mod tests {
                 }],
             },
             permissions,
+            mac: Some(PublishMacProfileManifest {
+                version: 1,
+                package: "webapp".into(),
+                backend: "apparmor".into(),
+                security_label: "aos-pkg-webapp".into(),
+                default_deny: true,
+                profile_path: Some("mac/apparmor/aos-pkg-webapp.profile".into()),
+            }),
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
         };
 
         let content = build_package_toml(
@@ -9821,6 +10168,7 @@ mod tests {
                 FEATURE_CONFIG_V1,
                 FEATURE_RELOAD_V1,
                 FEATURE_CAPABILITY_ROUTES_V1,
+                FEATURE_MAC_PROFILE_V1,
             ]
         );
         assert_eq!(
@@ -9930,6 +10278,10 @@ mod tests {
                 uses: Vec::new(),
             },
             permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
         };
 
         let err = build_package_toml(
@@ -9981,6 +10333,10 @@ mod tests {
                 uses: Vec::new(),
             },
             permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
         };
 
         let content = build_package_toml(

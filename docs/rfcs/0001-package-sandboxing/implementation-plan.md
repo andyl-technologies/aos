@@ -561,7 +561,11 @@ Full spec: [`enforcement.md`](enforcement.md).
 - [ ] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
       for MVP unless an SELinux base policy ships); loaded by `apm` at install.
-      The profile name is part of the measured manifest digest (P9).
+      The profile name is part of the measured manifest digest (P9). Current
+      coverage renders a deterministic `mac-profile.json` plus an AppArmor
+      default-deny scaffold for confined packages, records the MAC metadata in
+      `manifest.json`, and makes APM reject artifact/profile label mismatches
+      before attaching units; the kernel policy loader remains open.
 - [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).

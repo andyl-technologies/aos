@@ -56,6 +56,9 @@ pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
 /// Registry feature flag for RFC-0001 per-package network policy grants.
 pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
 
+/// Registry feature flag for RFC-0001 generated MAC profile artifacts.
+pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -65,6 +68,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_RELOAD_V1,
     FEATURE_CAPABILITY_ROUTES_V1,
     FEATURE_NETWORK_POLICY_V1,
+    FEATURE_MAC_PROFILE_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
