@@ -31738,6 +31738,7 @@ mod tests {
             eval("let x = 1; f = y: x + y; in let x = 10; in f x").as_int(),
             Ok(11)
         );
+        assert_eq!(eval("let f = x: x; or = 2; in f or").as_int(), Ok(2));
         assert_eq!(eval("((x: y: x) (1 + 2)) 0").as_int(), Ok(3));
     }
 

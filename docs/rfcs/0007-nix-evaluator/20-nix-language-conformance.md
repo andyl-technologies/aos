@@ -53,37 +53,39 @@ the builtin and defers its full contract to doc 21.
 The tokenizer must accept exactly the token set C++ Nix accepts and reject the
 rest at parse time (`parse-fail-*` conformance cases).
 
-- [ ] **Identifiers** — match `[a-zA-Z_][a-zA-Z0-9_'-]*`; first char is a letter
+- [x] **Identifiers** — match `[a-zA-Z_][a-zA-Z0-9_'-]*`; first char is a letter
       or `_`, subsequent chars may include `'` (prime) and `-` (hyphen). Verify
       the exact allowed set against pinned Nix (the trailing `'`/`-` are easy to
       miss and `lib` uses primed names like `x'`).
-- [ ] **Keywords** — `assert`, `else`, `if`, `in`, `inherit`, `let`, `or`,
+- [x] **Keywords** — `assert`, `else`, `if`, `in`, `inherit`, `let`, `or`,
       `rec`, `then`, `with`. Note `or` is a *contextual* keyword: it is the
-      default-value marker in attribute selection (`a.b or d`) but is otherwise
-      usable as an ordinary identifier in many positions — match Nix's exact
-      lexer/parser treatment of `or`.
-- [ ] **Integer literals** — signed 64-bit (`i64`). A bare literal is a sequence
+      default-value marker in attribute selection (`a.b or d`) and is accepted
+      in pinned Nix 2.24 as an attribute path segment / binding name, plus as a
+      bare unparenthesized application argument (`f or`), but not as a primary
+      expression (`or`, `(or)`, `[ or ]`), lambda parameter, or formal-set name.
+- [x] **Integer literals** — signed 64-bit (`i64`). A bare literal is a sequence
       of digits; a leading `-` is the negation *operator*, not part of the
       literal (precedence level 3, §6). No hex/octal/binary literals, no digit
       separators, no `0x`. Verify against pinned Nix.
-- [ ] **Float literals** — IEEE-754 double. Forms: `1.0`, `.5`, `1.`(verify),
-      `1e10`, `1.5e-3`, `3E8`. A float is produced when a `.` or an exponent is
-      present. Confirm exactly which forms the lexer accepts against pinned Nix
-      (leading-dot and trailing-dot are the corners).
-- [ ] **Boolean literals** — `true` and `false` are *not* keywords; they are
+- [x] **Float literals** — IEEE-754 double. Pinned Nix 2.24 accepts forms such
+      as `1.0`, `.5`, `1.`, `1.e10`, and `1.5e-3`. A float is produced when a
+      `.` is present; an exponent may then follow. Bare-exponent spellings
+      without a dot (`1e10`, `3E8`) are not floats in the pinned version: they
+      split as an integer followed by an identifier (`1` `e10`, `3` `E8`).
+- [x] **Boolean literals** — `true` and `false` are *not* keywords; they are
       identifiers bound in the global `builtins` scope. The parser does not
       special-case them — shadowing `true` with a `let` binding is legal and
       observable. Note this and reproduce it.
-- [ ] **`null`** — likewise a global identifier (`builtins.null`), not a keyword.
-- [ ] **Line comments** — `#` to end of line.
-- [ ] **Block comments** — `/* ... */`, **non-nesting** (the first `*/` closes).
+- [x] **`null`** — likewise a global identifier (`builtins.null`), not a keyword.
+- [x] **Line comments** — `#` to end of line.
+- [x] **Block comments** — `/* ... */`, **non-nesting** (the first `*/` closes).
       Verify the non-nesting rule against pinned Nix.
-- [ ] **Whitespace** — space, tab, newline, CR are insignificant between tokens
+- [x] **Whitespace** — space, tab, newline, CR are insignificant between tokens
       (significant *inside* string literals, §3). No layout/offside rule.
-- [ ] **No semicolon statement terminators** — `;` is a separator only inside
+- [x] **No semicolon statement terminators** — `;` is a separator only inside
       `let`/attrset bindings and after `assert`/`with` headers, not a general
       terminator.
-- [ ] **`parse-fail` rejection** — malformed tokens (unterminated string,
+- [x] **`parse-fail` rejection** — malformed tokens (unterminated string,
       unterminated block comment, stray `*/`, invalid number) must be a parse
       error, matching the `parse-fail-*` conformance category (doc 15 §3.2).
 

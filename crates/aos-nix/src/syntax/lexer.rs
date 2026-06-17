@@ -357,7 +357,7 @@ impl<'a> Lexer<'a> {
         if byte == b'#' {
             self.cursor += 1;
             while let Some(next) = self.peek_byte() {
-                if next == b'\n' {
+                if matches!(next, b'\n' | b'\r') {
                     break;
                 }
                 self.cursor += 1;
@@ -1086,6 +1086,96 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn lexical_identifier_and_number_boundaries_match_pinned_nix() {
+        let source = "foo-bar x' _ a0 1 1. .5 1.e10 1.5e-3 3E8 1e10 0x10";
+        let tokens = lex_tokens(source).expect("lexes");
+        let lexer = Lexer::from_source_str(source);
+        let significant = tokens
+            .iter()
+            .filter(|token| !token.kind.is_trivia() && token.kind != TokenKind::Eof)
+            .map(|token| {
+                (
+                    token.kind,
+                    String::from_utf8(lexer.slice(*token).expect("token span is valid").to_vec())
+                        .expect("fixture is UTF-8"),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            significant,
+            vec![
+                (TokenKind::Ident, "foo-bar".to_string()),
+                (TokenKind::Ident, "x'".to_string()),
+                (TokenKind::Ident, "_".to_string()),
+                (TokenKind::Ident, "a0".to_string()),
+                (TokenKind::Int, "1".to_string()),
+                (TokenKind::Float, "1.".to_string()),
+                (TokenKind::Float, ".5".to_string()),
+                (TokenKind::Float, "1.e10".to_string()),
+                (TokenKind::Float, "1.5e-3".to_string()),
+                (TokenKind::Int, "3".to_string()),
+                (TokenKind::Ident, "E8".to_string()),
+                (TokenKind::Int, "1".to_string()),
+                (TokenKind::Ident, "e10".to_string()),
+                (TokenKind::Int, "0".to_string()),
+                (TokenKind::Ident, "x10".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_whitespace_and_non_nesting_block_comments_match_pinned_nix() {
+        let mut lexer = Lexer::from_source_str("/* a /* b */ c */\r\n\t# line\nx");
+
+        let block = lexer.next_token().expect("block comment token");
+        assert_eq!(block.kind, TokenKind::BlockComment);
+        assert_eq!(
+            lexer.slice(block).expect("valid block span"),
+            b"/* a /* b */"
+        );
+
+        let space = lexer.next_token().expect("space token");
+        assert_eq!(space.kind, TokenKind::Whitespace);
+        assert_eq!(lexer.slice(space).expect("valid space span"), b" ");
+
+        let ident = lexer.next_token().expect("identifier token");
+        assert_eq!(ident.kind, TokenKind::Ident);
+        assert_eq!(lexer.slice(ident).expect("valid ident span"), b"c");
+
+        let mut lexer = Lexer::from_source_str("\r\n\t# line\nx");
+        let whitespace = lexer.next_token().expect("whitespace token");
+        assert_eq!(whitespace.kind, TokenKind::Whitespace);
+        assert_eq!(
+            lexer.slice(whitespace).expect("valid whitespace span"),
+            b"\r\n\t"
+        );
+        let line_comment = lexer.next_token().expect("line comment token");
+        assert_eq!(line_comment.kind, TokenKind::LineComment);
+        assert_eq!(
+            lexer.slice(line_comment).expect("valid line comment span"),
+            b"# line"
+        );
+
+        let mut lexer = Lexer::from_source_str("# cr\rx");
+        let line_comment = lexer.next_token().expect("line comment token");
+        assert_eq!(line_comment.kind, TokenKind::LineComment);
+        assert_eq!(
+            lexer.slice(line_comment).expect("valid line comment span"),
+            b"# cr"
+        );
+        let whitespace = lexer.next_token().expect("CR whitespace token");
+        assert_eq!(whitespace.kind, TokenKind::Whitespace);
+        assert_eq!(
+            lexer.slice(whitespace).expect("valid whitespace span"),
+            b"\r"
+        );
+        let ident = lexer.next_token().expect("identifier after CR");
+        assert_eq!(ident.kind, TokenKind::Ident);
+        assert_eq!(lexer.slice(ident).expect("valid ident span"), b"x");
     }
 
     #[test]

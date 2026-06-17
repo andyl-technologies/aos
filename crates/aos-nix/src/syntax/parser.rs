@@ -172,10 +172,10 @@ impl<'a> Parser<'a> {
             TokenKind::With => self.parse_with(),
             TokenKind::Assert => self.parse_assert(),
             TokenKind::If => self.parse_if(),
-            TokenKind::Ident | TokenKind::Or if self.peek_second_kind()? == TokenKind::Colon => {
+            TokenKind::Ident if self.peek_second_kind()? == TokenKind::Colon => {
                 self.parse_simple_lambda()
             }
-            TokenKind::Ident | TokenKind::Or if self.starts_prefixed_formal_lambda()? => {
+            TokenKind::Ident if self.starts_prefixed_formal_lambda()? => {
                 self.parse_prefixed_formal_lambda()
             }
             TokenKind::LBrace if self.starts_formal_lambda()? => self.parse_formal_lambda(None),
@@ -244,7 +244,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_simple_lambda(&mut self) -> Result<NodeId, ParseError> {
-        let param = self.parse_symbol_node(NodeKind::Ident)?;
+        let param = self.parse_identifier_node()?;
         self.expect(TokenKind::Colon)?;
         let body = self.parse_expr()?;
         let span = self.join_span(self.node_span(param)?, self.node_span(body)?);
@@ -425,7 +425,22 @@ impl<'a> Parser<'a> {
             }
 
             if self.starts_application_arg(next.kind) && BP_APPLY >= min_bp {
-                let rhs = self.parse_pratt(BP_APPLY + 1)?;
+                let rhs = if next.kind == TokenKind::Or {
+                    let rhs = self.parse_attr_symbol_node()?;
+                    let tail = self.peek()?;
+                    if matches!(tail.kind, TokenKind::Dot | TokenKind::Or) {
+                        return Err(self.error_at(
+                            tail.span,
+                            ParseErrorKind::UnexpectedToken {
+                                expected: "operator or end of expression",
+                                found: tail.kind,
+                            },
+                        ));
+                    }
+                    rhs
+                } else {
+                    self.parse_pratt(BP_APPLY + 1)?
+                };
                 lhs = self.push(
                     NodeKind::Apply,
                     self.join_span(self.node_span(lhs)?, self.node_span(rhs)?),
@@ -506,7 +521,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::Int => self.parse_int(),
             TokenKind::Float => self.parse_float(),
-            TokenKind::Ident | TokenKind::Or => self.parse_symbol_node(NodeKind::Ident),
+            TokenKind::Ident => self.parse_identifier_node(),
             TokenKind::Path => self.parse_path(),
             TokenKind::SPath => self.parse_symbol_node(NodeKind::SearchPath),
             TokenKind::Uri => self.parse_symbol_node(NodeKind::Uri),
@@ -579,10 +594,32 @@ impl<'a> Parser<'a> {
         self.push(NodeKind::Float, token.span, NodeData::Float(value))
     }
 
+    fn parse_identifier_node(&mut self) -> Result<NodeId, ParseError> {
+        let token = self.expect(TokenKind::Ident)?;
+        let symbol = self.intern_token(token)?;
+        self.push(NodeKind::Ident, token.span, NodeData::Symbol(symbol))
+    }
+
     fn parse_symbol_node(&mut self, kind: NodeKind) -> Result<NodeId, ParseError> {
         let token = self.expect_symbol_like()?;
         let symbol = self.intern_token(token)?;
         self.push(kind, token.span, NodeData::Symbol(symbol))
+    }
+
+    fn parse_attr_symbol_node(&mut self) -> Result<NodeId, ParseError> {
+        let token = self.bump()?;
+        if matches!(token.kind, TokenKind::Ident | TokenKind::Or) {
+            let symbol = self.intern_token(token)?;
+            self.push(NodeKind::Ident, token.span, NodeData::Symbol(symbol))
+        } else {
+            Err(self.error_at(
+                token.span,
+                ParseErrorKind::UnexpectedToken {
+                    expected: "attribute path segment",
+                    found: token.kind,
+                },
+            ))
+        }
     }
 
     fn parse_path(&mut self) -> Result<NodeId, ParseError> {
@@ -947,7 +984,7 @@ impl<'a> Parser<'a> {
     fn parse_attr_segment(&mut self) -> Result<NodeId, ParseError> {
         let token = self.peek()?;
         match token.kind {
-            TokenKind::Ident | TokenKind::Or => self.parse_symbol_node(NodeKind::Ident),
+            TokenKind::Ident | TokenKind::Or => self.parse_attr_symbol_node(),
             TokenKind::StrStart => {
                 self.parse_string(TokenKind::StrEnd, NodeKind::Str, StringSyntax::Double)
             }
@@ -1129,7 +1166,7 @@ impl<'a> Parser<'a> {
 
     fn starts_prefixed_formal_lambda(&mut self) -> Result<bool, ParseError> {
         let mut probe = self.probe();
-        if !matches!(probe.bump()?.kind, TokenKind::Ident | TokenKind::Or) {
+        if probe.bump()?.kind != TokenKind::Ident {
             return Ok(false);
         }
         Ok(probe.bump()?.kind == TokenKind::At && probe.bump()?.kind == TokenKind::LBrace)
@@ -1143,7 +1180,7 @@ impl<'a> Parser<'a> {
 
         if probe.peek()?.kind == TokenKind::At {
             probe.bump()?;
-            if !matches!(probe.bump()?.kind, TokenKind::Ident | TokenKind::Or) {
+            if probe.bump()?.kind != TokenKind::Ident {
                 return Ok(false);
             }
         }
@@ -1196,7 +1233,7 @@ impl<'a> Parser<'a> {
 
     fn expect_symbol_token(&mut self) -> Result<Token, ParseError> {
         let token = self.bump()?;
-        if matches!(token.kind, TokenKind::Ident | TokenKind::Or) {
+        if token.kind == TokenKind::Ident {
             Ok(token)
         } else {
             Err(self.error_at(
@@ -1213,7 +1250,7 @@ impl<'a> Parser<'a> {
         let token = self.bump()?;
         if matches!(
             token.kind,
-            TokenKind::Ident | TokenKind::Or | TokenKind::Path | TokenKind::SPath | TokenKind::Uri
+            TokenKind::Ident | TokenKind::Path | TokenKind::SPath | TokenKind::Uri
         ) {
             Ok(token)
         } else {
@@ -1596,7 +1633,7 @@ impl TokenProbe<'_> {
                     self.bump()?;
                     return Ok(true);
                 }
-                TokenKind::Ident | TokenKind::Or if expect_formal && !saw_ellipsis => {
+                TokenKind::Ident if expect_formal && !saw_ellipsis => {
                     self.bump()?;
                     if self.peek()?.kind == TokenKind::Question {
                         self.bump()?;
@@ -1979,6 +2016,58 @@ mod tests {
         let ast = parse("pkg ? meta.name");
         let root = node(&ast, ast.root);
         assert_eq!(root.kind, NodeKind::HasAttr);
+    }
+
+    #[test]
+    fn contextual_or_matches_pinned_keyword_positions() {
+        parse("({ or = 1; }).or");
+        parse("({ missing = 1; }).or or 2");
+        parse("let or = 1; in 0");
+        parse("let inherit ({ or = 1; }) or; in 0");
+        parse("let f = x: x; or = 2; in f or");
+        parse("let f = x: x; or = { a = 1; }; in f or ? a");
+
+        for source in [
+            "or",
+            "(or)",
+            "[ or ]",
+            "if or then 1 else 0",
+            "assert or; 1",
+            "or: 1",
+            "or@{ a }: 1",
+            "{ a }@or: 1",
+            "{ or }: 1",
+            "{ or ? 1 }: 1",
+            "let f = x: x; or = { a = 1; }; in f or.a",
+            "let f = x: x; or = { a = 1; }; in f or or 2",
+        ] {
+            parse_str(source).expect_err("contextual or position should match pinned Nix");
+        }
+    }
+
+    #[test]
+    fn parse_fail_lexical_rejections_are_reported() {
+        for source in [
+            "\"unterminated",
+            "''unterminated",
+            "/* unterminated",
+            "*/",
+            "999999999999999999999999",
+        ] {
+            parse_str(source).expect_err("malformed lexical input should be rejected");
+        }
+    }
+
+    #[test]
+    fn semicolon_is_not_a_general_expression_terminator() {
+        parse("let x = 1; in x");
+        parse("{ x = 1; }");
+        parse("assert true; 1");
+        parse("with { x = 1; }; x");
+
+        for source in ["1;", "[ 1; ]", "(1;)"] {
+            parse_str(source).expect_err("semicolon is not a general expression terminator");
+        }
     }
 
     #[test]
