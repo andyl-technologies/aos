@@ -13709,6 +13709,39 @@ mod tests {
 
     #[test]
     #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_identity_constants_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            "builtins.true",
+            "builtins.false",
+            "builtins.null",
+            "builtins.true == true",
+            "builtins.false == false",
+            "builtins.null == null",
+            "builtins ? true",
+            "builtins ? false",
+            "builtins ? null",
+            "builtins ? storeDir",
+            "builtins.typeOf builtins.true",
+            "builtins.typeOf builtins.false",
+            "builtins.typeOf builtins.null",
+            "builtins.storeDir",
+            "builtins.typeOf builtins.storeDir",
+            "builtins.storeDir or \"fallback\"",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
     fn cpp_nix_attrset_builtin_semantics_match_tree_walk() {
         let oracle = cpp_nix_oracle();
         let version = cpp_nix_version(&oracle);

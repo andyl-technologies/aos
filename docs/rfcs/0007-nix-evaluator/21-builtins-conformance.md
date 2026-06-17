@@ -750,7 +750,7 @@ on them.
       is `builtins`. Its membership and **attr order** must equal the pinned
       `nix`'s (the differential gate; see
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §4.4).
-- [ ] `true` / `false` / `null` — present both as language keywords and as
+- [x] `true` / `false` / `null` — present both as language keywords and as
       members of `builtins`. Must exist as members so `attrNames builtins`
       matches.
 - [x] `nixVersion` (string) — the reported Nix version, e.g. `"2.32.0"`.
@@ -769,7 +769,7 @@ on them.
 - [ ] `currentSystem` (string) — (also §10) the host system; constant per config.
 - [ ] `currentTime` (integer) — (also §10) start-of-eval Unix time; the one
       genuinely non-deterministic constant.
-- [ ] `storeDir` (string) — (also §11) `"/nix/store"`.
+- [x] `storeDir` (string) — (also §11) `"/nix/store"`.
 
 **Decision summary (flagged for [decision register](19-decision-register.md)):**
 `nixVersion` and `langVersion` are **spoofed to the pinned C++ Nix values**.
