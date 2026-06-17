@@ -837,7 +837,7 @@ version reports**. Concretely:
       harness-pinned `experimental-features = flakes` surface is captured as a
       golden fixture; the harness fails if aos-nix's set differs in membership
       or order.
-- [ ] Every builtin whose existence is version-gated (noted inline above:
+- [x] Every builtin whose existence is version-gated under that surface (noted inline above:
       `convertHash` ≥ 2.19, `readFileType` ≥ 2.14, `addDrvOutputDependencies`
       ≥ 2.16-era, `warn` ≥ 2.23, `fetchTree` stabilized ≥ 2.19) is present **iff**
       the pinned version includes it.

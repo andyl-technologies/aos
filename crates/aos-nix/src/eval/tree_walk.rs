@@ -17389,6 +17389,14 @@ mod tests {
         "zipAttrsWith",
     ];
 
+    const VERSION_GATED_BUILTIN_NAMES: &[&str] = &[
+        "addDrvOutputDependencies",
+        "convertHash",
+        "fetchTree",
+        "readFileType",
+        "warn",
+    ];
+
     const LIB_NOT_BUILTIN_NAMES: &[&str] = &[
         "toLower",
         "toUpper",
@@ -18215,6 +18223,25 @@ mod tests {
             eval_list_string_bytes_with_options("builtins.attrNames builtins.builtins", options),
             fixture,
         );
+    }
+
+    #[test]
+    fn version_gated_builtin_names_match_pinned_flakes_surface() {
+        for name in VERSION_GATED_BUILTIN_NAMES {
+            let fixture_contains = PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES.contains(name);
+            let registry_contains = BUILTINS.lookup(name.as_bytes()).is_some();
+            assert_eq!(
+                registry_contains, fixture_contains,
+                "{name} local registration should match the pinned flake-enabled fixture",
+            );
+
+            let source = format!("builtins.hasAttr {} builtins", nix_string_literal(name));
+            assert_eq!(
+                eval(&source).as_bool(),
+                Ok(fixture_contains),
+                "{name} runtime presence should match the pinned flake-enabled fixture",
+            );
+        }
     }
 
     #[test]
