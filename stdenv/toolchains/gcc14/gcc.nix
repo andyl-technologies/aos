@@ -1,235 +1,195 @@
-# stdenv/toolchains/gcc14/gcc.nix — GCC 14.3.0 (RHEL 10)
+# stdenv/toolchains/gcc14/gcc.nix - GCC 14.3.0 stage1 (RHEL 10)
 #
-# GCC built by GCC 11.5.0 from the previous tier. In-tree
-# GMP/MPFR/MPC/ISL. Enables PIE and SSP by default (hardening flags).
-#
+# Stage1 is built by GCC 11.5.0 from the previous tier. It is consumed only
+# inside the gcc14 tier to build binutils, linux headers, glibc, and the final
+# bootstrapped GCC.
 {
   prev,
   buildPlatform,
   hostPlatform,
   targetPlatform,
 }: let
-  gcc-src = builtins.fetchTarball {
+  gccSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gcc/gcc-14.3.0/gcc-14.3.0.tar.xz";
     sha256 = "18slj57b3zizzmc1bn4b6x8rygijfjjmwfzipdvyyzrbspaa5x21";
   };
 
-  gmp-src = builtins.fetchTarball {
+  gmpSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz";
     sha256 = "1kc3dy4jxand0y118yb9715g9xy1fnzqgkwxy02vd57y2fhg2pcw";
   };
 
-  mpfr-src = builtins.fetchTarball {
+  mpfrSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/mpfr/mpfr-4.2.1.tar.xz";
     sha256 = "1irpgc9aqyhgkwqk7cvib1dgr5v5hf4m0vaaknssyfpkjmab9ydq";
   };
 
-  mpc-src = builtins.fetchTarball {
+  mpcSrc = builtins.fetchTarball {
     url = "https://mirrors.kernel.org/gnu/mpc/mpc-1.3.1.tar.gz";
     sha256 = "1b6layaybj039fajx8dpy2zvcfy7s02y3y4lficz16vac0fsd0jk";
   };
 
-  isl-src = builtins.fetchTarball {
+  islSrc = builtins.fetchTarball {
     url = "https://downloads.sourceforge.net/project/libisl/isl-0.26.tar.xz";
     sha256 = "01krva4ax8zvi365akpzdv8r3a3gdl8sqcdgsg2kxmcy810gay0k";
   };
+
+  mkGcc = import ../lib/mk-gcc.nix {
+    inherit
+      prev
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
 in
-  builtins.derivation {
-    name = "gcc-14.3.0";
-    system = buildPlatform.system;
-    builder = "${prev.bash}/bin/bash";
-    args = [
-      "-c"
-      ''
-              set -eu
-              export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-              export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.diffutils}/bin:${prev.bash}/bin:${prev.patch}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.autoconf}/bin:${prev.automake}/bin:${prev.texinfo}/bin:${prev.help2man}/bin"
-              export CONFIG_SHELL="${prev.bash}/bin/bash"
-
-              cd "$TMPDIR"
-              # cp -r from coreutils/glibc may fail with "Function not implemented"
-              # (fchmodat AT_SYMLINK_NOFOLLOW bug). Use tar pipe workaround instead.
-              mkdir gcc-14.3.0 && (cd ${gcc-src} && ${prev.tar}/bin/tar cf - .) | (cd gcc-14.3.0 && ${prev.tar}/bin/tar xf -)
-              cd gcc-14.3.0
-              chmod -R u+w .
-
-              # In-tree GMP/MPFR/MPC/ISL
-              mkdir gmp && (cd ${gmp-src} && ${prev.tar}/bin/tar cf - .) | (cd gmp && ${prev.tar}/bin/tar xf -)
-              chmod -R u+w gmp
-              mkdir mpfr && (cd ${mpfr-src} && ${prev.tar}/bin/tar cf - .) | (cd mpfr && ${prev.tar}/bin/tar xf -)
-              chmod -R u+w mpfr
-              mkdir mpc && (cd ${mpc-src} && ${prev.tar}/bin/tar cf - .) | (cd mpc && ${prev.tar}/bin/tar xf -)
-              chmod -R u+w mpc
-              mkdir isl && (cd ${isl-src} && ${prev.tar}/bin/tar cf - .) | (cd isl && ${prev.tar}/bin/tar xf -)
-              chmod -R u+w isl
-
-              # Set up target sysroot so xgcc can find glibc + linux headers + libs
-              mkdir -p "$TMPDIR/sysroot/usr/include"
-              # Glibc headers first
-              ln -sf ${prev.glibc}/include/* "$TMPDIR/sysroot/usr/include/"
-              # Linux kernel headers — installed at $linuxHeaders/ root (no include/ prefix)
-              # Remove existing directory symlinks first (ln -sf can't replace symlink-to-directory)
-              for d in ${prev.linuxHeaders}/*; do
-                bn=$(basename "$d")
-                rm -f "$TMPDIR/sysroot/usr/include/$bn"
-                ln -sf "$d" "$TMPDIR/sysroot/usr/include/$bn"
-              done
-              ln -sf ${prev.glibc}/lib "$TMPDIR/sysroot/usr/lib"
-              ln -sf ${prev.glibc}/lib "$TMPDIR/sysroot/lib"
-
-              # Touch autotools inputs first, then .c/.h, then autotools outputs
-              for dir in . gmp mpfr mpc isl; do
-                find "$dir" -type f \( -name '*.y' -o -name '*.l' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' -o -name 'acinclude.m4' \) -exec touch {} + 2>/dev/null || true
-              done
-              sleep 1
-              for dir in . gmp mpfr mpc isl; do
-                find "$dir" -type f \( -name '*.c' -o -name '*.h' \) -exec touch {} + 2>/dev/null || true
-              done
-              sleep 1
-              for dir in . gmp mpfr mpc isl; do
-                find "$dir" \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch {} + 2>/dev/null || true
-              done
-
-              mkdir -p "$TMPDIR/build"
-              cd "$TMPDIR/build"
-
-              CC="${prev.gcc}/bin/gcc" CXX="${prev.gcc}/bin/g++" \
-              CFLAGS="-O2 -static -isystem ${prev.glibc}/include" \
-              CXXFLAGS="-O2 -static -isystem ${prev.glibc}/include" \
-              LDFLAGS="-L${prev.glibc}/lib -static" \
-              "$TMPDIR/gcc-14.3.0/configure" \
-                --prefix="$out" \
-                --build=${buildPlatform.config} --host=${hostPlatform.config} --target=${targetPlatform.config} \
-                --enable-languages=c,c++ \
-                --disable-shared --disable-nls --enable-threads=posix \
-                --disable-multilib --disable-bootstrap \
-                --disable-libsanitizer --disable-libvtv \
-                --enable-default-pie --enable-default-ssp \
-                --with-native-system-header-dir="/usr/include" \
-                --with-build-sysroot="$TMPDIR/sysroot" \
-                --program-transform-name=
-
-              # Build the compiler first
-              make -j"$NIX_BUILD_CORES" all-gcc \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-                BOOT_CFLAGS="-O2 -static" \
-                CFLAGS_FOR_TARGET="-O2" \
-                LDFLAGS_FOR_TARGET="-static"
-
-              # fixincludes in GCC 14 doesn't always generate include-fixed/limits.h,
-              # which is needed to chain #include_next from GCC's limits.h to the
-              # system's limits.h. Create it manually.
-              mkdir -p "$TMPDIR/build/gcc/include-fixed"
-              cat > "$TMPDIR/build/gcc/include-fixed/limits.h" <<'LIMITS_EOF'
-        /* Generated for GCC 14 bootstrap — chains to system limits.h.
-         *
-         * Do NOT guard this with #ifndef _GCC_LIMITS_H_: gcc's main limits.h
-         * (include/limits.h) defines that macro before including syslimits.h,
-         * which in turn triggers include-fixed/limits.h — so by the time we get
-         * here, _GCC_LIMITS_H_ is always set. A guard here would silently skip
-         * the #include_next below, leaving MB_LEN_MAX at gcc's fallback of 1
-         * instead of glibc's 16, which makes glibc's own bits/stdlib.h fail
-         * with `#error "Assumed value of MB_LEN_MAX wrong"` when a user
-         * includes <stdlib.h>. Use a local guard so the preprocessor still
-         * protects against degenerate re-includes of this same file.
-         */
-        #ifndef _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
-        #define _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
-        #include_next <limits.h>
-        #endif
-        LIMITS_EOF
-
-              # Now build target libraries (libgcc + libstdc++)
-              # libstdc++ is needed so this GCC can be used as the host compiler
-              # for the self-recompile step (g++ must be able to create executables).
-              make -j"$NIX_BUILD_CORES" all-target-libgcc \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-                CFLAGS_FOR_TARGET="-O2 -fPIC" \
-                LDFLAGS_FOR_TARGET="-static"
-              make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-                CFLAGS_FOR_TARGET="-O2 -fPIC" \
-                CXXFLAGS_FOR_TARGET="-O2 -fPIC" \
-                LDFLAGS_FOR_TARGET="-static"
-              make -j"$NIX_BUILD_CORES" all-target-libatomic \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
-                CFLAGS_FOR_TARGET="-O2 -fPIC" \
-                LDFLAGS_FOR_TARGET="-static"
-
-              make install-gcc \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-              make install-target-libgcc \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-              make install-target-libstdc++-v3 \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-              make install-target-libatomic \
-                AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
-
-              [ -f "$out/bin/gcc" ] && [ ! -f "$out/bin/cc" ] && ln -sf gcc "$out/bin/cc"
-              [ -f "$out/bin/g++" ] && [ ! -f "$out/bin/c++" ] && ln -sf g++ "$out/bin/c++"
-
-              # Symlink binutils tools so gcc can find as/ld
-              mkdir -p "$out/${targetPlatform.config}/bin"
-              for tool in as ld ar ranlib nm objcopy objdump strip; do
-                ln -sf ${prev.binutils}/bin/$tool "$out/${targetPlatform.config}/bin/$tool" 2>/dev/null || true
-                ln -sf ${prev.binutils}/bin/$tool "$out/bin/$tool" 2>/dev/null || true
-              done
-
-              # Set up so gcc finds glibc startfiles + libraries.
-              # Copy (install -m) rather than symlink: a symlink from $out into
-              # ${prev.glibc}/lib makes $out reference prev.glibc, which in turn
-              # drags the entire pre-tier chain (stage-0 glibc-2.2.5, old gccs,
-              # mes, tinycc, …) into every runtime closure that touches gcc14.
-              # Copying makes the bytes live inside $out; nix's scanner sees no
-              # store-path dependency in .o/.a files themselves.
-              SPEC_DIR="$out/lib/gcc/${targetPlatform.config}/14.3.0"
-              for f in ${prev.glibc}/lib/crt*.o ${prev.glibc}/lib/Scrt1.o ${prev.glibc}/lib/rcrt1.o ${prev.glibc}/lib/gcrt1.o; do
-                bn="$(basename "$f")"
-                install -m 644 "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
-              done
-              install -m 644 ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
-              install -m 644 ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
-              install -m 644 ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
-              # Install specs file: add glibc header path.
-              # Do NOT add forced -static to link specs — it conflicts with the PIE default
-              # (GCC 14 has --enable-default-pie). The spec `%{!static:` condition checks
-              # user flags, not spec-generated ones, so spec-injected -static still adds
-              # -dynamic-linker, producing a broken static PIE. Tier tools pass -static
-              # and -no-pie explicitly in their own LDFLAGS instead.
-              "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
-              # Add -idirafter for glibc + linux kernel headers (not -isystem, which goes
-              # before C++ headers and breaks #include_next <stdlib.h> in cstdlib).
-              ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} |}' \
-                "$SPEC_DIR/specs" 2>/dev/null || true
-              # Scrub the 32-char store-path hashes we just injected. The idirafter
-              # flags stay syntactically present (so bare `gcc` fails loudly on a
-              # nonexistent dir rather than silently resolving into prev's glibc),
-              # but the reference scanner no longer sees prev.glibc/prev.linuxHeaders
-              # as closure edges. Matches nixpkgs' `remove-references-to` idiom.
-              _hash_prev_glibc=$(echo "${prev.glibc}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
-              _hash_prev_headers=$(echo "${prev.linuxHeaders}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
-              ${prev.sed}/bin/sed -i \
-                -e "s|$_hash_prev_glibc|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
-                -e "s|$_hash_prev_headers|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
-                "$SPEC_DIR/specs"
-
-              # Create libgcc_s.so linker script stub.
-              # GCC was built with --disable-shared so libgcc_s.so doesn't exist,
-              # but GCC's default link sequence for dynamic executables references
-              # -lgcc_s. This linker script redirects it to the static libgcc.a.
-              echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.so"
-              echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.so"
-              # Also create libgcc_s.a for explicit static linking
-              echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.a"
-              echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.a"
-
-              echo "GCC 14.3.0 installed to $out"
-      ''
+  mkGcc {
+    version = "14.3.0";
+    src = gccSrc;
+    inTreeDeps = [
+      {
+        name = "gmp";
+        src = gmpSrc;
+      }
+      {
+        name = "mpfr";
+        src = mpfrSrc;
+      }
+      {
+        name = "mpc";
+        src = mpcSrc;
+      }
+      {
+        name = "isl";
+        src = islSrc;
+      }
     ];
-  }
-  // {
+    extraPathDeps = [
+      prev.m4
+      prev.flex
+      prev.bison
+      prev.autoconf
+      prev.automake
+      prev.texinfo
+      prev.help2man
+    ];
+    preConfigure = ''
+      # Set up target sysroot so xgcc can find glibc, linux headers, and libs.
+      mkdir -p "$TMPDIR/sysroot/usr/include"
+      ln -sf ${prev.glibc}/include/* "$TMPDIR/sysroot/usr/include/"
+      for d in ${prev.linuxHeaders}/*; do
+        bn=$(basename "$d")
+        rm -f "$TMPDIR/sysroot/usr/include/$bn"
+        ln -sf "$d" "$TMPDIR/sysroot/usr/include/$bn"
+      done
+      ln -sf ${prev.glibc}/lib "$TMPDIR/sysroot/usr/lib"
+      ln -sf ${prev.glibc}/lib "$TMPDIR/sysroot/lib"
+    '';
+    configureEnv = [
+      ''CC="${prev.gcc}/bin/gcc"''
+      ''CXX="${prev.gcc}/bin/g++"''
+      ''CFLAGS="-O2 -static -isystem ${prev.glibc}/include"''
+      ''CXXFLAGS="-O2 -static -isystem ${prev.glibc}/include"''
+      ''LDFLAGS="-L${prev.glibc}/lib -static"''
+    ];
+    configureFlags = [
+      "--enable-languages=c,c++"
+      "--disable-shared"
+      "--disable-nls"
+      "--enable-threads=posix"
+      "--disable-multilib"
+      "--disable-bootstrap"
+      "--disable-libsanitizer"
+      "--disable-libvtv"
+      "--enable-default-pie"
+      "--enable-default-ssp"
+      ''--with-native-system-header-dir="/usr/include"''
+      ''--with-build-sysroot="$TMPDIR/sysroot"''
+      "--program-transform-name="
+    ];
+    buildCommands = ''
+      make -j"$NIX_BUILD_CORES" all-gcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        BOOT_CFLAGS="-O2 -static" \
+        CFLAGS_FOR_TARGET="-O2" \
+        LDFLAGS_FOR_TARGET="-static"
+
+      # GCC 14 fixincludes does not always generate include-fixed/limits.h.
+      mkdir -p "$TMPDIR/build/gcc/include-fixed"
+      cat > "$TMPDIR/build/gcc/include-fixed/limits.h" <<'LIMITS_EOF'
+      /* Generated for GCC 14 bootstrap - chains to system limits.h.
+       *
+       * Do not guard this with _GCC_LIMITS_H_: gcc's main limits.h defines
+       * that macro before including syslimits.h, which would skip the
+       * #include_next below and leave MB_LEN_MAX at gcc's fallback value.
+       */
+      #ifndef _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+      #define _GCC_BOOTSTRAP_INCLUDE_FIXED_LIMITS_H_
+      #include_next <limits.h>
+      #endif
+      LIMITS_EOF
+
+      make -j"$NIX_BUILD_CORES" all-target-libgcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
+        LDFLAGS_FOR_TARGET="-static"
+      make -j"$NIX_BUILD_CORES" all-target-libstdc++-v3 \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
+        CXXFLAGS_FOR_TARGET="-O2 -fPIC" \
+        LDFLAGS_FOR_TARGET="-static"
+      make -j"$NIX_BUILD_CORES" all-target-libatomic \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true \
+        CFLAGS_FOR_TARGET="-O2 -fPIC" \
+        LDFLAGS_FOR_TARGET="-static"
+    '';
+    installCommands = ''
+      make install-gcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install-target-libgcc \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install-target-libstdc++-v3 \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+      make install-target-libatomic \
+        AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true MAKEINFO=true
+    '';
+    postInstall = ''
+      # Symlink binutils tools so gcc can find as/ld.
+      mkdir -p "$out/${targetPlatform.config}/bin"
+      for tool in as ld ar ranlib nm objcopy objdump strip; do
+        ln -sf ${prev.binutils}/bin/$tool "$out/${targetPlatform.config}/bin/$tool" 2>/dev/null || true
+        ln -sf ${prev.binutils}/bin/$tool "$out/bin/$tool" 2>/dev/null || true
+      done
+
+      # Copy startfiles/static libc pieces from prev.glibc so the raw stage can
+      # link without retaining symlink references in the files themselves.
+      SPEC_DIR="$out/lib/gcc/${targetPlatform.config}/14.3.0"
+      for f in ${prev.glibc}/lib/crt*.o ${prev.glibc}/lib/Scrt1.o ${prev.glibc}/lib/rcrt1.o ${prev.glibc}/lib/gcrt1.o; do
+        bn="$(basename "$f")"
+        install -m 644 "$f" "$SPEC_DIR/$bn" 2>/dev/null || true
+      done
+      install -m 644 ${prev.glibc}/lib/libc.a "$SPEC_DIR/libc.a" 2>/dev/null || true
+      install -m 644 ${prev.glibc}/lib/libm.a "$SPEC_DIR/libm.a" 2>/dev/null || true
+      install -m 644 ${prev.glibc}/lib/libpthread.a "$SPEC_DIR/libpthread.a" 2>/dev/null || true
+
+      "$out/bin/gcc" -dumpspecs > "$SPEC_DIR/specs"
+      ${prev.sed}/bin/sed -i '/^\*cpp:$/{n; s|^|-idirafter ${prev.glibc}/include -idirafter ${prev.linuxHeaders} |}' \
+        "$SPEC_DIR/specs" 2>/dev/null || true
+      _hash_prev_glibc=$(echo "${prev.glibc}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+      _hash_prev_headers=$(echo "${prev.linuxHeaders}" | ${prev.sed}/bin/sed -n 's|^/nix/store/\([a-z0-9]\{32\}\)-.*|\1|p')
+      ${prev.sed}/bin/sed -i \
+        -e "s|$_hash_prev_glibc|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
+        -e "s|$_hash_prev_headers|eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee|g" \
+        "$SPEC_DIR/specs"
+
+      echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.so"
+      echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.so"
+      echo "/* Stub: redirect -lgcc_s to static libgcc */" > "$SPEC_DIR/libgcc_s.a"
+      echo "INPUT(-lgcc)" >> "$SPEC_DIR/libgcc_s.a"
+    '';
+    finalMessage = "GCC 14.3.0 installed to $out";
     meta = {
-      description = "GNU Compiler Collection 14.3.0 — production compiler with PIE+SSP";
+      description = "GNU Compiler Collection 14.3.0 - stage1 compiler with PIE+SSP";
       homepage = "https://gcc.gnu.org/";
       license = "GPL-3.0-or-later";
       build = {

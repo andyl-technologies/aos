@@ -282,8 +282,8 @@ its successor.
   conversion across the remaining native tiers, including `python3` ownership
   for gcc11 and gcc14. Verified for Phase 2: touched Nix files parse locally;
   no native tier default routes `python3` through `prev.python3`; direct
-  remote builds of `[ gcc11.python3 gcc14.python3 ]` succeeded on
-  `builder-hil1-c13958ef`; both resulting Python interpreters start without
+  remote builds of `[ gcc11.python3 gcc14.python3 ]` succeeded on an
+  x86_64-linux builder; both resulting Python interpreters start without
   prefix warnings, import the required built-in modules, expose working
   `sysconfig` and `distutils.sysconfig` metadata, and ship config scripts with
   AOS bash shebangs; and adversarial review found no serious ownership or
@@ -292,14 +292,22 @@ its successor.
   lower-variance than gcc. Verified for Phase 3: touched Nix files parse
   locally; strict evaluation exposes the expected glibc names and gcc14 split
   outputs; corrected remote builds of `[ gcc8.glibc gcc11.glibc gcc14.glibc ]`
-  succeeded on `builder-hil1-c13958ef`; the corrected logs show gcc8's
+  succeeded on an x86_64-linux builder; the corrected logs show gcc8's
   `CFLAGS` reaching configure and gcc14 using its `$TMPDIR/ccwrap/gcc` wrapper;
   remote smoke checks confirm the glibc loaders/libraries and gcc14
   bin/dev/static/getent output split; and adversarial review caught and verified
   the configure-environment splice fix.
-- [ ] **Phase 4 — `mkGcc`.** Unify gcc across tiers; switch the final tier to
-  `bootstrap = true` (stock `make bootstrap`) and retire the disabled
-  self-recompile TODO.
+- [x] **Phase 4 — `mkGcc`. Implemented.** Unified native gcc tiers behind
+  `mkGcc`; switched the final tier to `bootstrap = true` (stock
+  `make bootstrap`) and retired the disabled self-recompile TODO. Verified for
+  Phase 4: touched Nix files parse locally; remote `stdenv.gccStage2` builds
+  successfully on an x86_64-linux builder; raw unwrapped GCC 14 C and C++
+  smoke tests compile and run without caller-supplied linker flags; installed
+  specs contain this-tier glibc headers, glibc shared/static library paths,
+  rpath/rpath-link, and the glibc dynamic linker; binutils symlinks point at
+  this tier's binutils; the final GCC closure has no `glibc-2.34`,
+  `gcc-11.5`, or `binutils-2.37`; a direct `gcc4_8.gcc` build resolves on the
+  same builder; and adversarial review found no blocking issues.
 - [ ] **Phase 5 — cleanup.** Delete the per-tier `default.nix` `callPackage`
   boilerplate where the manifest subsumes it; update `docs/` and this
   RFC's status.

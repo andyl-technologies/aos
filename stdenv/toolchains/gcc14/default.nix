@@ -38,13 +38,13 @@
   # Has prev.glibc (2.34) crt*.o in its specs dir; pinned to prev because
   # that is the only glibc that exists at this point. Consumed only by the
   # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
-  # host compiler for the stage-2 rebuild — never exposed downstream.
+  # host compiler for the final bootstrapped GCC — never exposed downstream.
   gccRaw = callPackage ./gcc.nix {};
 
-  # Phase 4: stage-2 GCC 14.3.0 self-recompiled by gccRaw against THIS
-  # tier's glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what
-  # the wrapper (and therefore stdenv.gcc) points at, so the production
-  # compiler's closure is free of the pre-tier bootstrap chain.
+  # Phase 4: final GCC 14.3.0 bootstrapped by gccRaw against THIS tier's
+  # glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what the wrapper
+  # (and therefore stdenv.gcc) points at, so the production compiler's closure
+  # is free of the pre-tier bootstrap chain.
   gccStage2 = callPackage ./gcc-stage2.nix {gccStage1 = gccRaw;};
 
   scope = {
@@ -55,7 +55,7 @@
       targetPlatform
       ;
 
-    # GCC wrapper around stage-2: passes -B${glibc}/lib / -idirafter
+    # GCC wrapper around the final bootstrapped compiler: passes -B${glibc}/lib / -idirafter
     # ${glibc.dev}/include for cc-wrapper-symmetry and for callers that probe
     # `gcc -v`. Stage-2's own specs file already has these baked in, so
     # these flags are belt-and-suspenders.
@@ -83,7 +83,7 @@
           [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
           [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
 
-          # Symlink all other binaries from stage-2 GCC
+          # Symlink all other binaries from the final bootstrapped GCC.
           for f in ${gccStage2}/bin/*; do
             bn=$(basename "$f")
             [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
@@ -108,7 +108,7 @@
     glibc = callPackage ./glibc.nix {gcc = gccRaw;};
 
     # Shared mini-stdenv for gcc14's POSIX/autotools tools. Use the wrapped
-    # stage-2 compiler and this tier's split glibc outputs; the build shell
+    # final bootstrapped compiler and this tier's split glibc outputs; the build shell
     # remains previous-tier bash while gcc14 bash is being built.
     tierBuildStdenv = mkTierStdenv {
       tc = {
@@ -196,8 +196,8 @@
     patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
 in {
-  # Expose the unwrapped gcc-14.3.0-stage2 (the let-binding above the
-  # scope, since scope wraps it via the cc-wrapper). Needed by
+  # Expose the unwrapped final gcc-14.3.0 (the let-binding above the scope,
+  # since scope wraps it via the cc-wrapper). Needed by
   # pkgs.gccUnwrapped so the perl Config scrub can target the unwrapped
   # path that Configure records.
   inherit gccStage2;
