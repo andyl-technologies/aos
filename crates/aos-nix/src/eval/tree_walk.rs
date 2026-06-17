@@ -31975,6 +31975,31 @@ mod tests {
     }
 
     #[test]
+    fn substring_and_replace_strings_preserve_contexts() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"let
+                     withCtx = text: path: builtins.appendContext text {
+                       ${path} = { path = true; };
+                     };
+                     source = withCtx "abcabc" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source";
+                     used = withCtx "X" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-used";
+                     unused = withCtx "Z" "/nix/store/cccccccccccccccccccccccccccccccc-unused";
+                     pattern = withCtx "a" "/nix/store/dddddddddddddddddddddddddddddddd-pattern";
+                   in {
+                     substring = builtins.getContext (builtins.substring 1 3 source);
+                     substringEmpty = builtins.getContext (builtins.substring 99 1 source);
+                     replaceUsed = builtins.getContext
+                       (builtins.replaceStrings [ "a" "z" ] [ used unused ] source);
+                     replacePattern = builtins.getContext
+                       (builtins.replaceStrings [ pattern ] [ used ] source);
+                   }"#
+            ),
+            br#"{"replacePattern":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-used":{"path":true}},"replaceUsed":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-used":{"path":true}},"substring":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source":{"path":true}},"substringEmpty":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source":{"path":true}}}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn indented_string_interpolation_strips_literals_before_insertion() {
         assert_eq!(
             eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),

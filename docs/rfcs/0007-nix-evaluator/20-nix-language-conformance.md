@@ -222,7 +222,7 @@ are language-level and live here.
 - [x] **`//`, comparisons, and other ops do not fabricate context** — only
       string-producing operations propagate; comparisons return bools with no
       context.
-- [ ] **Context survives string-slicing/replacement** — `substring`,
+- [x] **Context survives string-slicing/replacement** — `substring`,
       `replaceStrings` preserve (do not silently drop) context (the canonical
       divergence; see
       [compatibility constraints](02-compatibility-constraints.md) §5.3). Exact
