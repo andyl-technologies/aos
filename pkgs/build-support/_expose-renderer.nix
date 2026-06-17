@@ -1256,6 +1256,7 @@ in rec {
           then false
           else "identity";
         PrivateNetwork = network == "private";
+        PrivateDevices = devices == [];
         DevicePolicy = "closed";
         DeviceAllow = deviceAllows;
         Delegate = cgroupDelegate;
@@ -1266,7 +1267,9 @@ in rec {
         ProtectKernelTunables = true;
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
+        ProtectClock = true;
         ProtectControlGroups = !cgroupDelegate;
+        ProtectHostname = true;
         SystemCallArchitectures = "native";
         RestrictAddressFamilies = addressFamilies;
         RestrictNamespaces = !privilegedUsers;
@@ -1274,6 +1277,10 @@ in rec {
         RestrictSUIDSGID = true;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
+      }
+      // lib.optionalAttrs (!rootEquivalent) {
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
       }
       // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
       // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
