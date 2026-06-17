@@ -12,12 +12,13 @@
 //!   delete store paths unreachable from any GC root (profile generations
 //!   are roots, so pruning generations first frees more).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use super::config::ApmConfig;
 use super::profile::Profile;
+use crate::types::ProfileScope;
 use aos_core::nix::aos_nix_env;
 use aos_core::output::{OutputMode, Printer};
 
@@ -149,15 +150,16 @@ pub async fn run(
 
 /// Run `apm gc`.
 ///
-/// Delegates to the system's `nix-store --gc` to reclaim unreachable
-/// store paths.
+/// Prunes orphaned writable-layer registry overlays (see
+/// [`prune_orphaned_overlays`]), then delegates to the system's
+/// `nix-store --gc` to reclaim unreachable store paths.
 ///
 /// # Errors
 ///
-/// Returns an error if `nix-store` cannot be spawned or exits with a
-/// non-zero status.
-pub async fn run_gc(printer: &Printer) -> Result<()> {
-    run_gc_impl(printer, true).await
+/// Returns an error if a `/var` overlay cannot be removed, or if `nix-store`
+/// cannot be spawned or exits with a non-zero status.
+pub async fn run_gc(scope: ProfileScope, printer: &Printer) -> Result<()> {
+    run_gc_impl(scope, printer, true).await
 }
 
 /// Run automatic GC after another mutating command.
@@ -167,13 +169,22 @@ pub async fn run_gc(printer: &Printer) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if `nix-store` cannot be spawned or exits with a
-/// non-zero status.
-pub async fn run_gc_after_mutation(printer: &Printer) -> Result<()> {
-    run_gc_impl(printer, false).await
+/// Returns an error if a `/var` overlay cannot be removed, or if `nix-store`
+/// cannot be spawned or exits with a non-zero status.
+pub async fn run_gc_after_mutation(scope: ProfileScope, printer: &Printer) -> Result<()> {
+    run_gc_impl(scope, printer, false).await
 }
 
-async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
+async fn run_gc_impl(scope: ProfileScope, printer: &Printer, emit_json: bool) -> Result<()> {
+    let pruned = prune_orphaned_overlays(scope)?;
+    if !pruned.is_empty() && printer.mode() != OutputMode::Json {
+        printer.info(&format!(
+            "Pruned {} orphaned registry overlay(s): {}",
+            pruned.len(),
+            pruned.join(", ")
+        ));
+    }
+
     printer.info("Running garbage collection...");
 
     let nix_env = aos_nix_env();
@@ -198,6 +209,7 @@ async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
             "success": true,
             "nix_store_dir": nix_env_value(&nix_env, "NIX_STORE_DIR"),
             "nix_state_dir": nix_env_value(&nix_env, "NIX_STATE_DIR"),
+            "overlays_pruned": pruned,
             "stdout": stdout.trim_end(),
             "stderr": stderr.trim_end(),
         }));
@@ -210,6 +222,76 @@ async fn run_gc_impl(printer: &Printer, emit_json: bool) -> Result<()> {
 
     printer.success("Garbage collection complete.");
     Ok(())
+}
+
+/// Prune orphaned writable-layer registry overlays for `scope`.
+///
+/// A `registries.d/<stem>.toml` in the writable layer
+/// (`/var/lib/apm/config` for system scope) that carries no `url` — and whose
+/// stem is no longer defined by any read-only seed below it — is a dead
+/// override left behind when its seed was blanked. Such an orphan can wedge
+/// anti-rollback by resurrecting a stale `floor`/`last_commit` if the registry
+/// is later re-added, so it is removed here. Self-sufficient definitions (the
+/// overlay itself carries a `url`) and live overlays (a seed still defines the
+/// stem) are kept.
+///
+/// Returns the stems that were pruned, in sorted order.
+///
+/// # Errors
+///
+/// Returns an error if the writable directory cannot be read or an orphaned
+/// overlay cannot be removed.
+pub(crate) fn prune_orphaned_overlays(scope: ProfileScope) -> Result<Vec<String>> {
+    let layers = scope.config_layers();
+    let writable_dir = scope.writable_config_dir().join("registries.d");
+    // Everything below the writable layer (the last entry) is a read-only seed.
+    let seed_dirs: Vec<PathBuf> = layers[..layers.len().saturating_sub(1)]
+        .iter()
+        .map(|layer| layer.join("registries.d"))
+        .collect();
+    prune_orphaned_overlays_in(&writable_dir, &seed_dirs)
+}
+
+/// Prune orphaned overlays in an explicit `writable_dir`, treating each
+/// directory in `seed_dirs` as a read-only seed.
+///
+/// This is the directory-level core of [`prune_orphaned_overlays`], split out
+/// so it can be unit-tested without the process-global path resolvers.
+fn prune_orphaned_overlays_in(writable_dir: &Path, seed_dirs: &[PathBuf]) -> Result<Vec<String>> {
+    if !writable_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries: Vec<_> = std::fs::read_dir(writable_dir)
+        .with_context(|| format!("reading {}", writable_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "toml"))
+        .collect();
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut pruned = Vec::new();
+    for entry in entries {
+        let path = entry.path();
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // A self-sufficient definition (its own url) is never an orphan.
+        if crate::config::registry_file_has_url(&path) {
+            continue;
+        }
+        // A lower seed layer still defines the stem → the overlay is live.
+        let seeded = seed_dirs
+            .iter()
+            .any(|dir| crate::config::registry_file_has_url(&dir.join(format!("{stem}.toml"))));
+        if seeded {
+            continue;
+        }
+        std::fs::remove_file(&path)
+            .with_context(|| format!("removing orphaned overlay {}", path.display()))?;
+        pruned.push(stem.to_string());
+    }
+
+    Ok(pruned)
 }
 
 /// Look up a single variable in the AOS nix environment slice.
@@ -302,6 +384,53 @@ fn clean_generations_json(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn prune_removes_orphan_keeps_seeded_and_self_sufficient() {
+        let tmp = TempDir::new().unwrap();
+        let seed = tmp.path().join("etc/registries.d");
+        let writable = tmp.path().join("var/registries.d");
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::create_dir_all(&writable).unwrap();
+
+        // Orphan: a pure state overlay whose seed is gone → pruned.
+        std::fs::write(
+            writable.join("orphan.toml"),
+            "[registry.state]\nlast_commit = \"x\"\n",
+        )
+        .unwrap();
+        // Live overlay: a pure state overlay, but a seed still defines it → kept.
+        std::fs::write(
+            writable.join("live.toml"),
+            "[registry.state]\nlast_commit = \"y\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            seed.join("live.toml"),
+            "[registry]\nname = \"live\"\nurl = \"https://example.com/live\"\n",
+        )
+        .unwrap();
+        // Self-sufficient: the overlay itself carries a url → kept.
+        std::fs::write(
+            writable.join("operator.toml"),
+            "[registry]\nname = \"operator\"\nurl = \"https://example.com/op\"\n",
+        )
+        .unwrap();
+
+        let pruned = prune_orphaned_overlays_in(&writable, &[seed]).unwrap();
+        assert_eq!(pruned, vec!["orphan".to_string()]);
+        assert!(!writable.join("orphan.toml").exists());
+        assert!(writable.join("live.toml").exists());
+        assert!(writable.join("operator.toml").exists());
+    }
+
+    #[test]
+    fn prune_is_noop_when_writable_dir_absent() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("does/not/exist");
+        let pruned = prune_orphaned_overlays_in(&writable, &[]).unwrap();
+        assert!(pruned.is_empty());
+    }
 
     #[test]
     fn clear_nar_cache_removes_files_and_returns_size() {
