@@ -66,6 +66,13 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
     "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
 ];
+const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
+    "/usr/lib/credstore.encrypted",
+    "/etc/credstore.encrypted",
+    "/run/credstore.encrypted",
+];
+const PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES: &[&str] =
+    &["/usr/lib/credstore", "/etc/credstore", "/run/credstore"];
 
 // ---------------------------------------------------------------------------
 // Well-known paths
@@ -659,6 +666,9 @@ impl ConfigReloadPolicy {
 pub struct CredentialMeta {
     /// systemd credential name.
     pub name: String,
+    /// Optional host-side credstore source path for fail-closed loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     /// Service units expected to consume this credential.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub units: Vec<String>,
@@ -1220,6 +1230,9 @@ pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
         if !credential_names.insert(&credential.name) {
             bail!("duplicate credential name '{}'", credential.name);
         }
+        if let Some(source) = &credential.source {
+            validate_credential_source_path(source, credential.encrypted)?;
+        }
         for unit in &credential.units {
             validate_unit_name(unit)?;
             if !unit.ends_with(".service") {
@@ -1379,6 +1392,40 @@ fn validate_credential_name(name: &str) -> Result<()> {
         return Ok(());
     }
     bail!("invalid credential name '{name}'")
+}
+
+fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
+    validate_absolute_path(path, "credential source path")?;
+    let p = Path::new(path);
+    if p.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("credential source path must not contain '..': {path}");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!("credential source path contains unsupported characters: {path:?}");
+    }
+    let allowed = if encrypted {
+        ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES
+    } else {
+        PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES
+    };
+    if allowed
+        .iter()
+        .any(|prefix| path != *prefix && p.starts_with(prefix))
+    {
+        return Ok(());
+    }
+    if encrypted {
+        bail!(
+            "encrypted credential source path must be under /usr/lib/credstore.encrypted, /etc/credstore.encrypted, or /run/credstore.encrypted: {path}"
+        );
+    }
+    bail!(
+        "credential source path must be under /usr/lib/credstore, /etc/credstore, or /run/credstore: {path}"
+    )
 }
 
 fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
@@ -3313,6 +3360,7 @@ last_update = "2026-02-13T10:30:00Z"
             artifacts: Vec::new(),
             credentials: vec![CredentialMeta {
                 name: "join-token".into(),
+                source: None,
                 units: vec!["webapp.socket".into()],
                 encrypted: true,
             }],
@@ -3320,6 +3368,46 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_expose_config_meta(&config).unwrap_err();
         assert!(err.to_string().contains("non-service expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_outside_credstore() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/etc/shadow".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("encrypted credential source path must be under")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some(
+                    "/usr/lib/credstore.encrypted/join-token\nPrivateNetwork=false".into(),
+                ),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential source path contains unsupported characters")
+        );
     }
 
     #[test]
