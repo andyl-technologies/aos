@@ -768,6 +768,58 @@
     if readOnlyPreparedHostPathDirectory.success
     then throw "expose renderer must reject read-only prepared host path directories"
     else "ok";
+  unsupportedHostPathCharacters = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-bad-host-path-chars.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        permissions = {
+          network = "private";
+          host-paths = [
+            {
+              path = "/srv/expose smoke";
+              mode = "rw";
+            }
+          ];
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  unsupportedHostPathCharactersRejected =
+    if unsupportedHostPathCharacters.success
+    then throw "expose renderer must reject host paths with unsupported characters"
+    else "ok";
+  readOnlyTempHostPath = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-read-only-temp-host-path.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        permissions = {
+          network = "private";
+          host-paths = [
+            {
+              path = "/tmp/expose-smoke-ro";
+              mode = "read-only";
+            }
+          ];
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  readOnlyTempHostPathRejected =
+    if readOnlyTempHostPath.success
+    then throw "expose renderer must reject read-only host paths under writable temp grants"
+    else "ok";
   permissionOnlyModules = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-permission-only-modules.service" = {
@@ -848,6 +900,12 @@
       permissions = {
         network = "host";
         capabilities = ["CAP_NET_ADMIN"];
+        host-paths = [
+          {
+            path = "/srv/expose-smoke-unconfined";
+            mode = "read-only";
+          }
+        ];
         privileged-users = true;
       };
       requires = [];
@@ -932,6 +990,8 @@ in
       credentialAuthoredImportCollisionRejected
       undeclaredPreparedHostPathDirectoryRejected
       readOnlyPreparedHostPathDirectoryRejected
+      unsupportedHostPathCharactersRejected
+      readOnlyTempHostPathRejected
       ;
 
     buildDeps =
@@ -1219,6 +1279,8 @@ in
           test "$kernelModulePermissionMismatchRejected" = ok
           test "$undeclaredPreparedHostPathDirectoryRejected" = ok
           test "$readOnlyPreparedHostPathDirectoryRejected" = ok
+          test "$unsupportedHostPathCharactersRejected" = ok
+          test "$readOnlyTempHostPathRejected" = ok
           permission_only_modules="$permissionOnlyModulesExposePath/units/aos-pkg-expose-smoke-modules.service"
           permission_only_manifest="$permissionOnlyModulesExposePath/manifest.json"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' \
@@ -1233,8 +1295,17 @@ in
             "$withHolesExposePath/units/expose-smoke-holes.service"
           grep -q 'AmbientCapabilities=CAP_NET_BIND_SERVICE' \
             "$withHolesExposePath/units/expose-smoke-holes.service"
-          grep -q '"confinement":{"class":"unconfined","holes":\["network:host","capability:CAP_NET_ADMIN","privileged-users"\],"label":"unconfined"}' \
+          unconfined_policy="$unconfinedExposePath/network-policy.json"
+          grep -q '"confinement":{"class":"unconfined","holes":\["network:host","capability:CAP_NET_ADMIN","host-path:read-only:/srv/expose-smoke-unconfined","privileged-users"\],"label":"unconfined"}' \
             "$unconfinedExposePath/manifest.json"
+          grep -q '"fs":{"readOnly":\["/srv/expose-smoke-unconfined"\],"readWrite":\[\]}' \
+            "$unconfined_policy"
+          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\[\],"readWrite":\[\]}' \
+            "$unconfined_policy"
+          if grep -q 'aos-landlock' "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
+            echo "unconfined host path package must not run through aos-landlock" >&2
+            exit 1
+          fi
           grep -q 'RestrictAddressFamilies=AF_NETLINK' \
             "$unconfinedExposePath/units/expose-smoke-unconfined.service"
           grep -q 'CapabilityBoundingSet=CAP_NET_ADMIN' \
@@ -1350,8 +1421,16 @@ in
 
           host_path_without_prepare_unit="$hostPathWithoutPrepareExposePath/units/expose-smoke-rw-host-path.service"
           host_path_without_prepare_target="$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke.target"
+          host_path_without_prepare_policy="$hostPathWithoutPrepareExposePath/network-policy.json"
           test -f "$host_path_without_prepare_unit"
+          test -f "$host_path_without_prepare_policy"
           grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
+            "$host_path_without_prepare_unit"
+          grep -q '"fs":{"readOnly":\[\],"readWrite":\["/srv/expose-smoke-rw"\]}' \
+            "$host_path_without_prepare_policy"
+          grep -q '"readWrite":\["/tmp","/var/tmp","/srv/expose-smoke-rw"\]' \
+            "$host_path_without_prepare_policy"
           test ! -f "$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke-host-paths.service"
           if grep -q 'aos-pkg-expose-smoke-host-paths.service' "$host_path_without_prepare_target"; then
             echo "rw host paths must not implicitly synthesize host directory preparation" >&2

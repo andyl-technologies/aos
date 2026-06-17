@@ -45,8 +45,8 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   `LANDLOCK_ACCESS_NET_BIND_TCP`, `tcp-connect` maps to
   `LANDLOCK_ACCESS_NET_CONNECT_TCP`, and the same port lists are copied into the
   eBPF policy contract. The host policy admits those grants explicitly via
-  `[allow].tcp-bind` and `[allow].tcp-connect`. Filesystem Landlock rules from
-  `host-paths` remain a follow-up. `apm` validates any artifact-carried
+  `[allow].tcp-bind` and `[allow].tcp-connect`; `host-paths` map to
+  `LANDLOCK_ACCESS_FS_*` path rules. `apm` validates any artifact-carried
   `network-policy.json` against the admitted package metadata before attaching
   exposed units, so the JSON is not a second policy source. An **empty manifest
   yields no TCP grants**.
@@ -55,21 +55,22 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   package-authored workload service exec directive (`ExecStart=`,
   `ExecStartPre=`, `ExecStartPost=`, `ExecReload=`, `ExecStop=`,
   `ExecStopPost=`, `ExecCondition=`) with the AOS-built `aos-landlock` wrapper,
-  passing `--require-abi 4` plus the admitted `tcp-bind` / `tcp-connect` ports.
-  The wrapper probes the kernel ABI, loads the TCP ruleset, sets `no_new_privs`,
-  and then `execve`s the real command. The Nix-built `aos`/`apm` wrapper exports
-  the trusted helper path as `AOS_LANDLOCK_WRAPPER`; `apm` validates every
-  workload service's wrapper identity and arguments against that exact path
-  before attaching the unit artifact, while generated host-side side-effect
-  units stay outside the wrapper. A future
+  passing `--require-abi 4` plus the admitted `tcp-bind` / `tcp-connect` ports
+  and filesystem path grants.
+  The wrapper probes the kernel ABI, loads the Landlock ruleset, sets
+  `no_new_privs`, and then `execve`s the real command. The Nix-built `aos`/`apm`
+  wrapper exports the trusted helper path as `AOS_LANDLOCK_WRAPPER`; `apm`
+  validates every workload service's wrapper identity and arguments against that
+  exact path before attaching the unit artifact, while generated host-side
+  side-effect units stay outside the wrapper. A future
   `LandlockPaths=`-style systemd directive can replace the wrapper only after it
   preserves the same fail-closed validation point.
 - **ABI feature-detect, never hardcode.** Query
-  `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)` and
-  best-effort downgrade. ABI→kernel: v1/5.13 (fs), v2/5.19 (`FS_REFER`), v3/6.2
-  (`FS_TRUNCATE`), v4/6.7 (`NET_BIND/CONNECT_TCP`), v5/6.10 (`FS_IOCTL_DEV`),
-  v6/6.12 (`SCOPE_*`). AOS targets at least ABI 4 (network rules); record the
-  built kernel's max ABI.
+  `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`;
+  generated package wrappers currently fail closed below ABI 4. ABI→kernel:
+  v1/5.13 (fs), v2/5.19 (`FS_REFER`), v3/6.2 (`FS_TRUNCATE`), v4/6.7
+  (`NET_BIND/CONNECT_TCP`), v5/6.10 (`FS_IOCTL_DEV`), v6/6.12 (`SCOPE_*`). AOS
+  targets at least ABI 4 (network rules); record the built kernel's max ABI.
 - **Known limits (document, don't fight):** TCP-port granularity only (no
   UDP/raw/per-IP — those stay on the nftables/eBPF layer); does not restrict
   identity (combine with DAC/MAC); 16-layer stack cap; `IOCTL_DEV` covers only
