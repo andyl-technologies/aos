@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    fs,
+    fmt, fs,
     io::{self, Write as _},
     os::unix::ffi::OsStrExt,
     os::unix::fs::PermissionsExt,
@@ -67,6 +67,8 @@ const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
 const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
+const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
+    b"while evaluating the error message passed to builtins.addErrorContext";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
@@ -3183,6 +3185,123 @@ impl<'ir> TreeWalk<'ir> {
             },
             argument_span,
         ))
+    }
+
+    fn eval_add_error_context_direct(
+        &mut self,
+        call_id: IrId,
+        call_span: Span,
+        context: IrId,
+        expression: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        match self.eval_node(expression) {
+            Ok(value) => Ok(value),
+            Err(error) => self.add_error_context_node_to_error(call_id, call_span, context, error),
+        }
+    }
+
+    fn eval_add_error_context_value(
+        &mut self,
+        call_id: IrId,
+        call_span: Span,
+        context: EvalPrimOpArg,
+        expression: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match self.force_value(expression.id(), expression.span(), expression.value()) {
+            Ok(value) => Ok(value),
+            Err(error) => self.add_error_context_value_to_error(call_id, call_span, context, error),
+        }
+    }
+
+    fn add_error_context_node_to_error(
+        &mut self,
+        call_id: IrId,
+        call_span: Span,
+        context: IrId,
+        error: TreeWalkError,
+    ) -> Result<Value, TreeWalkError> {
+        let context_span = self.node(context)?.span;
+        let context_value = self.eval_node(context)?;
+        let message = self.coerce_add_error_context_message(
+            call_id,
+            call_span,
+            context,
+            context_span,
+            context_value,
+        )?;
+        Err(error.try_prepend_context(call_id, call_span, EvalErrorContext::new(message))?)
+    }
+
+    fn add_error_context_value_to_error(
+        &mut self,
+        call_id: IrId,
+        call_span: Span,
+        context: EvalPrimOpArg,
+        error: TreeWalkError,
+    ) -> Result<Value, TreeWalkError> {
+        let context_value = self.force_value(context.id(), context.span(), context.value())?;
+        let message = self.coerce_add_error_context_message(
+            call_id,
+            call_span,
+            context.id(),
+            context.span(),
+            context_value,
+        )?;
+        Err(error.try_prepend_context(call_id, call_span, EvalErrorContext::new(message))?)
+    }
+
+    fn coerce_add_error_context_message(
+        &mut self,
+        call_id: IrId,
+        call_span: Span,
+        context: IrId,
+        context_span: Span,
+        context_value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let context_tag = context_value.tag();
+        let message = match self.coerce_to_string(context, context_value, context_span) {
+            Ok(message) => message,
+            Err(error)
+                if Self::add_error_context_message_context_applies(
+                    context,
+                    context_tag,
+                    &error,
+                ) =>
+            {
+                let context = EvalErrorContext::new(Self::copy_bytes_for_node(
+                    call_id,
+                    call_span,
+                    ADD_ERROR_CONTEXT_MESSAGE_CONTEXT,
+                )?);
+                return Err(error.try_prepend_context(call_id, call_span, context)?);
+            }
+            Err(error) => return Err(error),
+        };
+        let message = self.heap.get_string(message).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: context,
+                    source,
+                },
+                context_span,
+            )
+        })?;
+        Self::copy_bytes_for_node(context, context_span, message.bytes())
+    }
+
+    fn add_error_context_message_context_applies(
+        context: IrId,
+        context_tag: ValueTag,
+        error: &TreeWalkError,
+    ) -> bool {
+        matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id,
+                expected: "string",
+                actual,
+            } if id == context && (context_tag != ValueTag::Attrs || actual == ValueTag::Attrs)
+        )
     }
 
     fn eval_trace_primop_value(
@@ -15787,6 +15906,10 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_try_eval_direct(call.id, call.span, args[0])
             }
+            BuiltinExecution::AddErrorContext => {
+                check_builtin_arity(call, 2, args.len())?;
+                eval.eval_add_error_context_direct(call.id, call.span, args[0], args[1])
+            }
             BuiltinExecution::GenericClosure => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -15942,6 +16065,10 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::TryEval => {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_try_eval_value(call.id, call.span, args[0])
+            }
+            BuiltinExecution::AddErrorContext => {
+                check_builtin_arity(call, 2, args.len())?;
+                eval.eval_add_error_context_value(call.id, call.span, args[0], args[1])
             }
             BuiltinExecution::GenericClosure => {
                 check_builtin_arity(call, 1, args.len())?;
@@ -16261,17 +16388,21 @@ pub enum ArithmeticOp {
 }
 
 /// A tree-walk evaluation failure with source location.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{kind} at byte span {span:?}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeWalkError {
     kind: TreeWalkErrorKind,
     span: Span,
+    contexts: Vec<EvalErrorContext>,
 }
 
 impl TreeWalkError {
     /// Creates a tree-walk evaluation error.
     pub const fn new(kind: TreeWalkErrorKind, span: Span) -> Self {
-        Self { kind, span }
+        Self {
+            kind,
+            span,
+            contexts: Vec::new(),
+        }
     }
 
     /// Returns the error category.
@@ -16282,6 +16413,62 @@ impl TreeWalkError {
     /// Returns the source span associated with this error.
     pub const fn span(&self) -> Span {
         self.span
+    }
+
+    /// Returns diagnostic context messages from outermost to innermost.
+    pub fn contexts(&self) -> &[EvalErrorContext] {
+        &self.contexts
+    }
+
+    fn try_prepend_context(
+        mut self,
+        id: IrId,
+        span: Span,
+        context: EvalErrorContext,
+    ) -> Result<Self, Self> {
+        self.contexts.try_reserve_exact(1).map_err(|_| {
+            Self::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: self.contexts.len().saturating_add(1),
+                },
+                span,
+            )
+        })?;
+        self.contexts.insert(0, context);
+        Ok(self)
+    }
+}
+
+impl fmt::Display for TreeWalkError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for context in &self.contexts {
+            write!(
+                formatter,
+                "while evaluating: {}\n",
+                String::from_utf8_lossy(context.message())
+            )?;
+        }
+        write!(formatter, "{} at byte span {:?}", self.kind, self.span)
+    }
+}
+
+impl std::error::Error for TreeWalkError {}
+
+/// A diagnostic context attached to a tree-walk evaluation error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalErrorContext {
+    message: Vec<u8>,
+}
+
+impl EvalErrorContext {
+    fn new(message: Vec<u8>) -> Self {
+        Self { message }
+    }
+
+    /// Returns the context message bytes.
+    pub fn message(&self) -> &[u8] {
+        &self.message
     }
 }
 
@@ -17464,6 +17651,23 @@ mod tests {
 
     fn assert_warning_output(output: &EvalWarningOutput, message: &[u8]) {
         assert_eq!(output.message(), message);
+    }
+
+    fn assert_error_contexts(error: &TreeWalkError, expected: &[&[u8]]) {
+        let actual: Vec<&[u8]> = error
+            .contexts()
+            .iter()
+            .map(EvalErrorContext::message)
+            .collect();
+        assert_eq!(actual, expected);
+        let rendered = error.to_string();
+        for message in expected {
+            let message = String::from_utf8_lossy(message);
+            assert!(
+                rendered.contains(message.as_ref()),
+                "rendered error {rendered:?} omitted context {message:?}"
+            );
+        }
     }
 
     fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
@@ -19684,6 +19888,163 @@ mod tests {
         ] {
             assert_eq!(eval(source).as_int(), Ok(42));
         }
+    }
+
+    #[test]
+    fn add_error_context_returns_success_without_evaluating_context_message() {
+        assert_eq!(eval("builtins.addErrorContext 1 7").as_int(), Ok(7));
+        assert_eq!(
+            eval(r#"builtins.addErrorContext (builtins.throw "context") 7"#).as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval(r#"let add = builtins.addErrorContext; in add (builtins.throw "context") 7"#)
+                .as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval(r#"let add = builtins.addErrorContext (builtins.throw "context"); in add 7"#)
+                .as_int(),
+            Ok(7)
+        );
+    }
+
+    #[test]
+    fn add_error_context_attaches_context_to_expression_errors() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext "ctx" (builtins.throw "boom")"#,
+        ))
+        .expect_err("addErrorContext attaches to throw");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"boom");
+        assert_error_contexts(&error, &[b"ctx"]);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext "ctx" (builtins.abort "boom")"#,
+        ))
+        .expect_err("addErrorContext attaches to abort");
+        let TreeWalkErrorKind::Aborted { message, .. } = error.kind() else {
+            panic!("expected aborted error");
+        };
+        assert_eq!(message, b"boom");
+        assert_error_contexts(&error, &[b"ctx"]);
+
+        let error = eval_whnf_owned(&lower(r#"builtins.addErrorContext "ctx" (1 + true)"#))
+            .expect_err("addErrorContext attaches to ordinary errors");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Type { .. }));
+        assert_error_contexts(&error, &[b"ctx"]);
+    }
+
+    #[test]
+    fn add_error_context_preserves_outer_to_inner_context_order() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext "outer" (builtins.addErrorContext "inner" (builtins.throw "boom"))"#,
+        ))
+        .expect_err("nested addErrorContext attaches both contexts");
+
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"boom");
+        assert_error_contexts(&error, &[b"outer", b"inner"]);
+    }
+
+    #[test]
+    fn add_error_context_supports_first_class_application() {
+        for source in [
+            r#"let add = builtins.addErrorContext "ctx"; in add (builtins.throw "boom")"#,
+            r#"let add = builtins.addErrorContext; in add "ctx" (builtins.throw "boom")"#,
+        ] {
+            let error =
+                eval_whnf_owned(&lower(source)).expect_err("first-class addErrorContext attaches");
+            let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+                panic!("expected thrown error");
+            };
+            assert_eq!(message, b"boom");
+            assert_error_contexts(&error, &[b"ctx"]);
+        }
+    }
+
+    #[test]
+    fn add_error_context_message_failures_match_cpp_nix_ordering() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext 1 (builtins.throw "boom")"#,
+        ))
+        .expect_err("invalid context message wins after wrapped expression fails");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+        assert_error_contexts(&error, &[ADD_ERROR_CONTEXT_MESSAGE_CONTEXT]);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext {} (builtins.throw "boom")"#,
+        ))
+        .expect_err("non-coercible attrset context gets addErrorContext context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Attrs,
+                ..
+            }
+        ));
+        assert_error_contexts(&error, &[ADD_ERROR_CONTEXT_MESSAGE_CONTEXT]);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext (builtins.throw "context") (builtins.throw "boom")"#,
+        ))
+        .expect_err("context expression error wins");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown context error");
+        };
+        assert_eq!(message, b"context");
+        assert_error_contexts(&error, &[]);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext ({ __toString = self: builtins.throw "context"; }) (builtins.throw "boom")"#,
+        ))
+        .expect_err("__toString throw wins while coercing the context message");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown context error");
+        };
+        assert_eq!(message, b"context");
+        assert_error_contexts(&error, &[]);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.addErrorContext ({ __toString = self: 1; }) (builtins.throw "boom")"#,
+        ))
+        .expect_err("__toString result type error wins while coercing the context message");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+        assert_error_contexts(&error, &[]);
+    }
+
+    #[test]
+    fn try_eval_catches_add_error_context_wrapped_throw() {
+        assert_eq!(
+            eval(r#"(builtins.tryEval (builtins.addErrorContext "ctx" (builtins.throw "boom"))).success"#)
+                .as_bool(),
+            Ok(false)
+        );
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.tryEval (builtins.addErrorContext 1 (builtins.throw "boom"))"#,
+        ))
+        .expect_err("tryEval does not catch context message type errors");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Type { .. }));
+        assert_error_contexts(&error, &[ADD_ERROR_CONTEXT_MESSAGE_CONTEXT]);
     }
 
     #[test]

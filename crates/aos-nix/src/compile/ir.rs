@@ -878,6 +878,33 @@ impl IrLowerer {
         Ok(Some((symbol, Self::effect_class(effect), first_argument)))
     }
 
+    fn lazy_strict_binary_primop_ref(
+        &self,
+        id: NodeId,
+    ) -> Result<Option<(Symbol, EffectClass, NodeId)>, IrError> {
+        let node = self.node(id)?;
+        if node.kind != NodeKind::Apply {
+            return Ok(None);
+        }
+        let NodeData::Pair {
+            first: function,
+            second: first_argument,
+        } = node.data
+        else {
+            return Err(self.invalid_shape(node, "application pair"));
+        };
+        if self.node(function)?.kind == NodeKind::GlobalVar {
+            return Ok(None);
+        }
+        let Some(symbol) = self.direct_builtin_ref_symbol(function)? else {
+            return Ok(None);
+        };
+        let Some(BuiltinDirect::LazyStrictBinary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((symbol, Self::effect_class(effect), first_argument)))
+    }
+
     fn strict_ternary_primop_ref(
         &self,
         id: NodeId,
@@ -1168,6 +1195,21 @@ impl IrLowerer {
         {
             let first_argument = self.lower_expr(first_argument)?;
             let second_argument = self.lower_lazy(argument)?;
+            let args = self
+                .arena
+                .push_child_slice(&[first_argument, second_argument], node.span)?;
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                effect,
+                IrData::PrimOp { symbol, args },
+            );
+        }
+        if let Some((symbol, effect, first_argument)) =
+            self.lazy_strict_binary_primop_ref(function)?
+        {
+            let first_argument = self.lower_lazy(first_argument)?;
+            let second_argument = self.lower_expr(argument)?;
             let args = self
                 .arena
                 .push_child_slice(&[first_argument, second_argument], node.span)?;
@@ -3100,18 +3142,45 @@ mod tests {
     }
 
     #[test]
-    fn unmodeled_pure_builtins_remain_applications() {
-        let ir = lowered("builtins.addErrorContext \"ctx\" 1");
+    fn lowers_add_error_context_directly_with_lazy_context_message() {
+        let ir = lowered("builtins.addErrorContext (let x = 1; in x) (let y = 2; in y)");
         let root = root_node(&ir);
-        assert_eq!(root.kind, IrKind::Apply);
-        let IrData::Pair { first, .. } = root.data else {
-            panic!("apply payload expected");
+        assert_eq!(root.kind, IrKind::PrimOp);
+        assert_eq!(root.effect, EffectClass::Pure);
+        let IrData::PrimOp { symbol, args } = root.data else {
+            panic!("primop payload expected");
         };
-        assert_eq!(node(&ir, first).kind, IrKind::Apply);
-        let IrData::Pair { first, .. } = node(&ir, first).data else {
-            panic!("inner apply payload expected");
-        };
-        assert_eq!(node(&ir, first).kind, IrKind::Select);
+        assert_eq!(symbol_text(&ir, symbol), b"addErrorContext");
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 2);
+        assert_eq!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
+        assert_eq!(node(&ir, args[1]).kind, IrKind::Let);
+    }
+
+    #[test]
+    fn shadowed_add_error_context_stays_ordinary_application() {
+        for source in [
+            "addErrorContext \"ctx\" 1",
+            "let addErrorContext = context: value: value; in addErrorContext \"ctx\" 1",
+            "let builtins = { addErrorContext = context: value: value; }; in builtins.addErrorContext \"ctx\" 1",
+            "(builtins.addErrorContext or (context: value: value)) \"ctx\" 1",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            let root = if root.kind == IrKind::Let {
+                let IrData::Let { body, .. } = root.data else {
+                    panic!("let payload expected");
+                };
+                node(&ir, body)
+            } else {
+                root
+            };
+            assert_eq!(root.kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = root.data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        }
     }
 
     #[test]

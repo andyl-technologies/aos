@@ -72,7 +72,8 @@ builtin_registry! {
     pub(crate) struct AddErrorContextBuiltin;
     impl BuiltinDefinition for AddErrorContextBuiltin {
         const NAME: &'static [u8] = b"addErrorContext";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::AddErrorContext;
+        const DOCS: &'static BuiltinDocs = &ADD_ERROR_CONTEXT_DOCS;
     }
 
     pub(crate) struct AllBuiltin;
@@ -848,6 +849,8 @@ pub(crate) enum BuiltinDirect {
     StrictBinary { effect: BuiltinEffect },
     /// The builtin lowers after a strict first argument and lazy second argument.
     StrictLazyBinary { effect: BuiltinEffect },
+    /// The builtin lowers after a lazy first argument and strict second argument.
+    LazyStrictBinary { effect: BuiltinEffect },
     /// The builtin lowers as a two-argument sort boundary with Nix-specific forcing.
     Sort { effect: BuiltinEffect },
     /// The builtin lowers after three strict arguments.
@@ -907,6 +910,8 @@ pub(crate) enum BuiltinExecution {
     Sort,
     /// The builtin evaluates `tryEval`.
     TryEval,
+    /// The builtin evaluates `addErrorContext`.
+    AddErrorContext,
     /// The builtin evaluates `pathExists`.
     PathExists,
     /// The builtin evaluates `readDir`.
@@ -1002,6 +1007,9 @@ impl BuiltinExecution {
             Self::Seq | Self::DeepSeq => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Pure,
             }),
+            Self::AddErrorContext => Some(BuiltinDirect::LazyStrictBinary {
+                effect: BuiltinEffect::Pure,
+            }),
             Self::Trace { .. } | Self::Warn => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Effectful,
             }),
@@ -1031,6 +1039,7 @@ impl BuiltinExecution {
             | Self::ReadFile
             | Self::ReadFileType => Some(1),
             Self::StrictBinary { .. }
+            | Self::AddErrorContext
             | Self::FindFile
             | Self::DirectBinary(_)
             | Self::Sort
@@ -1182,6 +1191,10 @@ static TODO_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
 
 static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a string with reflected string context appended.",
+};
+
+static ADD_ERROR_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Adds a diagnostic context message to errors from an expression.",
 };
 
 static CURRENT_SYSTEM_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1471,6 +1484,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"addErrorContext"),
+            Some(BuiltinDirect::LazyStrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"match"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure
@@ -1629,6 +1648,13 @@ mod tests {
             Some(2)
         );
         assert_eq!(
+            BUILTINS
+                .lookup(b"addErrorContext")
+                .unwrap()
+                .first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
             BUILTINS.lookup(b"hashFile").unwrap().first_class_arity(),
             Some(2)
         );
@@ -1744,6 +1770,14 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"appendContext").unwrap().docs().summary(),
             "Returns a string with reflected string context appended."
+        );
+        assert_eq!(
+            BUILTINS
+                .lookup(b"addErrorContext")
+                .unwrap()
+                .docs()
+                .summary(),
+            "Adds a diagnostic context message to errors from an expression."
         );
         assert_eq!(
             BUILTINS.lookup(b"currentSystem").unwrap().docs().summary(),

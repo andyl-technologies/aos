@@ -724,7 +724,7 @@ places C++ Nix would.
       here only to record its `tryEval` interaction: a failed assertion is a
       catchable error. The syntax is covered in
       [language conformance](20-nix-language-conformance.md).
-- [ ] `addErrorContext` (s e) — evaluate `e`, and if it raises an error, prepend
+- [x] `addErrorContext` (s e) — evaluate `e`, and if it raises an error, prepend
       `s` to the error's context trace. Affects error *messages*, not values;
       parity matters only for error-message-shaped tests, but the primop must
       exist (nixpkgs `lib` wraps it for `addErrorContext`-style annotations).
