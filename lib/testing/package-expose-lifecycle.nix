@@ -130,6 +130,7 @@
       };
       permissions = {
         network = "private";
+        tcp-bind = [18080];
         capabilities = [];
         devices = [];
         host-paths = [];

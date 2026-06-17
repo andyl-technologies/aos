@@ -73,6 +73,7 @@ mkDerivation {
 
     permissions = {
       network = "private";
+      tcp-bind = [8000];
       capabilities = [];
       devices = [];
       host-paths = [];

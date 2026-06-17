@@ -849,6 +849,37 @@
     then value
     else [value];
 
+  effectiveSystemdList = values:
+    builtins.foldl' (
+      acc: value: let
+        text = lib.trim (builtins.toString value);
+      in
+        if text == ""
+        then []
+        else acc ++ [text]
+    ) []
+    values;
+
+  isDecimal = value:
+    builtins.match "^[0-9]+$" value != null;
+
+  tcpListenStreamPort = field: value: let
+    text = lib.trim (builtins.toString value);
+    parts = lib.splitString ":" text;
+    lastPart = builtins.elemAt parts (builtins.length parts - 1);
+    parsePort = portText:
+      validatePort field (lib.toInt portText);
+  in
+    if text == "" || lib.hasPrefix "/" text || lib.hasPrefix "@" text || lib.hasPrefix "vsock:" text
+    then null
+    else if isDecimal text
+    then parsePort text
+    else if lib.hasPrefix "[" text && builtins.match "^.*\\]:[0-9]+$" text != null
+    then parsePort lastPart
+    else if builtins.length parts == 2 && isDecimal lastPart
+    then parsePort lastPart
+    else throw "mkDerivation ${field} contains unsupported ListenStream endpoint '${text}'; use a Unix socket path or a TCP port/host:port endpoint";
+
   hexDigits = {
     "0" = 0;
     "1" = 1;
@@ -1404,6 +1435,33 @@ in rec {
       (unknownUnitReferences == [])
       "mkDerivation expose for package '${packageName}' references unknown authored units: ${builtins.concatStringsSep ", " unknownUnitReferences}"
       true;
+    tcpSocketListeners = lib.concatMap (
+      socketName: let
+        unit = typedSystemdUnchecked.sockets.${socketName};
+        unitName = unit.name;
+        socketConfigListenStreams =
+          if unit.socketConfig ? ListenStream
+          then asList unit.socketConfig.ListenStream
+          else [];
+        listenStreams = effectiveSystemdList (socketConfigListenStreams ++ unit.listenStreams);
+        tcpPorts = builtins.filter (port: port != null) (
+          builtins.map
+          (tcpListenStreamPort "expose.units.${unitName}.ListenStream")
+          listenStreams
+        );
+      in
+        builtins.map (port: {
+          inherit port unitName;
+        })
+        tcpPorts
+    ) (builtins.attrNames typedSystemdUnchecked.sockets);
+    tcpSocketListenerViolations =
+      builtins.filter (listener: !(builtins.elem listener.port tcpBind)) tcpSocketListeners;
+    socketTcpBindValid =
+      throwIfNot
+      (tcpSocketListenerViolations == [])
+      "mkDerivation expose for package '${packageName}' has TCP socket listeners without matching permissions.tcp-bind grants: ${builtins.concatStringsSep ", " (builtins.map (listener: "${listener.unitName}:${builtins.toString listener.port}") tcpSocketListenerViolations)}"
+      true;
 
     addTargetMembership = name: unit: let
       conditionPaths =
@@ -1739,7 +1797,8 @@ in rec {
         }
       )
     );
-    typedSystemd = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
+    typedSystemdUnchecked = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
+    typedSystemd = builtins.seq socketTcpBindValid typedSystemdUnchecked;
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
     manifestUnitNames =
       throwIfNot

@@ -293,6 +293,7 @@ fn exposed_packages_from_expose_dir(
             }
             unit_owners.insert(unit.clone(), apm.name.clone());
         }
+        validate_socket_listener_permissions(&apm.name, &artifact_root, &units, &apm.permissions)?;
         validate_landlock_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
 
         let credential_blobs =
@@ -497,6 +498,89 @@ fn validate_network_policy_artifact(
         );
     }
     Ok(())
+}
+
+fn validate_socket_listener_permissions(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    for unit in units {
+        if !unit.ends_with(".socket") {
+            continue;
+        }
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed socket unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        let Some(socket) = parsed.sections.get("Socket") else {
+            continue;
+        };
+        let Some(listen_streams) = socket.get("ListenStream") else {
+            continue;
+        };
+        for listen_stream in listen_streams {
+            let Some(port) = tcp_listen_stream_port(listen_stream).with_context(|| {
+                format!(
+                    "validating ListenStream endpoint '{}' for package '{}' socket unit '{}'",
+                    listen_stream, package_name, unit
+                )
+            })?
+            else {
+                continue;
+            };
+            if !permissions.tcp_bind.contains(&port) {
+                bail!(
+                    "socket unit '{}' for package '{}' binds TCP port {} without a matching permissions.tcp-bind grant",
+                    unit,
+                    package_name,
+                    port
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn tcp_listen_stream_port(value: &str) -> Result<Option<u16>> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.starts_with('@')
+        || value.starts_with("vsock:")
+    {
+        return Ok(None);
+    }
+    if value.chars().all(|ch| ch.is_ascii_digit()) {
+        return parse_tcp_listen_port(value).map(Some);
+    }
+    if let Some((_, port)) = value.rsplit_once("]:")
+        && value.starts_with('[')
+    {
+        return parse_tcp_listen_port(port).map(Some);
+    }
+    if value.matches(':').count() == 1 {
+        let (_, port) = value
+            .rsplit_once(':')
+            .context("TCP ListenStream endpoint has no port")?;
+        if port.chars().all(|ch| ch.is_ascii_digit()) {
+            return parse_tcp_listen_port(port).map(Some);
+        }
+    }
+    bail!(
+        "unsupported ListenStream endpoint '{value}'; use a Unix socket path or a TCP port/host:port endpoint"
+    )
+}
+
+fn parse_tcp_listen_port(value: &str) -> Result<u16> {
+    let port = value
+        .parse::<u16>()
+        .with_context(|| format!("invalid TCP ListenStream port '{value}'"))?;
+    if port == 0 {
+        bail!("TCP ListenStream port must be between 1 and 65535");
+    }
+    Ok(port)
 }
 
 fn normalized_permissions(package_name: &str, permissions: &PermissionsMeta) -> PermissionsMeta {
@@ -1812,6 +1896,7 @@ mod tests {
             path: None,
             unit: Some("provider.socket".into()),
         }];
+        grant_tcp_bind(&mut provider, 18080);
 
         let mut consumer = installed_with_expose(tmp, "consumer", "pkghash222", "artifacthash222");
         consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
@@ -1999,6 +2084,11 @@ mod tests {
         let apm = installed.apm.as_ref().unwrap();
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         std::fs::remove_file(Path::new(&artifact).join("network-policy.json")).unwrap();
+    }
+
+    fn grant_tcp_bind(installed: &mut InstalledMeta, port: u16) {
+        installed.apm.as_mut().unwrap().permissions.tcp_bind = vec![port];
+        write_network_policy_file(installed, &[port], &[]);
     }
 
     fn write_service_unit(installed: &InstalledMeta, text: &str) {
@@ -2423,6 +2513,86 @@ mod tests {
             ),
         )
         .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_tcp_socket_without_bind_permission() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        apm.expose.as_mut().unwrap().units.push("web.socket".into());
+        std::fs::write(
+            Path::new(&artifact).join("units/web.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\n",
+        )
+        .unwrap();
+        write_network_policy_file(&installed, &[], &[]);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("without a matching permissions.tcp-bind grant"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_accepts_reset_tcp_socket_without_bind_permission() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        apm.expose.as_mut().unwrap().units.push("web.socket".into());
+        std::fs::write(
+            Path::new(&artifact).join("units/web.socket"),
+            "[Socket]\nListenStream=127.0.0.1:18080\nListenStream=\n",
+        )
+        .unwrap();
+        write_network_policy_file(&installed, &[], &[]);
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_accepts_tcp_socket_with_bind_permission() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_mut().unwrap();
+        apm.permissions.tcp_bind = vec![18080];
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        apm.expose.as_mut().unwrap().units.push("web.socket".into());
+        std::fs::write(
+            Path::new(&artifact).join("units/web.socket"),
+            "[Socket]\nListenStream=[::1]:18080\n",
+        )
+        .unwrap();
+        write_network_policy_file(&installed, &[18080], &[]);
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();
@@ -2896,6 +3066,7 @@ mod tests {
             path: None,
             unit: Some("provider.socket".into()),
         }];
+        grant_tcp_bind(&mut provider, 18080);
         let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
         consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
             vec![RequiredCapabilityMeta {
@@ -3028,6 +3199,7 @@ mod tests {
             path: None,
             unit: Some("provider.socket".into()),
         }];
+        grant_tcp_bind(&mut provider, 18080);
 
         let mut first = installed_with_expose(&tmp, "first", "pkghash222", "artifacthash222");
         first.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
@@ -3109,6 +3281,7 @@ mod tests {
                 unit: Some("provider.socket".into()),
             },
         ];
+        grant_tcp_bind(&mut provider, 18080);
 
         let mut first = installed_with_expose(&tmp, "first", "pkghash222", "artifacthash222");
         first.apm.as_mut().unwrap().expose.as_mut().unwrap().uses = vec![RequiredCapabilityMeta {
@@ -3203,6 +3376,7 @@ mod tests {
             path: None,
             unit: Some("provider.socket".into()),
         }];
+        grant_tcp_bind(&mut provider, 18080);
 
         let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
         consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
@@ -3269,6 +3443,7 @@ mod tests {
             path: None,
             unit: Some("provider.socket".into()),
         }];
+        grant_tcp_bind(&mut provider, 18080);
 
         let mut consumer = installed_with_expose(&tmp, "consumer", "pkghash222", "artifacthash222");
         consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =

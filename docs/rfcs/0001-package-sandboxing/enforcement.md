@@ -54,8 +54,8 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   admitted package metadata before attaching exposed units, so the JSON is not a
   second policy source. An **empty manifest yields no service-process TCP
   grants** and the default filesystem confinement. Host-owned socket activation
-  units remain outside the wrapper and must be validated separately against the
-  socket capability / `tcp-bind` contract.
+  units remain outside the wrapper, so `expose` and `apm` validate TCP
+  `ListenStream=` ports against the socket capability / `tcp-bind` contract.
 - **Apply point.** Landlock self-restriction runs in each service command's own
   process before `execve`. For TCP policy, the renderer prefixes every
   package-authored workload service exec directive (`ExecStart=`,
