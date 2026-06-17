@@ -926,7 +926,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [ ] `sort` stability and tie-breaking; `lessThan` cross-type/list ordering.
 - [x] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
 - [x] `match` / `split` regex dialect (named risk vs. Rust `regex`).
-- [ ] `div` truncate-toward-zero; int/float promotion and float rendering.
+- [x] `div` truncate-toward-zero; int/float promotion and float rendering.
 - [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.

@@ -15109,17 +15109,8 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_numeric_and_ordering_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
             "builtins.add 1 2",
             "let add = builtins.add 1; in add 2",
@@ -15155,9 +15146,32 @@ mod tests {
             "builtins.lessThan \"a\" \"b\"",
             "builtins.lessThan [ 1 2 ] [ 1 3 ]",
             "builtins.lessThan [ 1 (1 / 0) ] [ 2 (1 / 0) ]",
+            "builtins.toString 1.25",
+            "builtins.toString (-0.0)",
+            "builtins.toString (builtins.add 1 2.5)",
+            "builtins.toString (builtins.div 7 2.0)",
+            "builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))",
+            "builtins.toString (1.0e308 * 1.0e308)",
+            "builtins.toString (builtins.sub 0.0 (1.0e308 * 1.0e308))",
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_numeric_and_ordering_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_numeric_and_ordering_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix numeric check");
+            return;
+        };
+        assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
@@ -23312,6 +23326,14 @@ mod tests {
         assert_eq!(
             eval_string_bytes("builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))"),
             b"nan"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString (1.0e308 * 1.0e308)"),
+            b"inf"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString (builtins.sub 0.0 (1.0e308 * 1.0e308))"),
+            b"-inf"
         );
         assert_eq!(eval_string_bytes("builtins.toString true"), b"1");
         assert_eq!(eval_string_bytes("builtins.toString false"), b"");
