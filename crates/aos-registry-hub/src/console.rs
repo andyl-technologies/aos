@@ -158,23 +158,21 @@ struct Session {
 /// bounced to the login page rather than 401'd, so a logged-out click lands
 /// somewhere useful.
 async fn require_session(state: &AppState, headers: &HeaderMap) -> Result<Session, Box<Response>> {
-    let Some(secret) = session_secret_from_cookies(headers) else {
-        return Err(Box::new(Redirect::to("/login").into_response()));
-    };
-    let auth = match state.db.validate_session(&secret).await {
-        Ok(Some(auth)) => auth,
-        Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
-        Err(err) => return Err(Box::new(internal(err))),
-    };
-    let email = match state.db.user_email(auth.user_id).await {
-        Ok(Some(email)) => email,
-        Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
-        Err(err) => return Err(Box::new(internal(err))),
-    };
+    // Pull the cookie from axum and delegate to the runtime-neutral core
+    // resolver (RFC-0004 Phase 5); the only hub-specific behavior is bouncing an
+    // anonymous/invalid session to `/login` rather than returning an error.
+    let resolved =
+        match aos_registry_core::web::session::resolve_session_from_headers(&state.db, headers)
+            .await
+        {
+            Ok(Some(resolved)) => resolved,
+            Ok(None) => return Err(Box::new(Redirect::to("/login").into_response())),
+            Err(err) => return Err(Box::new(internal(err))),
+        };
     Ok(Session {
-        secret,
-        auth,
-        email,
+        secret: resolved.secret,
+        auth: resolved.auth,
+        email: resolved.email,
     })
 }
 

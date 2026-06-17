@@ -47,7 +47,6 @@ use serde::Serialize;
 
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::auth::permission_from_str;
-use crate::auth::session::COOKIE_NAME;
 use crate::db::{Database, SessionAuth as DbSessionAuth};
 use crate::domain::{iam, Permission, Scope};
 
@@ -246,59 +245,16 @@ pub fn require_permission(
     }
 }
 
-/// Returns `true` if the request may proceed past CSRF defenses.
-///
-/// For a cookie-authenticated Connect-JSON call, either the
-/// `connect-protocol-version` header is present (a no-JS form cannot send
-/// it, and a cross-origin XHR that does triggers a preflight blocked by
-/// strict CORS), or the SSR form path supplies a valid per-session
-/// synchronizer token via the `x-aos-csrf` header. Bearer requests carry no
-/// ambient credential and should not be routed through this check.
-///
-/// Not yet wired into a handler: every state-changing endpoint today
-/// authenticates with a `Bearer` token and no ambient cookie, so it is not
-/// CSRF-able. This gate must be applied to the first cookie-authenticated
-/// mutation that lands (the phase-3 producer console).
-#[must_use]
-pub fn connect_or_csrf_ok(headers: &HeaderMap, session_secret: Option<&str>) -> bool {
-    if headers.contains_key("connect-protocol-version") {
-        return true;
-    }
-    match (
-        headers.get("x-aos-csrf").and_then(|v| v.to_str().ok()),
-        session_secret,
-    ) {
-        (Some(token), Some(secret)) => verify_csrf_token(secret, token),
-        _ => false,
-    }
-}
-
-/// Mints a per-session CSRF synchronizer token bound to `session_secret`.
-///
-/// The token is the SHA-256 of the session secret prefixed with a fixed
-/// domain separator, so it is unforgeable without the session secret yet
-/// safe to embed in an SSR form. Verify with [`verify_csrf_token`].
-#[must_use]
-pub fn mint_csrf_token(session_secret: &str) -> String {
-    crate::auth::token::sha256_hex(&format!("aos-csrf:{session_secret}"))
-}
-
-/// Verifies a CSRF synchronizer token against a session secret.
-#[must_use]
-pub fn verify_csrf_token(session_secret: &str, token: &str) -> bool {
-    mint_csrf_token(session_secret) == token
-}
+// The CSRF synchronizer-token primitives moved to the wasm-clean
+// `aos_registry_core::web::csrf` (RFC-0004 Phase 5, console-dedup stage A) so
+// the Worker shares them; re-exported here so every
+// `crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token,
+// verify_csrf_token}` call site is unchanged.
+pub use aos_registry_core::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
 
 /// Extracts the `__Host-aos_session` value from a request's `Cookie` header.
 fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookies.split(';') {
-        let pair = pair.trim();
-        if let Some(value) = pair.strip_prefix(&format!("{COOKIE_NAME}=")) {
-            return Some(value.to_string());
-        }
-    }
-    None
+    aos_registry_core::web::session::session_secret_from_headers(headers)
 }
 
 /// OAuth2 token-exchange response body.
