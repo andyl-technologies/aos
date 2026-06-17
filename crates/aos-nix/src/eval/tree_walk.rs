@@ -15193,17 +15193,8 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_string_context_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_string_context_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
             r#"builtins.getContext (builtins.appendContext "x" {
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
@@ -15230,6 +15221,17 @@ mod tests {
                         outputs = [];
                     };
                 })"#,
+            r#"builtins.getContext (builtins.appendContext
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { outputs = [ "out" ]; };
+                })
+                {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = {
+                        path = true;
+                        allOutputs = true;
+                        outputs = [ "dev" ];
+                    };
+                })"#,
             r#"builtins.getContext (builtins.unsafeDiscardStringContext
                 (builtins.appendContext "x" {
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
@@ -15244,12 +15246,16 @@ mod tests {
                 (builtins.appendContext "x" {
                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { path = true; };
                 }))"#,
+            r#"builtins.getContext (builtins.addDrvOutputDependencies
+                (builtins.appendContext "x" {
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-drv.drv" = { allOutputs = true; };
+                }))"#,
             r#"let append = builtins.appendContext "x"; in
                builtins.getContext (append {
                  "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
                })"#,
         ] {
-            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
 
         for source in [
@@ -15303,8 +15309,24 @@ mod tests {
                 })"#,
             r#"builtins.unsafeDiscardOutputDependency 1"#,
         ] {
-            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_string_context_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_string_context_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_string_context_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix string context check");
+            return;
+        };
+        assert_cpp_nix_string_context_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
