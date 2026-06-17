@@ -113,10 +113,17 @@ impl Mailer for WorkerMailer {
 ///
 /// It holds no state: the Fetch API is global.
 ///
-/// Currently *forward-wiring*: the only callers are the OIDC token-exchange and
-/// JWKS fetch, and the OIDC routes stay native-only on the hub (not yet mounted
-/// by `console_router`), so no mounted Worker route reaches this client. The
-/// streaming-abort gap must be closed before the OIDC routes move to the Worker.
+/// This client is live: as of the OIDC move into shared `core` (console-dedup
+/// stage F), the Worker mounts the OIDC routes, whose token-exchange and JWKS
+/// fetch reach this client. The residual streaming-abort gap is bounded: a
+/// chunked response that declares no `Content-Length` is read in full by
+/// [`worker::Response::bytes`], so a hostile IdP endpoint could try to OOM the
+/// isolate — but the endpoint is the *tenant's own* admin-configured IdP, the
+/// blast radius is that tenant's own login request (a fresh per-request isolate
+/// capped at the Workers memory limit, no cross-tenant effect), and the
+/// `Content-Length` pre-check already rejects an honestly-declared oversized
+/// body. Closing it fully (a streamed read with a running cap via the Workers
+/// `Response` stream API) is a documented hardening follow-up.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WorkerHttpClient;
 
