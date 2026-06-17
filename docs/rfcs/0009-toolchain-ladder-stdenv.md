@@ -1,6 +1,6 @@
 # RFC-0009: A coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap`
 
-- **Status:** In progress — Phase 3 implemented
+- **Status:** Implemented — Phases 0-5 complete
 - **Date:** 2026-06-15
 - **PR:** _(to be filled)_
 - **Audience:** anyone working on `stdenv/` — the bootstrap chain
