@@ -62,6 +62,11 @@ worker = { version = "0.4", features = ["d1"] }
 axum = { version = "0.8", default-features = false, features = ["json"] }
 tower = { version = "0.5", features = ["util"] }
 http = { workspace = true }
+# `StreamExt::next` to drain a `worker::Response` body stream with a running
+# size cap in the OIDC HttpClient port (aborts the instant the running total
+# exceeds the cap, so a chunked no-Content-Length response cannot OOM the
+# isolate). Lightweight, wasm-clean.
+futures-util = "0.3"
 
 [dev-dependencies]
 # The `gen_surface` example (the worker integration test's fixture generator)
