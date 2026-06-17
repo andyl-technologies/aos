@@ -27,6 +27,13 @@ pub struct FakeState {
     /// JobRemoved while subscribed — faithfully simulating systemd's API-bus
     /// behaviour, so a client that forgot to Subscribe would hang.
     pub subscribed: Arc<AtomicBool>,
+    /// When set, `submit` allocates and returns a job path but does NOT emit
+    /// the terminal `JobRemoved` — modelling a job that systemd has accepted
+    /// but not yet reported complete. Used to leave a waiter parked so a
+    /// subsequent connection drop (see [`Harness::close_server`]) exercises
+    /// the bus-died-mid-flight path that restarting `dbus.service` triggers
+    /// in production.
+    pub suppress_emit: Arc<AtomicBool>,
     job_counter: Arc<AtomicU32>,
 }
 
@@ -37,6 +44,7 @@ impl FakeState {
             next_result: Arc::new(Mutex::new("done".to_string())),
             unit_results: Arc::new(Mutex::new(HashMap::new())),
             subscribed: Arc::new(AtomicBool::new(false)),
+            suppress_emit: Arc::new(AtomicBool::new(false)),
             job_counter: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -140,7 +148,9 @@ impl FakeSystemd {
         let id = self.state.job_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let path = OwnedObjectPath::try_from(format!("/org/freedesktop/systemd1/job/{id}"))
             .expect("synthetic job path is valid");
-        if self.state.subscribed.load(Ordering::SeqCst) {
+        if self.state.subscribed.load(Ordering::SeqCst)
+            && !self.state.suppress_emit.load(Ordering::SeqCst)
+        {
             let result = self
                 .state
                 .unit_results
@@ -160,7 +170,13 @@ impl FakeSystemd {
 pub struct Harness {
     pub client: SystemdClient,
     pub state: FakeState,
-    server_conn: zbus::Connection,
+    /// The fake's server-side connection, behind interior mutability so
+    /// [`Harness::close_server`] can take and close it through a shared `&self`
+    /// (it runs concurrently with an in-flight `&self.client` call). Closing it
+    /// severs the `UnixStream` pair and drives the client's signal stream to
+    /// EOF — the in-process analogue of `dbus.service` restarting out from
+    /// under the reconcile.
+    server_conn: Mutex<Option<zbus::Connection>>,
 }
 
 const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
@@ -192,7 +208,7 @@ impl Harness {
         Self {
             client,
             state,
-            server_conn,
+            server_conn: Mutex::new(Some(server_conn)),
         }
     }
 
@@ -202,6 +218,24 @@ impl Harness {
 
     pub fn set_next_result(&self, result: &str) {
         *self.state.next_result.lock().unwrap() = result.to_string();
+    }
+
+    /// Stop the fake from emitting terminal `JobRemoved` signals: subsequent
+    /// lifecycle calls return a job path but never report completion, leaving
+    /// the client's waiter parked. Pair with [`Harness::close_server`].
+    pub fn suppress_job_emission(&self) {
+        self.state.suppress_emit.store(true, Ordering::SeqCst);
+    }
+
+    /// Close the server side of the connection, severing the `UnixStream` pair
+    /// so the client's `JobRemoved` stream reaches EOF. This is exactly what
+    /// happens to the reconcile's bus connection when it restarts
+    /// `dbus.service`: the transport dies mid-flight with a job still pending.
+    pub async fn close_server(&self) {
+        let conn = self.server_conn.lock().unwrap().take();
+        if let Some(conn) = conn {
+            let _ = conn.close().await;
+        }
     }
 
     pub fn set_unit_result(&self, unit: &str, result: &str) {
@@ -215,8 +249,8 @@ impl Harness {
     /// Emit a standalone `JobRemoved` (no corresponding method call) — used to
     /// exercise `settle()`'s late-message draining.
     pub async fn emit_job_removed(&self, id: u32, unit: &str, result: &str) {
-        let iref = self
-            .server_conn
+        let conn = self.server_conn_clone();
+        let iref = conn
             .object_server()
             .interface::<_, FakeSystemd>(MANAGER_PATH)
             .await
@@ -228,12 +262,24 @@ impl Harness {
     }
 
     pub async fn emit_reloading(&self, active: bool) {
-        let iref = self
-            .server_conn
+        let conn = self.server_conn_clone();
+        let iref = conn
             .object_server()
             .interface::<_, FakeSystemd>(MANAGER_PATH)
             .await
             .unwrap();
         iref.reloading(active).await.unwrap();
+    }
+
+    /// Clone the live server connection. Panics if it was already closed via
+    /// [`Harness::close_server`] — emitting after a deliberate drop is a test
+    /// bug.
+    fn server_conn_clone(&self) -> zbus::Connection {
+        self.server_conn
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("server connection is open")
+            .clone()
     }
 }
