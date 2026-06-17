@@ -27,7 +27,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
 use aos_registry_core::auth::seal::SecretSealer;
@@ -202,9 +202,12 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
 ///
 /// Every logical surface path is resolved with the hub's
 /// [`safe_join`](crate::fetch::safe_join) (rejecting `..` and absolute
-/// components) before any IO, and writes go through an atomic temp-file +
-/// rename so a concurrent reader never sees a half-written object — the exact
-/// path-safety and atomicity semantics the hub's original `gitwrite` enforced.
+/// components), then symlink-canonicalized and required to stay under the real
+/// storage root — the same containment the read side
+/// ([`LocalFsFetch`](crate::fetch::LocalFsFetch)) enforces, so a symlinked path
+/// component cannot steer a write or delete outside the registry's root. Writes
+/// go through an atomic temp-file + rename so a concurrent reader never sees a
+/// half-written object.
 struct LocalFsWrite {
     /// The registry's storage-binding root the logical paths resolve under.
     root: PathBuf,
@@ -215,18 +218,71 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
-        write_atomic(&target, bytes).await
+        // Containment: create the parent, then require its real (symlink-
+        // resolved) location to live under the real root, so a symlinked
+        // component cannot redirect the write outside the storage root. The
+        // returned target is rebased onto the canonical parent.
+        let contained = self.contained_target(&target).await?;
+        write_atomic(&contained, bytes).await
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
         let target = crate::fetch::safe_join(&self.root, path)
             .with_context(|| format!("resolving surface path {path}"))?;
-        match tokio::fs::remove_file(&target).await {
-            Ok(()) => Ok(()),
-            // Idempotent: a missing object is a successful delete.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err).with_context(|| format!("deleting {}", target.display())),
+        // A missing object is a successful (idempotent) delete; an existing one
+        // must canonicalize under the root before removal.
+        let canonical = match tokio::fs::canonicalize(&target).await {
+            Ok(canonical) => canonical,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("resolving {}", target.display()));
+            }
+        };
+        let root = tokio::fs::canonicalize(&self.root)
+            .await
+            .with_context(|| format!("canonicalizing storage root {}", self.root.display()))?;
+        if !canonical.starts_with(&root) {
+            bail!("surface path '{path}' escapes the storage root via symlink");
         }
+        match tokio::fs::remove_file(&canonical).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| format!("deleting {}", canonical.display())),
+        }
+    }
+}
+
+impl LocalFsWrite {
+    /// Resolve `target`'s parent under the real storage root, returning the
+    /// write target rebased onto the canonical parent.
+    ///
+    /// Creates the parent directory, then symlink-canonicalizes both the root
+    /// and the parent and requires the parent to stay under the root, so a
+    /// symlinked path component cannot redirect the subsequent write outside the
+    /// registry's storage root. (`target` itself need not exist yet.)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the parent cannot be created or canonicalized, if it
+    /// escapes the root via a symlink, or if `target` has no file-name segment.
+    async fn contained_target(&self, target: &Path) -> Result<PathBuf> {
+        let parent = target.parent().unwrap_or(self.root.as_path());
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating {}", parent.display()))?;
+        let root = tokio::fs::canonicalize(&self.root)
+            .await
+            .with_context(|| format!("canonicalizing storage root {}", self.root.display()))?;
+        let canonical_parent = tokio::fs::canonicalize(parent)
+            .await
+            .with_context(|| format!("canonicalizing {}", parent.display()))?;
+        if !canonical_parent.starts_with(&root) {
+            bail!("surface path escapes the storage root via symlink");
+        }
+        let file_name = target
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("surface path has no file-name segment"))?;
+        Ok(canonical_parent.join(file_name))
     }
 }
 
