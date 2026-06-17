@@ -24,6 +24,7 @@ use std::{
 
 use base64::Engine as _;
 use md5::{Digest as _, Md5};
+use regex::bytes::Regex;
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
@@ -3145,6 +3146,193 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Ok(Value::int(string.len() as i64))
+    }
+
+    fn eval_match_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        pattern_id: IrId,
+        string_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let pattern_span = self.node(pattern_id)?.span;
+        let pattern = self.eval_node(pattern_id)?;
+        let pattern = self.context_free_string_bytes(pattern_id, pattern_span, pattern, "match")?;
+
+        let string_span = self.node(string_id)?.span;
+        let string = self.eval_node(string_id)?;
+        let string = self.context_free_string_bytes(string_id, string_span, string, "match")?;
+
+        self.eval_match_bytes(id, span, pattern_id, pattern_span, &pattern, &string)
+    }
+
+    fn eval_match_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        pattern: EvalPrimOpArg,
+        string: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let pattern_value = self.force_value(pattern.id(), pattern.span(), pattern.value())?;
+        let pattern_bytes =
+            self.context_free_string_bytes(pattern.id(), pattern.span(), pattern_value, "match")?;
+
+        let string_value = self.force_value(string.id(), string.span(), string.value())?;
+        let string_bytes =
+            self.context_free_string_bytes(string.id(), string.span(), string_value, "match")?;
+
+        self.eval_match_bytes(
+            id,
+            span,
+            pattern.id(),
+            pattern.span(),
+            &pattern_bytes,
+            &string_bytes,
+        )
+    }
+
+    fn eval_match_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        pattern_id: IrId,
+        pattern_span: Span,
+        pattern: &[u8],
+        string: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        let regex = self.compile_match_regex(pattern_id, pattern_span, pattern)?;
+        let Some(captures) = regex.captures_iter(string).find(|captures| {
+            captures
+                .get(0)
+                .is_some_and(|matched| matched.range() == (0..string.len()))
+        }) else {
+            return Ok(Value::null());
+        };
+
+        let capture_len = captures.len().saturating_sub(1);
+        let mut values = Vec::new();
+        values.try_reserve_exact(capture_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: capture_len,
+                },
+                span,
+            )
+        })?;
+        for capture in captures.iter().skip(1) {
+            let value = if let Some(capture) = capture {
+                self.alloc_static_string(id, span, capture.as_bytes())?
+            } else {
+                Value::null()
+            };
+            values.push(value);
+        }
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn compile_match_regex(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: &[u8],
+    ) -> Result<Regex, TreeWalkError> {
+        if pattern.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::RegexCompile {
+                    id,
+                    pattern: Vec::new(),
+                    message: "empty regular expression".to_owned(),
+                },
+                span,
+            ));
+        }
+        self.validate_match_regex_pattern(id, span, pattern)?;
+        let pattern_text = std::str::from_utf8(pattern).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::RegexCompile {
+                    id,
+                    pattern: pattern.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
+        let anchored_pattern = format!(r"\A(?:{pattern_text})\z");
+        Regex::new(&anchored_pattern).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::RegexCompile {
+                    id,
+                    pattern: pattern.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn validate_match_regex_pattern(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        let mut in_bracket_class = false;
+        let mut escaped = false;
+
+        for (index, byte) in pattern.iter().copied().enumerate() {
+            if escaped {
+                if matches!(
+                    byte,
+                    b'A' | b'B'
+                        | b'D'
+                        | b'P'
+                        | b'S'
+                        | b'W'
+                        | b'Z'
+                        | b'b'
+                        | b'd'
+                        | b'p'
+                        | b's'
+                        | b'w'
+                        | b'z'
+                ) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::RegexCompile {
+                            id,
+                            pattern: pattern.to_vec(),
+                            message: "unsupported POSIX ERE escape".to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                escaped = false;
+                continue;
+            }
+
+            match byte {
+                b'\\' => escaped = true,
+                b'[' if !in_bracket_class => in_bracket_class = true,
+                b']' if in_bracket_class => in_bracket_class = false,
+                b'(' if !in_bracket_class => {
+                    if matches!(pattern.get(index + 1), Some(b'?' | b')')) {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::RegexCompile {
+                                id,
+                                pattern: pattern.to_vec(),
+                                message: "unsupported POSIX ERE group".to_owned(),
+                            },
+                            span,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 
     fn eval_substring_primop(
@@ -8542,6 +8730,7 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Any => {
                 self.eval_all_any_primop(AllAnyOp::Any, call.id, call.span, first, second)
             }
+            StrictBinaryPrimOp::Match => self.eval_match_primop(call.id, call.span, first, second),
             StrictBinaryPrimOp::Filter => {
                 self.eval_filter_primop(call.id, call.span, first, second)
             }
@@ -9426,6 +9615,7 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Any => {
                 self.eval_all_any_primop_value(id, span, AllAnyOp::Any, first, second)
             }
+            StrictBinaryPrimOp::Match => self.eval_match_primop_value(id, span, first, second),
             StrictBinaryPrimOp::ConcatMap => {
                 self.eval_concat_map_primop_value(id, span, first, second)
             }
@@ -12269,6 +12459,16 @@ pub enum TreeWalkErrorKind {
         /// The unsupported runtime tag.
         actual: ValueTag,
     },
+    /// A regular expression failed to compile.
+    #[error("regular expression at node {id:?} failed to compile: {message}")]
+    RegexCompile {
+        /// The string-valued node that was parsed as a regular expression.
+        id: IrId,
+        /// The rejected regular expression bytes.
+        pattern: Vec<u8>,
+        /// The parser diagnostic.
+        message: String,
+    },
     /// A hash primop received an unsupported algorithm name.
     #[error("unknown hash algorithm at node {id:?}: {algorithm:?}")]
     UnknownHashAlgorithm {
@@ -13688,6 +13888,14 @@ mod tests {
             r#"let replace = builtins.replaceStrings [ "a" ]; swap = replace [ "b" ]; in swap "a""#,
             r#"builtins.concatStringsSep ":" [ "a" { outPath = "b"; } { __toString = self: "c"; } ]"#,
             r#"let join = builtins.concatStringsSep ","; in join [ "a" "b" ]"#,
+            r#"builtins.match "a(.)c" "abc""#,
+            r#"builtins.match "a(.)" "abc""#,
+            r#"builtins.match "abc" "abc""#,
+            r#"builtins.match "a|aa" "aa""#,
+            r#"builtins.match "(a|aa)" "aa""#,
+            r#"builtins.match "(a)?b" "b""#,
+            r#"builtins.match "(a*)" """#,
+            r#"let m = builtins.match "a(.)c"; in m "abc""#,
             r#"builtins.splitVersion "1.0pre2""#,
             r#"builtins.splitVersion "foo-1.2_bar""#,
             r#"builtins.splitVersion "1+2~pre""#,
@@ -13711,6 +13919,16 @@ mod tests {
             r#"builtins.dirOf { __toString = self: "/a/b"; }"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            r#"builtins.match "" """#,
+            r#"builtins.match "[" "x""#,
+            r#"builtins.match "()" """#,
+            r#"builtins.match "(?:a)" "a""#,
+            r#"builtins.match "\\d" "1""#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
     }
 
@@ -18452,6 +18670,289 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn match_primop_matches_full_strings_and_captures() {
+        assert_eq!(
+            eval_list_string_bytes(r#"builtins.match "a(.)c" "abc""#),
+            vec![b"b".to_vec()]
+        );
+        assert_eq!(eval(r#"builtins.match "a(.)" "abc""#).as_null(), Ok(()));
+        assert_eq!(
+            eval(r#"builtins.length (builtins.match "abc" "abc")"#).as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval(r#"builtins.length (builtins.match "a|aa" "aa")"#).as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval_list_string_bytes(r#"builtins.match "(a|aa)" "aa""#),
+            vec![b"aa".to_vec()]
+        );
+        assert_eq!(
+            eval(r#"builtins.elemAt (builtins.match "(a)?b" "b") 0"#).as_null(),
+            Ok(())
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.elemAt (builtins.match "(a*)" "") 0"#),
+            b""
+        );
+        assert_eq!(
+            eval_list_string_bytes(r#"let m = builtins.match "a(.)c"; in m "abc""#),
+            vec![b"b".to_vec()]
+        );
+        assert_eq!(
+            eval_string_bytes(
+                r#"let builtins = { match = pattern: value: "shadow"; }; in builtins.match "a" "a""#
+            ),
+            b"shadow"
+        );
+    }
+
+    #[test]
+    fn match_primop_checks_arguments_and_regexes() {
+        let ir = lower(r#"builtins.match 1 (1 / 0)"#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match type-checks pattern first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: pattern,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), pattern_span);
+
+        let ir = lower(r#"builtins.match "a" 1"#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let string = args[1];
+        let string_span = ir.arena.node(string).expect("string exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match type-checks string second");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: string,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), string_span);
+
+        let ir = lower(r#"builtins.match "[" "x""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match rejects invalid regexes");
+
+        match error.kind() {
+            TreeWalkErrorKind::RegexCompile {
+                id,
+                pattern: rejected,
+                ..
+            } => {
+                assert_eq!(id, pattern);
+                assert_eq!(rejected, b"[".to_vec());
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert_eq!(error.span(), pattern_span);
+
+        let ir = lower(r#"builtins.match "" """#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match rejects empty regexes");
+
+        match error.kind() {
+            TreeWalkErrorKind::RegexCompile {
+                id,
+                pattern: rejected,
+                ..
+            } => {
+                assert_eq!(id, pattern);
+                assert_eq!(rejected, Vec::<u8>::new());
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert_eq!(error.span(), pattern_span);
+
+        let ir = lower(r#"builtins.match "()" """#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match rejects empty POSIX groups");
+
+        match error.kind() {
+            TreeWalkErrorKind::RegexCompile {
+                id,
+                pattern: rejected,
+                ..
+            } => {
+                assert_eq!(id, pattern);
+                assert_eq!(rejected, b"()".to_vec());
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert_eq!(error.span(), pattern_span);
+
+        let ir = lower(r#"builtins.match "(?:a)" "a""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match rejects Rust-only groups");
+
+        match error.kind() {
+            TreeWalkErrorKind::RegexCompile {
+                id,
+                pattern: rejected,
+                ..
+            } => {
+                assert_eq!(id, pattern);
+                assert_eq!(rejected, b"(?:a)".to_vec());
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert_eq!(error.span(), pattern_span);
+
+        let ir = lower(r#"builtins.match "\\d" "1""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("match rejects Rust-only escapes");
+
+        match error.kind() {
+            TreeWalkErrorKind::RegexCompile {
+                id,
+                pattern: rejected,
+                ..
+            } => {
+                assert_eq!(id, pattern);
+                assert_eq!(rejected, b"\\d".to_vec());
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+        assert_eq!(error.span(), pattern_span);
+    }
+
+    #[test]
+    fn match_primop_rejects_string_context() {
+        let ir = lower(r#"builtins.match "a" "a""#);
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let string = args[1];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+        let string_span = ir.arena.node(string).expect("string exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let context_pattern = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"a".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+        let context_free_string = evaluator
+            .heap
+            .alloc_string(NixString::from_bytes(b"a".to_vec()))
+            .expect("context-free string allocates");
+
+        let error = evaluator
+            .eval_match_primop_value(
+                ir.root,
+                root.span,
+                EvalPrimOpArg::new(pattern, pattern_span, context_pattern),
+                EvalPrimOpArg::new(string, string_span, context_free_string),
+            )
+            .expect_err("match rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: pattern,
+                op: "match",
+            }
+        );
+        assert_eq!(error.span(), pattern_span);
+
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let context_free_pattern = evaluator
+            .heap
+            .alloc_string(NixString::from_bytes(b"a".to_vec()))
+            .expect("context-free string allocates");
+        let context_string = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"a".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_match_primop_value(
+                ir.root,
+                root.span,
+                EvalPrimOpArg::new(pattern, pattern_span, context_free_pattern),
+                EvalPrimOpArg::new(string, string_span, context_string),
+            )
+            .expect_err("match rejects string argument context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: string,
+                op: "match",
+            }
+        );
+        assert_eq!(error.span(), string_span);
     }
 
     #[test]

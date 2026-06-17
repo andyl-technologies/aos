@@ -622,7 +622,7 @@ impl BuiltinInfo for MapAttrsBuiltin {
 pub(crate) struct MatchBuiltin;
 impl BuiltinInfo for MatchBuiltin {
     const NAME: &'static [u8] = b"match";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::strict_binary(StrictBinaryPrimOp::Match);
 }
 
 pub(crate) struct MulBuiltin;
@@ -1179,6 +1179,7 @@ pub(crate) enum StrictBinaryPrimOp {
     Filter,
     GenList,
     GroupBy,
+    Match,
     Map,
     Partition,
 }
@@ -1401,6 +1402,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"match"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"zipAttrsWith"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure
@@ -1511,6 +1518,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"map").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"match").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

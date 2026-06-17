@@ -215,7 +215,7 @@ of its string inputs; context is string-granular, never byte-granular.
       - The algorithm has specific rules for empty components and for `"pre"`
         sorting *before* the empty component; these are non-obvious and must be
         matched exactly (nixpkgs leans on it).
-- [ ] `match` (regex str) — anchored full-string POSIX-ERE match. Returns `null`
+- [x] `match` (regex str) — anchored full-string POSIX-ERE match. Returns `null`
       on no match, else a list of the capture groups (un-grouped capture → that
       element is `null`).
       - **Anchored**: the regex must match the *entire* string, not a substring.

@@ -240,6 +240,7 @@ dependencies = [
  "blake3",
  "md-5",
  "nix-compat",
+ "regex",
  "serde_json",
  "sha1 0.10.6",
  "sha2 0.10.9",
