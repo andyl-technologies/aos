@@ -26,8 +26,10 @@
 //! space the read port uses (`objects/ab/cdef…`, `refs/hub/changes/<id>`),
 //! never a host filesystem path or an R2 key. The implementation owns the
 //! mapping to its store and is responsible for path safety: the native writer
-//! rejects `..`/symlink escapes before touching disk, and the R2 writer maps
-//! through the flat key space where traversal is not expressible.
+//! rejects `..`/absolute components lexically and then symlink-canonicalizes the
+//! parent and requires it to stay under the storage root (the same containment
+//! the read port enforces), and the R2 writer maps through the flat key space
+//! where traversal is not expressible.
 
 use anyhow::Result;
 
