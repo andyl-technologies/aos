@@ -55,6 +55,7 @@
   wasm-bindgen-cli,
   miniflare,
   nodejs,
+  protobuf,
   stdenv,
 }: let
   version = "0.1.0";
@@ -82,13 +83,13 @@ in
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the
     # version-locked bindgen CLI, node for the glue-rewrite script, and a host
     # `cc` on PATH for any build-script native compile during the cargo build.
-    buildDeps = [rust wasm-bindgen-cli nodejs stdenv.cc];
+    buildDeps = [rust wasm-bindgen-cli nodejs protobuf stdenv.cc];
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
     # `aos.nix`/`aos-registry-hub.nix` but its own FOD. Iterate fakeHash → real.
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-1TKoyD7zFfxuUgUTlDloUyjVB3y5E9B8SSgKKA4bu/U=";
+      hash = "sha256-g/UQ8/kOMPd7RJrJD2KsYx7Nqluytgy36TcNqKj9r/Y=";
     };
 
     phases = [
@@ -119,6 +120,10 @@ in
         name = "build-wasm";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
+          # aos-proto-types' build script runs protoc to generate the
+          # aos.registry.v1 message structs (the worker depends on it via
+          # aos-registry-core), so point prost-build at the hermetic protoc.
+          export PROTOC="${protobuf}/bin/protoc"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in
           # pkgs.rust's rustlib bin) is the wasm linker; no env override needed.
           cargo build \
