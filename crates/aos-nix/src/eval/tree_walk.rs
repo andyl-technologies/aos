@@ -65,6 +65,8 @@ const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
+const WARNING_PREFIX: &[u8] = b"evaluation warning:";
+const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
@@ -147,6 +149,7 @@ pub fn eval_whnf_owned_with_options(
         value,
         heap: evaluator.heap,
         trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
     })
 }
 
@@ -156,6 +159,7 @@ pub struct EvalOutcome {
     value: Value,
     heap: EvalHeap,
     trace_output: Vec<EvalTraceOutput>,
+    warning_output: Vec<EvalWarningOutput>,
 }
 
 impl EvalOutcome {
@@ -174,6 +178,11 @@ impl EvalOutcome {
         &self.trace_output
     }
 
+    /// Returns user-facing warning output emitted during evaluation.
+    pub fn warning_output(&self) -> &[EvalWarningOutput] {
+        &self.warning_output
+    }
+
     /// Consumes the outcome into its value and heap.
     pub fn into_parts(self) -> (Value, EvalHeap) {
         (self.value, self.heap)
@@ -182,6 +191,23 @@ impl EvalOutcome {
     /// Consumes the outcome into its value, heap, and user-facing trace output.
     pub fn into_full_parts(self) -> (Value, EvalHeap, Vec<EvalTraceOutput>) {
         (self.value, self.heap, self.trace_output)
+    }
+
+    /// Consumes the outcome into its value, heap, trace output, and warning output.
+    pub fn into_output_parts(
+        self,
+    ) -> (
+        Value,
+        EvalHeap,
+        Vec<EvalTraceOutput>,
+        Vec<EvalWarningOutput>,
+    ) {
+        (
+            self.value,
+            self.heap,
+            self.trace_output,
+            self.warning_output,
+        )
     }
 }
 
@@ -218,6 +244,24 @@ pub enum EvalTraceKind {
     TraceVerbose,
 }
 
+/// User-facing warning output emitted by `builtins.warn`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalWarningOutput {
+    message: Vec<u8>,
+}
+
+impl EvalWarningOutput {
+    /// Creates a warning output record.
+    fn new(message: Vec<u8>) -> Self {
+        Self { message }
+    }
+
+    /// Returns the warning message bytes without the `evaluation warning: ` prefix.
+    pub fn message(&self) -> &[u8] {
+        &self.message
+    }
+}
+
 /// Runtime options used by the tree-walk evaluator.
 ///
 /// These options carry interpreter settings that C++ Nix normally reads from
@@ -232,6 +276,7 @@ pub struct TreeWalkOptions {
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
     trace_verbose: bool,
+    abort_on_warn: bool,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
 }
@@ -246,6 +291,7 @@ impl Default for TreeWalkOptions {
             current_system: None,
             current_time: None,
             trace_verbose: false,
+            abort_on_warn: false,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
         }
@@ -405,6 +451,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with abort-on-warning behavior configured.
+    pub fn with_abort_on_warn(abort_on_warn: bool) -> Self {
+        let mut options = Self::default();
+        options.set_abort_on_warn(abort_on_warn);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -529,6 +582,11 @@ impl TreeWalkOptions {
         self.trace_verbose = trace_verbose;
     }
 
+    /// Enables or disables `builtins.warn` abort-on-warning behavior.
+    pub fn set_abort_on_warn(&mut self, abort_on_warn: bool) {
+        self.abort_on_warn = abort_on_warn;
+    }
+
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -618,6 +676,11 @@ impl TreeWalkOptions {
     /// Returns whether `builtins.traceVerbose` emits output.
     pub const fn trace_verbose(&self) -> bool {
         self.trace_verbose
+    }
+
+    /// Returns whether `builtins.warn` aborts after emitting a warning.
+    pub const fn abort_on_warn(&self) -> bool {
+        self.abort_on_warn
     }
 
     /// Returns the configured value for an environment variable.
@@ -945,6 +1008,7 @@ pub struct TreeWalk<'ir> {
     with_scopes: Vec<EvalWithScope>,
     options: TreeWalkOptions,
     trace_output: Vec<EvalTraceOutput>,
+    warning_output: Vec<EvalWarningOutput>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
 }
@@ -965,6 +1029,7 @@ impl<'ir> TreeWalk<'ir> {
             with_scopes: Vec::new(),
             options,
             trace_output: Vec::new(),
+            warning_output: Vec::new(),
             lazy_identity_thunks: BTreeSet::new(),
         }
     }
@@ -977,6 +1042,11 @@ impl<'ir> TreeWalk<'ir> {
     /// Returns user-facing trace output emitted so far.
     pub fn trace_output(&self) -> &[EvalTraceOutput] {
         &self.trace_output
+    }
+
+    /// Returns user-facing warning output emitted so far.
+    pub fn warning_output(&self) -> &[EvalWarningOutput] {
+        &self.warning_output
     }
 
     /// Evaluates the IR root to weak head normal form.
@@ -3171,6 +3241,101 @@ impl<'ir> TreeWalk<'ir> {
         let _ = stderr.write_all(b"\n");
         self.trace_output.push(EvalTraceOutput::new(kind, message));
         Ok(())
+    }
+
+    fn eval_warn_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        message_id: IrId,
+        message_span: Span,
+        message_value: Value,
+    ) -> Result<(), TreeWalkError> {
+        if message_value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: message_id,
+                    expected: "string",
+                    actual: message_value.tag(),
+                },
+                message_span,
+            ));
+        }
+        let message = self.heap.get_string(message_value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: message_id,
+                    source,
+                },
+                message_span,
+            )
+        })?;
+        let message = Self::copy_bytes_for_node(message_id, message_span, message.bytes())?;
+        self.emit_warning_output(id, span, message.clone())?;
+        if self.options.abort_on_warn() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::WarningAborted {
+                    id: message_id,
+                    message,
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn emit_warning_output(
+        &mut self,
+        id: IrId,
+        span: Span,
+        message: Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        let formatted = Self::warning_stderr_bytes(id, span, &message)?;
+        self.warning_output.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: self.warning_output.len().saturating_add(1),
+                },
+                span,
+            )
+        })?;
+        let mut stderr = io::stderr().lock();
+        let _ = stderr.write_all(&formatted);
+        self.warning_output.push(EvalWarningOutput::new(message));
+        Ok(())
+    }
+
+    fn warning_stderr_bytes(
+        id: IrId,
+        span: Span,
+        message: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut body = message;
+        while body.last() == Some(&b'\n') {
+            body = &body[..body.len() - 1];
+        }
+        if body.is_empty() {
+            return Self::copy_bytes_for_node(id, span, b"\n");
+        }
+
+        let mut out = Vec::new();
+        let mut lines = body.split(|byte| *byte == b'\n');
+        let first = lines.next().unwrap_or_default();
+        Self::extend_bytes_for_node(id, span, &mut out, WARNING_PREFIX)?;
+        if !first.is_empty() {
+            Self::extend_bytes_for_node(id, span, &mut out, b" ")?;
+            Self::extend_bytes_for_node(id, span, &mut out, first)?;
+        }
+        for line in lines {
+            Self::extend_bytes_for_node(id, span, &mut out, b"\n")?;
+            if !line.is_empty() {
+                Self::extend_bytes_for_node(id, span, &mut out, WARNING_CONTINUATION_INDENT)?;
+                Self::extend_bytes_for_node(id, span, &mut out, line)?;
+            }
+        }
+        Self::extend_bytes_for_node(id, span, &mut out, b"\n")?;
+        Ok(out)
     }
 
     fn write_trace_value(
@@ -15683,6 +15848,20 @@ impl BuiltinRuntime for BuiltinMetadata {
                 )?;
                 eval.eval_lazy_node(args[1])
             }
+            BuiltinExecution::Warn => {
+                check_builtin_arity(call, 2, args.len())?;
+                let message = args[0];
+                let message_span = eval.node(message)?.span;
+                let message_value = eval.eval_node(message)?;
+                eval.eval_warn_primop_value(
+                    call.id,
+                    call.span,
+                    message,
+                    message_span,
+                    message_value,
+                )?;
+                eval.eval_lazy_node(args[1])
+            }
             BuiltinExecution::EffectfulUnaryUnsupported => {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_node(args[0])?;
@@ -15841,6 +16020,19 @@ impl BuiltinRuntime for BuiltinMetadata {
                     mode,
                     first.id(),
                     first.span(),
+                    value,
+                )?;
+                Ok(args[1].value())
+            }
+            BuiltinExecution::Warn => {
+                check_builtin_arity(call, 2, args.len())?;
+                let message = args[0];
+                let value = eval.force_value(message.id(), message.span(), message.value())?;
+                eval.eval_warn_primop_value(
+                    call.id,
+                    call.span,
+                    message.id(),
+                    message.span(),
                     value,
                 )?;
                 Ok(args[1].value())
@@ -16845,6 +17037,14 @@ pub enum TreeWalkErrorKind {
         /// The coerced message bytes.
         message: Vec<u8>,
     },
+    /// `builtins.warn` aborted after emitting a warning.
+    #[error("warning aborted evaluation at node {id:?}: {message:?}")]
+    WarningAborted {
+        /// The warning message argument node.
+        id: IrId,
+        /// The warning message bytes.
+        message: Vec<u8>,
+    },
     /// The node kind is outside this evaluator slice.
     #[error("unsupported tree-walk node {kind:?} at {id:?}")]
     UnsupportedNode {
@@ -17259,6 +17459,10 @@ mod tests {
 
     fn assert_trace_output(output: &EvalTraceOutput, kind: EvalTraceKind, message: &[u8]) {
         assert_eq!(output.kind(), kind);
+        assert_eq!(output.message(), message);
+    }
+
+    fn assert_warning_output(output: &EvalWarningOutput, message: &[u8]) {
         assert_eq!(output.message(), message);
     }
 
@@ -17681,6 +17885,21 @@ mod tests {
         assert!(options.trace_verbose());
         options.set_trace_verbose(false);
         assert!(!options.trace_verbose());
+    }
+
+    #[test]
+    fn tree_walk_options_configure_abort_on_warn() {
+        let defaulted = TreeWalkOptions::new();
+        assert!(!defaulted.abort_on_warn());
+
+        let configured = TreeWalkOptions::with_abort_on_warn(true);
+        assert!(configured.abort_on_warn());
+
+        let mut options = TreeWalkOptions::new();
+        options.set_abort_on_warn(true);
+        assert!(options.abort_on_warn());
+        options.set_abort_on_warn(false);
+        assert!(!options.abort_on_warn());
     }
 
     #[test]
@@ -18227,6 +18446,133 @@ mod tests {
                 .expect("trace output exists"),
             EvalTraceKind::Trace,
             b"before-error",
+        );
+    }
+
+    #[test]
+    fn warn_primop_records_warning_and_returns_second_argument() {
+        let outcome = eval_owned(r#"builtins.warn "hello" 7"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(7));
+        assert!(outcome.trace_output().is_empty());
+        assert_eq!(outcome.warning_output().len(), 1);
+        assert_warning_output(
+            outcome
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            b"hello",
+        );
+
+        let outcome = eval_owned(r#"let w = builtins.warn "first-class"; in w 9"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(9));
+        assert_eq!(outcome.warning_output().len(), 1);
+        assert_warning_output(
+            outcome
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            b"first-class",
+        );
+
+        let outcome = eval_owned(r#"builtins.warn ("a" + "b") { a = 1 / 0; }"#);
+
+        assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+        assert_eq!(outcome.warning_output().len(), 1);
+        assert_warning_output(
+            outcome
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            b"ab",
+        );
+    }
+
+    #[test]
+    fn warn_primop_requires_string_message() {
+        for source in [
+            "builtins.warn 1 7",
+            "builtins.warn /tmp/foo 7",
+            r#"builtins.warn { __toString = self: "hook"; } 7"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source)).expect_err("warn requires a string");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::Type {
+                        expected: "string",
+                        ..
+                    }
+                ),
+                "{source}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn warn_primop_formats_multiline_stderr_like_cpp_nix() {
+        fn formatted(message: &[u8]) -> Vec<u8> {
+            TreeWalk::warning_stderr_bytes(IrId::new(0), Span::new(0, 0), message)
+                .expect("warning output formats")
+        }
+
+        assert_eq!(formatted(b"hello"), b"evaluation warning: hello\n");
+        assert_eq!(
+            formatted(b"a\nb"),
+            b"evaluation warning: a\n                    b\n"
+        );
+        assert_eq!(
+            formatted(b"a\n\nb"),
+            b"evaluation warning: a\n\n                    b\n"
+        );
+        assert_eq!(formatted(b"a\n"), b"evaluation warning: a\n");
+        assert_eq!(formatted(b""), b"\n");
+        assert_eq!(formatted(b"\n"), b"\n");
+        assert_eq!(
+            formatted(b"\nb"),
+            b"evaluation warning:\n                    b\n"
+        );
+    }
+
+    #[test]
+    fn warn_primop_abort_on_warn_emits_warning_then_errors() {
+        let ir = lower(r#"builtins.warn "strict" 7"#);
+        let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::with_abort_on_warn(true));
+        let error = evaluator
+            .eval_root()
+            .expect_err("abort-on-warn fails after emitting warning");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::WarningAborted { .. }
+        ));
+        assert_eq!(evaluator.warning_output().len(), 1);
+        assert_warning_output(
+            evaluator
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            b"strict",
+        );
+
+        let ir = lower(r#"builtins.tryEval (builtins.warn "strict" 7)"#);
+        let mut evaluator = TreeWalk::with_options(&ir, TreeWalkOptions::with_abort_on_warn(true));
+        let error = evaluator
+            .eval_root()
+            .expect_err("tryEval does not catch abort-on-warn");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::WarningAborted { .. }
+        ));
+        assert_eq!(evaluator.warning_output().len(), 1);
+        assert_warning_output(
+            evaluator
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            b"strict",
         );
     }
 

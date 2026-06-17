@@ -808,7 +808,8 @@ builtin_registry! {
     pub(crate) struct WarnBuiltin;
     impl BuiltinDefinition for WarnBuiltin {
         const NAME: &'static [u8] = b"warn";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Warn;
+        const DOCS: &'static BuiltinDocs = &WARN_DOCS;
     }
 
     pub(crate) struct ZipAttrsWithBuiltin;
@@ -927,6 +928,8 @@ pub(crate) enum BuiltinExecution {
         /// The verbosity mode controlling whether output is emitted.
         mode: TraceMode,
     },
+    /// The builtin evaluates `warn`.
+    Warn,
 }
 
 impl BuiltinExecution {
@@ -999,7 +1002,7 @@ impl BuiltinExecution {
             Self::Seq | Self::DeepSeq => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Pure,
             }),
-            Self::Trace { .. } => Some(BuiltinDirect::StrictLazyBinary {
+            Self::Trace { .. } | Self::Warn => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::Unsupported
@@ -1033,7 +1036,8 @@ impl BuiltinExecution {
             | Self::Sort
             | Self::Seq
             | Self::DeepSeq
-            | Self::Trace { .. } => Some(2),
+            | Self::Trace { .. }
+            | Self::Warn => Some(2),
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
@@ -1250,6 +1254,10 @@ static TRACE_DOCS: BuiltinDocs = BuiltinDocs {
 
 static TRACE_VERBOSE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Conditionally prints a value to stderr and returns the second argument.",
+};
+
+static WARN_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Prints a warning to stderr and returns the second argument.",
 };
 
 /// Static metadata shared by builtin resolution, lowering, and execution.
@@ -1547,6 +1555,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"warn"),
+            Some(BuiltinDirect::StrictLazyBinary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"substring"),
             Some(BuiltinDirect::StrictTernary {
                 effect: BuiltinEffect::Pure
@@ -1693,6 +1707,10 @@ mod tests {
             Some(2)
         );
         assert_eq!(
+            BUILTINS.lookup(b"warn").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
             BUILTINS.lookup(b"foldl'").unwrap().first_class_arity(),
             Some(3)
         );
@@ -1798,6 +1816,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"traceVerbose").unwrap().docs().summary(),
             "Conditionally prints a value to stderr and returns the second argument."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"warn").unwrap().docs().summary(),
+            "Prints a warning to stderr and returns the second argument."
         );
     }
 }

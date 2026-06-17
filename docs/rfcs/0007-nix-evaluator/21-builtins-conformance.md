@@ -542,7 +542,7 @@ a given mode does so identically.
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §2.3).
 - [x] `traceVerbose` (e1 e2) — like `trace` but only prints when verbose tracing
       is enabled; return value identical to `e2` either way.
-- [ ] `warn` (e1 e2) — print a warning for `e1` and return `e2` (and, depending
+- [x] `warn` (e1 e2) — print a warning for `e1` and return `e2` (and, depending
       on settings, may abort if warnings-as-errors is set). Introduced Nix
       ≥ 2.23; note for the version pin and reproduce the abort-on-strict-warn
       gating.

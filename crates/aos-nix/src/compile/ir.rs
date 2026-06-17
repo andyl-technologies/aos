@@ -2076,7 +2076,7 @@ mod tests {
 
     #[test]
     fn lowers_effectful_strict_lazy_binary_primops_directly() {
-        for name in ["trace", "traceVerbose"] {
+        for name in ["trace", "traceVerbose", "warn"] {
             let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
             let ir = lowered(&source);
             let root = root_node(&ir);
@@ -2128,12 +2128,16 @@ mod tests {
         for source in [
             "trace 1 2",
             "traceVerbose 1 2",
+            "warn 1 2",
             "let trace = first: second: second; in trace 1 2",
             "let traceVerbose = first: second: second; in traceVerbose 1 2",
+            "let warn = first: second: second; in warn 1 2",
             "let builtins = { trace = first: second: second; }; in builtins.trace 1 2",
             "let builtins = { traceVerbose = first: second: second; }; in builtins.traceVerbose 1 2",
+            "let builtins = { warn = first: second: second; }; in builtins.warn 1 2",
             "(builtins.trace or (first: second: second)) 1 2",
             "(builtins.traceVerbose or (first: second: second)) 1 2",
+            "(builtins.warn or (first: second: second)) 1 2",
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
