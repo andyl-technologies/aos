@@ -11,21 +11,24 @@
 //!   link via [`worker::console_log!`] (a real email-binding delivery is a
 //!   documented TODO).
 //! - [`WorkerHttpClient`] — the OIDC outbound [`HttpClient`], over the Workers
-//!   global Fetch API, with the same SSRF guard
+//!   global Fetch API. It applies the literal-IP SSRF rejection
 //!   ([`url_guard::is_safe_remote_url`](aos_registry_core::url_guard::is_safe_remote_url))
-//!   and 1 MiB body cap the native hub applies.
+//!   and a 1 MiB body cap (a `Content-Length` pre-check plus a post-read bound).
+//!   Unlike the native hub it cannot run a connect-time validating resolver, so
+//!   *hostname*-based SSRF is delegated to Cloudflare's egress policy rather than
+//!   blocked in code (see [`WorkerHttpClient`]).
 //! - [`WorkerChannelAdvancer`] — the hosted-key [`ChannelAdvancer`]. R2-backed
 //!   partition signing is not yet implemented on the Worker, so an advance
 //!   returns a clear error rather than a false success (a documented TODO).
 //!
 //! The at-rest [`SecretSealer`](aos_registry_core::auth::seal::SecretSealer) the
-//! console's OIDC token exchange needs is the shared
+//! console's OIDC token exchange needs is the shared pure-Rust AES-256-GCM
 //! [`AesGcmSealer`](aos_registry_core::auth::seal::AesGcmSealer), built from a
-//! Worker secret by [`sealer_from_secret`]; it is pure-Rust AES-256-GCM and
-//! needs no Worker-specific impl.
+//! Worker secret by [`sealer_from_secret`]. The *crypto* is shared; only the
+//! Worker's key *sourcing* (a Wrangler secret) is platform-specific.
 
 use aos_registry_core::auth::magic::Mailer;
-use aos_registry_core::auth::seal::{AesGcmSealer, SecretSealer};
+use aos_registry_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_registry_core::db::RegistryRecord;
 use aos_registry_core::url_guard;
 use aos_registry_core::web::console::ports::{AdvanceOutcome, ChannelAdvancer, HttpClient};
@@ -45,17 +48,24 @@ const MAX_OIDC_BODY_BYTES: usize = 1024 * 1024;
 /// Build the shared [`AesGcmSealer`] from a Worker secret string.
 ///
 /// The console's OIDC token exchange unseals a tenant's client secret with a
-/// [`SecretSealer`]; production uses AES-256-GCM with a per-instance key. The
-/// Worker derives that 32-byte key by hashing the configured secret with
-/// SHA-256, so an operator can set an arbitrary-length `HUB_SEAL_KEY` secret and
-/// always get a valid AES-256 key.
+/// [`SecretSealer`]; production uses AES-256-GCM with a 256-bit instance key.
+/// The key is sourced from the `HUB_SEAL_KEY` Wrangler secret two ways:
+///
+/// 1. if the secret parses as a literal key (32 raw bytes or 64 hex
+///    characters), it is used verbatim — the *same* form the native hub reads
+///    from its `secret.key` file ([`parse_key`]), so an operator can configure
+///    both targets with identical key material;
+/// 2. otherwise the secret is hashed with SHA-256 to a 256-bit key, so a
+///    free-form Wrangler secret still yields a valid AES-256 key. A value
+///    derived this way is **not** interchangeable with a hub key file.
 ///
 /// # Errors
 ///
 /// Returns an error only if [`AesGcmSealer::new`] rejects the derived key, which
-/// cannot happen here (SHA-256 always yields exactly 32 bytes).
+/// cannot happen here (both paths yield exactly 32 bytes).
 pub fn sealer_from_secret(secret: &str) -> Result<Arc<dyn SecretSealer>> {
-    let key: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
+    let key = parse_key(secret.as_bytes())
+        .unwrap_or_else(|_| Sha256::digest(secret.as_bytes()).to_vec());
     Ok(Arc::new(AesGcmSealer::new(&key)?))
 }
 
@@ -80,11 +90,29 @@ impl Mailer for WorkerMailer {
 
 /// The Worker's OIDC outbound [`HttpClient`], over the Workers global Fetch API.
 ///
-/// Both methods apply the same hardening the native hub's `HubHttpClient`
-/// applies — an SSRF guard that rejects private, loopback, and link-local hosts
-/// ([`url_guard::is_safe_remote_url`]) and a 1 MiB body cap — so routing the
-/// shared OIDC flow through this port preserves the multi-tenant safety
-/// properties on the Worker too. It holds no state: the Fetch API is global.
+/// Both methods reject literal-IP internal hosts and non-http(s) schemes up
+/// front ([`url_guard::is_safe_remote_url`]) and bound the response at 1 MiB (a
+/// `Content-Length` pre-check before reading plus a post-read length bound).
+/// Two properties differ from the native hub's `HubHttpClient` and are *not*
+/// closed in code here:
+///
+/// - **Hostname SSRF.** The hub runs a connect-time validating resolver that
+///   refuses a domain resolving to an internal address; the Workers runtime
+///   exposes no such hook, so a hostile IdP config using a *hostname* (rather
+///   than a literal internal IP) is bounded only by Cloudflare's egress policy,
+///   not by this guard.
+/// - **Streaming abort.** The hub aborts mid-stream the instant the running
+///   body total exceeds the cap; [`worker::Response::bytes`] buffers the whole
+///   body, so a chunked response that declares no `Content-Length` is bounded
+///   only after the fact. The `Content-Length` pre-check covers the common and
+///   the honest-but-oversized cases.
+///
+/// It holds no state: the Fetch API is global.
+///
+/// Currently *forward-wiring*: the only callers are the OIDC token-exchange and
+/// JWKS fetch, and the OIDC routes stay native-only on the hub (not yet mounted
+/// by `console_router`), so no mounted Worker route reaches this client. The
+/// streaming-abort gap must be closed before the OIDC routes move to the Worker.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WorkerHttpClient;
 
@@ -99,6 +127,16 @@ impl WorkerHttpClient {
         let status = response.status_code();
         if !(200..300).contains(&status) {
             bail!("{what}: endpoint returned HTTP {status}");
+        }
+        // Reject up front on a declared `Content-Length` over the cap, before
+        // reading a byte, so an endpoint that honestly declares an oversized
+        // body never makes the isolate buffer it.
+        if let Ok(Some(declared)) = response.headers().get("content-length") {
+            if let Ok(len) = declared.parse::<usize>() {
+                if len > MAX_OIDC_BODY_BYTES {
+                    bail!("{what}: declared Content-Length {len} exceeds {MAX_OIDC_BODY_BYTES}-byte cap");
+                }
+            }
         }
         let bytes = response
             .bytes()
