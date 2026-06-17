@@ -21334,6 +21334,81 @@ mod tests {
     }
 
     #[test]
+    fn search_path_lookup_uses_configured_order_and_fallback() {
+        let root = unique_temp_dir("search-path-order");
+        let first = root.join("first");
+        let second = root.join("second");
+        let empty = root.join("empty");
+        let first_subdir = first.join("subdir");
+        let second_subdir = second.join("subdir");
+        fs::create_dir_all(&first_subdir).expect("first search path hit creates");
+        fs::create_dir_all(&second_subdir).expect("second search path hit creates");
+        fs::create_dir(&empty).expect("empty search path entry creates");
+
+        let mut ordered = TreeWalkOptions::new();
+        ordered
+            .add_nix_path_entry(b"nixpkgs".to_vec(), path_bytes(&first))
+            .expect("first search-path entry configures");
+        ordered
+            .add_nix_path_entry(b"nixpkgs".to_vec(), path_bytes(&second))
+            .expect("second search-path entry configures");
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.toString <nixpkgs>", ordered.clone()),
+            path_bytes(&first)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                r#"builtins.toString (builtins.findFile builtins.nixPath "nixpkgs")"#,
+                ordered.clone()
+            ),
+            path_bytes(&first)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.toString <nixpkgs/subdir>", ordered.clone()),
+            path_bytes(&first_subdir)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                r#"builtins.toString (builtins.findFile builtins.nixPath "nixpkgs/subdir")"#,
+                ordered
+            ),
+            path_bytes(&first_subdir)
+        );
+
+        let mut fallback = TreeWalkOptions::new();
+        fallback
+            .add_nix_path_entry(b"nixpkgs".to_vec(), path_bytes(&empty))
+            .expect("empty search-path entry configures");
+        fallback
+            .add_nix_path_entry(b"nixpkgs".to_vec(), path_bytes(&second))
+            .expect("fallback search-path entry configures");
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.toString <nixpkgs>", fallback.clone()),
+            path_bytes(&empty)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                r#"builtins.toString (builtins.findFile builtins.nixPath "nixpkgs")"#,
+                fallback.clone()
+            ),
+            path_bytes(&empty)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.toString <nixpkgs/subdir>", fallback.clone()),
+            path_bytes(&second_subdir)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                r#"builtins.toString (builtins.findFile builtins.nixPath "nixpkgs/subdir")"#,
+                fallback
+            ),
+            path_bytes(&second_subdir)
+        );
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
     fn find_file_reports_exhausted_search_path() {
         let (_root, nixpkgs, _subdir) = search_path_fixture();
         let options = search_path_options(b"nixpkgs", &nixpkgs);

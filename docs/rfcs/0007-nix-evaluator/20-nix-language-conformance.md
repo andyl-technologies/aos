@@ -278,11 +278,11 @@ search paths, and store coercion.
       referenced file/tree into the store (NAR-hashed), yield its store path, and
       attach source-path context observable by derivations as `inputSrcs`. Plain
       `builtins.toString path` remains the raw context-free path string.
-- [ ] **Search paths `<name>`** — `<nixpkgs>` and `<name/sub>` resolve via
-      `NIX_PATH` / the configured search path to a path value. Verify whether AOS
-      uses angle-bracket lookups at all; if so, reproduce `NIX_PATH` resolution
-      order and the `__findFile`/`builtins.nixPath` mechanism (builtin detail in
-      doc 21). Mark **verify against pinned Nix + AOS eval config**.
+- [x] **Search paths `<name>`** — `<nixpkgs>` and `<name/sub>` resolve through
+      the explicitly configured search path to a path value. AOS does not read
+      ambient `NIX_PATH`; callers provide entries that are reflected by
+      `builtins.nixPath`, consumed by `<...>`, and shared with
+      `builtins.findFile` in configured order.
 - [ ] **Trailing-slash normalization** — verify how Nix normalizes `foo/`,
       `foo/./bar`, `foo/../bar` in path values against pinned Nix.
 
