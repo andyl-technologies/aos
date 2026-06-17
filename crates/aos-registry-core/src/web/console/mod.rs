@@ -4,10 +4,15 @@
 //! handlers that run on the shared [`Database`](crate::db::Database) and reach
 //! every platform-specific capability through a *port* (see [`ports`]), so the
 //! native hub and the Cloudflare Worker mount the same console router. This
-//! module owns the [`ports::ConsoleDeps`] bundle today; the ported handlers and
-//! their `console_router` land here as the handler move proceeds in
-//! rate-limit-survivable chunks.
+//! module owns the [`ports::ConsoleDeps`] bundle and the ported wasm-clean
+//! handlers ([`handlers`]) mounted by [`console_router`]. The routes that stay
+//! native (the pre-auth rate-limited login/activation paths, the OIDC flow, and
+//! the git-backed config/change-request flows) are mounted by the hub alongside
+//! this router.
 
+pub mod handlers;
 pub mod ports;
+pub mod router;
 
 pub use ports::{AdvanceOutcome, ChannelAdvancer, ConsoleDeps, HttpClient};
+pub use router::console_router;

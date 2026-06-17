@@ -45,7 +45,11 @@ aos-proto-types = { workspace = true }
 # shared Connect-JSON router (`connect` module) is plain axum handlers served
 # natively via axum::serve and on the Worker via axum-cloudflare-adapter. This
 # is the one wasm-clean axum config the RFC's spike verified (RFC-0004 Phase 5).
-axum = { version = "0.8", default-features = false, features = ["json"] }
+axum = { version = "0.8", default-features = false, features = [
+  "json",
+  "form",
+  "query",
+] }
 
 [features]
 default = []
