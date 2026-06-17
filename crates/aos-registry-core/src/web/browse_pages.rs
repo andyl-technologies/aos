@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::db::{
     CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,

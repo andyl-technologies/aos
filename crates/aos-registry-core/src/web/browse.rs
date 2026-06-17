@@ -50,7 +50,7 @@
 //! nor bearer), so only `public` registries resolve and everything else is a
 //! `404` — the same shape the Worker served before.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use axum::http::{header, HeaderMap};
 

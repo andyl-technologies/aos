@@ -26,7 +26,7 @@
 
 use std::fmt::Write as _;
 use std::sync::OnceLock;
-use std::time::Instant;
+use crate::clock::Instant;
 
 use crate::db::{
     AuditRow, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord, IdpConfigRecord,
