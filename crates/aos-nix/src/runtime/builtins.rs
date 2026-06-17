@@ -751,13 +751,19 @@ builtin_registry! {
     pub(crate) struct TraceBuiltin;
     impl BuiltinDefinition for TraceBuiltin {
         const NAME: &'static [u8] = b"trace";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Trace {
+            mode: TraceMode::Always,
+        };
+        const DOCS: &'static BuiltinDocs = &TRACE_DOCS;
     }
 
     pub(crate) struct TraceVerboseBuiltin;
     impl BuiltinDefinition for TraceVerboseBuiltin {
         const NAME: &'static [u8] = b"traceVerbose";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Trace {
+            mode: TraceMode::Verbose,
+        };
+        const DOCS: &'static BuiltinDocs = &TRACE_VERBOSE_DOCS;
     }
 
     pub(crate) struct TrueBuiltin;
@@ -916,6 +922,11 @@ pub(crate) enum BuiltinExecution {
     FindFile,
     /// The builtin evaluates `genericClosure`.
     GenericClosure,
+    /// The builtin evaluates `trace` or `traceVerbose`.
+    Trace {
+        /// The verbosity mode controlling whether output is emitted.
+        mode: TraceMode,
+    },
 }
 
 impl BuiltinExecution {
@@ -988,6 +999,9 @@ impl BuiltinExecution {
             Self::Seq | Self::DeepSeq => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Pure,
             }),
+            Self::Trace { .. } => Some(BuiltinDirect::StrictLazyBinary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::Unsupported
             | Self::TrueValue
             | Self::FalseValue
@@ -1018,7 +1032,8 @@ impl BuiltinExecution {
             | Self::DirectBinary(_)
             | Self::Sort
             | Self::Seq
-            | Self::DeepSeq => Some(2),
+            | Self::DeepSeq
+            | Self::Trace { .. } => Some(2),
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
@@ -1035,6 +1050,15 @@ impl BuiltinExecution {
             | Self::NixPathValue => None,
         }
     }
+}
+
+/// Output mode for trace-like builtins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TraceMode {
+    /// `builtins.trace` always emits its message.
+    Always,
+    /// `builtins.traceVerbose` emits only when verbose tracing is enabled.
+    Verbose,
 }
 
 /// Strict unary primitive operations.
@@ -1218,6 +1242,14 @@ static TO_PATH_DOCS: BuiltinDocs = BuiltinDocs {
 
 static TRY_EVAL_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Evaluates an expression to WHNF and reports catchable failures.",
+};
+
+static TRACE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Prints a value to stderr and returns the second argument.",
+};
+
+static TRACE_VERBOSE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Conditionally prints a value to stderr and returns the second argument.",
 };
 
 /// Static metadata shared by builtin resolution, lowering, and execution.
@@ -1503,6 +1535,18 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"trace"),
+            Some(BuiltinDirect::StrictLazyBinary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"traceVerbose"),
+            Some(BuiltinDirect::StrictLazyBinary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"substring"),
             Some(BuiltinDirect::StrictTernary {
                 effect: BuiltinEffect::Pure
@@ -1638,6 +1682,17 @@ mod tests {
             Some(2)
         );
         assert_eq!(
+            BUILTINS.lookup(b"trace").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            BUILTINS
+                .lookup(b"traceVerbose")
+                .unwrap()
+                .first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
             BUILTINS.lookup(b"foldl'").unwrap().first_class_arity(),
             Some(3)
         );
@@ -1735,6 +1790,14 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"tryEval").unwrap().docs().summary(),
             "Evaluates an expression to WHNF and reports catchable failures."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"trace").unwrap().docs().summary(),
+            "Prints a value to stderr and returns the second argument."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"traceVerbose").unwrap().docs().summary(),
+            "Conditionally prints a value to stderr and returns the second argument."
         );
     }
 }

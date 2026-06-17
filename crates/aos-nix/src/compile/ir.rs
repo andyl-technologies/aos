@@ -2075,6 +2075,25 @@ mod tests {
     }
 
     #[test]
+    fn lowers_effectful_strict_lazy_binary_primops_directly() {
+        for name in ["trace", "traceVerbose"] {
+            let source = format!("builtins.{name} (let x = 1; in x) (let y = 2; in y)");
+            let ir = lowered(&source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::PrimOp);
+            assert_eq!(root.effect, EffectClass::Effectful);
+            let IrData::PrimOp { symbol, args } = root.data else {
+                panic!("primop payload expected");
+            };
+            assert_eq!(symbol_text(&ir, symbol), name.as_bytes());
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            assert_eq!(args.len(), 2);
+            assert_eq!(node(&ir, args[0]).kind, IrKind::Let);
+            assert_eq!(node(&ir, args[1]).kind, IrKind::ThunkAlloc);
+        }
+    }
+
+    #[test]
     fn shadowed_pure_strict_lazy_binary_primops_stay_ordinary_applications() {
         for source in [
             "deepSeq 1 2",
@@ -2085,6 +2104,36 @@ mod tests {
             "let builtins = { seq = first: second: second; }; in builtins.seq 1 2",
             "(builtins.deepSeq or (first: second: second)) 1 2",
             "(builtins.seq or (first: second: second)) 1 2",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            let root = if root.kind == IrKind::Let {
+                let IrData::Let { body, .. } = root.data else {
+                    panic!("let payload expected");
+                };
+                node(&ir, body)
+            } else {
+                root
+            };
+            assert_eq!(root.kind, IrKind::Apply);
+            let IrData::Pair { first, .. } = root.data else {
+                panic!("apply payload expected");
+            };
+            assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        }
+    }
+
+    #[test]
+    fn shadowed_effectful_strict_lazy_binary_primops_stay_ordinary_applications() {
+        for source in [
+            "trace 1 2",
+            "traceVerbose 1 2",
+            "let trace = first: second: second; in trace 1 2",
+            "let traceVerbose = first: second: second; in traceVerbose 1 2",
+            "let builtins = { trace = first: second: second; }; in builtins.trace 1 2",
+            "let builtins = { traceVerbose = first: second: second; }; in builtins.traceVerbose 1 2",
+            "(builtins.trace or (first: second: second)) 1 2",
+            "(builtins.traceVerbose or (first: second: second)) 1 2",
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);

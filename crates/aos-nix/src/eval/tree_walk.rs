@@ -16,7 +16,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    fs, io,
+    fs,
+    io::{self, Write as _},
     os::unix::ffi::OsStrExt,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
@@ -145,6 +146,7 @@ pub fn eval_whnf_owned_with_options(
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
+        trace_output: evaluator.trace_output,
     })
 }
 
@@ -153,6 +155,7 @@ pub fn eval_whnf_owned_with_options(
 pub struct EvalOutcome {
     value: Value,
     heap: EvalHeap,
+    trace_output: Vec<EvalTraceOutput>,
 }
 
 impl EvalOutcome {
@@ -166,10 +169,53 @@ impl EvalOutcome {
         &self.heap
     }
 
+    /// Returns user-facing trace output emitted during evaluation.
+    pub fn trace_output(&self) -> &[EvalTraceOutput] {
+        &self.trace_output
+    }
+
     /// Consumes the outcome into its value and heap.
     pub fn into_parts(self) -> (Value, EvalHeap) {
         (self.value, self.heap)
     }
+
+    /// Consumes the outcome into its value, heap, and user-facing trace output.
+    pub fn into_full_parts(self) -> (Value, EvalHeap, Vec<EvalTraceOutput>) {
+        (self.value, self.heap, self.trace_output)
+    }
+}
+
+/// User-facing trace output emitted by `builtins.trace`-style builtins.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalTraceOutput {
+    kind: EvalTraceKind,
+    message: Vec<u8>,
+}
+
+impl EvalTraceOutput {
+    /// Creates a trace output record.
+    fn new(kind: EvalTraceKind, message: Vec<u8>) -> Self {
+        Self { kind, message }
+    }
+
+    /// Returns the builtin family that emitted this output.
+    pub const fn kind(&self) -> EvalTraceKind {
+        self.kind
+    }
+
+    /// Returns the rendered trace message bytes without the `trace: ` prefix.
+    pub fn message(&self) -> &[u8] {
+        &self.message
+    }
+}
+
+/// The trace-like builtin that produced user-facing output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvalTraceKind {
+    /// Output from `builtins.trace`.
+    Trace,
+    /// Output from `builtins.traceVerbose`.
+    TraceVerbose,
 }
 
 /// Runtime options used by the tree-walk evaluator.
@@ -185,6 +231,7 @@ pub struct TreeWalkOptions {
     allowed_paths: Vec<Vec<u8>>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
+    trace_verbose: bool,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
 }
@@ -198,6 +245,7 @@ impl Default for TreeWalkOptions {
             allowed_paths: Vec::new(),
             current_system: None,
             current_time: None,
+            trace_verbose: false,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
         }
@@ -350,6 +398,13 @@ impl TreeWalkOptions {
         Ok(options)
     }
 
+    /// Creates evaluator options with verbose trace output configured.
+    pub fn with_trace_verbose(trace_verbose: bool) -> Self {
+        let mut options = Self::default();
+        options.set_trace_verbose(trace_verbose);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -469,6 +524,11 @@ impl TreeWalkOptions {
         self.current_time = None;
     }
 
+    /// Enables or disables `builtins.traceVerbose` output.
+    pub fn set_trace_verbose(&mut self, trace_verbose: bool) {
+        self.trace_verbose = trace_verbose;
+    }
+
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -553,6 +613,11 @@ impl TreeWalkOptions {
     /// Returns the configured evaluation start time, if one is available.
     pub const fn current_time(&self) -> Option<i64> {
         self.current_time
+    }
+
+    /// Returns whether `builtins.traceVerbose` emits output.
+    pub const fn trace_verbose(&self) -> bool {
+        self.trace_verbose
     }
 
     /// Returns the configured value for an environment variable.
@@ -879,6 +944,7 @@ pub struct TreeWalk<'ir> {
     env: Vec<Rc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
     options: TreeWalkOptions,
+    trace_output: Vec<EvalTraceOutput>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
 }
@@ -898,6 +964,7 @@ impl<'ir> TreeWalk<'ir> {
             env: Vec::new(),
             with_scopes: Vec::new(),
             options,
+            trace_output: Vec::new(),
             lazy_identity_thunks: BTreeSet::new(),
         }
     }
@@ -905,6 +972,11 @@ impl<'ir> TreeWalk<'ir> {
     /// Returns the evaluator heap that owns heap-backed values.
     pub const fn heap(&self) -> &EvalHeap {
         &self.heap
+    }
+
+    /// Returns user-facing trace output emitted so far.
+    pub fn trace_output(&self) -> &[EvalTraceOutput] {
+        &self.trace_output
     }
 
     /// Evaluates the IR root to weak head normal form.
@@ -3041,6 +3113,485 @@ impl<'ir> TreeWalk<'ir> {
             },
             argument_span,
         ))
+    }
+
+    fn eval_trace_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        mode: TraceMode,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let kind = match mode {
+            TraceMode::Always => EvalTraceKind::Trace,
+            TraceMode::Verbose => {
+                if !self.options.trace_verbose() {
+                    return Ok(());
+                }
+                EvalTraceKind::TraceVerbose
+            }
+        };
+
+        let mut message = Vec::new();
+        let mut visited = Vec::new();
+        self.write_trace_value(
+            id,
+            span,
+            value_id,
+            value_span,
+            value,
+            &mut message,
+            &mut visited,
+            true,
+        )?;
+        self.emit_trace_output(id, span, kind, message)
+    }
+
+    fn emit_trace_output(
+        &mut self,
+        id: IrId,
+        span: Span,
+        kind: EvalTraceKind,
+        message: Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        self.trace_output.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: self.trace_output.len().saturating_add(1),
+                },
+                span,
+            )
+        })?;
+        let mut stderr = io::stderr().lock();
+        let _ = stderr.write_all(b"trace: ");
+        let _ = stderr.write_all(&message);
+        let _ = stderr.write_all(b"\n");
+        self.trace_output.push(EvalTraceOutput::new(kind, message));
+        Ok(())
+    }
+
+    fn write_trace_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        visited: &mut Vec<(ValueTag, u64)>,
+        top_level: bool,
+    ) -> Result<(), TreeWalkError> {
+        let tag = value.tag();
+        let entered = if Self::trace_recursive_value_tag(tag) {
+            let key = (tag, value.payload_bits());
+            if visited.contains(&key) {
+                return Self::extend_bytes_for_node(id, span, out, "«repeated»".as_bytes());
+            }
+            let len = visited.len() + 1;
+            visited.try_reserve_exact(1).map_err(|_| {
+                TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+            })?;
+            visited.push(key);
+            true
+        } else {
+            false
+        };
+
+        let result = match tag {
+            ValueTag::Null => Self::extend_bytes_for_node(id, span, out, b"null"),
+            ValueTag::Bool => {
+                if self.expect_bool(value_id, value, value_span)? {
+                    Self::extend_bytes_for_node(id, span, out, b"true")
+                } else {
+                    Self::extend_bytes_for_node(id, span, out, b"false")
+                }
+            }
+            ValueTag::Int => Self::extend_bytes_for_node(
+                id,
+                span,
+                out,
+                (value.payload_bits() as i64).to_string().as_bytes(),
+            ),
+            ValueTag::Float => {
+                let bytes = Self::xml_float_bytes(f64::from_bits(value.payload_bits()));
+                Self::extend_bytes_for_node(id, span, out, &bytes)
+            }
+            ValueTag::String => {
+                self.write_trace_string(id, span, value_id, value_span, value, out, top_level)
+            }
+            ValueTag::Path => self.write_trace_path(id, span, value_id, value_span, value, out),
+            ValueTag::List => {
+                self.write_trace_list(id, span, value_id, value_span, value, out, visited)
+            }
+            ValueTag::Attrs => {
+                self.write_trace_attrs(id, span, value_id, value_span, value, out, visited)
+            }
+            ValueTag::Lambda => Self::extend_bytes_for_node(id, span, out, "«lambda»".as_bytes()),
+            ValueTag::Primop => self.write_trace_primop(id, span, value_id, value_span, value, out),
+            ValueTag::External => {
+                Self::extend_bytes_for_node(id, span, out, "«external»".as_bytes())
+            }
+            ValueTag::Thunk => self.write_trace_thunk(
+                id, span, value_id, value_span, value, out, visited, top_level,
+            ),
+        };
+
+        if entered {
+            visited.pop();
+        }
+        result
+    }
+
+    fn trace_recursive_value_tag(tag: ValueTag) -> bool {
+        matches!(tag, ValueTag::List | ValueTag::Attrs | ValueTag::Thunk)
+    }
+
+    fn write_trace_thunk(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        visited: &mut Vec<(ValueTag, u64)>,
+        top_level: bool,
+    ) -> Result<(), TreeWalkError> {
+        let thunk = self.heap.get_thunk(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        let body = thunk.body();
+        let cached = thunk
+            .cell()
+            .cached_value()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        if let Some(cached) = cached {
+            self.write_trace_value(
+                id, span, value_id, value_span, cached, out, visited, top_level,
+            )
+        } else if let Some(body) = body {
+            if self.write_trace_literal_thunk_body(id, span, body, out, top_level)? {
+                Ok(())
+            } else {
+                Self::extend_bytes_for_node(id, span, out, "«thunk»".as_bytes())
+            }
+        } else {
+            Self::extend_bytes_for_node(id, span, out, "«thunk»".as_bytes())
+        }
+    }
+
+    fn write_trace_literal_thunk_body(
+        &self,
+        id: IrId,
+        span: Span,
+        body: IrId,
+        out: &mut Vec<u8>,
+        top_level: bool,
+    ) -> Result<bool, TreeWalkError> {
+        let node = *self.node(body)?;
+        match node.kind {
+            IrKind::Int => {
+                let IrData::Int(value) = node.data else {
+                    return Err(self.invalid_payload(body, &node, "integer payload"));
+                };
+                Self::extend_bytes_for_node(id, span, out, value.to_string().as_bytes())?;
+            }
+            IrKind::Float => {
+                let IrData::Float(value) = node.data else {
+                    return Err(self.invalid_payload(body, &node, "float payload"));
+                };
+                let bytes = Self::xml_float_bytes(value);
+                Self::extend_bytes_for_node(id, span, out, &bytes)?;
+            }
+            IrKind::Bool => {
+                let IrData::Bool(value) = node.data else {
+                    return Err(self.invalid_payload(body, &node, "boolean payload"));
+                };
+                if value {
+                    Self::extend_bytes_for_node(id, span, out, b"true")?;
+                } else {
+                    Self::extend_bytes_for_node(id, span, out, b"false")?;
+                }
+            }
+            IrKind::Null => {
+                if node.data != IrData::None {
+                    return Err(self.invalid_payload(body, &node, "empty payload"));
+                }
+                Self::extend_bytes_for_node(id, span, out, b"null")?;
+            }
+            IrKind::Str | IrKind::Uri => {
+                let IrData::Symbol(symbol) = node.data else {
+                    return Err(self.invalid_payload(body, &node, "string symbol payload"));
+                };
+                let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol { id: body, symbol },
+                        node.span,
+                    )
+                })?;
+                if top_level {
+                    Self::extend_bytes_for_node(id, span, out, bytes)?;
+                } else {
+                    Self::write_trace_escaped_string(id, span, bytes, out)?;
+                }
+            }
+            IrKind::Path => {
+                let IrData::Symbol(symbol) = node.data else {
+                    return Err(self.invalid_payload(body, &node, "path symbol payload"));
+                };
+                let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol { id: body, symbol },
+                        node.span,
+                    )
+                })?;
+                let path = Self::absolute_path_bytes_for_node(body, node.span, bytes)?;
+                Self::extend_bytes_for_node(id, span, out, &path)?;
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn write_trace_string(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        top_level: bool,
+    ) -> Result<(), TreeWalkError> {
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        if top_level {
+            Self::extend_bytes_for_node(id, span, out, string.bytes())
+        } else {
+            Self::write_trace_escaped_string(id, span, string.bytes(), out)
+        }
+    }
+
+    fn write_trace_path(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        let path = self.heap.get_path(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        Self::extend_bytes_for_node(id, span, out, path.bytes())
+    }
+
+    fn write_trace_list(
+        &self,
+        id: IrId,
+        span: Span,
+        list_id: IrId,
+        list_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        visited: &mut Vec<(ValueTag, u64)>,
+    ) -> Result<(), TreeWalkError> {
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            let mut elements = Vec::new();
+            elements.try_reserve_exact(list.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: list_id,
+                        len: list.len(),
+                    },
+                    list_span,
+                )
+            })?;
+            elements.extend_from_slice(list.as_slice());
+            elements
+        };
+
+        if elements.is_empty() {
+            return Self::extend_bytes_for_node(id, span, out, b"[ ]");
+        }
+
+        Self::extend_bytes_for_node(id, span, out, b"[ ")?;
+        for (index, element) in elements.into_iter().enumerate() {
+            if index > 0 {
+                Self::extend_bytes_for_node(id, span, out, b" ")?;
+            }
+            self.write_trace_value(id, span, list_id, list_span, element, out, visited, false)?;
+        }
+        Self::extend_bytes_for_node(id, span, out, b" ]")
+    }
+
+    fn write_trace_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+        visited: &mut Vec<(ValueTag, u64)>,
+    ) -> Result<(), TreeWalkError> {
+        let entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: attrs.len(),
+                        },
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs.iter_lexicographic() {
+                let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: attrs_id,
+                            symbol: entry.key,
+                        },
+                        attrs_span,
+                    )
+                })?;
+                entries.push((Self::copy_bytes_for_node(id, span, key)?, entry.value));
+            }
+            entries
+        };
+
+        if entries.is_empty() {
+            return Self::extend_bytes_for_node(id, span, out, b"{ }");
+        }
+
+        Self::extend_bytes_for_node(id, span, out, b"{ ")?;
+        for (key, value) in entries {
+            Self::write_trace_attr_key(id, span, &key, out)?;
+            Self::extend_bytes_for_node(id, span, out, b" = ")?;
+            self.write_trace_value(id, span, attrs_id, attrs_span, value, out, visited, false)?;
+            Self::extend_bytes_for_node(id, span, out, b"; ")?;
+        }
+        Self::extend_bytes_for_node(id, span, out, b"}")
+    }
+
+    fn write_trace_primop(
+        &self,
+        id: IrId,
+        span: Span,
+        primop_id: IrId,
+        primop_span: Span,
+        value: Value,
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        let primop = self.heap.get_primop(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: primop_id,
+                    source,
+                },
+                primop_span,
+            )
+        })?;
+        let name = self.symbols.resolve(primop.symbol()).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol {
+                    id: primop_id,
+                    symbol: primop.symbol(),
+                },
+                primop_span,
+            )
+        })?;
+        Self::extend_bytes_for_node(id, span, out, "«primop ".as_bytes())?;
+        Self::extend_bytes_for_node(id, span, out, name)?;
+        Self::extend_bytes_for_node(id, span, out, "»".as_bytes())
+    }
+
+    fn write_trace_attr_key(
+        id: IrId,
+        span: Span,
+        key: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        if Self::trace_attr_key_can_be_unquoted(key) {
+            Self::extend_bytes_for_node(id, span, out, key)
+        } else {
+            Self::write_trace_escaped_string(id, span, key, out)
+        }
+    }
+
+    fn trace_attr_key_can_be_unquoted(key: &[u8]) -> bool {
+        let Some(first) = key.first() else {
+            return false;
+        };
+        if !first.is_ascii_alphabetic() && *first != b'_' {
+            return false;
+        }
+        key.iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'\''))
+    }
+
+    fn write_trace_escaped_string(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), TreeWalkError> {
+        Self::extend_bytes_for_node(id, span, out, b"\"")?;
+        for byte in bytes {
+            match *byte {
+                b'"' => Self::extend_bytes_for_node(id, span, out, b"\\\"")?,
+                b'\\' => Self::extend_bytes_for_node(id, span, out, b"\\\\")?,
+                b'\n' => Self::extend_bytes_for_node(id, span, out, b"\\n")?,
+                b'\r' => Self::extend_bytes_for_node(id, span, out, b"\\r")?,
+                b'\t' => Self::extend_bytes_for_node(id, span, out, b"\\t")?,
+                byte => Self::extend_bytes_for_node(id, span, out, &[byte])?,
+            }
+        }
+        Self::extend_bytes_for_node(id, span, out, b"\"")
     }
 
     fn eval_try_eval_direct(
@@ -15114,6 +15665,24 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 2, args.len())?;
                 eval.eval_deep_seq_primop(args[0], args[1])
             }
+            BuiltinExecution::Trace { mode } => {
+                check_builtin_arity(call, 2, args.len())?;
+                if matches!(mode, TraceMode::Verbose) && !eval.options.trace_verbose() {
+                    return eval.eval_lazy_node(args[1]);
+                }
+                let first = args[0];
+                let first_span = eval.node(first)?.span;
+                let first_value = eval.eval_node(first)?;
+                eval.eval_trace_primop_value(
+                    call.id,
+                    call.span,
+                    mode,
+                    first,
+                    first_span,
+                    first_value,
+                )?;
+                eval.eval_lazy_node(args[1])
+            }
             BuiltinExecution::EffectfulUnaryUnsupported => {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.eval_node(args[0])?;
@@ -15257,6 +15826,23 @@ impl BuiltinRuntime for BuiltinMetadata {
                     let mut visited = Vec::new();
                     eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
                 }
+                Ok(args[1].value())
+            }
+            BuiltinExecution::Trace { mode } => {
+                check_builtin_arity(call, 2, args.len())?;
+                if matches!(mode, TraceMode::Verbose) && !eval.options.trace_verbose() {
+                    return Ok(args[1].value());
+                }
+                let first = args[0];
+                let value = eval.force_value(first.id(), first.span(), first.value())?;
+                eval.eval_trace_primop_value(
+                    call.id,
+                    call.span,
+                    mode,
+                    first.id(),
+                    first.span(),
+                    value,
+                )?;
                 Ok(args[1].value())
             }
             _ => unsupported_primop(call),
@@ -16663,6 +17249,19 @@ mod tests {
             .collect()
     }
 
+    fn eval_owned(source: &str) -> EvalOutcome {
+        eval_whnf_owned(&lower(source)).expect("source evaluates")
+    }
+
+    fn eval_owned_with_options(source: &str, options: TreeWalkOptions) -> EvalOutcome {
+        eval_whnf_owned_with_options(&lower(source), options).expect("source evaluates")
+    }
+
+    fn assert_trace_output(output: &EvalTraceOutput, kind: EvalTraceKind, message: &[u8]) {
+        assert_eq!(output.kind(), kind);
+        assert_eq!(output.message(), message);
+    }
+
     fn symbol_for(ir: &Ir, name: &[u8]) -> Symbol {
         let index = ir
             .symbols
@@ -17070,6 +17669,21 @@ mod tests {
     }
 
     #[test]
+    fn tree_walk_options_configure_trace_verbose() {
+        let defaulted = TreeWalkOptions::new();
+        assert!(!defaulted.trace_verbose());
+
+        let configured = TreeWalkOptions::with_trace_verbose(true);
+        assert!(configured.trace_verbose());
+
+        let mut options = TreeWalkOptions::new();
+        options.set_trace_verbose(true);
+        assert!(options.trace_verbose());
+        options.set_trace_verbose(false);
+        assert!(!options.trace_verbose());
+    }
+
+    #[test]
     fn tree_walk_options_configure_filesystem_access_policy() {
         let defaulted = TreeWalkOptions::new();
         assert_eq!(defaulted.eval_mode(), EvalMode::Impure);
@@ -17463,6 +18077,156 @@ mod tests {
         assert_eq!(
             eval_list_string_bytes_with_options("builtins.attrNames builtins", options),
             expected_builtin_names(true, true)
+        );
+    }
+
+    #[test]
+    fn trace_primop_records_output_and_returns_second_argument() {
+        let outcome = eval_owned(r#"builtins.trace "hello" 7"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(7));
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"hello",
+        );
+
+        let outcome = eval_owned(r#"let t = builtins.trace "first-class"; in t 9"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(9));
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"first-class",
+        );
+    }
+
+    #[test]
+    fn trace_primop_forces_message_to_whnf_but_not_nested_values() {
+        let outcome = eval_owned(r#"builtins.trace [ (builtins.throw "nested") ] { a = 1 / 0; }"#);
+
+        assert_eq!(outcome.value().tag(), ValueTag::Attrs);
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            "[ «thunk» ]".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn trace_primop_renders_unforced_literals_but_not_computed_thunks() {
+        let outcome = eval_owned(r#"builtins.trace [ 1 "x" true null /tmp/foo (1 + 2) ] 1"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(1));
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            r#"[ 1 "x" true null /tmp/foo «thunk» ]"#.as_bytes(),
+        );
+
+        let outcome = eval_owned(r#"builtins.trace { a = /tmp/foo; b = 1; c = 1 + 2; } 1"#);
+
+        assert_eq!(outcome.value().as_int(), Ok(1));
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            "{ a = /tmp/foo; b = 1; c = «thunk»; }".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn trace_primop_renders_recursive_cached_thunks_shallowly() {
+        let outcome =
+            eval_owned("let s = rec { a = s; }; in builtins.seq s.a (builtins.trace s 1)");
+
+        assert_eq!(outcome.value().as_int(), Ok(1));
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            "{ a = «repeated»; }".as_bytes(),
+        );
+    }
+
+    #[test]
+    fn trace_primop_renders_whnf_values() {
+        for (source, expected) in [
+            (r#"builtins.trace "a\n\"b" 1"#, b"a\n\"b".as_slice()),
+            ("builtins.trace 1000000.0 1", b"1e+06".as_slice()),
+            (
+                "builtins.trace builtins.length 1",
+                "«primop length»".as_bytes(),
+            ),
+            ("builtins.trace (x: x) 1", "«lambda»".as_bytes()),
+            ("builtins.trace { } 1", b"{ }".as_slice()),
+        ] {
+            let outcome = eval_owned(source);
+
+            assert_eq!(outcome.value().as_int(), Ok(1), "{source}");
+            assert_eq!(outcome.trace_output().len(), 1, "{source}");
+            assert_trace_output(
+                outcome.trace_output().first().expect("trace output exists"),
+                EvalTraceKind::Trace,
+                expected,
+            );
+        }
+    }
+
+    #[test]
+    fn trace_verbose_primop_respects_verbose_option() {
+        let hidden = eval_owned(r#"builtins.traceVerbose (builtins.throw "hidden") 1"#);
+
+        assert_eq!(hidden.value().as_int(), Ok(1));
+        assert!(hidden.trace_output().is_empty());
+
+        let hidden =
+            eval_owned(r#"let t = builtins.traceVerbose (builtins.throw "hidden"); in t 1"#);
+
+        assert_eq!(hidden.value().as_int(), Ok(1));
+        assert!(hidden.trace_output().is_empty());
+
+        let shown = eval_owned_with_options(
+            r#"builtins.traceVerbose "shown" 2"#,
+            TreeWalkOptions::with_trace_verbose(true),
+        );
+
+        assert_eq!(shown.value().as_int(), Ok(2));
+        assert_eq!(shown.trace_output().len(), 1);
+        assert_trace_output(
+            shown.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::TraceVerbose,
+            b"shown",
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.traceVerbose (builtins.throw "boom") 1"#),
+            TreeWalkOptions::with_trace_verbose(true),
+        )
+        .expect_err("verbose trace forces its message");
+
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+    }
+
+    #[test]
+    fn tree_walk_preserves_trace_records_after_later_errors() {
+        let ir = lower(r#"builtins.trace "before-error" (builtins.throw "boom")"#);
+        let mut evaluator = TreeWalk::new(&ir);
+        let error = evaluator.eval_root().expect_err("second argument throws");
+
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+        assert_eq!(evaluator.trace_output().len(), 1);
+        assert_trace_output(
+            evaluator
+                .trace_output()
+                .first()
+                .expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"before-error",
         );
     }
 

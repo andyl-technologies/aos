@@ -534,13 +534,13 @@ a given mode does so identically.
       (`"x86_64-linux"`). Effect: build-time configuration, but **constant per
       evaluator config**. Cache key = the configured system string. Unavailable
       when unset, which models pure-eval mode.
-- [ ] `trace` (e1 e2) — print `e1` (to stderr) and return `e2`. Effect: a
+- [x] `trace` (e1 e2) — print `e1` (to stderr) and return `e2`. Effect: a
       side-effecting print; *pure* in its return value. Parity matters only for
       *which* traces fire (a function of forcing order), not the text, for `.drv`
       parity — but the harness still compares trace firing because divergent
       forcing order is a bug signal (see
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §2.3).
-- [ ] `traceVerbose` (e1 e2) — like `trace` but only prints when verbose tracing
+- [x] `traceVerbose` (e1 e2) — like `trace` but only prints when verbose tracing
       is enabled; return value identical to `e2` either way.
 - [ ] `warn` (e1 e2) — print a warning for `e1` and return `e2` (and, depending
       on settings, may abort if warnings-as-errors is set). Introduced Nix
