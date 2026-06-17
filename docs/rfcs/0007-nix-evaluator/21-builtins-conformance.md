@@ -365,7 +365,7 @@ Forcing order is observable and must match (see
 - [ ] `elem` (x xs) — membership by **structural equality**; forces elements as
       it scans (short-circuits on match). Equality semantics must match the
       language core's `==`.
-- [ ] `filter` (f list) — keep elements where `f elem` is `true`. Result order
+- [x] `filter` (f list) — keep elements where `f elem` is `true`. Result order
       preserved. `f` forced per element.
 - [x] `map` (f list) — list of `f elem` thunks; lazy in elements, strict in the
       argument list's spine.

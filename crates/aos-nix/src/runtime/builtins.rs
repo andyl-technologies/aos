@@ -46,7 +46,7 @@ macro_rules! builtin_definitions {
             unsupported FetchTarballBuiltin, b"fetchTarball";
             unsupported FetchTreeBuiltin, b"fetchTree";
             unsupported FetchurlBuiltin, b"fetchurl";
-            direct_binary FilterBuiltin, b"filter", StrictBinaryPrimOp::Filter;
+            strict_binary FilterBuiltin, b"filter", StrictBinaryPrimOp::Filter;
             unsupported FilterSourceBuiltin, b"filterSource";
             unsupported FindFileBuiltin, b"findFile";
             unsupported FlakeRefToStringBuiltin, b"flakeRefToString";
@@ -626,6 +626,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"genList").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"filter").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(
