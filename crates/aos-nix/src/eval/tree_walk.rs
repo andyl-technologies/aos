@@ -7444,6 +7444,435 @@ impl<'ir> TreeWalk<'ir> {
         }
     }
 
+    fn eval_direct_binary_primop_value(
+        &mut self,
+        call: BuiltinCall,
+        primop: DirectBinaryPrimOp,
+        first: EvalPrimOpArg,
+        second: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            DirectBinaryPrimOp::GetAttr => {
+                let key = self.eval_attr_name_primop_value(first)?;
+                self.eval_get_attr_primop_value(call.id, call.span, key, second)
+            }
+            DirectBinaryPrimOp::HasAttr => {
+                let key = self.eval_attr_name_primop_value(first)?;
+                self.eval_has_attr_primop_value(key, second)
+            }
+            DirectBinaryPrimOp::RemoveAttrs => {
+                self.eval_remove_attrs_primop_value(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::IntersectAttrs => {
+                self.eval_intersect_attrs_primop_value(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::CatAttrs => {
+                let key = self.eval_attr_name_primop_value(first)?;
+                self.eval_cat_attrs_primop_value(call.id, call.span, key, second)
+            }
+            DirectBinaryPrimOp::Elem => self.eval_elem_primop_value(call.id, first, second),
+            DirectBinaryPrimOp::ConcatStringsSep => {
+                self.eval_concat_strings_sep_primop_value(call.id, call.span, first, second)
+            }
+        }
+    }
+
+    fn eval_attr_name_primop_value(
+        &mut self,
+        argument: EvalPrimOpArg,
+    ) -> Result<Symbol, TreeWalkError> {
+        let value = self.force_primop_value(argument, "string", ValueTag::String)?;
+        self.intern_string_value(argument.id(), value, argument.span())
+    }
+
+    fn eval_get_attr_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        key: Symbol,
+        attrs: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
+        let selected = {
+            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs.id(),
+                        source,
+                    },
+                    attrs.span(),
+                )
+            })?;
+            attrs_set.get(key)
+        };
+        selected.ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::MissingAttribute { id, symbol: key },
+                span,
+            )
+        })
+    }
+
+    fn eval_has_attr_primop_value(
+        &mut self,
+        key: Symbol,
+        attrs: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
+        let has_attr = {
+            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs.id(),
+                        source,
+                    },
+                    attrs.span(),
+                )
+            })?;
+            attrs_set.contains_key(key)
+        };
+        Ok(Value::bool(has_attr))
+    }
+
+    fn eval_remove_attrs_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs: EvalPrimOpArg,
+        names: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
+        let names_value = self.force_primop_value(names, "list", ValueTag::List)?;
+        let name_values = {
+            let names_list = self.heap.get_list(names_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: names.id(),
+                        source,
+                    },
+                    names.span(),
+                )
+            })?;
+            Self::clone_list_elements(names.id(), names.span(), names_list)?
+        };
+
+        let mut remove = Vec::new();
+        remove.try_reserve_exact(name_values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: names.id(),
+                    len: name_values.len(),
+                },
+                names.span(),
+            )
+        })?;
+        for value in name_values {
+            let value = self.force_value(names.id(), names.span(), value)?;
+            if value.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: names.id(),
+                        expected: "string",
+                        actual: value.tag(),
+                    },
+                    names.span(),
+                ));
+            }
+            let key = self.intern_string_value(names.id(), value, names.span())?;
+            if !remove.contains(&key) {
+                remove.push(key);
+            }
+        }
+
+        let entries = {
+            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs.id(),
+                        source,
+                    },
+                    attrs.span(),
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs_set.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: attrs_set.len(),
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs_set.entries_by_symbol() {
+                if !remove.contains(&entry.key) {
+                    entries.push(*entry);
+                }
+            }
+            entries
+        };
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_intersect_attrs_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        left: EvalPrimOpArg,
+        right: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let left_value = self.force_primop_value(left, "attrs", ValueTag::Attrs)?;
+        let right_value = self.force_primop_value(right, "attrs", ValueTag::Attrs)?;
+        let left_keys = {
+            let attrs = self.heap.get_attrs(left_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: left.id(),
+                        source,
+                    },
+                    left.span(),
+                )
+            })?;
+            let mut keys = Vec::new();
+            keys.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: left.id(),
+                        len: attrs.len(),
+                    },
+                    left.span(),
+                )
+            })?;
+            keys.extend(attrs.entries_by_symbol().iter().map(|entry| entry.key));
+            keys
+        };
+        let entries = {
+            let attrs = self.heap.get_attrs(right_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: right.id(),
+                        source,
+                    },
+                    right.span(),
+                )
+            })?;
+            let mut entries = Vec::new();
+            entries.try_reserve_exact(attrs.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: attrs.len(),
+                    },
+                    span,
+                )
+            })?;
+            for entry in attrs.entries_by_symbol() {
+                if left_keys.contains(&entry.key) {
+                    entries.push(*entry);
+                }
+            }
+            entries
+        };
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_cat_attrs_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        key: Symbol,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+        let mut values = Vec::new();
+        values.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let element = self.force_value(list.id(), list.span(), element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: list.id(),
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    list.span(),
+                ));
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(element).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: list.id(),
+                            source,
+                        },
+                        list.span(),
+                    )
+                })?;
+                attrs.get(key)
+            };
+            if let Some(value) = selected {
+                values.push(value);
+            }
+        }
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_elem_primop_value(
+        &mut self,
+        id: IrId,
+        candidate: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
+        let elements = {
+            let list_values = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_values)?
+        };
+        if elements.is_empty() {
+            return Ok(Value::bool(false));
+        }
+
+        let node = *self.node(id)?;
+        for element in elements {
+            if self.values_equal_nested_lazy(
+                id,
+                &node,
+                candidate.id(),
+                candidate.span(),
+                candidate.value(),
+                list.id(),
+                list.span(),
+                element,
+            )? {
+                return Ok(Value::bool(true));
+            }
+        }
+        Ok(Value::bool(false))
+    }
+
+    fn eval_concat_strings_sep_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        separator: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let separator_value = self.force_primop_value(separator, "string", ValueTag::String)?;
+        let (separator_bytes, separator_context) = {
+            let separator_string = self.heap.get_string(separator_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: separator.id(),
+                        source,
+                    },
+                    separator.span(),
+                )
+            })?;
+            let bytes = Self::copy_bytes_for_node(
+                separator.id(),
+                separator.span(),
+                separator_string.bytes(),
+            )?;
+            let context = separator_string
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: separator.id(),
+                            source,
+                        },
+                        separator.span(),
+                    )
+                })?;
+            (bytes, context)
+        };
+
+        let list_value = self.force_primop_value(list, "list", ValueTag::List)?;
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+        let result = self.concat_strings_sep_values(
+            id,
+            span,
+            list.id(),
+            list.span(),
+            &separator_bytes,
+            separator_context,
+            &elements,
+        )?;
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn force_primop_value(
+        &mut self,
+        argument: EvalPrimOpArg,
+        expected: &'static str,
+        tag: ValueTag,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        if value.tag() != tag {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument.id(),
+                    expected,
+                    actual: value.tag(),
+                },
+                argument.span(),
+            ));
+        }
+        Ok(value)
+    }
+
     fn eval_strict_binary_primop_value(
         &mut self,
         id: IrId,
@@ -9687,6 +10116,10 @@ fn apply_builtin(
                 args[1],
             )
         }
+        BuiltinExecution::DirectBinary(primop) => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_direct_binary_primop_value(call, primop, args[0], args[1])
+        }
         BuiltinExecution::TryEval => {
             check_builtin_arity(call, 1, args.len())?;
             eval.eval_try_eval_value(call.id, call.span, args[0])
@@ -11263,6 +11696,10 @@ mod tests {
             Ok(true)
         );
         assert_eq!(
+            eval("builtins.isFunction builtins.elem").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval("let f = builtins.isFunction; in f builtins.convertHash").as_bool(),
             Ok(true)
         );
@@ -12519,6 +12956,14 @@ mod tests {
         assert_eq!(eval("builtins.elem 2 [ 1 2 (1 / 0) ]").as_bool(), Ok(true));
         assert_eq!(eval("builtins.elem 3 [ 1 2 ]").as_bool(), Ok(false));
         assert_eq!(
+            eval("let f = builtins.elem; in f 2 [ 1 2 (1 / 0) ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let f = builtins.elem; in f 3 [ 1 2 ]").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
             eval("builtins.elem { a = 1; } [ { a = 1; } { a = 1 / 0; } ]").as_bool(),
             Ok(true)
         );
@@ -12533,6 +12978,10 @@ mod tests {
         );
         assert_eq!(
             eval("let xs = [ xs ]; in builtins.elem xs xs").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let xs = [ xs ]; f = builtins.elem; in f xs xs").as_bool(),
             Ok(true)
         );
         assert_eq!(
@@ -12601,6 +13050,26 @@ mod tests {
 
         assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: list });
         assert_eq!(error.span(), list_span);
+
+        let error = eval_whnf_owned(&lower("let f = builtins.elem; in f (1 / 0) 1"))
+            .expect_err("first-class elem checks list before candidate");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("let f = builtins.elem; in f 1 (1 / 0)"))
+            .expect_err("first-class elem forces list before candidate");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
 
         let ir = lower("builtins.elem 2 [ 1 (1 / 0) ]");
         let error = eval_whnf_owned(&ir).expect_err("elem scans until match or error");
@@ -16367,6 +16836,34 @@ mod tests {
         assert_eq!(
             eval("let cmp = builtins.compareVersions \"1.2\"; in cmp \"1.10\"").as_int(),
             Ok(-1)
+        );
+        assert_eq!(
+            eval_string_bytes("let get = builtins.getAttr \"a\"; in get { a = \"x\"; }"),
+            b"x"
+        );
+        assert_eq!(
+            eval("let has = builtins.hasAttr \"a\"; in has { a = 1; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let remove = builtins.removeAttrs { a = 1; b = 2; }; in remove [ \"a\" ] == { b = 2; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let intersect = builtins.intersectAttrs { a = 0; c = 0; }; in intersect { a = 1; b = 2; } == { a = 1; }").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_list_ints(
+                "let cat = builtins.catAttrs \"a\"; in cat [ { a = 1; } { b = 2; } { a = 3; } ]"
+            ),
+            vec![1, 3]
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let join = builtins.concatStringsSep \",\"; in join [ \"a\" \"b\" ]"
+            ),
+            b"a,b"
         );
         assert_eq!(
             eval("let s = builtins.seq (1 / 0); in builtins.isFunction s").as_bool(),

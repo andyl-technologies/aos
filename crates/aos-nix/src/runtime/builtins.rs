@@ -1078,7 +1078,9 @@ impl BuiltinExecution {
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType => Some(1),
-            Self::StrictBinary { .. } | Self::Seq | Self::DeepSeq => Some(2),
+            Self::StrictBinary { .. } | Self::DirectBinary(_) | Self::Seq | Self::DeepSeq => {
+                Some(2)
+            }
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
             | Self::DerivationStrict
@@ -1090,7 +1092,6 @@ impl BuiltinExecution {
             | Self::StoreDirValue
             | Self::NixVersionValue
             | Self::LangVersionValue
-            | Self::DirectBinary(_)
             | Self::DirectTernary(_) => None,
         }
     }
@@ -1477,6 +1478,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"elemAt").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"elem").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

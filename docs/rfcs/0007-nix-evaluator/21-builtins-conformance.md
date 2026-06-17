@@ -362,7 +362,7 @@ Forcing order is observable and must match (see
 - [x] `elemAt` (xs n) — zero-based index; throws out of range. Forces the list
       spine and `n`.
 - [x] `length` (list) — element count. Forces only the spine.
-- [ ] `elem` (x xs) — membership by **structural equality**; forces elements as
+- [x] `elem` (x xs) — membership by **structural equality**; forces elements as
       it scans (short-circuits on match). Equality semantics must match the
       language core's `==`.
 - [x] `filter` (f list) — keep elements where `f elem` is `true`. Result order
