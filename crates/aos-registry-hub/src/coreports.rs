@@ -124,12 +124,31 @@ impl core_fetch::SurfaceFetch for crate::fetch::HttpFetch {
 /// Adapts a boxed hub [`SurfaceFetch`](crate::fetch::SurfaceFetch) to the core
 /// [`SurfaceFetch`](core_fetch::SurfaceFetch) port by delegation.
 ///
-/// [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry)
-/// returns a `Box<dyn crate::fetch::SurfaceFetch>` (the hub trait object) chosen
-/// per registry. The core service needs a `Box<dyn core_fetch::SurfaceFetch>`,
-/// and a trait object cannot be re-coerced to a *different* trait, so this
-/// concrete wrapper holds the hub box and forwards both methods.
-struct CoreFetchAdapter(Box<dyn crate::fetch::SurfaceFetch>);
+/// [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry) and
+/// [`fetch_for_url`](crate::fetch::fetch_for_url) return a
+/// `Box<dyn crate::fetch::SurfaceFetch>` (the hub trait object) chosen per
+/// registry or source URL. The relocated core indexer
+/// ([`aos_registry_core::indexer`]) and the core service need a
+/// `Box<dyn core_fetch::SurfaceFetch>`, and a trait object cannot be re-coerced
+/// to a *different* trait, so this concrete wrapper holds the hub box and
+/// forwards both methods. Callers that already hold a hub fetcher box bridge it
+/// to the core port with [`into_core_fetch`].
+pub struct CoreFetchAdapter(Box<dyn crate::fetch::SurfaceFetch>);
+
+/// Bridge a hub [`SurfaceFetch`](crate::fetch::SurfaceFetch) box to a boxed core
+/// [`SurfaceFetch`](core_fetch::SurfaceFetch) for the relocated core indexer.
+///
+/// The hub's [`fetch_for_url`](crate::fetch::fetch_for_url) /
+/// `fetch_for_registry` return the hub trait object; the relocated
+/// [`index_and_record`](aos_registry_core::indexer::index_and_record) reads the
+/// core port. This wraps the former in [`CoreFetchAdapter`] so a hub-side caller
+/// can drive the shared indexer over any hub-resolved surface fetcher.
+#[must_use]
+pub fn into_core_fetch(
+    fetch: Box<dyn crate::fetch::SurfaceFetch>,
+) -> Box<dyn core_fetch::SurfaceFetch> {
+    Box::new(CoreFetchAdapter(fetch))
+}
 
 #[async_trait]
 impl core_fetch::SurfaceFetch for CoreFetchAdapter {
