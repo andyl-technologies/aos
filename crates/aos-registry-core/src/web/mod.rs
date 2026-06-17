@@ -13,6 +13,14 @@
 //!   [`render`], returning a [`Rendered`](browse::Rendered) the transport layer
 //!   ([`crate::connect`]) turns into an HTTP response. Browse reads
 //!   anonymously, so only `public` registries resolve.
+//! - [`browse_pages`] — the *rich*, session-aware browse renderer lifted from
+//!   the native hub (console-dedup stage G): the searchable/sortable package
+//!   index, the data-rich package detail with closure resolution, the channel
+//!   partition grid and bucket calculator, and the per-registry health page.
+//!   It renders from the [`db`](crate::db) record types (richer than the proto
+//!   read shapes) and threads the signed-in identity via an explicit
+//!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
+//!   anonymous proto-shaped builders in [`render`].
 //!
 //! The producer console's foundation is shared the same way (RFC-0004 Phase 5,
 //! console-dedup stage A):
@@ -36,6 +44,7 @@
 //! machine-surface facade wildcard, so the two never collide.
 
 pub mod browse;
+pub mod browse_pages;
 pub mod console;
 pub mod console_render;
 pub mod csrf;

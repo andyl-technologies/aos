@@ -360,6 +360,7 @@ dependencies = [
  "rand 0.9.4",
  "rsa",
  "rusqlite",
+ "semver",
  "send_wrapper",
  "serde",
  "serde_json",
