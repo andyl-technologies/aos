@@ -31,6 +31,7 @@ use aos_registry_core::auth::magic::Mailer;
 use aos_registry_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_registry_core::db::RegistryRecord;
 use aos_registry_core::url_guard;
+use aos_registry_core::reindex::Reindexer;
 use aos_registry_core::web::console::ports::{AdvanceOutcome, ChannelAdvancer, HttpClient};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
@@ -203,5 +204,37 @@ impl ChannelAdvancer for WorkerChannelAdvancer {
     ) -> Result<AdvanceOutcome> {
         // TODO(RFC-0004): R2-backed partition signing + re-index on the Worker.
         bail!("hosted-key channel advance is not yet supported on the Cloudflare Worker target")
+    }
+}
+
+/// The Worker's [`Reindexer`]: defers re-indexing to the Cron-trigger indexer.
+///
+/// The shared facade-write handler re-indexes a registry inline when a
+/// publish-completing pointer (`info/refs`/`nix-cache-info`) lands, so the native
+/// hub's browse pages are consistent the instant the final `PUT` returns. The
+/// Worker's single-registry indexer ([`crate::indexer::index_one`]) is tightly
+/// coupled to its concrete D1/R2/[`model::Registry`](crate::model) types and is
+/// not cleanly callable from a core port over a
+/// [`RegistryRecord`](aos_registry_core::db::RegistryRecord), so this impl is a
+/// logged no-op: the Worker already runs a Cron-trigger indexer
+/// ([`crate::indexer::index_all`]) that re-walks every registry's R2 surface on a
+/// schedule, which reconciles the D1 index after the publish.
+///
+/// **Consistency implication:** a Worker publish becomes browse-visible only at
+/// the next Cron run, not synchronously on the final `PUT`. The read *facade* is
+/// unaffected — it streams the new bytes straight from R2 — so only the derived
+/// D1 index (the browse pages, release/channel listings) lags until the Cron
+/// indexer runs.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WorkerReindexer;
+
+#[async_trait(?Send)]
+impl Reindexer for WorkerReindexer {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<()> {
+        worker::console_log!(
+            "reindex of '{}' deferred to the Cron-trigger indexer",
+            registry.slug
+        );
+        Ok(())
     }
 }

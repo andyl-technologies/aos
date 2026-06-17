@@ -50,7 +50,7 @@ async fn app_state(db: Arc<Database>, external_url: &str) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: aos_registry_hub::facade::LeaseMap::new(),
+        leases: std::sync::Arc::new(aos_registry_hub::facade::LeaseMap::new()),
         sealer: aos_registry_hub::auth::oidc::dev_sealer(),
         http: hardened_client().await,
         mailer: Arc::new(aos_registry_hub::auth::magic::LogMailer),

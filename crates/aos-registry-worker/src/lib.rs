@@ -116,6 +116,7 @@ pub mod indexer;
 #[cfg(target_arch = "wasm32")]
 pub mod surface;
 #[cfg(target_arch = "wasm32")]
+pub mod workerlease;
 pub mod workerlimit;
 
 #[cfg(target_arch = "wasm32")]
@@ -144,7 +145,7 @@ mod entry {
     use axum::Router;
 
     use crate::consoleports::{
-        sealer_from_secret, WorkerChannelAdvancer, WorkerHttpClient, WorkerMailer,
+        sealer_from_secret, WorkerChannelAdvancer, WorkerHttpClient, WorkerMailer, WorkerReindexer,
     };
 
     /// Whether a request path is the worker-local one-shot schema setup.
@@ -238,12 +239,25 @@ mod entry {
                 env.bucket(crate::handlers::bindings::R2)?,
             ));
 
+        // The cross-isolate publish lease and the deferred reindexer back the
+        // shared facade-write handler on the Worker. The lease lives in D1 (a
+        // process-local lease cannot serialize across isolates); the reindexer
+        // defers to the Cron-trigger indexer.
+        let lease: Arc<dyn aos_registry_core::lease::PublishLease> =
+            Arc::new(crate::workerlease::D1PublishLease::new(
+                crate::d1backend::D1Backend::new(env.d1(crate::handlers::bindings::D1)?),
+            ));
+        let reindexer: Arc<dyn aos_registry_core::reindex::Reindexer> = Arc::new(WorkerReindexer);
+
         let service = Arc::new(RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
             Arc::clone(&ratelimit),
             Arc::clone(&surface),
+            Arc::clone(&surface_write),
+            Arc::clone(&lease),
+            Arc::clone(&reindexer),
         ));
 
         let console_deps = ConsoleDeps {

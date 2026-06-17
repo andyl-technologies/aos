@@ -84,6 +84,19 @@ impl SurfaceFetch for R2SurfaceFetch {
         Ok(Some(bytes))
     }
 
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        // R2 `head` returns object metadata (including the size) without
+        // streaming the body — the cheap path for the write facade's overwrite
+        // quota delta. An absent key is `Ok(None)`.
+        let object = self
+            .bucket
+            .head(&key)
+            .await
+            .map_err(|err| anyhow::anyhow!("R2 head {key}: {err}"))?;
+        Ok(object.map(|object| u64::from(object.size())))
+    }
+
     fn describe(&self) -> String {
         format!("r2://{}", self.prefix)
     }

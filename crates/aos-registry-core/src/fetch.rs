@@ -41,6 +41,26 @@ pub trait SurfaceFetch: BackendBounds {
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// The byte length of the object at `path`, or `None` when it does not exist.
+    ///
+    /// Used by the write facade to compute the *overwrite delta* charged against
+    /// an org's storage quota: a `Some(old)` means the path already holds `old`
+    /// bytes, so a `PUT` of `new` bytes charges `new - old`; a `None` charges the
+    /// full new size as a brand-new object.
+    ///
+    /// The provided default reads the whole object and measures it, so an
+    /// implementation that already pays for the full fetch loses nothing; an
+    /// implementation whose store exposes object metadata cheaply (a filesystem
+    /// `stat`, an R2 `head`) should override this to avoid streaming the body
+    /// just to learn its length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for IO/transport failures other than absence.
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        Ok(self.fetch(path).await?.map(|bytes| bytes.len() as u64))
+    }
+
     /// A human-readable description of the source (for health/audit text).
     fn describe(&self) -> String;
 }
