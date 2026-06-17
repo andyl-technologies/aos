@@ -463,10 +463,13 @@ the prior generation's units.
       attached-unit writer drops stale provider-socket drop-ins before writing
       AOS route drop-ins, and the VM performs a real private-outbound netns HTTP
       request. The default socket namespace shape is now verified and covered;
-      Landlock TCP policy and eBPF policy remain before this item is complete.
+      the renderer now signs explicit `tcp-bind` / `tcp-connect` grants and
+      emits `network-policy.json` for Landlock/eBPF consumers. The kernel
+      enforcement loaders remain before this item is complete.
 - [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
-      only host-global nftables base-set mutation — the SOTA for per-package L3/L4
-      ([`container-model.md`](container-model.md) networking).
+      only host-global nftables base-set mutation — the SOTA for per-package L3/L4.
+      The signed `network-policy.json` contract exists; loading/enforcing it
+      remains ([`container-model.md`](container-model.md) networking).
 - [x] **Naming without `nss-mymachines`** (not shipped): default NSS host
       lookup uses explicit `/etc/hosts`, `nss-myhostname`, systemd-resolved, and
       DNS only; fleet metadata already writes `/etc/hosts` entries for host

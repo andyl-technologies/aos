@@ -159,6 +159,18 @@ impl HostPolicy {
             bail!("network mode '{network:?}' is not allowed by host policy");
         }
 
+        for port in &permissions.tcp_bind {
+            if !self.allows_tcp_bind(*port) {
+                bail!("TCP bind port {port} is not allowed by host policy");
+            }
+        }
+
+        for port in &permissions.tcp_connect {
+            if !self.allows_tcp_connect(*port) {
+                bail!("TCP connect port {port} is not allowed by host policy");
+            }
+        }
+
         for capability in &permissions.capabilities {
             if !self.allows_capability(capability) {
                 bail!("capability '{capability}' is not allowed by host policy");
@@ -228,6 +240,8 @@ impl HostPolicy {
         for label in &self.allow.security_labels {
             validate_security_label(label)?;
         }
+        validate_policy_ports("allow.tcp-bind", &self.allow.tcp_bind)?;
+        validate_policy_ports("allow.tcp-connect", &self.allow.tcp_connect)?;
         Ok(())
     }
 
@@ -248,6 +262,14 @@ impl HostPolicy {
                 .capabilities
                 .iter()
                 .any(|allowed| allowed == capability)
+    }
+
+    fn allows_tcp_bind(&self, port: u16) -> bool {
+        self.tier == PolicyTier::Privileged || self.allow.tcp_bind.contains(&port)
+    }
+
+    fn allows_tcp_connect(&self, port: u16) -> bool {
+        self.tier == PolicyTier::Privileged || self.allow.tcp_connect.contains(&port)
     }
 
     fn allows_device(&self, device: &str) -> bool {
@@ -302,6 +324,19 @@ fn is_generated_security_label(label: &str, package_name: &str) -> bool {
     label == format!("aos-pkg-{package_name}")
 }
 
+fn validate_policy_ports(kind: &str, ports: &[u16]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for port in ports {
+        if *port == 0 {
+            bail!("{kind} contains invalid TCP port 0");
+        }
+        if !seen.insert(port) {
+            bail!("{kind} contains duplicate TCP port {port}");
+        }
+    }
+    Ok(())
+}
+
 /// Per-permission host policy overrides.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,6 +347,12 @@ pub struct PolicyAllow {
     /// Additional network modes allowed by this host.
     #[serde(default)]
     pub networks: Vec<NetworkPermission>,
+    /// TCP ports packages may bind under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-bind")]
+    pub tcp_bind: Vec<u16>,
+    /// TCP ports packages may connect to under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-connect")]
+    pub tcp_connect: Vec<u16>,
     /// Additional device nodes allowed by this host.
     #[serde(default)]
     pub devices: Vec<String>,
@@ -347,6 +388,8 @@ systemd-security-threshold = 5.5
 
 [allow]
 networks = ["private-outbound"]
+tcp-bind = [8080]
+tcp-connect = [443]
 capabilities = ["CAP_NET_BIND_SERVICE"]
 devices = ["/dev/net/tun"]
 host-paths = [{ path = "/var/lib/rancher", mode = "rw" }]
@@ -364,6 +407,8 @@ syscall-profiles = ["system-service"]
                 .networks
                 .contains(&NetworkPermission::PrivateOutbound)
         );
+        assert_eq!(policy.allow.tcp_bind, vec![8080]);
+        assert_eq!(policy.allow.tcp_connect, vec![443]);
     }
 
     #[test]
@@ -375,6 +420,8 @@ kernel-modules = ["br_netfilter"]
 
 [allow]
 networks = ["private-outbound"]
+tcp-bind = [8080]
+tcp-connect = [443]
 capabilities = ["CAP_NET_BIND_SERVICE"]
 host-paths = [{ path = "/srv/data", mode = "read-only" }]
 syscall-profiles = ["system-service"]
@@ -385,6 +432,8 @@ syscall-profiles = ["system-service"]
         let permissions = PermissionsMeta {
             capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
             network: Some(NetworkPermission::PrivateOutbound),
+            tcp_bind: vec![8080],
+            tcp_connect: vec![443],
             host_paths: vec![HostPathPermission {
                 path: "/srv/data".into(),
                 mode: HostPathMode::ReadOnly,
@@ -395,6 +444,36 @@ syscall-profiles = ["system-service"]
         };
 
         policy.admit(&permissions).unwrap();
+    }
+
+    #[test]
+    fn rejects_network_policy_ports_outside_policy() {
+        let policy = HostPolicy::parse_str(
+            r#"
+tier = "baseline"
+
+[allow]
+tcp-connect = [443]
+"#,
+        )
+        .unwrap();
+
+        let err = policy
+            .admit(&PermissionsMeta {
+                tcp_connect: vec![8443],
+                ..PermissionsMeta::default()
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("TCP connect port 8443"));
+
+        let err = HostPolicy::parse_str(
+            r#"
+[allow]
+tcp-bind = [8080, 8080]
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("duplicate TCP port 8080"));
     }
 
     #[test]

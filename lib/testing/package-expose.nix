@@ -786,7 +786,11 @@
           ExecStart = "${pkgs.bash}/bin/bash -c true";
         };
       };
-      permissions.network = "private-outbound";
+      permissions = {
+        network = "private-outbound";
+        tcp-bind = [8000];
+        tcp-connect = [443];
+      };
       requires = [];
     };
   });
@@ -1218,8 +1222,10 @@ in
           private_outbound_netns="$privateOutboundExposePath/units/aos-pkg-expose-smoke-netns.service"
           private_outbound_target="$privateOutboundExposePath/units/aos-pkg-expose-smoke.target"
           private_outbound_manifest="$privateOutboundExposePath/manifest.json"
+          private_outbound_policy="$privateOutboundExposePath/network-policy.json"
           test -f "$private_outbound_unit"
           test -f "$private_outbound_netns"
+          test -f "$private_outbound_policy"
           grep -q 'After=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
             "$private_outbound_unit"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
@@ -1277,8 +1283,16 @@ in
           fi
           grep -q '"aos-pkg-expose-smoke-netns.service"' "$private_outbound_manifest"
           grep -q '"network":"private-outbound"' "$private_outbound_manifest"
-          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["network:private-outbound"\],"label":"sandboxed-with-holes (network:private-outbound)"}' \
+          grep -q '"tcp-bind":\[8000\]' "$private_outbound_manifest"
+          grep -q '"tcp-connect":\[443\]' "$private_outbound_manifest"
+          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["network:private-outbound","tcp-bind:8000","tcp-connect:443"\],"label":"sandboxed-with-holes (network:private-outbound, tcp-bind:8000, tcp-connect:443)"}' \
             "$private_outbound_manifest"
+          grep -q '"version":1' "$private_outbound_policy"
+          grep -q '"mode":"private-outbound"' "$private_outbound_policy"
+          grep -q '"securityLabel":"aos-pkg-expose-smoke"' "$private_outbound_policy"
+          grep -q '"bind":\[8000\]' "$private_outbound_policy"
+          grep -q '"connect":\[443\]' "$private_outbound_policy"
+          grep -q '"hooks":\["socket_bind","socket_connect"\]' "$private_outbound_policy"
           regex_name_start=$(
             sed -n 's|^ExecStart=||p' \
               "$regexNamePrivateOutboundExposePath/units/aos-pkg-expose.smoke.regex-netns.service"

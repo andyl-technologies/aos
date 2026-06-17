@@ -220,6 +220,17 @@
     "${field} contains invalid port '${builtins.toString port}'"
     port;
 
+  validatePortList = field: ports: let
+    checkedPorts =
+      builtins.map
+      (validatePort field)
+      (validateList field ports);
+  in
+    throwIfNot
+    (builtins.length checkedPorts == builtins.length (lib.unique checkedPorts))
+    "${field} contains duplicate ports"
+    checkedPorts;
+
   validateFirewall = firewall: let
     checkedFirewall =
       throwIfNot
@@ -308,6 +319,8 @@
     allowedKeys = [
       "capabilities"
       "network"
+      "tcp-bind"
+      "tcp-connect"
       "devices"
       "host-paths"
       "cgroup-delegate"
@@ -331,6 +344,10 @@
         "permissions.network must be `private`, `private-outbound`, or `host`"
         checkedPermissions.network
       else null;
+    tcpBind =
+      validatePortList "permissions.tcp-bind" (checkedPermissions.tcp-bind or []);
+    tcpConnect =
+      validatePortList "permissions.tcp-connect" (checkedPermissions.tcp-connect or []);
     devices =
       builtins.map
       (validateAbsolutePath "device")
@@ -366,6 +383,8 @@
     (
       lib.optionalAttrs (capabilities != []) {inherit capabilities;}
       // lib.optionalAttrs (network != null) {inherit network;}
+      // lib.optionalAttrs (tcpBind != []) {tcp-bind = tcpBind;}
+      // lib.optionalAttrs (tcpConnect != []) {tcp-connect = tcpConnect;}
       // lib.optionalAttrs (devices != []) {inherit devices;}
       // lib.optionalAttrs (hostPaths != []) {host-paths = hostPaths;}
       // lib.optionalAttrs cgroupDelegate {cgroup-delegate = cgroupDelegate;}
@@ -943,6 +962,8 @@ in rec {
       ++ lib.optional (network == "private-outbound") netnsUnit;
     reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit];
     capabilities = permissions.capabilities or [];
+    tcpBind = permissions.tcp-bind or [];
+    tcpConnect = permissions.tcp-connect or [];
     devices = permissions.devices or [];
     hostPaths = permissions.host-paths or [];
     cgroupDelegate = permissions.cgroup-delegate or false;
@@ -956,6 +977,8 @@ in rec {
       || builtins.any (hostPath: hasAnyPrefix systemLocationPrefixes hostPath.path) rwHostPaths;
     confinementHoles =
       lib.optional (network != "private") "network:${network}"
+      ++ builtins.map (port: "tcp-bind:${builtins.toString port}") tcpBind
+      ++ builtins.map (port: "tcp-connect:${builtins.toString port}") tcpConnect
       ++ builtins.map (capability: "capability:${capability}") capabilities
       ++ builtins.map (device: "device:${device}") devices
       ++ builtins.map (hostPath: "host-path:${hostPath.mode}:${hostPath.path}") hostPaths
@@ -1618,6 +1641,31 @@ in rec {
       inherit confinement;
       permissions = manifestPermissions;
     };
+    networkPolicy = {
+      version = 1;
+      package = packageName;
+      mode = network;
+      securityLabel = manifestPermissions.security-label;
+      tcp = {
+        bind = tcpBind;
+        connect = tcpConnect;
+      };
+      landlock = {
+        abi = 4;
+        tcp = {
+          bind = tcpBind;
+          connect = tcpConnect;
+        };
+      };
+      ebpf = {
+        identity = manifestPermissions.security-label;
+        hooks = ["socket_bind" "socket_connect"];
+        tcp = {
+          bind = tcpBind;
+          connect = tcpConnect;
+        };
+      };
+    };
   in
     throwIfNot
     (exposeExtraKeys == [])
@@ -1626,11 +1674,12 @@ in rec {
       pkgs.runCommand "expose-${packageName}" {
         unitsDrv = rendered.unitsDrv;
         manifest = builtins.toJSON manifest;
+        networkPolicy = builtins.toJSON networkPolicy;
         passthru = {
-          inherit manifest confinement;
+          inherit manifest confinement networkPolicy;
           permissions = manifestPermissions;
         };
-        passAsFile = ["manifest"];
+        passAsFile = ["manifest" "networkPolicy"];
         preferLocalBuild = true;
         allowSubstitutes = false;
       } ''
@@ -1638,6 +1687,7 @@ in rec {
         mkdir -p "$out/units"
         cp -a "$unitsDrv"/. "$out/units/"
         cp "$manifestPath" "$out/manifest.json"
+        cp "$networkPolicyPath" "$out/network-policy.json"
         ${credentialBlobCommands}
       ''
     ));

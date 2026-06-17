@@ -18,8 +18,8 @@ use crate::profile::meta::list_meta;
 use crate::profile::{Generation, Profile};
 use crate::registry::store_path_hash;
 use crate::types::{
-    CapabilityKind, CredentialMeta, ExposeMeta, InstalledMeta, ProfileScope,
-    ProvidedCapabilityMeta, RequiredCapabilityMeta,
+    CapabilityKind, CredentialMeta, ExposeMeta, InstalledMeta, NetworkPermission, PermissionsMeta,
+    ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
 };
 use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
@@ -252,6 +252,11 @@ fn exposed_packages_from_expose_dir(
 
         let artifact_hash = store_path_hash(&artifact.store_path).to_string();
         let artifact_root = expose_dir.join(&artifact_hash).join("units");
+        validate_network_policy_artifact(
+            &apm.name,
+            Path::new(&artifact.store_path),
+            &apm.permissions,
+        )?;
 
         let mut units = expose.units.iter().cloned().collect::<BTreeSet<_>>();
         units.insert(expose.target.clone());
@@ -305,6 +310,156 @@ fn exposed_packages_from_expose_dir(
     packages.sort_by(|left, right| left.name.cmp(&right.name));
     validate_capability_routes(&packages)?;
     Ok(packages)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkPolicyArtifact {
+    version: u32,
+    package: String,
+    mode: NetworkPermission,
+    #[serde(rename = "securityLabel")]
+    security_label: String,
+    tcp: NetworkPolicyTcp,
+    landlock: NetworkPolicyLandlock,
+    ebpf: NetworkPolicyEbpf,
+}
+
+#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct NetworkPolicyTcp {
+    bind: Vec<u16>,
+    connect: Vec<u16>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkPolicyLandlock {
+    abi: u32,
+    tcp: NetworkPolicyTcp,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkPolicyEbpf {
+    identity: String,
+    hooks: Vec<String>,
+    tcp: NetworkPolicyTcp,
+}
+
+fn validate_network_policy_artifact(
+    package_name: &str,
+    artifact_store_path: &Path,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    let path = artifact_store_path.join("network-policy.json");
+    let exists = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                bail!(
+                    "network policy artifact for package '{}' is not a regular file: {}",
+                    package_name,
+                    path.display()
+                );
+            }
+            true
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err).with_context(|| format!("checking {}", path.display())),
+    };
+    if !exists {
+        if permissions.has_network_policy() {
+            bail!(
+                "network policy artifact for package '{}' is missing required network-policy.json",
+                package_name
+            );
+        }
+        return Ok(());
+    }
+
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let policy: NetworkPolicyArtifact =
+        serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let expected_permissions = normalized_permissions(package_name, permissions);
+    let expected_mode = expected_permissions
+        .network
+        .unwrap_or(NetworkPermission::Private);
+    let expected_label = expected_permissions
+        .security_label
+        .as_deref()
+        .context("normalized permissions have no security label")?;
+    let expected_tcp = NetworkPolicyTcp {
+        bind: expected_permissions.tcp_bind.clone(),
+        connect: expected_permissions.tcp_connect.clone(),
+    };
+
+    if policy.version != 1 {
+        bail!(
+            "network policy artifact for package '{}' has unsupported version {}",
+            package_name,
+            policy.version
+        );
+    }
+    if policy.package != package_name {
+        bail!(
+            "network policy artifact package mismatch: expected '{}', got '{}'",
+            package_name,
+            policy.package
+        );
+    }
+    if policy.mode != expected_mode {
+        bail!(
+            "network policy artifact mode mismatch for package '{}'",
+            package_name
+        );
+    }
+    if policy.security_label != expected_label {
+        bail!(
+            "network policy artifact security label mismatch for package '{}'",
+            package_name
+        );
+    }
+    if policy.tcp != expected_tcp
+        || policy.landlock.tcp != expected_tcp
+        || policy.ebpf.tcp != expected_tcp
+    {
+        bail!(
+            "network policy artifact TCP grants differ from admitted permissions for package '{}'",
+            package_name
+        );
+    }
+    if policy.landlock.abi != 4 {
+        bail!(
+            "network policy artifact for package '{}' has unsupported Landlock ABI {}",
+            package_name,
+            policy.landlock.abi
+        );
+    }
+    if policy.ebpf.identity != expected_label {
+        bail!(
+            "network policy artifact eBPF identity mismatch for package '{}'",
+            package_name
+        );
+    }
+    if policy.ebpf.hooks != ["socket_bind", "socket_connect"] {
+        bail!(
+            "network policy artifact eBPF hooks mismatch for package '{}'",
+            package_name
+        );
+    }
+    Ok(())
+}
+
+fn normalized_permissions(package_name: &str, permissions: &PermissionsMeta) -> PermissionsMeta {
+    let mut normalized = permissions.clone();
+    if normalized.security_label.is_none() {
+        normalized.security_label = Some(format!("aos-pkg-{package_name}"));
+    }
+    if normalized.confinement.is_none() {
+        normalized.confinement = Some(normalized.computed_confinement());
+    }
+    normalized
 }
 
 fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> {
@@ -1455,6 +1610,44 @@ mod tests {
         std::fs::write(path, content).unwrap();
     }
 
+    fn write_network_policy_file(installed: &InstalledMeta, tcp_bind: &[u16], tcp_connect: &[u16]) {
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let permissions = normalized_permissions(&apm.name, &apm.permissions);
+        let label = permissions.security_label.unwrap();
+        let mode = permissions.network.unwrap_or(NetworkPermission::Private);
+        let policy = serde_json::json!({
+            "version": 1,
+            "package": apm.name,
+            "mode": mode,
+            "securityLabel": label,
+            "tcp": {
+                "bind": tcp_bind,
+                "connect": tcp_connect,
+            },
+            "landlock": {
+                "abi": 4,
+                "tcp": {
+                    "bind": tcp_bind,
+                    "connect": tcp_connect,
+                },
+            },
+            "ebpf": {
+                "identity": label,
+                "hooks": ["socket_bind", "socket_connect"],
+                "tcp": {
+                    "bind": tcp_bind,
+                    "connect": tcp_connect,
+                },
+            },
+        });
+        std::fs::write(
+            Path::new(&artifact).join("network-policy.json"),
+            serde_json::to_string(&policy).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn rebuild_generation_expose_roots_links_artifacts_once() {
         let tmp = TempDir::new().unwrap();
@@ -1508,6 +1701,42 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name(), "imagehash111");
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_required_network_policy_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(
+            err.to_string().contains("missing required network-policy"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_network_policy_grants_outside_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443, 8443]);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(err.to_string().contains("TCP grants differ"), "{err:?}");
     }
 
     #[test]
