@@ -70,6 +70,7 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
+      export AOS_NIX_ORACLE="${nix}/bin/nix-instantiate"
     '';
 
     doCheck = true;

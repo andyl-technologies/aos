@@ -14054,6 +14054,17 @@ mod tests {
         String::from_utf8(trim_command_stdout(output.stdout)).expect("version is UTF-8")
     }
 
+    fn assert_pinned_cpp_nix_oracle(oracle: &str) {
+        let version = cpp_nix_version(oracle);
+        let pinned = std::str::from_utf8(PINNED_NIX_VERSION).expect("pinned version is UTF-8");
+        assert!(
+            version.ends_with(&format!(" {pinned}"))
+                || version.ends_with(&format!("(Nix) {pinned}")),
+            "expected pinned C++ Nix {pinned} oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+    }
+
     fn cpp_nix_eval_json(oracle: &str, source: &str) -> Vec<u8> {
         let output = Command::new(oracle)
             .args(["--eval", "--strict", "--json", "--expr", source])
@@ -14078,6 +14089,39 @@ mod tests {
         let reference = cpp_nix_eval_json(oracle, source);
         let candidate = eval_json_bytes(source);
         assert_eq!(candidate, reference, "expression diverged: {source}");
+    }
+
+    fn assert_cpp_nix_identity_constants_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "builtins.true",
+            "builtins.false",
+            "builtins.null",
+            "builtins.true == true",
+            "builtins.false == false",
+            "builtins.null == null",
+            "builtins ? true",
+            "builtins ? false",
+            "builtins ? null",
+            "builtins ? storeDir",
+            "builtins ? nixVersion",
+            "builtins ? langVersion",
+            "builtins.typeOf builtins.true",
+            "builtins.typeOf builtins.false",
+            "builtins.typeOf builtins.null",
+            "builtins.storeDir",
+            "builtins.typeOf builtins.storeDir",
+            "builtins.storeDir or \"fallback\"",
+            "builtins.nixVersion",
+            "builtins.typeOf builtins.nixVersion",
+            "builtins.nixVersion or \"fallback\"",
+            "builtins.langVersion",
+            "builtins.typeOf builtins.langVersion",
+            "builtins.langVersion or 42",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
     }
 
     fn assert_cpp_nix_to_json_matches_tree_walk(oracle: &str, source: &str) {
@@ -14956,41 +15000,16 @@ mod tests {
     #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
     fn cpp_nix_identity_constants_match_tree_walk() {
         let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.ends_with(" 2.24.12") || version.ends_with("(Nix) 2.24.12"),
-            "expected pinned C++ Nix 2.24.12 oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
+        assert_cpp_nix_identity_constants_match_tree_walk(&oracle);
+    }
 
-        for source in [
-            "builtins.true",
-            "builtins.false",
-            "builtins.null",
-            "builtins.true == true",
-            "builtins.false == false",
-            "builtins.null == null",
-            "builtins ? true",
-            "builtins ? false",
-            "builtins ? null",
-            "builtins ? storeDir",
-            "builtins ? nixVersion",
-            "builtins ? langVersion",
-            "builtins.typeOf builtins.true",
-            "builtins.typeOf builtins.false",
-            "builtins.typeOf builtins.null",
-            "builtins.storeDir",
-            "builtins.typeOf builtins.storeDir",
-            "builtins.storeDir or \"fallback\"",
-            "builtins.nixVersion",
-            "builtins.typeOf builtins.nixVersion",
-            "builtins.nixVersion or \"fallback\"",
-            "builtins.langVersion",
-            "builtins.typeOf builtins.langVersion",
-            "builtins.langVersion or 42",
-        ] {
-            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
-        }
+    #[test]
+    fn configured_cpp_nix_identity_constants_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix oracle check");
+            return;
+        };
+        assert_cpp_nix_identity_constants_match_tree_walk(&oracle);
     }
 
     #[test]

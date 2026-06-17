@@ -481,7 +481,7 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### `nixVersion` / `langVersion` spoofing (§4)
 
-- [ ] `builtins.nixVersion` reports the **exact pinned C++ Nix version** aos-nix targets, and `builtins.langVersion` reports that version's language-version integer — a parity requirement, not cosmetic: `lib.versionAtLeast builtins.nixVersion "2.x"` gates must take identical branches or the `.drv` diverges and fans out to a from-source rebuild (§4.1, §4.2) — **P1**, `C-25`; single source of truth shared with the harness oracle (`C-9`), so the string can never drift from the behavior it advertises.
+- [x] `builtins.nixVersion` reports the **exact pinned C++ Nix version** aos-nix targets, and `builtins.langVersion` reports that version's language-version integer — a parity requirement, not cosmetic: `lib.versionAtLeast builtins.nixVersion "2.x"` gates must take identical branches or the `.drv` diverges and fans out to a from-source rebuild (§4.1, §4.2) — **P1**, `C-25`; single source of truth shared with the harness oracle (`C-9`), so the string can never drift from the behavior it advertises.
 
 ## References
 
