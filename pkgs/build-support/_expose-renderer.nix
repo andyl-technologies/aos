@@ -1056,6 +1056,19 @@ in rec {
     cgroupDelegate = permissions.cgroup-delegate or false;
     privilegedUsers = permissions.privileged-users or false;
     syscallProfile = permissions.syscalls or "restricted";
+    authoredStaticUsers = uniqueUnits (
+      builtins.filter (user: user != null) (
+        builtins.map (
+          unitName: let
+            serviceConfig = units.${unitName}.serviceConfig or {};
+          in
+            if lib.hasSuffix ".service" unitName && serviceConfig ? User
+            then builtins.toString serviceConfig.User
+            else null
+        )
+        authoredUnitNames
+      )
+    );
 
     rwHostPaths = builtins.filter (hostPath: hostPath.mode == "rw") hostPaths;
     rootEquivalent =
@@ -1071,6 +1084,7 @@ in rec {
       ++ builtins.map (hostPath: "host-path:${hostPath.mode}:${hostPath.path}") hostPaths
       ++ lib.optional cgroupDelegate "cgroup-delegate"
       ++ lib.optional privilegedUsers "privileged-users"
+      ++ builtins.map (user: "static-user:${user}") authoredStaticUsers
       ++ lib.optional (syscallProfile != "restricted") "syscalls:${syscallProfile}";
     confinementClass =
       if rootEquivalent
@@ -1340,82 +1354,114 @@ in rec {
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
       unconfined = confinementClass == "unconfined";
+      hasStaticUser = checkedAuthoredServiceConfig ? User;
+      authoredUser =
+        if hasStaticUser
+        then builtins.toString checkedAuthoredServiceConfig.User
+        else "";
+      hasAuthoredDynamicUser = checkedAuthoredServiceConfig ? DynamicUser;
+      authoredDynamicUser = checkedAuthoredServiceConfig.DynamicUser or null;
+      generatedDynamicUser =
+        if hasAuthoredDynamicUser
+        then authoredDynamicUser
+        else !(privilegedUsers || hasStaticUser);
+      dynamicUserIsBoolean =
+        throwIfNot
+        (!hasAuthoredDynamicUser || builtins.isBool authoredDynamicUser)
+        "mkDerivation expose.units.${unitName} for package '${packageName}' sets DynamicUser to a non-boolean value"
+        true;
+      staticUserAllowed =
+        throwIfNot
+        (!(hasStaticUser && builtins.elem authoredUser ["root" "0"] && !privilegedUsers))
+        "mkDerivation expose.units.${unitName} for package '${packageName}' sets User=${authoredUser} without privileged-users"
+        true;
+      dynamicUserDisabledHasIdentity =
+        throwIfNot
+        (!(generatedDynamicUser == false && !hasStaticUser && !privilegedUsers))
+        "mkDerivation expose.units.${unitName} for package '${packageName}' disables DynamicUser without setting User"
+        true;
     in
-      checkedAuthoredServiceConfig
-      // lib.optionalAttrs (!unconfined) {
-        RootDirectory = "${payloadRoot}";
-        MountAPIVFS = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = "disconnected";
-        TemporaryFileSystem = ["/tmp" "/var/tmp"];
-        StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
-        NoNewPrivileges = true;
-        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
-        BindPaths = readWriteHostPaths;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectKernelLogs = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        RestrictSUIDSGID = true;
-      }
-      // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
-        StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
-      }
-      // lib.optionalAttrs unconfined {
-        Slice = packageSlice;
-      }
-      // lib.optionalAttrs (unconfined && cgroupDelegate) {
-        Delegate = true;
-      }
-      // lib.optionalAttrs (unconfined && privilegedUsers) {
-        DynamicUser = false;
-        PrivateUsers = false;
-      }
-      // lib.optionalAttrs (unconfined && network == "private") {
-        PrivateNetwork = true;
-      }
-      // lib.optionalAttrs (unconfined && network == "private-outbound") {
-        PrivateNetwork = false;
-        NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
-      }
-      // lib.optionalAttrs (!unconfined) {
-        DynamicUser = !privilegedUsers;
-        PrivateUsers =
-          if privilegedUsers
-          then false
-          else "identity";
-        PrivateNetwork = network == "private";
-        PrivateDevices = devices == [];
-        DevicePolicy = "closed";
-        DeviceAllow = deviceAllows;
-        Delegate = cgroupDelegate;
-        CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
-        AmbientCapabilities = builtins.concatStringsSep " " capabilities;
-        ProtectControlGroups =
-          if cgroupDelegate
-          then false
-          else "private";
-        SystemCallArchitectures = "native";
-        RestrictAddressFamilies = addressFamilies;
-        RestrictNamespaces = !privilegedUsers;
-        RestrictRealtime = true;
-        Slice = packageSlice;
-      }
-      // lib.optionalAttrs (!rootEquivalent) {
-        ProtectProc = "invisible";
-        ProcSubset = "pid";
-      }
-      // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
-      // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
-      // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile)
-      // lib.optionalAttrs (network == "private-outbound") {
-        PrivateNetwork = false;
-        NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
-      };
+      builtins.seq dynamicUserIsBoolean (
+        builtins.seq staticUserAllowed (
+          builtins.seq dynamicUserDisabledHasIdentity (
+            checkedAuthoredServiceConfig
+            // lib.optionalAttrs (!unconfined) {
+              RootDirectory = "${payloadRoot}";
+              MountAPIVFS = true;
+              ProtectSystem = "strict";
+              ProtectHome = true;
+              PrivateTmp = "disconnected";
+              TemporaryFileSystem = ["/tmp" "/var/tmp"];
+              StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
+              NoNewPrivileges = true;
+              BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
+              BindPaths = readWriteHostPaths;
+              ProtectKernelTunables = true;
+              ProtectKernelModules = true;
+              ProtectKernelLogs = true;
+              ProtectClock = true;
+              ProtectHostname = true;
+              LockPersonality = true;
+              MemoryDenyWriteExecute = true;
+              RestrictSUIDSGID = true;
+            }
+            // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
+              StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
+            }
+            // lib.optionalAttrs unconfined {
+              Slice = packageSlice;
+            }
+            // lib.optionalAttrs (unconfined && cgroupDelegate) {
+              Delegate = true;
+            }
+            // lib.optionalAttrs (unconfined && privilegedUsers) {
+              DynamicUser = false;
+              PrivateUsers = false;
+            }
+            // lib.optionalAttrs (unconfined && network == "private") {
+              PrivateNetwork = true;
+            }
+            // lib.optionalAttrs (unconfined && network == "private-outbound") {
+              PrivateNetwork = false;
+              NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+            }
+            // lib.optionalAttrs (!unconfined) {
+              DynamicUser = generatedDynamicUser;
+              PrivateUsers =
+                if privilegedUsers
+                then false
+                else "identity";
+              PrivateNetwork = network == "private";
+              PrivateDevices = devices == [];
+              DevicePolicy = "closed";
+              DeviceAllow = deviceAllows;
+              Delegate = cgroupDelegate;
+              CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
+              AmbientCapabilities = builtins.concatStringsSep " " capabilities;
+              ProtectControlGroups =
+                if cgroupDelegate
+                then false
+                else "private";
+              SystemCallArchitectures = "native";
+              RestrictAddressFamilies = addressFamilies;
+              RestrictNamespaces = !privilegedUsers;
+              RestrictRealtime = true;
+              Slice = packageSlice;
+            }
+            // lib.optionalAttrs (!rootEquivalent) {
+              ProtectProc = "invisible";
+              ProcSubset = "pid";
+            }
+            // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
+            // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
+            // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile)
+            // lib.optionalAttrs (network == "private-outbound") {
+              PrivateNetwork = false;
+              NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+            }
+          )
+        )
+      );
 
     memberUnitNames = [packageSlice] ++ authoredUnitNames ++ sideEffectUnitNames;
     socketActivatedServiceFor = name: unit: let

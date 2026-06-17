@@ -861,6 +861,107 @@
     if readOnlyTempHostPath.success
     then throw "expose renderer must reject read-only host paths under writable temp grants"
     else "ok";
+  staticUser = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-static-user.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          User = "aos-static";
+          Group = "aos-static";
+          StateDirectory = "expose-smoke-static";
+        };
+      };
+      permissions = {
+        network = "private";
+      };
+      requires = [];
+    };
+  });
+  rootUserWithoutPrivilege = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-root-user.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          User = "root";
+        };
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  rootUserWithoutPrivilegeRejected =
+    if rootUserWithoutPrivilege.success
+    then throw "expose renderer must reject User=root without permissions.privileged-users"
+    else "ok";
+  numericRootUserWithoutPrivilege = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-root-user-numeric.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          User = "0";
+        };
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  numericRootUserWithoutPrivilegeRejected =
+    if numericRootUserWithoutPrivilege.success
+    then throw "expose renderer must reject User=0 without permissions.privileged-users"
+    else "ok";
+  dynamicUserFalseWithoutIdentity = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-dynamic-user-false.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          DynamicUser = false;
+        };
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  dynamicUserFalseWithoutIdentityRejected =
+    if dynamicUserFalseWithoutIdentity.success
+    then throw "expose renderer must reject DynamicUser=false without User or privileged-users"
+    else "ok";
+  dynamicUserStringFalse = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-dynamic-user-string-false.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          DynamicUser = "false";
+        };
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  dynamicUserStringFalseRejected =
+    if dynamicUserStringFalse.success
+    then throw "expose renderer must reject non-boolean DynamicUser values"
+    else "ok";
   permissionOnlyModules = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-permission-only-modules.service" = {
@@ -997,6 +1098,7 @@ in
     splitConfigExposePath = splitConfigPackage.expose;
     overriddenPayload = overridden;
     overriddenExposePath = overridden.expose;
+    staticUserExposePath = staticUser.expose;
     permissionOnlyModulesExposePath = permissionOnlyModules.expose;
     withHolesExposePath = withHoles.expose;
     unconfinedExposePath = unconfined.expose;
@@ -1035,6 +1137,10 @@ in
       readOnlyPreparedHostPathDirectoryRejected
       unsupportedHostPathCharactersRejected
       readOnlyTempHostPathRejected
+      rootUserWithoutPrivilegeRejected
+      numericRootUserWithoutPrivilegeRejected
+      dynamicUserFalseWithoutIdentityRejected
+      dynamicUserStringFalseRejected
       ;
 
     buildDeps =
@@ -1045,6 +1151,7 @@ in
         configPackage.exposeCheck
         splitConfigPackage.exposeCheck
         overridden.exposeCheck
+        staticUser.exposeCheck
         permissionOnlyModules.exposeCheck
         withHoles.exposeCheck
         unconfined.exposeCheck
@@ -1405,6 +1512,22 @@ in
           test "$readOnlyPreparedHostPathDirectoryRejected" = ok
           test "$unsupportedHostPathCharactersRejected" = ok
           test "$readOnlyTempHostPathRejected" = ok
+          test "$rootUserWithoutPrivilegeRejected" = ok
+          test "$numericRootUserWithoutPrivilegeRejected" = ok
+          test "$dynamicUserFalseWithoutIdentityRejected" = ok
+          test "$dynamicUserStringFalseRejected" = ok
+          static_user_unit="$staticUserExposePath/units/expose-smoke-static-user.service"
+          grep -q 'User=aos-static' "$static_user_unit"
+          grep -q 'Group=aos-static' "$static_user_unit"
+          grep -q 'StateDirectory=expose-smoke-static' "$static_user_unit"
+          grep -q 'DynamicUser=false' "$static_user_unit"
+          grep -q 'PrivateUsers=identity' "$static_user_unit"
+          if grep -q 'DynamicUser=true' "$static_user_unit"; then
+            echo "static User= services must not receive generated DynamicUser=true" >&2
+            exit 1
+          fi
+          grep -q '"confinement":{"class":"sandboxed-with-holes","holes":\["static-user:aos-static"\],"label":"sandboxed-with-holes (static-user:aos-static)"}' \
+            "$staticUserExposePath/manifest.json"
           permission_only_modules="$permissionOnlyModulesExposePath/units/aos-pkg-expose-smoke-modules.service"
           permission_only_manifest="$permissionOnlyModulesExposePath/manifest.json"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' \

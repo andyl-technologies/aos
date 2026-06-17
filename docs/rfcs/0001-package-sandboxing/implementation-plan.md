@@ -95,7 +95,7 @@ reframes how the phases below are read:
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☑ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☑ |
-| **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
+| **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☑ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
@@ -507,45 +507,51 @@ policy. (migration.md increments 2–4; D14.)
 
 - [x] **`test-http-server` via `expose` end-to-end** (build → image bake → preset
       enable → VM check) while the role tree still exists.
-- [ ] **Dissolve `modules/roles/*` one package at a time** into `pkgs/` `expose`
+- [x] **Dissolve `modules/roles/*` one package at a time** into `pkgs/` `expose`
       blocks; `k3s-worker` / `k3s-control-plane` become **meta-packages**
       (`runtimeDeps = [ k3s ]` + `expose`), `_k3s-common.nix` survives as a shared
       let-binding. Delete the `roleType` machinery (~400 lines) **last**.
-- [ ] **Thin policy modules.** `modules/packages.nix` (bake list + image preset
-      policy), `modules/security/policy.nix` (tiers + kernel-module allowlist),
-      `modules/security/firewall.nix` (base table, unchanged minus the dropped
-      include). `render-role.nix` logic relocates into the P1 renderer.
-- [ ] **Fleet-spec rename.** `lib/testing/fleet-spec.nix` + `fleet.nix`:
-      `roles` → `packages`, `availableRoles` → `availablePackages`,
-      `file:///etc/aos/ignition-roles/<n>` → `/etc/aos/packages/<n>`; every
-      `roles = ["…"]` → `packages = ["…"]` in `tests/fleet/*.nix`.
+- [x] **Thin policy modules.** `modules/packages.nix` owns the bake list and
+      image preset policy; `modules/security/firewall.nix` remains the base
+      nftables table without role drop-in includes; package permission policy is
+      enforced by the signed expose/permissions renderer and apm path. The legacy
+      role loader is removed from `modules/default.nix`, and role rendering now
+      lives in the P1 package expose renderer.
+- [x] **Fleet-spec rename.** `lib/testing/fleet-spec.nix` + `fleet.nix`:
+      `roles` → `packages`, `availableRoles` → `availablePackages`, and every
+      `roles = ["…"]` → `packages = ["…"]` in `tests/fleet/*.nix`. The fleet
+      harness now writes a package-profile seed at `/etc/aos/packages.d/fleet-seed`
+      instead of merging per-role Ignition fragments from
+      `/etc/aos/ignition-roles`.
 
-**Phase 7 implementation scope.** `test-http-server` now exists as a `pkgs/`
+**Phase 7 implementation scope.** `test-http-server` exists as a `pkgs/`
 derivation with an `expose` block, is baked into an image through
 `modules/packages.nix`, seeds the system package profile at boot, attaches its
 rendered unit artifact, and is enabled through image/APM preset policy in the
 `package-test-http-server` VM. The same VM also proves `bundle = true; preset =
 false` packages stay baked but inert: they are present in the image without
-being seeded into the package profile, attached, or enabled. Fleet tests now
-have an additive `packages = [...]` selector that seeds selected bundled package
-profiles per machine. `test-http-server-pair` uses that selector for a
-socket-activated package, `apm-systemd-client` uses it for a manual-start
-test-unit package, and the k3s fleet smoke tests use it for the high-privilege
-k3s meta-packages. Registry fleet tests use a separate
-`test-static-cache-server` exposed package when they need to serve generated
-cache files from `/var/lib/sysreg-cache`, keeping the canonical
-`test-http-server` package tightly sandboxed. The legacy `test-http-server`,
-`apm-systemd-client-test`, `aos-test-agent`, and k3s role-family modules are
-now retired; those fleet tests are package-only. The role tree and
-`roles = [...]` fleet surface still exist for `aos-registry-server`, so the
-broader role-to-package dissolution, security policy split, and full fleet-spec
-rename remain open.
+being seeded into the package profile, attached, or enabled. Fleet tests have a
+`packages = [...]` selector that seeds selected bundled package profiles per
+machine via `/etc/aos/packages.d/fleet-seed`, rather than by merging per-role
+Ignition fragments.
+
+The final dissolve converts `aos-registry-server` into an exposed package with
+git-daemon and `aos serve` units, an explicit static `aos-gitd` identity, host
+TCP exposure for ports 9418 and 15000, and package-owned state directories. The
+expose renderer now supports static non-root service users without falling back
+to `DynamicUser=`. `modules/roles/` and the `ignitionRolesBundle` plumbing are
+gone from the module loader, initrd builder, stage-2 toplevel, activation script,
+fleet spec, and fleet tests. Registry fleet tests use the package target
+`aos-pkg-aos-registry-server.target` plus the generated firewall service, and
+continue to use `test-static-cache-server` when they need to serve generated
+cache files from `/var/lib/sysreg-cache`.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 
-**EXIT CRITERIA.** `modules/roles/` is gone; `checks.eval` + `checks.vm.boot` +
-the fleet suite are green; the k3s fleet test asserts `aos-pkg-k3s-worker.target`
-/ `aos-pkg-k3s-control-plane.target` are reached.
+**EXIT CRITERIA.** `modules/roles/` is gone; `checks.eval` +
+`systems.server.checks.system-boot` + the package/fleet checks are green; the
+k3s fleet test asserts `aos-pkg-k3s-worker.target` /
+`aos-pkg-k3s-control-plane.target` are reached.
 
 ---
 

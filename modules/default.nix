@@ -13,7 +13,6 @@ let
     ./monitoring
     ./image
     ./profiles
-    ./roles
     ./systemd
     ./tests
   ];

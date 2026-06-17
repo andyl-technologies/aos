@@ -143,7 +143,7 @@
     lib.imap (i: mname: let
       m = machines.${mname};
     in {
-      inherit (m) system roles packages instanceMetadata;
+      inherit (m) system packages instanceMetadata;
       # `extraClosures` / `varSizeMiB` / `bootMode` / `imageDiskMiB`
       # default on the fleet machine type, so the `or` fallbacks only
       # matter for callers bypassing fleet-spec validation.
@@ -247,7 +247,7 @@
 
   # ── Compose final ignition for one machine ──────────────────────────
   # Identity fragment is always present; the optional debug fragment is
-  # layered between identity and user/role merges; user-supplied
+  # layered between identity and user metadata; user-supplied
   # `instanceMetadata` then layers on top. Identity files use stable
   # paths (`/etc/hostname`, `/etc/hosts`,
   # `/etc/systemd/network/10-fleet-eth0.network`); the debug fragment
@@ -280,10 +280,6 @@
       ++ builtins.map (d: d.path) packageDirs;
     reservedPaths = identityPaths ++ debugPaths ++ packagePaths;
 
-    roleMerges =
-      builtins.map
-      (r: {source = "file:///etc/aos/ignition-roles/${r}";})
-      m.roles;
     userCfg =
       if m.instanceMetadata != null
       then m.instanceMetadata.config
@@ -326,22 +322,18 @@
         collides with reserved path(s):
           ${lib.concatStringsSep ", " (builtins.map (f: f.path) collisions)}
         Reserved paths: ${lib.concatStringsSep ", " reservedPaths}.
-        Pick a different path, or move the override into a role/package.
+        Pick a different path, or move the override into a package or harness fragment.
       ''
     else
       userCfg
       // {
-        # `merge` is reconstructed as `roleMerges ++ userMerges` — both
-        # contribute, role merges first. The collision check above only
-        # inspects storage entries; merge entries aren't path-scoped and
-        # are safe to concatenate.
         ignition =
           userIgnition
           // {
             config =
               userIgnitionConfig
               // {
-                merge = roleMerges ++ userMerges;
+                merge = userMerges;
               };
           };
         storage =
@@ -373,14 +365,14 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system roles bootMode tpm;
+          inherit (m) name ip mac debugMac index system bootMode tpm;
           inherit (m) packages;
         }
         // (
           if m.bootMode == "image"
           then {
             # Image boot: the production raw image IS the disk; the
-            # composed ignition config (identity + roles + user
+            # composed ignition config (identity + packages + user
             # fragment) rides fw_cfg as a bare config.json, validated
             # against the FULL profile — storage.disks/filesystems are
             # exactly what these machines exercise.
@@ -414,7 +406,7 @@
   # ============================================================
   mkFleetTest = spec: let
     # spec is already validated against fleetSpecType by the discoverer
-    # — including the per-machine `roles` enum-against-`config.aos.roles`.
+    # — including the per-machine `packages` enum-against-`config.aos.packages`.
     inherit (spec) name testScript timeout machines;
     bootTimeout = spec.bootTimeout or null;
 

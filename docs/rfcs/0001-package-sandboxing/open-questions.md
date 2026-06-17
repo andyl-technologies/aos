@@ -636,12 +636,12 @@ workload package exists rather than guessing. **DEFER** (measure first).
 > sequencing is the increment plan (mkDerivation `expose` → test-http-server
 > end-to-end → dissolve per-package → policy module + preset wiring).
 
-**Statement.** The current option tree (`aos.roles.*`), module dir
+**Statement.** The legacy option tree (`aos.roles.*`), module dir
 (`modules/roles/`), the bundle (`system.build.ignitionRolesBundle`), the
 Ignition path (`/etc/aos/ignition-roles/<name>`), `lib/testing/fleet-spec.nix`,
-`lib/modules/systemd/render-role.nix`, and ~6 fleet test files must all move to
-the package model. The mechanical surface is well-understood (~15 files moved,
-~10 edited, ~200–300 lines).
+`lib/modules/systemd/render-role.nix`, and ~6 fleet test files moved to the
+package model. The mechanical surface is well-understood (~15 files moved, ~10
+edited, ~200–300 lines).
 
 **Why it matters.** This is the prerequisite for everything else. Folding the
 dissolve and the container model into one change would be hard to review; doing
@@ -657,7 +657,8 @@ twice (`aos-<pkg>` → `aos-pkg-<package>`).
 **Proposed next step.** *packages-core*: sequence as targets → dissolve →
 container-model to avoid renaming synthesized unit names twice; capture the
 touchpoint inventory and validation gates (`aos fmt --check`,
-`checks.eval`, `checks.vm.boot`, fleet) in [migration.md](migration.md).
+`checks.eval`, `systems.server.checks.system-boot`, fleet) in
+[migration.md](migration.md).
 **DECIDE-BEFORE-MVP** (sequencing).
 
 ---
