@@ -92,7 +92,7 @@ macro_rules! builtin_definitions {
             unsupported OutputOfBuiltin, b"outputOf";
             strict_unary ParseDrvNameBuiltin, b"parseDrvName", StrictUnaryPrimOp::ParseDrvName;
             unsupported ParseFlakeRefBuiltin, b"parseFlakeRef";
-            direct_binary PartitionBuiltin, b"partition", StrictBinaryPrimOp::Partition;
+            strict_binary PartitionBuiltin, b"partition", StrictBinaryPrimOp::Partition;
             unsupported PathBuiltin, b"path";
             custom_effectful_strict_unary PathExistsBuiltin, b"pathExists";
             unsupported PlaceholderBuiltin, b"placeholder";
@@ -630,6 +630,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"filter").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"partition").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

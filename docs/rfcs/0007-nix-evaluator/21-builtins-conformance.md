@@ -391,7 +391,7 @@ Forcing order is observable and must match (see
       short-circuits on first `false`. Empty list → `true`.
 - [x] `any` (pred list) — `true` iff `pred` holds for some element;
       short-circuits on first `true`. Empty list → `false`.
-- [ ] `partition` (pred list) — `{ right = [matching]; wrong = [non-matching]; }`,
+- [x] `partition` (pred list) — `{ right = [matching]; wrong = [non-matching]; }`,
       each preserving input order. (Key names are exactly `right`/`wrong`.)
 - [ ] `groupBy` (f list) — attrset grouping elements by the **string** key
       `f elem` returns; each value is the list of elements (input order) in that
