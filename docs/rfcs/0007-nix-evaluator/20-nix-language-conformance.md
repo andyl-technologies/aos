@@ -255,10 +255,10 @@ search paths, and store coercion.
 - [x] **`./.` and `./` forms** — `./.` is the current directory; verify `./`
       acceptance against pinned Nix.
 - [x] **Absolute path literal** — `/etc/foo`. A leading `/` makes it absolute.
-- [ ] **Home-relative path** — `~/foo` expands using the user's home directory.
-      **Disallowed in pure evaluation mode** — verify whether AOS evaluates in
-      pure mode and whether `~` paths can appear (likely **must-error** under
-      pure eval). Verify against pinned Nix and the AOS eval flags.
+- [x] **Home-relative path** — `~/foo` expands using the configured home
+      directory outside pure evaluation mode. Pure evaluation rejects home paths;
+      AOS requires callers to configure the home directory explicitly rather
+      than reading the ambient process `HOME`.
 - [ ] **Path interpolation** — `./a/${e}` (see §2.3): at least one `/` before any
       `${}` for path recognition.
 - [ ] **`/` division-vs-path disambiguation** — `a / b` (spaces) is division;

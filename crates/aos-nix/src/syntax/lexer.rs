@@ -885,7 +885,7 @@ impl<'a> Lexer<'a> {
 
     fn path_starts_here(&self) -> bool {
         if self.starts_with(b"~/") {
-            return true;
+            return self.path_segment_starts_after_slash(self.cursor + 1);
         }
 
         let mut cursor = self.cursor;
@@ -1339,6 +1339,32 @@ mod tests {
                 TokenKind::Slash,
                 TokenKind::Eof,
             ]
+        );
+    }
+
+    #[test]
+    fn home_slash_path_requires_segment_or_interpolation() {
+        let kinds = lex_kinds("~/foo ~/. ~/${x}").expect("home paths lex");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Path,
+                TokenKind::DollarBrace,
+                TokenKind::Ident,
+                TokenKind::RBrace,
+                TokenKind::Eof,
+            ]
+        );
+
+        assert_eq!(
+            lex_kinds("~/")
+                .expect_err("bare home slash path is invalid")
+                .kind(),
+            &LexErrorKind::UnexpectedByte(b'~')
         );
     }
 

@@ -319,6 +319,7 @@ pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
     search_path_base: Vec<u8>,
     path_literal_base: Option<Vec<u8>>,
+    home_dir: Option<Vec<u8>>,
     eval_mode: EvalMode,
     allowed_paths: Vec<Vec<u8>>,
     current_system: Option<Vec<u8>>,
@@ -335,6 +336,7 @@ impl Default for TreeWalkOptions {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             search_path_base: b"/".to_vec(),
             path_literal_base: None,
+            home_dir: None,
             eval_mode: EvalMode::default(),
             allowed_paths: Vec::new(),
             current_system: None,
@@ -458,6 +460,22 @@ impl TreeWalkOptions {
     ) -> Result<Self, TreeWalkOptionsError> {
         let mut options = Self::default();
         options.set_path_literal_base(path_literal_base)?;
+        Ok(options)
+    }
+
+    /// Creates evaluator options with a configured home directory.
+    ///
+    /// Home-relative path literals such as `~/foo` resolve against this
+    /// directory outside pure evaluation mode. The evaluator never reads the
+    /// ambient process `HOME`, so callers must configure the directory
+    /// explicitly when they want to model C++ Nix's impure home expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `home_dir` is empty or relative.
+    pub fn with_home_dir(home_dir: impl Into<Vec<u8>>) -> Result<Self, TreeWalkOptionsError> {
+        let mut options = Self::default();
+        options.set_home_dir(home_dir)?;
         Ok(options)
     }
 
@@ -587,6 +605,32 @@ impl TreeWalkOptions {
     /// Clears the base directory used for relative syntactic path literals.
     pub fn clear_path_literal_base(&mut self) {
         self.path_literal_base = None;
+    }
+
+    /// Replaces the configured home directory used by `~/...` path literals.
+    ///
+    /// This setting models C++ Nix's impure home expansion without reading the
+    /// ambient process environment. It is intentionally separate from
+    /// [`TreeWalkOptions::env_var`], because pure evaluation hides `getEnv`
+    /// values and rejects home paths with a different diagnostic surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `home_dir` is empty or relative.
+    pub fn set_home_dir(
+        &mut self,
+        home_dir: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.home_dir = Some(normalize_required_absolute_path(
+            home_dir.into(),
+            TreeWalkOptionsError::RelativeHomeDir,
+        )?);
+        Ok(())
+    }
+
+    /// Clears the configured home directory.
+    pub fn clear_home_dir(&mut self) {
+        self.home_dir = None;
     }
 
     /// Replaces the evaluation mode.
@@ -736,6 +780,11 @@ impl TreeWalkOptions {
         self.path_literal_base.as_deref()
     }
 
+    /// Returns the configured home directory for `~/...` path literals.
+    pub fn home_dir(&self) -> Option<&[u8]> {
+        self.home_dir.as_deref()
+    }
+
     /// Returns the configured evaluation mode.
     pub const fn eval_mode(&self) -> EvalMode {
         self.eval_mode
@@ -807,6 +856,10 @@ pub enum TreeWalkOptionsError {
     #[error("Nix path-literal base directory must be absolute")]
     RelativePathLiteralBase,
 
+    /// The configured home directory is empty or not absolute.
+    #[error("Nix home directory must be absolute")]
+    RelativeHomeDir,
+
     /// A configured allowed filesystem path is not absolute.
     #[error("Nix allowed filesystem paths must be absolute")]
     RelativeAllowedPath,
@@ -846,6 +899,17 @@ fn normalize_absolute_path(
 fn normalize_allowed_path(path: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
     if path.is_empty() || !path.starts_with(b"/") {
         return Err(TreeWalkOptionsError::RelativeAllowedPath);
+    }
+
+    Ok(normalize_absolute_path_bytes(&path))
+}
+
+fn normalize_required_absolute_path(
+    path: Vec<u8>,
+    relative_error: TreeWalkOptionsError,
+) -> Result<Vec<u8>, TreeWalkOptionsError> {
+    if path.is_empty() || !path.starts_with(b"/") {
+        return Err(relative_error);
     }
 
     Ok(normalize_absolute_path_bytes(&path))
@@ -5549,6 +5613,9 @@ impl<'ir> TreeWalk<'ir> {
         span: Span,
         bytes: &[u8],
     ) -> Result<Vec<u8>, TreeWalkError> {
+        if let Some(suffix) = bytes.strip_prefix(b"~/") {
+            return self.home_path_literal_bytes_for_node(id, span, bytes, suffix);
+        }
         if Path::new(OsStr::from_bytes(bytes)).is_absolute() {
             return Self::absolute_path_bytes_for_node(id, span, bytes);
         }
@@ -5556,6 +5623,35 @@ impl<'ir> TreeWalk<'ir> {
             return Self::absolute_path_bytes_for_node(id, span, bytes);
         };
         join_path_literal(id, span, base, bytes)
+    }
+
+    fn home_path_literal_bytes_for_node(
+        &self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        suffix: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Pure {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::HomePathNotAllowed {
+                    id,
+                    path: Self::copy_bytes_for_node(id, span, bytes)?,
+                    mode: self.options.eval_mode(),
+                },
+                span,
+            ));
+        }
+        let Some(home_dir) = self.options.home_dir() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::HomePathUnavailable {
+                    id,
+                    path: Self::copy_bytes_for_node(id, span, bytes)?,
+                },
+                span,
+            ));
+        };
+        join_path_literal(id, span, home_dir, suffix)
     }
 
     fn normalize_path(path: PathBuf) -> PathBuf {
@@ -17579,6 +17675,24 @@ pub enum TreeWalkErrorKind {
         /// The rejected path bytes.
         path: Vec<u8>,
     },
+    /// A pure evaluator rejected home-relative path expansion.
+    #[error("{mode:?} evaluation cannot resolve home path at node {id:?}: {path:?}")]
+    HomePathNotAllowed {
+        /// The path-valued node being expanded.
+        id: IrId,
+        /// The rejected home-relative path bytes.
+        path: Vec<u8>,
+        /// The evaluation mode that rejected home expansion.
+        mode: EvalMode,
+    },
+    /// A home-relative path was evaluated without a configured home directory.
+    #[error("home path at node {id:?} has no configured home directory: {path:?}")]
+    HomePathUnavailable {
+        /// The path-valued node being expanded.
+        id: IrId,
+        /// The rejected home-relative path bytes.
+        path: Vec<u8>,
+    },
     /// An evaluation mode rejected filesystem access to a path.
     #[error("{mode:?} evaluation forbids filesystem access at node {id:?} path {path:?}")]
     PathAccessDenied {
@@ -19367,6 +19481,30 @@ mod tests {
             TreeWalkOptions::with_path_literal_base(b"relative/source".to_vec())
                 .expect_err("relative path-literal base is rejected"),
             TreeWalkOptionsError::RelativePathLiteralBase
+        );
+
+        let home_dir = TreeWalkOptions::with_home_dir(b"//tmp//aos-home/./".to_vec())
+            .expect("absolute home directory normalizes");
+        assert_eq!(home_dir.home_dir(), Some(b"/tmp/aos-home".as_slice()));
+
+        let mut options = TreeWalkOptions::new();
+        assert_eq!(options.home_dir(), None);
+        options
+            .set_home_dir(b"/var//aos/home//".to_vec())
+            .expect("absolute home directory sets");
+        assert_eq!(options.home_dir(), Some(b"/var/aos/home".as_slice()));
+        options.clear_home_dir();
+        assert_eq!(options.home_dir(), None);
+
+        assert_eq!(
+            TreeWalkOptions::with_home_dir(b"relative/home".to_vec())
+                .expect_err("relative home directory is rejected"),
+            TreeWalkOptionsError::RelativeHomeDir
+        );
+        assert_eq!(
+            TreeWalkOptions::with_home_dir(Vec::new())
+                .expect_err("empty home directory is rejected"),
+            TreeWalkOptionsError::RelativeHomeDir
         );
     }
 
@@ -29507,6 +29645,70 @@ mod tests {
         );
         assert_eq!(eval_string_bytes("builtins.typeOf /etc/foo"), b"path");
         assert_eq!(eval("builtins.isPath /etc/foo").as_bool(), Ok(true));
+    }
+
+    #[test]
+    fn home_relative_path_literals_use_configured_home_outside_pure_eval() {
+        let dir = unique_temp_dir("home-relative-path-literals");
+        let home = dir.join("home");
+        let source_base = dir.join("source");
+        fs::create_dir(&home).expect("home directory creates");
+        fs::create_dir(&source_base).expect("source base directory creates");
+
+        let mut options = TreeWalkOptions::with_home_dir(home.as_os_str().as_bytes().to_vec())
+            .expect("home directory configures");
+        options
+            .set_path_literal_base(source_base.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options("~/foo", options.clone()),
+            home.join("foo").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.typeOf ~/foo", options.clone()),
+            b"path"
+        );
+        assert_eq!(
+            eval_with_options("builtins.isPath ~/foo", options).as_bool(),
+            Ok(true)
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn home_relative_path_literals_reject_pure_eval_and_missing_home() {
+        let mut pure_options = TreeWalkOptions::with_home_dir(b"/tmp/aos-home".to_vec())
+            .expect("home directory configures");
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let error = eval_whnf_owned_with_options(&lower("~/foo"), pure_options)
+            .expect_err("pure evaluation rejects home path literals");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HomePathNotAllowed {
+                path,
+                mode: EvalMode::Pure,
+                ..
+            } if path.as_slice() == b"~/foo"
+        ));
+
+        let error = eval_whnf_owned_with_options(&lower("~/foo"), TreeWalkOptions::new())
+            .expect_err("home path literals need a configured home directory");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HomePathUnavailable { path, .. }
+                if path.as_slice() == b"~/foo"
+        ));
+
+        let options = TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/tmp/aos-home".to_vec());
+        let error = eval_whnf_owned_with_options(&lower("~/foo"), options)
+            .expect_err("HOME environment configuration does not drive home path expansion");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::HomePathUnavailable { path, .. }
+                if path.as_slice() == b"~/foo"
+        ));
     }
 
     #[test]

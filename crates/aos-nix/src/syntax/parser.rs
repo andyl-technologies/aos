@@ -2493,6 +2493,19 @@ mod tests {
     }
 
     #[test]
+    fn home_slash_requires_path_segment() {
+        let ast = parse("~/foo");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, ast.root), b"~/foo");
+
+        let error = parse_str("~/").expect_err("bare ~/ is not a path expression");
+        assert!(matches!(
+            error.kind(),
+            ParseErrorKind::Lex(super::super::LexErrorKind::UnexpectedByte(b'~'))
+        ));
+    }
+
+    #[test]
     fn double_quoted_strings_decode_escape_forms() {
         let ast = parse("\"\\n\\r\\t\\\\\\\"\\${ $${\"");
         assert_eq!(string_bytes(&ast, ast.root), b"\n\r\t\\\"${ $${");
