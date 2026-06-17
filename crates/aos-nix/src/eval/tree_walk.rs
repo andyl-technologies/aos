@@ -65,6 +65,7 @@ const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
+const TRACE_PREFIX: &[u8] = b"trace: ";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
 const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
 const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
@@ -1029,6 +1030,62 @@ fn append_search_path_component(
     Ok(())
 }
 
+#[derive(Debug)]
+enum EvalStderr {
+    Process,
+    #[cfg(test)]
+    Buffer(Vec<u8>),
+}
+
+impl Default for EvalStderr {
+    fn default() -> Self {
+        Self::Process
+    }
+}
+
+impl EvalStderr {
+    fn write_trace_line(&mut self, message: &[u8]) {
+        match self {
+            Self::Process => {
+                let mut stderr = io::stderr().lock();
+                let _ = stderr.write_all(TRACE_PREFIX);
+                let _ = stderr.write_all(message);
+                let _ = stderr.write_all(b"\n");
+            }
+            #[cfg(test)]
+            Self::Buffer(buffer) => {
+                buffer.extend_from_slice(TRACE_PREFIX);
+                buffer.extend_from_slice(message);
+                buffer.extend_from_slice(b"\n");
+            }
+        }
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) {
+        match self {
+            Self::Process => {
+                let mut stderr = io::stderr().lock();
+                let _ = stderr.write_all(bytes);
+            }
+            #[cfg(test)]
+            Self::Buffer(buffer) => buffer.extend_from_slice(bytes),
+        }
+    }
+
+    #[cfg(test)]
+    fn capture(&mut self) {
+        *self = Self::Buffer(Vec::new());
+    }
+
+    #[cfg(test)]
+    fn captured(&self) -> &[u8] {
+        match self {
+            Self::Process => &[],
+            Self::Buffer(buffer) => buffer,
+        }
+    }
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk<'ir> {
@@ -1040,6 +1097,7 @@ pub struct TreeWalk<'ir> {
     options: TreeWalkOptions,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
+    stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
@@ -1062,6 +1120,7 @@ impl<'ir> TreeWalk<'ir> {
             options,
             trace_output: Vec::new(),
             warning_output: Vec::new(),
+            stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             lazy_identity_thunks: BTreeSet::new(),
         }
@@ -1080,6 +1139,16 @@ impl<'ir> TreeWalk<'ir> {
     /// Returns user-facing warning output emitted so far.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    #[cfg(test)]
+    fn capture_stderr(&mut self) {
+        self.stderr.capture();
+    }
+
+    #[cfg(test)]
+    fn captured_stderr(&self) -> &[u8] {
+        self.stderr.captured()
     }
 
     fn visible_nix_path(&self) -> &[NixSearchPathEntry] {
@@ -3455,10 +3524,7 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             )
         })?;
-        let mut stderr = io::stderr().lock();
-        let _ = stderr.write_all(b"trace: ");
-        let _ = stderr.write_all(&message);
-        let _ = stderr.write_all(b"\n");
+        self.stderr.write_trace_line(&message);
         self.trace_output.push(EvalTraceOutput::new(kind, message));
         Ok(())
     }
@@ -3520,8 +3586,7 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             )
         })?;
-        let mut stderr = io::stderr().lock();
-        let _ = stderr.write_all(&formatted);
+        self.stderr.write_all(&formatted);
         self.warning_output.push(EvalWarningOutput::new(message));
         Ok(())
     }
@@ -17675,6 +17740,39 @@ mod tests {
         trim_command_stdout(output.stdout)
     }
 
+    fn cpp_nix_eval_stderr_with_nix_options(
+        oracle: &str,
+        source: &str,
+        options: &[(&str, &str)],
+    ) -> Vec<u8> {
+        let mut command = Command::new(oracle);
+        let path = std::env::var_os("PATH");
+        command.env_clear();
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        command.env("HOME", "/homeless-shelter");
+        command.args(["--option", "trace-verbose", "false"]);
+        command.args(["--option", "abort-on-warn", "false"]);
+        for (name, value) in options {
+            command.args(["--option", name, value]);
+        }
+        command.args(["--eval", "--strict", "--expr", source]);
+        let output = command
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stderr
+    }
+
+    fn cpp_nix_eval_stderr(oracle: &str, source: &str) -> Vec<u8> {
+        cpp_nix_eval_stderr_with_nix_options(oracle, source, &[])
+    }
+
     fn cpp_nix_eval_json_with_pinned_builtin_surface_features(
         oracle: &str,
         source: &str,
@@ -18001,6 +18099,18 @@ mod tests {
 
     fn assert_warning_output(output: &EvalWarningOutput, message: &[u8]) {
         assert_eq!(output.message(), message);
+    }
+
+    fn eval_captured_stderr_with_options(source: &str, options: TreeWalkOptions) -> Vec<u8> {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.capture_stderr();
+        evaluator.eval_root().expect("source evaluates");
+        evaluator.captured_stderr().to_vec()
+    }
+
+    fn eval_captured_stderr(source: &str) -> Vec<u8> {
+        eval_captured_stderr_with_options(source, TreeWalkOptions::new())
     }
 
     fn assert_error_contexts(error: &TreeWalkError, expected: &[&[u8]]) {
@@ -19173,6 +19283,61 @@ mod tests {
                 .expect("warning output exists"),
             b"strict",
         );
+    }
+
+    fn assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            r#"builtins.trace "hello" 7"#,
+            r#"builtins.trace "a\n\"b" 1"#,
+            "builtins.trace 1000000.0 1",
+            "builtins.trace builtins.length 1",
+            "builtins.trace { } 1",
+        ] {
+            let reference = cpp_nix_eval_stderr(oracle, source);
+            let stderr = eval_captured_stderr(source);
+            assert_eq!(stderr, reference, "trace stderr diverged for {source}");
+        }
+
+        let source = r#"builtins.traceVerbose "hidden" 7"#;
+        let reference = cpp_nix_eval_stderr(oracle, source);
+        let stderr = eval_captured_stderr(source);
+        assert_eq!(stderr, reference, "disabled traceVerbose stderr diverged");
+
+        let source = r#"builtins.traceVerbose "shown" 7"#;
+        let reference =
+            cpp_nix_eval_stderr_with_nix_options(oracle, source, &[("trace-verbose", "true")]);
+        let stderr =
+            eval_captured_stderr_with_options(source, TreeWalkOptions::with_trace_verbose(true));
+        assert_eq!(stderr, reference, "enabled traceVerbose stderr diverged");
+
+        for source in [
+            r#"builtins.warn "hello" 7"#,
+            r#"builtins.warn "a\nb" 7"#,
+            r#"builtins.warn "a\n\nb" 7"#,
+            r#"builtins.warn "" 7"#,
+        ] {
+            let reference = cpp_nix_eval_stderr(oracle, source);
+            let stderr = eval_captured_stderr(source);
+            assert_eq!(stderr, reference, "warning stderr diverged for {source}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_trace_and_warn_stderr_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_trace_and_warn_stderr_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix trace/warn check");
+            return;
+        };
+        assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(&oracle);
     }
 
     #[test]
