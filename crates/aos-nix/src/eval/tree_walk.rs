@@ -3602,17 +3602,7 @@ impl<'ir> TreeWalk<'ir> {
         let mut values = Vec::new();
         let mut previous_end = 0usize;
 
-        for (index, captures) in matches.iter().enumerate() {
-            // C++ Nix's std::regex_token_iterator ignores a terminal empty
-            // separator unless an earlier nullable match has consumed up to it.
-            if captures.range.start == string.len()
-                && captures.range.end == string.len()
-                && !string.is_empty()
-                && previous_end < string.len()
-            {
-                continue;
-            }
-
+        for captures in &matches {
             self.push_split_string(
                 id,
                 span,
@@ -3622,16 +3612,6 @@ impl<'ir> TreeWalk<'ir> {
             let value = self.alloc_regex_capture_list(id, span, string, &captures.groups)?;
             Self::push_list_value(id, span, &mut values, value)?;
             previous_end = captures.range.end;
-            // After an empty separator, C++ std::regex_iterator resumes one
-            // byte later when that produces the next match; that byte does not
-            // appear as unmatched text in builtins.split output.
-            if captures.range.start == captures.range.end
-                && matches
-                    .get(index + 1)
-                    .is_some_and(|next| next.range.start == captures.range.end.saturating_add(1))
-            {
-                previous_end = previous_end.saturating_add(1);
-            }
         }
 
         self.push_split_string(id, span, &mut values, &string[previous_end..])?;
@@ -15329,17 +15309,8 @@ mod tests {
         assert_cpp_nix_string_context_builtins_match_tree_walk(&oracle);
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_string_path_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_string_path_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
             r#"builtins.substring 1 3 "abcdef""#,
             r#"builtins.substring 1 2 { outPath = "abcd"; }"#,
@@ -15360,6 +15331,7 @@ mod tests {
             r#"builtins.match "(a|aa)" "aa""#,
             r#"builtins.match "(a)?b" "b""#,
             r#"builtins.match "(a*)" """#,
+            r#"builtins.match "a{2,3}" "aaa""#,
             r#"let m = builtins.match "a(.)c"; in m "abc""#,
             r#"builtins.split "-" "a-b-c""#,
             r#"builtins.split "(-)" "a-b-c""#,
@@ -15411,6 +15383,7 @@ mod tests {
             r#"builtins.match "\\x61" "a""#,
             r#"builtins.match "\\n" "n""#,
             r#"builtins.match "a*?" "aaa""#,
+            r#"builtins.match "a{1,2}?" "aa""#,
             r#"builtins.split "" "abc""#,
             r#"builtins.split "[" "x""#,
             r#"builtins.split "()" """#,
@@ -15421,9 +15394,26 @@ mod tests {
             r#"builtins.split "\\x61" "a""#,
             r#"builtins.split "\\n" "n""#,
             r#"builtins.split "a*?" "aaa""#,
+            r#"builtins.split "a{1,2}?" "aa""#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_string_path_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_string_path_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_string_path_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix string/path check");
+            return;
+        };
+        assert_cpp_nix_string_path_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
@@ -20906,15 +20896,15 @@ mod tests {
     fn split_primop_handles_zero_width_matches_like_cpp_nix() {
         assert_eq!(
             eval_json_bytes(r#"builtins.split "a*" "baac""#),
-            br#"["",[],"",[],"",[],"",[],""]"#.to_vec()
+            br#"["",[],"b",[],"",[],"c",[],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "(a*)" "baac""#),
-            br#"["",[""],"",["aa"],"",[""],"",[""],""]"#.to_vec()
+            br#"["",[""],"b",["aa"],"",[""],"c",[""],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "a?" "bc""#),
-            br#"["",[],"",[],"",[],""]"#.to_vec()
+            br#"["",[],"b",[],"c",[],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "^" "abc""#),
@@ -20922,19 +20912,19 @@ mod tests {
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "$" "abc""#),
-            br#"["abc"]"#.to_vec()
+            br#"["abc",[],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "^|$" "abc""#),
-            br#"["",[],"abc"]"#.to_vec()
+            br#"["",[],"abc",[],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "^|$" "a""#),
-            br#"["",[],"",[],""]"#.to_vec()
+            br#"["",[],"a",[],""]"#.to_vec()
         );
         assert_eq!(
             eval_json_bytes(r#"builtins.split "a*$" "baac""#),
-            br#"["baac"]"#.to_vec()
+            br#"["baac",[],""]"#.to_vec()
         );
     }
 

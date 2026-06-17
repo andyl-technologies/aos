@@ -925,7 +925,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [ ] `attrNames` / `attrValues` / `mapAttrs` / `groupBy` sorted-by-name order.
 - [ ] `sort` stability and tie-breaking; `lessThan` cross-type/list ordering.
 - [x] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
-- [ ] `match` / `split` regex dialect (named risk vs. Rust `regex`).
+- [x] `match` / `split` regex dialect (named risk vs. Rust `regex`).
 - [ ] `div` truncate-toward-zero; int/float promotion and float rendering.
 - [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
