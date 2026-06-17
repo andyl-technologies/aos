@@ -78,10 +78,39 @@ struct RegexCaptureMatch {
     groups: Vec<Option<std::ops::Range<usize>>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ResolvedSearchPathEntry {
     prefix: Vec<u8>,
     path: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FindFileCacheKey {
+    search_path_base: Vec<u8>,
+    entries: Vec<ResolvedSearchPathEntry>,
+    lookup: Vec<u8>,
+}
+
+impl FindFileCacheKey {
+    fn new(search_path_base: &[u8], entries: &[ResolvedSearchPathEntry], lookup: &[u8]) -> Self {
+        Self {
+            search_path_base: search_path_base.to_vec(),
+            entries: entries.to_vec(),
+            lookup: lookup.to_vec(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FindFileCacheEntry {
+    Hit(Vec<u8>),
+    Miss,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FindFileLookupOrigin {
+    AmbientSearchPath,
+    ExplicitSearchPath,
 }
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -1011,6 +1040,7 @@ pub struct TreeWalk<'ir> {
     options: TreeWalkOptions,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
+    find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
 }
@@ -1032,6 +1062,7 @@ impl<'ir> TreeWalk<'ir> {
             options,
             trace_output: Vec::new(),
             warning_output: Vec::new(),
+            find_file_cache: BTreeMap::new(),
             lazy_identity_thunks: BTreeSet::new(),
         }
     }
@@ -1049,6 +1080,14 @@ impl<'ir> TreeWalk<'ir> {
     /// Returns user-facing warning output emitted so far.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    fn visible_nix_path(&self) -> &[NixSearchPathEntry] {
+        if self.options.eval_mode() == EvalMode::Pure {
+            &[]
+        } else {
+            self.options.nix_path()
+        }
     }
 
     /// Evaluates the IR root to weak head normal form.
@@ -1785,19 +1824,24 @@ impl<'ir> TreeWalk<'ir> {
         let lookup = Self::copy_bytes_for_node(id, node.span, lookup)?;
         let lookup = search_path_literal_lookup(id, node.span, &lookup)?;
         let entries = self
-            .options
-            .nix_path()
+            .visible_nix_path()
             .iter()
             .map(|entry| ResolvedSearchPathEntry {
                 prefix: entry.prefix().to_vec(),
                 path: entry.path().to_vec(),
             })
             .collect::<Vec<_>>();
-        self.find_file_in_entries(id, node.span, &entries, lookup)
+        self.find_file_in_entries(
+            id,
+            node.span,
+            &entries,
+            lookup,
+            FindFileLookupOrigin::AmbientSearchPath,
+        )
     }
 
     fn eval_nix_path_value(&mut self, id: IrId, span: Span) -> Result<Value, TreeWalkError> {
-        let entries = self.options.nix_path().to_vec();
+        let entries = self.visible_nix_path().to_vec();
         let mut values = Vec::new();
         values.try_reserve_exact(entries.len()).map_err(|_| {
             TreeWalkError::new(
@@ -1847,7 +1891,13 @@ impl<'ir> TreeWalk<'ir> {
         let entries =
             self.search_path_entries_from_value(search_path_id, search_path_span, search_path)?;
         let lookup = self.context_free_string_bytes(lookup_id, lookup_span, lookup, "findFile")?;
-        self.find_file_in_entries(id, span, &entries, &lookup)
+        self.find_file_in_entries(
+            id,
+            span,
+            &entries,
+            &lookup,
+            FindFileLookupOrigin::ExplicitSearchPath,
+        )
     }
 
     fn search_path_entries_from_value(
@@ -1929,7 +1979,13 @@ impl<'ir> TreeWalk<'ir> {
         span: Span,
         entries: &[ResolvedSearchPathEntry],
         lookup: &[u8],
+        origin: FindFileLookupOrigin,
     ) -> Result<Value, TreeWalkError> {
+        let cache_key = FindFileCacheKey::new(self.options.search_path_base(), entries, lookup);
+        if let Some(cached) = self.find_file_cache.get(&cache_key).cloned() {
+            return self.find_file_cached_result(id, span, cached, lookup);
+        }
+
         for entry in entries {
             let Some(suffix) = search_path_suffix(entry.prefix.as_slice(), lookup) else {
                 continue;
@@ -1941,15 +1997,12 @@ impl<'ir> TreeWalk<'ir> {
                 entry.path.as_slice(),
                 suffix,
             )?;
-            self.check_filesystem_path_access(id, span, &candidate)?;
+            self.check_find_file_candidate_access(id, span, &candidate, origin)?;
             match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
                 Ok(_) => {
-                    return self
-                        .heap
-                        .alloc_path(NixString::from_bytes(candidate))
-                        .map_err(|source| {
-                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                        });
+                    self.find_file_cache
+                        .insert(cache_key, FindFileCacheEntry::Hit(candidate.clone()));
+                    return self.alloc_find_file_path(id, span, candidate);
                 }
                 Err(source)
                     if matches!(
@@ -1971,6 +2024,54 @@ impl<'ir> TreeWalk<'ir> {
                 }
             }
         }
+        self.find_file_cache
+            .insert(cache_key, FindFileCacheEntry::Miss);
+        self.find_file_not_found(id, span, lookup)
+    }
+
+    fn check_find_file_candidate_access(
+        &self,
+        id: IrId,
+        span: Span,
+        candidate: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Result<(), TreeWalkError> {
+        match (origin, self.options.eval_mode()) {
+            (FindFileLookupOrigin::ExplicitSearchPath, EvalMode::Pure) => Ok(()),
+            _ => self.check_filesystem_path_access(id, span, candidate),
+        }
+    }
+
+    fn find_file_cached_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        cached: FindFileCacheEntry,
+        lookup: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        match cached {
+            FindFileCacheEntry::Hit(path) => self.alloc_find_file_path(id, span, path),
+            FindFileCacheEntry::Miss => self.find_file_not_found(id, span, lookup),
+        }
+    }
+
+    fn alloc_find_file_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn find_file_not_found(
+        &self,
+        id: IrId,
+        span: Span,
+        lookup: &[u8],
+    ) -> Result<Value, TreeWalkError> {
         Err(TreeWalkError::new(
             TreeWalkErrorKind::SearchPathNotFound {
                 id,
@@ -17252,6 +17353,7 @@ mod tests {
         path::{Path, PathBuf},
         process::Command,
         ptr::NonNull,
+        sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -17794,12 +17896,17 @@ mod tests {
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
+        static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock is after Unix epoch")
             .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("aos-nix-{prefix}-{}-{nanos}", std::process::id()));
+        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "aos-nix-{prefix}-{}-{nanos}-{counter}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).expect("temp directory creates");
         dir
     }
@@ -19912,6 +20019,37 @@ mod tests {
         (root, nixpkgs, subdir)
     }
 
+    fn resolved_search_path_entry(prefix: &[u8], path: &Path) -> ResolvedSearchPathEntry {
+        ResolvedSearchPathEntry {
+            prefix: prefix.to_vec(),
+            path: path.as_os_str().as_bytes().to_vec(),
+        }
+    }
+
+    fn path_bytes(path: &Path) -> Vec<u8> {
+        path.as_os_str().as_bytes().to_vec()
+    }
+
+    fn path_value_bytes(evaluator: &TreeWalk<'_>, value: Value) -> Vec<u8> {
+        evaluator
+            .heap()
+            .get_path(value)
+            .expect("value is a heap-owned path")
+            .bytes()
+            .to_vec()
+    }
+
+    fn assert_search_path_not_found(error: TreeWalkError, expected_lookup: &[u8]) {
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::SearchPathNotFound { lookup, .. }
+                    if lookup == expected_lookup
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
     #[test]
     fn nix_path_value_reflects_configured_search_path() {
         let (root, nixpkgs, _subdir) = search_path_fixture();
@@ -20013,14 +20151,147 @@ mod tests {
         let error = eval_whnf_owned_with_options(&ir, options)
             .expect_err("missing search-path lookup is rejected");
 
-        assert!(
-            matches!(
-                error.kind(),
-                TreeWalkErrorKind::SearchPathNotFound { lookup, .. }
-                    if lookup == b"nixpkgs/missing"
+        assert_search_path_not_found(error, b"nixpkgs/missing");
+    }
+
+    #[test]
+    fn pure_eval_hides_configured_search_path_from_nix_path_and_angle_lookup() {
+        let (_root, nixpkgs, subdir) = search_path_fixture();
+        let mut hidden_options = search_path_options(b"nixpkgs", &nixpkgs);
+        hidden_options
+            .add_allowed_path(path_bytes(&nixpkgs))
+            .expect("search path configures as allowed");
+        hidden_options.set_eval_mode(EvalMode::Pure);
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.toJSON builtins.nixPath",
+                hidden_options.clone()
             ),
-            "unexpected error: {error:?}"
+            b"[]".to_vec()
         );
+
+        let search_path = lower(r#"<nixpkgs/subdir>"#);
+        let error = eval_whnf_owned_with_options(&search_path, hidden_options)
+            .expect_err("pure eval hides configured angle-bracket search paths");
+        assert_search_path_not_found(error, b"nixpkgs/subdir");
+
+        let explicit_options = TreeWalkOptions::with_eval_mode(EvalMode::Pure);
+        let explicit = format!(
+            r#"builtins.toString (builtins.findFile [ {{ path = {}; prefix = "nixpkgs"; }} ] "nixpkgs/subdir")"#,
+            nix_string_literal(&path_source(&nixpkgs))
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(&explicit, explicit_options.clone()),
+            path_bytes(&subdir)
+        );
+
+        let default_nix = nixpkgs.join("default.nix");
+        let default_nix_bytes = path_bytes(&default_nix);
+        let read = format!(
+            r#"builtins.readFile (builtins.findFile [ {{ path = {}; prefix = "nixpkgs"; }} ] "nixpkgs/default.nix")"#,
+            nix_string_literal(&path_source(&nixpkgs))
+        );
+        let error = eval_whnf_owned_with_options(&lower(&read), explicit_options)
+            .expect_err("pure eval still denies later filesystem reads");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied { path, mode: EvalMode::Pure, .. }
+                if path.as_slice() == default_nix_bytes.as_slice()
+        ));
+    }
+
+    #[test]
+    fn find_file_caches_successful_lookup_results() {
+        let (_root, nixpkgs, subdir) = search_path_fixture();
+        let ir = lower("0");
+        let mut evaluator = TreeWalk::new(&ir);
+        let entries = vec![resolved_search_path_entry(b"nixpkgs", &nixpkgs)];
+        let lookup = b"nixpkgs/subdir";
+        let span = Span::new(0, 0);
+
+        let first = evaluator
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect("initial search-path lookup finds existing directory");
+        assert_eq!(path_value_bytes(&evaluator, first), path_bytes(&subdir));
+
+        fs::remove_dir(&subdir).expect("fixture subdir removes");
+
+        let cached = evaluator
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect("cached search-path hit survives filesystem mutation");
+        assert_eq!(path_value_bytes(&evaluator, cached), path_bytes(&subdir));
+
+        let mut fresh = TreeWalk::new(&ir);
+        let error = fresh
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect_err("fresh evaluator observes removed directory");
+        assert_search_path_not_found(error, lookup);
+    }
+
+    #[test]
+    fn find_file_caches_exhausted_lookup_results() {
+        let (_root, nixpkgs, _subdir) = search_path_fixture();
+        let ir = lower("0");
+        let mut evaluator = TreeWalk::new(&ir);
+        let entries = vec![resolved_search_path_entry(b"nixpkgs", &nixpkgs)];
+        let lookup = b"nixpkgs/later";
+        let later = nixpkgs.join("later");
+        let span = Span::new(0, 0);
+
+        let first = evaluator
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect_err("initial missing search-path lookup is rejected");
+        assert_search_path_not_found(first, lookup);
+
+        fs::create_dir(&later).expect("late fixture directory creates");
+
+        let cached = evaluator
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect_err("cached search-path miss survives filesystem mutation");
+        assert_search_path_not_found(cached, lookup);
+
+        let mut fresh = TreeWalk::new(&ir);
+        let found = fresh
+            .find_file_in_entries(
+                ir.root,
+                span,
+                &entries,
+                lookup,
+                FindFileLookupOrigin::ExplicitSearchPath,
+            )
+            .expect("fresh evaluator observes late directory");
+        assert_eq!(path_value_bytes(&fresh, found), path_bytes(&later));
     }
 
     fn assert_cpp_nix_find_file_and_search_path_match_tree_walk(oracle: &str) {
