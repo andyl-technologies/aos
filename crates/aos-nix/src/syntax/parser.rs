@@ -966,6 +966,17 @@ impl<'a> Parser<'a> {
         let node = self.node(node)?;
         match node.kind {
             NodeKind::Ident | NodeKind::Str => self.symbol_payload(node).map(Some),
+            NodeKind::Interp => {
+                let NodeData::Node(child) = node.data else {
+                    return Ok(None);
+                };
+                let child = self.node(child)?;
+                if child.kind == NodeKind::Str {
+                    self.symbol_payload(child).map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -1912,10 +1923,26 @@ mod tests {
     fn binding_name<'a>(ast: &'a ParsedAst, binding: NodeId) -> &'a [u8] {
         let (path, _) = binding_path_and_value(ast, binding);
         assert_eq!(path.len(), 1);
-        let NodeData::Symbol(symbol) = node(ast, path[0]).data else {
-            panic!("binding path should carry a symbol");
-        };
-        ast.symbols.resolve(symbol).expect("symbol resolves")
+        static_attr_name(ast, path[0])
+    }
+
+    fn static_attr_name(ast: &ParsedAst, segment: NodeId) -> &[u8] {
+        let segment = node(ast, segment);
+        match segment.kind {
+            NodeKind::Ident | NodeKind::Str => {
+                let NodeData::Symbol(symbol) = segment.data else {
+                    panic!("static segment should carry a symbol");
+                };
+                ast.symbols.resolve(symbol).expect("symbol resolves")
+            }
+            NodeKind::Interp => {
+                let NodeData::Node(child) = segment.data else {
+                    panic!("static interpolation should carry an expression");
+                };
+                static_attr_name(ast, child)
+            }
+            _ => panic!("binding path should carry a static name"),
+        }
     }
 
     #[test]
@@ -2241,6 +2268,14 @@ mod tests {
         let bindings = child_ids(&ast, bindings);
         assert_eq!(bindings.len(), 1);
         assert_eq!(binding_name(&ast, bindings[0]), b"a");
+
+        let ast = parse("let ${\"a\"}.b = 1; a.c = 2; in a");
+        let NodeData::LetIn { bindings, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
     }
 
     #[test]
@@ -2252,11 +2287,26 @@ mod tests {
         let bindings = child_ids(&ast, bindings);
         assert_eq!(bindings.len(), 1);
         assert_eq!(binding_name(&ast, bindings[0]), b"a");
+
+        let ast = parse("{ ${\"a\"}.b = 1; a.c = 2; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
     }
 
     #[test]
     fn dynamic_first_attr_paths_are_not_statically_merged() {
         let ast = parse("{ ${name}.b = 1; a.c = 2; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 2);
+
+        let ast = parse("{ ${\"a\" + \"b\"}.c = 1; ab.d = 2; }");
         let NodeData::Children(bindings) = node(&ast, ast.root).data else {
             panic!("attrset children expected");
         };
@@ -2373,6 +2423,56 @@ mod tests {
             ast.arena.child_slice(fragments).expect("fragments").len(),
             3
         );
+    }
+
+    #[test]
+    fn path_interpolation_requires_a_path_prefix() {
+        let ast = parse("./a/${x}/b");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::Interp);
+        let NodeData::Children(fragments) = root.data else {
+            panic!("path interpolation fragments expected");
+        };
+        let fragments = child_ids(&ast, fragments);
+        assert_eq!(fragments.len(), 3);
+        assert_eq!(node(&ast, fragments[0]).kind, NodeKind::Path);
+        assert_eq!(node(&ast, fragments[1]).kind, NodeKind::Interp);
+        assert_eq!(node(&ast, fragments[2]).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, fragments[0]), b"./a/");
+        assert_eq!(string_bytes(&ast, fragments[2]), b"/b");
+
+        let ast = parse("./a.${foo}/b");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::Interp);
+        let NodeData::Children(fragments) = root.data else {
+            panic!("path interpolation fragments expected");
+        };
+        let fragments = child_ids(&ast, fragments);
+        assert_eq!(fragments.len(), 3);
+        assert_eq!(node(&ast, fragments[0]).kind, NodeKind::Path);
+        assert_eq!(node(&ast, fragments[1]).kind, NodeKind::Interp);
+        assert_eq!(node(&ast, fragments[2]).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, fragments[0]), b"./a.");
+        assert_eq!(string_bytes(&ast, fragments[2]), b"/b");
+
+        let ast = parse("a.${foo}/b");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::Apply);
+        let NodeData::Pair { first, second } = root.data else {
+            panic!("application payload expected");
+        };
+        assert_eq!(node(&ast, first).kind, NodeKind::Select);
+        assert_eq!(node(&ast, second).kind, NodeKind::Path);
+
+        let ast = parse("a.${foo} / b");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::BinOp);
+        let NodeData::Binary { op, lhs, rhs } = root.data else {
+            panic!("division payload expected");
+        };
+        assert_eq!(op, BinOpKind::Div);
+        assert_eq!(node(&ast, lhs).kind, NodeKind::Select);
+        assert_eq!(node(&ast, rhs).kind, NodeKind::Ident);
     }
 
     #[test]

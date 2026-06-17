@@ -2167,6 +2167,9 @@ impl<'ir> TreeWalk<'ir> {
                         node.span,
                     )
                 })?;
+                if self.interp_children_have_path_fragments(children)? {
+                    return self.eval_path_interp(id, node, children);
+                }
                 let Some((first, rest)) = children.split_first() else {
                     return self
                         .heap
@@ -2219,6 +2222,97 @@ impl<'ir> TreeWalk<'ir> {
             }
             _ => Err(self.invalid_payload(id, node, "interpolation payload")),
         }
+    }
+
+    fn interp_children_have_path_fragments(
+        &self,
+        children: &[IrId],
+    ) -> Result<bool, TreeWalkError> {
+        for child in children {
+            if self.node(*child)?.kind == IrKind::Path {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn eval_path_interp(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        children: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        let mut bytes = Vec::new();
+        for child in children {
+            let child_node = *self.node(*child)?;
+            if child_node.kind == IrKind::Path {
+                let IrData::Symbol(symbol) = child_node.data else {
+                    return Err(self.invalid_payload(*child, &child_node, "path symbol payload"));
+                };
+                let raw = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol { id: *child, symbol },
+                        child_node.span,
+                    )
+                })?;
+                let fragment = Self::copy_bytes_for_node(*child, child_node.span, raw)?;
+                bytes.try_reserve_exact(fragment.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ByteAllocationFailed {
+                            id,
+                            len: bytes.len().saturating_add(fragment.len()),
+                        },
+                        node.span,
+                    )
+                })?;
+                bytes.extend_from_slice(&fragment);
+                continue;
+            }
+
+            let expression = if child_node.kind == IrKind::Interp {
+                match child_node.data {
+                    IrData::Node(expression) => expression,
+                    _ => *child,
+                }
+            } else {
+                *child
+            };
+            let expression_span = self.node(expression)?.span;
+            let value = self.eval_node(expression)?;
+            let value = self.force_demanded_value(expression, expression_span, value)?;
+            let fragment =
+                self.coerce_to_path_interpolation_fragment(expression, expression_span, value)?;
+            bytes.try_reserve_exact(fragment.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: bytes.len().saturating_add(fragment.len()),
+                    },
+                    node.span,
+                )
+            })?;
+            bytes.extend_from_slice(&fragment);
+        }
+
+        let path = Self::absolute_path_bytes_for_node(id, node.span, &bytes)?;
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn coerce_to_path_interpolation_fragment(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(id, span, value)?;
+            return Self::copy_bytes_for_node(id, span, path.bytes());
+        }
+
+        let value = self.coerce_to_string(id, value, span)?;
+        self.context_free_string_bytes(id, span, value, "path interpolation")
     }
 
     fn coerce_to_interpolation_string(
@@ -31175,6 +31269,32 @@ mod tests {
     }
 
     #[test]
+    fn string_interpolation_evaluates_concatenates_and_unions_context() {
+        assert_eq!(eval_string_bytes("let x = \"b\"; in \"a${x}c\""), b"abc");
+        assert_eq!(eval_string_bytes("let x = \"b\"; in ''a${x}c''"), b"abc");
+        assert_eq!(
+            eval_string_bytes(r#"let e = "x"; in "${"a${e}b"}""#),
+            b"axb"
+        );
+        assert_eq!(
+            eval(
+                r#"let
+                     withCtx = text: path: builtins.appendContext text {
+                       ${path} = { path = true; };
+                     };
+                     aPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                     bPath = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+                     a = withCtx "a" aPath;
+                     b = withCtx "b" bPath;
+                     ctx = builtins.getContext "${a}${b}";
+                   in builtins.hasAttr aPath ctx && builtins.hasAttr bPath ctx"#
+            )
+            .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
     fn indented_string_interpolation_strips_literals_before_insertion() {
         assert_eq!(
             eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),
@@ -31187,6 +31307,37 @@ mod tests {
     }
 
     #[test]
+    fn path_interpolation_evaluates_to_path_values() {
+        assert_eq!(
+            eval_string_bytes(r#"builtins.typeOf (/tmp/${"x"})"#),
+            b"path"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toString (/tmp/${"x"}/y)"#),
+            b"/tmp/x/y"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.toString (/tmp/${/x}/y)"#),
+            b"/tmp/x/y"
+        );
+
+        let ir = lower(
+            r#"builtins.toString (/tmp/${builtins.appendContext "x" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a" = { path = true; };
+               }}/y)"#,
+        );
+        let error =
+            eval_whnf_owned(&ir).expect_err("context-bearing strings cannot be appended to paths");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "path interpolation",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn dynamic_attr_names_use_string_coercion() {
         assert_eq!(
             eval("{ ${ { outPath = \"name\"; } } = 7; }.name").as_int(),
@@ -31196,6 +31347,13 @@ mod tests {
             eval("{ value = 9; }.${ { __toString = self: \"value\"; } }").as_int(),
             Ok(9)
         );
+    }
+
+    #[test]
+    fn literal_interpolated_let_binding_names_evaluate_as_static_names() {
+        assert_eq!(eval(r#"let ${"x"} = 1; in x"#).as_int(), Ok(1));
+        assert_eq!(eval("let ${''x''} = 1; in x").as_int(), Ok(1));
+        assert_eq!(eval(r#"let ${"a"}.b = 1; in a.b"#).as_int(), Ok(1));
     }
 
     #[test]
@@ -31641,9 +31799,12 @@ mod tests {
             Ok(1)
         );
         assert_eq!(eval("({ ${\"a\" + \"b\"} = 3; }).ab").as_int(), Ok(3));
-        assert_eq!(eval("rec { ${\"a\"} = b; b = 2; }.a").as_int(), Ok(2));
         assert_eq!(
-            eval("let a = 7; in rec { ${\"x\"} = a; a = 1; }.x").as_int(),
+            eval("rec { ${\"a\" + \"\"} = b; b = 2; }.a").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let a = 7; in rec { ${\"x\" + \"\"} = a; a = 1; }.x").as_int(),
             Ok(1)
         );
         assert_eq!(
@@ -31668,7 +31829,7 @@ mod tests {
 
     #[test]
     fn dynamic_attrsets_report_duplicate_and_non_string_keys() {
-        let duplicate = lower("{ ${\"a\"} = 1; a = 2; }");
+        let duplicate = lower("{ ${\"a\" + \"\"} = 1; a = 2; }");
         let duplicate_symbol = symbol_for(&duplicate, b"a");
         let duplicate_error =
             eval_whnf_owned(&duplicate).expect_err("computed duplicate key is invalid");

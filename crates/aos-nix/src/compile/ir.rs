@@ -1462,16 +1462,41 @@ impl IrLowerer {
     }
 
     fn lower_attr_segment(&mut self, id: NodeId) -> Result<IrAttrPathSegment, IrError> {
+        if let Some(symbol) = self.static_attr_symbol(id)? {
+            return Ok(IrAttrPathSegment::Static(symbol));
+        }
+
+        let node = self.node(id)?;
+        match node.kind {
+            NodeKind::Interp => Ok(IrAttrPathSegment::Dynamic(self.lower_expr(id)?)),
+            _ => Err(self.invalid_shape(node, "attribute path segment")),
+        }
+    }
+
+    fn static_attr_symbol(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
         let node = self.node(id)?;
         match node.kind {
             NodeKind::Ident | NodeKind::Str => {
                 let NodeData::Symbol(symbol) = node.data else {
                     return Err(self.invalid_shape(node, "static attr symbol"));
                 };
-                Ok(IrAttrPathSegment::Static(symbol))
+                Ok(Some(symbol))
             }
-            NodeKind::Interp => Ok(IrAttrPathSegment::Dynamic(self.lower_expr(id)?)),
-            _ => Err(self.invalid_shape(node, "attribute path segment")),
+            NodeKind::Interp => {
+                let NodeData::Node(child) = node.data else {
+                    return Ok(None);
+                };
+                let child = self.node(child)?;
+                if child.kind == NodeKind::Str {
+                    let NodeData::Symbol(symbol) = child.data else {
+                        return Err(self.invalid_shape(child, "static attr symbol"));
+                    };
+                    Ok(Some(symbol))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
         }
     }
 
@@ -3203,6 +3228,21 @@ mod tests {
     }
 
     #[test]
+    fn literal_interpolated_let_binding_names_lower_as_static_keys() {
+        let ir = lowered(r#"let ${"x"} = 1; in x"#);
+        let root = root_node(&ir);
+        let IrData::Let { bindings, body, .. } = root.data else {
+            panic!("let payload expected");
+        };
+        let binding = ir.bindings[bindings.start as usize];
+        let IrAttrPathSegment::Static(symbol) = binding.key else {
+            panic!("literal interpolated let key should be static");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"x");
+        assert_eq!(node(&ir, body).kind, IrKind::LocalVar);
+    }
+
+    #[test]
     fn unsupported_literal_values_stay_lazy() {
         let ir = lowered("let p = ./foo; s = <nixpkgs>; in 1");
         let root = node(&ir, ir.root);
@@ -3258,6 +3298,13 @@ mod tests {
             ir.attr_paths[path.index()].as_ref(),
             [IrAttrPathSegment::Dynamic(_)]
         ));
+
+        let ir = lowered(r#"{ ${"x" + ""} = 1; }"#);
+        let root = root_node(&ir);
+        let IrData::AttrSet { has_dynamic, .. } = root.data else {
+            panic!("attrset payload expected");
+        };
+        assert!(has_dynamic);
     }
 
     #[test]

@@ -770,7 +770,7 @@ impl ResolverState {
     fn ensure_static_let_path(&self, path: ChildSlice) -> Result<(), ScopeError> {
         for segment in self.child_ids(path)? {
             let node = self.node(segment)?;
-            if node.kind == NodeKind::Interp {
+            if node.kind == NodeKind::Interp && self.static_attr_symbol(segment)?.is_none() {
                 return Err(ScopeError::new(
                     ScopeErrorKind::DynamicLetBinding,
                     node.span,
@@ -959,6 +959,17 @@ impl ResolverState {
         let node = self.node(id)?;
         match node.kind {
             NodeKind::Ident | NodeKind::Str => Ok(Some(self.symbol_payload(node)?)),
+            NodeKind::Interp => {
+                let NodeData::Node(child) = node.data else {
+                    return Ok(None);
+                };
+                let child = self.node(child)?;
+                if child.kind == NodeKind::Str {
+                    Ok(Some(self.symbol_payload(child)?))
+                } else {
+                    Ok(None)
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -1692,6 +1703,34 @@ mod tests {
         let error = resolve(parse_str("let ${name} = 1; in 1").expect("source parses"))
             .expect_err("computed let target errors");
         assert_eq!(error.kind(), &ScopeErrorKind::DynamicLetBinding);
+
+        let error = resolve(parse_str(r#"let ${"x" + "y"} = 1; in 1"#).expect("source parses"))
+            .expect_err("computed let target errors");
+        assert_eq!(error.kind(), &ScopeErrorKind::DynamicLetBinding);
+
+        let error = resolve(parse_str(r#"let ${"a${"b"}"} = 1; in 1"#).expect("source parses"))
+            .expect_err("computed let target errors");
+        assert_eq!(error.kind(), &ScopeErrorKind::DynamicLetBinding);
+    }
+
+    #[test]
+    fn literal_interpolated_let_binding_names_are_static() {
+        let ast = resolved(r#"let ${"x"} = 1; in x"#);
+        let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        assert_eq!(node(&ast, body).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, body), 0);
+
+        let ast = resolved(r#"let ${"a"}.b = 1; in a.b"#);
+        let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let NodeData::Select { receiver, .. } = node(&ast, body).data else {
+            panic!("select payload expected");
+        };
+        assert_eq!(node(&ast, receiver).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, receiver), 0);
     }
 
     #[test]

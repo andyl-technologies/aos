@@ -147,21 +147,25 @@ exactly.
 
 ### 2.3 Interpolation / antiquotation (`${...}`)
 
-- [ ] **In double-quoted strings** — `"a${e}b"` evaluates `e`, coerces to string
+- [x] **In double-quoted strings** — `"a${e}b"` evaluates `e`, coerces to string
       (§2.4), and concatenates. Contexts union (§3).
-- [ ] **In indented strings** — as above.
-- [ ] **In paths** — `./a/${e}` is allowed; **at least one `/` must appear before
-      any interpolated expression** for the result to be a path, otherwise it is
-      parsed as division (`a.${foo}/b` is division; `./a.${foo}/b` is a path).
-      Verify against pinned Nix (string-interpolation page).
-- [ ] **In attribute names** — `{ ${e} = v; }` and `s.${e}` (dynamic/computed
+- [x] **In indented strings** — as above.
+- [x] **In paths** — `./a/${e}` is allowed; **at least one `/` must appear before
+      any interpolated expression** for the result to be a path. `./a.${foo}/b`
+      is a path; `a.${foo}/b` parses as applying `a.${foo}` to the path `/b`;
+      `a.${foo} / b` is division. Verify against pinned Nix
+      (string-interpolation page).
+- [x] **In attribute names** — `{ ${e} = v; }` and `s.${e}` (dynamic/computed
       attr names, §5.4). The interpolated value must coerce to a string.
-- [ ] **NOT in `let` binding *names*** — a `let` binding's left-hand side must be
-      a static identifier (or `inherit`); `let ${e} = ...; in ...` is **not**
-      legal (dynamic names are an attrset-literal feature, not a `let` feature).
-      Verify: `let`-binding names are static; reject computed `let` names
-      (**must-error / parse behavior — verify against pinned Nix**).
-- [ ] **Nested interpolation** — `${"${e}"}` and interpolation inside interpolated
+- [x] **Only static names in first-position `let` binding names** — a `let`
+      binding's first left-hand-side segment must be statically known:
+      `let ${"x"} = ...; in ...` is legal and binds `x`, but computed first
+      segments such as `let ${e} = ...; in ...` and `let ${"x" + "y"} = ...; in ...`
+      are **not** legal. Dynamic attr segments are legal only below a static
+      prefix (for example, `let a.${e} = ...; in ...` builds a nested attrset).
+      Verify: `let`-binding names are static; reject computed first-segment
+      `let` names (**must-error / parse behavior — verify against pinned Nix**).
+- [x] **Nested interpolation** — `${"${e}"}` and interpolation inside interpolated
       expressions evaluate recursively.
 
 ### 2.4 String coercion (what `${}` and `toString`-style coercion accept)
