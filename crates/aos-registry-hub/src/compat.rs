@@ -26,81 +26,14 @@ use crate::db::RegistryRecord;
 use crate::fetch::{safe_join, LocalFsFetch, SurfaceFetch};
 use crate::ui::render::escape;
 
-/// Cache-control for content-addressed (immutable) payloads.
-pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
-/// Cache-control for mutable pointers.
-pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
-
-/// The machine-surface directory prefixes (also valid as bare paths, for
-/// the autoindex fallback).
-const MACHINE_DIRS: [&str; 7] = [
-    "info", "objects", "channels", "releases", "nar", "web", "browse",
-];
-
-/// Whether a relative path belongs to the machine surface.
-///
-/// Directory forms of the machine prefixes (`objects`, `channels/stable/`,
-/// …) are machine paths too, so `file://` sources can answer them with an
-/// autoindex. Anything else under a registry URL is either the human
-/// `/-/` namespace (routed before the facade) or not found.
-pub fn is_machine_path(path: &str) -> bool {
-    path == "HEAD"
-        || path == "nix-cache-info"
-        || path == "index.html"
-        || path.ends_with(".narinfo")
-        || MACHINE_DIRS
-            .iter()
-            .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
-}
-
-/// Classify a machine path into its cache-control header.
-///
-/// Follows `classify_git_path` in `static_upload.rs` for the git surface
-/// — under `objects/` only `objects/info/**` is mutable; `releases/**`
-/// and `nar/**` are content-addressed — and extends it to the web
-/// surface: hash-named files under `web/` are immutable, while the
-/// mutable pointers (`web/config.json`, `web/index.json`, the
-/// `web/packages/` snapshots, `browse/` pages, `index.html`) plus refs,
-/// channel partitions, narinfos, and server-info files revalidate.
-pub fn cache_control(path: &str) -> &'static str {
-    let immutable = if let Some(rest) = path.strip_prefix("objects/") {
-        !rest.starts_with("info/")
-    } else if let Some(rest) = path.strip_prefix("web/") {
-        rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
-    } else {
-        path.starts_with("releases/") || path.starts_with("nar/")
-    };
-    if immutable {
-        IMMUTABLE_CACHE_CONTROL
-    } else {
-        MUTABLE_CACHE_CONTROL
-    }
-}
-
-/// The Content-Type for a machine path.
-pub fn content_type(path: &str) -> &'static str {
-    if path.ends_with(".narinfo") {
-        "text/x-nix-narinfo"
-    } else if path.ends_with(".nar.zst") || path.ends_with(".zst") {
-        "application/zstd"
-    } else if path.ends_with(".nar.xz") || path.ends_with(".xz") {
-        "application/x-xz"
-    } else if path.ends_with(".json") {
-        "application/json"
-    } else if path.ends_with(".html") {
-        "text/html; charset=utf-8"
-    } else if path.ends_with(".css") {
-        "text/css"
-    } else if path.ends_with(".js") {
-        "text/javascript"
-    } else if path.ends_with(".wasm") {
-        "application/wasm"
-    } else if path == "HEAD" || path == "nix-cache-info" || path.starts_with("info/") {
-        "text/plain; charset=utf-8"
-    } else {
-        "application/octet-stream"
-    }
-}
+// The machine-path classification + cache classes are the single, shared,
+// runtime-neutral source of truth in [`aos_registry_core::keymap`] (RFC-0004
+// Phase 5) — the same functions the Cloudflare Worker's facade uses — so the two
+// facades cannot drift. Re-exported here to keep the hub's `compat::…` paths
+// (used by `facade.rs`, `server.rs`, and the autoindex/serve paths below) stable.
+pub use aos_registry_core::keymap::{
+    cache_control, content_type, is_machine_path, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+};
 
 /// The locked-down `Content-Security-Policy` for a producer-controlled web
 /// document (HTML or JS), or `None` for every other machine path.
