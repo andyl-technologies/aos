@@ -326,7 +326,7 @@ emit them in this sorted order, not insertion order.
       from the intersection, the *values* from the second argument.)
 - [x] `catAttrs` (attr list) — for a list of attrsets, collect `set.${attr}`
       from each set **that has it**, in list order, skipping those that lack it.
-- [ ] `mapAttrs` (f set) — apply `f name value` to each attribute, producing a
+- [x] `mapAttrs` (f set) — apply `f name value` to each attribute, producing a
       new attrset with the same names. `f` is called lazily per value; forcing
       order follows demand on the result. Name set unchanged (so order unchanged).
 - [ ] `zipAttrsWith` (f list) — given a list of attrsets, for each name that

@@ -615,7 +615,8 @@ impl BuiltinInfo for MapBuiltin {
 pub(crate) struct MapAttrsBuiltin;
 impl BuiltinInfo for MapAttrsBuiltin {
     const NAME: &'static [u8] = b"mapAttrs";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution =
+        BuiltinExecution::DirectBinary(DirectBinaryPrimOp::MapAttrs);
 }
 
 pub(crate) struct MatchBuiltin;
@@ -1191,6 +1192,7 @@ pub(crate) enum DirectBinaryPrimOp {
     CatAttrs,
     Elem,
     ConcatStringsSep,
+    MapAttrs,
 }
 
 /// Short user-facing documentation for a builtin.

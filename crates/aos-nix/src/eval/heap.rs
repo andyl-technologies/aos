@@ -51,6 +51,25 @@ pub(crate) enum EvalThunkKind {
         /// The lazy argument value.
         argument: Value,
     },
+    /// Applies a forced function value to two lazy argument values.
+    Apply2 {
+        /// The IR node that produced the function.
+        function_id: IrId,
+        /// The source span associated with the function.
+        function_span: Span,
+        /// The function value, forced only when this thunk is forced.
+        function: Value,
+        /// The IR node associated with the first argument.
+        first_argument_id: IrId,
+        /// The source span associated with the first argument.
+        first_argument_span: Span,
+        /// The first lazy argument value.
+        first_argument: Value,
+        /// The IR node associated with the second argument.
+        second_argument_id: IrId,
+        /// The second lazy argument value.
+        second_argument: Value,
+    },
 }
 
 /// A suspended tree-walk thunk heap record.
@@ -105,6 +124,33 @@ impl EvalThunk {
         }
     }
 
+    /// Creates a suspended two-argument function-application thunk record.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn apply2(
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        first_argument_id: IrId,
+        first_argument_span: Span,
+        first_argument: Value,
+        second_argument_id: IrId,
+        second_argument: Value,
+    ) -> Self {
+        Self {
+            kind: EvalThunkKind::Apply2 {
+                function_id,
+                function_span,
+                function,
+                first_argument_id,
+                first_argument_span,
+                first_argument,
+                second_argument_id,
+                second_argument,
+            },
+            cell: ThunkCell::new(),
+        }
+    }
+
     /// Returns the deferred work this thunk performs when forced.
     pub(crate) const fn kind(&self) -> &EvalThunkKind {
         &self.kind
@@ -114,7 +160,7 @@ impl EvalThunk {
     pub const fn body(&self) -> Option<IrId> {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(*body),
-            EvalThunkKind::Apply { .. } => None,
+            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
         }
     }
 
@@ -122,7 +168,7 @@ impl EvalThunk {
     pub const fn env(&self) -> Option<&EvalEnv> {
         match &self.kind {
             EvalThunkKind::Node { env, .. } => Some(env),
-            EvalThunkKind::Apply { .. } => None,
+            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
         }
     }
 
@@ -130,7 +176,7 @@ impl EvalThunk {
     pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
         match &self.kind {
             EvalThunkKind::Node { with_env, .. } => Some(with_env),
-            EvalThunkKind::Apply { .. } => None,
+            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
         }
     }
 

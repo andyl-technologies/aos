@@ -1981,6 +1981,10 @@ mod tests {
                 "builtins.concatStringsSep \",\" [ \"a\" \"b\" ]",
                 b"concatStringsSep".as_slice(),
             ),
+            (
+                "builtins.mapAttrs (name: value: value) { a = 1; }",
+                b"mapAttrs".as_slice(),
+            ),
             ("builtins.add 1 2", b"add".as_slice()),
             ("builtins.sub 2 1", b"sub".as_slice()),
             ("builtins.mul 2 3", b"mul".as_slice()),

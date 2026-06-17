@@ -1014,6 +1014,27 @@ impl<'ir> TreeWalk<'ir> {
         Ok(cloned)
     }
 
+    fn clone_attr_entries_source_order(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend(attrs.iter_source_order().copied());
+        Ok(cloned)
+    }
+
     fn clone_list_elements(
         id: IrId,
         span: Span,
@@ -1579,6 +1600,34 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_apply2_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        first_argument_id: IrId,
+        first_argument_span: Span,
+        first_argument: Value,
+        second_argument_id: IrId,
+        second_argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_thunk(EvalThunk::apply2(
+                function_id,
+                function_span,
+                function,
+                first_argument_id,
+                first_argument_span,
+                first_argument,
+                second_argument_id,
+                second_argument,
+            ))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
         if !value.is_thunk() {
             return Ok(value);
@@ -1628,6 +1677,27 @@ impl<'ir> TreeWalk<'ir> {
                         *function_span,
                         *argument_id,
                         *argument,
+                    ),
+                    EvalThunkKind::Apply2 {
+                        function_id,
+                        function_span,
+                        function,
+                        first_argument_id,
+                        first_argument_span,
+                        first_argument,
+                        second_argument_id,
+                        second_argument,
+                    } => self.apply_lambda_value_2(
+                        id,
+                        span,
+                        *function_id,
+                        *function,
+                        *function_span,
+                        *first_argument_id,
+                        *first_argument_span,
+                        *first_argument,
+                        *second_argument_id,
+                        *second_argument,
                     ),
                 };
                 let value = result?;
@@ -5738,6 +5808,147 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_map_attrs_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        attrs_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_span = self.node(attrs_id)?.span;
+        let attrs_value = self.eval_node(attrs_id)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: attrs_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                attrs_span,
+            ));
+        }
+
+        let entries = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            Self::clone_attr_entries_source_order(attrs_id, attrs_span, attrs)?
+        };
+        if entries.is_empty() {
+            return self
+                .heap
+                .alloc_attrs(0, FlatAttrs::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        let function_span = self.node(function_id)?.span;
+        let function = self.alloc_thunk_for_node(function_id, function_id, function_span)?;
+        self.alloc_mapped_attrs(
+            id,
+            span,
+            function_id,
+            function_span,
+            function,
+            attrs_id,
+            entries,
+        )
+    }
+
+    fn eval_map_attrs_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: EvalPrimOpArg,
+        attrs: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
+        let entries = {
+            let attrs_set = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs.id(),
+                        source,
+                    },
+                    attrs.span(),
+                )
+            })?;
+            Self::clone_attr_entries_source_order(attrs.id(), attrs.span(), attrs_set)?
+        };
+        if entries.is_empty() {
+            return self
+                .heap
+                .alloc_attrs(0, FlatAttrs::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        self.alloc_mapped_attrs(
+            id,
+            span,
+            function.id(),
+            function.span(),
+            function.value(),
+            attrs.id(),
+            entries,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_mapped_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        attrs_id: IrId,
+        entries: Vec<AttrEntry>,
+    ) -> Result<Value, TreeWalkError> {
+        let mut mapped = Vec::new();
+        mapped.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: entries.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for entry in entries {
+            let name = self.alloc_symbol_string(id, span, entry.key)?;
+            let value = self.alloc_apply2_thunk(
+                id,
+                span,
+                function_id,
+                function_span,
+                function,
+                id,
+                span,
+                name,
+                attrs_id,
+                entry.value,
+            )?;
+            mapped.push(AttrEntry::new(entry.key, value));
+        }
+
+        let attrs = FlatAttrs::new(mapped, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn eval_cat_attrs_primop(
         &mut self,
         id: IrId,
@@ -7906,6 +8117,47 @@ impl<'ir> TreeWalk<'ir> {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn apply_lambda_value_2(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function: Value,
+        function_span: Span,
+        first_argument_id: IrId,
+        first_argument_span: Span,
+        first_argument: Value,
+        second_argument_id: IrId,
+        second_argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let mut function = function;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            function = self.force_demanded_value(function_id, function_span, function)?;
+        }
+        let mut partial = self.apply_lambda_value(
+            id,
+            span,
+            function_id,
+            function,
+            function_span,
+            first_argument_id,
+            first_argument,
+        )?;
+        if !matches!(partial.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            partial = self.force_demanded_value(function_id, function_span, partial)?;
+        }
+        self.apply_lambda_value(
+            id,
+            span,
+            function_id,
+            partial,
+            first_argument_span,
+            second_argument_id,
+            second_argument,
+        )
+    }
+
     fn apply_primop_value(
         &mut self,
         id: IrId,
@@ -8090,6 +8342,9 @@ impl<'ir> TreeWalk<'ir> {
             DirectBinaryPrimOp::ConcatStringsSep => {
                 self.eval_concat_strings_sep_primop(call.id, call.span, first, second)
             }
+            DirectBinaryPrimOp::MapAttrs => {
+                self.eval_map_attrs_primop(call.id, call.span, first, second)
+            }
         }
     }
 
@@ -8122,6 +8377,9 @@ impl<'ir> TreeWalk<'ir> {
             DirectBinaryPrimOp::Elem => self.eval_elem_primop_value(call.id, first, second),
             DirectBinaryPrimOp::ConcatStringsSep => {
                 self.eval_concat_strings_sep_primop_value(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::MapAttrs => {
+                self.eval_map_attrs_primop_value(call.id, call.span, first, second)
             }
         }
     }
@@ -13022,6 +13280,10 @@ mod tests {
             r#"builtins.functionArgs ({ b ? 1, a, ... }@args: a)"#,
             r#"let f = builtins.functionArgs; in f ({ a, b ? 1 }: a)"#,
             r#"builtins.functionArgs builtins.length"#,
+            r#"builtins.mapAttrs (name: value: name) { b = 2; a = 1; }"#,
+            r#"builtins.mapAttrs (name: value: value + 1) { b = 2; a = 1; }"#,
+            r#"builtins.attrNames (builtins.mapAttrs (1 / 0) { b = 2; a = 1; })"#,
+            r#"let mapAttrs = builtins.mapAttrs; mapped = mapAttrs (name: value: value) { a = 1; }; in mapped"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
@@ -13782,6 +14044,91 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn map_attrs_primop_preserves_names_and_maps_values_lazily() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.mapAttrs (1 / 0) { z = 1; a = 2; })"
+            ),
+            vec![b"a".to_vec(), b"z".to_vec()]
+        );
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames (builtins.mapAttrs (1 / 0) {})"),
+            Vec::<Vec<u8>>::new()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "(builtins.mapAttrs (name: value: name + \":\" + builtins.toString value) { b = 2; a = 1; }).a"
+            ),
+            b"a:1"
+        );
+        assert_eq!(
+            eval("let mapped = builtins.mapAttrs (name: value: value + 1) { b = 1 / 0; a = 1; }; in mapped.a")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "let mapAttrs = builtins.mapAttrs; mapped = mapAttrs (name: value: name) { a = 1; }; in mapped.a"
+            ),
+            b"a"
+        );
+        assert_eq!(
+            eval(
+                "let builtins = { mapAttrs = f: set: { local = true; }; }; in (builtins.mapAttrs (name: value: value) { a = 1; }).local"
+            )
+            .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn map_attrs_primop_checks_set_before_function_and_defers_function_errors() {
+        let ir = lower("builtins.mapAttrs (1 / 0) 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let attrs_id = args[1];
+        let attrs_span = ir.arena.node(attrs_id).expect("attrs arg exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("mapAttrs checks the set first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: attrs_id,
+                expected: "attrs",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), attrs_span);
+
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames (builtins.mapAttrs 1 { a = 1; })"),
+            vec![b"a".to_vec()]
+        );
+
+        let ir = lower("(builtins.mapAttrs 1 { a = 1; }).a");
+        let error = eval_whnf_owned(&ir).expect_err("mapAttrs rejects non-functions on demand");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("(builtins.mapAttrs (1 / 0) { a = 1; }).a");
+        let error = eval_whnf_owned(&ir).expect_err("mapAttrs forces the function on demand");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
