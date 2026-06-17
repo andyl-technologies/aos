@@ -552,9 +552,12 @@ Full spec: [`enforcement.md`](enforcement.md).
       `LANDLOCK_CREATE_RULESET_VERSION`, and `apm` validates the exact trusted
       wrapper path and arguments before attaching a unit artifact. Current
       coverage also maps declared `host-paths` to `LANDLOCK_ACCESS_FS_*` rules
-      for `sandboxed-with-holes` packages. Remaining coverage:
-      empty-manifest deny-all-but-own-root filesystem behavior. Holds even when
-      a namespace is shared — the layer for `sandboxed-with-holes` packages.
+      for `sandboxed-with-holes` packages and applies default filesystem
+      confinement (`/` read-only plus writable package temp/state roots) for
+      non-root-equivalent empty manifests. Holds even when a namespace is
+      shared — the layer for `sandboxed-with-holes` packages. Remaining
+      coverage: host-owned socket listener validation against the
+      socket-capability / `tcp-bind` contract.
 - [ ] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
       for MVP unless an SELinux base policy ships); loaded by `apm` at install.

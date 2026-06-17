@@ -393,7 +393,7 @@ source_nar_hash = ""
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "requires-v1"]
+requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-consumer.target"
@@ -421,7 +421,7 @@ source_nar_hash = ""
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "capability-routes-v1"]
+requires-features = ["expose-v1", "network-policy-v1", "capability-routes-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-consumer-uses.target"
@@ -455,7 +455,7 @@ source_nar_hash = ""
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "requires-v1"]
+requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-cycle-a.target"
@@ -483,7 +483,7 @@ source_nar_hash = ""
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "requires-v1"]
+requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-cycle-b.target"

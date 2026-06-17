@@ -46,10 +46,16 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   `LANDLOCK_ACCESS_NET_CONNECT_TCP`, and the same port lists are copied into the
   eBPF policy contract. The host policy admits those grants explicitly via
   `[allow].tcp-bind` and `[allow].tcp-connect`; `host-paths` map to
-  `LANDLOCK_ACCESS_FS_*` path rules. `apm` validates any artifact-carried
-  `network-policy.json` against the admitted package metadata before attaching
-  exposed units, so the JSON is not a second policy source. An **empty manifest
-  yields no TCP grants**.
+  `LANDLOCK_ACCESS_FS_*` path rules. Non-root-equivalent services also get the
+  default filesystem rules `--fs-ro / --fs-rw /tmp --fs-rw /var/tmp` plus
+  writable `StateDirectory=` paths, evaluated after `RootDirectory=` and its
+  package-private temp/state directories are in place.
+  `apm` validates any artifact-carried `network-policy.json` against the
+  admitted package metadata before attaching exposed units, so the JSON is not a
+  second policy source. An **empty manifest yields no service-process TCP
+  grants** and the default filesystem confinement. Host-owned socket activation
+  units remain outside the wrapper and must be validated separately against the
+  socket capability / `tcp-bind` contract.
 - **Apply point.** Landlock self-restriction runs in each service command's own
   process before `execve`. For TCP policy, the renderer prefixes every
   package-authored workload service exec directive (`ExecStart=`,

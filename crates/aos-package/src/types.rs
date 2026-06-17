@@ -1078,6 +1078,7 @@ pub fn validate_supported_package_meta_with(
 
     if meta.expose.is_some() {
         require_feature(meta, FEATURE_EXPOSE_V1)?;
+        require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
     }
     if meta.expose_artifact.is_some() {
         require_feature(meta, FEATURE_EXPOSE_ARTIFACT_V1)?;
@@ -3527,6 +3528,49 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
+    fn package_meta_requires_network_policy_feature_gate_for_expose() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_EXPOSE_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
     fn package_meta_rejects_invalid_network_policy_ports() {
         let mut meta = PackageMeta {
             name: "webapp".into(),
@@ -3634,7 +3678,11 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_CONFIG_V1.into()],
+            requires_features: vec![
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
                 units: vec!["webapp.service".into()],
@@ -3689,6 +3737,7 @@ last_update = "2026-02-13T10:30:00Z"
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
                 FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
                 FEATURE_CONFIG_V1.into(),
                 FEATURE_RELOAD_V1.into(),
             ],
@@ -3854,7 +3903,7 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into()],
+            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-consumer.target".into(),
                 units: vec!["consumer.service".into()],
@@ -3904,6 +3953,7 @@ last_update = "2026-02-13T10:30:00Z"
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
                 FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
                 FEATURE_CAPABILITY_ROUTES_V1.into(),
             ],
             expose: Some(ExposeMeta {
