@@ -93,7 +93,7 @@ reframes how the phases below are read:
 | **P2** | Target sandbox + gated side-effect services + nftables reload coherence + eval assertion | P1 | D15; activation.md | ☑ |
 | **P3** | Per-unit sandboxing materialization + confinement label + **the Decision 17 validation spike** (the gate) | P1, P2 | D2, D4, D10, D17; D1(b) | ☑ |
 | **P4** | Preset enablement (image `disable *`; Ignition per-host preset; every-boot `aos-preset.service`) | P2 | D8 (enable half) | ☑ |
-| **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ◐ |
+| **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☑ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☐ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☐ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
@@ -374,7 +374,7 @@ apm at first boot; define upgrade/rollback.
       the desired set: install additions **and uninstall packages removed from
       `desired.toml`** (disable target, remove attach units + preset lines, gc the
       generation). Replaces additive-only — the Nix/Talos/K8s declarative idiom.
-- [ ] **Layered config (D9, signed off).** Structured/env apm config artifacts
+- [x] **Layered config (D9, signed off).** Structured/env apm config artifacts
       are declared in signed `expose.config` metadata, validated against the
       manifest-declared required/optional field set, materialized under
       `/var/etc` + `/etc`, and bound into sandboxed units before start for
@@ -387,8 +387,9 @@ apm at first boot; define upgrade/rollback.
       `credstore.encrypted/aos/<package>/<name>` expose-artifact blobs, keep
       build-only inputs out of `manifest.json`, and project those blobs under
       `/run/credstore.encrypted/aos/...` before package targets start. Inline
-      encrypted payload production remains open. External system-credential
-      ingress now works through desired values of
+      encrypted payload production is owned by `apm credential encrypt`, which
+      emits either the inline ciphertext or a Nix metadata snippet. External
+      system-credential ingress now works through desired values of
       `{ system-credential = "<name>" }`, read from
       `/run/credentials/@system/<name>` ([`config.md`](config.md)).
 - [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
@@ -420,10 +421,10 @@ boot publishes the PCR public key at `/etc/aos/pcr-sign.pem` for that path.
 Offline/package-time vendor blobs now build through `encryptedFile` metadata
 for already sealed ciphertext and are projected by `apm` under the AOS-owned
 runtime credstore namespace at `/run/credstore.encrypted/aos/...`. Inline
-ciphertext production helpers remain open and keep the phase at ◐ rather than
-☑.
+ciphertext production is handled by `apm credential encrypt`, so the P5
+implementation surface is complete.
 
-**Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
+**Closes.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
 **EXIT CRITERIA.** End-to-end on a booted host: a package's manifest is verified
 against policy, units land under `/var/etc`, the preset is applied, the target

@@ -1446,7 +1446,7 @@ fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
     )
 }
 
-fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
+pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
     if !ciphertext.is_empty()
         && ciphertext
             .chars()
@@ -1528,7 +1528,7 @@ fn validate_target_name(target: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_unit_name(unit: &str) -> Result<()> {
+pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
     let has_known_suffix = [
         ".automount",
         ".mount",
