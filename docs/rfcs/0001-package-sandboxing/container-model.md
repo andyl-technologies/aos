@@ -332,7 +332,10 @@ per-identity attachment — the SOTA, vs. mutating a host-global set) and
 **Landlock TCP bind/connect rules** (ABI 4+) to restrict egress from *inside*
 the sandbox. These are identity-aware (keyed to the package's UID identity, see
 above) and stack on top of the L3/L4 base table as defense in depth — see
-[enforcement.md](enforcement.md) (layer 4).
+[enforcement.md](enforcement.md) (layer 4). The signed manifest exposes those
+grants as explicit `tcp-bind` and `tcp-connect` port lists, and the renderer
+copies them into `network-policy.json`; they are not inferred from host firewall
+ports.
 
 Three modes, selected by the manifest's `network` permission:
 
@@ -353,9 +356,9 @@ Three modes, selected by the manifest's `network` permission:
   gated firewall service must add the matching forward accept, or install the
   DNAT in the base table itself instead of using `--port=`. This
   `network = "private"`-with-outbound path additionally gains **Landlock TCP
-  bind/connect rules** (ABI 4+) scoped to the allowed ports, restricting egress
-  from inside the sandbox even where the host base table would permit it — see
-  [enforcement.md](enforcement.md).
+  bind/connect rules** (ABI 4+) scoped to `tcp-bind` / `tcp-connect`, restricting
+  egress from inside the sandbox even where the host base table would permit it
+  — see [enforcement.md](enforcement.md).
 - **`--network-zone=<zone>` (multi-container L2).** nspawn maintains a virtual
   zone hub so several containers share an isolated L2 without an external
   bridge. Available, less-documented; veth+managed-network is the more

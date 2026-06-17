@@ -78,13 +78,13 @@ use crate::security::{
 use crate::sshkey;
 use crate::types::{
     CacheEntry, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
-    FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
-    RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
-    package_name_bucket, validate_branch_name, validate_channel_name,
-    validate_expose_artifact_meta, validate_expose_meta, validate_git_ref_name,
-    validate_package_name, validate_permissions_meta, validate_platform_name,
-    validate_registry_name,
+    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_NETWORK_POLICY_V1,
+    FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT,
+    PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
+    SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket, validate_branch_name,
+    validate_channel_name, validate_expose_artifact_meta, validate_expose_meta,
+    validate_git_ref_name, validate_package_name, validate_permissions_meta,
+    validate_platform_name, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -2726,6 +2726,9 @@ fn package_platform_table(
             required_features.push(toml::Value::String(
                 FEATURE_CAPABILITY_ROUTES_V1.to_string(),
             ));
+        }
+        if manifest.permissions.has_network_policy() {
+            required_features.push(toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()));
         }
         table.insert(
             "requires-features".into(),
@@ -9729,6 +9732,8 @@ mod tests {
         };
         let mut permissions = PermissionsMeta {
             network: Some(crate::types::NetworkPermission::PrivateOutbound),
+            tcp_bind: vec![8080],
+            tcp_connect: vec![443],
             capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
             ..PermissionsMeta::default()
         };
@@ -9817,6 +9822,7 @@ mod tests {
                 FEATURE_CONFIG_V1,
                 FEATURE_RELOAD_V1,
                 FEATURE_CAPABILITY_ROUTES_V1,
+                FEATURE_NETWORK_POLICY_V1,
             ]
         );
         assert_eq!(
@@ -9850,11 +9856,37 @@ mod tests {
         assert_eq!(
             platform
                 .get("permissions")
+                .and_then(|permissions| permissions.get("tcp-bind"))
+                .and_then(toml::Value::as_array)
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter_map(toml::Value::as_integer)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![8080])
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
+                .and_then(|permissions| permissions.get("tcp-connect"))
+                .and_then(toml::Value::as_array)
+                .map(|ports| {
+                    ports
+                        .iter()
+                        .filter_map(toml::Value::as_integer)
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec![443])
+        );
+        assert_eq!(
+            platform
+                .get("permissions")
                 .and_then(|permissions| permissions.get("confinement"))
                 .and_then(|confinement| confinement.get("label"))
                 .and_then(toml::Value::as_str),
             Some(
-                "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE)",
+                "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE)",
             )
         );
 
@@ -9876,6 +9908,8 @@ mod tests {
             parsed.permissions.network,
             Some(crate::types::NetworkPermission::PrivateOutbound)
         );
+        assert_eq!(parsed.permissions.tcp_bind, vec![8080]);
+        assert_eq!(parsed.permissions.tcp_connect, vec![443]);
     }
 
     #[test]

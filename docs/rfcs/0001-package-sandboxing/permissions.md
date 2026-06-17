@@ -62,6 +62,7 @@ pinned against the per-unit substrate:
 |---|---|---|---|
 | `capabilities` | `CapabilityBoundingSet=` and `AmbientCapabilities=` | none added | dangerous permissions |
 | `network` | `PrivateNetwork=` for `private`; `NetworkNamespacePath=` for `private-outbound`; neither for `host` | `private` | INTERNET / local network |
+| `tcp-bind` / `tcp-connect` | Signed TCP port grants consumed by generated Landlock/eBPF policy | none | scoped network access |
 | `devices` | `DevicePolicy=closed` plus `DeviceAllow=` entries | none | camera / USB / sensors |
 | `host-paths` | `BindReadOnlyPaths=` for `mode = "read-only"`; `BindPaths=` for `mode = "rw"` | none | scoped storage |
 | `cgroup-delegate` | `Delegate=` | off | — (no analog) |

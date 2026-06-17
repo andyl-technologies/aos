@@ -40,11 +40,16 @@ the XZ backdoor disabled — evidence it is worth enforcing.
 
 **Mechanism (implementer detail).**
 
-- The `expose` renderer emits, alongside the unit, a **Landlock ruleset** derived
-  from the manifest: `host-paths` → `LANDLOCK_ACCESS_FS_*` rules on those paths
-  (read/write/execute per the grant's mode); `network = "private"`-with-outbound
-  → `LANDLOCK_ACCESS_NET_CONNECT_TCP` on the allowed ports; inbound → `BIND_TCP`.
-  An **empty manifest yields a deny-all-but-own-root ruleset**.
+- The `expose` renderer emits `network-policy.json` alongside the unit artifact
+  from the signed manifest: `tcp-bind` maps to
+  `LANDLOCK_ACCESS_NET_BIND_TCP`, `tcp-connect` maps to
+  `LANDLOCK_ACCESS_NET_CONNECT_TCP`, and the same port lists are copied into the
+  eBPF policy contract. The host policy admits those grants explicitly via
+  `[allow].tcp-bind` and `[allow].tcp-connect`. Filesystem Landlock rules from
+  `host-paths` remain a follow-up. `apm` validates any artifact-carried
+  `network-policy.json` against the admitted package metadata before attaching
+  exposed units, so the JSON is not a second policy source. An **empty manifest
+  yields no TCP grants**.
 - **Apply point.** Landlock self-restriction must run in the service's own
   process before `execve`. Use a tiny `aos-landlock` exec wrapper (set as the
   unit's `ExecStart` prefix, or via a generated drop-in) that loads the ruleset

@@ -587,7 +587,7 @@ source_nar_hash = ""
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
+requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-webapp.target"
@@ -602,14 +602,16 @@ nar_size = 2048
 
 [versions.platforms.x86_64-linux.permissions]
 network = "private-outbound"
+tcp-bind = [8080]
+tcp-connect = [443]
 capabilities = ["CAP_NET_BIND_SERVICE"]
 host-paths = [{ path = "/srv/webapp", mode = "read-only" }]
 syscalls = "system-service"
 
 [versions.platforms.x86_64-linux.permissions.confinement]
 class = "sandboxed-with-holes"
-label = "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
-holes = ["network:private-outbound", "capability:CAP_NET_BIND_SERVICE", "host-path:read-only:/srv/webapp", "syscalls:system-service"]
+label = "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+holes = ["network:private-outbound", "tcp-bind:8080", "tcp-connect:443", "capability:CAP_NET_BIND_SERVICE", "host-path:read-only:/srv/webapp", "syscalls:system-service"]
 "#;
 
 #[cfg(test)]
@@ -737,7 +739,12 @@ mod tests {
         assert_eq!(meta.min_format, Some(1));
         assert_eq!(
             meta.requires_features,
-            vec!["expose-v1", "permissions-v1", "requires-v1"]
+            vec![
+                "expose-v1",
+                "network-policy-v1",
+                "permissions-v1",
+                "requires-v1",
+            ]
         );
         let expose = meta.expose.as_ref().unwrap();
         assert_eq!(expose.target, "aos-pkg-webapp.target");
@@ -749,6 +756,8 @@ mod tests {
             meta.permissions.network,
             Some(NetworkPermission::PrivateOutbound)
         );
+        assert_eq!(meta.permissions.tcp_bind, vec![8080]);
+        assert_eq!(meta.permissions.tcp_connect, vec![443]);
         assert_eq!(meta.permissions.capabilities, vec!["CAP_NET_BIND_SERVICE"]);
         assert_eq!(meta.permissions.host_paths.len(), 1);
         assert_eq!(meta.permissions.host_paths[0].mode, HostPathMode::ReadOnly);
@@ -760,12 +769,14 @@ mod tests {
         assert_eq!(confinement.class, ConfinementClass::SandboxedWithHoles);
         assert_eq!(
             confinement.label,
-            "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+            "sandboxed-with-holes (network:private-outbound, tcp-bind:8080, tcp-connect:443, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
         );
         assert_eq!(
             confinement.holes,
             vec![
                 "network:private-outbound".to_string(),
+                "tcp-bind:8080".to_string(),
+                "tcp-connect:443".to_string(),
                 "capability:CAP_NET_BIND_SERVICE".to_string(),
                 "host-path:read-only:/srv/webapp".to_string(),
                 "syscalls:system-service".to_string(),
@@ -803,11 +814,11 @@ mod tests {
             r#"[versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
+requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 "#,
             r#"references = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
+requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 "#,
         );
 
@@ -837,8 +848,8 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
     #[test]
     fn parse_expose_requires_feature_gate() {
         let content = EXPOSED_TOML.replace(
-            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\"]",
-            "requires-features = [\"permissions-v1\", \"requires-v1\"]",
+            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
         );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
@@ -848,8 +859,8 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
     #[test]
     fn parse_permissions_requires_feature_gate() {
         let content = EXPOSED_TOML.replace(
-            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\"]",
-            "requires-features = [\"expose-v1\", \"requires-v1\"]",
+            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"expose-v1\", \"requires-v1\", \"network-policy-v1\"]",
         );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();

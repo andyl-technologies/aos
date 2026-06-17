@@ -53,6 +53,9 @@ pub const FEATURE_RELOAD_V1: &str = "reload-v1";
 /// Registry feature flag for RFC-0001 typed package capability routing.
 pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
 
+/// Registry feature flag for RFC-0001 per-package network policy grants.
+pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -61,6 +64,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_CONFIG_V1,
     FEATURE_RELOAD_V1,
     FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_NETWORK_POLICY_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -744,6 +748,12 @@ pub struct PermissionsMeta {
     /// Package network mode; absent means the default private mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkPermission>,
+    /// TCP ports the package may bind under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-bind", skip_serializing_if = "Vec::is_empty")]
+    pub tcp_bind: Vec<u16>,
+    /// TCP ports the package may connect to under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-connect", skip_serializing_if = "Vec::is_empty")]
+    pub tcp_connect: Vec<u16>,
     /// Device nodes requested by the package.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<String>,
@@ -783,6 +793,8 @@ impl PermissionsMeta {
     pub fn is_empty(&self) -> bool {
         self.capabilities.is_empty()
             && self.network.is_none()
+            && self.tcp_bind.is_empty()
+            && self.tcp_connect.is_empty()
             && self.devices.is_empty()
             && self.host_paths.is_empty()
             && !self.cgroup_delegate
@@ -797,6 +809,8 @@ impl PermissionsMeta {
     pub fn requires_policy_admission(&self) -> bool {
         self.network
             .is_some_and(|network| network != NetworkPermission::Private)
+            || !self.tcp_bind.is_empty()
+            || !self.tcp_connect.is_empty()
             || !self.capabilities.is_empty()
             || !self.devices.is_empty()
             || !self.host_paths.is_empty()
@@ -817,6 +831,11 @@ impl PermissionsMeta {
                 .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
     }
 
+    /// Returns whether this manifest carries explicit TCP network policy.
+    pub fn has_network_policy(&self) -> bool {
+        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty()
+    }
+
     /// Computes the RFC-0001 confinement summary from permission grants.
     pub fn computed_confinement(&self) -> ConfinementMeta {
         let network = self.network.unwrap_or(NetworkPermission::Private);
@@ -826,6 +845,12 @@ impl PermissionsMeta {
         if network != NetworkPermission::Private {
             holes.push(format!("network:{}", network.as_manifest_str()));
         }
+        holes.extend(self.tcp_bind.iter().map(|port| format!("tcp-bind:{port}")));
+        holes.extend(
+            self.tcp_connect
+                .iter()
+                .map(|port| format!("tcp-connect:{port}")),
+        );
         holes.extend(
             self.capabilities
                 .iter()
@@ -1058,6 +1083,9 @@ pub fn validate_supported_package_meta_with(
     }
     if !meta.permissions.is_empty() {
         require_feature(meta, FEATURE_PERMISSIONS_V1)?;
+        if meta.permissions.has_network_policy() {
+            require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
+        }
     }
 
     if let Some(expose) = &meta.expose {
@@ -1310,6 +1338,8 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
             );
         }
     }
+    validate_tcp_ports("tcp-bind", &permissions.tcp_bind)?;
+    validate_tcp_ports("tcp-connect", &permissions.tcp_connect)?;
     for device in &permissions.devices {
         validate_absolute_path(device, "device")?;
     }
@@ -1335,6 +1365,19 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
                 confinement.label,
                 confinement.holes
             );
+        }
+    }
+    Ok(())
+}
+
+fn validate_tcp_ports(kind: &str, ports: &[u16]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for port in ports {
+        if *port == 0 {
+            bail!("{kind} contains invalid TCP port 0");
+        }
+        if !seen.insert(port) {
+            bail!("{kind} contains duplicate TCP port {port}");
         }
     }
     Ok(())
@@ -3373,6 +3416,85 @@ last_update = "2026-02-13T10:30:00Z"
         let err =
             validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
         assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
+    }
+
+    #[test]
+    fn package_meta_requires_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                tcp_connect: vec![443],
+                ..PermissionsMeta::default()
+            },
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_network_policy_ports() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                tcp_bind: vec![0],
+                ..PermissionsMeta::default()
+            },
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("invalid TCP port 0"));
+
+        meta.permissions.tcp_bind = vec![8080, 8080];
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("duplicate TCP port 8080"));
     }
 
     #[test]
