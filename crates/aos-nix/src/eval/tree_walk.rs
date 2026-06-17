@@ -15546,17 +15546,8 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_hash_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
-
+    fn assert_cpp_nix_hash_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
         for source in [
             r#"builtins.hashString "md5" "abc""#,
             r#"builtins.hashString "sha1" "abc""#,
@@ -15581,7 +15572,7 @@ mod tests {
             r#"let placeholder = builtins.placeholder; in placeholder "out""#,
             r#"builtins.stringLength (builtins.placeholder "out")"#,
         ] {
-            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
 
         let (dir, path) = temp_file_with_bytes("cpp-nix-hash-file", b"abc");
@@ -15599,7 +15590,7 @@ mod tests {
                 nix_string_literal(&path)
             ),
         ] {
-            assert_cpp_nix_json_matches_tree_walk(&oracle, &source);
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
         }
         fs::remove_dir_all(dir).expect("temp directory removes");
 
@@ -15609,8 +15600,24 @@ mod tests {
             r#"builtins.placeholder 1"#,
             r#"builtins.placeholder (builtins.appendContext "out" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; })"#,
         ] {
-            assert_cpp_nix_and_tree_walk_reject_json(&oracle, source);
+            assert_cpp_nix_and_tree_walk_reject_json(oracle, source);
         }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_hash_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_hash_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_hash_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix hash check");
+            return;
+        };
+        assert_cpp_nix_hash_builtins_match_tree_walk(&oracle);
     }
 
     #[test]
