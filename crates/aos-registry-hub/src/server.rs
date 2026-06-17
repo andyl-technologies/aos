@@ -33,9 +33,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use tower_http::catch_panic::CatchPanicLayer;
@@ -237,11 +237,6 @@ struct BucketParams {
 }
 
 impl SearchParams {
-    /// The trimmed, non-empty search query, if any.
-    fn query(&self) -> Option<&str> {
-        self.q.as_deref().map(str::trim).filter(|q| !q.is_empty())
-    }
-
     /// The trimmed, non-empty filter expression, if any.
     fn filter(&self) -> Option<&str> {
         self.filter
@@ -324,7 +319,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // `RequestBodyLimitLayer` enforces the cap at the body-stream level (`413
     // Payload Too Large`) regardless of how the handler consumes the body.
     let rpc_router =
-        aos_registry_core::connect::rpc_router(rpc_service).layer(
+        aos_registry_core::connect::rpc_browse_router(rpc_service).layer(
             tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
         );
 
@@ -332,8 +327,16 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // state up front so it merges into the AppState-typed router below.
     let oauth2 = crate::auth::extract::oauth2_router().with_state(Arc::clone(&state.auth));
 
+    // The flat browse routes (the hub home `/`, the `/{slug}` redirect, the
+    // registry home `/{slug}/`, and the `/{slug}/-/…` human pages + JSON read
+    // API) are no longer registered here: RFC-0004 Phase 5 console-dedup stage
+    // G mounts the *shared* session-aware browse via
+    // `aos_registry_core::connect::rpc_browse_router` (merged below), so the
+    // native hub and the Worker serve the identical browse. The hub keeps only
+    // its serving/static endpoints (`/healthz`, `/metrics`, `/_assets/*`, the
+    // device-authorization POST) and its own richer machine-surface facade
+    // (`/{slug}/{*path}` and the nested-canonical catch-all).
     let mut router = Router::new()
-        .route("/", get(instance_home))
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
         .route(
@@ -345,14 +348,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
         .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
         .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
         .route("/_assets/OFL.txt", get(font_license))
-        .route("/{slug}", get(registry_redirect))
-        .route("/{slug}/", get(registry_home))
-        .route("/{slug}/-/packages", get(package_index))
-        .route("/{slug}/-/packages/{name}", get(package_page))
-        .route("/{slug}/-/channels", get(channels_index))
-        .route("/{slug}/-/channels/{name}", get(channel_page))
-        .route("/{slug}/-/releases", get(releases_page))
-        .route("/{slug}/-/health", get(health_page))
         .route(
             "/{slug}/{*path}",
             get(machine_path)
@@ -645,16 +640,6 @@ async fn inject_client_ip(
     next.run(request).await
 }
 
-pub(crate) async fn load_registry(
-    state: &AppState,
-    slug: &str,
-) -> Result<Option<(RegistryRecord, Option<IndexStatus>)>, anyhow::Error> {
-    let Some(registry) = state.db.registry_by_slug(slug).await? else {
-        return Ok(None);
-    };
-    let status = state.db.index_status(registry.id).await?;
-    Ok(Some((registry, status)))
-}
 
 async fn healthz(State(state): State<Arc<AppState>>) -> Response {
     match state.db.list_registries().await {
@@ -869,114 +854,6 @@ fn font_response(bytes: &'static [u8]) -> Response {
         .into_response()
 }
 
-async fn instance_home(
-    State(state): State<Arc<AppState>>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
-    Query(params): Query<SearchParams>,
-) -> Response {
-    // Anonymous: it scans and visibility-filters every registry. Throttle per IP.
-    if let Some(limited) = browse_rate_limited(&state, &headers, peer) {
-        return limited;
-    }
-    let started = Instant::now();
-    let result = async {
-        let mut rows = Vec::new();
-        for registry in state.db.list_registries().await? {
-            // Non-disclosure: only list registries this caller could open.
-            // Anonymous callers see public only; a session/token member sees
-            // their org's internal and any granted private registries too.
-            if !can_read_registry(&state, &registry, &headers).await {
-                continue;
-            }
-            let status = state.db.index_status(registry.id).await?;
-            rows.push((registry, status));
-        }
-        Ok::<_, anyhow::Error>(rows)
-    }
-    .await;
-    match result {
-        Ok(rows) => Html(pages::instance_home(
-            &rows,
-            params.query(),
-            params.page.unwrap_or(1).max(1),
-            started,
-        ))
-        .into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-async fn registry_redirect(Path(slug): Path<String>) -> Redirect {
-    Redirect::permanent(&format!("/{slug}/"))
-}
-
-/// Whether the request's `Accept` header admits an HTML response.
-///
-/// An absent header is treated as a browser (HTML); a present header must
-/// list `text/html`, `text/*`, or `*/*` somewhere.
-fn accepts_html(headers: &HeaderMap) -> bool {
-    let Some(accept) = headers.get(header::ACCEPT).and_then(|v| v.to_str().ok()) else {
-        return true;
-    };
-    accept.split(',').any(|part| {
-        let mt = part.split(';').next().unwrap_or("").trim();
-        mt.eq_ignore_ascii_case("text/html") || mt.eq_ignore_ascii_case("text/*") || mt == "*/*"
-    })
-}
-
-async fn registry_home(
-    State(state): State<Arc<AppState>>,
-    Path(slug): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    let started = Instant::now();
-
-    // Content negotiation: clients that do not accept HTML get the
-    // machine surface's `index.html` (the on-CDN web-surface pointer),
-    // or 406 when the source ships none.
-    if !accepts_html(&headers) {
-        return match state.db.registry_by_slug(&slug).await {
-            Ok(Some(registry)) => {
-                let response = compat::serve_machine_path(&registry, "index.html").await;
-                if response.status() == StatusCode::NOT_FOUND {
-                    StatusCode::NOT_ACCEPTABLE.into_response()
-                } else {
-                    response
-                }
-            }
-            Ok(None) => StatusCode::NOT_FOUND.into_response(),
-            Err(err) => internal(err),
-        };
-    }
-
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let channels = state.db.list_channels(registry.id).await?;
-        let packages = state.db.list_packages(registry.id).await?;
-        let caches = state.db.list_caches(registry.id).await?;
-        let roster = state.db.list_roster(registry.id).await?;
-        let validations = state.db.latest_validation_runs(registry.id).await?;
-        let external = format!("{}/{slug}", state.external_url.trim_end_matches('/'));
-        let manage_link = registry_manage_link(&state, &registry, &headers).await;
-        Ok::<_, anyhow::Error>(Some(pages::registry_home(
-            &registry,
-            status.as_ref(),
-            &channels,
-            &packages,
-            &caches,
-            &roster,
-            &validations,
-            &external,
-            manage_link,
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
 
 /// Maximum packages loaded for one anonymous browse page view.
 ///
@@ -1115,55 +992,6 @@ fn distinct_capped(values: impl Iterator<Item = String>) -> Vec<String> {
     out
 }
 
-async fn package_index(
-    State(state): State<Arc<AppState>>,
-    Path(slug): Path<String>,
-    PeerAddr(peer): PeerAddr,
-    headers: HeaderMap,
-    Query(params): Query<SearchParams>,
-) -> Response {
-    // Anonymous and expensive (full re-load + filter + sort): throttle per IP.
-    if let Some(limited) = browse_rate_limited(&state, &headers, peer) {
-        return limited;
-    }
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        Ok::<_, anyhow::Error>(Some(
-            package_index_html(&state, &registry, status.as_ref(), &params, started).await?,
-        ))
-    }
-    .await;
-    respond_page(result)
-}
-
-async fn package_page(
-    State(state): State<Arc<AppState>>,
-    Path((slug, name)): Path<(String, String)>,
-) -> Response {
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let Some(detail) = state.db.package_detail(registry.id, &name).await? else {
-            return Ok(None);
-        };
-        let closure = resolve_package_closure(&state.db, registry.id, &name, &detail).await?;
-        Ok::<_, anyhow::Error>(Some(pages::package_page(
-            &registry,
-            status.as_ref(),
-            &detail,
-            &closure,
-            &state.external_url,
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
 
 /// Display cap for the "required by" reverse-dependency list.
 const REVERSE_DEP_CAP: usize = 100;
@@ -1215,125 +1043,6 @@ async fn resolve_package_closure(
     Ok(closure)
 }
 
-async fn channels_index(
-    State(state): State<Arc<AppState>>,
-    Path(slug): Path<String>,
-    Query(params): Query<SearchParams>,
-) -> Response {
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let channels = state.db.list_channels(registry.id).await?;
-        Ok::<_, anyhow::Error>(Some(pages::channels_index(
-            &registry,
-            status.as_ref(),
-            &channels,
-            params.page_number(),
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
-
-async fn channel_page(
-    State(state): State<Arc<AppState>>,
-    Path((slug, name)): Path<(String, String)>,
-    Query(params): Query<BucketParams>,
-) -> Response {
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let channels = state.db.list_channels(registry.id).await?;
-        let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
-            return Ok(None);
-        };
-        let floor = state.db.channel_floor(registry.id, &name).await?;
-        Ok::<_, anyhow::Error>(Some(pages::channel_page(
-            &registry,
-            status.as_ref(),
-            &channel,
-            floor.as_deref(),
-            params.bucket.as_deref(),
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
-
-async fn releases_page(
-    State(state): State<Arc<AppState>>,
-    Path(slug): Path<String>,
-    Query(params): Query<SearchParams>,
-) -> Response {
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let releases = state.db.list_releases(registry.id).await?;
-        Ok::<_, anyhow::Error>(Some(pages::releases_page(
-            &registry,
-            status.as_ref(),
-            &releases,
-            params.page_number(),
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
-
-async fn health_page(State(state): State<Arc<AppState>>, Path(slug): Path<String>) -> Response {
-    let started = Instant::now();
-    let result = async {
-        let Some((registry, status)) = load_registry(&state, &slug).await? else {
-            return Ok(None);
-        };
-        let mut runs = Vec::new();
-        for run in state.db.latest_validation_runs(registry.id).await? {
-            let missing = if run.missing > 0 {
-                state.db.validation_missing(run.id).await?
-            } else {
-                Vec::new()
-            };
-            // Deep runs can also carry `corrupt` findings; load them so the
-            // page flags corruption distinctly from absence.
-            let corrupt = if run.missing > 0 {
-                state.db.validation_corrupt(run.id).await?
-            } else {
-                Vec::new()
-            };
-            runs.push((run, missing, corrupt));
-        }
-        let stack = state.db.registry_cache_stack(registry.id).await?;
-        let probes = state.db.list_cache_probes(registry.id).await?;
-        let repair_jobs = state
-            .db
-            .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
-            .await?;
-        let frontends = state.db.list_frontends(registry.id).await?;
-        let frontend_probes = state.db.list_frontend_probes(registry.id).await?;
-        Ok::<_, anyhow::Error>(Some(pages::health_page(
-            &registry,
-            status.as_ref(),
-            &runs,
-            stack.as_ref(),
-            &probes,
-            &repair_jobs,
-            &frontends,
-            &frontend_probes,
-            started,
-        )))
-    }
-    .await;
-    respond_page(result)
-}
 
 /// The `/{slug}/{*path}` route: a flat phase-1 machine path, or — when the
 /// single-segment slug names no registry — the entry point to nested
@@ -2020,31 +1729,6 @@ pub(crate) async fn authorize_registry_read(
     }
 }
 
-/// Whether the caller in `headers` may see `registry` at all.
-///
-/// This is the boolean form of [`authorize_registry_read`], used to filter
-/// listings (the instance home and its `?q=` search) so that internal and
-/// private registries never leak to callers who could not open their pages.
-/// It applies the same access matrix:
-///
-/// - **public** (and every unowned phase-1 registry) is visible to anyone;
-/// - **internal** is visible only to a session member of the owning org;
-/// - **private** (and any unknown visibility, failing closed) is visible only
-///   when a session or bearer token grants `Read` at the registry scope.
-///
-/// Keeping the filter in terms of the same primitives as
-/// [`authorize_registry_read`] guarantees a registry shown in a listing is one
-/// the caller can actually open, and one hidden from the listing 404s on its
-/// page — preserving the non-disclosure rule end to end.
-pub(crate) async fn can_read_registry(
-    state: &AppState,
-    registry: &RegistryRecord,
-    headers: &HeaderMap,
-) -> bool {
-    authorize_registry_read(state, registry, headers)
-        .await
-        .is_ok()
-}
 
 /// Whether the request's session user holds any membership covering `org_id`.
 async fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {

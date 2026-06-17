@@ -404,7 +404,8 @@ async fn webhook_rpc_create_list_delete_with_authz() {
         body["secret"].as_str().is_some_and(|s| !s.is_empty()),
         "secret returned once on create: {body}"
     );
-    // proto3 JSON encodes int64 as a string.
+    // The Connect-JSON body shape encodes int64 as a native JSON number
+    // (camelCase names, native scalars — not canonical proto3 int64-as-string).
     let id = json_i64(&body["webhook"]["id"]);
 
     // List shows the hook but never its secret.
@@ -442,7 +443,7 @@ async fn webhook_rpc_create_list_delete_with_authz() {
     let (status, body) = rpc(
         &app,
         "WebhookService/DeleteWebhook",
-        serde_json::json!({ "id": id.to_string() }),
+        serde_json::json!({ "id": id }),
         Some(&admin),
     )
     .await;

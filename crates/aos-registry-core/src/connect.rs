@@ -42,7 +42,6 @@ use serde::Serialize;
 
 use crate::service::{RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
-use crate::web::render::PageChrome;
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
 ///
@@ -199,16 +198,23 @@ async fn facade(
 /// Turn a [`Rendered`] browse outcome into an HTTP response.
 ///
 /// [`Rendered::Html`] is a `200` `text/html` with the strict first-party CSP
-/// (RFC-0004 asset policy: `default-src 'self'`, no third-party origins);
-/// [`Rendered::Json`] is a `200` `application/json`; [`Rendered::NotFound`] is
-/// a bare `404` (the anonymous browse surface does not distinguish "absent"
-/// from "private").
+/// (`default-src 'self'; frame-ancestors 'none'` — no third-party origins, no
+/// framing); [`Rendered::Json`] is a `200` `application/json`;
+/// [`Rendered::Redirect`] is a `308 Permanent Redirect`;
+/// [`Rendered::TooManyRequests`] is a `429` with a `Retry-After`;
+/// [`Rendered::NotFound`] is a bare `404` (the visibility matrix returns this for
+/// a hidden registry alike, never disclosing "absent" from "private");
+/// [`Rendered::NotAcceptable`] is a `406` (content negotiation: a non-HTML client
+/// for a visible registry that ships no machine `index.html`).
 fn browse_response(rendered: Rendered) -> Response {
     match rendered {
         Rendered::Html(body) => (
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (header::CONTENT_SECURITY_POLICY, "default-src 'self'"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "default-src 'self'; frame-ancestors 'none'",
+                ),
             ],
             body,
         )
@@ -218,20 +224,38 @@ fn browse_response(rendered: Rendered) -> Response {
             body,
         )
             .into_response(),
+        Rendered::Redirect(location) => {
+            axum::response::Redirect::permanent(&location).into_response()
+        }
+        Rendered::TooManyRequests(retry_after) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.max(1).to_string())],
+            "rate limit exceeded",
+        )
+            .into_response(),
         Rendered::NotFound => StatusCode::NOT_FOUND.into_response(),
+        Rendered::NotAcceptable => StatusCode::NOT_ACCEPTABLE.into_response(),
     }
 }
 
 /// Dispatch a `GET` browse request under `/{slug}/-/{*rest}` to the matching
-/// [`browse`] handler, rendering with an anonymous [`PageChrome`].
+/// session-aware [`browse`] handler.
 ///
 /// Splits the reserved `/-/` tail into its page or `api/…` route and calls the
-/// corresponding [`browse`] read. The chrome is anonymous (no brand, no
-/// signed-in email): the shared browse surface is public-only and the native
-/// hub keeps its own session-aware, branded browse handlers, so only the
-/// transport (the Worker) mounts these routes.
-async fn browse_dispatch(svc: Arc<RpcService>, slug: String, rest: String) -> Response {
-    let chrome = PageChrome::anonymous();
+/// corresponding [`browse`] read. The HTML pages resolve the request's session
+/// (so the masthead reflects the login and the visibility matrix admits the
+/// caller's internal/granted-private registries) and honor the
+/// `?q`/`?filter`/`?sort`/`?dir`/`?page`/`?bucket` controls parsed from `query`;
+/// the `/-/api/…` JSON reads stay bearer-only. This is the *same* code the
+/// native hub now serves — the divergence between the two shells is gone.
+async fn browse_dispatch(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: String,
+    rest: String,
+    query: Option<String>,
+) -> Response {
+    let q = browse::BrowseQuery::parse(query.as_deref());
     let rendered = match rest.strip_prefix("api/") {
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,
@@ -244,17 +268,18 @@ async fn browse_dispatch(svc: Arc<RpcService>, slug: String, rest: String) -> Re
             },
         },
         None => match rest.as_str() {
-            "" => browse::registry_home(&svc, &chrome, &slug).await,
-            "packages" => browse::packages(&svc, &chrome, &slug).await,
-            "channels" => browse::channels(&svc, &chrome, &slug).await,
-            "releases" => browse::releases(&svc, &chrome, &slug).await,
+            "" => browse::registry_home(&svc, &headers, &slug).await,
+            "packages" => browse::packages(&svc, &headers, &slug, &q).await,
+            "channels" => browse::channels(&svc, &headers, &slug, &q).await,
+            "releases" => browse::releases(&svc, &headers, &slug, &q).await,
+            "health" => browse::health(&svc, &headers, &slug).await,
             other => {
                 if let Some(name) = other.strip_prefix("packages/").filter(|n| !n.is_empty()) {
-                    browse::package(&svc, &chrome, &slug, name).await
+                    browse::package(&svc, &headers, &slug, name).await
                 } else if let Some(name) =
                     other.strip_prefix("channels/").filter(|n| !n.is_empty())
                 {
-                    browse::channel(&svc, &chrome, &slug, name).await
+                    browse::channel(&svc, &headers, &slug, name, &q).await
                 } else {
                     Rendered::NotFound
                 }
@@ -305,33 +330,52 @@ macro_rules! rpc_route {
 /// returned router carries the service as axum state.
 #[must_use]
 pub fn router(service: Arc<RpcService>) -> Router {
-    build(service, true)
+    build(service, true, true)
 }
 
-/// Build the shared Connect-JSON router *without* the machine-surface facade.
+/// Build the shared Connect-JSON router with neither the browse surface nor the
+/// machine-surface facade — the RPC methods only.
 ///
-/// Identical to [`router`] but omits the catch-all `/{slug}/{*path}` facade
-/// route, so it can be merged into a host that already owns that path with a
-/// richer handler — the native hub, whose facade serves filesystem autoindexes,
-/// `http(s)` redirects, pull-through mirroring, and inert producer documents,
-/// and authorizes private reads from a session cookie as well as a bearer JWT
-/// (merging two routers that both define `/{slug}/{*path}` would otherwise
-/// panic). The returned router carries the service as axum state.
+/// Omits the catch-all `/{slug}/{*path}` facade route *and* the browse routes,
+/// so it can be merged into a host that already owns those paths. Retained for
+/// any host that wants only the wire RPC; the native hub instead uses
+/// [`rpc_browse_router`] to take the shared session-aware browse while keeping
+/// its own richer machine facade. The returned router carries the service as
+/// axum state.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
-    build(service, false)
+    build(service, false, false)
 }
 
-/// Build the shared router, optionally mounting the human + machine surface.
+/// Build the shared Connect-JSON router *with* the session-aware browse surface
+/// but *without* the machine-surface facade.
 ///
-/// `mount_surface` adds the no-JS browse routes (the hub home `/`, the
-/// `/{slug}/-/…` pages, and the `/{slug}/-/api/…` JSON read API) *and* the
-/// catch-all `GET`/`HEAD` `/{slug}/{*path}` machine-surface facade — the full
-/// public surface the Worker serves. The native hub passes `false`: it keeps
-/// its own session-aware, branded browse handlers and its richer facade, so
-/// mounting these here would collide on those paths. See [`router`] (mounts the
-/// surface) and [`rpc_router`] (RPC only).
-fn build(service: Arc<RpcService>, mount_surface: bool) -> Router {
+/// This is the variant the native hub mounts (RFC-0004 Phase 5, console-dedup
+/// stage G): it takes the shared rich, branded, session-aware browse (the hub
+/// home `/`, the `/{slug}` redirect, the registry home `/{slug}/` and
+/// `/{slug}/-/`, the `/{slug}/-/…` pages, and the `/{slug}/-/api/…` JSON reads)
+/// so the native hub and the Worker serve the **identical** browse, while the
+/// hub keeps its own richer `/{slug}/{*path}` machine facade (filesystem
+/// autoindex, `http(s)` redirect, pull-through mirroring, inert
+/// producer-document serving, the upload `PUT`/`HEAD`) — so omitting the shared
+/// facade here avoids a wildcard collision on merge. The returned router carries
+/// the service as axum state.
+#[must_use]
+pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
+    build(service, true, false)
+}
+
+/// Build the shared router, optionally mounting the browse surface and/or the
+/// machine-surface facade.
+///
+/// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
+/// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
+/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_facade` adds the
+/// catch-all `GET`/`HEAD` `/{slug}/{*path}` machine-surface facade. The Worker
+/// takes both ([`router`]); the native hub takes browse only
+/// ([`rpc_browse_router`]) and keeps its own facade; [`rpc_router`] takes
+/// neither.
+fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
     let mut r = Router::new();
     // RegistryService
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListRegistries", list_registries);
@@ -377,7 +421,7 @@ fn build(service: Arc<RpcService>, mount_surface: bool) -> Router {
     // so the facade only matches a registry URL. Omitted by [`rpc_router`] so a
     // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
     // it.
-    if mount_surface {
+    if mount_browse {
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
         // the `/{slug}/-/api/…` JSON read API. These static-prefixed routes win
         // over the facade wildcard below by axum's static-over-dynamic
@@ -387,34 +431,65 @@ fn build(service: Arc<RpcService>, mount_surface: bool) -> Router {
         // an empty `{*rest}` capture.
         r = r.route(
             "/",
-            get(|State(state): State<SharedState>| {
-                let svc = from_state(state);
-                send_bridge(async move {
-                    browse_response(browse::home(&svc, &PageChrome::anonymous()).await)
-                })
+            get(
+                |State(state): State<SharedState>, headers: HeaderMap, uri: axum::http::Uri| {
+                    let svc = from_state(state);
+                    send_bridge(async move {
+                        let q = browse::BrowseQuery::parse(uri.query());
+                        browse_response(browse::home(&svc, &headers, &q).await)
+                    })
+                },
+            ),
+        );
+        // `/{slug}` (no trailing slash) permanently redirects to `/{slug}/` so
+        // the registry root has one canonical, slash-terminated URL.
+        r = r.route(
+            "/{slug}",
+            get(|Path(slug): Path<String>| {
+                send_bridge(async move { browse_response(Rendered::Redirect(format!("/{slug}/"))) })
             }),
         );
-        let registry_home = |State(state): State<SharedState>, Path(slug): Path<String>| {
-            let svc = from_state(state);
-            send_bridge(browse_dispatch(svc, slug, String::new()))
-        };
+        // The registry home is served both at `/{slug}/` (the canonical,
+        // slash-terminated root the rich pages link to) and at the marker form
+        // `/{slug}/-/`; both dispatch to the registry-home browse read, which
+        // content-negotiates HTML vs the machine `index.html` pointer.
+        let registry_home =
+            |State(state): State<SharedState>, headers: HeaderMap, Path(slug): Path<String>, uri: axum::http::Uri| {
+                let svc = from_state(state);
+                send_bridge(browse_dispatch(
+                    svc,
+                    headers,
+                    slug,
+                    String::new(),
+                    uri.query().map(str::to_owned),
+                ))
+            };
+        r = r.route("/{slug}/", get(registry_home));
         r = r.route(&format!("/{{slug}}/{BROWSE_MARKER}/"), get(registry_home));
         r = r.route(
             &format!("/{{slug}}/{BROWSE_MARKER}/{{*rest}}"),
             get(
-                |State(state): State<SharedState>, Path((slug, rest)): Path<(String, String)>| {
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, rest)): Path<(String, String)>, uri: axum::http::Uri| {
                     let svc = from_state(state);
-                    send_bridge(browse_dispatch(svc, slug, rest))
+                    send_bridge(browse_dispatch(
+                        svc,
+                        headers,
+                        slug,
+                        rest,
+                        uri.query().map(str::to_owned),
+                    ))
                 },
             ),
         );
+    }
+    if mount_facade {
         // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to
         // it, eliding the body) for the registry machine path, registered LAST.
         // The static `/aos.registry.v1.{Service}/{Method}` RPC routes and the
         // browse routes above win over this `/{slug}/{*path}` wildcard by axum's
         // static-over-dynamic precedence, so the facade only matches a machine
-        // URL. Omitted by [`rpc_router`] so a host with its own
-        // `/{slug}/{*path}` (the native hub) does not double-mount it.
+        // URL. Omitted by [`rpc_router`]/[`rpc_browse_router`] so a host with its
+        // own `/{slug}/{*path}` (the native hub) does not double-mount it.
         r = r.route(
             "/{slug}/{*path}",
             get(
