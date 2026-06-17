@@ -42,6 +42,7 @@
 pub mod clean;
 pub mod config;
 pub(crate) mod config_artifact;
+pub(crate) mod credential;
 pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
@@ -371,6 +372,9 @@ pub enum PackageCommand {
         #[arg(long)]
         drain: bool,
     },
+    /// Prepare package credential payloads
+    #[command(subcommand)]
+    Credential(CredentialCommand),
     /// Manage registries
     #[command(after_long_help = ENVIRONMENT_HELP)]
     Registry {
@@ -426,6 +430,30 @@ pub enum PackageCommand {
         /// Use the system package profile
         #[arg(long)]
         system: bool,
+    },
+}
+
+/// Package credential helper operations.
+#[derive(Subcommand)]
+pub enum CredentialCommand {
+    /// Encrypt plaintext for inline expose credential metadata
+    Encrypt {
+        /// systemd credential name
+        name: String,
+        /// Plaintext credential file
+        input: PathBuf,
+        /// Write encrypted payload to this file
+        #[arg(long)]
+        output: Option<PathBuf>,
+        /// Signed PCR public key
+        #[arg(long = "pcr-public-key")]
+        pcr_public_key: Option<PathBuf>,
+        /// Print a Nix expose.config.credentials entry
+        #[arg(long)]
+        expose_nix: bool,
+        /// Service unit that consumes the credential
+        #[arg(long = "unit")]
+        units: Vec<String>,
     },
 }
 
@@ -1885,6 +1913,7 @@ pub async fn run(
             fetch,
             verify,
         } => source::run_source(&config, package, *show_drv, *fetch, *verify, printer).await,
+        PackageCommand::Credential(command) => credential::run(&config, command, printer),
         PackageCommand::Rollback {
             generation,
             system: rollback_system,

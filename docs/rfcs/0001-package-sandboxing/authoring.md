@@ -119,6 +119,18 @@ The renderer copies the opaque ciphertext into the expose artifact under
 targets, because the live `/usr` tree is immutable. Sealing plaintext with
 `systemd-creds encrypt --with-key=tpm2` remains a host/runtime operation because
 TPM2 sealing requires a TPM context, not just the signed PCR public key.
+For inline `ciphertext = ...` metadata, generate the payload outside the Nix
+build with the same signed-PCR-11 policy:
+
+```sh
+apm credential encrypt join-token ./join-token.plain \
+  --pcr-public-key ./pcr-sign.pem \
+  --unit example.service \
+  --expose-nix
+```
+
+The command prints a Nix `expose.config.credentials` entry containing
+`encrypted = true` and the inline `ciphertext` value.
 
 Install-at-boot desired files can also reference a system credential instead of
 embedding plaintext:

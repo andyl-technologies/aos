@@ -398,16 +398,28 @@ fn encrypt_desired_credential(
     std::fs::set_permissions(&input, Permissions::from_mode(0o600))
         .with_context(|| format!("setting mode on {}", input.display()))?;
 
-    let args = systemd_creds_encrypt_args(&credential.name, &public_key, &input, &output);
+    run_systemd_creds_encrypt(&credential.name, &public_key, &input, &output)
+        .context("running systemd-creds encrypt for desired credential")?;
+
+    std::fs::read(&output).with_context(|| format!("reading {}", output.display()))
+}
+
+pub(crate) fn run_systemd_creds_encrypt(
+    credential_name: &str,
+    public_key: &Path,
+    input: &Path,
+    output: &Path,
+) -> Result<()> {
+    let args = systemd_creds_encrypt_args(credential_name, public_key, input, output, false);
     let output_status = Command::new("systemd-creds")
         .args(&args)
         .output()
-        .context("running systemd-creds encrypt for desired credential")?;
+        .context("running systemd-creds encrypt")?;
     if !output_status.status.success() {
         let stderr = String::from_utf8_lossy(&output_status.stderr);
         bail!(
-            "systemd-creds failed to encrypt desired credential '{}': {}{}",
-            credential.name,
+            "systemd-creds failed to encrypt credential '{}': {}{}",
+            credential_name,
             output_status.status,
             if stderr.trim().is_empty() {
                 String::new()
@@ -416,8 +428,33 @@ fn encrypt_desired_credential(
             }
         );
     }
+    Ok(())
+}
 
-    std::fs::read(&output).with_context(|| format!("reading {}", output.display()))
+pub(crate) fn systemd_creds_encrypt_pretty(
+    credential_name: &str,
+    public_key: &Path,
+    input: &Path,
+) -> Result<String> {
+    let args = systemd_creds_encrypt_args(credential_name, public_key, input, Path::new("-"), true);
+    let output_status = Command::new("systemd-creds")
+        .args(&args)
+        .output()
+        .context("running systemd-creds encrypt")?;
+    if !output_status.status.success() {
+        let stderr = String::from_utf8_lossy(&output_status.stderr);
+        bail!(
+            "systemd-creds failed to encrypt credential '{}': {}{}",
+            credential_name,
+            output_status.status,
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", stderr.trim())
+            }
+        );
+    }
+    String::from_utf8(output_status.stdout).context("systemd-creds pretty output is not UTF-8")
 }
 
 fn systemd_creds_encrypt_args(
@@ -425,23 +462,28 @@ fn systemd_creds_encrypt_args(
     public_key: &Path,
     input: &Path,
     output: &Path,
+    pretty: bool,
 ) -> Vec<OsString> {
     let mut name = OsString::from("--name=");
     name.push(credential_name);
     let mut public_key_arg = OsString::from("--tpm2-public-key=");
     public_key_arg.push(public_key.as_os_str());
-    vec![
+    let mut args = vec![
         OsString::from("encrypt"),
         name,
         OsString::from("--with-key=tpm2"),
         public_key_arg,
         OsString::from("--tpm2-public-key-pcrs=11"),
-        input.as_os_str().to_owned(),
-        output.as_os_str().to_owned(),
-    ]
+    ];
+    if pretty {
+        args.push(OsString::from("--pretty"));
+    }
+    args.push(input.as_os_str().to_owned());
+    args.push(output.as_os_str().to_owned());
+    args
 }
 
-fn credential_pcr_public_key(settings: &ApmSettings, root: &Path) -> Result<PathBuf> {
+pub(crate) fn credential_pcr_public_key(settings: &ApmSettings, root: &Path) -> Result<PathBuf> {
     let configured = settings
         .credential_pcr_public_key
         .as_deref()
@@ -1220,6 +1262,7 @@ mod tests {
             Path::new("/etc/aos/pcr-sign.pem"),
             Path::new("/tmp/in"),
             Path::new("/tmp/out"),
+            false,
         );
         let rendered = args
             .iter()
@@ -1236,6 +1279,35 @@ mod tests {
                 "--tpm2-public-key-pcrs=11",
                 "/tmp/in",
                 "/tmp/out",
+            ]
+        );
+    }
+
+    #[test]
+    fn systemd_creds_encrypt_args_can_emit_pretty_unit_directive() {
+        let args = systemd_creds_encrypt_args(
+            "join-token",
+            Path::new("/etc/aos/pcr-sign.pem"),
+            Path::new("/tmp/in"),
+            Path::new("-"),
+            true,
+        );
+        let rendered = args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered,
+            vec![
+                "encrypt",
+                "--name=join-token",
+                "--with-key=tpm2",
+                "--tpm2-public-key=/etc/aos/pcr-sign.pem",
+                "--tpm2-public-key-pcrs=11",
+                "--pretty",
+                "/tmp/in",
+                "-",
             ]
         );
     }
