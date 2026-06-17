@@ -291,6 +291,97 @@ in {
     meta = gnuMeta "GNU perfect hash function generator 3.1" "https://www.gnu.org/software/gperf/" "GPL-3.0-or-later";
   };
 
+  python3 = gcc14 {
+    name = "python-3.8.18";
+    pname = "python";
+    version = "3.8.18";
+    url = "https://www.python.org/ftp/python/3.8.18/Python-3.8.18.tar.xz";
+    hash = "1nsgfnq51826mrzq4kfviv871z3zjklpfsfhfwc13hry2abn46y8";
+    freezeAutotoolsTimestamps = false;
+    configureScript = ''
+      cat > Modules/Setup.local <<'SETUP_EOF'
+      _posixsubprocess _posixsubprocess.c
+      select selectmodule.c
+      fcntl fcntlmodule.c
+      _struct _struct.c
+      math mathmodule.c _math.c
+      binascii binascii.c
+      _contextvars _contextvarsmodule.c
+      _sha1 sha1module.c
+      _sha256 sha256module.c
+      _sha512 sha512module.c
+      _md5 md5module.c
+      _blake2 _blake2/blake2module.c _blake2/blake2b_impl.c _blake2/blake2s_impl.c
+      _sha3 _sha3/sha3module.c
+      _random _randommodule.c
+      SETUP_EOF
+
+      CC="$CC" \
+      CXX="$CXX" \
+      CFLAGS="$CFLAGS" \
+      LDFLAGS="$LDFLAGS" \
+      ./configure \
+        --prefix="$out" \
+        --build=${buildPlatform.config} \
+        --host=${hostPlatform.config} \
+        --disable-shared \
+        --without-ensurepip \
+        ac_cv_file__dev_ptmx=yes \
+        ac_cv_file__dev_ptc=no
+    '';
+    postConfigure = ''
+      sed -i '/^build_all:/s/ sharedmods / /' Makefile
+    '';
+    installScript = ''
+      mkdir -p "$out/bin" "$out/lib/python3.8/lib-dynload" "$out/include/python3.8"
+
+      cp python "$out/bin/python3.8"
+      chmod +x "$out/bin/python3.8"
+
+      ./python -E -S -m sysconfig --generate-posix-vars
+
+      cp -R Lib/. "$out/lib/python3.8/"
+      if [ -f pybuilddir.txt ]; then
+        pybuilddir="$(cat pybuilddir.txt)"
+        if [ -d "$pybuilddir" ]; then
+          find "$pybuilddir" -maxdepth 1 -type f -name '_sysconfigdata*.py' -exec cp {} "$out/lib/python3.8/" \;
+        fi
+      fi
+      if [ -d build ]; then
+        find build -type f -name '_sysconfigdata*.py' -exec cp {} "$out/lib/python3.8/" \;
+      fi
+      test -n "$(find "$out/lib/python3.8" -maxdepth 1 -type f -name '_sysconfigdata*.py' -print -quit)"
+
+      cp -R Include/. "$out/include/python3.8/"
+      cp pyconfig.h "$out/include/python3.8/pyconfig.h"
+      [ -f libpython3.8.a ] && cp libpython3.8.a "$out/lib/libpython3.8.a"
+
+      config_dir="$out/lib/python3.8/config-3.8-$("$out/bin/python3.8" -c 'import sysconfig; print(sysconfig.get_config_var("MULTIARCH") or sysconfig.get_platform())')"
+      mkdir -p "$config_dir"
+      cp Makefile "$config_dir/Makefile"
+      cp pyconfig.h "$config_dir/pyconfig.h"
+      for setup in Modules/Setup Modules/Setup.local Modules/Setup.config; do
+        [ -f "$setup" ] && cp "$setup" "$config_dir/"
+      done
+
+      if [ -f python-config ]; then
+        cp python-config "$out/bin/python3.8-config"
+        sed -i "1s|^#!.*|#!$AOS_BASH|" "$out/bin/python3.8-config"
+        chmod +x "$out/bin/python3.8-config"
+      fi
+      mkdir -p "$out/lib/pkgconfig"
+      [ -f Misc/python.pc ] && cp Misc/python.pc "$out/lib/pkgconfig/python-3.8.pc"
+      [ -f Misc/python-embed.pc ] && cp Misc/python-embed.pc "$out/lib/pkgconfig/python-3.8-embed.pc"
+    '';
+    postInstall = ''
+      [ -f "$out/bin/python3.8" ] && [ ! -f "$out/bin/python3" ] && ln -sf python3.8 "$out/bin/python3"
+      [ -f "$out/bin/python3" ] && [ ! -f "$out/bin/python" ] && ln -sf python3 "$out/bin/python"
+      [ -f "$out/bin/python3.8-config" ] && [ ! -f "$out/bin/python3-config" ] && ln -sf python3.8-config "$out/bin/python3-config"
+      [ -f "$out/bin/python3-config" ] && [ ! -f "$out/bin/python-config" ] && ln -sf python3-config "$out/bin/python-config"
+    '';
+    meta = gnuMeta "Python 3.8.18 minimal interpreter for build scripts" "https://www.python.org/" "PSF-2.0";
+  };
+
   bash = gcc14 {
     pname = "bash";
     version = "5.2.37";

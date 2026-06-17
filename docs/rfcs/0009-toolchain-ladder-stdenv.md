@@ -1,6 +1,6 @@
 # RFC-0009: A coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap`
 
-- **Status:** In progress — Phase 1 implemented
+- **Status:** In progress — Phase 2 implemented
 - **Date:** 2026-06-15
 - **PR:** _(to be filled)_
 - **Audience:** anyone working on `stdenv/` — the bootstrap chain
@@ -278,8 +278,16 @@ its successor.
   identical file lists versus the Phase 0 baseline; the refactored
   `stdenv` builds; remote `checks.eval` passes; the Phase 1 Nix files
   pass Alejandra; and adversarial review findings were addressed.
-- [ ] **Phase 2 — POSIX tools, all tiers.** Roll the manifest conversion
-  across the remaining native tiers, then the cross tiers.
+- [x] **Phase 2 — POSIX tools, all tiers. Implemented.** Rolled the manifest
+  conversion across the remaining native tiers, including `python3` ownership
+  for gcc11 and gcc14. Verified for Phase 2: touched Nix files parse locally;
+  no native tier default routes `python3` through `prev.python3`; direct
+  remote builds of `[ gcc11.python3 gcc14.python3 ]` succeeded on
+  `builder-hil1-c13958ef`; both resulting Python interpreters start without
+  prefix warnings, import the required built-in modules, expose working
+  `sysconfig` and `distutils.sysconfig` metadata, and ship config scripts with
+  AOS bash shebangs; and adversarial review found no serious ownership or
+  install-layout issues.
 - [ ] **Phase 3 — `mkGlibc`.** Unify glibc across tiers; it is lower-variance
   than gcc.
 - [ ] **Phase 4 — `mkGcc`.** Unify gcc across tiers; switch the final tier to
