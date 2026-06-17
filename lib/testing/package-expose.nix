@@ -60,6 +60,11 @@
       };
     };
   };
+  testEncryptedCredential = pkgs.writeTextFile {
+    name = "expose-config-generated-token-encrypted";
+    destination = "/generated-token.cred";
+    text = "opaque encrypted credential blob\n";
+  };
   configPackage = pkgs.mkDerivation {
     pname = "expose-config";
     version = "0";
@@ -102,6 +107,11 @@
             source = "/usr/lib/credstore.encrypted/join-token";
             units = ["expose-config.service"];
             encrypted = true;
+          }
+          {
+            name = "generated-token";
+            encryptedFile = "${testEncryptedCredential}/generated-token.cred";
+            units = ["expose-config.service"];
           }
           {
             name = "inline-secret";
@@ -372,6 +382,148 @@
   credentialSourceAndCiphertextRejected =
     if credentialSourceAndCiphertext.success
     then throw "expose renderer must reject credentials that declare both source and ciphertext"
+    else "ok";
+  credentialGeneratedNamespaceSource = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            source = "/run/credstore.encrypted/aos/expose-config-split/bad";
+            encrypted = true;
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialGeneratedNamespaceSourceRejected =
+    if credentialGeneratedNamespaceSource.success
+    then throw "expose renderer must reject source credentials in the generated /run credstore namespace"
+    else "ok";
+  credentialVendoredPlain = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            encryptedFile = "${testEncryptedCredential}/generated-token.cred";
+            units = ["expose-config-split-main.service"];
+            encrypted = false;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialVendoredPlainRejected =
+    if credentialVendoredPlain.success
+    then throw "expose renderer must reject vendored encrypted credentials with encrypted=false"
+    else "ok";
+  credentialVendoredCustomSource = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            source = "/run/credstore.encrypted/aos/other-package/bad";
+            encryptedFile = "${testEncryptedCredential}/generated-token.cred";
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialVendoredCustomSourceRejected =
+    if credentialVendoredCustomSource.success
+    then throw "expose renderer must reject custom source paths on vendored encrypted credentials"
+    else "ok";
+  credentialVendoredCiphertext = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            encryptedFile = "${testEncryptedCredential}/generated-token.cred";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialVendoredCiphertextRejected =
+    if credentialVendoredCiphertext.success
+    then throw "expose renderer must reject vendored encrypted credentials with inline ciphertext"
+    else "ok";
+  credentialVendoredNonStoreFile = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            encryptedFile = "/tmp/generated-token.cred";
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialVendoredNonStoreFileRejected =
+    if credentialVendoredNonStoreFile.success
+    then throw "expose renderer must reject non-store encryptedFile paths"
+    else "ok";
+  credentialVendoredStoreParentTraversal = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            encryptedFile = "/nix/store/../../tmp/generated-token.cred";
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialVendoredStoreParentTraversalRejected =
+    if credentialVendoredStoreParentTraversal.success
+    then throw "expose renderer must reject vendored encryptedFile store paths containing parent components"
     else "ok";
   credentialDuplicateName = builtins.tryEval (
     (splitConfigPackage.overrideAttrs (_: {
@@ -738,6 +890,12 @@ in
       credentialBadCiphertextRejected
       credentialPlainCiphertextRejected
       credentialSourceAndCiphertextRejected
+      credentialGeneratedNamespaceSourceRejected
+      credentialVendoredPlainRejected
+      credentialVendoredCustomSourceRejected
+      credentialVendoredCiphertextRejected
+      credentialVendoredNonStoreFileRejected
+      credentialVendoredStoreParentTraversalRejected
       credentialDuplicateNameRejected
       credentialAuthoredCollisionRejected
       credentialAuthoredImportCollisionRejected
@@ -955,15 +1113,32 @@ in
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config/config.env' "$config_unit"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config/config.env' "$config_unit"
           grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/join-token' "$config_unit"
+          grep -q 'ConditionPathExists=/run/credstore.encrypted/aos/expose-config/generated-token' "$config_unit"
           grep -q 'LoadCredential=plain-note' "$config_unit"
           grep -q 'LoadCredentialEncrypted=join-token:/usr/lib/credstore.encrypted/join-token' "$config_unit"
+          grep -q 'LoadCredentialEncrypted=generated-token:/run/credstore.encrypted/aos/expose-config/generated-token' "$config_unit"
           grep -q 'SetCredentialEncrypted=inline-secret:abcDEF0123+/=' "$config_unit"
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          test -s "$configExposePath/credstore.encrypted/aos/expose-config/generated-token"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":true,"name":"generated-token","source":"/run/credstore.encrypted/aos/expose-config/generated-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          if grep -q 'encryptedFile' "$config_manifest"; then
+            echo "vendored credential build input leaked into manifest" >&2
+            exit 1
+          fi
+          if grep -q '${testEncryptedCredential}' "$config_manifest"; then
+            echo "vendored credential store path leaked into manifest" >&2
+            exit 1
+          fi
           grep -q '"provides":\[{"kind":"directory","name":"data","path":"/var/lib/expose-config/data"}\]' "$config_manifest"
           grep -q '"uses":\[{"kind":"directory","name":"data","provider":"expose-config","unit":"expose-config.service"}\]' "$config_manifest"
           test "$unknownConfigUnitRejected" = ok
+          test "$credentialGeneratedNamespaceSourceRejected" = ok
+          test "$credentialVendoredPlainRejected" = ok
+          test "$credentialVendoredCustomSourceRejected" = ok
+          test "$credentialVendoredCiphertextRejected" = ok
+          test "$credentialVendoredNonStoreFileRejected" = ok
+          test "$credentialVendoredStoreParentTraversalRejected" = ok
 
           split_main="$splitConfigExposePath/units/expose-config-split-main.service"
           split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"

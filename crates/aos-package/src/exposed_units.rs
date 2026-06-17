@@ -18,7 +18,8 @@ use crate::profile::meta::list_meta;
 use crate::profile::{Generation, Profile};
 use crate::registry::store_path_hash;
 use crate::types::{
-    CapabilityKind, InstalledMeta, ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
+    CapabilityKind, CredentialMeta, ExposeMeta, InstalledMeta, ProfileScope,
+    ProvidedCapabilityMeta, RequiredCapabilityMeta,
 };
 use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
@@ -27,6 +28,8 @@ use tempfile::TempDir;
 
 const APM_PRESET_REL: &str = "systemd/system-preset/30-aos-apm.preset";
 const ATTACHED_REL: &str = "systemd/system.attached";
+const GENERATED_CREDSTORE_REL: &str = "run/credstore.encrypted/aos";
+const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExposedPackage {
@@ -35,8 +38,16 @@ struct ExposedPackage {
     units: BTreeSet<String>,
     artifact_hash: String,
     artifact_store_path: String,
+    credential_blobs: Vec<CredentialBlob>,
     provides: Vec<ProvidedCapabilityMeta>,
     uses: Vec<RequiredCapabilityMeta>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CredentialBlob {
+    relative_path: PathBuf,
+    store_path: PathBuf,
+    units: BTreeSet<String>,
 }
 
 /// Rebuild the generation's `expose/` GC-root symlinks from metadata.
@@ -171,9 +182,16 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
     let had_attached_units = has_attached_units(&root)?;
     if packages.is_empty() && removed_targets.is_empty() {
         write_attached_units(&root, &packages)?;
+        let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
         write_exact_preset(&root, &current_targets)?;
         if had_attached_units {
-            apply_systemd_changes(&root, &current_targets, &attached_diff).await?;
+            apply_systemd_changes(
+                &root,
+                &current_targets,
+                &attached_diff,
+                &changed_credential_units,
+            )
+            .await?;
         }
         printer.info("No exposed package targets are installed.");
         return Ok(());
@@ -181,8 +199,15 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
 
     disable_removed_targets(&root, &removed_targets)?;
     write_attached_units(&root, &packages)?;
+    let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
     write_exact_preset(&root, &current_targets)?;
-    apply_systemd_changes(&root, &current_targets, &attached_diff).await?;
+    apply_systemd_changes(
+        &root,
+        &current_targets,
+        &attached_diff,
+        &changed_credential_units,
+    )
+    .await?;
 
     if current_targets.is_empty() {
         printer.info("Removed exposed package target enablement.");
@@ -207,6 +232,7 @@ fn exposed_packages_from_expose_dir(
 ) -> Result<Vec<ExposedPackage>> {
     let mut packages = Vec::new();
     let mut unit_owners = BTreeMap::<String, String>::new();
+    let mut credential_blob_owners = BTreeMap::<PathBuf, String>::new();
     for entry in installed {
         let Some(apm) = entry.apm.as_ref() else {
             continue;
@@ -250,12 +276,28 @@ fn exposed_packages_from_expose_dir(
             unit_owners.insert(unit.clone(), apm.name.clone());
         }
 
+        let credential_blobs =
+            generated_credential_blobs(&apm.name, Path::new(&artifact.store_path), expose)
+                .with_context(|| format!("reading credential blobs for package '{}'", apm.name))?;
+        for blob in &credential_blobs {
+            if let Some(owner) = credential_blob_owners.get(&blob.relative_path) {
+                bail!(
+                    "exposed credential blob '{}' is declared by both packages '{}' and '{}'",
+                    blob.relative_path.display(),
+                    owner,
+                    apm.name
+                );
+            }
+            credential_blob_owners.insert(blob.relative_path.clone(), apm.name.clone());
+        }
+
         packages.push(ExposedPackage {
             name: apm.name.clone(),
             target: expose.target.clone(),
             units,
             artifact_hash,
             artifact_store_path: artifact.store_path.clone(),
+            credential_blobs,
             provides: expose.provides.clone(),
             uses: expose.uses.clone(),
         });
@@ -286,6 +328,196 @@ fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> 
         write_capability_route_dropins(&dir, packages)?;
     }
     Ok(())
+}
+
+fn generated_credential_blobs(
+    package_name: &str,
+    artifact_store_path: &Path,
+    expose: &ExposeMeta,
+) -> Result<Vec<CredentialBlob>> {
+    let artifact_credstore = artifact_store_path.join("credstore.encrypted");
+    let mut expected = BTreeMap::<PathBuf, BTreeSet<String>>::new();
+    for credential in &expose.config.credentials {
+        let Some(relative) = generated_credential_relative_path(package_name, credential)? else {
+            continue;
+        };
+        let units = credential_blob_units(credential, expose);
+        if expected.insert(relative.clone(), units).is_some() {
+            bail!(
+                "expose metadata declares generated credential blob '{}' more than once",
+                relative.display()
+            );
+        }
+    }
+
+    let actual = actual_generated_credential_paths(&artifact_credstore)?;
+    let expected_paths = expected.keys().cloned().collect::<BTreeSet<_>>();
+    for path in actual.difference(&expected_paths) {
+        bail!(
+            "expose artifact contains undeclared generated credential blob '{}'",
+            path.display()
+        );
+    }
+
+    let mut blobs = Vec::new();
+    for (relative_path, units) in expected {
+        let store_path = artifact_credstore.join(&relative_path);
+        let metadata = std::fs::symlink_metadata(&store_path).with_context(|| {
+            format!(
+                "generated credential blob '{}' is missing from expose artifact",
+                relative_path.display()
+            )
+        })?;
+        if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            bail!(
+                "generated credential blob {} is not a regular file",
+                store_path.display()
+            );
+        }
+        blobs.push(CredentialBlob {
+            relative_path,
+            store_path,
+            units,
+        });
+    }
+    blobs.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(blobs)
+}
+
+fn generated_credential_relative_path(
+    package_name: &str,
+    credential: &CredentialMeta,
+) -> Result<Option<PathBuf>> {
+    let Some(source) = credential.source.as_deref() else {
+        return Ok(None);
+    };
+    let Some(relative) = source.strip_prefix(GENERATED_CREDSTORE_SOURCE_PREFIX) else {
+        return Ok(None);
+    };
+    let relative = PathBuf::from(relative);
+    let mut components = relative.components();
+    if components
+        .next()
+        .and_then(|component| component.as_os_str().to_str())
+        != Some("aos")
+    {
+        return Ok(None);
+    }
+    if relative
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("generated credential source path must not contain '..': {source}");
+    }
+    let expected = PathBuf::from("aos")
+        .join(package_name)
+        .join(&credential.name);
+    if relative != expected {
+        bail!(
+            "generated credential source path must match owning package namespace '{}': {}",
+            expected.display(),
+            source
+        );
+    }
+    Ok(Some(relative))
+}
+
+fn credential_blob_units(credential: &CredentialMeta, expose: &ExposeMeta) -> BTreeSet<String> {
+    if credential.units.is_empty() {
+        return expose
+            .units
+            .iter()
+            .filter(|unit| unit.ends_with(".service"))
+            .cloned()
+            .collect();
+    }
+    credential.units.iter().cloned().collect()
+}
+
+fn actual_generated_credential_paths(root: &Path) -> Result<BTreeSet<PathBuf>> {
+    if !root.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let mut paths = BTreeSet::new();
+    collect_actual_generated_credential_paths(root, root, &mut paths)?;
+    Ok(paths)
+}
+
+fn collect_actual_generated_credential_paths(
+    root: &Path,
+    dir: &Path,
+    paths: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("reading file type for {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_actual_generated_credential_paths(root, &path, paths)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            bail!(
+                "generated credential blob {} is not a regular file",
+                path.display()
+            );
+        }
+        paths.insert(
+            path.strip_prefix(root)
+                .with_context(|| format!("computing credential blob path for {}", path.display()))?
+                .to_path_buf(),
+        );
+    }
+    Ok(())
+}
+
+fn write_generated_credential_blobs(
+    root: &Path,
+    packages: &[ExposedPackage],
+) -> Result<BTreeSet<String>> {
+    let managed_root = root.join(GENERATED_CREDSTORE_REL);
+    let mut changed_units = BTreeSet::new();
+    for package in packages {
+        for blob in &package.credential_blobs {
+            let link = root
+                .join("run/credstore.encrypted")
+                .join(&blob.relative_path);
+            if credential_blob_link_changed(&link, &blob.store_path) {
+                changed_units.extend(blob.units.iter().cloned());
+            }
+        }
+    }
+    reset_dir(&managed_root)?;
+    for package in packages {
+        for blob in &package.credential_blobs {
+            let link = root
+                .join("run/credstore.encrypted")
+                .join(&blob.relative_path);
+            if !link.starts_with(&managed_root) {
+                bail!(
+                    "generated credential blob path escapes managed credstore namespace: {}",
+                    link.display()
+                );
+            }
+            atomic_symlink(&blob.store_path, &link).with_context(|| {
+                format!(
+                    "linking generated credential blob {} -> {}",
+                    link.display(),
+                    blob.store_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(changed_units)
+}
+
+fn credential_blob_link_changed(link: &Path, target: &Path) -> bool {
+    match std::fs::read_link(link) {
+        Ok(existing) => existing != target,
+        Err(_) => link.symlink_metadata().is_ok(),
+    }
 }
 
 fn validate_capability_routes(packages: &[ExposedPackage]) -> Result<()> {
@@ -660,6 +892,7 @@ async fn apply_systemd_changes(
     root: &Path,
     current_targets: &BTreeSet<String>,
     attached_diff: &UnitDiff,
+    changed_credential_units: &BTreeSet<String>,
 ) -> Result<()> {
     if root == Path::new("/") {
         let client = SystemdClient::connect().await?;
@@ -685,10 +918,30 @@ async fn apply_systemd_changes(
                 }
             }
         }
+        let restarted_units = attached_diff
+            .to_restart
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let credential_restart_units = changed_credential_units
+            .difference(&restarted_units)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        try_restart_changed_credential_units(root, &credential_restart_units)?;
     } else {
         preset_targets(root, current_targets)?;
     }
     Ok(())
+}
+
+fn try_restart_changed_credential_units(root: &Path, units: &BTreeSet<String>) -> Result<()> {
+    if units.is_empty() || root != Path::new("/") {
+        return Ok(());
+    }
+    let mut command = systemctl(root);
+    command.arg("try-restart");
+    command.args(units);
+    run_systemctl(command, "try-restart changed package credential consumers")
 }
 
 async fn apply_attached_unit_diff(client: &SystemdClient, diff: &UnitDiff) -> Result<()> {
@@ -889,25 +1142,37 @@ fn copy_dropin_dir(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn reset_dir(path: &Path) -> Result<()> {
-    if path.symlink_metadata().is_ok() {
-        for entry in
-            std::fs::read_dir(path).with_context(|| format!("reading {}", path.display()))?
-        {
-            let entry = entry?;
-            let entry_path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("reading file type for {}", entry_path.display()))?;
-            if file_type.is_dir() {
-                std::fs::remove_dir_all(&entry_path)
-                    .with_context(|| format!("removing {}", entry_path.display()))?;
-            } else {
-                std::fs::remove_file(&entry_path)
-                    .with_context(|| format!("removing {}", entry_path.display()))?;
+    match path.symlink_metadata() {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() => {
+            std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
+            std::fs::create_dir_all(path)
+                .with_context(|| format!("creating {}", path.display()))?;
+        }
+        Ok(_) => {
+            for entry in
+                std::fs::read_dir(path).with_context(|| format!("reading {}", path.display()))?
+            {
+                let entry = entry?;
+                let entry_path = entry.path();
+                let file_type = entry
+                    .file_type()
+                    .with_context(|| format!("reading file type for {}", entry_path.display()))?;
+                if file_type.is_dir() {
+                    std::fs::remove_dir_all(&entry_path)
+                        .with_context(|| format!("removing {}", entry_path.display()))?;
+                } else {
+                    std::fs::remove_file(&entry_path)
+                        .with_context(|| format!("removing {}", entry_path.display()))?;
+                }
             }
         }
-    } else {
-        std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(path)
+                .with_context(|| format!("creating {}", path.display()))?;
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading metadata for {}", path.display()));
+        }
     }
     Ok(())
 }
@@ -959,11 +1224,11 @@ fn aos_root_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use tempfile::TempDir;
 
     use crate::types::{
-        ApmMeta, CapabilityKind, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
+        ApmMeta, CapabilityKind, CredentialMeta, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
         ProvidedCapabilityMeta, RequiredCapabilityMeta, SysrootImageEntry,
     };
 
@@ -1112,6 +1377,84 @@ mod tests {
         exposed_packages(&profile, &[provider, consumer]).unwrap_err()
     }
 
+    fn link_expose_artifact(profile: &Profile, installed: &InstalledMeta) {
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::os::unix::fs::symlink(
+            &artifact,
+            profile
+                .current_path()
+                .join("expose")
+                .join(store_path_hash(&artifact)),
+        )
+        .unwrap();
+    }
+
+    fn add_generated_credential_blob(installed: &mut InstalledMeta, relative: &str, content: &str) {
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let path = Path::new(&artifact)
+            .join("credstore.encrypted")
+            .join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+
+        declare_generated_credential_blob(installed, relative);
+    }
+
+    fn declare_generated_credential_blob(installed: &mut InstalledMeta, relative: &str) {
+        let apm = installed.apm.as_mut().unwrap();
+        let package = apm.name.clone();
+        let expose = apm.expose.as_mut().unwrap();
+        let credential_name = Path::new(relative)
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap()
+            .to_string();
+        expose.config.credentials.push(CredentialMeta {
+            name: credential_name,
+            source: Some(format!("/run/credstore.encrypted/{relative}")),
+            ciphertext: None,
+            units: vec![format!("{package}.service")],
+            encrypted: true,
+        });
+    }
+
+    fn write_generated_credential_blob_file(
+        installed: &InstalledMeta,
+        relative: &str,
+        content: &str,
+    ) {
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let path = Path::new(&artifact)
+            .join("credstore.encrypted")
+            .join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
     #[test]
     fn rebuild_generation_expose_roots_links_artifacts_once() {
         let tmp = TempDir::new().unwrap();
@@ -1239,6 +1582,190 @@ mod tests {
             assert!(!route_dropin.contains("NetworkNamespacePath="));
             assert!(!route_dropin.contains("JoinsNamespaceOf="));
         }
+    }
+
+    #[test]
+    fn write_generated_credential_blobs_links_managed_credstore_namespace() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_generated_credential_blob(&mut installed, "aos/web/join-token", "ciphertext");
+        let stale = root.join("run/credstore.encrypted/aos/stale-token");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, "stale").unwrap();
+        let old = tmp.path().join("old-credential");
+        std::fs::write(&old, "old").unwrap();
+        let link = root.join("run/credstore.encrypted/aos/web/join-token");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        let changed_units = write_generated_credential_blobs(&root, &packages).unwrap();
+
+        let target = std::fs::read_link(&link).unwrap();
+        assert!(target.ends_with("credstore.encrypted/aos/web/join-token"));
+        assert!(!stale.exists());
+        assert!(changed_units.contains("web.service"));
+    }
+
+    #[test]
+    fn write_generated_credential_blobs_replaces_symlinked_managed_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_generated_credential_blob(&mut installed, "aos/web/join-token", "ciphertext");
+        let external = tmp.path().join("external-credstore");
+        std::fs::create_dir_all(&external).unwrap();
+        std::fs::write(external.join("sentinel"), "keep").unwrap();
+        let managed_root = root.join(GENERATED_CREDSTORE_REL);
+        std::fs::create_dir_all(managed_root.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&external, &managed_root).unwrap();
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        write_generated_credential_blobs(&root, &packages).unwrap();
+
+        assert!(external.join("sentinel").exists());
+        let metadata = std::fs::symlink_metadata(&managed_root).unwrap();
+        assert!(metadata.file_type().is_dir());
+        assert!(!metadata.file_type().is_symlink());
+        assert!(std::fs::read_link(managed_root.join("web/join-token")).is_ok());
+    }
+
+    #[test]
+    fn exposed_packages_rejects_duplicate_generated_credential_blobs() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_generated_credential_blob(&mut web, "aos/web/token", "web");
+        declare_generated_credential_blob(&mut web, "aos/web/token");
+        link_expose_artifact(&profile, &web);
+
+        let err = exposed_packages(&profile, &[web]).unwrap_err();
+
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("more than once")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_generated_credential_outside_package_namespace() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_generated_credential_blob(&mut web, "aos/other-package/join-token", "ciphertext");
+        link_expose_artifact(&profile, &web);
+
+        let err = exposed_packages(&profile, &[web]).unwrap_err();
+
+        assert!(
+            err.chain().any(|cause| cause
+                .to_string()
+                .contains("owning package namespace 'aos/web/join-token'")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_generated_credential_blob_files() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        declare_generated_credential_blob(&mut web, "aos/web/missing-token");
+        link_expose_artifact(&profile, &web);
+
+        let err = exposed_packages(&profile, &[web]).unwrap_err();
+
+        assert!(
+            err.chain().any(|cause| cause
+                .to_string()
+                .contains("is missing from expose artifact")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_symlink_generated_credential_blob_files() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        declare_generated_credential_blob(&mut web, "aos/web/join-token");
+        let artifact = web
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let blob = Path::new(&artifact).join("credstore.encrypted/aos/web/join-token");
+        std::fs::create_dir_all(blob.parent().unwrap()).unwrap();
+        let target = tmp.path().join("credential-target");
+        std::fs::write(&target, "ciphertext").unwrap();
+        std::os::unix::fs::symlink(&target, &blob).unwrap();
+        link_expose_artifact(&profile, &web);
+
+        let err = exposed_packages(&profile, &[web]).unwrap_err();
+
+        assert!(
+            err.chain()
+                .any(|cause| cause.to_string().contains("is not a regular file")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_undeclared_generated_credential_blob_files() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let web = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        write_generated_credential_blob_file(&web, "aos/web/extra-token", "extra");
+        link_expose_artifact(&profile, &web);
+
+        let err = exposed_packages(&profile, &[web]).unwrap_err();
+
+        assert!(
+            err.chain().any(|cause| cause
+                .to_string()
+                .contains("undeclared generated credential blob")),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -1851,6 +2378,7 @@ mod tests {
             units: BTreeSet::from(["aos-pkg-web.target".to_string(), "web.service".to_string()]),
             artifact_hash: "newartifacthash".into(),
             artifact_store_path: new_artifact.display().to_string(),
+            credential_blobs: Vec::new(),
             provides: Vec::new(),
             uses: Vec::new(),
         };

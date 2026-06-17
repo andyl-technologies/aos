@@ -115,6 +115,14 @@
     "${kind} must be an absolute path: ${builtins.toString path}"
     path;
 
+  validateStorePath = kind: path: let
+    checked = validatePathHasNoParent kind (validateAbsolutePath kind path);
+  in
+    throwIfNot
+    (lib.hasPrefix "/nix/store/" checked)
+    "${kind} must be a Nix store path: ${builtins.toString path}"
+    checked;
+
   validatePathHasNoParent = kind: path:
     throwIfNot
     (!(builtins.elem ".." (lib.splitString "/" path)))
@@ -413,32 +421,61 @@
         }
     );
 
-  validateCredential = credential:
+  validateCredential = packageName: credential:
     throwIfNot
     (builtins.isAttrs credential)
     "expose.config.credentials entries must be attrsets"
     (
       let
-        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted"];
+        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted" "encryptedFile"];
         extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames credential);
         name =
           throwIfNot
           (credential ? name && builtins.isString credential.name && builtins.match credentialNameType credential.name != null)
           "invalid credential name '${builtins.toString (credential.name or "")}'"
           credential.name;
-        encrypted = validateBool "expose.config.credentials.encrypted" (credential.encrypted or false);
+        vendored = credential ? encryptedFile;
+        encrypted =
+          if vendored
+          then
+            throwIfNot
+            (validateBool "expose.config.credentials.encrypted" (credential.encrypted or true))
+            "credential '${name}' with encryptedFile must be encrypted"
+            true
+          else validateBool "expose.config.credentials.encrypted" (credential.encrypted or false);
         source =
           if credential ? source
           then validateCredentialSource encrypted credential.source
+          else if vendored
+          then "/run/credstore.encrypted/aos/${packageName}/${name}"
           else null;
+        generatedSource =
+          source != null
+          && (
+            source == "/run/credstore.encrypted/aos"
+            || lib.hasPrefix "/run/credstore.encrypted/aos/" source
+          );
         ciphertext =
           if credential ? ciphertext
           then validateCredentialCiphertext credential.ciphertext
+          else null;
+        encryptedFile =
+          if credential ? encryptedFile
+          then
+            validateStorePath
+            "credential encryptedFile"
+            (builtins.toString credential.encryptedFile)
           else null;
         units =
           builtins.map
           (validateServiceUnitName "expose.config.credentials.units")
           (validateList "expose.config.credentials.units" (credential.units or []));
+        manifestCredential =
+          {
+            inherit name units encrypted;
+          }
+          // lib.optionalAttrs (source != null) {inherit source;}
+          // lib.optionalAttrs (ciphertext != null) {inherit ciphertext;};
       in
         throwIfNot
         (extraKeys == [])
@@ -451,11 +488,35 @@
             throwIfNot
             (!(ciphertext != null && !encrypted))
             "credential '${name}' declares ciphertext but is not encrypted"
-            ({
-              inherit name units encrypted;
-            }
-            // lib.optionalAttrs (source != null) {inherit source;}
-            // lib.optionalAttrs (ciphertext != null) {inherit ciphertext;})
+            (
+              throwIfNot
+              (!(vendored && ciphertext != null))
+              "credential '${name}' must not declare both encryptedFile and ciphertext"
+              (
+                throwIfNot
+                (!(vendored && credential ? source))
+                "credential '${name}' with encryptedFile uses the deterministic /run/credstore.encrypted/aos/<package>/<name> source path"
+                (
+                  throwIfNot
+                  (!vendored || lib.hasPrefix "/run/credstore.encrypted/aos/" source)
+                  "credential '${name}' with encryptedFile must use the AOS projected credstore namespace under /run/credstore.encrypted/aos"
+                  (
+                    throwIfNot
+                    (vendored || !generatedSource)
+                    "credential '${name}' must not use the AOS generated credential namespace /run/credstore.encrypted/aos without encryptedFile"
+                    {
+                      manifest = manifestCredential;
+                      blob =
+                        if vendored
+                        then {
+                          inherit name source encryptedFile;
+                        }
+                        else null;
+                    }
+                  )
+                )
+              )
+            )
           )
         )
     );
@@ -490,7 +551,9 @@
     allowedKeys = ["artifacts" "credentials"];
     extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames checkedConfig);
     artifacts = builtins.map (validateConfigArtifact packageName) (validateList "expose.config.artifacts" (checkedConfig.artifacts or []));
-    credentials = builtins.map validateCredential (validateList "expose.config.credentials" (checkedConfig.credentials or []));
+    checkedCredentials = builtins.map (validateCredential packageName) (validateList "expose.config.credentials" (checkedConfig.credentials or []));
+    credentials = builtins.map (credential: credential.manifest) checkedCredentials;
+    credentialBlobs = builtins.filter (blob: blob != null) (builtins.map (credential: credential.blob) checkedCredentials);
     credentialNames = builtins.map (credential: credential.name) credentials;
     duplicateCredentialNames =
       lib.unique (
@@ -507,7 +570,7 @@
       throwIfNot
       (duplicateCredentialNames == [])
       "expose.config.credentials declares duplicate credential name(s): ${builtins.concatStringsSep ", " duplicateCredentialNames}"
-      {inherit artifacts credentials;}
+      {inherit artifacts credentials credentialBlobs;}
     );
 
   validateProvidedCapability = capability:
@@ -840,7 +903,11 @@ in rec {
       builtins.map
       validateImage
       (validateList "expose.images" (checkedExpose.images or []));
-    config = validateConfig packageName (checkedExpose.config or {});
+    checkedConfig = validateConfig packageName (checkedExpose.config or {});
+    config = {
+      inherit (checkedConfig) artifacts credentials;
+    };
+    credentialBlobs = checkedConfig.credentialBlobs;
     provides =
       builtins.map
       validateProvidedCapability
@@ -1528,6 +1595,18 @@ in rec {
       systemd = typedSystemd;
     };
     storageLinks = assertNoGlobalScanDirStorage packageName rendered.storageLinks;
+    credentialBlobCommands =
+      lib.concatMapStringsSep "\n" (
+        blob: let
+          relative = lib.removePrefix "/run/credstore.encrypted/" blob.source;
+        in ''
+          credential_out="$out/credstore.encrypted/${relative}"
+          mkdir -p "$(dirname "$credential_out")"
+          cp ${lib.escapeShellArg blob.encryptedFile} "$credential_out"
+          chmod 0400 "$credential_out"
+        ''
+      )
+      credentialBlobs;
 
     manifest = {
       expose = {
@@ -1559,6 +1638,7 @@ in rec {
         mkdir -p "$out/units"
         cp -a "$unitsDrv"/. "$out/units/"
         cp "$manifestPath" "$out/manifest.json"
+        ${credentialBlobCommands}
       ''
     ));
 }
