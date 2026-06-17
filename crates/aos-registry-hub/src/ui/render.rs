@@ -50,21 +50,14 @@ fn page_title(brand: &str, title: &str) -> String {
     }
 }
 
-/// Escape text for HTML element and attribute contexts.
-pub fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            other => out.push(other),
-        }
-    }
-    out
-}
+// The pure rendering primitives (`escape`, `table`, `human_size`,
+// `key_fingerprint`) are single-sourced in the shared, wasm-clean
+// [`aos_registry_core::web::render`] and re-exported here so the hub's richer
+// page builders, the producer console, and the shared browse surface render
+// byte-identically. The hub keeps its own session/brand/state-line page chrome
+// (`page_with_session`, `StateLine`, `SessionIndicator`, `brand`), which the
+// shared renderer parameterizes differently (an explicit `PageChrome`).
+pub use aos_registry_core::web::render::{escape, human_size, key_fingerprint, table};
 
 /// Data for the footer state line ("expose state" — every page carries
 /// the surface commit, index freshness, render time, and hub version).
@@ -257,27 +250,6 @@ pub fn page_with_session(
          <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
         session = session.render(),
     )
-}
-
-/// Render a table from a header row and pre-escaped body rows.
-///
-/// Cells in `rows` are inserted as-is so callers can embed links; callers
-/// must escape all dynamic text via [`escape`].
-pub fn table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut out = String::from("<table>\n<thead><tr>");
-    for header in headers {
-        let _ = write!(out, "<th>{}</th>", escape(header));
-    }
-    out.push_str("</tr></thead>\n<tbody>\n");
-    for row in rows {
-        out.push_str("<tr>");
-        for cell in row {
-            let _ = write!(out, "<td>{cell}</td>");
-        }
-        out.push_str("</tr>\n");
-    }
-    out.push_str("</tbody>\n</table>\n");
-    out
 }
 
 /// Render a table whose header cells are pre-rendered HTML.
@@ -486,41 +458,6 @@ pub fn ago(unix: i64) -> String {
         format!("{}h ago", delta / 3600)
     } else {
         format!("{}d ago", delta / 86400)
-    }
-}
-
-/// The ssh-keygen-style SHA-256 fingerprint of a base64 key blob.
-///
-/// Decodes `b64`, hashes the raw blob, and renders the digest as
-/// `SHA256:<base64-no-pad>` — the same form `ssh-keygen -lf` prints. When
-/// `b64` is not valid base64, the raw string bytes are hashed instead so
-/// every anchor still gets a stable fingerprint.
-pub fn key_fingerprint(b64: &str) -> String {
-    use base64::Engine as _;
-    use sha2::Digest as _;
-    let blob = base64::engine::general_purpose::STANDARD
-        .decode(b64.trim())
-        .unwrap_or_else(|_| b64.as_bytes().to_vec());
-    let digest = sha2::Sha256::digest(&blob);
-    format!(
-        "SHA256:{}",
-        base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
-    )
-}
-
-/// Format a byte count for humans (binary units, one decimal).
-pub fn human_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
