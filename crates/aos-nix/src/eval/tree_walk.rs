@@ -29712,6 +29712,41 @@ mod tests {
     }
 
     #[test]
+    fn relative_path_interpolation_resolves_against_path_literal_base() {
+        let dir = unique_temp_dir("relative-path-interpolation");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("source base directory creates");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(base.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options(r#"./a/${"b"}/c"#, options.clone()),
+            base.join("a/b/c").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(r#"builtins.typeOf (./a/${"b"}/c)"#, options.clone()),
+            b"path"
+        );
+        assert_eq!(
+            eval_with_options(r#"builtins.isPath (./a/${"b"}/c)"#, options.clone()).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_path_bytes_with_options(r#"./a/${"../b"}/c"#, options.clone()),
+            base.join("b/c").as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_path_bytes_with_options(r#"./a/${/x}/y"#, options),
+            base.join("a/x/y").as_os_str().as_bytes()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn path_interpolation_copies_sources_to_store_contexts() {
         let (dir, path) = temp_file_with_bytes("path-interpolation", b"abc");
         let path = path_source(&path);

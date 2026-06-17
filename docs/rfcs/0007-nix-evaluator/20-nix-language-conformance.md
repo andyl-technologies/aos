@@ -259,8 +259,9 @@ search paths, and store coercion.
       directory outside pure evaluation mode. Pure evaluation rejects home paths;
       AOS requires callers to configure the home directory explicitly rather
       than reading the ambient process `HOME`.
-- [ ] **Path interpolation** — `./a/${e}` (see §2.3): at least one `/` before any
-      `${}` for path recognition.
+- [x] **Path interpolation** — `./a/${e}` (see §2.3): at least one `/` before any
+      `${}` for path recognition. Relative interpolated paths resolve against
+      the configured path-literal base and remain path values.
 - [ ] **`/` division-vs-path disambiguation** — `a / b` (spaces) is division;
       `a/b` (no spaces) is a path. **The whitespace around `/` is the
       disambiguator** — reproduce the lexer rule exactly. Verify the precise
