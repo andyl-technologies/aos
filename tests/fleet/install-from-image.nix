@@ -55,13 +55,14 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      roles = ["aos-registry-server"];
+      packages = ["test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
-      # Static cache of the full closure lands under /var/lib. The server-2
-      # closure has grown past the old 1536 MiB margin (the zstd cache now
-      # overflows it mid-generation: "No space left on device"), so give
-      # /var more room.
-      varSizeMiB = 3072;
+      # Static cache of the full closure lands under /var/lib/sysreg-cache, and
+      # publish/cache generation stages rewritten store paths in the /nix
+      # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
+      # producer headroom as the server closure grows.
+      varSizeMiB = 4096;
     };
 
     target = {
@@ -177,7 +178,13 @@ in {
       # Same producer block as apm-registry-upgrade.nix, plus a regular
       # (non-sysroot) bc package for the `apm install` leg.
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
       )
