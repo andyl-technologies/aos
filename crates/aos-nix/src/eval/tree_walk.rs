@@ -31953,6 +31953,28 @@ mod tests {
     }
 
     #[test]
+    fn non_string_operations_do_not_fabricate_context() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"let
+                     withCtx = text: path: builtins.appendContext text {
+                       ${path} = { path = true; };
+                     };
+                     a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                     a2 = withCtx "a" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+                     b = withCtx "b" "/nix/store/cccccccccccccccccccccccccccccccc-c";
+                     updated = { eq = a == a2; lt = a < b; } // { gt = b > a; };
+                   in {
+                     comparison = builtins.getContext (builtins.toJSON (a == a2));
+                     ordering = builtins.getContext (builtins.toJSON (a < b));
+                     update = builtins.getContext (builtins.toJSON updated);
+                   }"#
+            ),
+            br#"{"comparison":{},"ordering":{},"update":{}}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn indented_string_interpolation_strips_literals_before_insertion() {
         assert_eq!(
             eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),

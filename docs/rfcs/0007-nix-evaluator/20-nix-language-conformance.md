@@ -219,7 +219,7 @@ are language-level and live here.
 - [x] **Concatenation unions context** — `a + b` carries `context(a) ∪ context(b)`.
 - [x] **Interpolation unions context** — `"${a}${b}"` carries the union of every
       interpolated part's context.
-- [ ] **`//`, comparisons, and other ops do not fabricate context** — only
+- [x] **`//`, comparisons, and other ops do not fabricate context** — only
       string-producing operations propagate; comparisons return bools with no
       context.
 - [ ] **Context survives string-slicing/replacement** — `substring`,
