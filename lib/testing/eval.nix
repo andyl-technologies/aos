@@ -390,7 +390,7 @@ in
 
         is_allowed_unconfined_package() {
           case "$1" in
-            k3s-combined|k3s-control-plane|k3s-worker)
+            aos-test-agent|k3s-combined|k3s-control-plane|k3s-worker)
               return 0
               ;;
             *)
