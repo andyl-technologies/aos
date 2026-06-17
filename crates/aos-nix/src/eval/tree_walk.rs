@@ -7354,20 +7354,6 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         match primop {
             StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop(first, second),
-            StrictBinaryPrimOp::GetAttr => {
-                self.eval_get_attr_primop(call.id, call.span, first, second)
-            }
-            StrictBinaryPrimOp::HasAttr => self.eval_has_attr_primop(first, second),
-            StrictBinaryPrimOp::RemoveAttrs => {
-                self.eval_remove_attrs_primop(call.id, call.span, first, second)
-            }
-            StrictBinaryPrimOp::IntersectAttrs => {
-                self.eval_intersect_attrs_primop(call.id, call.span, first, second)
-            }
-            StrictBinaryPrimOp::CatAttrs => {
-                self.eval_cat_attrs_primop(call.id, call.span, first, second)
-            }
-            StrictBinaryPrimOp::Elem => self.eval_elem_primop(call.id, node, first, second),
             StrictBinaryPrimOp::LessThan => {
                 self.eval_comparison(call.id, node, ComparisonOp::Lt, first, second)
             }
@@ -7376,9 +7362,6 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictBinaryPrimOp::HashFile => {
                 self.eval_hash_file_primop(call.id, call.span, first, second)
-            }
-            StrictBinaryPrimOp::ConcatStringsSep => {
-                self.eval_concat_strings_sep_primop(call.id, call.span, first, second)
             }
             StrictBinaryPrimOp::Add => {
                 self.eval_numeric_binary(call.id, node, BinaryArithmeticOp::Add, first, second)
@@ -7417,6 +7400,35 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictBinaryPrimOp::GroupBy => {
                 self.eval_group_by_primop(call.id, call.span, first, second)
+            }
+        }
+    }
+
+    fn eval_direct_binary_primop_direct(
+        &mut self,
+        call: BuiltinCall,
+        node: &IrNode,
+        primop: DirectBinaryPrimOp,
+        first: IrId,
+        second: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            DirectBinaryPrimOp::GetAttr => {
+                self.eval_get_attr_primop(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::HasAttr => self.eval_has_attr_primop(first, second),
+            DirectBinaryPrimOp::RemoveAttrs => {
+                self.eval_remove_attrs_primop(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::IntersectAttrs => {
+                self.eval_intersect_attrs_primop(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::CatAttrs => {
+                self.eval_cat_attrs_primop(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::Elem => self.eval_elem_primop(call.id, node, first, second),
+            DirectBinaryPrimOp::ConcatStringsSep => {
+                self.eval_concat_strings_sep_primop(call.id, call.span, first, second)
             }
         }
     }
@@ -7560,16 +7572,6 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Partition => {
                 self.eval_partition_primop_value(id, span, first, second)
             }
-            StrictBinaryPrimOp::GetAttr
-            | StrictBinaryPrimOp::HasAttr
-            | StrictBinaryPrimOp::RemoveAttrs
-            | StrictBinaryPrimOp::IntersectAttrs
-            | StrictBinaryPrimOp::CatAttrs
-            | StrictBinaryPrimOp::Elem
-            | StrictBinaryPrimOp::ConcatStringsSep => Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
-                span,
-            )),
         }
     }
 
@@ -9574,21 +9576,38 @@ trait Builtin: Sync {
     }
 }
 
+trait UnsupportedBuiltin: BuiltinInfo + Sync {}
+
+fn unsupported_builtin_metadata<T: UnsupportedBuiltin>() -> BuiltinMetadata {
+    <T as BuiltinInfo>::METADATA
+}
+
 macro_rules! unsupported_builtin {
-    ($ty:ident, $name:expr) => {
+    ($ty:ident) => {
+        impl UnsupportedBuiltin for $ty {}
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
+                unsupported_builtin_metadata::<Self>()
             }
         }
     };
 }
 
+trait EffectfulUnaryUnsupportedBuiltin: BuiltinInfo + Sync {}
+
+fn effectful_unary_unsupported_builtin_metadata<T: EffectfulUnaryUnsupportedBuiltin>()
+-> BuiltinMetadata {
+    <T as BuiltinInfo>::METADATA
+}
+
 macro_rules! effectful_unary_unsupported_builtin {
-    ($ty:ident, $name:expr) => {
+    ($ty:ident) => {
+        impl EffectfulUnaryUnsupportedBuiltin for $ty {}
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
+                effectful_unary_unsupported_builtin_metadata::<Self>()
             }
 
             fn apply_direct(
@@ -9612,28 +9631,16 @@ macro_rules! effectful_unary_unsupported_builtin {
     };
 }
 
-fn check_builtin_arity(
-    call: BuiltinCall,
-    expected: usize,
-    actual: usize,
-) -> Result<(), TreeWalkError> {
-    if actual == expected {
-        return Ok(());
-    }
-
-    Err(TreeWalkError::new(
-        TreeWalkErrorKind::InvalidPrimOpArity {
-            id: call.id,
-            symbol: call.symbol,
-            expected,
-            actual,
-        },
-        call.span,
-    ))
+trait StrictUnaryBuiltin: BuiltinInfo + Sync {
+    const PRIMOP: StrictUnaryPrimOp;
 }
 
 macro_rules! strict_unary_builtin {
-    ($ty:ident, $name:expr, $primop:expr) => {
+    ($ty:ident, $primop:expr) => {
+        impl StrictUnaryBuiltin for $ty {
+            const PRIMOP: StrictUnaryPrimOp = $primop;
+        }
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
                 <Self as BuiltinInfo>::METADATA
@@ -9653,7 +9660,7 @@ macro_rules! strict_unary_builtin {
                 eval.eval_strict_unary_primop_value(
                     call.id,
                     call.span,
-                    $primop,
+                    <Self as StrictUnaryBuiltin>::PRIMOP,
                     argument,
                     argument_span,
                     value,
@@ -9672,7 +9679,7 @@ macro_rules! strict_unary_builtin {
                 eval.eval_strict_unary_primop_value(
                     call.id,
                     call.span,
-                    $primop,
+                    <Self as StrictUnaryBuiltin>::PRIMOP,
                     argument.id(),
                     argument.span(),
                     value,
@@ -9682,11 +9689,19 @@ macro_rules! strict_unary_builtin {
     };
 }
 
+trait LazyUnaryBuiltin: BuiltinInfo + Sync {}
+
+fn lazy_unary_builtin_metadata<T: LazyUnaryBuiltin>() -> BuiltinMetadata {
+    <T as BuiltinInfo>::METADATA
+}
+
 macro_rules! lazy_unary_builtin {
-    ($ty:ident, $name:expr) => {
+    ($ty:ident) => {
+        impl LazyUnaryBuiltin for $ty {}
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
+                lazy_unary_builtin_metadata::<Self>()
             }
 
             fn apply_direct(
@@ -9717,8 +9732,16 @@ macro_rules! lazy_unary_builtin {
     };
 }
 
+trait StrictBinaryBuiltin: BuiltinInfo + Sync {
+    const PRIMOP: StrictBinaryPrimOp;
+}
+
 macro_rules! strict_binary_builtin {
-    ($ty:ident, $name:expr, $primop:expr) => {
+    ($ty:ident, $primop:expr) => {
+        impl StrictBinaryBuiltin for $ty {
+            const PRIMOP: StrictBinaryPrimOp = $primop;
+        }
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
                 <Self as BuiltinInfo>::METADATA
@@ -9732,7 +9755,13 @@ macro_rules! strict_binary_builtin {
                 args: &[IrId],
             ) -> Result<Value, TreeWalkError> {
                 check_builtin_arity(call, 2, args.len())?;
-                eval.eval_strict_binary_primop_direct(call, node, $primop, args[0], args[1])
+                eval.eval_strict_binary_primop_direct(
+                    call,
+                    node,
+                    <Self as StrictBinaryBuiltin>::PRIMOP,
+                    args[0],
+                    args[1],
+                )
             }
 
             fn apply(
@@ -9746,7 +9775,7 @@ macro_rules! strict_binary_builtin {
                     call.id,
                     call.span,
                     call.symbol,
-                    $primop,
+                    <Self as StrictBinaryBuiltin>::PRIMOP,
                     args[0],
                     args[1],
                 )
@@ -9755,8 +9784,16 @@ macro_rules! strict_binary_builtin {
     };
 }
 
+trait DirectBinaryBuiltin: BuiltinInfo + Sync {
+    const PRIMOP: DirectBinaryPrimOp;
+}
+
 macro_rules! direct_binary_builtin {
-    ($ty:ident, $name:expr, $primop:expr) => {
+    ($ty:ident, $primop:expr) => {
+        impl DirectBinaryBuiltin for $ty {
+            const PRIMOP: DirectBinaryPrimOp = $primop;
+        }
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
                 <Self as BuiltinInfo>::METADATA
@@ -9770,14 +9807,28 @@ macro_rules! direct_binary_builtin {
                 args: &[IrId],
             ) -> Result<Value, TreeWalkError> {
                 check_builtin_arity(call, 2, args.len())?;
-                eval.eval_strict_binary_primop_direct(call, node, $primop, args[0], args[1])
+                eval.eval_direct_binary_primop_direct(
+                    call,
+                    node,
+                    <Self as DirectBinaryBuiltin>::PRIMOP,
+                    args[0],
+                    args[1],
+                )
             }
         }
     };
 }
 
+trait DirectTernaryBuiltin: BuiltinInfo + Sync {
+    const PRIMOP: StrictTernaryPrimOp;
+}
+
 macro_rules! direct_ternary_builtin {
-    ($ty:ident, $name:expr, $primop:expr) => {
+    ($ty:ident, $primop:expr) => {
+        impl DirectTernaryBuiltin for $ty {
+            const PRIMOP: StrictTernaryPrimOp = $primop;
+        }
+
         impl Builtin for $ty {
             fn metadata(&self) -> BuiltinMetadata {
                 <Self as BuiltinInfo>::METADATA
@@ -9791,10 +9842,36 @@ macro_rules! direct_ternary_builtin {
                 args: &[IrId],
             ) -> Result<Value, TreeWalkError> {
                 check_builtin_arity(call, 3, args.len())?;
-                eval.eval_strict_ternary_primop_direct(call, $primop, args[0], args[1], args[2])
+                eval.eval_strict_ternary_primop_direct(
+                    call,
+                    <Self as DirectTernaryBuiltin>::PRIMOP,
+                    args[0],
+                    args[1],
+                    args[2],
+                )
             }
         }
     };
+}
+
+fn check_builtin_arity(
+    call: BuiltinCall,
+    expected: usize,
+    actual: usize,
+) -> Result<(), TreeWalkError> {
+    if actual == expected {
+        return Ok(());
+    }
+
+    Err(TreeWalkError::new(
+        TreeWalkErrorKind::InvalidPrimOpArity {
+            id: call.id,
+            symbol: call.symbol,
+            expected,
+            actual,
+        },
+        call.span,
+    ))
 }
 
 macro_rules! builtin_registry {
@@ -9813,45 +9890,45 @@ macro_rules! builtin_registry {
     (@declare strict_lazy_binary $ty:ident, $name:expr) => {};
 
     (@declare derivation_strict $ty:ident, $name:expr) => {
-        unsupported_builtin!($ty, $name);
+        unsupported_builtin!($ty);
     };
 
     (@declare strict_unary $ty:ident, $name:expr, $primop:expr) => {
-        strict_unary_builtin!($ty, $name, $primop);
+        strict_unary_builtin!($ty, $primop);
     };
 
     (@declare lazy_unary $ty:ident, $name:expr) => {
-        lazy_unary_builtin!($ty, $name);
+        lazy_unary_builtin!($ty);
     };
 
     (@declare effectful_strict_unary $ty:ident, $name:expr, $primop:expr) => {
-        strict_unary_builtin!($ty, $name, $primop);
+        strict_unary_builtin!($ty, $primop);
     };
 
     (@declare custom_effectful_strict_unary $ty:ident, $name:expr) => {};
 
     (@declare strict_binary $ty:ident, $name:expr, $primop:expr) => {
-        strict_binary_builtin!($ty, $name, $primop);
+        strict_binary_builtin!($ty, $primop);
     };
 
     (@declare effectful_strict_binary $ty:ident, $name:expr, $primop:expr) => {
-        strict_binary_builtin!($ty, $name, $primop);
+        strict_binary_builtin!($ty, $primop);
     };
 
     (@declare direct_binary $ty:ident, $name:expr, $primop:expr) => {
-        direct_binary_builtin!($ty, $name, $primop);
+        direct_binary_builtin!($ty, $primop);
     };
 
     (@declare direct_ternary $ty:ident, $name:expr, $primop:expr) => {
-        direct_ternary_builtin!($ty, $name, $primop);
+        direct_ternary_builtin!($ty, $primop);
     };
 
     (@declare unsupported $ty:ident, $name:expr) => {
-        unsupported_builtin!($ty, $name);
+        unsupported_builtin!($ty);
     };
 
     (@declare effectful_unary_unsupported $ty:ident, $name:expr) => {
-        effectful_unary_unsupported_builtin!($ty, $name);
+        effectful_unary_unsupported_builtin!($ty);
     };
 }
 
@@ -10301,16 +10378,9 @@ enum StrictBinaryPrimOp {
     BitXor,
     CompareVersions,
     ElemAt,
-    GetAttr,
-    HasAttr,
-    RemoveAttrs,
-    IntersectAttrs,
-    CatAttrs,
-    Elem,
     LessThan,
     HashString,
     HashFile,
-    ConcatStringsSep,
     All,
     Any,
     ConcatMap,
@@ -10319,6 +10389,17 @@ enum StrictBinaryPrimOp {
     GroupBy,
     Map,
     Partition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirectBinaryPrimOp {
+    GetAttr,
+    HasAttr,
+    RemoveAttrs,
+    IntersectAttrs,
+    CatAttrs,
+    Elem,
+    ConcatStringsSep,
 }
 
 #[derive(Debug, Default)]
