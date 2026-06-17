@@ -70,6 +70,14 @@
     "expose.units contains invalid systemd unit name '${builtins.toString unit}'"
     unit;
 
+  validateServiceUnitName = field: unit: let
+    checked = validateUnitName unit;
+  in
+    throwIfNot
+    (lib.hasSuffix ".service" checked)
+    "${field} must reference a service unit, got '${builtins.toString unit}'"
+    checked;
+
   validateTargetName = target:
     throwIfNot
     (
@@ -400,7 +408,10 @@
           (credential ? name && builtins.isString credential.name && builtins.match credentialNameType credential.name != null)
           "invalid credential name '${builtins.toString (credential.name or "")}'"
           credential.name;
-        units = builtins.map validateUnitName (validateList "expose.config.credentials.units" (credential.units or []));
+        units =
+          builtins.map
+          (validateServiceUnitName "expose.config.credentials.units")
+          (validateList "expose.config.credentials.units" (credential.units or []));
         encrypted = validateBool "expose.config.credentials.encrypted" (credential.encrypted or false);
       in
         throwIfNot
@@ -887,6 +898,32 @@ in rec {
       )
       config.artifacts;
 
+    credentialsForUnit = unitName:
+      builtins.filter (
+        credential: credential.units == [] || builtins.elem unitName credential.units
+      )
+      config.credentials;
+
+    credentialServiceConfigFor = unitName: authoredServiceConfig: let
+      credentials = credentialsForUnit unitName;
+      loadCredentials =
+        builtins.map (credential: credential.name) (
+          builtins.filter (credential: !credential.encrypted) credentials
+        );
+      loadEncryptedCredentials =
+        builtins.map (credential: credential.name) (
+          builtins.filter (credential: credential.encrypted) credentials
+        );
+    in
+      lib.optionalAttrs (loadCredentials != []) {
+        LoadCredential =
+          lib.unique ((asList (authoredServiceConfig.LoadCredential or [])) ++ loadCredentials);
+      }
+      // lib.optionalAttrs (loadEncryptedCredentials != []) {
+        LoadCredentialEncrypted =
+          lib.unique ((asList (authoredServiceConfig.LoadCredentialEncrypted or [])) ++ loadEncryptedCredentials);
+      };
+
     sandboxServiceConfig = unitName: authoredServiceConfig: let
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
@@ -926,6 +963,7 @@ in rec {
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
       }
+      // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
       // syscallFilterFor syscallProfile
       // lib.optionalAttrs (network == "private-outbound") {
         PrivateNetwork = false;

@@ -398,8 +398,13 @@ apm at first boot; define upgrade/rollback.
 path, first-boot desired-set reconciliation, package-profile install/prune,
 generation upgrade/rollback mechanics, signed structured/env config artifact
 metadata + desired materialization, config-triggered reload/restart, and
-directory/namespace/socket capability-route drop-ins. TPM2-sealed credential
-delivery remains open and keeps the phase at ◐ rather than ☑.
+directory/namespace/socket capability-route drop-ins. Signed credential metadata
+now renders `LoadCredentialEncrypted=` / `LoadCredential=` into the consuming
+service units. The current bare-name imports intentionally declare the unit's
+credential appetite; they do not yet make missing credentials fail closed.
+Offline `systemd-creds encrypt`, signed-PCR-11 policy generation, and
+provisioning of the credstore/system credential payloads remain open and keep the
+phase at ◐ rather than ☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 

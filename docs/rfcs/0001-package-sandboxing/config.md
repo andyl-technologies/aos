@@ -503,8 +503,13 @@ already-sealed ciphertext keyed to that machine's TPM2.
 - **AOS module surface.** No first-class module option wraps
   `SetCredentialEncrypted=` / `LoadCredentialEncrypted=` /
   `--tpm2-public-key-pcrs` yet (the existing `assertKeyIsSystemdCredential`
-  helper only validates `@<name>` field markers). A `mkDerivation`/module-side
-  `systemd-creds encrypt` step and an offline PCR-policy signing key need wiring.
+  helper only validates `@<name>` field markers). Exposed-package credential
+  metadata now renders `LoadCredentialEncrypted=<name>` or
+  `LoadCredential=<name>` into consuming service units, but the
+  current bare-name imports are an appetite/import declaration and do **not**
+  make a missing credential fail closed. The `mkDerivation`/module-side
+  `systemd-creds encrypt` step, first-class source/credstore path schema, and an
+  offline PCR-policy signing key still need wiring.
 - **nspawn handoff.** The host→container `--load-credential` path for full-init
   containers (the Option 1 caveat: container must run systemd as PID 1) still
   needs an end-to-end test; k3s, being a nominal/host-privileged container, is

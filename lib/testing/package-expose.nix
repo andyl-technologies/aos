@@ -102,6 +102,9 @@
             units = ["expose-config.service"];
             encrypted = true;
           }
+          {
+            name = "plain-note";
+          }
         ];
       };
       provides = [
@@ -167,6 +170,17 @@
           units = ["expose-config-split-sidecar.service"];
         }
       ];
+      config.credentials = [
+        {
+          name = "main-secret";
+          units = ["expose-config-split-main.service"];
+          encrypted = true;
+        }
+        {
+          name = "sidecar-note";
+          units = ["expose-config-split-sidecar.service"];
+        }
+      ];
     };
   };
   unknownConfigUnit = builtins.tryEval (
@@ -192,6 +206,29 @@
   unknownConfigUnitRejected =
     if unknownConfigUnit.success
     then throw "expose renderer must reject config artifacts that reference unknown units"
+    else "ok";
+  credentialNonServiceUnit = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            units = ["expose-config-split-main.socket"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialNonServiceUnitRejected =
+    if credentialNonServiceUnit.success
+    then throw "expose renderer must reject credentials that reference non-service units"
     else "ok";
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
@@ -467,7 +504,15 @@ in
     k3sControlPlaneExposePath = k3sControlPlanePackage.expose;
     k3sCombinedExposePath = k3sCombinedPackage.expose;
     inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
-    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected unknownConfigUnitRejected undeclaredPreparedHostPathDirectoryRejected readOnlyPreparedHostPathDirectoryRejected;
+    inherit
+      reservedCollisionRejected
+      privilegedExecPrefixRejected
+      kernelModulePermissionMismatchRejected
+      unknownConfigUnitRejected
+      credentialNonServiceUnitRejected
+      undeclaredPreparedHostPathDirectoryRejected
+      readOnlyPreparedHostPathDirectoryRejected
+      ;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
@@ -678,9 +723,11 @@ in
           grep -q 'BindReadOnlyPaths=/nix/store' "$config_unit"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config/config.env' "$config_unit"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config/config.env' "$config_unit"
+          grep -q 'LoadCredential=plain-note' "$config_unit"
+          grep -q 'LoadCredentialEncrypted=join-token' "$config_unit"
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","units":\["expose-config.service"\]}\]}' "$config_manifest"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
           grep -q '"provides":\[{"kind":"directory","name":"data","path":"/var/lib/expose-config/data"}\]' "$config_manifest"
           grep -q '"uses":\[{"kind":"directory","name":"data","provider":"expose-config","unit":"expose-config.service"}\]' "$config_manifest"
           test "$unknownConfigUnitRejected" = ok
@@ -689,14 +736,24 @@ in
           split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/main.env' "$split_main"
+          grep -q 'LoadCredentialEncrypted=main-secret' "$split_main"
           if grep -q 'expose-config-split/sidecar.env' "$split_main"; then
             echo "main service must not receive sidecar config artifact" >&2
             exit 1
           fi
+          if grep -q 'sidecar-note' "$split_main"; then
+            echo "main service must not receive sidecar credential" >&2
+            exit 1
+          fi
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/sidecar.env' "$split_sidecar"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/sidecar.env' "$split_sidecar"
+          grep -q 'LoadCredential=sidecar-note' "$split_sidecar"
           if grep -q 'expose-config-split/main.env' "$split_sidecar"; then
             echo "sidecar service must not receive main config artifact" >&2
+            exit 1
+          fi
+          if grep -q 'main-secret' "$split_sidecar"; then
+            echo "sidecar service must not receive main credential" >&2
             exit 1
           fi
 
