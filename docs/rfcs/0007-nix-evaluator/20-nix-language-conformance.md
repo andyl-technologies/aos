@@ -273,9 +273,11 @@ search paths, and store coercion.
       and is **copied into the store** (adds source path + context). Verify the
       existence requirement and the copy/coercion asymmetry vs `path + string`
       against pinned Nix — this asymmetry is a classic foot-gun.
-- [ ] **Path → store coercion** — coercing a path to a string copies the
-      referenced file/tree into the store (NAR-hashed) and yields its store path
-      (§2.4, §3). Eval-time, observable as `inputSrcs`.
+- [x] **Path → store coercion** — store-sensitive coercion boundaries such as
+      interpolation, JSON rendering, and derivation attributes copy the
+      referenced file/tree into the store (NAR-hashed), yield its store path, and
+      attach source-path context observable by derivations as `inputSrcs`. Plain
+      `builtins.toString path` remains the raw context-free path string.
 - [ ] **Search paths `<name>`** — `<nixpkgs>` and `<name/sub>` resolve via
       `NIX_PATH` / the configured search path to a path value. Verify whether AOS
       uses angle-bracket lookups at all; if so, reproduce `NIX_PATH` resolution

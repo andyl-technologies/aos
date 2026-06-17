@@ -29820,6 +29820,12 @@ mod tests {
         );
         assert_eq!(
             eval_string_bytes(&format!(
+                "builtins.toJSON (builtins.getContext (builtins.toString {path}))"
+            )),
+            b"{}"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
                 "builtins.toJSON {{ nested = [ {{ path = {path}; }} ]; }}"
             )),
             br#"{"nested":[{"path":"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt"}]}"#
