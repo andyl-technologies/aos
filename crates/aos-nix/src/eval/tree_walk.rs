@@ -5649,16 +5649,19 @@ impl<'ir> TreeWalk<'ir> {
     fn eval_all_any_primop(
         &mut self,
         op: AllAnyOp,
+        id: IrId,
+        span: Span,
         predicate_id: IrId,
         list_id: IrId,
     ) -> Result<Value, TreeWalkError> {
         let predicate_span = self.node(predicate_id)?.span;
         let predicate = self.eval_node(predicate_id)?;
-        if predicate.tag() != ValueTag::Lambda {
+        let predicate = self.force_value(predicate_id, predicate_span, predicate)?;
+        if !matches!(predicate.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: predicate_id,
-                    expected: "lambda",
+                    expected: "function",
                     actual: predicate.tag(),
                 },
                 predicate_span,
@@ -5667,6 +5670,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -5701,10 +5705,92 @@ impl<'ir> TreeWalk<'ir> {
             elements
         };
 
+        self.eval_all_any_elements(
+            op,
+            id,
+            span,
+            predicate_id,
+            predicate_span,
+            predicate,
+            list_id,
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_all_any_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op: AllAnyOp,
+        predicate: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let predicate_value =
+            self.force_value(predicate.id(), predicate.span(), predicate.value())?;
+        if !matches!(predicate_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: predicate.id(),
+                    expected: "function",
+                    actual: predicate_value.tag(),
+                },
+                predicate.span(),
+            ));
+        }
+
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+
+        self.eval_all_any_elements(
+            op,
+            id,
+            span,
+            predicate.id(),
+            predicate.span(),
+            predicate_value,
+            list.id(),
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_all_any_elements(
+        &mut self,
+        op: AllAnyOp,
+        id: IrId,
+        span: Span,
+        predicate_id: IrId,
+        predicate_span: Span,
+        predicate: Value,
+        list_id: IrId,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
         for element in elements {
             let result = self.apply_lambda_value(
-                predicate_id,
-                predicate_span,
+                id,
+                span,
                 predicate_id,
                 predicate,
                 predicate_span,
@@ -6937,8 +7023,12 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::BitOr => self.eval_bitwise_primop(BitwiseOp::Or, first, second),
             StrictBinaryPrimOp::BitXor => self.eval_bitwise_primop(BitwiseOp::Xor, first, second),
             StrictBinaryPrimOp::CompareVersions => self.eval_compare_versions_primop(first, second),
-            StrictBinaryPrimOp::All => self.eval_all_any_primop(AllAnyOp::All, first, second),
-            StrictBinaryPrimOp::Any => self.eval_all_any_primop(AllAnyOp::Any, first, second),
+            StrictBinaryPrimOp::All => {
+                self.eval_all_any_primop(AllAnyOp::All, call.id, call.span, first, second)
+            }
+            StrictBinaryPrimOp::Any => {
+                self.eval_all_any_primop(AllAnyOp::Any, call.id, call.span, first, second)
+            }
             StrictBinaryPrimOp::Filter => {
                 self.eval_filter_primop(call.id, call.span, first, second)
             }
@@ -7080,6 +7170,12 @@ impl<'ir> TreeWalk<'ir> {
                     right,
                 )
             }
+            StrictBinaryPrimOp::All => {
+                self.eval_all_any_primop_value(id, span, AllAnyOp::All, first, second)
+            }
+            StrictBinaryPrimOp::Any => {
+                self.eval_all_any_primop_value(id, span, AllAnyOp::Any, first, second)
+            }
             StrictBinaryPrimOp::GenList => self.eval_gen_list_primop_value(id, span, first, second),
             StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
             StrictBinaryPrimOp::ElemAt
@@ -7090,8 +7186,6 @@ impl<'ir> TreeWalk<'ir> {
             | StrictBinaryPrimOp::CatAttrs
             | StrictBinaryPrimOp::Elem
             | StrictBinaryPrimOp::ConcatStringsSep
-            | StrictBinaryPrimOp::All
-            | StrictBinaryPrimOp::Any
             | StrictBinaryPrimOp::ConcatMap
             | StrictBinaryPrimOp::Filter
             | StrictBinaryPrimOp::GroupBy
@@ -11335,6 +11429,8 @@ mod tests {
             eval("builtins.isFunction builtins.tryEval").as_bool(),
             Ok(true)
         );
+        assert_eq!(eval("builtins.isFunction builtins.all").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isFunction builtins.any").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isFunction builtins.map").as_bool(), Ok(true));
         assert_eq!(
             eval("builtins.isFunction builtins.genList").as_bool(),
@@ -12641,6 +12737,26 @@ mod tests {
             Ok(true)
         );
         assert_eq!(
+            eval("builtins.all builtins.isInt [ 1 2 ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.any builtins.isString [ 1 \"x\" ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let a = builtins.all; in a (x: x) [ true ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let a = builtins.any; in a (x: x) [ false true ]").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let p = x: x; xs = [ true ]; in builtins.all p xs").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval("let builtins = { all = pred: list: false; }; in builtins.all (x: true) []")
                 .as_bool(),
             Ok(false)
@@ -12694,11 +12810,40 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: predicate,
-                expected: "lambda",
+                expected: "function",
                 actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), predicate_span);
+
+        let error = eval_whnf_owned(&lower(
+            "let a = builtins.all; in a (builtins.throw \"predicate\") (builtins.throw \"list\")",
+        ))
+        .expect_err("first-class all forces predicate before list");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"predicate");
+
+        let error = eval_whnf_owned(&lower(
+            "let a = builtins.any; in a (builtins.throw \"predicate\") (builtins.throw \"list\")",
+        ))
+        .expect_err("first-class any forces predicate before list");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"predicate");
+
+        let error = eval_whnf_owned(&lower("let a = builtins.any; in a (x: false) 1"))
+            .expect_err("first-class any requires a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
 
         let ir = lower("builtins.all (x: true) 1");
         let root = ir.arena.node(ir.root).expect("root exists");

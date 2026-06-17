@@ -387,9 +387,9 @@ Forcing order is observable and must match (see
 - [ ] `concatLists` (lists) — flatten one level: concatenate a list of lists.
 - [ ] `concatMap` (f list) — `concatLists (map f list)`, but a single primop;
       `f` must return a list per element.
-- [ ] `all` (pred list) — `true` iff `pred` holds for every element;
+- [x] `all` (pred list) — `true` iff `pred` holds for every element;
       short-circuits on first `false`. Empty list → `true`.
-- [ ] `any` (pred list) — `true` iff `pred` holds for some element;
+- [x] `any` (pred list) — `true` iff `pred` holds for some element;
       short-circuits on first `true`. Empty list → `false`.
 - [ ] `partition` (pred list) — `{ right = [matching]; wrong = [non-matching]; }`,
       each preserving input order. (Key names are exactly `right`/`wrong`.)

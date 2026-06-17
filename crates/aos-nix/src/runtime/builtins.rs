@@ -11,8 +11,8 @@ macro_rules! builtin_definitions {
             strict_binary AddBuiltin, b"add", StrictBinaryPrimOp::Add;
             strict_unary AddDrvOutputDependenciesBuiltin, b"addDrvOutputDependencies", StrictUnaryPrimOp::AddDrvOutputDependencies;
             unsupported AddErrorContextBuiltin, b"addErrorContext";
-            direct_binary AllBuiltin, b"all", StrictBinaryPrimOp::All;
-            direct_binary AnyBuiltin, b"any", StrictBinaryPrimOp::Any;
+            strict_binary AllBuiltin, b"all", StrictBinaryPrimOp::All;
+            strict_binary AnyBuiltin, b"any", StrictBinaryPrimOp::Any;
             unsupported AppendContextBuiltin, b"appendContext";
             strict_unary AttrNamesBuiltin, b"attrNames", StrictUnaryPrimOp::AttrNames;
             strict_unary AttrValuesBuiltin, b"attrValues", StrictUnaryPrimOp::AttrValues;
@@ -628,7 +628,14 @@ mod tests {
             builtin_metadata(b"genList").unwrap().first_class_arity(),
             Some(2)
         );
-        assert_eq!(builtin_metadata(b"all").unwrap().first_class_arity(), None);
+        assert_eq!(
+            builtin_metadata(b"all").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"any").unwrap().first_class_arity(),
+            Some(2)
+        );
         assert_eq!(
             builtin_metadata(b"seq").unwrap().first_class_arity(),
             Some(2)
