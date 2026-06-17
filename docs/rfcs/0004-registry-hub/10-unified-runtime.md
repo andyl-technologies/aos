@@ -201,11 +201,12 @@ flow, and hosted-key channel advance (`core::signing`). The couplings:
   secrets and hosted-key seeds at rest (AES-256-GCM). Native builds it from a
   file-backed instance key; the worker builds the *same* `AesGcmSealer` from a
   Wrangler secret binding. No new trait — just a different constructor.
-- `Mailer` (**exists** in `core::auth::magic`) — sends magic-link / invite
-  email. Native impl is the SMTP/dev-echo seam; the worker's `WorkerMailer`
-  currently logs the link via `console_log!` (a real email-binding delivery is
-  a documented TODO — the port method is synchronous and the Workers runtime
-  has no synchronous mail transport).
+- `Mailer` (**now an async trait** in `core::auth::magic`) — sends magic-link /
+  invite email. Made `async` so a deployment can deliver over the network: the
+  worker's `WorkerMailer` `POST`s the link to an `HUB_EMAIL_API_URL` relay over
+  the Fetch API (optional `HUB_EMAIL_API_TOKEN` bearer), falling back to
+  `console_log!` when unset; the native hub keeps `LogMailer` by default and can
+  inject any async sender.
 - **Publish lease** (**now a trait** — `core::lease::PublishLease`) — the
   native hub keeps its in-memory `Mutex<LeaseMap>` (`InMemoryLease`) behind the
   port; the worker's `D1PublishLease` is a conditional upsert (take iff no row /
@@ -387,8 +388,13 @@ every route — RPC included, as shared Connect-JSON handlers (the decision
 above) — so `aos hub … --hub https://…workers.dev` will configure a Cloudflare
 deployment identically to a native one — no raw D1 SQL, no `wrangler` seeding
 beyond the one-time `migrations apply`. Same code path yields the same config
-path. *Today the worker serves only the read path; the admin/RPC routes answer
-on the native hub.*
+path. *Handler unification has landed: the worker now serves the **entire**
+shared router — RPC, the facade read **and write** (`PUT`), browse, the full
+producer console (login/OIDC/activate/passkey/IAM/config/changes), and
+hosted-key channel advance — so `aos hub … --hub https://…workers.dev`
+administers a Cloudflare deployment identically to a native one. The worker's
+install-time root bootstrap runs in `GET /_init` from `HUB_ROOT_EMAIL` +
+`HUB_ROOT_PASSWORD` (step 6).*
 
 ## The D1 transaction audit (the gate)
 
@@ -499,7 +505,17 @@ unification) are the remaining work that wins parity.
 5. ✅ **Move the CLI to the API** under `aos hub …` — the client speaks
    Connect-JSON and answers identically from the native hub or the worker.
    *Done.*
-6. **Install-time root bootstrap** as the sole non-API mutation path.
+6. ✅ **Install-time root bootstrap** as the sole non-API mutation path. *Done* —
+   native via `aos-registry-hub user set-password` (in-process `find_or_create_user`
+   + `hash_password` + `set_user_password`); the worker runs the same shared calls
+   idempotently in `GET /_init` from `HUB_ROOT_EMAIL` + `HUB_ROOT_PASSWORD`.
+
+The indexer is also unified: `core::indexer` is the single canonical
+fetch→verify→load→index orchestration over the `SurfaceFetch` port — the native
+hub reindexes inline over it and the Worker's Cron runs the same code over R2,
+so the index (packages, channels, anti-rollback floors) cannot drift between the
+two shells. (One intentional change: the Worker Cron now skips public registries
+of soft-deleted orgs, matching the native hub's `list_registries` filter.)
 
 ## Open questions
 
