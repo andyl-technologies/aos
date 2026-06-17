@@ -393,6 +393,7 @@ builtin_registry! {
         const NAME: &'static [u8] = b"hashFile";
         const EXECUTION: BuiltinExecution =
             BuiltinExecution::effectful_strict_binary(StrictBinaryPrimOp::HashFile);
+        const DOCS: &'static BuiltinDocs = &HASH_FILE_DOCS;
     }
 
     pub(crate) struct HashStringBuiltin;
@@ -1133,6 +1134,10 @@ static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a string with reflected string context appended.",
 };
 
+static HASH_FILE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the hex digest of a file's contents.",
+};
+
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the pinned Nix language version.",
 };
@@ -1611,6 +1616,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"appendContext").unwrap().docs().summary(),
             "Returns a string with reflected string context appended."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"hashFile").unwrap().docs().summary(),
+            "Returns the hex digest of a file's contents."
         );
         assert_eq!(
             BUILTINS.lookup(b"langVersion").unwrap().docs().summary(),

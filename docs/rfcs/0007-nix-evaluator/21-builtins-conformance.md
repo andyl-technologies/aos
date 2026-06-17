@@ -470,9 +470,10 @@ on the three-hashes policy). Output is a hex string by default.
         `convertHash`, below — `hashString` itself returns hex.)
       - Hashes the raw bytes; if `s` carries context, the *bytes* are hashed (and
         the result string is context-free).
-- [ ] `hashFile` (type p) — hash the *contents of the file at path `p`* with
+- [x] `hashFile` (type p) — hash the *contents of the file at path `p`* with
       algorithm `type`. **Impure / eval-time effect** (reads the filesystem) —
-      must be keyed into the incremental cache by the file's content hash (§13).
+      lowered as an effectful boundary so cache users must key it by the file's
+      content hash (§13).
       - Same algorithm set as `hashString`.
 - [x] `convertHash` (args) — convert a hash between encodings/algorithms:
       `args = { hash; hashAlgo ? <omitted>; toHashFormat; }`, where a present
