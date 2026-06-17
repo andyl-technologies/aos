@@ -41,7 +41,7 @@
 //! private resource returns `404` (existence is never disclosed); a forbidden
 //! mutation returns `403`.
 
-use std::time::Instant;
+use crate::clock::Instant;
 
 use axum::extract::{Form, Path, Query};
 use axum::http::{header, HeaderMap, StatusCode};
