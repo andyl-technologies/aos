@@ -747,7 +747,7 @@ places C++ Nix would.
       etc.); it backs nixpkgs' `import` shadowing. **In scope.** Distinct parity
       note: it **does not memoize** (each call re-evaluates), unlike `import` —
       see [primops and the runtime ABI](10-primops-and-runtime-abi.md) §6.1 and §17.
-- [ ] `trace` / `traceVerbose` / `warn` / `break` — (effectful, listed §10).
+- [x] `trace` / `traceVerbose` / `warn` / `break` — (effectful, listed §10).
 
 ---
 

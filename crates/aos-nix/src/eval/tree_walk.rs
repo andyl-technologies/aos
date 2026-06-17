@@ -17745,6 +17745,34 @@ mod tests {
         source: &str,
         options: &[(&str, &str)],
     ) -> Vec<u8> {
+        let output = cpp_nix_eval_stderr_output_with_nix_options(oracle, source, options);
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stderr
+    }
+
+    fn cpp_nix_eval_failure_stderr_with_nix_options(
+        oracle: &str,
+        source: &str,
+        options: &[(&str, &str)],
+    ) -> Vec<u8> {
+        let output = cpp_nix_eval_stderr_output_with_nix_options(oracle, source, options);
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly succeeded for {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        output.stderr
+    }
+
+    fn cpp_nix_eval_stderr_output_with_nix_options(
+        oracle: &str,
+        source: &str,
+        options: &[(&str, &str)],
+    ) -> std::process::Output {
         let mut command = Command::new(oracle);
         let path = std::env::var_os("PATH");
         command.env_clear();
@@ -17758,15 +17786,9 @@ mod tests {
             command.args(["--option", name, value]);
         }
         command.args(["--eval", "--strict", "--expr", source]);
-        let output = command
+        command
             .output()
-            .expect("C++ Nix oracle evaluates expression");
-        assert!(
-            output.status.success(),
-            "C++ Nix oracle failed for {source:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        output.stderr
+            .expect("C++ Nix oracle evaluates expression")
     }
 
     fn cpp_nix_eval_stderr(oracle: &str, source: &str) -> Vec<u8> {
@@ -18107,6 +18129,18 @@ mod tests {
         evaluator.capture_stderr();
         evaluator.eval_root().expect("source evaluates");
         evaluator.captured_stderr().to_vec()
+    }
+
+    fn eval_captured_stderr_error_with_options(
+        source: &str,
+        options: TreeWalkOptions,
+    ) -> (TreeWalkError, Vec<u8>) {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.capture_stderr();
+        let error = evaluator.eval_root().expect_err("source fails");
+        let stderr = evaluator.captured_stderr().to_vec();
+        (error, stderr)
     }
 
     fn eval_captured_stderr(source: &str) -> Vec<u8> {
@@ -19321,6 +19355,34 @@ mod tests {
             let reference = cpp_nix_eval_stderr(oracle, source);
             let stderr = eval_captured_stderr(source);
             assert_eq!(stderr, reference, "warning stderr diverged for {source}");
+        }
+
+        for source in [r#"builtins.warn "fatal" 7"#, r#"builtins.warn "a\nb" 7"#] {
+            let reference = cpp_nix_eval_failure_stderr_with_nix_options(
+                oracle,
+                source,
+                &[("abort-on-warn", "true")],
+            );
+            let (error, stderr) = eval_captured_stderr_error_with_options(
+                source,
+                TreeWalkOptions::with_abort_on_warn(true),
+            );
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::WarningAborted { .. }),
+                "abort-on-warn did not produce WarningAborted for {source}: {error:?}"
+            );
+            assert!(
+                reference.starts_with(&stderr),
+                "abort-on-warn warning stderr prefix diverged for {source}: reference={:?}, actual={:?}",
+                String::from_utf8_lossy(&reference),
+                String::from_utf8_lossy(&stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&reference)
+                    .contains("aborting to reveal stack trace of warning"),
+                "C++ Nix abort-on-warn stderr did not include abort diagnostic for {source}: {}",
+                String::from_utf8_lossy(&reference)
+            );
         }
     }
 
