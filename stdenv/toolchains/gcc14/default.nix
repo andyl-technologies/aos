@@ -28,6 +28,8 @@
       ;
   };
 
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
@@ -47,7 +49,31 @@
   # is free of the pre-tier bootstrap chain.
   gccStage2 = callPackage ./gcc-stage2.nix {gccStage1 = gccRaw;};
 
-  scope = {
+  manifestToolNames = [
+    "perl"
+    "texinfo"
+    "help2man"
+    "m4"
+    "flex"
+    "bison"
+    "autoconf"
+    "automake"
+    "gperf"
+    "python3"
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "tar"
+    "gzip"
+    "patch"
+  ];
+
+  baseScope = {
     inherit
       prev
       buildPlatform
@@ -161,40 +187,21 @@
         ;
     };
 
-    # Phase 3.5: Autotools rebuilt with wrapped gcc + binutils + glibc
-    # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
-    # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man).
-    perl = scope.mkAutotoolsTool scope.manifest.perl;
-    texinfo = scope.mkAutotoolsTool scope.manifest.texinfo;
-    help2man = scope.mkAutotoolsTool scope.manifest.help2man;
-    m4 = scope.mkAutotoolsTool scope.manifest.m4;
-    flex = scope.mkAutotoolsTool scope.manifest.flex;
-    bison = scope.mkAutotoolsTool scope.manifest.bison;
-    autoconf = scope.mkAutotoolsTool scope.manifest.autoconf;
-    automake = scope.mkAutotoolsTool scope.manifest.automake;
-    gperf = scope.mkAutotoolsTool scope.manifest.gperf;
-    python3 = scope.mkAutotoolsTool scope.manifest.python3;
-
     # Compression tools (needed so tar can decompress .tar.xz/.tar.bz2 in the production stdenv)
     xz = callPackage ./xz.nix {};
     bzip2 = callPackage ./bzip2.nix {gcc = gccRaw;};
 
     # Build tools
     patchelf = callPackage ./patchelf.nix {};
-
-    # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
-    bash = scope.mkAutotoolsTool scope.manifest.bash;
-    coreutils = scope.mkAutotoolsTool scope.manifest.coreutils;
-    gnumake = scope.mkAutotoolsTool scope.manifest.gnumake;
-    sed = scope.mkAutotoolsTool scope.manifest.sed;
-    grep = scope.mkAutotoolsTool scope.manifest.grep;
-    gawk = scope.mkAutotoolsTool scope.manifest.gawk;
-    findutils = scope.mkAutotoolsTool scope.manifest.findutils;
-    diffutils = scope.mkAutotoolsTool scope.manifest.diffutils;
-    tar = scope.mkAutotoolsTool scope.manifest.tar;
-    gzip = scope.mkAutotoolsTool scope.manifest.gzip;
-    patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
+
+  manifestTools = mkManifestTools {
+    manifest = baseScope.manifest;
+    mkTool = baseScope.mkAutotoolsTool;
+    names = manifestToolNames;
+  };
+
+  scope = baseScope // manifestTools;
 in {
   # Expose the unwrapped final gcc-14.3.0 (the let-binding above the scope,
   # since scope wraps it via the cc-wrapper). Needed by

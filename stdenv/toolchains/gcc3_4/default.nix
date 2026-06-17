@@ -57,6 +57,8 @@
       ;
   };
 
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   # callPackage: import a file, auto-fill `prev` and platform attrs, pass `this`
   # for intra-tier references, plus any overrides.
   callPackage = path: overrides: let
@@ -71,10 +73,26 @@
       // overrides
     );
 
-  # Recursive attrset for intra-tier dependencies.
-  # Phase 1-3 tools can reference each other; Phase 4-5 tools reference
-  # earlier phases through `this`.
-  this = {
+  phase4ToolNames = [
+    "tar"
+    "gzip"
+  ];
+
+  phase5ToolNames = [
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "patch"
+  ];
+
+  # Recursive attrset for intra-tier dependencies. Phase 1-3 tools can
+  # reference each other; manifest-built Phase 4-5 tools are merged below.
+  baseThis = {
     inherit
       prev
       buildPlatform
@@ -158,22 +176,21 @@
       inherit buildPlatform hostPlatform;
       inherit (this) gcc binutils glibc;
     };
-
-    # Phase 4: tar + gzip (enables tarball extraction)
-    tar = this.mkPhase4Tool this.manifest.tar;
-    gzip = this.mkPhase4Tool this.manifest.gzip;
-
-    # Phase 5: all remaining POSIX tools
-    bash = this.mkPhase5Tool this.manifest.bash;
-    coreutils = this.mkPhase5Tool this.manifest.coreutils;
-    gnumake = this.mkPhase5Tool this.manifest.gnumake;
-    sed = this.mkPhase5Tool this.manifest.sed;
-    grep = this.mkPhase5Tool this.manifest.grep;
-    gawk = this.mkPhase5Tool this.manifest.gawk;
-    findutils = this.mkPhase5Tool this.manifest.findutils;
-    diffutils = this.mkPhase5Tool this.manifest.diffutils;
-    patch = this.mkPhase5Tool this.manifest.patch;
   };
+
+  phase4Tools = mkManifestTools {
+    manifest = baseThis.manifest;
+    mkTool = baseThis.mkPhase4Tool;
+    names = phase4ToolNames;
+  };
+
+  phase5Tools = mkManifestTools {
+    manifest = baseThis.manifest;
+    mkTool = baseThis.mkPhase5Tool;
+    names = phase5ToolNames;
+  };
+
+  this = baseThis // phase4Tools // phase5Tools;
 in
   # Export complete toolchain with unversioned names
   {

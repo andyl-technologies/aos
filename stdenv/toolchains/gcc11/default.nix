@@ -30,6 +30,8 @@
       ;
   };
 
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   callPackage = path: overrides: let
     fn = import path;
     args = builtins.functionArgs fn;
@@ -42,7 +44,31 @@
   # glibc 2.34 which removed __libc_csu_init/__libc_csu_fini.
   gccRaw = callPackage ./gcc.nix {};
 
-  scope = {
+  manifestToolNames = [
+    "perl"
+    "texinfo"
+    "help2man"
+    "m4"
+    "flex"
+    "bison"
+    "autoconf"
+    "automake"
+    "gperf"
+    "python3"
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "tar"
+    "gzip"
+    "patch"
+  ];
+
+  baseScope = {
     inherit
       prev
       buildPlatform
@@ -147,33 +173,15 @@
         ;
     };
 
-    # Phase 3.5: Autotools rebuilt with wrapped gcc + binutils + glibc
-    # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
-    # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man).
-    perl = scope.mkAutotoolsTool scope.manifest.perl;
-    texinfo = scope.mkAutotoolsTool scope.manifest.texinfo;
-    help2man = scope.mkAutotoolsTool scope.manifest.help2man;
-    m4 = scope.mkAutotoolsTool scope.manifest.m4;
-    flex = scope.mkAutotoolsTool scope.manifest.flex;
-    bison = scope.mkAutotoolsTool scope.manifest.bison;
-    autoconf = scope.mkAutotoolsTool scope.manifest.autoconf;
-    automake = scope.mkAutotoolsTool scope.manifest.automake;
-    gperf = scope.mkAutotoolsTool scope.manifest.gperf;
-    python3 = scope.mkAutotoolsTool scope.manifest.python3;
-
-    # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
-    bash = scope.mkAutotoolsTool scope.manifest.bash;
-    coreutils = scope.mkAutotoolsTool scope.manifest.coreutils;
-    gnumake = scope.mkAutotoolsTool scope.manifest.gnumake;
-    sed = scope.mkAutotoolsTool scope.manifest.sed;
-    grep = scope.mkAutotoolsTool scope.manifest.grep;
-    gawk = scope.mkAutotoolsTool scope.manifest.gawk;
-    findutils = scope.mkAutotoolsTool scope.manifest.findutils;
-    diffutils = scope.mkAutotoolsTool scope.manifest.diffutils;
-    tar = scope.mkAutotoolsTool scope.manifest.tar;
-    gzip = scope.mkAutotoolsTool scope.manifest.gzip;
-    patch = scope.mkAutotoolsTool scope.manifest.patch;
   };
+
+  manifestTools = mkManifestTools {
+    manifest = baseScope.manifest;
+    mkTool = baseScope.mkAutotoolsTool;
+    names = manifestToolNames;
+  };
+
+  scope = baseScope // manifestTools;
 in {
   inherit
     (scope)
