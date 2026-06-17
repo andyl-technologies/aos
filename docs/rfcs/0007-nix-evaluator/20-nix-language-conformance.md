@@ -214,7 +214,7 @@ are language-level and live here.
       a derivation attaches its `=drv`/output context element.
 - [x] **Context attaches on path coercion** — coercing a path to a string adds the
       NAR-hashed source store path to the context (and is observed as an `inputSrc`).
-- [ ] **Context attaches via `builtins.storePath`** — adds the path as a context
+- [x] **Context attaches via `builtins.storePath`** — adds the path as a context
       element (builtin in doc 21; the propagation rule is here).
 - [x] **Concatenation unions context** — `a + b` carries `context(a) ∪ context(b)`.
 - [ ] **Interpolation unions context** — `"${a}${b}"` carries the union of every

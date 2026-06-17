@@ -26491,6 +26491,29 @@ mod tests {
     }
 
     #[test]
+    fn store_path_context_is_observed_by_derivation_strict_as_input_src() {
+        let source = r#"let
+             src = builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               inherit src;
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+             src = src;
+             srcContext = builtins.getContext src;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/vkbcsd0wpf20mil1mngbk8dzrh9z3sdv-x.drv","out":"/nix/store/y1q9h2irnds1pphaf2cpyxdv54y87w6d-x","src":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src","srcContext":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn store_path_primop_uses_configured_store_dir() {
         let root = "/custom/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
         let options = TreeWalkOptions::with_store_dir(b"/custom/store".to_vec())
