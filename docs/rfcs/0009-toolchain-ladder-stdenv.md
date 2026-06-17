@@ -308,9 +308,14 @@ its successor.
   this tier's binutils; the final GCC closure has no `glibc-2.34`,
   `gcc-11.5`, or `binutils-2.37`; a direct `gcc4_8.gcc` build resolves on the
   same builder; and adversarial review found no blocking issues.
-- [ ] **Phase 5 — cleanup.** Delete the per-tier `default.nix` `callPackage`
-  boilerplate where the manifest subsumes it; update `docs/` and this
-  RFC's status.
+- [x] **Phase 5 — cleanup. Implemented.** Added a shared manifest-toolset
+  helper and removed the repeated per-tier `default.nix`
+  `mkAutotoolsTool manifest.<name>` assignments where the manifest already
+  owns the package details. Verified for Phase 5: touched Nix files parse
+  locally; strict eval forces representative manifest-built attrs across every
+  native tier; remote builds of `stdenv.gccStage2`, `stdenv.bash`, and an
+  early `gcc3_4.patch` manifest tool resolve successfully on an x86_64-linux
+  builder; and adversarial review found no blocking issues.
 
 Each phase is independently revertible and CI-gated on `nix-build -A
 stdenv` plus the existing eval/VM checks.
