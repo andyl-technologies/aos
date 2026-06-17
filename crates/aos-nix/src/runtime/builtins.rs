@@ -693,7 +693,9 @@ impl BuiltinInfo for PathExistsBuiltin {
 pub(crate) struct PlaceholderBuiltin;
 impl BuiltinInfo for PlaceholderBuiltin {
     const NAME: &'static [u8] = b"placeholder";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution =
+        BuiltinExecution::strict_unary(StrictUnaryPrimOp::Placeholder);
+    const DOCS: &'static BuiltinDocs = &PLACEHOLDER_DOCS;
 }
 
 pub(crate) struct ReadDirBuiltin;
@@ -1138,6 +1140,7 @@ pub(crate) enum StrictUnaryPrimOp {
     AddDrvOutputDependencies,
     UnsafeDiscardOutputDependency,
     UnsafeDiscardStringContext,
+    Placeholder,
     StringLength,
     BaseNameOf,
     DirOf,
@@ -1227,6 +1230,10 @@ static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
 
 static PATH_EXISTS_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns whether a path exists at evaluation time.",
+};
+
+static PLACEHOLDER_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the Nix placeholder string for a derivation output.",
 };
 
 static READ_DIR_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1638,6 +1645,10 @@ mod tests {
         assert_eq!(
             builtin_metadata(b"pathExists").unwrap().docs().summary(),
             "Returns whether a path exists at evaluation time."
+        );
+        assert_eq!(
+            builtin_metadata(b"placeholder").unwrap().docs().summary(),
+            "Returns the Nix placeholder string for a derivation output."
         );
         assert_eq!(
             builtin_metadata(b"readDir").unwrap().docs().summary(),

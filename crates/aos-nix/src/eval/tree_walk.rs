@@ -55,6 +55,7 @@ const HASH_ATTR: &[u8] = b"hash";
 const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
+const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 
@@ -2272,6 +2273,9 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictUnaryPrimOp::UnsafeDiscardStringContext => {
                 self.eval_unsafe_discard_string_context_primop(argument, argument_span, value)
+            }
+            StrictUnaryPrimOp::Placeholder => {
+                self.eval_placeholder_primop(id, span, argument, argument_span, value)
             }
             StrictUnaryPrimOp::StringLength => {
                 self.eval_string_length_primop(argument, argument_span, value)
@@ -4726,6 +4730,64 @@ impl<'ir> TreeWalk<'ir> {
             Self::hash_bytes(string.bytes(), algorithm)
         };
         self.alloc_hash_digest(id, span, &digest)
+    }
+
+    fn eval_placeholder_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let output =
+            self.context_free_string_bytes(argument, argument_span, value, "placeholder")?;
+        let input_len = PLACEHOLDER_HASH_PREFIX
+            .len()
+            .checked_add(output.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id: argument,
+                        len: usize::MAX,
+                    },
+                    argument_span,
+                )
+            })?;
+        let mut input = Vec::new();
+        input.try_reserve_exact(input_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id: argument,
+                    len: input_len,
+                },
+                argument_span,
+            )
+        })?;
+        input.extend_from_slice(PLACEHOLDER_HASH_PREFIX);
+        input.extend_from_slice(&output);
+
+        let digest = Sha256::digest(&input).to_vec();
+        let encoded = Self::encode_nix_base32(id, span, &digest)?;
+        let len = encoded.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        bytes.push(b'/');
+        bytes.extend_from_slice(&encoded);
+
+        self.heap
+            .alloc_string(NixString::from_bytes(bytes))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_hash_file_primop(
@@ -14628,6 +14690,7 @@ mod tests {
         assert_eq!(eval("builtins ? throw").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? abort").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? tryEval").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? placeholder").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? nixVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? langVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
@@ -14702,6 +14765,10 @@ mod tests {
         );
         assert_eq!(
             eval("builtins.isFunction builtins.tryEval").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.placeholder").as_bool(),
             Ok(true)
         );
         assert_eq!(eval("builtins.isFunction builtins.all").as_bool(), Ok(true));
@@ -15458,6 +15525,10 @@ mod tests {
             r#"builtins.convertHash { hash = builtins.hashString "sha1" "abc"; hashAlgo = "sha1"; toHashFormat = "base64"; }"#,
             r#"builtins.convertHash { hash = builtins.hashString "sha512" "abc"; hashAlgo = "sha512"; toHashFormat = "nix32"; }"#,
             r#"let convert = builtins.convertHash; in convert { hash = "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="; hashAlgo = "sha256"; toHashFormat = "base16"; }"#,
+            r#"builtins.placeholder "out""#,
+            r#"builtins.placeholder "dev""#,
+            r#"let placeholder = builtins.placeholder; in placeholder "out""#,
+            r#"builtins.stringLength (builtins.placeholder "out")"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
@@ -15484,6 +15555,8 @@ mod tests {
         for source in [
             r#"builtins.hashString "sha384" "abc""#,
             r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = null; toHashFormat = "base16"; }"#,
+            r#"builtins.placeholder 1"#,
+            r#"builtins.placeholder (builtins.appendContext "out" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; })"#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_json(&oracle, source);
         }
@@ -22398,6 +22471,99 @@ mod tests {
         assert!(matches!(
             error.kind(),
             TreeWalkErrorKind::InvalidSriHash { .. }
+        ));
+    }
+
+    #[test]
+    fn placeholder_primop_matches_cpp_nix_hash_scheme() {
+        assert_eq!(
+            eval_string_bytes(r#"builtins.placeholder "out""#),
+            b"/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.placeholder "dev""#),
+            b"/02qcpld1y6xhs5gz9bchpxaw0xdhmsp5dv88lh25r2ss44kh8dxz"
+        );
+        assert_eq!(
+            eval("builtins.stringLength (builtins.placeholder \"out\")").as_int(),
+            Ok(53)
+        );
+        assert_eq!(
+            eval_string_bytes(r#"let p = builtins.placeholder; in p "out""#),
+            b"/1rz4g4znpzjwh1xymhjpm42vipw92pr73vdgl6xs1hycac8kf2n9"
+        );
+        assert_eq!(
+            eval_string_bytes(
+                r#"let builtins = { placeholder = output: "local"; }; in builtins.placeholder "out""#
+            ),
+            b"local"
+        );
+    }
+
+    #[test]
+    fn placeholder_primop_requires_context_free_string_output() {
+        let ir = lower("builtins.placeholder 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("placeholder argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("placeholder output must be a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"out".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing output allocates");
+
+        let error = evaluator
+            .eval_placeholder_primop(ir.root, root.span, argument, argument_span, value)
+            .expect_err("placeholder rejects output string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "placeholder",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.placeholder (builtins.appendContext "out" {
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+            })"#,
+        ))
+        .expect_err("placeholder rejects context-bearing output expressions");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "placeholder",
+                ..
+            }
         ));
     }
 

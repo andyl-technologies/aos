@@ -609,7 +609,7 @@ eval (network access is disabled unless explicitly allowed).
         [primops and the runtime ABI](10-primops-and-runtime-abi.md) §6.4). A
         wrong resolution is a silent catastrophic divergence.
       - `nixPath` (§14) is the reflected value of the search path.
-- [ ] `placeholder` (output) — return the stable placeholder string Nix uses for
+- [x] `placeholder` (output) — return the stable placeholder string Nix uses for
       a not-yet-known output path (`/<hash>` form) so build scripts can reference
       `$out` before it exists. The placeholder bytes are *hashed* into
       derivations, so they must be byte-identical to C++ Nix's scheme (see
@@ -930,7 +930,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
-- [ ] `placeholder` byte-identical placeholder scheme.
+- [x] `placeholder` byte-identical placeholder scheme.
 - [ ] `nixVersion`/`langVersion` spoofing for feature-gate parity.
 - [ ] `builtins` set membership and order.
 
