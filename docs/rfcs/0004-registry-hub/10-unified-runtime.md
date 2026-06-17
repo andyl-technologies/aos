@@ -198,16 +198,21 @@ worker impl, the logic above it written once:
   file-backed instance key; the worker builds the *same* `AesGcmSealer` from a
   Wrangler secret binding. No new trait — just a different constructor.
 - `Mailer` (**exists** in `core::auth::magic`) — sends magic-link / invite
-  email. Native impl is the SMTP/dev-echo seam; the worker needs a
-  `worker::Fetch`-backed impl posting to an email API (or the dev-echo path).
+  email. Native impl is the SMTP/dev-echo seam; the worker's `WorkerMailer`
+  currently logs the link via `console_log!` (a real email-binding delivery is
+  a documented TODO — the port method is synchronous and the Workers runtime
+  has no synchronous mail transport).
 - **Publish lease** (**not yet a trait**) — `facade.rs` guards concurrent
   pointer-flips with an in-memory `std::sync::Mutex<LeaseMap>`, which is
   per-isolate and meaningless across Worker invocations. Becomes a `Lease`
   port backed by a conditional D1 `UPDATE … WHERE expires_at < ?` (or a
   Durable Object) — atomic across the edge.
-- **Rate limiter** (**not yet a trait**) — `ratelimit.rs` is an in-memory
-  token bucket; same per-isolate problem. Becomes a `RateLimiter` port over
-  D1/KV (or a Durable Object) on the worker; the in-memory bucket stays native.
+- **Rate limiter** (**now a trait** — `core::ratelimit::RateLimiter`) — the
+  native hub keeps its in-memory token bucket behind the port; the worker's
+  `D1RateLimiter` meters over a D1 counter table, so the per-isolate problem is
+  gone. Pre-auth handlers key it on a runtime-neutral `ClientIp` (the hub
+  resolves it from the socket peer / trusted-proxy `X-Forwarded-For`, the worker
+  from `CF-Connecting-IP`).
 
 ## Backend choice: `sqlx` native, D1 on Workers
 
@@ -454,35 +459,41 @@ unification) are the remaining work that wins parity.
    / guarded conditionals) so writes are batchable on D1. *Done.*
 3. ✅ **Flip `Backend` to async** and ship the native `sqlx` backend +
    `core::Database` (reads and writes) + the worker `D1Backend`. *Done.*
-4. **Handler unification** (the parity work — RPC surface done; facade/console
-   relocation remains):
+4. **Handler unification** (the parity work — RPC, facade, browse, and most of
+   the producer console now shared):
    - a. ✅ Worker read path + Cron indexer fold onto `core::Database`. *Done.*
    - b. ✅ **`aos-proto-types`** — wasm-clean `prost`+`serde` message structs,
      the lingua franca of `RpcService`/the shared handlers/the client. *Done.*
-   - c. **Lift the handlers into `core`** — *partial.* Done: the shared
-     Connect-JSON `axum` router (`core::connect`), the `RpcService` (all 26
-     `aos.registry.v1` methods), and the ports — `RateLimiter` (`core::ratelimit`)
-     and the surface-read `SurfaceFetch`/`SurfaceProvider` (`core::fetch`).
-     **Remaining:** move the R2/fs **facade**, the **browse UI**, and the
-     **producer console** into the shared router (so the worker's `facade.rs`/
-     `reads.rs`/`render.rs`/`keymap.rs` and the hub's console can delete), plus
-     the `Mailer` worker impl.
+   - c. ✅ **Lift the handlers into `core`** — the shared Connect-JSON `axum`
+     router (`core::connect`), the `RpcService` (all 26 `aos.registry.v1`
+     methods), the R2/fs **facade** (`RpcService::facade_fetch`), the **browse
+     UI** (`core::web::browse`/`render`), and **39 of the producer console's
+     routes** (`core::web::console`) all run on one code path; the ports —
+     `RateLimiter` (`core::ratelimit`), `SurfaceFetch`/`SurfaceProvider`
+     (`core::fetch`), `Mailer`/`SecretSealer` (`core::auth`), plus the console's
+     `HttpClient` and `ChannelAdvancer` — abstract the rest. The worker's
+     `facade.rs`/`reads.rs`/`render.rs` are deleted; the hub's `console.rs`
+     shrank from 5277 to ~2100 lines. *Done.* **Remaining:** the 9 console
+     routes that need a host-only capability — the pre-auth rate-limited
+     login/activation paths (a `ClientIp` abstraction, *in progress*), the OIDC
+     flow (route its outbound calls through the `HttpClient` port), and the
+     git-backed config/change-request flows (an R2 surface-write port).
    - d. ✅ **RPC as shared Connect-JSON handlers** — `RpcService` + `core::connect`
      serve all 26 methods (`POST /aos.registry.v1.{Service}/{Method}`, JSON
      in/out, `{code,message}` errors) on both targets. *Done.*
-   - e. ✅ **Fold the worker** — the Worker serves the shared router for
-     `/aos.registry.v1.*` via the hand-rolled `worker`⇄`axum` bridge + the
-     `SendWrapper` Send bridge; its D1/R2/D1-limiter back the `RpcService`. *Done*
-     (its read-path `handlers.rs`/`facade.rs`/etc. stay until the 4c facade/browse
-     relocation; the worker dispatches non-RPC paths to them).
+   - e. ✅ **Fold the worker** — the Worker serves the **full** shared router
+     (RPC, facade, browse, and the shared console) via the hand-rolled
+     `worker`⇄`axum` bridge + the `SendWrapper` Send bridge; its D1/R2/D1-limiter
+     back the `RpcService`, and its `consoleports` (logging `Mailer`, Fetch-API
+     `HttpClient`, AES-GCM sealer) back the `ConsoleDeps`. *Done.*
    - f. ✅ **Port `aos-remote::RegistryHubClient`** to a Connect-JSON `reqwest`
      client over `aos-proto-types`. *Done.*
-   - g. **Rewire the native hub** to mount `core::connect::router()` (the CLI now
-     speaks Connect-JSON) and unmount the connectrpc `rpc.rs` services. *In
-     progress.* Then retire `rpc.rs`.
+   - g. ✅ **Rewire the native hub** to mount `core::connect::rpc_router()` and
+     `core::web::console::console_router()` (the CLI speaks Connect-JSON); the
+     connectrpc `rpc.rs` services are retired. *Done.*
 5. ✅ **Move the CLI to the API** under `aos hub …` — the client speaks
-   Connect-JSON; once 4g lands it answers identically from the native hub or the
-   worker. *Done* (client side).
+   Connect-JSON and answers identically from the native hub or the worker.
+   *Done.*
 6. **Install-time root bootstrap** as the sole non-API mutation path.
 
 ## Open questions
