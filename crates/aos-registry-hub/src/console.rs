@@ -46,7 +46,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Router;
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
 use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS};
 use crate::config;
@@ -63,18 +63,19 @@ use crate::ui::console;
 /// handlers into the shared core crate. The routes that remain native are the
 /// ones this router registers:
 ///
-/// - the **pre-auth rate-limited** activation/passkey paths
-///   (`/auth/passkey/begin`, `/activate`), which read the connecting peer
-///   address ([`crate::server::PeerAddr`]) and the reverse-proxy trust flag —
-///   neither available to a wasm handler. (The `/login` and `/login/password`
-///   paths moved to the shared core router in RFC-0004 Phase 5 stage D: they now
-///   meter on the runtime-neutral `x-aos-client-ip` header the hub stamps in
-///   [`crate::server::inject_client_ip`].)
 /// - the **OIDC flow** (`/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`),
 ///   which makes outbound [`reqwest`] calls through [`crate::auth::oidc`];
 /// - the **git-backed config** surface (`/{slug}/-/settings/config`,
 ///   `/{slug}/-/changes`), which uses [`crate::gitwrite`] and
 ///   [`crate::surface`].
+///
+/// The pre-auth rate-limited `/login`, `/login/password` (stage D),
+/// `/auth/passkey/begin`, and `/activate` (stage E) paths moved to the shared
+/// core router: they now meter on the runtime-neutral `x-aos-client-ip` header
+/// the hub stamps in [`crate::server::inject_client_ip`] instead of the native
+/// peer socket, so they serve both shells. The `finish` halves of the passkey
+/// ceremony (`/account/passkeys/finish`, `/auth/passkey/finish`), which mint no
+/// rate-limit key, were already shared.
 ///
 /// Every other console route is served by the shared core router. The
 /// nested-canonical fallback ([`dispatch_nested`]) still lives here and reuses
@@ -84,11 +85,6 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/auth/sso", post(login_sso))
         .route("/auth/oidc/start", get(oidc_start))
         .route("/auth/oidc/callback", get(oidc_callback))
-        // The passkey assertion ceremony is the pre-auth login path and is
-        // rate-limited on the source IP, so it stays native (the `finish` half,
-        // which mints no rate-limit key, moved to the shared router).
-        .route("/auth/passkey/begin", post(passkey_login_begin))
-        .route("/activate", get(activate_form).post(activate_submit))
         .route(
             "/{slug}/-/settings/config",
             get(config_edit).post(config_submit),
@@ -309,179 +305,6 @@ fn sso_error(message: &str) -> Response {
 }
 
 // -- account ----------------------------------------------------------------
-
-// -- passkeys / WebAuthn ----------------------------------------------------
-//
-// WebAuthn is the one place the console departs from its no-JS floor: the
-// browser's `navigator.credentials` API has no form-only equivalent, so the
-// passkey pages serve a small, first-party inline script. The script is gated
-// by a per-request CSP nonce (`script-src 'nonce-…'` alongside the global
-// `default-src 'self'`), so only that exact `<script nonce=…>` runs — no other
-// inline or third-party script is permitted. The script exchanges JSON with the
-// begin/finish endpoints, base64url-encoding the binary credential fields.
-
-/// `POST /auth/passkey/begin` — stage a usernameless assertion challenge (JSON).
-///
-/// Pre-auth (the login path). Returns the
-/// [`AssertionChallenge`](crate::auth::webauthn::AssertionChallenge) the inline
-/// login script feeds to `navigator.credentials.get`.
-async fn passkey_login_begin(
-    State(state): State<Arc<AppState>>,
-    crate::server::PeerAddr(peer): crate::server::PeerAddr,
-    headers: HeaderMap,
-) -> Response {
-    // Rate-limit assertion-challenge issuance per source IP, the same pre-auth
-    // spray bound as magic-link issuance.
-    let now = crate::server::now_secs();
-    let ip = crate::server::client_ip_for(&headers, peer, state.trusted_proxy);
-    if let crate::ratelimit::RateDecision::Limited { retry_after } =
-        state
-            .ratelimit
-            .check(crate::ratelimit::RateClass::MagicLinkIp, &ip, now)
-    {
-        return crate::server::too_many_requests(retry_after);
-    }
-    let rp = match crate::auth::webauthn::relying_party(&state.external_url) {
-        Ok(rp) => rp,
-        Err(err) => return internal(err),
-    };
-    match crate::auth::webauthn::begin_assertion(&state.db, &rp.id).await {
-        Ok(challenge) => Json(challenge).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-// -- device approval (RFC 8628) ---------------------------------------------
-
-/// `GET /activate?user_code=` query.
-#[derive(Default, serde::Deserialize)]
-struct ActivateQuery {
-    user_code: Option<String>,
-    message: Option<String>,
-}
-
-/// Rate-limit a device-activation request for the signed-in `session`.
-///
-/// The `/activate` approve surface keys a pending device grant solely on its
-/// `user_code` with no ownership predicate, so without a throttle a signed-in
-/// user could enumerate the code space at full speed to discover and inspect
-/// (or hijack) other users' in-flight grants (sec L-4). This meters under
-/// [`RateClass::DeviceActivate`](crate::ratelimit::RateClass::DeviceActivate)
-/// keyed on the **session user combined with the client IP**, so neither a
-/// single account nor a single source can spin the wheel quickly, and returns
-/// `Some(429)` (with `Retry-After`) when the budget is exhausted. Both the GET
-/// form and the POST submit call it. (The future polling endpoint, when wired,
-/// should meter the same class on the requesting CLI principal.)
-fn activate_rate_limited(
-    state: &AppState,
-    session: &Session,
-    headers: &HeaderMap,
-    peer: Option<std::net::SocketAddr>,
-) -> Option<Response> {
-    let ip = crate::server::client_ip_for(headers, peer, state.trusted_proxy);
-    let key = format!("{}|{ip}", session.auth.user_id);
-    match state.ratelimit.check(
-        crate::ratelimit::RateClass::DeviceActivate,
-        &key,
-        crate::server::now_secs(),
-    ) {
-        crate::ratelimit::RateDecision::Limited { retry_after } => {
-            Some(crate::server::too_many_requests(retry_after))
-        }
-        crate::ratelimit::RateDecision::Allowed => None,
-    }
-}
-
-/// `GET /activate` — the device-approval page.
-///
-/// Prefills the user code from `?user_code=` and, when it resolves to a live
-/// pending grant, shows the requested scope/permissions and the approve form.
-async fn activate_form(
-    State(state): State<Arc<AppState>>,
-    crate::server::PeerAddr(peer): crate::server::PeerAddr,
-    headers: HeaderMap,
-    Query(query): Query<ActivateQuery>,
-) -> Response {
-    let session = match require_session(&state, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Some(resp) = activate_rate_limited(&state, &session, &headers, peer) {
-        return resp;
-    }
-    let user_code = query.user_code.unwrap_or_default();
-    let request = if user_code.is_empty() {
-        None
-    } else {
-        match state.db.pending_device_request(&user_code).await {
-            Ok(req) => req,
-            Err(err) => return internal(err),
-        }
-    };
-    let request_ref = request.as_ref().map(|(s, p)| (s.as_str(), p.as_slice()));
-    Html(console::activate_page(
-        &session.email,
-        &session.csrf(),
-        &user_code,
-        request_ref,
-        query.message.as_deref(),
-        Instant::now(),
-    ))
-    .into_response()
-}
-
-/// `POST /activate` form: the user code and the approve/deny decision.
-#[derive(serde::Deserialize)]
-struct ActivateForm {
-    #[serde(default)]
-    csrf: String,
-    user_code: String,
-    decision: String,
-}
-
-/// `POST /activate` — approve or deny a device grant.
-///
-/// Approval clamps the minted token to the approver's current grants (the
-/// clamp lives in [`crate::db::Database::approve_device`]); denial marks the
-/// grant denied. Redirects back to `/activate` with a result message.
-async fn activate_submit(
-    State(state): State<Arc<AppState>>,
-    crate::server::PeerAddr(peer): crate::server::PeerAddr,
-    headers: HeaderMap,
-    Form(form): Form<ActivateForm>,
-) -> Response {
-    let session = match require_session(&state, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Some(resp) = activate_rate_limited(&state, &session, &headers, peer) {
-        return resp;
-    }
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let message = if form.decision == "approve" {
-        let grants = match session.grants(&state.db).await {
-            Ok(grants) => grants,
-            Err(err) => return internal(err),
-        };
-        match state
-            .db
-            .approve_device(&form.user_code, session.principal(), &grants)
-            .await
-        {
-            Ok(true) => "Approved. Return to your terminal — the CLI will continue.",
-            Ok(false) => "That code is unknown, already resolved, or expired.",
-            Err(err) => return internal(err),
-        }
-    } else {
-        match state.db.deny_device(&form.user_code).await {
-            Ok(_) => "Denied.",
-            Err(err) => return internal(err),
-        }
-    };
-    Redirect::to(&format!("/activate?message={}", urlencode(message))).into_response()
-}
 
 // -- orgs -------------------------------------------------------------------
 
@@ -1845,9 +1668,4 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
-}
-
-/// Percent-encode a string for a query component.
-fn urlencode(text: &str) -> String {
-    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
 }

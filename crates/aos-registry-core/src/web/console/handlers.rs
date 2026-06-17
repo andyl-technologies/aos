@@ -14,13 +14,13 @@
 //! compiles to `wasm32-unknown-unknown` and the native hub and the Cloudflare
 //! Worker mount the same [`console_router`](super::console_router).
 //!
-//! The pre-auth rate-limited login paths ([`login_form`], [`login_submit`],
-//! [`login_password`]) live here too: instead of the native `ConnectInfo` peer
-//! socket and a reverse-proxy trust flag, they read the connecting client's IP
-//! from the runtime-neutral [`CLIENT_IP_HEADER`] each shell stamps on ingress
-//! (RFC-0004 Phase 5, console-dedup stage D). The remaining native-only handlers
-//! — the device-approval `/activate` surface and passkey assertion `begin` (both
-//! still keyed on the native peer), the OIDC flow (outbound `reqwest`), and the
+//! The pre-auth rate-limited paths ([`login_form`], [`login_submit`],
+//! [`login_password`], [`passkey_login_begin`], and the device-approval
+//! [`activate_form`]/[`activate_submit`] surface) live here too: instead of the
+//! native `ConnectInfo` peer socket and a reverse-proxy trust flag, they read the
+//! connecting client's IP from the runtime-neutral [`CLIENT_IP_HEADER`] each
+//! shell stamps on ingress (RFC-0004 Phase 5, console-dedup stages D and E). The
+//! remaining native-only handlers — the OIDC flow (outbound `reqwest`) and the
 //! git-backed config/change-request flows — stay in the native hub, which mounts
 //! them alongside this router.
 //!
@@ -283,9 +283,11 @@ fn urlencode(text: &str) -> String {
 
 /// The request header carrying the deployment-resolved client IP.
 ///
-/// The pre-auth login handlers ([`login_submit`], [`login_password`]) rate-limit
-/// on the connecting client's IP, but the connecting peer address and the
-/// reverse-proxy trust model are *runtime-specific* (a native `ConnectInfo`
+/// The pre-auth handlers ([`login_submit`], [`login_password`],
+/// [`passkey_login_begin`], and the [`activate_form`]/[`activate_submit`]
+/// surface) rate-limit on the connecting client's IP, but the connecting peer
+/// address and the reverse-proxy trust model are *runtime-specific* (a native
+/// `ConnectInfo`
 /// socket on the hub, a `cf-connecting-ip` header on the Worker) and so are not
 /// available to these wasm-clean handlers. Each shell resolves the trusted IP in
 /// its own ingress layer and stamps it onto this header; the handlers read it
@@ -1048,6 +1050,173 @@ pub(crate) async fn passkey_login_finish(
         Json(serde_json::json!({ "ok": true })),
     )
         .into_response()
+}
+
+/// `POST /auth/passkey/begin` — stage a usernameless assertion challenge (JSON).
+///
+/// Pre-auth (the login path). Returns the
+/// [`AssertionChallenge`](crate::auth::webauthn::AssertionChallenge) the inline
+/// login script feeds to `navigator.credentials.get`.
+///
+/// Rate-limited per source IP — the [`resolved_client_ip`] the ingress layer
+/// stamped (see [`CLIENT_IP_HEADER`]) — under the same
+/// [`RateClass::MagicLinkIp`](crate::ratelimit::RateClass::MagicLinkIp) spray
+/// bound as magic-link issuance.
+pub(crate) async fn passkey_login_begin(deps: ConsoleDeps, headers: HeaderMap) -> Response {
+    // Rate-limit assertion-challenge issuance per source IP, the same pre-auth
+    // spray bound as magic-link issuance.
+    let now = crate::clock::now_unix_secs();
+    let ip = resolved_client_ip(&headers);
+    if let crate::ratelimit::RateDecision::Limited { retry_after } = deps
+        .ratelimit
+        .check(crate::ratelimit::RateClass::MagicLinkIp, &ip, now)
+        .await
+    {
+        return too_many_requests(retry_after);
+    }
+    let rp = match crate::auth::webauthn::relying_party(&deps.external_url) {
+        Ok(rp) => rp,
+        Err(err) => return internal(err),
+    };
+    match crate::auth::webauthn::begin_assertion(&deps.db, &rp.id).await {
+        Ok(challenge) => Json(challenge).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+// -- device approval (RFC 8628) ---------------------------------------------
+
+/// `GET /activate?user_code=` query.
+#[derive(Default, serde::Deserialize)]
+pub(crate) struct ActivateQuery {
+    user_code: Option<String>,
+    message: Option<String>,
+}
+
+/// Rate-limit a device-activation request for the signed-in `session`.
+///
+/// The `/activate` approve surface keys a pending device grant solely on its
+/// `user_code` with no ownership predicate, so without a throttle a signed-in
+/// user could enumerate the code space at full speed to discover and inspect
+/// (or hijack) other users' in-flight grants (sec L-4). This meters under
+/// [`RateClass::DeviceActivate`](crate::ratelimit::RateClass::DeviceActivate)
+/// keyed on the **session user combined with the client IP** (the
+/// [`resolved_client_ip`] the ingress layer stamped — see [`CLIENT_IP_HEADER`]),
+/// so neither a single account nor a single source can spin the wheel quickly,
+/// and returns `Some(429)` (with `Retry-After`) when the budget is exhausted.
+/// Both the GET form and the POST submit call it. (The future polling endpoint,
+/// when wired, should meter the same class on the requesting CLI principal.)
+async fn activate_rate_limited(
+    deps: &ConsoleDeps,
+    session: &Session,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let ip = resolved_client_ip(headers);
+    let key = format!("{}|{ip}", session.auth.user_id);
+    match deps
+        .ratelimit
+        .check(
+            crate::ratelimit::RateClass::DeviceActivate,
+            &key,
+            crate::clock::now_unix_secs(),
+        )
+        .await
+    {
+        crate::ratelimit::RateDecision::Limited { retry_after } => {
+            Some(too_many_requests(retry_after))
+        }
+        crate::ratelimit::RateDecision::Allowed => None,
+    }
+}
+
+/// `GET /activate` — the device-approval page.
+///
+/// Prefills the user code from `?user_code=` and, when it resolves to a live
+/// pending grant, shows the requested scope/permissions and the approve form.
+pub(crate) async fn activate_form(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Query(query): Query<ActivateQuery>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Some(resp) = activate_rate_limited(&deps, &session, &headers).await {
+        return resp;
+    }
+    let user_code = query.user_code.unwrap_or_default();
+    let request = if user_code.is_empty() {
+        None
+    } else {
+        match deps.db.pending_device_request(&user_code).await {
+            Ok(req) => req,
+            Err(err) => return internal(err),
+        }
+    };
+    let request_ref = request.as_ref().map(|(s, p)| (s.as_str(), p.as_slice()));
+    Html(console::activate_page(
+        &session.email,
+        &session.csrf(),
+        &user_code,
+        request_ref,
+        query.message.as_deref(),
+        Instant::now(),
+    ))
+    .into_response()
+}
+
+/// `POST /activate` form: the user code and the approve/deny decision.
+#[derive(serde::Deserialize)]
+pub(crate) struct ActivateForm {
+    #[serde(default)]
+    csrf: String,
+    user_code: String,
+    decision: String,
+}
+
+/// `POST /activate` — approve or deny a device grant.
+///
+/// Approval clamps the minted token to the approver's current grants (the
+/// clamp lives in [`Database::approve_device`](crate::db::Database::approve_device));
+/// denial marks the grant denied. Redirects back to `/activate` with a result
+/// message.
+pub(crate) async fn activate_submit(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<ActivateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Some(resp) = activate_rate_limited(&deps, &session, &headers).await {
+        return resp;
+    }
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let message = if form.decision == "approve" {
+        let grants = match session.grants(&deps.db).await {
+            Ok(grants) => grants,
+            Err(err) => return internal(err),
+        };
+        match deps
+            .db
+            .approve_device(&form.user_code, session.principal(), &grants)
+            .await
+        {
+            Ok(true) => "Approved. Return to your terminal — the CLI will continue.",
+            Ok(false) => "That code is unknown, already resolved, or expired.",
+            Err(err) => return internal(err),
+        }
+    } else {
+        match deps.db.deny_device(&form.user_code).await {
+            Ok(_) => "Denied.",
+            Err(err) => return internal(err),
+        }
+    };
+    Redirect::to(&format!("/activate?message={}", urlencode(message))).into_response()
 }
 
 // -- orgs -------------------------------------------------------------------
