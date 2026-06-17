@@ -552,6 +552,23 @@ fn is_valid_store_path(path: &[u8], store_dir: &[u8]) -> bool {
         && store_name.iter().all(|byte| is_store_name_byte(*byte))
 }
 
+fn store_path_root<'a>(path: &'a [u8], store_dir: &[u8]) -> Option<&'a [u8]> {
+    if path.len() <= store_dir.len() + 34 || !path.starts_with(store_dir) {
+        return None;
+    }
+    if path.get(store_dir.len()) != Some(&b'/') {
+        return None;
+    }
+    let suffix = &path[store_dir.len() + 1..];
+    let component_len = suffix
+        .iter()
+        .position(|byte| *byte == b'/')
+        .unwrap_or(suffix.len());
+    let root_len = store_dir.len() + 1 + component_len;
+    let root = &path[..root_len];
+    is_valid_store_path(root, store_dir).then_some(root)
+}
+
 fn is_nix_base32_byte(byte: u8) -> bool {
     matches!(
         byte,
@@ -2762,6 +2779,9 @@ impl<'ir> TreeWalk<'ir> {
             StrictUnaryPrimOp::Placeholder => {
                 self.eval_placeholder_primop(id, span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::StorePath => {
+                self.eval_store_path_primop(id, span, argument, argument_span, value)
+            }
             StrictUnaryPrimOp::StringLength => {
                 self.eval_string_length_primop(argument, argument_span, value)
             }
@@ -3756,6 +3776,66 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         target.extend_from_slice(bytes);
         Ok(())
+    }
+
+    fn eval_store_path_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let string_value = self.coerce_to_string(argument, value, argument_span)?;
+        let result = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            let full_path =
+                Self::absolute_path_bytes_for_node(argument, argument_span, string.bytes())?;
+            let Some(root) = store_path_root(&full_path, self.options.store_dir()) else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StorePathNotInStore {
+                        id: argument,
+                        path: full_path,
+                    },
+                    argument_span,
+                ));
+            };
+            let root = Self::copy_bytes_for_node(argument, argument_span, root)?;
+            let store_context =
+                StringContext::singleton(ContextElement::opaque_path(root).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: argument,
+                            source,
+                        },
+                        argument_span,
+                    )
+                })?;
+            let context = string.context().union(&store_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+            NixString::new(full_path, context)
+        };
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_add_drv_output_dependencies_primop(
@@ -14519,6 +14599,14 @@ pub enum TreeWalkErrorKind {
         /// The rejected context key bytes.
         path: Vec<u8>,
     },
+    /// `builtins.storePath` received a path outside the configured store.
+    #[error("path at node {id:?} is not in the Nix store: {path:?}")]
+    StorePathNotInStore {
+        /// The argument node whose normalized path was rejected.
+        id: IrId,
+        /// The rejected normalized path bytes.
+        path: Vec<u8>,
+    },
     /// A context-transforming primop required a derivation path context.
     #[error("string context path at node {id:?} is not a derivation: {path:?}")]
     StringContextPathNotDerivation {
@@ -15484,6 +15572,7 @@ mod tests {
             b"readDir".as_slice(),
             b"readFile".as_slice(),
             b"readFileType".as_slice(),
+            b"storePath".as_slice(),
         ] {
             assert_eq!(
                 direct_builtin(name),
@@ -21404,6 +21493,120 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::StringContextNotAllowed {
                 op: "appendContext",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn store_path_primop_returns_context_bearing_store_strings() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+        let child = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src/sub";
+        let context_json =
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec();
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.storePath {root}")),
+            root.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(r#"builtins.storePath "{root}/.""#)),
+            root.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(r#"builtins.storePath "{child}""#)),
+            child.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(r#"builtins.storePath {{ outPath = "{root}"; }}"#)),
+            root.as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.typeOf (builtins.storePath {root})")),
+            b"string"
+        );
+        assert_eq!(
+            eval_json_bytes(&format!("builtins.getContext (builtins.storePath {root})")),
+            context_json
+        );
+        assert_eq!(
+            eval_json_bytes(&format!(
+                r#"builtins.getContext (builtins.storePath "{child}")"#
+            )),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn store_path_primop_unions_existing_string_context() {
+        let source = r#"builtins.getContext (
+            builtins.storePath (
+                builtins.appendContext
+                  "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src"
+                  {
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other" = {
+                      path = true;
+                    };
+                  }
+            )
+        )"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other":{"path":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn store_path_primop_uses_configured_store_dir() {
+        let root = "/custom/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+        let options = TreeWalkOptions::with_store_dir(b"/custom/store".to_vec())
+            .expect("store dir configures");
+
+        assert_eq!(
+            eval_string_bytes_with_options(&format!("builtins.storePath {root}"), options.clone()),
+            root.as_bytes()
+        );
+        assert_eq!(
+            eval_json_bytes_with_options(
+                &format!(r#"builtins.getContext (builtins.storePath "{root}/sub")"#),
+                options,
+            ),
+            br#"{"/custom/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn store_path_primop_rejects_non_store_paths() {
+        let error = eval_whnf_owned(&lower(r#"builtins.storePath "/tmp/not-store""#))
+            .expect_err("storePath rejects paths outside the store");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StorePathNotInStore {
+                path,
+                ..
+            } if path.as_slice() == b"/tmp/not-store"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src/..""#,
+        ))
+        .expect_err("storePath rejects normalized store dir");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StorePathNotInStore {
+                path,
+                ..
+            } if path.as_slice() == b"/nix/store"
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.storePath 1"))
+            .expect_err("storePath coerces its argument to a string");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
                 ..
             }
         ));

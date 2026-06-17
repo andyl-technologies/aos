@@ -286,8 +286,10 @@ input set. Each gets adversarial differential coverage.
       `getContext`-shaped attrset) back into `s`'s context. The inverse pairing
       with `getContext`; the merge must be a context **union**.
 - [ ] `storePath` (path) — turn a path that is *already* in the store into a
-      string with a single constant context element naming that path (so it
-      becomes an `input_source`). Errors if the path is not a valid store path.
+      string with a context element naming the store-path root (so it becomes
+      an `input_source`), unioned with any existing string context on the
+      argument. Errors if the path is not a valid store path, and C++ Nix also
+      verifies that the path exists/can be realized in the store.
       - Disabled under pure-/restricted-eval; flag accordingly (§13, §16).
 - [ ] `outputOf` (drv-ref output-name) — produce the deriving path string for a
       named output of a (possibly CA / not-yet-known) derivation reference,

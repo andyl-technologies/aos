@@ -664,7 +664,9 @@ builtin_registry! {
     pub(crate) struct StorePathBuiltin;
     impl BuiltinDefinition for StorePathBuiltin {
         const NAME: &'static [u8] = b"storePath";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution =
+            BuiltinExecution::effectful_strict_unary(StrictUnaryPrimOp::StorePath);
+        const DOCS: &'static BuiltinDocs = &STORE_PATH_DOCS;
     }
 
     pub(crate) struct StringLengthBuiltin;
@@ -1041,6 +1043,7 @@ pub(crate) enum StrictUnaryPrimOp {
     UnsafeDiscardOutputDependency,
     UnsafeDiscardStringContext,
     Placeholder,
+    StorePath,
     StringLength,
     BaseNameOf,
     DirOf,
@@ -1158,6 +1161,10 @@ static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
 
 static STORE_DIR_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the configured Nix store directory.",
+};
+
+static STORE_PATH_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns a store path as a context-carrying string.",
 };
 
 static TRY_EVAL_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1414,6 +1421,12 @@ mod tests {
         );
         assert_eq!(
             direct_builtin(b"readFileType"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"storePath"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
             })
