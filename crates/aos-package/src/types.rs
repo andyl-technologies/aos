@@ -1008,6 +1008,29 @@ pub enum ProfileScope {
 }
 
 impl ProfileScope {
+    /// Lowercase human name for this scope (`"system"` or `"user"`).
+    ///
+    /// Used in diagnostics that name the scope a command searched, such as the
+    /// unsynced-registry warning emitted by query commands.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProfileScope::User => "user",
+            ProfileScope::System => "system",
+        }
+    }
+
+    /// The opposite scope.
+    ///
+    /// System scope returns [`ProfileScope::User`] and vice versa. Used to
+    /// point an operator at the scope they probably meant when a query finds a
+    /// registry unsynced in the current one.
+    pub fn other(&self) -> ProfileScope {
+        match self {
+            ProfileScope::User => ProfileScope::System,
+            ProfileScope::System => ProfileScope::User,
+        }
+    }
+
     /// Base path for profiles of this scope.
     ///
     /// User scope resolves to `<profiles>/per-user/$USER` (with `"unknown"`
@@ -1040,10 +1063,54 @@ impl ProfileScope {
     }
 
     /// Path for registry config files.
+    ///
+    /// This is the read-only `/etc/apm` image seed (system) or `~/.config/apm`
+    /// (user) — the lowest configuration layer. Use [`config_layers`] for the
+    /// full ordered read set and [`writable_config_dir`] for the mutation
+    /// target.
+    ///
+    /// [`config_layers`]: ProfileScope::config_layers
+    /// [`writable_config_dir`]: ProfileScope::writable_config_dir
     pub fn config_dir(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_config_home().join("apm"),
             ProfileScope::System => apm_system_config_dir().to_path_buf(),
+        }
+    }
+
+    /// Ordered configuration layers, from lowest to highest precedence.
+    ///
+    /// `apm` loads `apm.conf` and `registries.d/*.toml` from each layer and
+    /// merges them field by field, with higher layers overriding lower ones
+    /// (see [`crate::config`]). The lowest layer is the read-only `/etc/apm`
+    /// seed baked into the system image; the highest is the writable layer
+    /// returned by [`ProfileScope::writable_config_dir`].
+    ///
+    /// - System scope: `[/etc/apm, /var/lib/apm/config]`.
+    /// - User scope: `[/etc/apm, /var/lib/apm/config, ~/.config/apm]` — a user
+    ///   invocation also sees system runtime deltas before applying its own.
+    pub fn config_layers(&self) -> Vec<PathBuf> {
+        let mut layers = vec![
+            apm_system_config_dir().to_path_buf(),
+            apm_state_dir().join("config"),
+        ];
+        if matches!(self, ProfileScope::User) {
+            layers.push(xdg_config_home().join("apm"));
+        }
+        layers
+    }
+
+    /// Writable configuration layer where `apm` persists runtime config and
+    /// state deltas.
+    ///
+    /// This is the highest-precedence entry of [`ProfileScope::config_layers`]:
+    /// `/var/lib/apm/config` for system scope and `~/.config/apm` for user
+    /// scope. The `/etc/apm` seed is never written — it is a read-only image
+    /// layer whose tmpfs `/etc` upper is discarded on reboot.
+    pub fn writable_config_dir(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => xdg_config_home().join("apm"),
+            ProfileScope::System => apm_state_dir().join("config"),
         }
     }
 
@@ -1057,8 +1124,13 @@ impl ProfileScope {
 
     /// Directories searched for pinned trusted keys, in precedence order.
     ///
-    /// The first directory is also where new pins are written; the system
-    /// `trusted-keys.d` is shared by both scopes so user installs can trust
+    /// The first directory is the writable store where new pins are persisted
+    /// ([`crate::security::KeyStore`] writes its `.first()`); the rest are
+    /// read-only anchors searched in order. For system scope the writable
+    /// store is the persistent `/var/lib/apm/trusted-keys.d`, placed ahead of
+    /// the read-only `/etc/apm/trusted-keys.d` image seed, so runtime pins
+    /// survive a reboot while the seed still contributes trust anchors. The
+    /// `/etc` seed is shared with user scope so user installs can trust
     /// system-provisioned keys.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
@@ -1067,8 +1139,8 @@ impl ProfileScope {
                 apm_system_config_dir().join("trusted-keys.d"),
             ],
             ProfileScope::System => vec![
-                apm_system_config_dir().join("trusted-keys.d"),
                 apm_state_dir().join("trusted-keys.d"),
+                apm_system_config_dir().join("trusted-keys.d"),
             ],
         }
     }
@@ -1112,8 +1184,19 @@ pub struct RegistryFile {
 /// `apm update` appends — config loading splits the two apart.
 #[derive(Debug, Deserialize)]
 pub struct RegistryFileInner {
-    pub name: String,
-    pub url: String,
+    /// Registry name. Optional because a registry's identity is its config
+    /// file name (`<stem>.toml`): the loader defaults `name` to the stem and,
+    /// when this field is present, requires it to match. A minimal `/var`
+    /// overlay (a `[registry.state]` or `enabled` delta on a seeded registry)
+    /// carries no `name`.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Registry URL. Optional at the schema level so the loader can merge
+    /// layered fragments before validation: a pure `/var` overlay omits it and
+    /// inherits the seed's `url`, while a merged result that still lacks a
+    /// `url` is an orphaned delta the loader drops (see [`crate::config`]).
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_true")]
@@ -1581,6 +1664,59 @@ mod tests {
     }
 
     #[test]
+    fn config_layers_run_seed_to_writable() {
+        // Independent of the env-cached resolver values, the lowest layer is
+        // always the read-only `/etc` seed and the highest is the scope's
+        // writable layer.
+        for scope in [ProfileScope::System, ProfileScope::User] {
+            let layers = scope.config_layers();
+            assert_eq!(
+                layers.first(),
+                Some(&ProfileScope::System.config_dir()),
+                "lowest config layer must be the /etc seed",
+            );
+            assert_eq!(
+                layers.last(),
+                Some(&scope.writable_config_dir()),
+                "highest config layer must be the writable dir",
+            );
+        }
+    }
+
+    #[test]
+    fn system_config_layers_are_etc_then_var() {
+        let layers = ProfileScope::System.config_layers();
+        assert_eq!(layers.len(), 2);
+        assert_ne!(layers[0], layers[1]);
+    }
+
+    #[test]
+    fn user_config_layers_share_the_system_var_layer() {
+        let layers = ProfileScope::User.config_layers();
+        assert_eq!(layers.len(), 3);
+        // The shared /var system layer sits between the /etc seed and the
+        // user's own writable dir, so a user invocation sees system runtime
+        // deltas.
+        assert_eq!(layers[1], ProfileScope::System.writable_config_dir());
+    }
+
+    #[test]
+    fn system_trusted_keys_writable_store_precedes_seed() {
+        let dirs = ProfileScope::System.trusted_keys_dirs();
+        assert_eq!(dirs.len(), 2);
+        // The writable store is a sibling of the writable config dir (both
+        // under /var/lib/apm) and precedes the read-only /etc seed anchor.
+        assert_eq!(
+            dirs[0].parent(),
+            ProfileScope::System.writable_config_dir().parent(),
+        );
+        assert_eq!(
+            dirs[1],
+            ProfileScope::System.config_dir().join("trusted-keys.d"),
+        );
+    }
+
+    #[test]
     fn system_config_dir_falls_back_when_unset() {
         assert_eq!(resolve_system_config_dir(None), PathBuf::from("/etc/apm"));
     }
@@ -1824,7 +1960,7 @@ required = true
 public_key = "aos-core:Ed25519:base64keyhere"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(rf.registry.name, "aos-core");
+        assert_eq!(rf.registry.name.as_deref(), Some("aos-core"));
         assert_eq!(rf.registry.priority, 500);
         assert_eq!(rf.registry.max_staleness_seconds, Some(604800));
         assert_eq!(rf.registry.caches.len(), 1);
@@ -2232,5 +2368,13 @@ pin = "v2026.02"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         assert_eq!(rf.registry.pin.as_deref(), Some("v2026.02"));
+    }
+
+    #[test]
+    fn profile_scope_name_and_other() {
+        assert_eq!(ProfileScope::User.name(), "user");
+        assert_eq!(ProfileScope::System.name(), "system");
+        assert_eq!(ProfileScope::User.other(), ProfileScope::System);
+        assert_eq!(ProfileScope::System.other(), ProfileScope::User);
     }
 }
