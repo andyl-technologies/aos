@@ -330,6 +330,9 @@ in
       vm.succeed("if grep -q '^Wants=.*expose-lifecycle-consumer.service' /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target; then exit 1; fi")
       vm.succeed("grep -q '^Service=expose-lifecycle-consumer.service$' /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf")
       vm.succeed("grep -q '^FileDescriptorName=aos-expose-lifecycle-socket-provider-api$' /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf")
+      vm.succeed("if grep -R -q '^PrivateNetwork=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
+      vm.succeed("if grep -R -q '^NetworkNamespacePath=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
+      vm.succeed("if grep -R -q '^JoinsNamespaceOf=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-private.target")

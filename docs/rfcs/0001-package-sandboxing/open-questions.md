@@ -168,8 +168,9 @@ the allowlist is declared rides on the still-open policy file format of 1(a)).
 
 > **Resolved (direction).** The `network` permission materializes as:
 > **inbound-only private** (default) — host-owned socket units pass named fds
-> into the sandboxed unit (`PrivateNetwork=` on both + socket-unit
-> `JoinsNamespaceOf=`), zero address-space exposure; **private with
+> into the sandboxed `PrivateNetwork=` unit while the socket stays in the host
+> namespace, with no ambient host-network access beyond passed activation fds;
+> **private with
 > outbound** — a gated `aos-pkg-<n>-netns.service` oneshot creates a named
 > netns + veth pair (host side managed by systemd-networkd; `CONFIG_VETH=y`
 > confirmed in the kernel config) and the workload unit joins via
@@ -759,7 +760,7 @@ the package generation. Spec in [apm-integration.md](apm-integration.md) §4.1.
 > regression (Decision 11), eliminates the nesting/test risk (Decision 4) and
 > the per-package image format (Decision 5 — the MVP "root" is a store path
 > via `RootDirectory=`: no loop device, no udev ordering, no image build),
-> gives named-fd socket activation and the `JoinsNamespaceOf=` pod primitive,
+> gives named-fd host-socket activation and the `JoinsNamespaceOf=` pod primitive,
 > and is upstream's flagship-supported composition (the portable-services
 > default profile). Kernel note: `CONFIG_DM_VERITY` is absent today, so the
 > verity-signed `RootImage=` upgrade path is future work behind a
@@ -788,9 +789,10 @@ Decision 5), and shrinks nspawn's honest use case to "package needs its own
 multi-unit init tree" — currently approximately none. Choosing the substrate
 late invalidates the container-root builder, image format, and template
 decisions, so it is upstream of Decisions 4, 5, 11, and 13. Further verified
-evidence for the per-unit side: socket units + `PrivateNetwork=` +
-`JoinsNamespaceOf=` give named-fd socket activation and a two-unit pod
-primitive (nspawn forwards `$LISTEN_FDS` only to a `--boot` init, unnamed —
+evidence for the per-unit side: host-namespace socket units give named-fd
+socket activation into a `PrivateNetwork=` service, while `JoinsNamespaceOf=`
+remains the two-unit pod primitive when units intentionally share a private
+namespace (nspawn forwards `$LISTEN_FDS` only to a `--boot` init, unnamed —
 systemd#17764); `RootImage=` carries dm-verity (`RootHashSignature=`) for
 signed container roots; and `RootImage=` + `DynamicUser=` + `PrivateUsers=` is
 upstream's own portable-services default profile.
