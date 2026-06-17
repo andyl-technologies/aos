@@ -669,6 +669,9 @@ pub struct CredentialMeta {
     /// Optional host-side credstore source path for fail-closed loading.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Optional inline systemd encrypted credential payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext: Option<String>,
     /// Service units expected to consume this credential.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub units: Vec<String>,
@@ -1233,6 +1236,21 @@ pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
         if let Some(source) = &credential.source {
             validate_credential_source_path(source, credential.encrypted)?;
         }
+        if let Some(ciphertext) = &credential.ciphertext {
+            if !credential.encrypted {
+                bail!(
+                    "credential '{}' declares ciphertext but is not encrypted",
+                    credential.name
+                );
+            }
+            if credential.source.is_some() {
+                bail!(
+                    "credential '{}' must not declare both source and ciphertext",
+                    credential.name
+                );
+            }
+            validate_credential_ciphertext(ciphertext)?;
+        }
         for unit in &credential.units {
             validate_unit_name(unit)?;
             if !unit.ends_with(".service") {
@@ -1426,6 +1444,17 @@ fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
     bail!(
         "credential source path must be under /usr/lib/credstore, /etc/credstore, or /run/credstore: {path}"
     )
+}
+
+fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
+    if !ciphertext.is_empty()
+        && ciphertext
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '.' | '_' | '-'))
+    {
+        return Ok(());
+    }
+    bail!("credential ciphertext contains unsupported characters")
 }
 
 fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
@@ -3361,6 +3390,7 @@ last_update = "2026-02-13T10:30:00Z"
             credentials: vec![CredentialMeta {
                 name: "join-token".into(),
                 source: None,
+                ciphertext: None,
                 units: vec!["webapp.socket".into()],
                 encrypted: true,
             }],
@@ -3377,6 +3407,7 @@ last_update = "2026-02-13T10:30:00Z"
             credentials: vec![CredentialMeta {
                 name: "join-token".into(),
                 source: Some("/etc/shadow".into()),
+                ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
             }],
@@ -3398,6 +3429,7 @@ last_update = "2026-02-13T10:30:00Z"
                 source: Some(
                     "/usr/lib/credstore.encrypted/join-token\nPrivateNetwork=false".into(),
                 ),
+                ciphertext: None,
                 units: vec!["webapp.service".into()],
                 encrypted: true,
             }],
@@ -3407,6 +3439,60 @@ last_update = "2026-02-13T10:30:00Z"
         assert!(
             err.to_string()
                 .contains("credential source path contains unsupported characters")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_without_encryption() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: false,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("is not encrypted"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_and_ciphertext() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/usr/lib/credstore.encrypted/join-token".into()),
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("both source and ciphertext"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abc\nPrivateNetwork=false".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential ciphertext contains unsupported characters")
         );
     }
 

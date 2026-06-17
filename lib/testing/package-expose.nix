@@ -104,6 +104,12 @@
             encrypted = true;
           }
           {
+            name = "inline-secret";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config.service"];
+            encrypted = true;
+          }
+          {
             name = "plain-note";
           }
         ];
@@ -295,18 +301,120 @@
     if credentialBadSourceInjection.success
     then throw "expose renderer must reject credential source unit syntax injection"
     else "ok";
+  credentialBadCiphertext = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            ciphertext = "abc\nPrivateNetwork=false";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialBadCiphertextRejected =
+    if credentialBadCiphertext.success
+    then throw "expose renderer must reject credential ciphertext unit syntax injection"
+    else "ok";
+  credentialPlainCiphertext = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config-split-main.service"];
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialPlainCiphertextRejected =
+    if credentialPlainCiphertext.success
+    then throw "expose renderer must reject ciphertext on unencrypted credentials"
+    else "ok";
+  credentialSourceAndCiphertext = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            source = "/usr/lib/credstore.encrypted/bad";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialSourceAndCiphertextRejected =
+    if credentialSourceAndCiphertext.success
+    then throw "expose renderer must reject credentials that declare both source and ciphertext"
+    else "ok";
+  credentialDuplicateName = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "duplicate";
+            source = "/usr/lib/credstore.encrypted/duplicate";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+          {
+            name = "duplicate";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialDuplicateNameRejected =
+    if credentialDuplicateName.success
+    then throw "expose renderer must reject duplicate credential names"
+    else "ok";
   credentialAuthoredCollision = builtins.tryEval (
     (splitConfigPackage.overrideAttrs (_: {
       expose = {
         units."expose-config-split-main.service".serviceConfig = {
           Type = "oneshot";
           ExecStart = "${pkgs.bash}/bin/bash -c true";
-          LoadCredentialEncrypted = "main-secret";
+          SetCredentialEncrypted = "main-secret:abcDEF0123+/=";
         };
         config.credentials = [
           {
             name = "main-secret";
-            source = "/usr/lib/credstore.encrypted/main-secret";
+            ciphertext = "abcDEF0123+/=";
             units = ["expose-config-split-main.service"];
             encrypted = true;
           }
@@ -318,7 +426,32 @@
   );
   credentialAuthoredCollisionRejected =
     if credentialAuthoredCollision.success
-    then throw "expose renderer must reject authored LoadCredential collisions with expose.config.credentials"
+    then throw "expose renderer must reject authored credential directive collisions with expose.config.credentials"
+    else "ok";
+  credentialAuthoredImportCollision = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          ImportCredential = "main-secret";
+        };
+        config.credentials = [
+          {
+            name = "main-secret";
+            ciphertext = "abcDEF0123+/=";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialAuthoredImportCollisionRejected =
+    if credentialAuthoredImportCollision.success
+    then throw "expose renderer must reject authored ImportCredential collisions with expose.config.credentials"
     else "ok";
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
@@ -602,7 +735,12 @@ in
       credentialNonServiceUnitRejected
       credentialBadSourceRejected
       credentialBadSourceInjectionRejected
+      credentialBadCiphertextRejected
+      credentialPlainCiphertextRejected
+      credentialSourceAndCiphertextRejected
+      credentialDuplicateNameRejected
       credentialAuthoredCollisionRejected
+      credentialAuthoredImportCollisionRejected
       undeclaredPreparedHostPathDirectoryRejected
       readOnlyPreparedHostPathDirectoryRejected
       ;
@@ -819,9 +957,10 @@ in
           grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/join-token' "$config_unit"
           grep -q 'LoadCredential=plain-note' "$config_unit"
           grep -q 'LoadCredentialEncrypted=join-token:/usr/lib/credstore.encrypted/join-token' "$config_unit"
+          grep -q 'SetCredentialEncrypted=inline-secret:abcDEF0123+/=' "$config_unit"
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"ciphertext":"abcDEF0123+/=","encrypted":true,"name":"inline-secret","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
           grep -q '"provides":\[{"kind":"directory","name":"data","path":"/var/lib/expose-config/data"}\]' "$config_manifest"
           grep -q '"uses":\[{"kind":"directory","name":"data","provider":"expose-config","unit":"expose-config.service"}\]' "$config_manifest"
           test "$unknownConfigUnitRejected" = ok
