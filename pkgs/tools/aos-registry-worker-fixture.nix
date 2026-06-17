@@ -27,6 +27,7 @@
   mkDerivation,
   fetchCargoDeps,
   rust,
+  protobuf,
 }: let
   version = "0.1.0";
 
@@ -43,13 +44,13 @@ in
     pname = "aos-registry-worker-fixture";
     inherit version src;
 
-    buildDeps = [rust];
+    buildDeps = [rust protobuf];
 
     # Same workspace vendor set as the dist package (the example adds no new
     # crate — ed25519-dalek is already in the lockfile via aos-registry-surface).
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-1TKoyD7zFfxuUgUTlDloUyjVB3y5E9B8SSgKKA4bu/U=";
+      hash = "sha256-g/UQ8/kOMPd7RJrJD2KsYx7Nqluytgy36TcNqKj9r/Y=";
     };
 
     phases = [
@@ -74,6 +75,9 @@ in
         name = "generate";
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
+          # aos-proto-types' build script needs protoc (the worker pulls it in
+          # via aos-registry-core).
+          export PROTOC="${protobuf}/bin/protoc"
           mkdir -p "$out/surface"
           # Build + run the host-target fixture generator. It writes the surface
           # tree under $out/surface and prints the trust line + HEAD oid.
