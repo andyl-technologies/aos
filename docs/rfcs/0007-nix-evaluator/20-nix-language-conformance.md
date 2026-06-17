@@ -613,18 +613,18 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [ ] **`deepSeq` (deep force)** — forces `a` fully (recursively) then returns
       `b`; reproduce the deep-forcing order and that it makes otherwise-hidden
       errors fire (e.g. `deepSeq { x = throw "e"; } 1` throws). Builtin in doc 21.
-- [ ] **`tryEval` catches `throw` and `assert`** — `(tryEval (throw "x")).success`
+- [x] **`tryEval` catches `throw` and `assert`** — `(tryEval (throw "x")).success`
       is `false`; same for a failed `assert`. (Verified: tryEval catches throw and
       assert.)
-- [ ] **`tryEval` does NOT catch `abort`** — `abort` is uncatchable by design;
+- [x] **`tryEval` does NOT catch `abort`** — `abort` is uncatchable by design;
       `tryEval (abort "x")` aborts the whole evaluation. Reproduce this
       non-catchability. (Verified.)
-- [ ] **`tryEval` does NOT deep-force** — `(tryEval { x = throw "e"; }).success`
+- [x] **`tryEval` does NOT deep-force** — `(tryEval { x = throw "e"; }).success`
       is `true` because `tryEval` only forces to WHNF; the inner `throw` is never
       demanded. Reproduce the shallow-force semantics exactly. (Verified.)
-- [ ] **`tryEval` and type errors** — verify whether builtin *type* errors are
-      caught by `tryEval` in the pinned version (historically not all are caught).
-      **Verify against pinned Nix.**
+- [x] **`tryEval` and non-catchable evaluator errors** — builtin type errors,
+      missing attributes, and list-bounds failures are not converted by
+      `tryEval`; they remain ordinary evaluation failures.
 - [ ] **Evaluation order of errors is observable in some contexts** — which of two
       failing branches surfaces first can depend on forcing order; reproduce
       Nix's order where observable (see
@@ -683,12 +683,12 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [ ] **`assert c; body`** — if `c` is `false`, **must-error** (assertion
       failed); else evaluates `body`. `c` forced to bool. Catchable by `tryEval`
       (§10).
-- [ ] **`builtins.throw msg`** — raises a catchable error with `msg`
+- [x] **`builtins.throw msg`** — raises a catchable error with `msg`
       (builtin in doc 21; language behavior: catchable by `tryEval`, forced only
       when demanded).
-- [ ] **`builtins.abort msg`** — raises an **uncatchable** error; `tryEval` does
+- [x] **`builtins.abort msg`** — raises an **uncatchable** error; `tryEval` does
       not catch it (§10). Builtin in doc 21.
-- [ ] **`throw` vs `abort` vs `assert` — catchability matrix**:
+- [x] **`throw` vs `abort` vs `assert` — catchability matrix**:
       `throw` catchable, `assert` catchable, `abort` **not** catchable. Reproduce
       this matrix exactly (it gates the `EvalError`-vs-fatal distinction the
       integration relies on; see

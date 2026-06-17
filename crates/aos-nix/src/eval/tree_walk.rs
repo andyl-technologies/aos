@@ -2063,6 +2063,66 @@ impl<'ir> TreeWalk<'ir> {
         ))
     }
 
+    fn eval_try_eval_direct(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        match self.eval_node(argument) {
+            Ok(value) => self.alloc_try_eval_result(id, span, true, value),
+            Err(error) => self.handle_try_eval_error(id, span, error),
+        }
+    }
+
+    fn eval_try_eval_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match self.force_value(argument.id(), argument.span(), argument.value()) {
+            Ok(value) => self.alloc_try_eval_result(id, span, true, value),
+            Err(error) => self.handle_try_eval_error(id, span, error),
+        }
+    }
+
+    fn handle_try_eval_error(
+        &mut self,
+        id: IrId,
+        span: Span,
+        error: TreeWalkError,
+    ) -> Result<Value, TreeWalkError> {
+        match error.kind() {
+            TreeWalkErrorKind::Thrown { .. } | TreeWalkErrorKind::AssertionFailed { .. } => {
+                self.alloc_try_eval_result(id, span, false, Value::bool(false))
+            }
+            _ => Err(error),
+        }
+    }
+
+    fn alloc_try_eval_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        success: bool,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let success_key = self.intern_builtin_attr_symbol(id, b"success", span)?;
+        let value_key = self.intern_builtin_attr_symbol(id, b"value", span)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(2).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len: 2 }, span)
+        })?;
+        entries.push(AttrEntry::new(success_key, Value::bool(success)));
+        entries.push(AttrEntry::new(value_key, value));
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn eval_float_to_int_primop(
         &self,
         id: IrId,
@@ -8904,6 +8964,8 @@ macro_rules! builtin_registry {
 
     (@declare custom_value $ty:ident, $name:expr) => {};
 
+    (@declare custom_strict_unary $ty:ident, $name:expr) => {};
+
     (@declare strict_lazy_binary $ty:ident, $name:expr) => {};
 
     (@declare derivation_strict $ty:ident, $name:expr) => {
@@ -9096,6 +9158,33 @@ impl Builtin for LangVersionBuiltin {
         _symbol: Symbol,
     ) -> Result<Value, TreeWalkError> {
         Ok(Value::int(PINNED_NIX_LANG_VERSION))
+    }
+}
+
+impl Builtin for TryEvalBuiltin {
+    fn metadata(&self) -> BuiltinMetadata {
+        <Self as BuiltinInfo>::METADATA
+    }
+
+    fn apply_direct(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        _node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        eval.eval_try_eval_direct(call.id, call.span, args[0])
+    }
+
+    fn apply(
+        &self,
+        eval: &mut TreeWalk<'_>,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Value, TreeWalkError> {
+        check_builtin_arity(call, 1, args.len())?;
+        eval.eval_try_eval_value(call.id, call.span, args[0])
     }
 }
 
@@ -10806,6 +10895,7 @@ mod tests {
         assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? throw").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? abort").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? tryEval").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? nixVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? langVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
@@ -10856,6 +10946,10 @@ mod tests {
         );
         assert_eq!(
             eval("builtins.isFunction builtins.abort").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.tryEval").as_bool(),
             Ok(true)
         );
         assert_eq!(
@@ -11081,6 +11175,93 @@ mod tests {
             panic!("expected aborted error");
         };
         assert_eq!(message, b"boom");
+    }
+
+    #[test]
+    fn try_eval_catches_throw_and_assertion_failures() {
+        assert_eq!(
+            eval("(builtins.tryEval (builtins.throw \"boom\")).success").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("(builtins.tryEval (builtins.throw \"boom\")).value").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("(let t = builtins.tryEval; in t (builtins.throw \"boom\")).success").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval("(builtins.tryEval (assert false; 1)).success").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(eval("(builtins.tryEval 7).success").as_bool(), Ok(true));
+        assert_eq!(eval("(builtins.tryEval 7).value").as_int(), Ok(7));
+    }
+
+    #[test]
+    fn try_eval_is_shallow() {
+        assert_eq!(
+            eval("(builtins.tryEval { x = builtins.throw \"boom\"; }).success").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isAttrs (builtins.tryEval { x = builtins.throw \"boom\"; }).value")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("(builtins.tryEval [ (builtins.throw \"boom\") ]).success").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.tryEval [ (builtins.throw \"boom\") ]).value").as_int(),
+            Ok(1)
+        );
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.deepSeq (builtins.tryEval { x = builtins.throw \"boom\"; }) true",
+        ))
+        .expect_err("deepSeq demands the latent throw inside tryEval's value");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"boom");
+    }
+
+    #[test]
+    fn try_eval_does_not_catch_fatal_or_type_errors() {
+        let error = eval_whnf_owned(&lower("builtins.tryEval (builtins.abort \"boom\")"))
+            .expect_err("tryEval does not catch abort");
+        let TreeWalkErrorKind::Aborted { message, .. } = error.kind() else {
+            panic!("expected aborted error");
+        };
+        assert_eq!(message, b"boom");
+
+        let error = eval_whnf_owned(&lower("builtins.tryEval (1 + true)"))
+            .expect_err("tryEval does not catch type errors");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "number",
+                actual: ValueTag::Bool,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.tryEval ({ }).missing"))
+            .expect_err("tryEval does not catch missing attrs");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower("builtins.tryEval (builtins.elemAt [] 0)"))
+            .expect_err("tryEval does not catch list bounds errors");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::ListIndexOutOfBounds { .. }
+        ));
     }
 
     #[test]

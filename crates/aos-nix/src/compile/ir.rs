@@ -1902,6 +1902,7 @@ mod tests {
             ),
             ("builtins.toString 1", b"toString".as_slice()),
             ("builtins.toJSON { a = 1; }", b"toJSON".as_slice()),
+            ("builtins.tryEval 1", b"tryEval".as_slice()),
             (
                 "builtins.convertHash { hash = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; hashAlgo = \"sha256\"; toHashFormat = \"base64\"; }",
                 b"convertHash".as_slice(),

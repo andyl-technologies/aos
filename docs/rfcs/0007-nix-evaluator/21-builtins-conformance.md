@@ -688,12 +688,12 @@ places C++ Nix would.
 
 ## 13. Control, errors, and meta
 
-- [ ] `throw` (s) — raise a **catchable** evaluation error with message `s`.
+- [x] `throw` (s) — raise a **catchable** evaluation error with message `s`.
       Caught by `tryEval`. Strict in `s`.
-- [ ] `abort` (s) — raise a **non-catchable** fatal error with message `s`.
+- [x] `abort` (s) — raise a **non-catchable** fatal error with message `s`.
       **Not** caught by `tryEval` (verified: the whole point of `abort` is that
       it is not caught). Aborts the evaluation.
-- [ ] `tryEval` (e) — force `e` to **WHNF** (shallow!) and return
+- [x] `tryEval` (e) — force `e` to **WHNF** (shallow!) and return
       `{ success = true; value = e; }`, or `{ success = false; value = false; }`
       if forcing raised a **catchable** error.
       - Catches: `throw`, `assert` failures (and other "catchable" errors —
@@ -705,7 +705,7 @@ places C++ Nix would.
         on it).
       - In the JIT tiers this is a catch-frame runtime symbol, not C++-style
         unwinding (see [primops and the runtime ABI](10-primops-and-runtime-abi.md) §5.4).
-- [ ] `assert` — **language syntax**, not a builtin (`assert cond; body`). Listed
+- [x] `assert` — **language syntax**, not a builtin (`assert cond; body`). Listed
       here only to record its `tryEval` interaction: a failed assertion is a
       catchable error. The syntax is covered in
       [language conformance](20-nix-language-conformance.md).
@@ -918,7 +918,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [ ] `match` / `split` regex dialect (named risk vs. Rust `regex`).
 - [ ] `div` truncate-toward-zero; int/float promotion and float rendering.
 - [ ] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
-- [ ] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
+- [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
 - [ ] `placeholder` byte-identical placeholder scheme.
 - [ ] `nixVersion`/`langVersion` spoofing for feature-gate parity.

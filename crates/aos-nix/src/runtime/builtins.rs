@@ -122,7 +122,7 @@ macro_rules! builtin_definitions {
             unsupported TraceBuiltin, b"trace";
             unsupported TraceVerboseBuiltin, b"traceVerbose";
             custom_value TrueBuiltin, b"true";
-            unsupported TryEvalBuiltin, b"tryEval";
+            custom_strict_unary TryEvalBuiltin, b"tryEval";
             strict_unary TypeOfBuiltin, b"typeOf", StrictUnaryPrimOp::TypeOf;
             strict_unary UnsafeDiscardOutputDependencyBuiltin, b"unsafeDiscardOutputDependency", StrictUnaryPrimOp::UnsafeDiscardOutputDependency;
             strict_unary UnsafeDiscardStringContextBuiltin, b"unsafeDiscardStringContext", StrictUnaryPrimOp::UnsafeDiscardStringContext;
@@ -201,6 +201,10 @@ static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the filesystem type of a path.",
 };
 
+static TRY_EVAL_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Evaluates an expression to WHNF and reports catchable failures.",
+};
+
 /// Static metadata shared by builtin resolution, lowering, and execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuiltinMetadata {
@@ -263,6 +267,17 @@ macro_rules! builtin_metadata {
     };
 
     (@record strict_unary, $ty:ident, $name:expr, $primop:expr) => {
+        BuiltinMetadata::new(
+            $name,
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure,
+            }),
+            Some(1),
+            builtin_metadata!(@docs $ty),
+        )
+    };
+
+    (@record custom_strict_unary, $ty:ident, $name:expr) => {
         BuiltinMetadata::new(
             $name,
             Some(BuiltinDirect::StrictUnary {
@@ -405,6 +420,10 @@ macro_rules! builtin_metadata {
         &READ_FILE_TYPE_DOCS
     };
 
+    (@docs TryEvalBuiltin) => {
+        &TRY_EVAL_DOCS
+    };
+
     (@docs $ty:ident) => {
         &TODO_BUILTIN_DOCS
     };
@@ -531,6 +550,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"tryEval"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"seq"),
             Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Pure
@@ -565,6 +590,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"readFile").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"tryEval").unwrap().first_class_arity(),
             Some(1)
         );
         assert_eq!(
@@ -618,6 +647,10 @@ mod tests {
         assert_eq!(
             builtin_metadata(b"readFileType").unwrap().docs().summary(),
             "Returns the filesystem type of a path."
+        );
+        assert_eq!(
+            builtin_metadata(b"tryEval").unwrap().docs().summary(),
+            "Evaluates an expression to WHNF and reports catchable failures."
         );
     }
 }
