@@ -1435,6 +1435,7 @@ fn primop_effect(name: Option<&[u8]>) -> Option<EffectClass> {
     let effect = match direct {
         BuiltinDirect::DerivationStrict => return None,
         BuiltinDirect::StrictUnary { effect }
+        | BuiltinDirect::LazyUnary { effect }
         | BuiltinDirect::StrictBinary { effect }
         | BuiltinDirect::StrictLazyBinary { effect }
         | BuiltinDirect::StrictTernary { effect } => effect,
@@ -3123,6 +3124,7 @@ mod tests {
               drv = derivationStrict { name = "x"; };
               flag = true;
               kind = builtins.typeOf flag;
+              broken = builtins.break (name == "dyn");
               none = null;
               picked = with { fallback = 2; }; fallback;
             }

@@ -20,7 +20,7 @@ macro_rules! builtin_definitions {
             strict_binary BitAndBuiltin, b"bitAnd", StrictBinaryPrimOp::BitAnd;
             strict_binary BitOrBuiltin, b"bitOr", StrictBinaryPrimOp::BitOr;
             strict_binary BitXorBuiltin, b"bitXor", StrictBinaryPrimOp::BitXor;
-            unsupported BreakBuiltin, b"break";
+            lazy_unary BreakBuiltin, b"break";
             unsupported BuiltinsBuiltin, b"builtins";
             direct_binary CatAttrsBuiltin, b"catAttrs", StrictBinaryPrimOp::CatAttrs;
             strict_unary CeilBuiltin, b"ceil", StrictUnaryPrimOp::Ceil;
@@ -151,6 +151,8 @@ pub(crate) enum BuiltinDirect {
     DerivationStrict,
     /// The builtin lowers after one strict argument.
     StrictUnary { effect: BuiltinEffect },
+    /// The builtin lowers after one lazy argument.
+    LazyUnary { effect: BuiltinEffect },
     /// The builtin lowers after two strict arguments.
     StrictBinary { effect: BuiltinEffect },
     /// The builtin lowers after a strict first argument and lazy second argument.
@@ -258,6 +260,17 @@ macro_rules! builtin_metadata {
         BuiltinMetadata::new(
             $name,
             Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure,
+            }),
+            Some(1),
+            builtin_metadata!(@docs $ty),
+        )
+    };
+
+    (@record lazy_unary, $ty:ident, $name:expr) => {
+        BuiltinMetadata::new(
+            $name,
+            Some(BuiltinDirect::LazyUnary {
                 effect: BuiltinEffect::Pure,
             }),
             Some(1),
@@ -455,6 +468,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"break"),
+            Some(BuiltinDirect::LazyUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"hashFile"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful
@@ -507,6 +526,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"getEnv").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            builtin_metadata(b"break").unwrap().first_class_arity(),
             Some(1)
         );
         assert_eq!(

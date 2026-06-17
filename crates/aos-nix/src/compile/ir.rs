@@ -810,6 +810,19 @@ impl IrLowerer {
         Ok(Some((symbol, Self::effect_class(effect))))
     }
 
+    fn lazy_unary_primop_ref(&self, id: NodeId) -> Result<Option<(Symbol, EffectClass)>, IrError> {
+        let Some(symbol) = self.direct_builtin_ref_symbol(id)? else {
+            return Ok(None);
+        };
+        if self.node(id)?.kind == NodeKind::GlobalVar {
+            return Ok(None);
+        }
+        let Some(BuiltinDirect::LazyUnary { effect }) = self.direct_builtin(symbol) else {
+            return Ok(None);
+        };
+        Ok(Some((symbol, Self::effect_class(effect))))
+    }
+
     fn strict_binary_primop_ref(
         &self,
         id: NodeId,
@@ -1131,6 +1144,16 @@ impl IrLowerer {
         }
         if let Some((symbol, effect)) = self.strict_unary_primop_ref(function)? {
             let argument = self.lower_expr(argument)?;
+            let args = self.arena.push_child_slice(&[argument], node.span)?;
+            return self.push_with_effect(
+                IrKind::PrimOp,
+                node.span,
+                effect,
+                IrData::PrimOp { symbol, args },
+            );
+        }
+        if let Some((symbol, effect)) = self.lazy_unary_primop_ref(function)? {
+            let argument = self.lower_lazy(argument)?;
             let args = self.arena.push_child_slice(&[argument], node.span)?;
             return self.push_with_effect(
                 IrKind::PrimOp,
@@ -1900,6 +1923,32 @@ mod tests {
             assert_eq!(args.len(), 1);
             assert_ne!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
         }
+    }
+
+    #[test]
+    fn lowers_pure_lazy_unary_primops_directly() {
+        let ir = lowered("builtins.break (let x = [ 1 2 ]; in x)");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        assert_eq!(root.effect, EffectClass::Pure);
+        let IrData::PrimOp { symbol, args } = root.data else {
+            panic!("primop payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"break");
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 1);
+        assert_eq!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
+
+        let ir = lowered("builtins.break ./foo");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::PrimOp);
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("primop payload expected");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        assert_eq!(args.len(), 1);
+        assert_eq!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
+        assert_eq!(node(&ir, thunk_inner(&ir, args[0])).kind, IrKind::Path);
     }
 
     #[test]

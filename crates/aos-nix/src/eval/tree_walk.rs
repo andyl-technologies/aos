@@ -14,7 +14,7 @@
 //! first-class primitive operations, and derivation boundaries.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fs, io,
     os::unix::ffi::OsStrExt,
@@ -31,7 +31,7 @@ use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk};
-use super::thunk::{ForceClaim, ForceError};
+use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
     FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
@@ -420,6 +420,8 @@ pub struct TreeWalk<'ir> {
     env: Vec<Rc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
     options: TreeWalkOptions,
+    // Lazy identity primops expose their returned argument thunk to strict consumers.
+    lazy_identity_thunks: BTreeSet<u64>,
 }
 
 impl<'ir> TreeWalk<'ir> {
@@ -437,6 +439,7 @@ impl<'ir> TreeWalk<'ir> {
             env: Vec::new(),
             with_scopes: Vec::new(),
             options,
+            lazy_identity_thunks: BTreeSet::new(),
         }
     }
 
@@ -526,7 +529,112 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )),
         }?;
-        self.force_value(id, node.span, value)
+        self.force_node_result(id, node.span, value)
+    }
+
+    fn force_node_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        mut value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        loop {
+            if self.is_suspended_lazy_identity_thunk(id, span, value)? {
+                return Ok(value);
+            }
+            if !value.is_thunk() {
+                return Ok(value);
+            }
+            let forced = self.force_value(id, span, value)?;
+            if forced.raw_eq(value) {
+                return Ok(forced);
+            }
+            value = forced;
+        }
+    }
+
+    fn is_suspended_lazy_identity_thunk(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<bool, TreeWalkError> {
+        if !value.is_thunk() || !self.lazy_identity_thunks.contains(&value.payload_bits()) {
+            return Ok(false);
+        }
+        let thunk = self
+            .heap
+            .get_thunk(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let state = thunk
+            .cell()
+            .state()
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?;
+        Ok(state == ThunkState::Suspended)
+    }
+
+    fn mark_lazy_identity_thunk(&mut self, value: Value) {
+        if value.is_thunk() {
+            self.lazy_identity_thunks.insert(value.payload_bits());
+        }
+    }
+
+    fn eval_lazy_identity_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if self.is_path_literal_thunk(id, span, value)? {
+            return self.force_value(id, span, value);
+        }
+        self.mark_lazy_identity_thunk(value);
+        Ok(value)
+    }
+
+    fn is_path_literal_thunk(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<bool, TreeWalkError> {
+        if !value.is_thunk() {
+            return Ok(false);
+        }
+        let thunk = self
+            .heap
+            .get_thunk(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        Ok(self.node(thunk.body())?.kind == IrKind::Path)
+    }
+
+    fn consume_suspended_lazy_identity_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<bool, TreeWalkError> {
+        if self.is_suspended_lazy_identity_thunk(id, span, value)? {
+            self.lazy_identity_thunks.remove(&value.payload_bits());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn force_demanded_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if self.consume_suspended_lazy_identity_thunk(id, span, value)? {
+            return self.force_value(id, span, value);
+        }
+        let value = self.force_value(id, span, value)?;
+        if self.consume_suspended_lazy_identity_thunk(id, span, value)? {
+            return self.force_value(id, span, value);
+        }
+        Ok(value)
     }
 
     fn node(&self, id: IrId) -> Result<&IrNode, TreeWalkError> {
@@ -1360,6 +1468,7 @@ impl<'ir> TreeWalk<'ir> {
         if !value.is_thunk() {
             return Ok(value);
         }
+        let forced_payload = value.payload_bits();
         let thunk = self
             .heap
             .clone_thunk(value)
@@ -1370,7 +1479,10 @@ impl<'ir> TreeWalk<'ir> {
             .begin_force()
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span))?
         {
-            ForceClaim::AlreadyForced(value) => Ok(value),
+            ForceClaim::AlreadyForced(value) => {
+                self.lazy_identity_thunks.remove(&forced_payload);
+                Ok(value)
+            }
             ForceClaim::Claimed(guard) => {
                 let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
                 let thunk_with_env = self.clone_with_scopes(id, thunk.with_scope_env(), span)?;
@@ -1380,9 +1492,11 @@ impl<'ir> TreeWalk<'ir> {
                 self.env = saved_env;
                 self.with_scopes = saved_with_scopes;
                 let value = result?;
-                guard.finish(value).map_err(|source| {
+                let value = guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
-                })
+                })?;
+                self.lazy_identity_thunks.remove(&forced_payload);
+                Ok(value)
             }
         }
     }
@@ -1536,7 +1650,12 @@ impl<'ir> TreeWalk<'ir> {
             return Err(self.invalid_payload(id, node, "application pair"));
         };
         let function_span = self.node(first)?.span;
-        let function = self.eval_node(first)?;
+        let mut function = self.eval_node(first)?;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop)
+            && !self.node_is_break_primop(first)?
+        {
+            function = self.force_demanded_value(first, function_span, function)?;
+        }
         if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -1557,6 +1676,14 @@ impl<'ir> TreeWalk<'ir> {
             second,
             argument,
         )
+    }
+
+    fn node_is_break_primop(&self, id: IrId) -> Result<bool, TreeWalkError> {
+        let node = self.node(id)?;
+        let IrData::PrimOp { symbol, .. } = node.data else {
+            return Ok(false);
+        };
+        Ok(node.kind == IrKind::PrimOp && self.symbols.resolve(symbol) == Some(b"break"))
     }
 
     fn eval_primop(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -1932,15 +2059,19 @@ impl<'ir> TreeWalk<'ir> {
     }
 
     fn eval_seq_primop(&mut self, first: IrId, second: IrId) -> Result<Value, TreeWalkError> {
-        self.eval_node(first)?;
+        let first_span = self.node(first)?.span;
+        let value = self.eval_node(first)?;
+        self.consume_suspended_lazy_identity_thunk(first, first_span, value)?;
         self.eval_lazy_node(second)
     }
 
     fn eval_deep_seq_primop(&mut self, first: IrId, second: IrId) -> Result<Value, TreeWalkError> {
         let first_span = self.node(first)?.span;
         let value = self.eval_node(first)?;
-        let mut visited = Vec::new();
-        self.deep_force_value(first, first_span, value, &mut visited)?;
+        if !self.consume_suspended_lazy_identity_thunk(first, first_span, value)? {
+            let mut visited = Vec::new();
+            self.deep_force_value(first, first_span, value, &mut visited)?;
+        }
         self.eval_lazy_node(second)
     }
 
@@ -6432,8 +6563,9 @@ impl<'ir> TreeWalk<'ir> {
             | StrictBinaryPrimOp::Sub
             | StrictBinaryPrimOp::Mul
             | StrictBinaryPrimOp::Div => {
-                let left = self.force_value(first.id(), first.span(), first.value())?;
-                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let left = self.force_demanded_value(first.id(), first.span(), first.value())?;
+                let right =
+                    self.force_demanded_value(second.id(), second.span(), second.value())?;
                 let left = self.expect_number(first.id(), left, first.span())?;
                 let right = self.expect_number(second.id(), right, second.span())?;
                 let node = self.node(id)?;
@@ -7150,8 +7282,14 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let forced_break_left = self.consume_suspended_lazy_identity_thunk(lhs, lhs_span, left)?;
+        let left = if forced_break_left {
+            self.force_value(lhs, lhs_span, left)?
+        } else {
+            left
+        };
         match left.tag() {
-            ValueTag::Int | ValueTag::Float => {
+            ValueTag::Int | ValueTag::Float if !forced_break_left => {
                 let rhs_span = self.node(rhs)?.span;
                 let right = self.eval_node(rhs)?;
                 let left = self.expect_number(lhs, left, lhs_span)?;
@@ -7161,6 +7299,7 @@ impl<'ir> TreeWalk<'ir> {
             ValueTag::String => {
                 let rhs_span = self.node(rhs)?.span;
                 let right = self.eval_node(rhs)?;
+                let right = self.force_demanded_value(rhs, rhs_span, right)?;
                 if right.tag() != ValueTag::String {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -7192,8 +7331,12 @@ impl<'ir> TreeWalk<'ir> {
         rhs: IrId,
         invert: bool,
     ) -> Result<Value, TreeWalkError> {
+        let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let left = self.force_demanded_value(lhs, lhs_span, left)?;
+        let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let equal = self.values_equal(id, node, left, right, EqualityContext::Direct)?;
         Ok(Value::bool(if invert { !equal } else { equal }))
     }
@@ -7449,8 +7592,10 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let left = self.force_demanded_value(lhs, lhs_span, left)?;
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
         let left = self.expect_number(lhs, left, lhs_span)?;
         let right = self.expect_number(rhs, right, rhs_span)?;
         self.eval_numeric_values(id, node, op, left, right)
@@ -7518,6 +7663,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
+        let left = self.force_demanded_value(lhs, lhs_span, left)?;
         if left.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -7531,6 +7677,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
         if right.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -8050,6 +8197,7 @@ impl<'ir> TreeWalk<'ir> {
     fn eval_number_node(&mut self, id: IrId) -> Result<Number, TreeWalkError> {
         let span = self.node(id)?.span;
         let value = self.eval_node(id)?;
+        let value = self.force_demanded_value(id, span, value)?;
         self.expect_number(id, value, span)
     }
 
@@ -8590,6 +8738,41 @@ macro_rules! strict_unary_builtin {
     };
 }
 
+macro_rules! lazy_unary_builtin {
+    ($ty:ident, $name:expr) => {
+        impl Builtin for $ty {
+            fn metadata(&self) -> BuiltinMetadata {
+                <Self as BuiltinInfo>::METADATA
+            }
+
+            fn apply_direct(
+                &self,
+                eval: &mut TreeWalk<'_>,
+                call: BuiltinCall,
+                _node: &IrNode,
+                args: &[IrId],
+            ) -> Result<Value, TreeWalkError> {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_lazy_node(argument)?;
+                eval.eval_lazy_identity_value(argument, argument_span, value)
+            }
+
+            fn apply(
+                &self,
+                eval: &mut TreeWalk<'_>,
+                call: BuiltinCall,
+                args: &[EvalPrimOpArg],
+            ) -> Result<Value, TreeWalkError> {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_lazy_identity_value(argument.id(), argument.span(), argument.value())
+            }
+        }
+    };
+}
+
 macro_rules! strict_binary_builtin {
     ($ty:ident, $name:expr, $primop:expr) => {
         impl Builtin for $ty {
@@ -8689,6 +8872,10 @@ macro_rules! builtin_registry {
 
     (@declare strict_unary $ty:ident, $name:expr, $primop:expr) => {
         strict_unary_builtin!($ty, $name, $primop);
+    };
+
+    (@declare lazy_unary $ty:ident, $name:expr) => {
+        lazy_unary_builtin!($ty, $name);
     };
 
     (@declare effectful_strict_unary $ty:ident, $name:expr, $primop:expr) => {
@@ -8992,7 +9179,8 @@ impl Builtin for SeqBuiltin {
     ) -> Result<Value, TreeWalkError> {
         check_builtin_arity(call, 2, args.len())?;
         let first = args[0];
-        eval.force_value(first.id(), first.span(), first.value())?;
+        let value = eval.force_value(first.id(), first.span(), first.value())?;
+        eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)?;
         Ok(args[1].value())
     }
 }
@@ -9022,8 +9210,10 @@ impl Builtin for DeepSeqBuiltin {
         check_builtin_arity(call, 2, args.len())?;
         let first = args[0];
         let value = eval.force_value(first.id(), first.span(), first.value())?;
-        let mut visited = Vec::new();
-        eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
+        if !eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)? {
+            let mut visited = Vec::new();
+            eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
+        }
         Ok(args[1].value())
     }
 }
@@ -10428,6 +10618,8 @@ mod tests {
         assert_eq!(eval("builtins.true").as_bool(), Ok(true));
         assert_eq!(eval("builtins.false").as_bool(), Ok(false));
         assert_eq!(eval("builtins.null").as_null(), Ok(()));
+        assert_eq!(eval("builtins.break 7").as_int(), Ok(7));
+        assert_eq!(eval("let f = builtins.break; in f 9").as_int(), Ok(9));
         assert_eq!(eval_string_bytes("builtins.storeDir"), b"/nix/store");
         assert_eq!(
             eval_string_bytes_with_options(
@@ -10481,6 +10673,7 @@ mod tests {
             Ok(true)
         );
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? break").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
         assert_eq!(
@@ -10524,6 +10717,42 @@ mod tests {
             eval("let f = builtins.isFunction; in f builtins.convertHash").as_bool(),
             Ok(true)
         );
+        assert_eq!(
+            eval("let x = builtins.break (1 / 0); in 42").as_int(),
+            Ok(42)
+        );
+        assert!(matches!(
+            eval_whnf(&lower("builtins.length (builtins.break [ 1 2 ])"))
+                .expect_err("length sees the break result as an unforced thunk")
+                .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Thunk,
+                ..
+            }
+        ));
+        assert!(matches!(
+            eval_whnf(&lower(
+                "builtins.length (let f = builtins.break; in f [ 1 2 ])"
+            ))
+            .expect_err("first-class break preserves the returned thunk")
+            .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Thunk,
+                ..
+            }
+        ));
+        assert!(matches!(
+            eval_whnf(&lower("builtins.hasAttr \"x\" (builtins.break { x = 1; })"))
+                .expect_err("hasAttr sees the break result as an unforced thunk")
+                .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Thunk,
+                ..
+            }
+        ));
         assert_eq!(eval("builtins.__missing or 42").as_int(), Ok(42));
         assert_eq!(eval("builtins.__missing.foo or 42").as_int(), Ok(42));
         assert_eq!(eval("builtins.length.foo or 42").as_int(), Ok(42));
@@ -10643,6 +10872,10 @@ mod tests {
                 "let builtins = { currentSystem = \"local\"; }; in builtins.currentSystem"
             ),
             b"local"
+        );
+        assert_eq!(
+            eval("let builtins = { break = value: 42; }; in builtins.break 1").as_int(),
+            Ok(42)
         );
         assert_eq!(
             eval_string_bytes(
@@ -16599,6 +16832,160 @@ mod tests {
             TreeWalkErrorKind::DivisionByZero { id: argument }
         );
         assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn break_result_is_forced_when_explicitly_demanded() {
+        let ir = lower("builtins.break (1 / 0)");
+        let mut evaluator = TreeWalk::new(&ir);
+        let value = evaluator
+            .eval_root()
+            .expect("break returns the argument thunk");
+
+        assert!(value.is_thunk());
+
+        let error = evaluator
+            .force_value(ir.root, Span::new(0, 0), value)
+            .expect_err("forcing the returned thunk demands the argument");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn break_thunks_can_be_forced_by_arithmetic_and_reused() {
+        assert_eq!(
+            eval("builtins.add (builtins.break (1 + 2)) 1").as_int(),
+            Ok(4)
+        );
+        assert_eq!(
+            eval("let add = builtins.add; in add (builtins.break (1 + 2)) 1").as_int(),
+            Ok(4)
+        );
+        assert!(matches!(
+            eval_whnf(&lower(
+                "builtins.add (builtins.break (builtins.break (1 + 2))) 1"
+            ))
+            .expect_err("arithmetic demands through exactly one break wrapper")
+            .kind(),
+            TreeWalkErrorKind::Type {
+                actual: ValueTag::Thunk,
+                ..
+            }
+        ));
+        assert_eq!(
+            eval("builtins.isInt (builtins.break (1 + 2))").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval(
+                "let x = builtins.break (1 + 2); y = builtins.add x 0; \
+                 in y + (if builtins.isInt x then 1 else 2)"
+            )
+            .as_int(),
+            Ok(4)
+        );
+        assert_eq!(
+            eval("builtins.seq (builtins.break (1 / 0)) 7").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("builtins.deepSeq (builtins.break [ (1 / 0) ]) 7").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("let s = builtins.seq; in s (builtins.break (1 / 0)) 7").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("let x = builtins.break [ 1 2 ]; y = builtins.seq x 0; in y + builtins.length x")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval(
+                "let x = builtins.break { a = 1; }; y = builtins.deepSeq x 0; \
+                 in y + (if builtins.hasAttr \"a\" x then 1 else 2)"
+            )
+            .as_int(),
+            Ok(1)
+        );
+        assert_eq!(eval("(builtins.break (1 + 2)) == 3").as_bool(), Ok(true));
+        assert_eq!(
+            eval("(builtins.break (builtins.break (1 + 2))) == 3").as_bool(),
+            Ok(false)
+        );
+        assert_eq!(eval("(builtins.break [ 1 ]) == [ 1 ]").as_bool(), Ok(true));
+        assert_eq!(
+            eval_string_bytes("builtins.break (\"a\" + \"b\") + \"c\""),
+            b"abc"
+        );
+        assert!(matches!(
+            eval_whnf(&lower("(builtins.break (1 + 2)) + 1"))
+                .expect_err("operator + does not treat break like builtins.add")
+                .kind(),
+            TreeWalkErrorKind::Type { .. }
+        ));
+        assert_eq!(
+            eval("builtins.length ((builtins.break ([ 1 ] ++ [ 2 ])) ++ [ 3 ])").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let x = builtins.break (1 + 2); in -x").as_int(),
+            Ok(-3)
+        );
+        assert!(matches!(
+            eval_whnf(&lower("(builtins.break (x: x)) 1"))
+                .expect_err("direct break lambda remains a thunk"),
+            TreeWalkError {
+                kind: TreeWalkErrorKind::Type {
+                    actual: ValueTag::Thunk,
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(
+            eval("let f = builtins.break (x: x); in f 1").as_int(),
+            Ok(1)
+        );
+        assert!(matches!(
+            eval_whnf(&lower(
+                "let f = builtins.break (builtins.break (x: x)); in f 1"
+            ))
+            .expect_err("double break lambda leaves one thunk"),
+            TreeWalkError {
+                kind: TreeWalkErrorKind::Type {
+                    actual: ValueTag::Thunk,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn break_preserves_path_arguments_as_paths() {
+        let (_dir, path) = temp_file_with_bytes("break-path", b"abc");
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval(&format!("builtins.isPath (builtins.break {path})")).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.typeOf (builtins.break {path})")),
+            b"path"
+        );
+        assert_eq!(
+            eval(&format!(
+                "let f = builtins.break; in builtins.isPath (f {path})"
+            ))
+            .as_bool(),
+            Ok(true)
+        );
     }
 
     #[test]
