@@ -33,7 +33,9 @@ use crate::auth::magic::Mailer;
 use crate::auth::seal::SecretSealer;
 use crate::backend::BackendBounds;
 use crate::db::{Database, RegistryRecord};
+use crate::fetch::SurfaceProvider;
 use crate::ratelimit::RateLimiter;
+use crate::surface_write::SurfaceWriteProvider;
 
 /// The dependency bundle the shared console handlers carry as `axum` `State`.
 ///
@@ -66,6 +68,14 @@ pub struct ConsoleDeps {
     pub http: Arc<dyn HttpClient>,
     /// Hosted-key channel advance (the [`ChannelAdvancer`] port).
     pub advancer: Arc<dyn ChannelAdvancer>,
+    /// Per-registry surface **read** access (the [`SurfaceProvider`] port),
+    /// used by the git-backed config/change-request flow to read the base
+    /// commit's `registry.toml` and the committed history.
+    pub surface: Arc<dyn SurfaceProvider>,
+    /// Per-registry surface **write** access (the [`SurfaceWriteProvider`]
+    /// port), used by the git-backed config-change-request flow to write the
+    /// draft commit's loose objects and ref.
+    pub surface_write: Arc<dyn SurfaceWriteProvider>,
 }
 
 /// A minimal outbound HTTP client for the OIDC authorization-code flow.

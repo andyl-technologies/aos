@@ -23,6 +23,7 @@ use worker::Bucket;
 
 use aos_registry_core::db::RegistryRecord;
 use aos_registry_core::fetch::{SurfaceFetch, SurfaceProvider};
+use aos_registry_core::surface_write::{SurfaceWrite, SurfaceWriteProvider};
 
 use crate::keymap;
 
@@ -85,5 +86,71 @@ impl SurfaceFetch for R2SurfaceFetch {
 
     fn describe(&self) -> String {
         format!("r2://{}", self.prefix)
+    }
+}
+
+/// A [`SurfaceWriteProvider`] that writes every registry into one R2 bucket.
+///
+/// The write sibling of [`R2SurfaceProvider`]: holds the hub-owned bucket
+/// binding and scopes a [`R2Write`] to the requested registry's prefix. The
+/// shared git-backed change-request flow ([`aos_registry_core::gitwrite`]) uses
+/// it to write loose objects and draft refs.
+pub struct R2SurfaceWriteProvider {
+    bucket: Bucket,
+}
+
+impl R2SurfaceWriteProvider {
+    /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface write
+    /// provider.
+    #[must_use]
+    pub fn new(bucket: Bucket) -> R2SurfaceWriteProvider {
+        R2SurfaceWriteProvider { bucket }
+    }
+}
+
+#[async_trait(?Send)]
+impl SurfaceWriteProvider for R2SurfaceWriteProvider {
+    async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>> {
+        Ok(Box::new(R2Write {
+            bucket: self.bucket.clone(),
+            prefix: registry.prefix.clone(),
+        }))
+    }
+}
+
+/// A [`SurfaceWrite`] writing one registry's prefix into an R2 bucket.
+///
+/// Logical surface paths map to R2 keys through the same
+/// [`crate::keymap::r2_key`] mapping the read side
+/// ([`R2SurfaceFetch`]) uses, so a draft written here is read back by the same
+/// key. R2 puts are atomic per object, so no temp-file + rename dance is needed;
+/// R2 keys are a flat namespace, so there is no traversal/symlink escape to
+/// guard against (the key map normalizes the prefix join).
+struct R2Write {
+    bucket: Bucket,
+    prefix: String,
+}
+
+#[async_trait(?Send)]
+impl SurfaceWrite for R2Write {
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.bucket
+            .put(&key, bytes.to_vec())
+            .execute()
+            .await
+            .map_err(|err| anyhow::anyhow!("R2 put {key}: {err}"))?;
+        Ok(())
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let key = keymap::r2_key(&self.prefix, path);
+        // R2 delete of an absent key is a no-op, so this is naturally
+        // idempotent.
+        self.bucket
+            .delete(&key)
+            .await
+            .map_err(|err| anyhow::anyhow!("R2 delete {key}: {err}"))?;
+        Ok(())
     }
 }

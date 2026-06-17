@@ -49,10 +49,13 @@
 //! [`ConsoleDeps`](aos_registry_core::web::console::ConsoleDeps) over its console
 //! ports ([`consoleports`]) and merges
 //! [`console_router`](aos_registry_core::web::console::console_router) onto the
-//! RPC/facade/browse router, so the 39 shared console routes run identical code
-//! on both shells. Nine console routes stay native-only on the hub (the pre-auth
-//! rate-limited login/activation paths, the OIDC flow, and the git-backed
-//! config/change-request flows) and are not yet mounted on the Worker.
+//! RPC/facade/browse router, so the console runs identical code on both shells.
+//! As of stage H3 that includes the git-backed config/change-request flow
+//! (`/{slug}/-/settings/config`, `/{slug}/-/changes`): its base-commit reads go
+//! through the R2 [`surface`] read provider and its draft-object writes through
+//! the R2 [`surface::R2SurfaceWriteProvider`] write provider, so **every** flat
+//! console route is mounted on the Worker. The only console code that stays
+//! native is the hub's nested-canonical fallback for slugs with slashes.
 //!
 //! Still worker-local: the one-shot D1 schema setup (`GET /_init`,
 //! [`handlers::init_schema`]) and the Cron-trigger indexer ([`indexer`]). The
@@ -227,15 +230,20 @@ mod entry {
             .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?,
         );
 
-        let surface =
-            crate::surface::R2SurfaceProvider::new(env.bucket(crate::handlers::bindings::R2)?);
+        let surface: Arc<dyn aos_registry_core::fetch::SurfaceProvider> = Arc::new(
+            crate::surface::R2SurfaceProvider::new(env.bucket(crate::handlers::bindings::R2)?),
+        );
+        let surface_write: Arc<dyn aos_registry_core::surface_write::SurfaceWriteProvider> =
+            Arc::new(crate::surface::R2SurfaceWriteProvider::new(
+                env.bucket(crate::handlers::bindings::R2)?,
+            ));
 
         let service = Arc::new(RpcService::new(
             Arc::clone(&db),
             jwt_keys.clone(),
             external_url.clone(),
             Arc::clone(&ratelimit),
-            Arc::new(surface),
+            Arc::clone(&surface),
         ));
 
         let console_deps = ConsoleDeps {
@@ -248,6 +256,8 @@ mod entry {
             sealer,
             http: Arc::new(WorkerHttpClient),
             advancer: Arc::new(WorkerChannelAdvancer),
+            surface,
+            surface_write,
         };
 
         Ok(aos_registry_core::connect::router(service).merge(console_router(console_deps)))

@@ -391,6 +391,12 @@ pub async fn router(state: Arc<AppState>) -> Router {
             Arc::clone(&state.db),
             Arc::clone(&state.sealer),
         )),
+        surface: Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
+            &state.db,
+        ))),
+        surface_write: Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
+            &state.db,
+        ))),
     };
     let console_router = aos_registry_core::web::console::console_router(console_deps);
     // Kept for the outermost client-IP injection layer below, which runs after
