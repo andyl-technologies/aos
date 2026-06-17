@@ -237,7 +237,7 @@ are language-level and live here.
       [compatibility constraints](02-compatibility-constraints.md) §5.1). The
       `getContext`/`appendContext` attrset shape is a doc-21 boundary; the
       language must preserve element identity across it.
-- [ ] **`unsafeDiscardStringContext` clears exactly** — the boundary primop must
+- [x] **`unsafeDiscardStringContext` clears exactly** — the boundary primop must
       clear *all* context and nothing more (doc 21); the language guarantees no
       other operation silently clears context.
 

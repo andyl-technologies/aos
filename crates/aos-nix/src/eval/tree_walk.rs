@@ -32118,6 +32118,35 @@ mod tests {
     }
 
     #[test]
+    fn unsafe_discard_string_context_clears_exactly() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"let
+                     original = builtins.appendContext "payload" {
+                       "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                       "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                         outputs = [ "out" ];
+                       };
+                       "/nix/store/cccccccccccccccccccccccccccccccc-deep.drv" = {
+                         allOutputs = true;
+                       };
+                     };
+                     other = builtins.appendContext "tail" {
+                       "/nix/store/dddddddddddddddddddddddddddddddd-other" = { path = true; };
+                     };
+                     discarded = builtins.unsafeDiscardStringContext original;
+                   in {
+                     value = discarded;
+                     discardedContext = builtins.getContext discarded;
+                     originalContext = builtins.getContext original;
+                     concatContext = builtins.getContext (discarded + other);
+                   }"#
+            ),
+            br#"{"concatContext":{"/nix/store/dddddddddddddddddddddddddddddddd-other":{"path":true}},"discardedContext":{},"originalContext":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv":{"outputs":["out"]},"/nix/store/cccccccccccccccccccccccccccccccc-deep.drv":{"allOutputs":true}},"value":"payload"}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn indented_string_interpolation_strips_literals_before_insertion() {
         assert_eq!(
             eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),
