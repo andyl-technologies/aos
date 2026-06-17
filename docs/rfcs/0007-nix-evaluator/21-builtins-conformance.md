@@ -225,7 +225,7 @@ of its string inputs; context is string-granular, never byte-granular.
         risk, since Rust's `regex` crate differs in some corners. Pin via the
         differential harness; consider a POSIX-compatible engine if `regex`
         diverges.
-- [ ] `split` (regex str) — split `str` by `regex`, returning an
+- [x] `split` (regex str) — split `str` by `regex`, returning an
       *interleaved* list: `[ text [groups] text [groups] … ]`, where the
       odd positions are lists of the capture groups of each separator match.
       - This interleaving shape is the surprising part and is exactly what

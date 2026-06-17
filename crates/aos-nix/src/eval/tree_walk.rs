@@ -24,7 +24,7 @@ use std::{
 
 use base64::Engine as _;
 use md5::{Digest as _, Md5};
-use regex::bytes::Regex;
+use regex::bytes::{Regex, RegexBuilder};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
@@ -57,6 +57,12 @@ const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+#[derive(Debug)]
+struct RegexCaptureMatch {
+    range: std::ops::Range<usize>,
+    groups: Vec<Option<std::ops::Range<usize>>>,
+}
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
 ///
@@ -3495,12 +3501,13 @@ impl<'ir> TreeWalk<'ir> {
         let pattern_span = self.node(pattern_id)?.span;
         let pattern = self.eval_node(pattern_id)?;
         let pattern = self.context_free_string_bytes(pattern_id, pattern_span, pattern, "match")?;
+        let regex = self.compile_match_regex(pattern_id, pattern_span, &pattern)?;
 
         let string_span = self.node(string_id)?.span;
         let string = self.eval_node(string_id)?;
         let string = self.context_free_string_bytes(string_id, string_span, string, "match")?;
 
-        self.eval_match_bytes(id, span, pattern_id, pattern_span, &pattern, &string)
+        self.eval_match_bytes(id, span, &regex, &string)
     }
 
     fn eval_match_primop_value(
@@ -3513,31 +3520,261 @@ impl<'ir> TreeWalk<'ir> {
         let pattern_value = self.force_value(pattern.id(), pattern.span(), pattern.value())?;
         let pattern_bytes =
             self.context_free_string_bytes(pattern.id(), pattern.span(), pattern_value, "match")?;
+        let regex = self.compile_match_regex(pattern.id(), pattern.span(), &pattern_bytes)?;
 
         let string_value = self.force_value(string.id(), string.span(), string.value())?;
         let string_bytes =
             self.context_free_string_bytes(string.id(), string.span(), string_value, "match")?;
 
-        self.eval_match_bytes(
+        self.eval_match_bytes(id, span, &regex, &string_bytes)
+    }
+
+    fn eval_split_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        pattern_id: IrId,
+        string_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let pattern_span = self.node(pattern_id)?.span;
+        let pattern = self.eval_node(pattern_id)?;
+        let pattern = self.context_free_string_bytes(pattern_id, pattern_span, pattern, "split")?;
+        let regex = self.compile_split_regex(pattern_id, pattern_span, &pattern)?;
+
+        let string_span = self.node(string_id)?.span;
+        let string = self.eval_node(string_id)?;
+        let string = self.context_free_string_bytes(string_id, string_span, string, "split")?;
+
+        self.eval_split_bytes(
+            id,
+            span,
+            pattern_id,
+            pattern_span,
+            &pattern,
+            &regex,
+            &string,
+        )
+    }
+
+    fn eval_split_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        pattern: EvalPrimOpArg,
+        string: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let pattern_value = self.force_value(pattern.id(), pattern.span(), pattern.value())?;
+        let pattern_bytes =
+            self.context_free_string_bytes(pattern.id(), pattern.span(), pattern_value, "split")?;
+        let regex = self.compile_split_regex(pattern.id(), pattern.span(), &pattern_bytes)?;
+
+        let string_value = self.force_value(string.id(), string.span(), string.value())?;
+        let string_bytes =
+            self.context_free_string_bytes(string.id(), string.span(), string_value, "split")?;
+
+        self.eval_split_bytes(
             id,
             span,
             pattern.id(),
             pattern.span(),
             &pattern_bytes,
+            &regex,
             &string_bytes,
         )
     }
 
-    fn eval_match_bytes(
+    fn eval_split_bytes(
         &mut self,
         id: IrId,
         span: Span,
         pattern_id: IrId,
         pattern_span: Span,
         pattern: &[u8],
+        regex: &Regex,
         string: &[u8],
     ) -> Result<Value, TreeWalkError> {
-        let regex = self.compile_match_regex(pattern_id, pattern_span, pattern)?;
+        let matches =
+            self.collect_split_matches(pattern_id, pattern_span, pattern, regex, string)?;
+        let mut values = Vec::new();
+        let mut previous_end = 0usize;
+
+        for (index, captures) in matches.iter().enumerate() {
+            // C++ Nix's std::regex_token_iterator ignores a terminal empty
+            // separator unless an earlier nullable match has consumed up to it.
+            if captures.range.start == string.len()
+                && captures.range.end == string.len()
+                && !string.is_empty()
+                && previous_end < string.len()
+            {
+                continue;
+            }
+
+            self.push_split_string(
+                id,
+                span,
+                &mut values,
+                &string[previous_end..captures.range.start],
+            )?;
+            let value = self.alloc_regex_capture_list(id, span, string, &captures.groups)?;
+            Self::push_list_value(id, span, &mut values, value)?;
+            previous_end = captures.range.end;
+            // After an empty separator, C++ std::regex_iterator resumes one
+            // byte later when that produces the next match; that byte does not
+            // appear as unmatched text in builtins.split output.
+            if captures.range.start == captures.range.end
+                && matches
+                    .get(index + 1)
+                    .is_some_and(|next| next.range.start == captures.range.end.saturating_add(1))
+            {
+                previous_end = previous_end.saturating_add(1);
+            }
+        }
+
+        self.push_split_string(id, span, &mut values, &string[previous_end..])?;
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn collect_split_matches(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: &[u8],
+        regex: &Regex,
+        string: &[u8],
+    ) -> Result<Vec<RegexCaptureMatch>, TreeWalkError> {
+        let mut matches = Vec::new();
+        let mut search_start = 0usize;
+
+        while search_start <= string.len() {
+            let Some(captures) = regex.captures_at(string, search_start) else {
+                break;
+            };
+            let Some(matched) = captures.get(0) else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::RegexCompile {
+                        id,
+                        pattern: pattern.to_vec(),
+                        message: "regular expression match did not include the full capture"
+                            .to_owned(),
+                    },
+                    span,
+                ));
+            };
+            let range = matched.range();
+            let group_len = captures.len().saturating_sub(1);
+            let mut groups = Vec::new();
+            groups.try_reserve_exact(group_len).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed { id, len: group_len },
+                    span,
+                )
+            })?;
+            for capture in captures.iter().skip(1) {
+                groups.push(capture.map(|capture| capture.range()));
+            }
+
+            let len = matches.len().checked_add(1).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+            matches.try_reserve_exact(1).map_err(|_| {
+                TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+            })?;
+            matches.push(RegexCaptureMatch {
+                range: range.clone(),
+                groups,
+            });
+
+            if range.start == range.end {
+                if range.end == string.len() {
+                    break;
+                }
+                search_start = range.end.saturating_add(1);
+            } else {
+                search_start = range.end;
+            }
+        }
+
+        Ok(matches)
+    }
+
+    fn push_split_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        values: &mut Vec<Value>,
+        bytes: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        let value = self.alloc_static_string(id, span, bytes)?;
+        Self::push_list_value(id, span, values, value)
+    }
+
+    fn push_list_value(
+        id: IrId,
+        span: Span,
+        values: &mut Vec<Value>,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let len = values.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        values.try_reserve_exact(1).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ListAllocationFailed { id, len }, span)
+        })?;
+        values.push(value);
+        Ok(())
+    }
+
+    fn alloc_regex_capture_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        string: &[u8],
+        captures: &[Option<std::ops::Range<usize>>],
+    ) -> Result<Value, TreeWalkError> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(captures.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: captures.len(),
+                },
+                span,
+            )
+        })?;
+        for capture in captures {
+            let value = if let Some(capture) = capture {
+                self.alloc_static_string(id, span, &string[capture.clone()])?
+            } else {
+                Value::null()
+            };
+            values.push(value);
+        }
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_match_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        regex: &Regex,
+        string: &[u8],
+    ) -> Result<Value, TreeWalkError> {
         let Some(captures) = regex.captures_iter(string).find(|captures| {
             captures
                 .get(0)
@@ -3570,11 +3807,30 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn compile_split_regex(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: &[u8],
+    ) -> Result<Regex, TreeWalkError> {
+        self.compile_regex(id, span, pattern, false)
+    }
+
     fn compile_match_regex(
         &self,
         id: IrId,
         span: Span,
         pattern: &[u8],
+    ) -> Result<Regex, TreeWalkError> {
+        self.compile_regex(id, span, pattern, true)
+    }
+
+    fn compile_regex(
+        &self,
+        id: IrId,
+        span: Span,
+        pattern: &[u8],
+        anchored: bool,
     ) -> Result<Regex, TreeWalkError> {
         if pattern.is_empty() {
             return Err(TreeWalkError::new(
@@ -3597,17 +3853,24 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             )
         })?;
-        let anchored_pattern = format!(r"\A(?:{pattern_text})\z");
-        Regex::new(&anchored_pattern).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::RegexCompile {
-                    id,
-                    pattern: pattern.to_vec(),
-                    message: source.to_string(),
-                },
-                span,
-            )
-        })
+        let compiled_pattern = if anchored {
+            format!(r"\A(?:{pattern_text})\z")
+        } else {
+            pattern_text.to_owned()
+        };
+        RegexBuilder::new(&compiled_pattern)
+            .unicode(false)
+            .build()
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::RegexCompile {
+                        id,
+                        pattern: pattern.to_vec(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+            })
     }
 
     fn validate_match_regex_pattern(
@@ -3621,21 +3884,7 @@ impl<'ir> TreeWalk<'ir> {
 
         for (index, byte) in pattern.iter().copied().enumerate() {
             if escaped {
-                if matches!(
-                    byte,
-                    b'A' | b'B'
-                        | b'D'
-                        | b'P'
-                        | b'S'
-                        | b'W'
-                        | b'Z'
-                        | b'b'
-                        | b'd'
-                        | b'p'
-                        | b's'
-                        | b'w'
-                        | b'z'
-                ) {
+                if byte.is_ascii_alphabetic() {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::RegexCompile {
                             id,
@@ -3653,6 +3902,26 @@ impl<'ir> TreeWalk<'ir> {
                 b'\\' => escaped = true,
                 b'[' if !in_bracket_class => in_bracket_class = true,
                 b']' if in_bracket_class => in_bracket_class = false,
+                b'|' if !in_bracket_class && Self::is_empty_regex_alternative(pattern, index) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::RegexCompile {
+                            id,
+                            pattern: pattern.to_vec(),
+                            message: "unsupported POSIX ERE empty alternative".to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                b'?' if !in_bracket_class && self.follows_unescaped_quantifier(pattern, index) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::RegexCompile {
+                            id,
+                            pattern: pattern.to_vec(),
+                            message: "unsupported POSIX ERE lazy quantifier".to_owned(),
+                        },
+                        span,
+                    ));
+                }
                 b'(' if !in_bracket_class => {
                     if matches!(pattern.get(index + 1), Some(b'?' | b')')) {
                         return Err(TreeWalkError::new(
@@ -3670,6 +3939,71 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         Ok(())
+    }
+
+    fn is_empty_regex_alternative(pattern: &[u8], index: usize) -> bool {
+        let left_empty = index == 0
+            || (!Self::regex_byte_is_escaped(pattern, index - 1)
+                && matches!(pattern[index - 1], b'(' | b'|'));
+        let next = index.saturating_add(1);
+        let right_empty = next == pattern.len()
+            || (!Self::regex_byte_is_escaped(pattern, next)
+                && matches!(pattern[next], b')' | b'|'));
+        left_empty || right_empty
+    }
+
+    fn follows_unescaped_quantifier(&self, pattern: &[u8], index: usize) -> bool {
+        let Some(previous_index) = index.checked_sub(1) else {
+            return false;
+        };
+        if Self::regex_byte_is_escaped(pattern, previous_index) {
+            return false;
+        }
+        match pattern[previous_index] {
+            b'*' | b'+' | b'?' => true,
+            b'}' => Self::interval_quantifier_ends_at(pattern, previous_index),
+            _ => false,
+        }
+    }
+
+    fn interval_quantifier_ends_at(pattern: &[u8], end: usize) -> bool {
+        if Self::regex_byte_is_escaped(pattern, end) {
+            return false;
+        }
+        let Some(start) = pattern[..end]
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, byte)| {
+                (*byte == b'{' && !Self::regex_byte_is_escaped(pattern, index)).then_some(index)
+            })
+        else {
+            return false;
+        };
+        let content = &pattern[start + 1..end];
+        if content.is_empty() {
+            return false;
+        }
+        let mut comma_seen = false;
+        let mut digit_seen = false;
+        for byte in content {
+            match *byte {
+                b'0'..=b'9' => digit_seen = true,
+                b',' if !comma_seen => comma_seen = true,
+                _ => return false,
+            }
+        }
+        digit_seen
+    }
+
+    fn regex_byte_is_escaped(pattern: &[u8], index: usize) -> bool {
+        let mut slash_count = 0usize;
+        let mut cursor = index;
+        while cursor > 0 && pattern[cursor - 1] == b'\\' {
+            slash_count = slash_count.saturating_add(1);
+            cursor -= 1;
+        }
+        slash_count % 2 == 1
     }
 
     fn eval_substring_primop(
@@ -9177,6 +9511,7 @@ impl<'ir> TreeWalk<'ir> {
                 self.eval_all_any_primop(AllAnyOp::Any, call.id, call.span, first, second)
             }
             StrictBinaryPrimOp::Match => self.eval_match_primop(call.id, call.span, first, second),
+            StrictBinaryPrimOp::Split => self.eval_split_primop(call.id, call.span, first, second),
             StrictBinaryPrimOp::Filter => {
                 self.eval_filter_primop(call.id, call.span, first, second)
             }
@@ -10065,6 +10400,7 @@ impl<'ir> TreeWalk<'ir> {
                 self.eval_all_any_primop_value(id, span, AllAnyOp::Any, first, second)
             }
             StrictBinaryPrimOp::Match => self.eval_match_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::Split => self.eval_split_primop_value(id, span, first, second),
             StrictBinaryPrimOp::ConcatMap => {
                 self.eval_concat_map_primop_value(id, span, first, second)
             }
@@ -14860,6 +15196,20 @@ mod tests {
             r#"builtins.match "(a)?b" "b""#,
             r#"builtins.match "(a*)" """#,
             r#"let m = builtins.match "a(.)c"; in m "abc""#,
+            r#"builtins.split "-" "a-b-c""#,
+            r#"builtins.split "(-)" "a-b-c""#,
+            r#"builtins.split "(a)?b" "b-ab""#,
+            r#"builtins.split "a*" "baac""#,
+            r#"builtins.split "(a*)" "baac""#,
+            r#"builtins.split "a?" "bc""#,
+            r#"builtins.split "^" "abc""#,
+            r#"builtins.split "$" "abc""#,
+            r#"builtins.split "^|$" "abc""#,
+            r#"builtins.split "^|$" "a""#,
+            r#"builtins.split "a*$" "baac""#,
+            r#"builtins.length (builtins.split "." "éx")"#,
+            r#"builtins.stringLength (builtins.elemAt (builtins.elemAt (builtins.split "(.)" "éx") 1) 0)"#,
+            r#"let split = builtins.split "-"; in split "a-b""#,
             r#"builtins.splitVersion "1.0pre2""#,
             r#"builtins.splitVersion "foo-1.2_bar""#,
             r#"builtins.splitVersion "1+2~pre""#,
@@ -14891,6 +15241,21 @@ mod tests {
             r#"builtins.match "()" """#,
             r#"builtins.match "(?:a)" "a""#,
             r#"builtins.match "\\d" "1""#,
+            r#"builtins.match "a|" "a""#,
+            r#"builtins.match "(|a)" "a""#,
+            r#"builtins.match "\\x61" "a""#,
+            r#"builtins.match "\\n" "n""#,
+            r#"builtins.match "a*?" "aaa""#,
+            r#"builtins.split "" "abc""#,
+            r#"builtins.split "[" "x""#,
+            r#"builtins.split "()" """#,
+            r#"builtins.split "(?:a)" "a""#,
+            r#"builtins.split "\\d" "1""#,
+            r#"builtins.split "a|" "a""#,
+            r#"builtins.split "(|a)" "a""#,
+            r#"builtins.split "\\x61" "a""#,
+            r#"builtins.split "\\n" "n""#,
+            r#"builtins.split "a*?" "aaa""#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
@@ -20079,6 +20444,19 @@ mod tests {
         );
         assert_eq!(error.span(), string_span);
 
+        for source in [
+            r#"builtins.match "[" (builtins.throw "boom")"#,
+            r#"builtins.match "[" 1"#,
+            r#"let m = builtins.match "["; in m 1"#,
+        ] {
+            let error =
+                eval_whnf_owned(&lower(source)).expect_err("match compiles regex before string");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::RegexCompile { .. }),
+                "unexpected error for {source}: {error:?}"
+            );
+        }
+
         let ir = lower(r#"builtins.match "[" "x""#);
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
@@ -20198,6 +20576,29 @@ mod tests {
             other => panic!("unexpected error kind: {other:?}"),
         }
         assert_eq!(error.span(), pattern_span);
+
+        for source in [
+            r#"builtins.match "a*?" "aaa""#,
+            r#"builtins.match "a+?" "aaa""#,
+            r#"builtins.match "a??" "aaa""#,
+            r#"builtins.match "a{1}?" "aaa""#,
+            r#"builtins.match "a{1,}?" "aaa""#,
+            r#"builtins.match "a{1,2}?" "aaa""#,
+            r#"builtins.match "a|" "a""#,
+            r#"builtins.match "|a" "a""#,
+            r#"builtins.match "a||b" "a""#,
+            r#"builtins.match "(|a)" "a""#,
+            r#"builtins.match "(a|)" "a""#,
+            r#"builtins.match "\\x61" "a""#,
+            r#"builtins.match "\\n" "n""#,
+            r#"builtins.match "\\t" "t""#,
+        ] {
+            let error = eval_whnf_owned(&lower(source)).expect_err("match rejects invalid regexes");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::RegexCompile { .. }),
+                "unexpected error for {source}: {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -20277,6 +20678,214 @@ mod tests {
             }
         );
         assert_eq!(error.span(), string_span);
+    }
+
+    #[test]
+    fn split_primop_interleaves_text_and_capture_lists() {
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "-" "a-b-c""#),
+            br#"["a",[],"b",[],"c"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "(-)" "a-b-c""#),
+            br#"["a",["-"],"b",["-"],"c"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "x" "abc""#),
+            br#"["abc"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "(a)?b" "b-ab""#),
+            br#"["",[null],"-",["a"],""]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"let split = builtins.split "-"; in split "a-b""#),
+            br#"["a",[],"b"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_string_bytes(
+                r#"let builtins = { split = pattern: value: "shadow"; }; in builtins.split "-" "a-b""#
+            ),
+            b"shadow"
+        );
+    }
+
+    #[test]
+    fn split_primop_handles_zero_width_matches_like_cpp_nix() {
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "a*" "baac""#),
+            br#"["",[],"",[],"",[],"",[],""]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "(a*)" "baac""#),
+            br#"["",[""],"",["aa"],"",[""],"",[""],""]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "a?" "bc""#),
+            br#"["",[],"",[],"",[],""]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "^" "abc""#),
+            br#"["",[],"abc"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "$" "abc""#),
+            br#"["abc"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "^|$" "abc""#),
+            br#"["",[],"abc"]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "^|$" "a""#),
+            br#"["",[],"",[],""]"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes(r#"builtins.split "a*$" "baac""#),
+            br#"["baac"]"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn split_primop_matches_regexes_over_bytes_like_cpp_nix() {
+        assert_eq!(
+            eval(r#"builtins.length (builtins.split "." "éx")"#).as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval(
+                r#"builtins.stringLength
+                    (builtins.elemAt (builtins.elemAt (builtins.split "(.)" "éx") 1) 0)"#
+            )
+            .as_int(),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn split_primop_checks_arguments_and_regexes() {
+        let ir = lower(r#"builtins.split 1 (builtins.throw "boom")"#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let pattern = args[0];
+        let pattern_span = ir.arena.node(pattern).expect("pattern exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("split type-checks pattern first");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: pattern,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), pattern_span);
+
+        let error = eval_whnf_owned(&lower(
+            r#"let split = builtins.split 1; in split (builtins.throw "boom")"#,
+        ))
+        .expect_err("curried split type-checks pattern first");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        for source in [
+            r#"builtins.split "[" (builtins.throw "boom")"#,
+            r#"builtins.split "[" 1"#,
+            r#"let split = builtins.split "["; in split (builtins.throw "boom")"#,
+        ] {
+            let error =
+                eval_whnf_owned(&lower(source)).expect_err("split compiles regex before string");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::RegexCompile { .. }),
+                "unexpected error for {source}: {error:?}"
+            );
+        }
+
+        let ir = lower(r#"builtins.split "a" 1"#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let string = args[1];
+        let string_span = ir.arena.node(string).expect("string exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("split type-checks string second");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: string,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), string_span);
+
+        for source in [
+            r#"builtins.split "" "abc""#,
+            r#"builtins.split "[" "x""#,
+            r#"builtins.split "()" """#,
+            r#"builtins.split "(?:a)" "a""#,
+            r#"builtins.split "\\d" "1""#,
+            r#"builtins.split "a|" "a""#,
+            r#"builtins.split "|a" "a""#,
+            r#"builtins.split "a||b" "a""#,
+            r#"builtins.split "(|a)" "a""#,
+            r#"builtins.split "(a|)" "a""#,
+            r#"builtins.split "\\x61" "a""#,
+            r#"builtins.split "\\n" "n""#,
+            r#"builtins.split "\\t" "t""#,
+            r#"builtins.split "a*?" "aaa""#,
+            r#"builtins.split "a+?" "aaa""#,
+            r#"builtins.split "a??" "aaa""#,
+            r#"builtins.split "a{1}?" "aaa""#,
+            r#"builtins.split "a{1,}?" "aaa""#,
+            r#"builtins.split "a{1,2}?" "aaa""#,
+        ] {
+            let error = eval_whnf_owned(&lower(source)).expect_err("split rejects invalid regexes");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::RegexCompile { .. }),
+                "unexpected error for {source}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn split_primop_rejects_string_context() {
+        let path = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.split
+                (builtins.appendContext "a" {{ "{path}" = {{ path = true; }}; }})
+                "a""#
+        )))
+        .expect_err("split rejects pattern context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "split", .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.split
+                "a"
+                (builtins.appendContext "a" {{ "{path}" = {{ path = true; }}; }})"#
+        )))
+        .expect_err("split rejects string context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "split", .. }
+        ));
     }
 
     #[test]

@@ -752,7 +752,7 @@ impl BuiltinInfo for SortBuiltin {
 pub(crate) struct SplitBuiltin;
 impl BuiltinInfo for SplitBuiltin {
     const NAME: &'static [u8] = b"split";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::strict_binary(StrictBinaryPrimOp::Split);
 }
 
 pub(crate) struct SplitVersionBuiltin;
@@ -1186,6 +1186,7 @@ pub(crate) enum StrictBinaryPrimOp {
     Match,
     Map,
     Partition,
+    Split,
 }
 
 /// Direct-only binary primitive operations.
@@ -1422,6 +1423,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"split"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"zipAttrsWith"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure
@@ -1547,6 +1554,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"match").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"split").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

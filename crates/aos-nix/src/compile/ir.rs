@@ -1982,6 +1982,7 @@ mod tests {
                 "builtins.hashString \"sha256\" \"abc\"",
                 b"hashString".as_slice(),
             ),
+            ("builtins.split \"-\" \"a-b\"", b"split".as_slice()),
             (
                 "builtins.concatStringsSep \",\" [ \"a\" \"b\" ]",
                 b"concatStringsSep".as_slice(),
