@@ -98,11 +98,14 @@ Relevant AOS surfaces, for grounding:
 
 - `lib/modules/systemd/lib.nix` has an `assertKeyIsSystemdCredential` helper
   that validates fields marked `@<credential-name>`, but AOS does **not** yet
-  expose systemd's credential system as a first-class module option. needs
-  verification of exact scope.
-- `pkgs/system/systemd.nix` controls the systemd build flags; whether
-  credstore is compiled in **needs verification** before any credentials-based
-  option can be costed.
+  expose systemd's credential system as a first-class module option. The
+  exposed-package renderer can emit `LoadCredential=` /
+  `LoadCredentialEncrypted=` for service units, but a general module surface
+  remains open.
+- `pkgs/system/systemd.nix` controls the systemd build flags. The credential
+  substrate is verified by `checks.systemd-credentials`: `systemd-creds`, signed
+  PCR TPM2 encryption flags, credstore tmpfiles entries, `systemd-measure`, TPM2
+  setup units and generator, and the cryptsetup TPM2 token plugin are present.
 - Ignition's files stage writes to `/run/etc/ignition-<gen>/etc/` in initrd,
   then those land under `/var/etc/*` in stage 2
   (`modules/services/ignition.nix`).
@@ -155,8 +158,10 @@ file under `$CREDENTIALS_DIRECTORY` (a per-service tmpfs, `noexec`).
 - **Secret-safety:** best on isolation — `$CREDENTIALS_DIRECTORY` is tmpfs,
   per-service, not world-readable. **But** the *source* still has to live
   somewhere; without a sealed backend that source is plaintext under
-  `/etc/credstore/`. AOS has **no credential backend** (TPM/sealed/LUKS) today.
-  needs verification of whether systemd here is even built with credstore.
+  `/etc/credstore/`. AOS now has a measured-boot/TPM2 substrate (RFC-0006) and a
+  credstore-capable systemd build verified by `checks.systemd-credentials`; the
+  remaining gap is wiring package-level encrypted credential production and
+  provisioning.
 - **Per-instance override:** Ignition writes per-instance source files at first
   boot. One file per credential; systemd treats the content as opaque bytes.
 - **Introspection:** `systemctl show -p LoadCredential <unit>`; `ls
@@ -497,9 +502,11 @@ already-sealed ciphertext keyed to that machine's TPM2.
 
 ### Residual work (so this is honest, not done)
 
-- **Verify the systemd build.** `pkgs/system/systemd.nix` must expose
-  `systemd-creds` and the credstore/TPM2 paths (Open Question #4). Costing
-  depends on this.
+The systemd substrate is verified by `checks.systemd-credentials`: AOS exposes
+`systemd-creds`, `systemd-measure`, credstore tmpfiles entries, TPM2 setup units
+and generator, signed-PCR TPM2 encryption flags, and the cryptsetup TPM2 token
+plugin.
+
 - **AOS module surface.** No first-class module option wraps
   `SetCredentialEncrypted=` / `LoadCredentialEncrypted=` /
   `--tpm2-public-key-pcrs` yet (the existing `assertKeyIsSystemdCredential`
@@ -573,11 +580,12 @@ requirements vs. nice-to-haves — that prioritization is itself open.
 2. **Hot-reload — in scope for v1?** If yes, which shape: watch-file reloader,
    registry push, or a systemd reload path? If no, document restart-to-apply as
    the contract.
-3. **Secrets at rest — required, and at which layer?** LUKS on `/var`,
-   systemd sealed credentials (needs a backend), or app-level encryption in
-   apm? This is potentially decoupled from the delivery mechanism.
-4. **Is systemd built with credstore?** Verify `pkgs/system/systemd.nix` build
-   flags before Option 1 can be seriously costed.
+3. **Encrypted credential sources.** Should package manifests name immutable
+   credstore paths, inline `SetCredentialEncrypted=` payloads, or both, and how
+   does `apm` fail closed when a required credential is absent?
+4. **Credential provisioning.** Which first-boot path seals or imports
+   per-instance plaintext into encrypted systemd credentials without leaving the
+   plaintext in `/var/etc`?
 5. **Credential read audit.** Do we need to log which process read which
    secret? systemd credentials don't provide it natively; a registry/apm path
    could.
@@ -609,8 +617,8 @@ Ignition-file + bind-mount path (Option 2/6); a single mechanism need not serve
 both shapes. Structured config rides an apm artifact + manifest-declared schema;
 simple/non-secret config stays on `EnvironmentFile=`.
 
-Remaining implementer work (not decisions): verify the systemd build exposes
-`systemd-creds`/credstore/TPM2; wire the manifest-declared config schema; carry
-the outcome into [apm-integration.md](apm-integration.md),
+Remaining implementer work (not decisions): wire fail-closed encrypted
+credential source/provisioning, complete the manifest-declared config schema, and
+carry the outcome into [apm-integration.md](apm-integration.md),
 [container-model.md](container-model.md), and the TPM substrate in
 [../0006-secure-boot/README.md](../0006-secure-boot/README.md).
