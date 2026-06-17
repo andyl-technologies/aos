@@ -176,6 +176,8 @@ impl EvalOutcome {
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
     search_path_base: Vec<u8>,
+    eval_mode: EvalMode,
+    allowed_paths: Vec<Vec<u8>>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
@@ -187,11 +189,30 @@ impl Default for TreeWalkOptions {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
             search_path_base: b"/".to_vec(),
+            eval_mode: EvalMode::default(),
+            allowed_paths: Vec::new(),
             current_system: None,
             current_time: None,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
         }
+    }
+}
+
+/// Filesystem and impurity policy used by the tree-walk evaluator.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvalMode {
+    /// Allows evaluator-time filesystem access without an allow-list.
+    Impure,
+    /// Restricts evaluator-time filesystem access to explicitly allowed paths.
+    Restricted,
+    /// Models pure evaluation by allowing only explicitly allowed paths.
+    Pure,
+}
+
+impl Default for EvalMode {
+    fn default() -> Self {
+        Self::Impure
     }
 }
 
@@ -274,6 +295,13 @@ impl TreeWalkOptions {
         Ok(options)
     }
 
+    /// Creates evaluator options with an explicit evaluation mode.
+    pub fn with_eval_mode(eval_mode: EvalMode) -> Self {
+        let mut options = Self::default();
+        options.set_eval_mode(eval_mode);
+        options
+    }
+
     /// Creates evaluator options with one configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -287,9 +315,9 @@ impl TreeWalkOptions {
 
     /// Creates evaluator options with a configured target system.
     ///
-    /// The target system is exposed through `builtins.currentSystem`. Leaving
-    /// it unset keeps that builtin unavailable, which lets callers model
-    /// pure-eval mode and avoids accidental host introspection.
+    /// The target system is exposed through `builtins.currentSystem` outside
+    /// pure evaluation mode. Leaving it unset keeps that builtin unavailable
+    /// and avoids accidental host introspection.
     ///
     /// # Errors
     ///
@@ -304,9 +332,9 @@ impl TreeWalkOptions {
 
     /// Creates evaluator options with a configured evaluation start time.
     ///
-    /// The timestamp is exposed through `builtins.currentTime`. Leaving it unset
-    /// keeps that builtin unavailable, which lets callers model pure-eval mode
-    /// and avoids accidental host clock reads.
+    /// The timestamp is exposed through `builtins.currentTime` outside pure
+    /// evaluation mode. Leaving it unset keeps that builtin unavailable and
+    /// avoids accidental host clock reads.
     ///
     /// # Errors
     ///
@@ -353,6 +381,47 @@ impl TreeWalkOptions {
             TreeWalkOptionsError::RelativeSearchPathBase,
         )?;
         Ok(())
+    }
+
+    /// Replaces the evaluation mode.
+    pub fn set_eval_mode(&mut self, eval_mode: EvalMode) {
+        self.eval_mode = eval_mode;
+    }
+
+    /// Appends one allowed filesystem path root for restricted and pure modes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `path` is relative.
+    pub fn add_allowed_path(
+        &mut self,
+        path: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        let path = normalize_allowed_path(path.into())?;
+        self.allowed_paths.push(path);
+        Ok(())
+    }
+
+    /// Replaces the allowed filesystem path roots for restricted and pure modes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if any path is relative.
+    pub fn set_allowed_paths(
+        &mut self,
+        paths: impl IntoIterator<Item = Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        let mut allowed_paths = Vec::new();
+        for path in paths {
+            allowed_paths.push(normalize_allowed_path(path)?);
+        }
+        self.allowed_paths = allowed_paths;
+        Ok(())
+    }
+
+    /// Clears all allowed filesystem path roots.
+    pub fn clear_allowed_paths(&mut self) {
+        self.allowed_paths.clear();
     }
 
     /// Replaces the configured target system.
@@ -446,6 +515,31 @@ impl TreeWalkOptions {
         &self.search_path_base
     }
 
+    /// Returns the configured evaluation mode.
+    pub const fn eval_mode(&self) -> EvalMode {
+        self.eval_mode
+    }
+
+    /// Returns the configured allowed filesystem path roots.
+    pub fn allowed_paths(&self) -> &[Vec<u8>] {
+        &self.allowed_paths
+    }
+
+    fn path_is_allowed(&self, path: &[u8]) -> bool {
+        self.allowed_paths
+            .iter()
+            .any(|allowed| path_is_under_root(path, allowed))
+    }
+
+    fn resolved_path_is_allowed(&self, path: &[u8]) -> bool {
+        self.path_is_allowed(path)
+            || self
+                .allowed_paths
+                .iter()
+                .filter_map(|allowed| canonicalize_policy_path(allowed))
+                .any(|allowed| path_is_under_root(path, &allowed))
+    }
+
     /// Returns the configured target system, if one is available.
     pub fn current_system(&self) -> Option<&[u8]> {
         self.current_system.as_deref()
@@ -478,6 +572,10 @@ pub enum TreeWalkOptionsError {
     #[error("Nix search-path base directory must be absolute")]
     RelativeSearchPathBase,
 
+    /// A configured allowed filesystem path is not absolute.
+    #[error("Nix allowed filesystem paths must be absolute")]
+    RelativeAllowedPath,
+
     /// The configured target system is empty.
     #[error("Nix currentSystem value must not be empty")]
     EmptyCurrentSystem,
@@ -507,6 +605,18 @@ fn normalize_absolute_path(
         return Err(relative_error);
     }
 
+    Ok(normalize_absolute_path_bytes(&path))
+}
+
+fn normalize_allowed_path(path: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
+    if path.is_empty() || !path.starts_with(b"/") {
+        return Err(TreeWalkOptionsError::RelativeAllowedPath);
+    }
+
+    Ok(normalize_absolute_path_bytes(&path))
+}
+
+fn normalize_absolute_path_bytes(path: &[u8]) -> Vec<u8> {
     let mut components = Vec::new();
     for component in path.split(|byte| *byte == b'/') {
         if component.is_empty() || component == b"." {
@@ -529,7 +639,22 @@ fn normalize_absolute_path(
         normalized.push(b'/');
     }
 
-    Ok(normalized)
+    normalized
+}
+
+fn path_is_under_root(path: &[u8], root: &[u8]) -> bool {
+    if root == b"/" {
+        return path.starts_with(b"/");
+    }
+    path == root || (path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
+}
+
+fn canonicalize_policy_path(path: &[u8]) -> Option<Vec<u8>> {
+    let path = Path::new(OsStr::from_bytes(path));
+    let resolved = fs::canonicalize(path).ok()?;
+    Some(normalize_absolute_path_bytes(
+        resolved.as_os_str().as_bytes(),
+    ))
 }
 
 fn is_valid_store_path(path: &[u8], store_dir: &[u8]) -> bool {
@@ -1667,6 +1792,7 @@ impl<'ir> TreeWalk<'ir> {
                 entry.path.as_slice(),
                 suffix,
             )?;
+            self.check_filesystem_path_access(id, span, &candidate)?;
             match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
                 Ok(_) => {
                     return self
@@ -1967,6 +2093,50 @@ impl<'ir> TreeWalk<'ir> {
             ));
         }
         Ok(bytes)
+    }
+
+    fn check_filesystem_path_access(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Impure {
+            return Ok(());
+        }
+        if !Path::new(OsStr::from_bytes(path)).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute {
+                    id,
+                    path: path.to_vec(),
+                },
+                span,
+            ));
+        }
+        let normalized = normalize_absolute_path_bytes(path);
+        if self.options.path_is_allowed(&normalized) {
+            if let Some(resolved) = canonicalize_policy_path(path) {
+                if !self.options.resolved_path_is_allowed(&resolved) {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::PathAccessDenied {
+                            id,
+                            path: resolved,
+                            mode: self.options.eval_mode(),
+                        },
+                        span,
+                    ));
+                }
+            }
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::PathAccessDenied {
+                id,
+                path: normalized,
+                mode: self.options.eval_mode(),
+            },
+            span,
+        ))
     }
 
     fn eval_attr_name(
@@ -3485,6 +3655,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let must_be_dir = self.path_exists_requires_directory(argument, argument_span, value)?;
         let path = self.coerce_to_path_bytes(argument, argument_span, value, "pathExists")?;
+        self.check_filesystem_path_access(argument, argument_span, &path)?;
         let metadata = if must_be_dir {
             fs::metadata(Path::new(OsStr::from_bytes(&path)))
         } else {
@@ -3543,6 +3714,7 @@ impl<'ir> TreeWalk<'ir> {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let path = self.coerce_to_path_bytes(argument, argument_span, value, "readDir")?;
+        self.check_filesystem_path_access(argument, argument_span, &path)?;
         let entries = fs::read_dir(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::DirectoryRead {
@@ -3605,6 +3777,7 @@ impl<'ir> TreeWalk<'ir> {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFile")?;
+        self.check_filesystem_path_access(argument, argument_span, &path)?;
         let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::FileRead {
@@ -3633,6 +3806,7 @@ impl<'ir> TreeWalk<'ir> {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFileType")?;
+        self.check_filesystem_path_access(argument, argument_span, &path)?;
         let stat_path = path_without_trailing_path_markers(&path);
         let file_type =
             fs::symlink_metadata(Path::new(OsStr::from_bytes(stat_path))).map_err(|source| {
@@ -3802,6 +3976,7 @@ impl<'ir> TreeWalk<'ir> {
             })?;
             let full_path =
                 Self::absolute_path_bytes_for_node(argument, argument_span, string.bytes())?;
+            self.check_filesystem_path_access(argument, argument_span, &full_path)?;
             let Some(root) = store_path_root(&full_path, self.options.store_dir()) else {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::StorePathNotInStore {
@@ -5387,6 +5562,7 @@ impl<'ir> TreeWalk<'ir> {
         let path_span = self.node(path_id)?.span;
         let path_value = self.eval_node(path_id)?;
         let path = self.coerce_to_path_bytes(path_id, path_span, path_value, "hashFile")?;
+        self.check_filesystem_path_access(path_id, path_span, &path)?;
         let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::FileRead {
@@ -6447,6 +6623,7 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             ));
         }
+        self.check_filesystem_path_access(id, span, bytes)?;
         let Some(name) = source_path.file_name().map(OsStrExt::as_bytes) else {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::SourcePathStoreName {
@@ -11198,6 +11375,7 @@ impl<'ir> TreeWalk<'ir> {
                 let path_value = self.force_value(second.id(), second.span(), second.value())?;
                 let path =
                     self.coerce_to_path_bytes(second.id(), second.span(), path_value, "hashFile")?;
+                self.check_filesystem_path_access(second.id(), second.span(), &path)?;
                 let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::FileRead {
@@ -13679,8 +13857,13 @@ trait BuiltinRuntime {
 impl BuiltinRuntime for BuiltinMetadata {
     fn is_available(self, eval: &TreeWalk<'_>) -> bool {
         match self.execution() {
-            BuiltinExecution::CurrentSystemValue => eval.options.current_system().is_some(),
-            BuiltinExecution::CurrentTimeValue => eval.options.current_time().is_some(),
+            BuiltinExecution::CurrentSystemValue => {
+                eval.options.eval_mode() != EvalMode::Pure
+                    && eval.options.current_system().is_some()
+            }
+            BuiltinExecution::CurrentTimeValue => {
+                eval.options.eval_mode() != EvalMode::Pure && eval.options.current_time().is_some()
+            }
             _ => true,
         }
     }
@@ -13698,14 +13881,22 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::FalseValue => Ok(Value::bool(false)),
             BuiltinExecution::NullValue => Ok(Value::null()),
             BuiltinExecution::CurrentSystemValue => {
-                let Some(current_system) = eval.options.current_system() else {
+                let Some(current_system) = eval
+                    .options
+                    .current_system()
+                    .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
+                else {
                     return unsupported_builtin_attr(id, span, symbol);
                 };
                 let current_system = current_system.to_vec();
                 eval.alloc_static_string(id, span, &current_system)
             }
             BuiltinExecution::CurrentTimeValue => {
-                let Some(current_time) = eval.options.current_time() else {
+                let Some(current_time) = eval
+                    .options
+                    .current_time()
+                    .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
+                else {
                     return unsupported_builtin_attr(id, span, symbol);
                 };
                 Ok(Value::int(current_time))
@@ -14421,6 +14612,16 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The rejected path bytes.
         path: Vec<u8>,
+    },
+    /// An evaluation mode rejected filesystem access to a path.
+    #[error("{mode:?} evaluation forbids filesystem access at node {id:?} path {path:?}")]
+    PathAccessDenied {
+        /// The path-valued node being accessed.
+        id: IrId,
+        /// The normalized or resolved path bytes.
+        path: Vec<u8>,
+        /// The evaluation mode that denied access.
+        mode: EvalMode,
     },
     /// A file-content primop could not read its target path.
     #[error("failed to read file at node {id:?} path {path:?}: {message}")]
@@ -15358,6 +15559,22 @@ mod tests {
         Symbol::new(index as u32)
     }
 
+    fn primop_argument(ir: &Ir, index: usize) -> (IrId, Span) {
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .get(index)
+            .copied()
+            .expect("primop argument exists");
+        let span = ir.arena.node(argument).expect("argument exists").span;
+        (argument, span)
+    }
+
     fn empty_ir(root: IrId, arena: IrArena) -> Ir {
         Ir {
             root,
@@ -15735,6 +15952,43 @@ mod tests {
         assert_eq!(
             TreeWalkOptions::with_current_time(-1).expect_err("negative currentTime is rejected"),
             TreeWalkOptionsError::NegativeCurrentTime
+        );
+    }
+
+    #[test]
+    fn tree_walk_options_configure_filesystem_access_policy() {
+        let defaulted = TreeWalkOptions::new();
+        assert_eq!(defaulted.eval_mode(), EvalMode::Impure);
+        assert!(defaulted.allowed_paths().is_empty());
+
+        let restricted = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        assert_eq!(restricted.eval_mode(), EvalMode::Restricted);
+
+        let mut options = TreeWalkOptions::new();
+        options.set_eval_mode(EvalMode::Pure);
+        assert_eq!(options.eval_mode(), EvalMode::Pure);
+        options
+            .add_allowed_path(b"/tmp//allowed/./".to_vec())
+            .expect("absolute allowed path configures");
+        assert_eq!(options.allowed_paths(), &[b"/tmp/allowed".to_vec()]);
+        options
+            .set_allowed_paths(vec![b"/var/../tmp/other".to_vec()])
+            .expect("allowed paths replace");
+        assert_eq!(options.allowed_paths(), &[b"/tmp/other".to_vec()]);
+        options.clear_allowed_paths();
+        assert!(options.allowed_paths().is_empty());
+
+        assert_eq!(
+            options
+                .add_allowed_path(b"relative/path".to_vec())
+                .expect_err("relative allowed paths are rejected"),
+            TreeWalkOptionsError::RelativeAllowedPath
+        );
+        assert_eq!(
+            options
+                .add_allowed_path(Vec::new())
+                .expect_err("empty allowed paths are rejected"),
+            TreeWalkOptionsError::RelativeAllowedPath
         );
     }
 
@@ -17414,6 +17668,35 @@ mod tests {
                 symbol: symbol_for(&ir, b"currentTime")
             }
         );
+    }
+
+    #[test]
+    fn pure_eval_mode_hides_configured_impure_constants() {
+        let mut options =
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
+        options.set_current_time(1_700_000_000).expect("time valid");
+        options.set_eval_mode(EvalMode::Pure);
+
+        assert_eq!(
+            eval_with_options("builtins ? currentSystem", options.clone()).as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval_with_options("builtins ? currentTime", options.clone()).as_bool(),
+            Ok(false)
+        );
+        assert!(matches!(
+            eval_whnf_owned_with_options(&lower("builtins.currentSystem"), options.clone())
+                .expect_err("pure eval hides currentSystem")
+                .kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+        assert!(matches!(
+            eval_whnf_owned_with_options(&lower("builtins.currentTime"), options)
+                .expect_err("pure eval hides currentTime")
+                .kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
     }
 
     #[test]
@@ -21672,6 +21955,36 @@ mod tests {
     }
 
     #[test]
+    fn store_path_primop_is_gated_by_filesystem_policy() {
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+        let source = format!(r#"builtins.storePath "{root}""#);
+        let ir = lower(&source);
+        let (argument, argument_span) = primop_argument(&ir, 0);
+
+        let error =
+            eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+                .expect_err("pure mode rejects unallowed storePath access");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                id: argument,
+                path: root.as_bytes().to_vec(),
+                mode: EvalMode::Pure,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(b"/nix/store".to_vec())
+            .expect("store root configures as allowed");
+        assert_eq!(
+            eval_string_bytes_with_options(&source, options),
+            root.as_bytes()
+        );
+    }
+
+    #[test]
     fn add_drv_output_dependencies_primop_upgrades_derivation_context() {
         assert_eq!(
             eval_string_bytes(
@@ -24605,6 +24918,234 @@ mod tests {
             other => panic!("expected file-read error, got {other:?}"),
         }
         assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_blocks_unallowed_filesystem_reads() {
+        let (dir, path) = temp_file_with_bytes("fs-policy-denied", b"abc");
+        let path = path_source(&path);
+        let source = format!("builtins.readFile {}", nix_string_literal(&path));
+        let ir = lower(&source);
+        let (argument, argument_span) = primop_argument(&ir, 0);
+
+        let error = eval_whnf_owned_with_options(
+            &ir,
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted mode rejects unallowed reads");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                id: argument,
+                path: path.as_bytes().to_vec(),
+                mode: EvalMode::Restricted,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_allows_configured_roots() {
+        let dir = unique_temp_dir("fs-policy-allowed");
+        let regular = dir.join("regular.txt");
+        fs::write(&regular, b"abc").expect("regular file writes");
+        let dir_path = path_source(&dir);
+        let file_path = path_source(&regular);
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(dir.as_os_str().as_bytes().to_vec())
+            .expect("allowed root configures");
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!("builtins.readFile {}", nix_string_literal(&file_path)),
+                options.clone(),
+            ),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    "builtins.hashFile \"sha256\" {}",
+                    nix_string_literal(&file_path)
+                ),
+                options.clone(),
+            ),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!("builtins.readFileType {}", nix_string_literal(&file_path)),
+                options.clone(),
+            ),
+            b"regular"
+        );
+        assert_eq!(
+            eval_list_string_bytes_with_options(
+                &format!(
+                    "builtins.attrNames (builtins.readDir {})",
+                    nix_string_literal(&dir_path)
+                ),
+                options.clone(),
+            ),
+            vec![b"regular.txt".to_vec()]
+        );
+        assert_eq!(
+            eval_with_options(
+                &format!("builtins.pathExists {}", nix_string_literal(&file_path)),
+                options,
+            )
+            .as_bool(),
+            Ok(true)
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_normalizes_paths_before_matching() {
+        let base = unique_temp_dir("fs-policy-normalized");
+        let allowed = base.join("allowed");
+        let sibling = base.join("allowed-sibling");
+        fs::create_dir(&allowed).expect("allowed directory creates");
+        fs::create_dir(&sibling).expect("sibling directory creates");
+        fs::write(allowed.join("data.txt"), b"allowed").expect("allowed file writes");
+        fs::write(sibling.join("data.txt"), b"denied").expect("sibling file writes");
+        let allowed_path = path_source(&allowed);
+        let allowed_with_parent = format!("{allowed_path}/../allowed/data.txt");
+        let sibling_path = path_source(&sibling.join("data.txt"));
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(allowed.as_os_str().as_bytes().to_vec())
+            .expect("allowed root configures");
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    "builtins.readFile {}",
+                    nix_string_literal(&allowed_with_parent)
+                ),
+                options.clone(),
+            ),
+            b"allowed"
+        );
+
+        let source = format!("builtins.readFile {}", nix_string_literal(&sibling_path));
+        let ir = lower(&source);
+        let error = eval_whnf_owned_with_options(&ir, options)
+            .expect_err("sibling prefix is not under the allowed root");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(base).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_blocks_resolved_symlink_escapes() {
+        let base = unique_temp_dir("fs-policy-symlink");
+        let allowed = base.join("allowed");
+        let outside = base.join("outside.txt");
+        let link = allowed.join("link.txt");
+        fs::create_dir(&allowed).expect("allowed directory creates");
+        fs::write(&outside, b"outside").expect("outside file writes");
+        std::os::unix::fs::symlink(&outside, &link).expect("escape symlink creates");
+        let link_path = path_source(&link);
+        let outside_path = fs::canonicalize(&outside).expect("outside path resolves");
+        let outside_path = normalize_absolute_path_bytes(outside_path.as_os_str().as_bytes());
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(allowed.as_os_str().as_bytes().to_vec())
+            .expect("allowed root configures");
+
+        let source = format!("builtins.readFile {}", nix_string_literal(&link_path));
+        let ir = lower(&source);
+        let error = eval_whnf_owned_with_options(&ir, options)
+            .expect_err("symlink escapes outside allowed roots are rejected");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                id: primop_argument(&ir, 0).0,
+                path: outside_path,
+                mode: EvalMode::Restricted,
+            }
+        );
+
+        fs::remove_dir_all(base).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_gates_find_file_candidates() {
+        let base = unique_temp_dir("fs-policy-find-file");
+        let root = base.join("nixpkgs");
+        fs::create_dir(&root).expect("search root creates");
+        fs::write(root.join("default.nix"), b"{ }").expect("search file writes");
+        let root_path = path_source(&root);
+        let source = format!(
+            r#"builtins.typeOf (builtins.findFile [ {{ prefix = "nixpkgs"; path = {}; }} ] "nixpkgs/default.nix")"#,
+            nix_string_literal(&root_path)
+        );
+        let ir = lower(&source);
+
+        let error = eval_whnf_owned_with_options(
+            &ir,
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted mode rejects unallowed findFile candidates");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(root.as_os_str().as_bytes().to_vec())
+            .expect("allowed root configures");
+        assert_eq!(eval_string_bytes_with_options(&source, options), b"path");
+
+        fs::remove_dir_all(base).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_access_policy_blocks_source_path_serialization() {
+        let (dir, path) = temp_file_with_bytes("fs-policy-source-path", b"abc");
+        let path_source = path_source(&path);
+        let source = format!("\"${{{path_source}}}\"");
+        let ir = lower(&source);
+
+        let error = eval_whnf_owned_with_options(
+            &ir,
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted mode rejects unallowed source path serialization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(dir.as_os_str().as_bytes().to_vec())
+            .expect("allowed source root configures");
+        assert_eq!(
+            eval_string_bytes_with_options(&source, options),
+            b"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt"
+        );
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }
