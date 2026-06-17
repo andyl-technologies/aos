@@ -19397,6 +19397,102 @@ mod tests {
         assert_cpp_nix_string_path_builtins_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_filesystem_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let root = fs::canonicalize(unique_temp_dir("filesystem-builtins"))
+            .expect("temp directory canonicalizes");
+        let regular = root.join("regular.txt");
+        let nested = root.join("nested");
+        let link = root.join("link");
+        let link_dir = root.join("link-dir");
+        let dangling = root.join("dangling");
+        fs::write(&regular, b"hello\n").expect("regular file writes");
+        fs::create_dir(&nested).expect("nested directory creates");
+        std::os::unix::fs::symlink(&regular, &link).expect("file symlink creates");
+        std::os::unix::fs::symlink(&nested, &link_dir).expect("directory symlink creates");
+        std::os::unix::fs::symlink(root.join("missing-target"), &dangling)
+            .expect("dangling symlink creates");
+
+        let root_source = nix_string_literal(&path_source(&root));
+        let regular_path = path_source(&regular);
+        let regular_source = nix_string_literal(&regular_path);
+        let nested_source = nix_string_literal(&path_source(&nested));
+        let link_source = nix_string_literal(&path_source(&link));
+        let link_dir_path = path_source(&link_dir);
+        let link_dir_source = nix_string_literal(&link_dir_path);
+        let dangling_path = path_source(&dangling);
+        let dangling_source = nix_string_literal(&dangling_path);
+        let missing_source = nix_string_literal(&path_source(&root.join("missing")));
+
+        for source in [
+            format!("builtins.readFile {regular_source}"),
+            format!("builtins.readFile {regular_path}"),
+            format!(r#"let f = builtins.readFile; in f {link_source}"#),
+            format!("builtins.hasContext (builtins.readFile {regular_source})"),
+            format!("builtins.readDir {root_source}"),
+            format!("builtins.attrNames (builtins.readDir {root_source})"),
+            format!("builtins.readFileType {regular_source}"),
+            format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{regular_path}/."))
+            ),
+            format!("builtins.readFileType {nested_source}"),
+            format!("builtins.readFileType {link_source}"),
+            format!("builtins.readFileType {link_dir_source}"),
+            format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{link_dir_path}/"))
+            ),
+            format!("builtins.readFileType {dangling_source}"),
+            format!(
+                "builtins.readFileType {}",
+                nix_string_literal(&format!("{dangling_path}/."))
+            ),
+            format!("builtins.pathExists {regular_source}"),
+            format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{regular_path}/."))
+            ),
+            format!("builtins.pathExists {nested_source}"),
+            format!("builtins.pathExists {link_dir_source}"),
+            format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{link_dir_path}/"))
+            ),
+            format!("builtins.pathExists {dangling_source}"),
+            format!(
+                "builtins.pathExists {}",
+                nix_string_literal(&format!("{dangling_path}/"))
+            ),
+            format!("builtins.pathExists {missing_source}"),
+            format!(
+                "builtins.pathExists {{ outPath = {}; }}",
+                nix_string_literal(&format!("{regular_path}/"))
+            ),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_filesystem_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_filesystem_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_filesystem_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix filesystem check");
+            return;
+        };
+        assert_cpp_nix_filesystem_builtins_match_tree_walk(&oracle);
+    }
+
     fn search_path_options(prefix: &[u8], path: &Path) -> TreeWalkOptions {
         let mut options = TreeWalkOptions::new();
         options

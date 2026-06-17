@@ -505,17 +505,19 @@ Several of these are **gated** by evaluation mode: `--pure-eval` (flakes) and
 gating as the pinned `nix` so an expression that errors (or returns `""`) under
 a given mode does so identically.
 
-- [ ] `readFile` (path) — return the file's contents as a string (no context).
+- [x] `readFile` (path) — return the file's contents as a string (no context).
       Effect: file content. Non-UTF-8 bytes pass through (string is a byte
       string — see [value representation](05-value-representation.md)). Cache key
       = content hash of the file.
-- [ ] `readDir` (path) — attrset mapping each entry name to its type string
+- [x] `readDir` (path) — attrset mapping each entry name to its type string
       (`"regular"`, `"directory"`, `"symlink"`, `"unknown"`). Effect: directory
       listing. Cache key = a digest of the (name,type) entries.
-- [ ] `pathExists` (path) — `true` iff the path exists (following symlinks).
-      Effect: a stat. Cache key = existence + (arguably) the resolved target;
-      pin to C++ Nix's observable behavior.
-- [ ] `readFileType` (p) — the type string of `p` alone (`"regular"`,
+- [x] `pathExists` (path) — `true` iff the path exists under C++ Nix's observable
+      stat behavior: dangling symlinks without a trailing directory marker count
+      as existing; for direct string path arguments, trailing `/` or `/.`
+      requires a directory target. Effect: a stat. Cache key = existence +
+      (arguably) the resolved target.
+- [x] `readFileType` (p) — the type string of `p` alone (`"regular"`,
       `"directory"`, `"symlink"`, `"unknown"`) without listing a directory.
       - Introduced Nix ≥ 2.14. Effect: a stat/lstat. Note for the version pin.
 - [x] `getEnv` (s) — value of a configured environment variable, or `""` if
