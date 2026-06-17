@@ -231,7 +231,7 @@ are language-level and live here.
 - [x] **Context is observed by `derivationStrict`** — the union of all string
       contexts handed to `derivationStrict` becomes `inputDrvs`/`inputSrcs`. This
       is the only place context becomes a `.drv` byte (doc 11/21).
-- [ ] **Context-element kinds round-trip** — plain store path, `=drv`
+- [x] **Context-element kinds round-trip** — plain store path, `=drv`
       (output-specific), and `!`/all-outputs/deep elements must each be
       represented and re-emitted exactly (see
       [compatibility constraints](02-compatibility-constraints.md) §5.1). The

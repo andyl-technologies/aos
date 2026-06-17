@@ -32094,6 +32094,30 @@ mod tests {
     }
 
     #[test]
+    fn context_element_kinds_round_trip_through_reflection() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.getContext (
+                     builtins.appendContext "x" (
+                       builtins.getContext (
+                         builtins.appendContext "x" {
+                           "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                           "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv" = {
+                             outputs = [ "out" "dev" ];
+                           };
+                           "/nix/store/cccccccccccccccccccccccccccccccc-deep.drv" = {
+                             allOutputs = true;
+                           };
+                         }
+                       )
+                     )
+                   )"#
+            ),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-drv.drv":{"outputs":["dev","out"]},"/nix/store/cccccccccccccccccccccccccccccccc-deep.drv":{"allOutputs":true}}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn indented_string_interpolation_strips_literals_before_insertion() {
         assert_eq!(
             eval_string_bytes("let x = \"X\"; in ''\n  ${x}\n  text\n''"),
