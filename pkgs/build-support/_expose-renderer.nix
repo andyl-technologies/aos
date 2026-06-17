@@ -1353,7 +1353,10 @@ in rec {
         ProtectKernelModules = true;
         ProtectKernelLogs = true;
         ProtectClock = true;
-        ProtectControlGroups = !cgroupDelegate;
+        ProtectControlGroups =
+          if cgroupDelegate
+          then false
+          else "private";
         ProtectHostname = true;
         SystemCallArchitectures = "native";
         RestrictAddressFamilies = addressFamilies;

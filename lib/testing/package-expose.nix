@@ -1119,6 +1119,10 @@ in
           grep -q '^CapabilityBoundingSet=$' "$unit"
           grep -q '^AmbientCapabilities=$' "$unit"
           grep -q 'BindReadOnlyPaths=/nix/store' "$unit"
+          grep -q 'ProtectKernelTunables=true' "$unit"
+          grep -q 'ProtectKernelModules=true' "$unit"
+          grep -q 'ProtectKernelLogs=true' "$unit"
+          grep -q 'ProtectControlGroups=private' "$unit"
           grep -q 'SystemCallFilter=@system-service' "$unit"
           grep -q 'SystemCallErrorNumber=EPERM' "$unit"
           grep -q 'SystemCallArchitectures=native' "$unit"
@@ -1130,6 +1134,8 @@ in
           grep -q 'RestrictAddressFamilies=AF_INET' "$unit"
           grep -q 'RestrictAddressFamilies=AF_INET6' "$unit"
           grep -q 'RestrictNamespaces=true' "$unit"
+          grep -q 'RestrictRealtime=true' "$unit"
+          grep -q 'RestrictSUIDSGID=true' "$unit"
           grep -q 'LockPersonality=true' "$unit"
           grep -q 'MemoryDenyWriteExecute=true' "$unit"
           grep -q 'Where=/var/lib/exposesmoke' "$exposePath/units/var-lib-exposesmoke.mount"
@@ -1619,6 +1625,7 @@ in
           grep -q 'Delegate=true' "$k3s_worker_unit"
           grep -q 'PrivateUsers=false' "$k3s_worker_unit"
           grep -q 'DynamicUser=false' "$k3s_worker_unit"
+          grep -q 'ProtectControlGroups=false' "$k3s_worker_unit"
           grep -q 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
             "$k3s_worker_unit"
           grep -q 'AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
