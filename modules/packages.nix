@@ -277,7 +277,7 @@ in {
             ${pkgs.coreutils}/bin/cp -a ${packageSeedBundle}/. "$profile/"
           fi
         fi
-        ${reconcileExposedUnits}/bin/aos-reconcile-exposed-units --system
+        AOS_EXPOSE_START_NO_WAIT=1 ${reconcileExposedUnits}/bin/aos-reconcile-exposed-units --system
       '';
     };
   };

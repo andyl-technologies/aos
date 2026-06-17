@@ -226,7 +226,7 @@ in {
         TimeoutStartSec = "2min";
       };
       script = ''
-        ${pkgs.aos}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
+        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };
 

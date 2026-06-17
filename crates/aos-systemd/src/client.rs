@@ -257,6 +257,21 @@ impl SystemdClient {
         self.await_job(path).await
     }
 
+    /// Queue a start job for `name` without awaiting the job result.
+    ///
+    /// This matches `systemctl start --no-block`: systemd validates and queues
+    /// the job, then the caller continues while the unit reaches its terminal
+    /// state asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails, for example when systemd
+    /// rejects the unit name or cannot queue the job.
+    pub async fn start_unit_no_wait(&self, name: &str) -> Result<()> {
+        self.manager.start_unit(name, "replace").await?;
+        Ok(())
+    }
+
     /// Stop `name` (mode `"replace"`) and await the job's terminal result.
     ///
     /// # Errors

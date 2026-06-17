@@ -195,8 +195,9 @@
     else "ok";
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
-  k3sCommon = import ../../modules/roles/kubernetes/_k3s-common.nix {inherit lib pkgs;};
-  k3sWorkerRequiredEnv = ["K3S_TOKEN" "K3S_URL"];
+  k3sWorkerPackage = pkgs.k3s-worker;
+  k3sControlPlanePackage = pkgs.k3s-control-plane;
+  k3sCombinedPackage = pkgs.k3s-combined;
   roleSystemdLinkTarget = unitName: let
     matches =
       builtins.filter
@@ -281,6 +282,55 @@
     if kernelModulePermissionMismatch.success
     then throw "expose renderer must reject host module loads that are absent from permissions.kernel-modules"
     else "ok";
+  undeclaredPreparedHostPathDirectory = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-undeclared-prep.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        permissions = {
+          network = "private";
+          host-paths = [];
+        };
+        prepareHostPathDirectories = ["/srv/expose-smoke-rw"];
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  undeclaredPreparedHostPathDirectoryRejected =
+    if undeclaredPreparedHostPathDirectory.success
+    then throw "expose renderer must reject prepared host path directories absent from rw permissions.host-paths"
+    else "ok";
+  readOnlyPreparedHostPathDirectory = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-read-only-prep.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        permissions = {
+          network = "private";
+          host-paths = [
+            {
+              path = "/srv/expose-smoke-ro";
+              mode = "read-only";
+            }
+          ];
+        };
+        prepareHostPathDirectories = ["/srv/expose-smoke-ro"];
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  readOnlyPreparedHostPathDirectoryRejected =
+    if readOnlyPreparedHostPathDirectory.success
+    then throw "expose renderer must reject read-only prepared host path directories"
+    else "ok";
   permissionOnlyModules = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-permission-only-modules.service" = {
@@ -292,6 +342,26 @@
       permissions = {
         network = "private";
         kernel-modules = ["br_netfilter"];
+      };
+      requires = [];
+    };
+  });
+  hostPathWithoutPrepare = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-rw-host-path.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      permissions = {
+        network = "private";
+        host-paths = [
+          {
+            path = "/srv/expose-smoke-rw";
+            mode = "rw";
+          }
+        ];
       };
       requires = [];
     };
@@ -370,91 +440,6 @@
       requires = [];
     };
   });
-  k3sWorkerSpike = pkgs.mkDerivation {
-    pname = "k3s-worker";
-    version = "0";
-    src = null;
-
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p "$out/share/k3s-worker"
-          printf k3s-worker > "$out/share/k3s-worker/payload.txt"
-        '';
-      }
-    ];
-
-    expose = {
-      units = {
-        "k3s-preflight.service" =
-          k3sCommon.preflightService "k3s-worker" k3sWorkerRequiredEnv;
-        "k3s.service" = {
-          description = "Lightweight Kubernetes (agent / worker)";
-          wantedBy = ["multi-user.target"];
-          after = ["network-online.target" "k3s-preflight.service"];
-          wants = ["network-online.target"];
-          requisite = ["k3s-preflight.service"];
-          path = k3sCommon.runtimePath;
-          serviceConfig = {
-            Type = "notify";
-            EnvironmentFile = "/etc/rancher/k3s/k3s.env";
-            ExecStart = "${pkgs.k3s}/bin/k3s agent";
-            KillMode = "process";
-            Delegate = "yes";
-            LimitNOFILE = "1048576";
-            LimitNPROC = "infinity";
-            LimitCORE = "infinity";
-            TasksMax = "infinity";
-            TimeoutStartSec = "infinity";
-            Restart = "always";
-            RestartSec = "5s";
-          };
-        };
-      };
-      kernel = k3sWorkerRole.kernel;
-      firewall = k3sWorkerRole.firewall;
-      permissions = {
-        network = "host";
-        privileged-users = true;
-        cgroup-delegate = true;
-        capabilities = [
-          "CAP_SYS_ADMIN"
-          "CAP_NET_ADMIN"
-          "CAP_NET_RAW"
-          "CAP_SYS_RESOURCE"
-          "CAP_SYS_PTRACE"
-        ];
-        devices = [
-          "/dev/net/tun"
-          "/dev/kmsg"
-          "/dev/fuse"
-        ];
-        host-paths = [
-          {
-            path = "/var/lib/rancher";
-            mode = "rw";
-          }
-          {
-            path = "/var/lib/kubelet";
-            mode = "rw";
-          }
-          {
-            path = "/etc/rancher/k3s";
-            mode = "read-only";
-          }
-          {
-            path = "/lib/modules";
-            mode = "read-only";
-          }
-        ];
-        kernel-modules = ["br_netfilter" "vxlan" "ip_set"];
-        syscalls = "privileged";
-        security-label = "aos-pkg-k3s-worker";
-      };
-      requires = [];
-    };
-  };
 in
   pkgs.mkDerivation {
     pname = "package-expose-check";
@@ -477,9 +462,12 @@ in
     privilegedSyscallsExposePath = privilegedSyscalls.expose;
     privateOutboundExposePath = privateOutbound.expose;
     regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
-    k3sWorkerExposePath = k3sWorkerSpike.expose;
+    hostPathWithoutPrepareExposePath = hostPathWithoutPrepare.expose;
+    k3sWorkerExposePath = k3sWorkerPackage.expose;
+    k3sControlPlaneExposePath = k3sControlPlanePackage.expose;
+    k3sCombinedExposePath = k3sCombinedPackage.expose;
     inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
-    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected unknownConfigUnitRejected;
+    inherit reservedCollisionRejected privilegedExecPrefixRejected kernelModulePermissionMismatchRejected unknownConfigUnitRejected undeclaredPreparedHostPathDirectoryRejected readOnlyPreparedHostPathDirectoryRejected;
 
     buildDeps =
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
@@ -495,7 +483,10 @@ in
         privilegedSyscalls.exposeCheck
         privateOutbound.exposeCheck
         regexNamePrivateOutbound.exposeCheck
-        k3sWorkerSpike.exposeCheck
+        hostPathWithoutPrepare.exposeCheck
+        k3sWorkerPackage.exposeCheck
+        k3sControlPlanePackage.exposeCheck
+        k3sCombinedPackage.exposeCheck
       ];
 
     phases = [
@@ -717,6 +708,8 @@ in
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$kernelModulePermissionMismatchRejected" = ok
+          test "$undeclaredPreparedHostPathDirectoryRejected" = ok
+          test "$readOnlyPreparedHostPathDirectoryRejected" = ok
           permission_only_modules="$permissionOnlyModulesExposePath/units/aos-pkg-expose-smoke-modules.service"
           permission_only_manifest="$permissionOnlyModulesExposePath/manifest.json"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter' \
@@ -827,16 +820,42 @@ in
             exit 1
           fi
 
+          host_path_without_prepare_unit="$hostPathWithoutPrepareExposePath/units/expose-smoke-rw-host-path.service"
+          host_path_without_prepare_target="$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke.target"
+          test -f "$host_path_without_prepare_unit"
+          grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
+          test ! -f "$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke-host-paths.service"
+          if grep -q 'aos-pkg-expose-smoke-host-paths.service' "$host_path_without_prepare_target"; then
+            echo "rw host paths must not implicitly synthesize host directory preparation" >&2
+            exit 1
+          fi
+
           k3s_worker_unit="$k3sWorkerExposePath/units/k3s.service"
           k3s_worker_target="$k3sWorkerExposePath/units/aos-pkg-k3s-worker.target"
+          k3s_worker_host_paths="$k3sWorkerExposePath/units/aos-pkg-k3s-worker-host-paths.service"
           k3s_worker_modules="$k3sWorkerExposePath/units/aos-pkg-k3s-worker-modules.service"
           k3s_worker_manifest="$k3sWorkerExposePath/manifest.json"
+          k3s_control_plane_unit="$k3sControlPlaneExposePath/units/k3s.service"
+          k3s_control_plane_target="$k3sControlPlaneExposePath/units/aos-pkg-k3s-control-plane.target"
+          k3s_control_plane_host_paths="$k3sControlPlaneExposePath/units/aos-pkg-k3s-control-plane-host-paths.service"
+          k3s_control_plane_manifest="$k3sControlPlaneExposePath/manifest.json"
+          k3s_combined_unit="$k3sCombinedExposePath/units/k3s.service"
+          k3s_combined_target="$k3sCombinedExposePath/units/aos-pkg-k3s-combined.target"
+          k3s_combined_host_paths="$k3sCombinedExposePath/units/aos-pkg-k3s-combined-host-paths.service"
+          k3s_combined_manifest="$k3sCombinedExposePath/manifest.json"
           k3s_role_unit="$k3sWorkerRoleUnitPath"
           k3s_role_preflight="$k3sWorkerRolePreflightPath"
           test -f "$k3s_worker_unit"
           test -f "$k3sWorkerExposePath/units/k3s-preflight.service"
           test -f "$k3s_worker_target"
+          test -f "$k3s_worker_host_paths"
           test -f "$k3s_worker_modules"
+          test -f "$k3s_control_plane_unit"
+          test -f "$k3s_control_plane_target"
+          test -f "$k3s_control_plane_host_paths"
+          test -f "$k3s_combined_unit"
+          test -f "$k3s_combined_target"
+          test -f "$k3s_combined_host_paths"
           test -f "$k3s_role_unit"
           test -f "$k3s_role_preflight"
           test ! -f "$k3sWorkerExposePath/units/aos-pkg-k3s-worker-netns.service"
@@ -910,6 +929,11 @@ in
           require_preflight_line ExecStart
 
           grep -q 'Description=Lightweight Kubernetes (agent / worker)' "$k3s_worker_unit"
+          if grep -q 'X-OnlyManualStart=true' "$k3s_worker_unit"; then
+            echo "k3s worker service must start with the package target" >&2
+            exit 1
+          fi
+          grep -q 'WantedBy=aos-pkg-k3s-worker.target' "$k3s_worker_unit"
           grep -q 'ExecStart=${pkgs.k3s}/bin/k3s agent' "$k3s_worker_unit"
           grep -q 'KillMode=process' "$k3s_worker_unit"
           grep -q 'Requisite=k3s-preflight.service' "$k3s_worker_unit"
@@ -932,7 +956,8 @@ in
           grep -q 'DeviceAllow=/dev/fuse rwm' "$k3s_worker_unit"
           grep -q 'BindPaths=/var/lib/rancher' "$k3s_worker_unit"
           grep -q 'BindPaths=/var/lib/kubelet' "$k3s_worker_unit"
-          grep -q 'BindReadOnlyPaths=/etc/rancher/k3s' "$k3s_worker_unit"
+          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_worker_unit"
+          grep -q 'BindPaths=/etc/rancher/node' "$k3s_worker_unit"
           grep -q 'BindReadOnlyPaths=/lib/modules' "$k3s_worker_unit"
           grep -q 'RootDirectory=' "$k3sWorkerExposePath/units/k3s-preflight.service"
           grep -q 'PartOf=aos-pkg-k3s-worker.target' "$k3sWorkerExposePath/units/k3s-preflight.service"
@@ -940,8 +965,13 @@ in
             echo "k3s worker privileged syscall profile must not render a restrictive SystemCallFilter" >&2
             exit 1
           fi
-          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-worker-modules.service aos-pkg-k3s-worker-sysctl.service aos-pkg-k3s-worker-firewall.service' \
+          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-worker-host-paths.service aos-pkg-k3s-worker-modules.service aos-pkg-k3s-worker-sysctl.service aos-pkg-k3s-worker-firewall.service' \
             "$k3s_worker_target"
+          test -L "$k3sWorkerExposePath/units/aos-pkg-k3s-worker.target.wants/k3s.service"
+          grep -q 'Description=Prepare host path directories for k3s-worker' \
+            "$k3s_worker_host_paths"
+          grep -q "ExecStart=${pkgs.coreutils}/bin/mkdir -p '/var/lib/rancher' '/var/lib/kubelet' '/etc/rancher/k3s' '/etc/rancher/node'" \
+            "$k3s_worker_host_paths"
           grep -q 'ExecStart=${pkgs.kmod}/sbin/modprobe -a br_netfilter vxlan ip_set' \
             "$k3s_worker_modules"
           grep -q '"confinement":{"class":"unconfined"' "$k3s_worker_manifest"
@@ -951,6 +981,49 @@ in
           grep -q '"cgroup-delegate":true' "$k3s_worker_manifest"
           grep -q '"kernel-modules":\["br_netfilter","vxlan","ip_set"\]' "$k3s_worker_manifest"
           grep -q '"security-label":"aos-pkg-k3s-worker"' "$k3s_worker_manifest"
+          grep -q '"allowedTCP":\[10250\]' "$k3s_worker_manifest"
+          grep -q '"allowedUDP":\[8472\]' "$k3s_worker_manifest"
+          grep -q '"forwardPolicy":"accept"' "$k3s_worker_manifest"
+
+          grep -q 'Description=Lightweight Kubernetes (control plane, no agent)' \
+            "$k3s_control_plane_unit"
+          grep -q 'WantedBy=aos-pkg-k3s-control-plane.target' "$k3s_control_plane_unit"
+          grep -q 'ExecStart=${pkgs.k3s}/bin/k3s server --disable-agent' \
+            "$k3s_control_plane_unit"
+          grep -q 'BindPaths=/var/lib/rancher' "$k3s_control_plane_unit"
+          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_control_plane_unit"
+          grep -q 'BindPaths=/etc/rancher/node' "$k3s_control_plane_unit"
+          if grep -q 'BindPaths=/var/lib/kubelet' "$k3s_control_plane_unit"; then
+            echo "k3s control-plane package must not bind kubelet state" >&2
+            exit 1
+          fi
+          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-control-plane-host-paths.service aos-pkg-k3s-control-plane-modules.service aos-pkg-k3s-control-plane-sysctl.service aos-pkg-k3s-control-plane-firewall.service' \
+            "$k3s_control_plane_target"
+          grep -q 'Description=Prepare host path directories for k3s-control-plane' \
+            "$k3s_control_plane_host_paths"
+          grep -q "ExecStart=${pkgs.coreutils}/bin/mkdir -p '/var/lib/rancher' '/etc/rancher/k3s' '/etc/rancher/node'" \
+            "$k3s_control_plane_host_paths"
+          grep -q '"allowedTCP":\[6443\]' "$k3s_control_plane_manifest"
+          grep -q '"allowedUDP":\[\]' "$k3s_control_plane_manifest"
+          grep -q '"forwardPolicy":"drop"' "$k3s_control_plane_manifest"
+
+          grep -q 'Description=Lightweight Kubernetes (combined: server + agent)' \
+            "$k3s_combined_unit"
+          grep -q 'WantedBy=aos-pkg-k3s-combined.target' "$k3s_combined_unit"
+          grep -Fxq 'ExecStart=${pkgs.k3s}/bin/k3s server' "$k3s_combined_unit"
+          grep -q 'BindPaths=/var/lib/rancher' "$k3s_combined_unit"
+          grep -q 'BindPaths=/var/lib/kubelet' "$k3s_combined_unit"
+          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_combined_unit"
+          grep -q 'BindPaths=/etc/rancher/node' "$k3s_combined_unit"
+          grep -q 'Wants=k3s-preflight.service k3s.service aos-pkg-k3s-combined-host-paths.service aos-pkg-k3s-combined-modules.service aos-pkg-k3s-combined-sysctl.service aos-pkg-k3s-combined-firewall.service' \
+            "$k3s_combined_target"
+          grep -q 'Description=Prepare host path directories for k3s-combined' \
+            "$k3s_combined_host_paths"
+          grep -q "ExecStart=${pkgs.coreutils}/bin/mkdir -p '/var/lib/rancher' '/var/lib/kubelet' '/etc/rancher/k3s' '/etc/rancher/node'" \
+            "$k3s_combined_host_paths"
+          grep -q '"allowedTCP":\[6443,10250\]' "$k3s_combined_manifest"
+          grep -q '"allowedUDP":\[8472\]' "$k3s_combined_manifest"
+          grep -q '"forwardPolicy":"accept"' "$k3s_combined_manifest"
 
           if grep -R "$exposePath" "$payload"; then
             echo "payload output must not contain a reference to its expose path" >&2

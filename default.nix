@@ -220,10 +220,15 @@
     ) (builtins.attrNames entries);
 
     loadSpec = filename: let
-      raw = (import (./tests/fleet + "/${filename}")) {
-        inherit lib pkgs;
+      specModule = import (./tests/fleet + "/${filename}");
+      availableArgs = {
+        inherit lib pkgs mkSystem;
         systems = discoverSystems;
       };
+      raw = specModule (
+        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+        availableArgs
+      );
       eval = lib.evalModules {
         modules = [
           {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}

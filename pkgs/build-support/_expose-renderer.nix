@@ -123,6 +123,9 @@
       )
     );
 
+  validateHostPathDirectory = path:
+    validateAbsolutePath "host path directory" path;
+
   validateKernelModule = module:
     throwIfNot
     (builtins.isString module && builtins.match kernelModuleType module != null)
@@ -709,6 +712,7 @@ in rec {
       "config"
       "provides"
       "uses"
+      "prepareHostPathDirectories"
     ];
     exposeExtraKeys = builtins.filter (
       key: !(builtins.elem key allowedExposeKeys)
@@ -721,6 +725,7 @@ in rec {
       (checkedExpose.units or {});
     authoredUnitNames = builtins.map validateUnitName (builtins.attrNames units);
     target = validateTargetName (checkedExpose.target or "aos-pkg-${packageName}.target");
+    hostPathsUnit = "aos-pkg-${packageName}-host-paths.service";
     modulesUnit = "aos-pkg-${packageName}-modules.service";
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
@@ -755,6 +760,10 @@ in rec {
     permissions = validatePermissions packageName (checkedExpose.permissions or {});
     kernel = validateKernel (checkedExpose.kernel or {});
     firewall = validateFirewall (checkedExpose.firewall or {});
+    prepareHostPathDirectories =
+      builtins.map
+      validateHostPathDirectory
+      (validateList "expose.prepareHostPathDirectories" (checkedExpose.prepareHostPathDirectories or []));
     network = permissions.network or "private";
     legacyKernelModules = kernel.modules;
     permissionKernelModules = permissions.kernel-modules or [];
@@ -770,9 +779,10 @@ in rec {
         "mkDerivation expose for package '${packageName}' declares expose.kernel.modules that do not match permissions.kernel-modules; kernel module loads must be declared in the signed permissions manifest"
         permissionKernelModules;
     sideEffectUnitNames =
-      [modulesUnit sysctlUnit firewallUnit]
+      lib.optional (prepareHostPathDirectories != []) hostPathsUnit
+      ++ [modulesUnit sysctlUnit firewallUnit]
       ++ lib.optional (network == "private-outbound") netnsUnit;
-    reservedUnitNames = [target modulesUnit sysctlUnit firewallUnit netnsUnit];
+    reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit];
     capabilities = permissions.capabilities or [];
     devices = permissions.devices or [];
     hostPaths = permissions.host-paths or [];
@@ -820,6 +830,16 @@ in rec {
     );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
+    undeclaredPreparedHostPathDirectories =
+      builtins.filter (
+        path: !(builtins.elem path readWriteHostPaths)
+      )
+      prepareHostPathDirectories;
+    preparedHostPathDirectoriesAvailable =
+      throwIfNot
+      (undeclaredPreparedHostPathDirectories == [])
+      "expose.prepareHostPathDirectories for package '${packageName}' must be a subset of rw permissions.host-paths: ${builtins.concatStringsSep ", " undeclaredPreparedHostPathDirectories}"
+      true;
     deviceAllows = builtins.map (device: "${device} rwm") devices;
     payloadRoot =
       throwIfNot
@@ -1007,6 +1027,10 @@ in rec {
       if sysctlAssignments == []
       then trueCommand
       else "${pkgs.procps-ng}/sbin/sysctl -w ${builtins.concatStringsSep " " sysctlAssignments}";
+    hostPathsCommand =
+      if prepareHostPathDirectories == []
+      then trueCommand
+      else "${pkgs.coreutils}/bin/mkdir -p ${lib.escapeShellArgs prepareHostPathDirectories}";
 
     formatPorts = ports:
       builtins.concatStringsSep ", " (builtins.map builtins.toString ports);
@@ -1205,6 +1229,20 @@ in rec {
     netnsStopCommand = "${netnsStopTool}/bin/aos-pkg-${packageName}-netns-stop";
 
     sideEffectUnits =
+      lib.optionalAttrs (prepareHostPathDirectories != []) {
+        "${hostPathsUnit}" = {
+          description = "Prepare host path directories for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = hostPathsCommand;
+          };
+        };
+      }
+      //
       {
         "${modulesUnit}" = {
           description = "Apply kernel modules for ${packageName}";
@@ -1267,14 +1305,16 @@ in rec {
         };
       };
     synthesizedUnits = builtins.seq reservedUnitsAvailable (
-      builtins.mapAttrs addTargetMembership units
-      // sideEffectUnits
-      // {
-        "${target}" = {
-          description = "Activation target for ${packageName}";
-          wants = uniqueUnits targetMemberUnitNames;
-        };
-      }
+      builtins.seq preparedHostPathDirectoriesAvailable (
+        builtins.mapAttrs addTargetMembership units
+        // sideEffectUnits
+        // {
+          "${target}" = {
+            description = "Activation target for ${packageName}";
+            wants = uniqueUnits targetMemberUnitNames;
+          };
+        }
+      )
     );
     typedSystemd = builtins.seq unitReferencesValid (validateTypedUnits synthesizedUnits);
     renderedUnitNames = unitNamesFromTypedSystemd typedSystemd;
