@@ -561,6 +561,9 @@ Full spec: [`enforcement.md`](enforcement.md).
 - [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).
+      Current coverage enables `CONFIG_BPF_EVENTS`, `CONFIG_BPF_LSM`, and `bpf`
+      in `CONFIG_LSM`; BTF still needs an AOS-built `pahole`/dwarves package
+      before `CONFIG_DEBUG_INFO_BTF` can be enabled hermetically.
 - [ ] **Full systemd hardening baseline** on every generated unit (the
       `systemd-analyze security` consensus set — see [`enforcement.md`](enforcement.md));
       relaxations computed from the manifest, never hand-written. Current coverage

@@ -37,11 +37,18 @@
     "STRICT_DEVMEM"
     "IO_STRICT_DEVMEM"
     "SECURITY_DMESG_RESTRICT"
+    "BPF"
+    "BPF_SYSCALL"
+    "BPF_JIT"
+    "BPF_EVENTS"
+    "BPF_LSM"
+    "SECURITY_LANDLOCK"
   ];
 
   # Symbols required to hold a specific value (CONFIG_<name>=<value>).
   valueCommon = {
     DEFAULT_MMAP_MIN_ADDR = "65536";
+    LSM = "'\"landlock,yama,integrity,selinux,bpf\"'";
   };
 
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module

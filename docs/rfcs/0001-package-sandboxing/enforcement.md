@@ -104,11 +104,13 @@ BPF-LSM policies through the existing registry trust chain.**
 [permissions.md](permissions.md) tiers) may reference signed BPF-LSM programs the
 fleet loads to (a) live-patch a CVE-class behavior ahead of a kernel update, or
 (b) add fleet-wide hardening (e.g. block unprivileged `unshare`) without
-rebuilding the kernel or the major MAC. Requirements: `CONFIG_BPF_LSM=y`, `bpf`
-in the `lsm=` order, BTF (`CONFIG_DEBUG_INFO_BTF`), privileged load. This is
-**host/fleet policy, not per-package manifest** — it is the dynamic counterpart
-to the static MAC of layer 5. MVP-optional; the kernel-config + signed-policy
-channel land in Phase 9, enforcement content is fleet-authored.
+rebuilding the kernel or the major MAC. Requirements: `CONFIG_BPF_LSM=y`,
+`CONFIG_BPF_EVENTS=y`, `bpf` in the `lsm=` order, BTF
+(`CONFIG_DEBUG_INFO_BTF` plus the AOS-built `pahole`/dwarves toolchain),
+privileged load. This is **host/fleet policy, not per-package manifest** — it is
+the dynamic counterpart to the static MAC of layer 5. MVP-optional; the
+kernel-config + signed-policy channel land in Phase 9, enforcement content is
+fleet-authored.
 
 ## The systemd hardening baseline (apply to every generated unit)
 
