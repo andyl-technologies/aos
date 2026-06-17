@@ -149,6 +149,73 @@ enum Command {
         #[command(subcommand)]
         command: FrontendCommand,
     },
+    /// Deploy and manage a Cloudflare Workers deployment of this hub.
+    Cloudflare {
+        #[command(subcommand)]
+        command: CloudflareCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum CloudflareCommand {
+    /// Provision, deploy, and initialise a fresh Cloudflare deployment.
+    ///
+    /// One idempotent sequence: create the D1/R2/KV resources, deploy the
+    /// bundled Worker wasm, apply the runtime secrets, and `GET /_init` to
+    /// migrate the schema and bootstrap the root admin. `wrangler` reads the
+    /// operator's CLOUDFLARE_API_TOKEN (or OAuth login) from the environment.
+    Install(CloudflareArgs),
+    /// Re-deploy the bundled Worker wasm and re-run the schema migration.
+    Deploy(CloudflareArgs),
+    /// Provision the D1/R2/KV resources only (no deploy).
+    Provision(CloudflareArgs),
+    /// Apply the D1 schema (and bootstrap root) on the live Worker via /_init.
+    Init {
+        /// The deployed Worker's externally-reachable base URL.
+        #[arg(long)]
+        external_url: String,
+    },
+}
+
+/// Shared options for the Cloudflare deployment commands.
+#[derive(Args)]
+struct CloudflareArgs {
+    /// The Worker name (also the default D1 database name).
+    #[arg(long, default_value = "aos-registry-hub")]
+    name: String,
+    /// The D1 database name.
+    #[arg(long, default_value = "aos-registry-hub")]
+    d1_name: String,
+    /// The R2 bucket holding the registry surfaces.
+    #[arg(long, default_value = "aos-registry-surfaces")]
+    bucket: String,
+    /// The KV namespace title for sessions.
+    #[arg(long, default_value = "SESSIONS")]
+    kv_title: String,
+    /// The deployed Worker's externally-reachable base URL (also /_init target).
+    #[arg(long)]
+    external_url: String,
+    /// Bootstrap root admin email (paired with --root-password).
+    #[arg(long)]
+    root_email: Option<String>,
+    /// Bootstrap root admin password. Prefer --root-password-stdin.
+    #[arg(long)]
+    root_password: Option<String>,
+    /// Read the root admin password from stdin (one line).
+    #[arg(long)]
+    root_password_stdin: bool,
+    /// HS256 JWT signing secret; minted randomly when omitted.
+    #[arg(long)]
+    jwt_secret: Option<String>,
+    /// At-rest AES-GCM sealing key; minted randomly when omitted.
+    #[arg(long)]
+    seal_key: Option<String>,
+    /// Magic-link email relay endpoint (HUB_EMAIL_API_URL).
+    #[arg(long)]
+    email_relay_url: Option<String>,
+    /// Bearer token for the email relay (HUB_EMAIL_API_TOKEN).
+    #[arg(long)]
+    email_api_token: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -1164,7 +1231,112 @@ async fn main() -> Result<()> {
             let db = Database::open(&root.join("hub.db")).await?;
             run_frontend_command(&db, command).await?;
         }
+        Command::Cloudflare { command } => {
+            run_cloudflare_command(command).await?;
+        }
     }
+    Ok(())
+}
+
+/// Dispatches the `cloudflare` subcommands (provision/deploy/install/init).
+///
+/// All but `init` require the bundled wasm dist + `wrangler` launcher, resolved
+/// from the wrapper environment ([`cloudflare::Assets::from_env`]); `init` only
+/// makes an HTTP request to the live Worker.
+///
+/// # Errors
+///
+/// Returns an error if asset resolution, any `wrangler` step, or the `/_init`
+/// request fails.
+async fn run_cloudflare_command(command: CloudflareCommand) -> Result<()> {
+    use aos_registry_hub::cloudflare;
+
+    match command {
+        CloudflareCommand::Init { external_url } => {
+            let body = cloudflare::init_remote(&external_url).await?;
+            println!("/_init: {}", body.trim());
+        }
+        CloudflareCommand::Provision(args) => {
+            let assets = cloudflare::Assets::from_env()?;
+            let cfg = provision_from_args(&assets, &args).await?;
+            println!(
+                "provisioned: D1 {} (id {}), R2 {}, KV id {}",
+                cfg.d1_name, cfg.d1_id, cfg.bucket, cfg.kv_id
+            );
+        }
+        CloudflareCommand::Deploy(args) => {
+            let assets = cloudflare::Assets::from_env()?;
+            deploy_and_init(&assets, &args).await?;
+        }
+        CloudflareCommand::Install(args) => {
+            let assets = cloudflare::Assets::from_env()?;
+            deploy_and_init(&assets, &args).await?;
+            println!("install complete: {}", args.external_url);
+        }
+    }
+    Ok(())
+}
+
+/// Resolves the root password from the `--root-password` flag or stdin.
+///
+/// # Errors
+///
+/// Returns an error if `--root-password-stdin` is set but stdin cannot be read.
+fn resolve_root_password(args: &CloudflareArgs) -> Result<Option<String>> {
+    if args.root_password_stdin {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading root password from stdin")?;
+        Ok(Some(buf.trim_end_matches(['\n', '\r']).to_string()))
+    } else {
+        Ok(args.root_password.clone())
+    }
+}
+
+/// Provisions resources and resolves a [`cloudflare::DeployConfig`] from CLI args.
+async fn provision_from_args(
+    assets: &aos_registry_hub::cloudflare::Assets,
+    args: &CloudflareArgs,
+) -> Result<aos_registry_hub::cloudflare::DeployConfig> {
+    aos_registry_hub::cloudflare::provision(
+        assets,
+        &args.name,
+        &args.d1_name,
+        &args.bucket,
+        &args.kv_title,
+        &args.external_url,
+        args.root_email.as_deref(),
+        args.email_relay_url.as_deref(),
+    )
+    .await
+}
+
+/// Provisions, deploys, applies secrets, and runs `/_init` (the shared
+/// install/deploy body).
+async fn deploy_and_init(
+    assets: &aos_registry_hub::cloudflare::Assets,
+    args: &CloudflareArgs,
+) -> Result<()> {
+    use aos_registry_hub::cloudflare;
+
+    let cfg = provision_from_args(assets, args).await?;
+    let secrets = cloudflare::Secrets {
+        jwt_secret: args.jwt_secret.clone(),
+        seal_key: args.seal_key.clone(),
+        root_password: resolve_root_password(args)?,
+        email_api_token: args.email_api_token.clone(),
+    };
+    let applied = cloudflare::deploy(assets, &cfg, &secrets).await?;
+    if applied.minted {
+        println!("NOTE: store these minted secrets — they are not recoverable:");
+        println!("  HUB_JWT_SECRET={}", applied.jwt_secret);
+        println!("  HUB_SEAL_KEY={}", applied.seal_key);
+    }
+    println!("deployed; applying schema via /_init …");
+    let body = cloudflare::init_remote(&args.external_url).await?;
+    println!("/_init: {}", body.trim());
     Ok(())
 }
 

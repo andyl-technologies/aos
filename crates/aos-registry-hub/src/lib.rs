@@ -73,6 +73,7 @@
 //!   `/healthz` and Prometheus `/metrics` observability endpoints).
 
 pub mod auth;
+pub mod cloudflare;
 pub mod compat;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_registry_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
