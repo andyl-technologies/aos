@@ -107,28 +107,28 @@ result is a float; otherwise integer arithmetic in `i64`. Forcing order is left
 operand then right operand, and it is observable (see
 [primops and the runtime ABI](10-primops-and-runtime-abi.md) §2.3).
 
-- [ ] `add` (e1 e2) — `e1 + e2`. Int+int → int; any float → float. Also the
+- [x] `add` (e1 e2) — `e1 + e2`. Int+int → int; any float → float. Also the
       desugaring target of the `+` operator on numbers (string/path `+` is in
       [language conformance](20-nix-language-conformance.md)).
       - **i64 overflow throws, does not wrap**, on Nix ≥ 2.25 (NixOS/nix#11188):
         an `add`/`sub`/`mul` that would overflow signed 64-bit raises a catchable
         evaluation error. Older Nix wrapped. Match the pinned version's behavior
         exactly (see [language conformance](20-nix-language-conformance.md) §7.1).
-- [ ] `sub` (e1 e2) — `e1 - e2`. Same promotion rule.
-- [ ] `mul` (e1 e2) — `e1 * e2`. Same promotion rule.
-- [ ] `div` (e1 e2) — `e1 / e2`. **Division by zero throws** (a catchable error).
+- [x] `sub` (e1 e2) — `e1 - e2`. Same promotion rule.
+- [x] `mul` (e1 e2) — `e1 * e2`. Same promotion rule.
+- [x] `div` (e1 e2) — `e1 / e2`. **Division by zero throws** (a catchable error).
       - Integer division **truncates toward zero** (C/C++ semantics), *not*
         floor division: `div 7 (-2) == -3`, not `-4`. This is a classic
         divergence point versus floor-dividing languages.
       - Mixed int/float → float division.
-- [ ] `bitAnd` (e1 e2) — bitwise AND of two integers.
-- [ ] `bitOr` (e1 e2) — bitwise OR of two integers.
-- [ ] `bitXor` (e1 e2) — bitwise XOR of two integers.
+- [x] `bitAnd` (e1 e2) — bitwise AND of two integers.
+- [x] `bitOr` (e1 e2) — bitwise OR of two integers.
+- [x] `bitXor` (e1 e2) — bitwise XOR of two integers.
       - The three bit ops are **integer-only**; a float argument is a (non-
         catchable) type error, matching C++ Nix.
-- [ ] `ceil` (number) — smallest integer ≥ `number`, returned as an **int**
+- [x] `ceil` (number) — smallest integer ≥ `number`, returned as an **int**
       (`i64`). Accepts int or float; an int passes through.
-- [ ] `floor` (number) — largest integer ≤ `number`, returned as an **int**.
+- [x] `floor` (number) — largest integer ≤ `number`, returned as an **int**.
       - Both `ceil` and `floor` return the integer type, not a float — relevant
         because the result may then flow into `add`/`toString` with int rules.
 
@@ -144,7 +144,7 @@ env changes the `.drv` bytes.
 
 ## 3. Comparison and logic
 
-- [ ] `lessThan` (e1 e2) — `e1 < e2`, the *only* comparison primop; `>`, `<=`,
+- [x] `lessThan` (e1 e2) — `e1 < e2`, the *only* comparison primop; `>`, `<=`,
       `>=`, and `==`/`!=` ordering all desugar through it / through structural
       equality in the language core (see
       [language conformance](20-nix-language-conformance.md)).

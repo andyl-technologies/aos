@@ -12998,6 +12998,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_numeric_and_ordering_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            "builtins.add 1 2",
+            "let add = builtins.add 1; in add 2",
+            "builtins.sub 5 8",
+            "builtins.mul 2 3",
+            "builtins.div 7 2",
+            "builtins.div 7 (-2)",
+            "builtins.add 1 2.5",
+            "builtins.sub 1 2.5",
+            "builtins.mul 2 0.5",
+            "builtins.div 7 2.0",
+            "builtins.add 9223372036854775807 1",
+            "builtins.sub (-9223372036854775807 - 1) 1",
+            "builtins.mul 9223372036854775807 2",
+            "builtins.bitAnd 6 3",
+            "builtins.bitOr 4 1",
+            "builtins.bitXor 6 3",
+            "builtins.bitXor (-1) 1",
+            "let xor = builtins.bitXor 6; in xor 3",
+            "builtins.ceil 1",
+            "builtins.ceil 1.2",
+            "builtins.ceil (-1.2)",
+            "builtins.ceil 9223372036854775808.0",
+            "builtins.floor 1",
+            "builtins.floor 1.8",
+            "builtins.floor (-1.2)",
+            "builtins.floor 9223372036854775808.0",
+            "builtins.lessThan 1 2",
+            "let less = builtins.lessThan 1; in less 2",
+            "builtins.lessThan 2 1",
+            "builtins.lessThan 1 1",
+            "builtins.lessThan 1 1.5",
+            "builtins.lessThan \"a\" \"b\"",
+            "builtins.lessThan [ 1 2 ] [ 1 3 ]",
+            "builtins.lessThan [ 1 (1 / 0) ] [ 2 (1 / 0) ]",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
             ("builtins.exec or 42", b"exec".as_slice()),
@@ -15912,6 +15963,7 @@ mod tests {
         assert_eq!(eval("builtins.sub 5 8").as_int(), Ok(-3));
         assert_eq!(eval("builtins.mul 2 3").as_int(), Ok(6));
         assert_eq!(eval("builtins.div 7 2").as_int(), Ok(3));
+        assert_eq!(eval("builtins.div 7 (-2)").as_int(), Ok(-3));
         assert_eq!(eval("builtins.add 1 2.5").as_float(), Ok(3.5));
         assert_eq!(eval("builtins.sub 1 2.5").as_float(), Ok(-1.5));
         assert_eq!(eval("builtins.mul 2 0.5").as_float(), Ok(1.0));
@@ -15919,6 +15971,10 @@ mod tests {
         assert_eq!(
             eval("builtins.add 9223372036854775807 1").as_int(),
             Ok(i64::MIN)
+        );
+        assert_eq!(
+            eval("builtins.sub (-9223372036854775807 - 1) 1").as_int(),
+            Ok(i64::MAX)
         );
         assert_eq!(eval("builtins.mul 9223372036854775807 2").as_int(), Ok(-2));
     }
