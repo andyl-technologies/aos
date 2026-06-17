@@ -12128,6 +12128,20 @@ mod tests {
         );
     }
 
+    fn assert_cpp_nix_and_tree_walk_reject_json(oracle: &str, source: &str) {
+        let output = Command::new(oracle)
+            .args(["--eval", "--strict", "--json", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let ir = lower(&format!("builtins.toJSON ({source})"));
+        eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+    }
+
     fn unique_temp_dir(prefix: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -13156,6 +13170,67 @@ mod tests {
             r#"builtins.dirOf { __toString = self: "/a/b"; }"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_hash_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.hashString "md5" "abc""#,
+            r#"builtins.hashString "sha1" "abc""#,
+            r#"builtins.hashString "sha256" "abc""#,
+            r#"builtins.hashString "sha512" "abc""#,
+            r#"let h = builtins.hashString "sha256"; in h "abc""#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = "sha256"; toHashFormat = "base16"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = "sha256"; toHashFormat = "base64"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = "sha256"; toHashFormat = "nix32"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = "sha256"; toHashFormat = "base32"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = "sha256"; toHashFormat = "sri"; }"#,
+            r#"builtins.convertHash { hash = "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"; hashAlgo = "sha256"; toHashFormat = "base16"; }"#,
+            r#"builtins.convertHash { hash = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="; toHashFormat = "base16"; }"#,
+            r#"builtins.convertHash { hash = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0"; toHashFormat = "base16"; }"#,
+            r#"builtins.convertHash { hash = "sha256:1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s"; toHashFormat = "base16"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "md5" "abc"; hashAlgo = "md5"; toHashFormat = "nix32"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha1" "abc"; hashAlgo = "sha1"; toHashFormat = "base64"; }"#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha512" "abc"; hashAlgo = "sha512"; toHashFormat = "nix32"; }"#,
+            r#"let convert = builtins.convertHash; in convert { hash = "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0="; hashAlgo = "sha256"; toHashFormat = "base16"; }"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        let (dir, path) = temp_file_with_bytes("cpp-nix-hash-file", b"abc");
+        let path = path_source(&path);
+        for source in [
+            format!(r#"builtins.hashFile "md5" {path}"#),
+            format!(r#"builtins.hashFile "sha1" {path}"#),
+            format!(r#"builtins.hashFile "sha256" {path}"#),
+            format!(
+                r#"builtins.hashFile "sha512" {}"#,
+                nix_string_literal(&path)
+            ),
+            format!(
+                r#"builtins.hashFile "sha256" {{ outPath = {}; }}"#,
+                nix_string_literal(&path)
+            ),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, &source);
+        }
+        fs::remove_dir_all(dir).expect("temp directory removes");
+
+        for source in [
+            r#"builtins.hashString "sha384" "abc""#,
+            r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = null; toHashFormat = "base16"; }"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_json(&oracle, source);
         }
     }
 

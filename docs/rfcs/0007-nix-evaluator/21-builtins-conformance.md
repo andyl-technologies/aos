@@ -455,7 +455,7 @@ distinct from the SHA-256 store-path hashing that `nix-compat` owns (see
 [derivation and store compatibility](11-derivation-and-store-compatibility.md) §9
 on the three-hashes policy). Output is a hex string by default.
 
-- [ ] `hashString` (type s) — hash the bytes of `s` with algorithm `type`.
+- [x] `hashString` (type s) — hash the bytes of `s` with algorithm `type`.
       - Supported `type` values: `"md5"`, `"sha1"`, `"sha256"`, `"sha512"`. An
         unknown algorithm throws; the error/accepted-set must match.
       - Default output encoding is lowercase **hex**. (Other encodings are via
@@ -466,9 +466,12 @@ on the three-hashes policy). Output is a hex string by default.
       algorithm `type`. **Impure / eval-time effect** (reads the filesystem) —
       must be keyed into the incremental cache by the file's content hash (§13).
       - Same algorithm set as `hashString`.
-- [ ] `convertHash` (args) — convert a hash between encodings/algorithms:
-      `args = { hash; hashAlgo ? null; toHashFormat; }` with `toHashFormat` one
-      of `"base16"`/`"nix32"`/`"base32"`/`"base64"`/`"sri"`. The `nix32`/base32
+- [x] `convertHash` (args) — convert a hash between encodings/algorithms:
+      `args = { hash; hashAlgo ? <omitted>; toHashFormat; }`, where a present
+      `hashAlgo` must be a string. Omitting `hashAlgo` is allowed for typed
+      hashes such as SRI and `sha256:<nix32>`, but `hashAlgo = null` is a type
+      error in C++ Nix 2.24.x. `toHashFormat` is one of
+      `"base16"`/`"nix32"`/`"base32"`/`"base64"`/`"sri"`. The `nix32`/base32
       alphabet is Nix's custom one (see
       [derivation and store compatibility](11-derivation-and-store-compatibility.md) §5.1).
       - Introduced Nix ≥ 2.19. Note for the version pin; if the pinned `nix`
