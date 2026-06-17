@@ -99,6 +99,7 @@
         credentials = [
           {
             name = "join-token";
+            source = "/usr/lib/credstore.encrypted/join-token";
             units = ["expose-config.service"];
             encrypted = true;
           }
@@ -153,6 +154,15 @@
             ExecStart = "${pkgs.bash}/bin/bash -c true";
           };
         };
+        "expose-config-split-socket.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        "expose-config-split-socket.socket" = {
+          socketConfig.ListenStream = "127.0.0.1:18081";
+        };
       };
       config.artifacts = [
         {
@@ -173,12 +183,19 @@
       config.credentials = [
         {
           name = "main-secret";
+          source = "/usr/lib/credstore.encrypted/main-secret";
           units = ["expose-config-split-main.service"];
           encrypted = true;
         }
         {
           name = "sidecar-note";
           units = ["expose-config-split-sidecar.service"];
+        }
+        {
+          name = "socket-secret";
+          source = "/usr/lib/credstore.encrypted/socket-secret";
+          units = ["expose-config-split-socket.service"];
+          encrypted = true;
         }
       ];
     };
@@ -229,6 +246,79 @@
   credentialNonServiceUnitRejected =
     if credentialNonServiceUnit.success
     then throw "expose renderer must reject credentials that reference non-service units"
+    else "ok";
+  credentialBadSource = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            source = "/etc/shadow";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialBadSourceRejected =
+    if credentialBadSource.success
+    then throw "expose renderer must reject credential sources outside systemd credstore paths"
+    else "ok";
+  credentialBadSourceInjection = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+        config.credentials = [
+          {
+            name = "bad";
+            source = "/usr/lib/credstore.encrypted/bad\nPrivateNetwork=false";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialBadSourceInjectionRejected =
+    if credentialBadSourceInjection.success
+    then throw "expose renderer must reject credential source unit syntax injection"
+    else "ok";
+  credentialAuthoredCollision = builtins.tryEval (
+    (splitConfigPackage.overrideAttrs (_: {
+      expose = {
+        units."expose-config-split-main.service".serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+          LoadCredentialEncrypted = "main-secret";
+        };
+        config.credentials = [
+          {
+            name = "main-secret";
+            source = "/usr/lib/credstore.encrypted/main-secret";
+            units = ["expose-config-split-main.service"];
+            encrypted = true;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  credentialAuthoredCollisionRejected =
+    if credentialAuthoredCollision.success
+    then throw "expose renderer must reject authored LoadCredential collisions with expose.config.credentials"
     else "ok";
   serverSystem = mkSystem ../../systems/server.nix;
   k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
@@ -510,6 +600,9 @@ in
       kernelModulePermissionMismatchRejected
       unknownConfigUnitRejected
       credentialNonServiceUnitRejected
+      credentialBadSourceRejected
+      credentialBadSourceInjectionRejected
+      credentialAuthoredCollisionRejected
       undeclaredPreparedHostPathDirectoryRejected
       readOnlyPreparedHostPathDirectoryRejected
       ;
@@ -723,20 +816,24 @@ in
           grep -q 'BindReadOnlyPaths=/nix/store' "$config_unit"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config/config.env' "$config_unit"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config/config.env' "$config_unit"
+          grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/join-token' "$config_unit"
           grep -q 'LoadCredential=plain-note' "$config_unit"
-          grep -q 'LoadCredentialEncrypted=join-token' "$config_unit"
+          grep -q 'LoadCredentialEncrypted=join-token:/usr/lib/credstore.encrypted/join-token' "$config_unit"
           grep -q 'X-ReloadIfChanged=true' "$config_unit"
           grep -q 'X-Reload-Triggers=/etc/aos/packages/expose-config/config.env' "$config_unit"
-          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
+          grep -q '"config":{"artifacts":\[{"format":"env","name":"env","optional":\["URL"\],"path":"/etc/aos/packages/expose-config/config.env","reload":"reload","required":\["TOKEN"\],"units":\["expose-config.service"\]}\],"credentials":\[{"encrypted":true,"name":"join-token","source":"/usr/lib/credstore.encrypted/join-token","units":\["expose-config.service"\]},{"encrypted":false,"name":"plain-note","units":\[\]}\]}' "$config_manifest"
           grep -q '"provides":\[{"kind":"directory","name":"data","path":"/var/lib/expose-config/data"}\]' "$config_manifest"
           grep -q '"uses":\[{"kind":"directory","name":"data","provider":"expose-config","unit":"expose-config.service"}\]' "$config_manifest"
           test "$unknownConfigUnitRejected" = ok
 
           split_main="$splitConfigExposePath/units/expose-config-split-main.service"
           split_sidecar="$splitConfigExposePath/units/expose-config-split-sidecar.service"
+          split_socket_service="$splitConfigExposePath/units/expose-config-split-socket.service"
+          split_socket="$splitConfigExposePath/units/expose-config-split-socket.socket"
           grep -q 'BindReadOnlyPaths=/etc/aos/packages/expose-config-split/main.env' "$split_main"
           grep -q 'ConditionPathExists=/etc/aos/packages/expose-config-split/main.env' "$split_main"
-          grep -q 'LoadCredentialEncrypted=main-secret' "$split_main"
+          grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/main-secret' "$split_main"
+          grep -q 'LoadCredentialEncrypted=main-secret:/usr/lib/credstore.encrypted/main-secret' "$split_main"
           if grep -q 'expose-config-split/sidecar.env' "$split_main"; then
             echo "main service must not receive sidecar config artifact" >&2
             exit 1
@@ -756,6 +853,9 @@ in
             echo "sidecar service must not receive main credential" >&2
             exit 1
           fi
+          grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/socket-secret' "$split_socket_service"
+          grep -q 'LoadCredentialEncrypted=socket-secret:/usr/lib/credstore.encrypted/socket-secret' "$split_socket_service"
+          grep -q 'ConditionPathExists=/usr/lib/credstore.encrypted/socket-secret' "$split_socket"
 
           test "$payload" = "$overriddenPayload"
           test "$exposePath" != "$overriddenExposePath"

@@ -100,8 +100,9 @@ Relevant AOS surfaces, for grounding:
   that validates fields marked `@<credential-name>`, but AOS does **not** yet
   expose systemd's credential system as a first-class module option. The
   exposed-package renderer can emit `LoadCredential=` /
-  `LoadCredentialEncrypted=` for service units, but a general module surface
-  remains open.
+  `LoadCredentialEncrypted=` for service units, including fail-closed
+  `name:/path` imports from systemd credstore directories, but a general module
+  surface remains open.
 - `pkgs/system/systemd.nix` controls the systemd build flags. The credential
   substrate is verified by `checks.systemd-credentials`: `systemd-creds`, signed
   PCR TPM2 encryption flags, credstore tmpfiles entries, `systemd-measure`, TPM2
@@ -512,11 +513,11 @@ plugin.
   `--tpm2-public-key-pcrs` yet (the existing `assertKeyIsSystemdCredential`
   helper only validates `@<name>` field markers). Exposed-package credential
   metadata now renders `LoadCredentialEncrypted=<name>` or
-  `LoadCredential=<name>` into consuming service units, but the
-  current bare-name imports are an appetite/import declaration and do **not**
-  make a missing credential fail closed. The `mkDerivation`/module-side
-  `systemd-creds encrypt` step, first-class source/credstore path schema, and an
-  offline PCR-policy signing key still need wiring.
+  `LoadCredential=<name>` into consuming service units. When the metadata
+  declares a credstore `source`, it renders `name:/path` with
+  `ConditionPathExists=` so missing blobs fail closed; bare-name imports remain
+  an appetite/import declaration. The `mkDerivation`/module-side `systemd-creds
+  encrypt` step and an offline PCR-policy signing key still need wiring.
 - **nspawn handoff.** The host→container `--load-credential` path for full-init
   containers (the Option 1 caveat: container must run systemd as PID 1) still
   needs an end-to-end test; k3s, being a nominal/host-privileged container, is
@@ -580,9 +581,9 @@ requirements vs. nice-to-haves — that prioritization is itself open.
 2. **Hot-reload — in scope for v1?** If yes, which shape: watch-file reloader,
    registry push, or a systemd reload path? If no, document restart-to-apply as
    the contract.
-3. **Encrypted credential sources.** Should package manifests name immutable
-   credstore paths, inline `SetCredentialEncrypted=` payloads, or both, and how
-   does `apm` fail closed when a required credential is absent?
+3. **Encrypted credential payload shape.** Should packages use immutable
+   credstore paths only, or also support inline `SetCredentialEncrypted=`
+   payloads in signed unit text?
 4. **Credential provisioning.** Which first-boot path seals or imports
    per-instance plaintext into encrypted systemd credentials without leaving the
    plaintext in `/var/etc`?
@@ -617,8 +618,8 @@ Ignition-file + bind-mount path (Option 2/6); a single mechanism need not serve
 both shapes. Structured config rides an apm artifact + manifest-declared schema;
 simple/non-secret config stays on `EnvironmentFile=`.
 
-Remaining implementer work (not decisions): wire fail-closed encrypted
-credential source/provisioning, complete the manifest-declared config schema, and
-carry the outcome into [apm-integration.md](apm-integration.md),
+Remaining implementer work (not decisions): wire encrypted credential production
+and provisioning, complete the manifest-declared config schema, and carry the
+outcome into [apm-integration.md](apm-integration.md),
 [container-model.md](container-model.md), and the TPM substrate in
 [../0006-secure-boot/README.md](../0006-secure-boot/README.md).
