@@ -40,7 +40,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::service::{RpcError, RpcService};
+use crate::service::{FacadeWrite, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
@@ -193,6 +193,75 @@ async fn facade(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => error_response(&err),
     }
+}
+
+/// Render a [`FacadeWrite`] outcome as the byte-identical HTTP response the
+/// upload protocol expects.
+///
+/// A success ([`FacadeWrite::Created`]/[`FacadeWrite::Overwritten`]) carries a
+/// small `{"path": …}` JSON body and `201`/`200`; every denial maps to its fixed
+/// status (`400`/`401`/`403`/`404`/`405`/`409`/`413`/`507`/`500`), preserving the
+/// prior hub facade's wire contract.
+fn facade_write_response(outcome: FacadeWrite, path: &str) -> Response {
+    match outcome {
+        FacadeWrite::Created => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "path": path })),
+        )
+            .into_response(),
+        FacadeWrite::Overwritten | FacadeWrite::Present => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "path": path })),
+        )
+            .into_response(),
+        FacadeWrite::NotFound => StatusCode::NOT_FOUND.into_response(),
+        FacadeWrite::NotWritable(reason) => {
+            (StatusCode::METHOD_NOT_ALLOWED, reason).into_response()
+        }
+        FacadeWrite::BadPath(reason) => (StatusCode::BAD_REQUEST, reason).into_response(),
+        FacadeWrite::Unauthorized(reason) => (StatusCode::UNAUTHORIZED, reason).into_response(),
+        FacadeWrite::Forbidden => {
+            (StatusCode::FORBIDDEN, "insufficient permission").into_response()
+        }
+        FacadeWrite::LeaseConflict => (
+            StatusCode::CONFLICT,
+            "another publisher holds the registry publish lease",
+        )
+            .into_response(),
+        FacadeWrite::TooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        FacadeWrite::QuotaExceeded => (
+            StatusCode::INSUFFICIENT_STORAGE,
+            "org storage quota exceeded",
+        )
+            .into_response(),
+        FacadeWrite::Internal => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
+}
+
+/// Handle a facade `PUT` of one registry surface path through the shared write
+/// handler.
+///
+/// Delegates to
+/// [`RpcService::put_machine_path`](crate::service::RpcService::put_machine_path),
+/// which authorizes [`Permission::Publish`](crate::domain::Permission::Publish),
+/// enforces the quota and publish lease, writes through the
+/// [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider), and
+/// re-indexes a completing pointer — so the same upload logic runs on the native
+/// hub and the Cloudflare Worker.
+async fn facade_put(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: String,
+    path: String,
+    body: Bytes,
+) -> Response {
+    let auth = auth_header(&headers);
+    let outcome = svc
+        .put_machine_path(auth.as_deref(), &slug, &path, &body)
+        .await;
+    facade_write_response(outcome, &path)
 }
 
 /// Turn a [`Rendered`] browse outcome into an HTTP response.
@@ -496,6 +565,19 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
                 |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>| {
                     let svc = from_state(state);
                     send_bridge(facade(svc, headers, slug, path))
+                },
+            )
+            // The authenticated surface-upload `PUT` shares the wildcard so an
+            // `apr origin upload` / `apm` publish lands directly on the registry
+            // URL (RFC-0004 "like magic"). The body extractor is last so axum
+            // buffers it only for the write method. The Worker mounts this whole
+            // router, so this is how it stores published artifacts; the native
+            // hub keeps its own richer `/{slug}/{*path}` handler instead (this
+            // facade route is omitted for it via `mount_facade = false`).
+            .put(
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, body: Bytes| {
+                    let svc = from_state(state);
+                    send_bridge(facade_put(svc, headers, slug, path, body))
                 },
             ),
         );

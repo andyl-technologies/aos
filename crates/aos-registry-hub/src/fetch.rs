@@ -232,6 +232,21 @@ pub trait SurfaceFetch: Send + Sync {
     /// transport-level failures carry a [`FetchError`] in their chain.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
 
+    /// The byte length of the object at `path`, or `None` when it does not exist.
+    ///
+    /// Used by the write facade to compute the overwrite quota delta. The default
+    /// reads the whole object and measures it; the filesystem fetcher overrides
+    /// it with a `metadata` `stat` (which, unlike a full read, does not require
+    /// the surface root to already exist — a brand-new managed registry whose
+    /// binding directory has never been written probes cleanly as `None`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for IO/transport failures other than absence.
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        Ok(self.fetch(path).await?.map(|bytes| bytes.len() as u64))
+    }
+
     /// A human-readable description of the source (for health/audit text).
     fn describe(&self) -> String;
 }
@@ -281,6 +296,20 @@ impl SurfaceFetch for LocalFsFetch {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(err) => Err(fetch_err(format!("reading {}: {err}", canonical.display()))),
+        }
+    }
+
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        // `stat` the joined path directly: this neither reads the body nor
+        // requires the surface root to already exist (a never-written managed
+        // binding probes cleanly as `None`), matching the prior in-facade
+        // `std::fs::metadata(&target)` overwrite-delta read. `safe_join` is
+        // lexical, so a missing root yields a non-existent target -> `None`.
+        let full = safe_join(&self.root, path)?;
+        match tokio::fs::metadata(&full).await {
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(fetch_err(format!("stat {}: {err}", full.display()))),
         }
     }
 

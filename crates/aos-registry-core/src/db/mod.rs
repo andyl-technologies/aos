@@ -1039,6 +1039,21 @@ pub const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE registry_index ADD COLUMN readme TEXT;
     ",
+    // v21: cross-process publish leases (RFC-0004 Phase 5 "later phase
+    // multi-process" lease). Serializes a registry's mutable-pointer flips
+    // across worker isolates / hub replicas, replacing the process-local
+    // in-memory lease that cannot serialize when two publishers land on
+    // different isolates. One live lease per registry; `holder_token_id` is the
+    // JWT `sub` that holds it and `deadline` is the unix-seconds expiry after
+    // which another token may take over. The native single-replica hub still
+    // uses the in-memory lease; this table backs the Worker's D1 lease.
+    "
+    CREATE TABLE publish_leases (
+        registry_id     INTEGER PRIMARY KEY REFERENCES registries(id) ON DELETE CASCADE,
+        holder_token_id TEXT    NOT NULL,
+        deadline        INTEGER NOT NULL
+    );
+    ",
 ];
 
 /// Marker error: a membership mutation was refused because it would leave an

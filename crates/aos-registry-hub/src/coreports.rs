@@ -34,6 +34,7 @@ use aos_registry_core::auth::seal::SecretSealer;
 use aos_registry_core::db::{Database, RegistryRecord};
 use aos_registry_core::fetch as core_fetch;
 use aos_registry_core::ratelimit as core_rl;
+use aos_registry_core::reindex as core_reindex;
 use aos_registry_core::surface_write as core_sw;
 use aos_registry_core::web::console::ports as console_ports;
 
@@ -94,6 +95,12 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         crate::fetch::SurfaceFetch::fetch(self, path).await
     }
 
+    /// Forwards to the hub fetcher's efficient `metadata`-based size (avoids a
+    /// full read, and probes a never-written binding cleanly as `None`).
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        crate::fetch::SurfaceFetch::size(self, path).await
+    }
+
     fn describe(&self) -> String {
         crate::fetch::SurfaceFetch::describe(self)
     }
@@ -104,6 +111,10 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
 impl core_fetch::SurfaceFetch for crate::fetch::HttpFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         crate::fetch::SurfaceFetch::fetch(self, path).await
+    }
+
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        crate::fetch::SurfaceFetch::size(self, path).await
     }
 
     fn describe(&self) -> String {
@@ -125,6 +136,10 @@ struct CoreFetchAdapter(Box<dyn crate::fetch::SurfaceFetch>);
 impl core_fetch::SurfaceFetch for CoreFetchAdapter {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         self.0.fetch(path).await
+    }
+
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        self.0.size(path).await
     }
 
     fn describe(&self) -> String {
@@ -414,5 +429,65 @@ impl console_ports::ChannelAdvancer for HubChannelAdvancer {
             at_target: result.at_target,
             rollout_percent: result.rollout_percent,
         })
+    }
+}
+
+/// The native [`Reindexer`](core_reindex::Reindexer): re-indexes a managed
+/// registry inline from its local surface and records an `index` audit row.
+///
+/// Resolves the registry's storage-binding root and indexes from a
+/// [`LocalFsFetch`](crate::fetch::LocalFsFetch) over it (not the empty
+/// `source_url`, as managed registries have no HTTP origin) through
+/// [`crate::indexer::index_and_record`], then records a `system`-actor `index`
+/// audit row cross-referencing the resulting commit. This is the relocated,
+/// byte-identical behavior of the hub's prior facade `reindex`, so a managed
+/// publish becomes browse-visible the instant its completing pointer write
+/// returns.
+pub struct HubReindexer {
+    /// The hub database the indexer reads/writes and the audit row lands in.
+    db: Arc<Database>,
+}
+
+impl HubReindexer {
+    /// Build the reindexer over the hub database.
+    #[must_use]
+    pub fn new(db: Arc<Database>) -> HubReindexer {
+        HubReindexer { db }
+    }
+}
+
+#[async_trait]
+impl core_reindex::Reindexer for HubReindexer {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<()> {
+        let root = self
+            .db
+            .registry_surface_root(registry.id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "registry '{}' has no writable storage root to re-index from",
+                    registry.slug
+                )
+            })?;
+        let fetch = crate::fetch::LocalFsFetch::new(&root);
+        let outcome = crate::indexer::index_and_record(&self.db, &fetch, registry).await?;
+        // Record an `index` audit row so the publish-pipeline view (and the org
+        // audit feed) reflects the inline reindex a managed publish triggers.
+        // The actor is the hub itself (`system`); the resulting commit cross-
+        // references the cryptographic history.
+        self.db
+            .record_audit(
+                "system",
+                None,
+                "system",
+                "index",
+                &registry.slug,
+                None,
+                Some(&outcome.commit),
+                None,
+                None,
+            )
+            .await?;
+        Ok(())
     }
 }

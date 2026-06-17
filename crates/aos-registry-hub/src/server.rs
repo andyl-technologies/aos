@@ -74,7 +74,11 @@ pub struct AppState {
     pub auth: Arc<AuthState>,
     /// Per-registry publish leases held by the upload facade
     /// ([`crate::facade`]); process-local for phase 1/2.
-    pub leases: crate::facade::LeaseMap,
+    ///
+    /// Shared (as the [`PublishLease`](aos_registry_core::lease::PublishLease)
+    /// port) with the shared write handler the facade `PUT`/`HEAD` shims delegate
+    /// to, so pointer-flip serialization is process-wide.
+    pub leases: Arc<crate::facade::LeaseMap>,
     /// The mailer that delivers magic-link login emails.
     ///
     /// Defaults to [`crate::auth::magic::LogMailer`] (logs the link rather
@@ -129,7 +133,7 @@ impl AppState {
             db,
             external_url,
             auth,
-            leases: crate::facade::LeaseMap::new(),
+            leases: Arc::new(crate::facade::LeaseMap::new()),
             mailer: Arc::new(crate::auth::magic::LogMailer),
             dev: false,
             // A deterministic placeholder sealer for dev/tests; production
@@ -307,6 +311,16 @@ pub async fn router(state: Arc<AppState>) -> Router {
         Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
             &state.db,
         ))),
+        Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
+            &state.db,
+        ))),
+        // The shared service's publish lease is the *same* in-memory lease the
+        // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
+        // pointer-flip serialization is process-wide whether a write arrives via
+        // the hub's `/{slug}/{*path}` route or (in principle) the shared facade
+        // route.
+        Arc::clone(&state.leases) as Arc<dyn aos_registry_core::lease::PublishLease>,
+        Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
     ));
     // The shared router owns `/aos.registry.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into

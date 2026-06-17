@@ -38,6 +38,9 @@ use crate::clock;
 use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::fetch::SurfaceProvider;
 use crate::keymap;
+use crate::lease::PublishLease;
+use crate::reindex::Reindexer;
+use crate::surface_write::SurfaceWriteProvider;
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, PrincipalKind, Role, Scope};
 use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
@@ -301,6 +304,80 @@ pub struct FacadeObject {
     pub cache_control: &'static str,
 }
 
+/// Maximum surface-file upload size accepted by a single facade `PUT` (256 MiB).
+///
+/// Generously sized for release packs while still bounding a single request; a
+/// body past this cap is rejected as [`FacadeWrite::TooLarge`]. The transport
+/// renders that as `413 Payload Too Large`, and the deployment additionally
+/// caps the request body at this size at the transport layer.
+pub const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
+
+/// The outcome of a facade write ([`RpcService::put_machine_path`]) or write-side
+/// probe ([`RpcService::head_machine_path`]), rendered by the transport.
+///
+/// Unlike the read RPCs (which return [`RpcError`]), the facade write path mounts
+/// on the raw `/{slug}/{*path}` route and renders plain HTTP statuses (the wire
+/// contract `apr origin upload` expects), so it carries its own result enum
+/// rather than the Connect error envelope. The transport maps each variant to a
+/// fixed status, preserving the byte-identical `201`/`200`/`400`/`401`/`403`/
+/// `404`/`405`/`409`/`413`/`507`/`500` contract of the prior hub facade.
+#[derive(Debug)]
+pub enum FacadeWrite {
+    /// The write created a new object: `201 Created`.
+    Created,
+    /// The write overwrote an existing object: `200 OK`.
+    Overwritten,
+    /// The probed object exists: `200 OK` (HEAD only).
+    Present,
+    /// The slug is unknown or under a soft-deleted org: `404 Not Found`.
+    NotFound,
+    /// The registry exists but is not writable through the facade (no storage
+    /// binding / not locally writable): `405 Method Not Allowed`, with a reason.
+    NotWritable(&'static str),
+    /// The path is not a machine path or escapes the surface root: `400 Bad
+    /// Request`, with a reason.
+    BadPath(&'static str),
+    /// No, or an invalid, bearer JWT: `401 Unauthorized`, with a reason.
+    Unauthorized(&'static str),
+    /// A valid token lacking `Publish` on the registry scope: `403 Forbidden`.
+    Forbidden,
+    /// Another token holds the registry publish lease: `409 Conflict`.
+    LeaseConflict,
+    /// The body exceeds [`MAX_UPLOAD_BYTES`]: `413 Payload Too Large`.
+    TooLarge,
+    /// The org's storage quota would be exceeded: `507 Insufficient Storage`.
+    QuotaExceeded,
+    /// An internal IO/database failure (already logged): `500`.
+    Internal,
+}
+
+/// Whether a surface-relative path is a *mutable pointer* (vs. an immutable
+/// content-addressed object).
+///
+/// Mirrors the producer's classification (`StaticOriginClass` in
+/// `static_upload.rs` and [`keymap::cache_control`]): `HEAD`, `info/refs`,
+/// `objects/info/**`, `channels/**`, and `nix-cache-info` are pointers rewritten
+/// on each publish; everything else (loose objects, release packs, narinfos,
+/// NARs) is content-addressed and immutable. Only pointer writes take the
+/// publish lease and trigger a re-index.
+fn is_mutable_pointer(path: &str) -> bool {
+    path == "HEAD"
+        || path == "info/refs"
+        || path == "nix-cache-info"
+        || path.starts_with("objects/info/")
+        || path.starts_with("channels/")
+}
+
+/// Whether a successful write of `path` should trigger a re-index.
+///
+/// The two pointers that *complete* a publish — `info/refs` (the git surface)
+/// and `nix-cache-info` (the cache surface) — drive a re-index; they are written
+/// last in the producer's phase-major order, so by the time they land the
+/// objects they reference are already present.
+fn triggers_reindex(path: &str) -> bool {
+    path == "info/refs" || path == "nix-cache-info"
+}
+
 /// The shared, transport-free implementation of the `aos.registry.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -324,17 +401,42 @@ pub struct RpcService {
     /// storage binding; the Worker returns an R2-backed fetcher scoped to the
     /// registry's prefix.
     pub surface: Arc<dyn SurfaceProvider>,
+    /// The per-registry surface-*write* port (the [`SurfaceWriteProvider`]),
+    /// resolving a [`SurfaceWrite`](crate::surface_write::SurfaceWrite) for the
+    /// facade upload `PUT`.
+    ///
+    /// The native hub returns a filesystem writer rooted at the registry's
+    /// storage binding (atomic temp-file + rename, symlink-contained); the Worker
+    /// returns an R2-backed writer scoped to the registry's prefix.
+    pub surface_write: Arc<dyn SurfaceWriteProvider>,
+    /// The publish lease ([`PublishLease`]), serializing a registry's
+    /// mutable-pointer flips across concurrent publishers.
+    ///
+    /// The native hub uses an in-memory lease
+    /// ([`InMemoryLease`](crate::lease::InMemoryLease)); the Worker uses a
+    /// D1-backed lease shared across isolates.
+    pub lease: Arc<dyn PublishLease>,
+    /// The post-publish reindexer ([`Reindexer`]), run inline when a
+    /// publish-completing pointer write lands.
+    ///
+    /// The native hub re-indexes synchronously from the local surface; the Worker
+    /// defers to its Cron-trigger indexer (a logged no-op).
+    pub reindexer: Arc<dyn Reindexer>,
 }
 
 impl RpcService {
     /// Construct the service over its dependencies.
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: Arc<Database>,
         jwt_keys: JwtKeys,
         external_url: String,
         ratelimit: Arc<dyn RateLimiter>,
         surface: Arc<dyn SurfaceProvider>,
+        surface_write: Arc<dyn SurfaceWriteProvider>,
+        lease: Arc<dyn PublishLease>,
+        reindexer: Arc<dyn Reindexer>,
     ) -> Self {
         Self {
             db,
@@ -342,6 +444,9 @@ impl RpcService {
             external_url,
             ratelimit,
             surface,
+            surface_write,
+            lease,
+            reindexer,
         }
     }
 
@@ -1902,6 +2007,309 @@ impl RpcService {
             cache_control: keymap::cache_control(machine_path),
         }))
     }
+
+    /// Resolve a managed registry by slug, requiring it be writable, or return
+    /// the denial [`FacadeWrite`].
+    ///
+    /// `404` for an unknown slug or a registry under a soft-deleted org (the same
+    /// contract the read facade enforces). `405` for a registry that exists but
+    /// has no storage binding / no locally-writable surface root (it is read-only
+    /// through the facade). On success, returns the record; the actual writable
+    /// surface is obtained from the [`SurfaceWriteProvider`].
+    async fn resolve_writable(&self, slug: &str) -> Result<RegistryRecord, FacadeWrite> {
+        let registry = match self.db.registry_by_slug(slug).await {
+            Ok(Some(registry)) => registry,
+            Ok(None) => return Err(FacadeWrite::NotFound),
+            Err(err) => return Err(internal_write(err)),
+        };
+        // A registry owned by a soft-deleted org stops serving immediately and
+        // must not accept uploads: indistinguishable from one that never existed.
+        if let Some(org_id) = registry.org_id {
+            match self.db.org_is_active(org_id).await {
+                Ok(true) => {}
+                Ok(false) => return Err(FacadeWrite::NotFound),
+                Err(err) => return Err(internal_write(err)),
+            }
+        }
+        // A managed registry has a storage binding; that is what makes it
+        // writable. Unowned phase-1 registries (no binding) are read-only.
+        if registry.storage_binding_id.is_none() {
+            return Err(FacadeWrite::NotWritable(
+                "registry has no storage binding; uploads are not supported",
+            ));
+        }
+        Ok(registry)
+    }
+
+    /// Authorize a write: require a Bearer JWT granting [`Permission::Publish`]
+    /// on the registry's canonical scope, returning the token id on success.
+    ///
+    /// `401` when the `Authorization: Bearer <jwt>` header is missing or the JWT
+    /// does not verify; `403` when it verifies but does not grant `Publish` on
+    /// the registry scope.
+    fn authorize_publish(
+        &self,
+        registry: &RegistryRecord,
+        auth: Option<&str>,
+    ) -> Result<String, FacadeWrite> {
+        let value =
+            auth.ok_or(FacadeWrite::Unauthorized("missing Authorization header"))?;
+        let token = value
+            .strip_prefix("Bearer ")
+            .ok_or(FacadeWrite::Unauthorized(
+                "Authorization header must start with Bearer",
+            ))?;
+        let claims = self
+            .jwt_keys
+            .verify(token)
+            .map_err(|_| FacadeWrite::Unauthorized("invalid token"))?;
+        let scope = Scope::parse(&registry.slug);
+        if token_allows(&claims, Permission::Publish, &scope) {
+            Ok(claims.sub)
+        } else {
+            Err(FacadeWrite::Forbidden)
+        }
+    }
+
+    /// Give a previously-made quota reservation back, best-effort.
+    ///
+    /// Called when a write is rejected *after* its quota was atomically reserved
+    /// (a publish-lease conflict or a write failure), so a rejected upload does
+    /// not permanently consume an org's quota. A failure is logged, not fatal
+    /// (usage is approximate and reconciled by re-index/GC). No-op for an unowned
+    /// registry (`org_id` is `None`).
+    async fn release_reservation(
+        &self,
+        registry: &RegistryRecord,
+        delta_bytes: i64,
+        delta_objects: i64,
+    ) {
+        let Some(org_id) = registry.org_id else {
+            return;
+        };
+        if let Err(err) = self
+            .db
+            .reserve_org_usage(org_id, -delta_bytes, -delta_objects)
+            .await
+        {
+            tracing::warn!(
+                slug = %registry.slug,
+                error = %format!("{err:#}"),
+                "releasing quota reservation after a rejected upload failed"
+            );
+        }
+    }
+
+    /// Handle a facade `PUT` of one surface path for a managed registry.
+    ///
+    /// The shared, transport-free upload handler, single-sourced across the
+    /// native hub and the Cloudflare Worker. It preserves every check, in order:
+    /// [`resolve_writable`](Self::resolve_writable) (writable storage root, else
+    /// `404`/`405`), [`authorize_publish`](Self::authorize_publish)
+    /// ([`Permission::Publish`] at the registry scope, else `401`/`403`),
+    /// [`is_machine_path`](keymap::is_machine_path) (`400`), the
+    /// [`MAX_UPLOAD_BYTES`] cap (`413`), the **quota reserve-before-write**
+    /// ([`reserve_org_usage`](crate::db::Database::reserve_org_usage) → `507`,
+    /// charging the overwrite *delta* via the surface [`size`](crate::fetch::SurfaceFetch::size)),
+    /// the **publish lease** for mutable pointers (`409` on conflict), the
+    /// symlink-contained write through the [`SurfaceWrite`](crate::surface_write::SurfaceWrite)
+    /// port, and the **inline re-index** for completing pointers via the
+    /// [`Reindexer`] port. A reservation made for a write that is then rejected
+    /// (lease conflict, write failure) is released, so a rejected upload never
+    /// leaks quota.
+    ///
+    /// Returns [`FacadeWrite::Created`] (new file) or [`FacadeWrite::Overwritten`]
+    /// (overwrite) on success; the transport renders the small `{"path": …}` JSON
+    /// body and the status. Every denial maps to its [`FacadeWrite`] variant.
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: every failure is encoded as a [`FacadeWrite`] variant
+    /// the transport renders as the matching HTTP status (internal failures are
+    /// logged and surface as [`FacadeWrite::Internal`] → `500`).
+    pub async fn put_machine_path(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+        body: &[u8],
+    ) -> FacadeWrite {
+        let registry = match self.resolve_writable(slug).await {
+            Ok(registry) => registry,
+            Err(deny) => return deny,
+        };
+        let token_id = match self.authorize_publish(&registry, auth) {
+            Ok(token_id) => token_id,
+            Err(deny) => return deny,
+        };
+
+        if !keymap::is_machine_path(path) {
+            return FacadeWrite::BadPath("not a machine path");
+        }
+        // Lexical traversal guard (portable across the native filesystem writer
+        // and the R2 writer): reject `..`/absolute/doubled-slash paths up front
+        // with `400`, before reserving quota or writing. The native writer
+        // additionally enforces symlink containment at write time.
+        if crate::url_guard::validate_http_surface_path(path).is_err() {
+            return FacadeWrite::BadPath("unsafe surface path");
+        }
+        if body.len() > MAX_UPLOAD_BYTES {
+            return FacadeWrite::TooLarge;
+        }
+
+        // The writable surface for this registry (the native filesystem writer
+        // rooted at the storage binding, or the R2 writer scoped to the prefix).
+        // A registration-only registry with no writable root errors here, which
+        // maps to the `405` contract.
+        let writer = match self.surface_write.writer(&registry).await {
+            Ok(writer) => writer,
+            Err(err) => {
+                tracing::warn!(
+                    slug = %registry.slug,
+                    error = %format!("{err:#}"),
+                    "no writable surface for upload"
+                );
+                return FacadeWrite::NotWritable("registry surface is not writable");
+            }
+        };
+
+        // The old object size, if any, drives the overwrite delta. Read it
+        // through the surface read port before reserving and writing, so an
+        // overwrite charges only the size change and a new object charges its
+        // full size.
+        let old_len: Option<i64> = match self.surface.fetcher(&registry).await {
+            Ok(fetch) => match fetch.size(path).await {
+                Ok(size) => size.map(|s| s as i64),
+                Err(err) => return internal_write(err),
+            },
+            Err(err) => return internal_write(err),
+        };
+        let existed = old_len.is_some();
+        let new_len = body.len() as i64;
+        // Charge the *delta*: new minus old on an overwrite (may be negative when
+        // shrinking), or the full size for a new object.
+        let delta_bytes = new_len - old_len.unwrap_or(0);
+        let delta_objects = i64::from(!existed);
+
+        // Quota gate (org-owned registries only): atomically check *and* reserve
+        // the delta before any bytes land, rejecting an over-quota write `507`.
+        // The reserve-then-write order closes the check-then-write TOCTOU window.
+        if let Some(org_id) = registry.org_id {
+            match self
+                .db
+                .reserve_org_usage(org_id, delta_bytes, delta_objects)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return FacadeWrite::QuotaExceeded,
+                Err(err) => return internal_write(err),
+            }
+        }
+
+        let mutable = is_mutable_pointer(path);
+        if mutable {
+            // Serialize this registry's pointer flips: the first mutable-pointer
+            // write of a publish takes the lease; a different token is blocked
+            // `409` while it is live. The reservation is released on conflict so
+            // the rejected write does not leak quota.
+            if let Err(holder) = self
+                .lease
+                .acquire(registry.id, &token_id, clock::now_unix_secs())
+                .await
+            {
+                self.release_reservation(&registry, delta_bytes, delta_objects)
+                    .await;
+                tracing::warn!(
+                    slug = %registry.slug,
+                    %path,
+                    held_by = %holder,
+                    "publish lease conflict"
+                );
+                return FacadeWrite::LeaseConflict;
+            }
+        }
+
+        if let Err(err) = writer.write(path, body).await {
+            // The write failed after reserving (and possibly after taking the
+            // lease); give the reservation back and release the lease so a failed
+            // upload does not permanently consume quota or block other writers.
+            self.release_reservation(&registry, delta_bytes, delta_objects)
+                .await;
+            if mutable {
+                self.lease.release(registry.id, &token_id).await;
+            }
+            return internal_write(err);
+        }
+
+        // A pointer that completes a publish re-indexes inline (native) or defers
+        // to the Cron indexer (Worker), per the [`Reindexer`] port.
+        if mutable && triggers_reindex(path) {
+            if let Err(err) = self.reindexer.reindex(&registry).await {
+                // The bytes landed; a failed re-index is logged but the upload
+                // itself succeeded.
+                tracing::warn!(
+                    slug = %registry.slug,
+                    error = %format!("{err:#}"),
+                    "re-index after pointer flip failed"
+                );
+            }
+        }
+
+        if existed {
+            FacadeWrite::Overwritten
+        } else {
+            FacadeWrite::Created
+        }
+    }
+
+    /// Handle a facade `HEAD` of one surface path for a managed registry.
+    ///
+    /// Lets an uploader skip files it has already pushed:
+    /// [`FacadeWrite::Present`] (`200`) when the file exists,
+    /// [`FacadeWrite::NotFound`] (`404`) when it does not. Authorization matches
+    /// [`put_machine_path`](Self::put_machine_path) (a probe reveals surface
+    /// contents, so it requires `Publish`).
+    ///
+    /// # Errors
+    ///
+    /// Never returns `Err`: every failure is encoded as a [`FacadeWrite`] variant
+    /// (`401`/`403`/`404`/`405`/`400`/`500`).
+    pub async fn head_machine_path(
+        &self,
+        auth: Option<&str>,
+        slug: &str,
+        path: &str,
+    ) -> FacadeWrite {
+        let registry = match self.resolve_writable(slug).await {
+            Ok(registry) => registry,
+            Err(deny) => return deny,
+        };
+        if let Err(deny) = self.authorize_publish(&registry, auth) {
+            return deny;
+        }
+        if !keymap::is_machine_path(path) {
+            return FacadeWrite::BadPath("not a machine path");
+        }
+        if crate::url_guard::validate_http_surface_path(path).is_err() {
+            return FacadeWrite::BadPath("unsafe surface path");
+        }
+        // Probe existence through the surface read port (filesystem stat / R2
+        // head); a missing surface fetcher is an internal error.
+        match self.surface.fetcher(&registry).await {
+            Ok(fetch) => match fetch.size(path).await {
+                Ok(Some(_)) => FacadeWrite::Present,
+                Ok(None) => FacadeWrite::NotFound,
+                Err(err) => internal_write(err),
+            },
+            Err(err) => internal_write(err),
+        }
+    }
+}
+
+/// Log an internal error and map it to [`FacadeWrite::Internal`] (`500`).
+fn internal_write(err: anyhow::Error) -> FacadeWrite {
+    tracing::error!(error = %format!("{err:#}"), "facade write failed");
+    FacadeWrite::Internal
 }
 
 /// Apply one revision of a revert draft to its live object.
