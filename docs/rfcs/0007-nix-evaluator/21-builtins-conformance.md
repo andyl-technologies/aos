@@ -616,7 +616,7 @@ eval (network access is disabled unless explicitly allowed).
       [derivation and store compatibility](11-derivation-and-store-compatibility.md) §5.3).
 - [ ] `storePath` (path) — (also §5) assert a path is in the store and return it
       as a context-carrying string; gated under restricted/pure eval.
-- [ ] `storeDir` (value) — the store directory string (`"/nix/store"`). A
+- [x] `storeDir` (value) — the store directory string (`"/nix/store"`). A
       constant; feeds path computation. (Listed also in §14 as a constant.)
 - [ ] `toPath` (s) — **deprecated** coercion of a string to a path; retained for
       compatibility. Implement to match (likely an alias-ish to coercion) only if

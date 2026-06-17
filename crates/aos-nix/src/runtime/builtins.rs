@@ -768,6 +768,7 @@ pub(crate) struct StoreDirBuiltin;
 impl BuiltinInfo for StoreDirBuiltin {
     const NAME: &'static [u8] = b"storeDir";
     const EXECUTION: BuiltinExecution = BuiltinExecution::StoreDirValue;
+    const DOCS: &'static BuiltinDocs = &STORE_DIR_DOCS;
 }
 
 pub(crate) struct StorePathBuiltin;
@@ -1248,6 +1249,10 @@ static READ_FILE_TYPE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the filesystem type of a path.",
 };
 
+static STORE_DIR_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the configured Nix store directory.",
+};
+
 static TRY_EVAL_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Evaluates an expression to WHNF and reports catchable failures.",
 };
@@ -1661,6 +1666,10 @@ mod tests {
         assert_eq!(
             builtin_metadata(b"readFileType").unwrap().docs().summary(),
             "Returns the filesystem type of a path."
+        );
+        assert_eq!(
+            builtin_metadata(b"storeDir").unwrap().docs().summary(),
+            "Returns the configured Nix store directory."
         );
         assert_eq!(
             builtin_metadata(b"tryEval").unwrap().docs().summary(),
