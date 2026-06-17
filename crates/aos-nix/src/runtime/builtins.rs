@@ -900,7 +900,8 @@ impl BuiltinInfo for WarnBuiltin {
 pub(crate) struct ZipAttrsWithBuiltin;
 impl BuiltinInfo for ZipAttrsWithBuiltin {
     const NAME: &'static [u8] = b"zipAttrsWith";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution =
+        BuiltinExecution::DirectBinary(DirectBinaryPrimOp::ZipAttrsWith);
 }
 
 /// The C++ Nix version whose observable builtin surface this evaluator targets.
@@ -1193,6 +1194,7 @@ pub(crate) enum DirectBinaryPrimOp {
     Elem,
     ConcatStringsSep,
     MapAttrs,
+    ZipAttrsWith,
 }
 
 /// Short user-facing documentation for a builtin.
@@ -1399,6 +1401,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"zipAttrsWith"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"genList"),
             Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure
@@ -1523,6 +1531,12 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"groupBy").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"zipAttrsWith")
+                .unwrap()
+                .first_class_arity(),
             Some(2)
         );
         assert_eq!(

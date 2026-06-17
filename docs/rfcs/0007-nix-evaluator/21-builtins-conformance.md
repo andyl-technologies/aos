@@ -329,7 +329,7 @@ emit them in this sorted order, not insertion order.
 - [x] `mapAttrs` (f set) — apply `f name value` to each attribute, producing a
       new attrset with the same names. `f` is called lazily per value; forcing
       order follows demand on the result. Name set unchanged (so order unchanged).
-- [ ] `zipAttrsWith` (f list) — given a list of attrsets, for each name that
+- [x] `zipAttrsWith` (f list) — given a list of attrsets, for each name that
       appears in any of them call `f name [values…]` where the list is the
       values from the sets that had that name, **in input-list order**. Returns
       one attrset over the union of names.

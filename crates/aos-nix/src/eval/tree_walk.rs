@@ -5949,6 +5949,251 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_zip_attrs_with_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let function_span = self.node(function_id)?.span;
+        let function = self.eval_node(function_id)?;
+        let function = self.force_zip_attrs_with_function(function_id, function_span, function)?;
+
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+
+        self.alloc_zipped_attrs_with(
+            id,
+            span,
+            function_id,
+            function_span,
+            function,
+            list_id,
+            list_span,
+            elements,
+        )
+    }
+
+    fn eval_zip_attrs_with_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let function_value =
+            self.force_zip_attrs_with_function(function.id(), function.span(), function.value())?;
+
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+
+        self.alloc_zipped_attrs_with(
+            id,
+            span,
+            function.id(),
+            function.span(),
+            function_value,
+            list.id(),
+            list.span(),
+            elements,
+        )
+    }
+
+    fn force_zip_attrs_with_function(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        if !matches!(value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "function",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        Ok(value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_zipped_attrs_with(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        list_id: IrId,
+        list_span: Span,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let mut groups: Vec<(Symbol, Vec<Value>)> = Vec::new();
+        for element in elements {
+            let element = self.force_value(list_id, list_span, element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: list_id,
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    list_span,
+                ));
+            }
+
+            let attrs = self.heap.get_attrs(element).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            for entry in attrs.entries_by_symbol() {
+                if let Some((_, values)) = groups.iter_mut().find(|(key, _)| *key == entry.key) {
+                    let len = values.len().checked_add(1).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::List {
+                                id,
+                                source: NixListError::LengthOverflow {
+                                    left: values.len(),
+                                    right: 1,
+                                },
+                            },
+                            span,
+                        )
+                    })?;
+                    values.try_reserve_exact(1).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed { id, len },
+                            span,
+                        )
+                    })?;
+                    values.push(entry.value);
+                } else {
+                    let len = groups.len().checked_add(1).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListLengthOverflow {
+                                id,
+                                len: usize::MAX,
+                            },
+                            span,
+                        )
+                    })?;
+                    groups.try_reserve_exact(1).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::Attr {
+                                id,
+                                source: AttrError::AllocationFailed { entries: len },
+                            },
+                            span,
+                        )
+                    })?;
+                    let mut values = Vec::new();
+                    values.try_reserve_exact(1).map_err(|_| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ListAllocationFailed { id, len: 1 },
+                            span,
+                        )
+                    })?;
+                    values.push(entry.value);
+                    groups.push((entry.key, values));
+                }
+            }
+        }
+
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(groups.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: groups.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for (key, values) in groups {
+            let values = self
+                .heap
+                .alloc_list(NixList::new(values))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+            let name = self.alloc_symbol_string(id, span, key)?;
+            let value = self.alloc_apply2_thunk(
+                id,
+                span,
+                function_id,
+                function_span,
+                function,
+                id,
+                span,
+                name,
+                list_id,
+                values,
+            )?;
+            entries.push(AttrEntry::new(key, value));
+        }
+
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn eval_cat_attrs_primop(
         &mut self,
         id: IrId,
@@ -8345,6 +8590,9 @@ impl<'ir> TreeWalk<'ir> {
             DirectBinaryPrimOp::MapAttrs => {
                 self.eval_map_attrs_primop(call.id, call.span, first, second)
             }
+            DirectBinaryPrimOp::ZipAttrsWith => {
+                self.eval_zip_attrs_with_primop(call.id, call.span, first, second)
+            }
         }
     }
 
@@ -8380,6 +8628,9 @@ impl<'ir> TreeWalk<'ir> {
             }
             DirectBinaryPrimOp::MapAttrs => {
                 self.eval_map_attrs_primop_value(call.id, call.span, first, second)
+            }
+            DirectBinaryPrimOp::ZipAttrsWith => {
+                self.eval_zip_attrs_with_primop_value(call.id, call.span, first, second)
             }
         }
     }
@@ -13284,6 +13535,10 @@ mod tests {
             r#"builtins.mapAttrs (name: value: value + 1) { b = 2; a = 1; }"#,
             r#"builtins.attrNames (builtins.mapAttrs (1 / 0) { b = 2; a = 1; })"#,
             r#"let mapAttrs = builtins.mapAttrs; mapped = mapAttrs (name: value: value) { a = 1; }; in mapped"#,
+            r#"builtins.zipAttrsWith (name: values: values) [ { a = 1; b = 2; } { a = 3; c = 4; } { b = 5; } ]"#,
+            r#"builtins.attrNames (builtins.zipAttrsWith (name: values: 1 / 0) [ { b = 2; a = 1; } { c = 3; } ])"#,
+            r#"builtins.length (builtins.zipAttrsWith (name: values: values) [ { a = 1 / 0; } ]).a"#,
+            r#"let zip = builtins.zipAttrsWith; zipped = zip (name: values: values) [ { a = 1; } ]; in zipped"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
@@ -14125,6 +14380,114 @@ mod tests {
 
         let ir = lower("(builtins.mapAttrs (1 / 0) { a = 1; }).a");
         let error = eval_whnf_owned(&ir).expect_err("mapAttrs forces the function on demand");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+    }
+
+    #[test]
+    fn zip_attrs_with_primop_groups_union_names_and_value_lists() {
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.zipAttrsWith (name: values: values) [ { b = 2; a = 1; } { a = 3; c = 4; } { b = 5; } ])"
+            ),
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.zipAttrsWith (name: values: values) [ { b = 2; a = 1; } { a = 3; c = 4; } { b = 5; } ]).a")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.zipAttrsWith (name: values: values) [ { b = 2; a = 1; } { a = 3; c = 4; } { b = 5; } ]).a 0")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.zipAttrsWith (name: values: values) [ { b = 2; a = 1; } { a = 3; c = 4; } { b = 5; } ]).a 1")
+                .as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "(builtins.zipAttrsWith (name: values: name + \":\" + builtins.toString (builtins.length values)) [ { b = 2; a = 1; } { a = 3; c = 4; } { b = 5; } ]).b"
+            ),
+            b"b:2"
+        );
+        assert_eq!(
+            eval("let zip = builtins.zipAttrsWith; zipped = zip (name: values: values) [ { a = 1; } ]; in builtins.elemAt zipped.a 0")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval(
+                "let builtins = { zipAttrsWith = f: list: { local = true; }; }; in (builtins.zipAttrsWith (name: values: values) []).local"
+            )
+            .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn zip_attrs_with_primop_force_order_and_result_laziness_match_cpp_nix() {
+        let ir = lower("let zip = builtins.zipAttrsWith; in zip 1 (1 / 0)");
+        let error = eval_whnf_owned(&ir).expect_err("zipAttrsWith checks function before list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "function",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.zipAttrsWith (name: values: values) 1");
+        let error = eval_whnf_owned(&ir).expect_err("zipAttrsWith requires a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let ir = lower("builtins.attrNames (builtins.zipAttrsWith (name: values: values) [ 1 ])");
+        let error = eval_whnf_owned(&ir).expect_err("zipAttrsWith requires attrset elements");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            eval_list_string_bytes(
+                "builtins.attrNames (builtins.zipAttrsWith (name: values: 1 / 0) [ { a = 1; } ])"
+            ),
+            vec![b"a".to_vec()]
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.zipAttrsWith (name: values: values) [ { a = 1 / 0; } ]).a")
+                .as_int(),
+            Ok(1)
+        );
+
+        let ir = lower("(builtins.zipAttrsWith (name: values: 1 / 0) [ { a = 1; } ]).a");
+        let error =
+            eval_whnf_owned(&ir).expect_err("zipAttrsWith applies function on value demand");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let ir = lower(
+            "builtins.elemAt (builtins.zipAttrsWith (name: values: values) [ { a = 1 / 0; } ]).a 0",
+        );
+        let error = eval_whnf_owned(&ir).expect_err("zipAttrsWith preserves lazy grouped values");
         assert!(matches!(
             error.kind(),
             TreeWalkErrorKind::DivisionByZero { .. }
