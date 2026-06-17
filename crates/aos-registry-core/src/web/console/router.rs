@@ -83,10 +83,16 @@ fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
 /// (settings, tokens, channel rollout, hosted keys, webhooks, SSO, serving, key
 /// roster, publishes) — with the same paths the hub's router historically used.
 ///
-/// Routes intentionally omitted (served by the native hub): `/login`,
-/// `/login/password`, `/auth/passkey/begin`, `/activate`, `/auth/sso`,
-/// `/auth/oidc/start`, `/auth/oidc/callback`, `/{slug}/-/settings/config`, and
-/// `/{slug}/-/changes`.
+/// The pre-auth `/login` (`GET` + `POST`) and `/login/password` (`POST`) paths
+/// are served here too (RFC-0004 Phase 5, console-dedup stage D): they rate-limit
+/// on the client IP through the runtime-neutral
+/// [`CLIENT_IP_HEADER`](handlers::CLIENT_IP_HEADER) that each shell stamps on
+/// ingress, so they need neither the native `ConnectInfo` socket nor a
+/// reverse-proxy trust flag.
+///
+/// Routes intentionally omitted (served by the native hub): `/auth/passkey/begin`,
+/// `/activate`, `/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`,
+/// `/{slug}/-/settings/config`, and `/{slug}/-/changes`.
 #[must_use]
 pub fn console_router(deps: ConsoleDeps) -> Router {
     // Each route is a thin closure that recovers `ConsoleDeps` from the
@@ -95,6 +101,21 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
     // inner handlers ([`handlers`]) take `ConsoleDeps` by value plus their own
     // extractors, so they stay free of the wasm bridge details.
     Router::new()
+        .route(
+            "/login",
+            get(|State(s): State<SharedState>| {
+                send_bridge(handlers::login_form(from_state(s)))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_submit(from_state(s), h, f))
+            }),
+        )
+        .route(
+            "/login/password",
+            post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_password(from_state(s), h, f))
+            }),
+        )
         .route(
             "/auth/magic",
             get(|State(s): State<SharedState>, q: Query<_>| {

@@ -398,6 +398,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
         )),
     };
     let console_router = aos_registry_core::web::console::console_router(console_deps);
+    // Kept for the outermost client-IP injection layer below, which runs after
+    // `with_state` moves `state` into the router.
+    let ip_state = Arc::clone(&state);
     router
         // The native-only producer-console routes (pre-auth login/activation,
         // OIDC, git-backed config/changes). Its static prefixes win over the
@@ -444,6 +447,15 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // security-header layer wraps everything (including those 500s).
         .layer(CatchPanicLayer::new())
         .layer(axum::middleware::from_fn(security_headers))
+        // The OUTERMOST layer: it runs first on the way in, so it stamps the
+        // shell-resolved client IP onto the `x-aos-client-ip` header (overwriting
+        // any inbound value) before any merged router — including the shared
+        // console's pre-auth login routes — sees the request. See
+        // [`inject_client_ip`] for the forge-resistance invariant.
+        .layer(axum::middleware::from_fn_with_state(
+            ip_state,
+            inject_client_ip,
+        ))
 }
 
 /// Resolve the current session and run the request with the user's email in
@@ -583,6 +595,54 @@ pub(crate) fn client_ip_for(
     let xff = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok());
     let peer = peer.map(|p| p.ip().to_string()).unwrap_or_default();
     crate::ratelimit::client_ip(xff, &peer, trusted_proxy)
+}
+
+/// Stamp the trusted client IP onto the runtime-neutral
+/// [`CLIENT_IP_HEADER`](aos_registry_core::web::console::CLIENT_IP_HEADER) so the
+/// shared console's pre-auth login handlers meter on it.
+///
+/// The shared `/login` and `/login/password` handlers (RFC-0004 Phase 5,
+/// console-dedup stage D) are wasm-clean and cannot read the native
+/// [`ConnectInfo`] peer socket or the per-deployment reverse-proxy trust flag, so
+/// they read the connecting IP from a header instead. This middleware resolves
+/// the *trusted* IP with the hub's existing [`client_ip_for`] (the same
+/// resolution every other auth path uses — peer socket by default, last
+/// forwarded hop only when `trusted_proxy`) and **overwrites** the header with
+/// it, replacing any inbound value of the same name.
+///
+/// # Security invariant
+///
+/// The overwrite (`insert`, not `append`) is load-bearing: a client could
+/// otherwise supply its own `x-aos-client-ip` and forge a fresh per-IP
+/// rate-limit bucket on the unauthenticated login paths. Because this is applied
+/// as the **outermost** router layer (after every `.merge`), it covers the shared
+/// console routes too, so a forged inbound value never survives to a handler. The
+/// peer may be `None` under a test server with no connect-info; [`client_ip_for`]
+/// resolves that to an empty string, which still meters (coarsely) rather than
+/// failing open.
+async fn inject_client_ip(
+    State(state): State<Arc<AppState>>,
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0);
+    let ip = client_ip_for(request.headers(), peer, state.trusted_proxy);
+    if let Ok(value) = HeaderValue::from_str(&ip) {
+        request.headers_mut().insert(
+            aos_registry_core::web::console::CLIENT_IP_HEADER,
+            value,
+        );
+    } else {
+        // A resolved IP is always header-safe ASCII, but if it somehow is not,
+        // remove any inbound value so a client cannot smuggle a forged bucket.
+        request
+            .headers_mut()
+            .remove(aos_registry_core::web::console::CLIENT_IP_HEADER);
+    }
+    next.run(request).await
 }
 
 pub(crate) async fn load_registry(
