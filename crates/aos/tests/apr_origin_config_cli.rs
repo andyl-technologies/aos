@@ -322,14 +322,25 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
             "origin-default-reg",
             "--key",
             release_key.to_str().context("release key path utf-8")?,
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(
         release.contains("Released origin-default-reg 1.0.0"),
         "{release}"
     );
+    // The fixture's placeholder store path can't be cached, so the release is
+    // local; `apr origin upload` publishes the git origin for the consumer.
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "origin-default-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
     git_stdout(
         &maintainer_registry,
         &["rev-parse", "1.0.0^{tag}"],
@@ -405,14 +416,23 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
             "origin-default-reg",
             "--key",
             release_key.to_str().context("release key path utf-8")?,
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(
         release.contains("Released origin-default-reg 1.1.0"),
         "{release}"
     );
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "origin-default-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
 
     let updated = run_aos_package_json(
         &consumer_home,
@@ -507,11 +527,22 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
             "--channel",
             "stable",
             "--init-channel",
+        ],
+    )?;
+    assert!(release.contains("Released signed-reg 1.0.0"), "{release}");
+    // Placeholder store path → no cache; publish the git origin (incl. the
+    // freshly-initialized channel partitions) with `apr origin upload`.
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "signed-reg",
             "--upload-url",
             &upload_url,
         ],
     )?;
-    assert!(release.contains("Released signed-reg 1.0.0"), "{release}");
     assert!(
         upload_dir.join("channels/stable/00").exists(),
         "uploaded signed channel is missing a partition in {}",
@@ -582,8 +613,6 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
             "stable",
             "--count",
             "256",
-            "--upload-url",
-            &upload_url,
         ],
     )?;
     assert!(release.contains("Released signed-reg 1.1.0"), "{release}");
@@ -591,6 +620,17 @@ async fn apr_release_channel_upload_supports_verified_consumer_sync() -> Result<
         release.contains("Advanced channel 'stable' 256 partition(s) to 1.1.0"),
         "{release}",
     );
+    run_apr(
+        &maintainer_home,
+        &[
+            "origin",
+            "upload",
+            "--registry",
+            "signed-reg",
+            "--upload-url",
+            &upload_url,
+        ],
+    )?;
 
     let updated = run_aos_package_json(
         &consumer_home,

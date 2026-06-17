@@ -63,6 +63,7 @@ use crate::config::ApmConfig;
 use crate::gitcmd;
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
+use crate::registry::membership::{CacheMembership, HeadMembership};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
@@ -4787,16 +4788,36 @@ pub async fn run_cache(
             no_commit,
             registry,
             jobs,
+            no_skip,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
             let upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+            let output = output
+                .clone()
+                .unwrap_or_else(|| config.registry_cache_path(&registry_name));
+            let upload_auth =
+                auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+            let membership = if upload_urls.is_empty() || *no_skip {
+                None
+            } else {
+                Some(
+                    HeadMembership::from_urls(&upload_urls, &upload_auth)
+                        .await
+                        .context("creating remote cache membership checker")?,
+                )
+            };
+            let membership = membership
+                .as_ref()
+                .map(|membership| membership as &dyn CacheMembership);
             let report = nixcache::generate_static_cache(
                 &dir,
-                output,
+                &output,
                 key.as_deref(),
                 *priority,
                 *jobs,
+                membership,
+                *no_skip,
                 printer,
             )
             .await?;
@@ -4805,14 +4826,20 @@ pub async fn run_cache(
                 "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
                 report.narinfos,
                 report.nars,
-                report.nars_skipped,
+                report.local_reused,
                 report.output_dir.display(),
             ));
 
             if !upload_urls.is_empty() {
-                let auth = auth
-                    .auth_options_with_config(registry_upload_auth_config(config, &registry_name));
-                nixcache::upload_static_cache_to_all(output, &upload_urls, &auth, printer).await?;
+                nixcache::upload_static_cache_to_all(
+                    &output,
+                    &upload_urls,
+                    &upload_auth,
+                    &report.root_hashes,
+                    *no_skip,
+                    printer,
+                )
+                .await?;
             }
 
             let mut cache_pointer_updated = false;
@@ -4838,7 +4865,9 @@ pub async fn run_cache(
                     "paths": report.paths,
                     "narinfos": report.narinfos,
                     "nars": report.nars,
-                    "nars_skipped": report.nars_skipped,
+                    "local_reused": report.local_reused,
+                    "remote_skipped": report.remote_skipped,
+                    "root_hashes": report.root_hashes,
                     "cache_url": cache_url.as_deref(),
                     "priority": priority,
                     "upload_urls": upload_urls,
@@ -4848,6 +4877,51 @@ pub async fn run_cache(
                 }));
             }
 
+            warn_on_cache_gc(
+                &output,
+                registry_cache_max_age_days(config, &registry_name),
+                printer,
+            );
+
+            Ok(())
+        }
+        CacheCommand::Gc {
+            registry,
+            max_age,
+            dry_run,
+        } => {
+            let registry_name = resolve_registry_name(config, registry.as_deref())?;
+            let output = config.registry_cache_path(&registry_name);
+            let max_age_days =
+                max_age.unwrap_or_else(|| registry_cache_max_age_days(config, &registry_name));
+            let report = nixcache::gc_static_cache(&output, max_age_days, *dry_run)?;
+            if printer.mode() == OutputMode::Json {
+                printer.json(&serde_json::json!({
+                    "action": "cache_gc",
+                    "registry": registry_name,
+                    "cache_dir": output.to_string_lossy().to_string(),
+                    "max_age_days": max_age_days,
+                    "dry_run": dry_run,
+                    "candidates": report.candidates,
+                    "deleted_files": report.deleted_files,
+                    "deleted_bytes": report.deleted_bytes,
+                    "deleted_bytes_human": format_size(report.deleted_bytes),
+                    "hashes": report.hashes,
+                }));
+            } else if *dry_run {
+                printer.info(&format!(
+                    "Would delete {} staged cache pair(s) older than {max_age_days} day(s) from {}.",
+                    report.candidates,
+                    output.display(),
+                ));
+            } else {
+                printer.success(&format!(
+                    "Deleted {} staged cache file(s) ({}) from {}.",
+                    report.deleted_files,
+                    format_size(report.deleted_bytes),
+                    output.display(),
+                ));
+            }
             Ok(())
         }
     }
@@ -4895,11 +4969,29 @@ pub async fn run_origin(
                 .context("refreshing static git origin before upload")?;
             let auth =
                 auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+            // When a cache dir is given, upload its bytes before the git origin
+            // (NARs/narinfos before the refs that point at them), reusing the
+            // ordering `upload_static_cache_to_all` already owns. This command
+            // derives no roots, so every narinfo is a member (root-last
+            // collapses to narinfos-after-NARs, still producer-safe). `files`
+            // and `bytes` below report the git-origin surface; the cache upload
+            // prints its own per-destination success line.
+            if let Some(cache_dir) = cache_dir.as_deref() {
+                nixcache::upload_static_cache_to_all(
+                    cache_dir,
+                    &upload_urls,
+                    &auth,
+                    &[],
+                    false,
+                    printer,
+                )
+                .await?;
+            }
             let report = static_upload::upload_static_origin_to_all(
                 &dir,
-                cache_dir.as_deref(),
                 &upload_urls,
                 &auth,
+                false,
                 printer,
             )
             .await?;
@@ -6634,6 +6726,24 @@ fn registry_upload_auth_config<'a>(
         .and_then(|(registry, _state)| registry.upload_auth.as_ref())
 }
 
+fn registry_cache_max_age_days(config: &ApmConfig, registry_name: &str) -> u64 {
+    config
+        .registries
+        .iter()
+        .find(|(registry, _state)| registry.name == registry_name)
+        .map(|(registry, _state)| registry.cache.max_age_days())
+        .unwrap_or(crate::types::DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
+}
+
+fn warn_on_cache_gc(cache_dir: &Path, max_age_days: u64, printer: &Printer) {
+    if let Err(err) = nixcache::gc_static_cache(cache_dir, max_age_days, false) {
+        printer.warning(&format!(
+            "Static cache GC failed for {}: {err:#}",
+            cache_dir.display()
+        ));
+    }
+}
+
 /// Resolve upload destinations: `--upload-url` flags when given, otherwise
 /// the `upload_urls` persisted in `[registry.upload_auth]` by
 /// `apr origin config`.
@@ -6648,6 +6758,35 @@ fn resolve_upload_urls(
     registry_upload_auth_config(config, registry_name)
         .map(|upload| upload.upload_urls.clone())
         .unwrap_or_default()
+}
+
+fn resolve_effective_release_cache_url(
+    explicit_cache_url: Option<&str>,
+    upload_urls: &[String],
+    has_store_roots: bool,
+) -> Result<Option<String>> {
+    if let Some(cache_url) = explicit_cache_url {
+        return Ok(Some(cache_url.to_string()));
+    }
+    if upload_urls.is_empty() || !has_store_roots {
+        return Ok(None);
+    }
+
+    let http_urls = upload_urls
+        .iter()
+        .filter(|url| {
+            url::Url::parse(url)
+                .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    if upload_urls.len() == 1 && http_urls.len() == 1 {
+        return Ok(Some(http_urls[0].to_string()));
+    }
+
+    bail!(
+        "publishing a release with store paths requires --cache-url unless exactly one upload URL is http(s)"
+    );
 }
 
 /// Parse a `registry:Algorithm:<base64>` line into a [`TrustedKey`] pinned
@@ -7291,14 +7430,23 @@ pub struct ReleaseTreeOptions {
     pub count: Option<usize>,
     /// Explicit partition list to advance (decimal or hex buckets).
     pub partitions: Option<String>,
-    /// Directory to generate the static Nix cache into, if any.
-    pub cache_output: Option<PathBuf>,
+    /// Internal directory to stage static Nix cache files into.
+    pub cache_dir: PathBuf,
     /// Nix cache signing key for the generated narinfos.
     pub cache_key: Option<PathBuf>,
-    /// Public cache URL to upsert into `registry.toml` `[[caches]]`.
+    /// Effective public cache URL to upsert into `registry.toml` `[[caches]]`.
     pub cache_url: Option<String>,
+    /// Whether `cache_url` came from an explicit `--cache-url`.
+    pub cache_url_explicit: bool,
     /// Priority recorded for the cache pointer.
     pub cache_priority: u32,
+    /// Whether `cache_priority` came from an explicit `--cache-priority`.
+    pub cache_priority_explicit: bool,
+    /// Whether the registry already has store roots or this release will
+    /// publish one.
+    pub has_store_roots: bool,
+    /// Regenerate/reupload paths even if local or remote entries exist.
+    pub no_skip: bool,
     /// Static-origin upload destinations.
     pub upload_urls: Vec<String>,
     /// Authentication used for cache and origin uploads.
@@ -7309,6 +7457,41 @@ pub struct ReleaseTreeOptions {
     pub resume: bool,
     /// Parallel compression jobs for the static cache (default: CPU count).
     pub jobs: Option<usize>,
+    /// Optional package publish payload to run under the release lock.
+    pub store_publish: Option<ReleaseStorePublish>,
+    /// Staged cache retention after a successful release.
+    pub cache_max_age_days: u64,
+}
+
+/// Optional `--store-path` publish payload carried into the locked release.
+#[derive(Debug, Clone)]
+pub struct ReleaseStorePublish {
+    pub config: ApmConfig,
+    pub store_path: String,
+    pub name: Option<String>,
+    pub platform: Option<String>,
+    pub description: Option<String>,
+    pub homepage: Option<String>,
+    pub license: Option<String>,
+    pub maintainer: Option<String>,
+    pub sysroot: bool,
+    pub previous: Option<String>,
+    pub source_drv: Option<String>,
+    pub image_paths: Vec<String>,
+    pub image_formats: Vec<String>,
+    pub bless: bool,
+    pub message: Option<String>,
+    pub registry: String,
+}
+
+impl ReleaseTreeOptions {
+    fn publishing(&self) -> bool {
+        !self.upload_urls.is_empty()
+    }
+
+    fn should_publish_cache(&self) -> bool {
+        self.publishing() && self.has_store_roots
+    }
 }
 
 /// Summary of the artifacts produced by [`release_registry_tree`].
@@ -7403,10 +7586,10 @@ pub async fn release(
     partitions: Option<&str>,
     key: Option<&str>,
     key_id: Option<&str>,
-    cache_output: Option<&Path>,
     cache_key: Option<&Path>,
     cache_url: Option<&str>,
-    cache_priority: u32,
+    cache_priority: Option<u32>,
+    no_skip: bool,
     upload_urls: &[String],
     auth: &CacheUploadAuthArgs,
     dry_run: bool,
@@ -7424,44 +7607,31 @@ pub async fn release(
     }
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
 
-    if let Some(store_path) = store_path {
-        if dry_run {
-            printer.info(&format!(
-                "Would publish {store_path} into release metadata for {version}."
-            ));
-        } else {
-            ensure_release_worktree_clean(&dir)?;
-            let release_version = version.to_string();
-            publish(
-                config,
-                store_path,
-                name,
-                Some(release_version.as_str()),
-                platform,
-                description,
-                homepage,
-                license,
-                maintainer,
-                sysroot,
-                previous,
-                source_drv,
-                image_paths,
-                image_formats,
-                bless,
-                false, // no_ca: release honors the registry's content_addressed setting
-                false, // no_commit
-                message,
-                Some(signing_key.path()),
-                None,
-                Some(&registry_name),
-                printer,
-            )
-            .await?;
-        }
-    }
-
     let upload_auth =
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+    let resolved_upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
+    let has_store_roots = store_path.is_some() || nixcache::registry_has_store_roots(&dir)?;
+    let cache_url_explicit = cache_url.is_some();
+    let effective_cache_url =
+        resolve_effective_release_cache_url(cache_url, &resolved_upload_urls, has_store_roots)?;
+    let store_publish = store_path.map(|store_path| ReleaseStorePublish {
+        config: config.clone(),
+        store_path: store_path.to_string(),
+        name: name.map(ToString::to_string),
+        platform: platform.map(ToString::to_string),
+        description: description.map(ToString::to_string),
+        homepage: homepage.map(ToString::to_string),
+        license: license.map(ToString::to_string),
+        maintainer: maintainer.map(ToString::to_string),
+        sysroot,
+        previous: previous.map(ToString::to_string),
+        source_drv: source_drv.map(ToString::to_string),
+        image_paths: image_paths.to_vec(),
+        image_formats: image_formats.to_vec(),
+        bless,
+        message: message.map(ToString::to_string),
+        registry: registry_name.clone(),
+    });
     let options = ReleaseTreeOptions {
         version,
         signing_key: signing_key.path().to_string(),
@@ -7469,19 +7639,59 @@ pub async fn release(
         init_channel,
         count,
         partitions: partitions.map(ToString::to_string),
-        cache_output: cache_output.map(Path::to_path_buf),
+        cache_dir: config.registry_cache_path(&registry_name),
         cache_key: cache_key.map(Path::to_path_buf),
-        cache_url: cache_url.map(ToString::to_string),
-        cache_priority,
-        upload_urls: resolve_upload_urls(config, &registry_name, upload_urls),
+        cache_url: effective_cache_url,
+        cache_url_explicit,
+        cache_priority: cache_priority.unwrap_or(40),
+        cache_priority_explicit: cache_priority.is_some(),
+        has_store_roots,
+        no_skip,
+        upload_urls: resolved_upload_urls,
         upload_auth,
         dry_run,
         resume,
         jobs,
+        store_publish,
+        cache_max_age_days: registry_cache_max_age_days(config, &registry_name),
     };
 
     release_registry_tree(&dir, &registry_name, &options, printer).await?;
     Ok(())
+}
+
+async fn publish_release_store_path(
+    publish_opts: &ReleaseStorePublish,
+    version: &semver::Version,
+    signing_key: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let release_version = version.to_string();
+    publish(
+        &publish_opts.config,
+        &publish_opts.store_path,
+        publish_opts.name.as_deref(),
+        Some(release_version.as_str()),
+        publish_opts.platform.as_deref(),
+        publish_opts.description.as_deref(),
+        publish_opts.homepage.as_deref(),
+        publish_opts.license.as_deref(),
+        publish_opts.maintainer.as_deref(),
+        publish_opts.sysroot,
+        publish_opts.previous.as_deref(),
+        publish_opts.source_drv.as_deref(),
+        &publish_opts.image_paths,
+        &publish_opts.image_formats,
+        publish_opts.bless,
+        false,
+        false,
+        publish_opts.message.as_deref(),
+        Some(signing_key),
+        None,
+        Some(&publish_opts.registry),
+        printer,
+    )
+    .await
 }
 
 /// Executes the release workflow against a registry directory.
@@ -7502,11 +7712,12 @@ pub async fn release(
 /// # Errors
 ///
 /// Fails when the option combination is invalid (`--init-channel` or
-/// partition selectors without `--channel`, `--cache-key` without
-/// `--cache-output`); when another publisher holds the release lock; when
-/// the working tree is dirty; when the tag or pack artifacts already exist
-/// without `resume` (or the tag exists at a different commit); or when
-/// pack generation, cache generation, channel updates, or uploads fail.
+/// partition selectors without `--channel`, cache flags without a publishing
+/// destination or store roots); when another publisher holds the release
+/// lock; when the working tree is dirty; when the tag or pack artifacts
+/// already exist without `resume` (or the tag exists at a different commit);
+/// or when pack generation, cache generation, channel updates, or uploads
+/// fail.
 pub async fn release_registry_tree(
     dir: &Path,
     registry_name: &str,
@@ -7533,9 +7744,69 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
 
+    if let Some(publish) = &options.store_publish {
+        publish_release_store_path(publish, &options.version, &options.signing_key, printer)
+            .await?;
+    }
+
+    // Publishing cache unit (§9): generate into the internal staging dir, push
+    // the cache bytes, and only then commit the advertising pointer. A failed
+    // upload aborts the release here with no tag and no `[[caches]]` entry; a
+    // committed pointer lands before the tag so it is part of the snapshot.
+    let mut cache_report = None;
     let mut cache_pointer_updated = false;
-    if let Some(cache_url) = &options.cache_url {
-        if nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)? {
+    if options.should_publish_cache() {
+        let membership = if options.no_skip {
+            None
+        } else {
+            Some(
+                HeadMembership::from_urls(&options.upload_urls, &options.upload_auth)
+                    .await
+                    .context("creating remote cache membership checker")?,
+            )
+        };
+        let membership_ref = membership
+            .as_ref()
+            .map(|membership| membership as &dyn CacheMembership);
+        let generated = nixcache::generate_static_cache(
+            dir,
+            &options.cache_dir,
+            options.cache_key.as_deref(),
+            options.cache_priority,
+            options.jobs,
+            membership_ref,
+            options.no_skip,
+            printer,
+        )
+        .await?;
+        printer.success(&format!(
+            "Generated static cache: {} narinfos, {} NARs ({} reused, {} remote-skipped) in {}",
+            generated.narinfos,
+            generated.nars,
+            generated.local_reused,
+            generated.remote_skipped,
+            generated.output_dir.display(),
+        ));
+
+        // Cache bytes first (NARs, then member narinfos, then root narinfos).
+        // On failure the `?` aborts before any tag or pointer exists.
+        nixcache::upload_static_cache_to_all(
+            &options.cache_dir,
+            &options.upload_urls,
+            &options.upload_auth,
+            &generated.root_hashes,
+            options.no_skip,
+            printer,
+        )
+        .await?;
+
+        // Advertise only when at least one narinfo is present on the
+        // destinations — freshly uploaded (`narinfos`) or already there
+        // (`remote_skipped`). Never advertise an empty or unpublished cache.
+        if let Some(cache_url) = &options.cache_url
+            && generated.narinfos + generated.remote_skipped > 0
+            && nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)?
+        {
             cache_pointer_updated = true;
             printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
             commit_registry(
@@ -7544,6 +7815,7 @@ pub async fn release_registry_tree(
                 Some(&options.signing_key),
             )?;
         }
+        cache_report = Some(generated);
     }
 
     let head = git(dir, &["rev-parse", "HEAD"])?;
@@ -7558,27 +7830,6 @@ pub async fn release_registry_tree(
     let artifacts = write_release_artifacts(dir, &published_before, options, printer).await?;
     refresh_registry_object_store(dir)
         .context("refreshing dumb-HTTP object store after release artifacts")?;
-
-    let mut cache_report = None;
-    if let Some(output) = &options.cache_output {
-        let generated = nixcache::generate_static_cache(
-            dir,
-            output,
-            options.cache_key.as_deref(),
-            options.cache_priority,
-            options.jobs,
-            printer,
-        )
-        .await?;
-        printer.success(&format!(
-            "Generated static cache: {} narinfos, {} NARs ({} reused) in {}",
-            generated.narinfos,
-            generated.nars,
-            generated.nars_skipped,
-            generated.output_dir.display(),
-        ));
-        cache_report = Some(generated);
-    }
 
     let mut report = artifacts;
     report.cache_pointer_updated = cache_pointer_updated;
@@ -7608,12 +7859,15 @@ pub async fn release_registry_tree(
         }
     }
 
+    // Static git origin last: objects, refs, channel payloads, and the
+    // committed cache pointer. Cache bytes, when any, were already uploaded
+    // above, so this call carries the git surface only (`cache_dir = None`).
     if !options.upload_urls.is_empty() {
         let upload = static_upload::upload_static_origin_to_all(
             dir,
-            options.cache_output.as_deref(),
             &options.upload_urls,
             &options.upload_auth,
+            options.no_skip,
             printer,
         )
         .await?;
@@ -7635,6 +7889,9 @@ pub async fn release_registry_tree(
             options,
             &report,
         ));
+    }
+    if let Some(cache) = &report.cache {
+        warn_on_cache_gc(&cache.output_dir, options.cache_max_age_days, printer);
     }
     Ok(report)
 }
@@ -7664,8 +7921,31 @@ fn validate_release_options(options: &ReleaseTreeOptions) -> Result<()> {
         }
     }
 
-    if options.cache_key.is_some() && options.cache_output.is_none() {
-        bail!("--cache-key requires --cache-output");
+    if !options.publishing() {
+        if options.cache_url_explicit {
+            bail!("--cache-url requires an upload destination");
+        }
+        if options.cache_key.is_some() {
+            bail!("--cache-key signs published narinfos; it requires an upload destination");
+        }
+        if options.cache_priority_explicit {
+            bail!("--cache-priority requires an upload destination");
+        }
+        if options.no_skip {
+            bail!("--no-skip requires an upload destination");
+        }
+    } else if !options.has_store_roots {
+        if options.cache_url_explicit
+            || options.cache_key.is_some()
+            || options.cache_priority_explicit
+            || options.no_skip
+        {
+            bail!("cache flags require registry store paths when publishing");
+        }
+    } else if options.cache_url.is_none() {
+        bail!(
+            "publishing a release with store paths requires --cache-url unless exactly one upload URL is http(s)"
+        );
     }
     Ok(())
 }
@@ -7694,12 +7974,13 @@ fn release_result_json(
         "version": options.version.to_string(),
         "dry_run": options.dry_run,
         "resume": options.resume,
-        "cache_output": options
-            .cache_output
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string()),
+        "cache_dir": options.cache_dir.to_string_lossy().to_string(),
         "cache_url": options.cache_url.as_deref(),
+        "cache_url_explicit": options.cache_url_explicit,
         "cache_priority": options.cache_priority,
+        "cache_priority_explicit": options.cache_priority_explicit,
+        "has_store_roots": options.has_store_roots,
+        "no_skip": options.no_skip,
         "cache": report.cache.as_ref().map(static_cache_report_json),
         "cache_pointer_updated": report.cache_pointer_updated,
         "upload_urls": &options.upload_urls,
@@ -7718,23 +7999,27 @@ fn static_cache_report_json(report: &nixcache::StaticCacheReport) -> serde_json:
         "paths": report.paths,
         "narinfos": report.narinfos,
         "nars": report.nars,
-        "nars_skipped": report.nars_skipped,
+        "local_reused": report.local_reused,
+        "remote_skipped": report.remote_skipped,
+        "root_hashes": report.root_hashes,
         "output_dir": report.output_dir.to_string_lossy().to_string(),
     })
 }
 
 fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
-    let mut steps = vec![
-        "ensure_clean_worktree",
-        "create_signed_release_tag",
-        "generate_release_packs",
-    ];
-    if options.cache_url.is_some() {
-        steps.insert(1, "commit_cache_pointer");
+    let mut steps = vec!["ensure_clean_worktree"];
+    if options.store_publish.is_some() {
+        steps.push("publish_store_path");
     }
-    if options.cache_output.is_some() {
+    // Cache bytes upload and pointer commit precede the tag so the pointer is
+    // part of the released snapshot and a failed upload leaves no tag.
+    if options.should_publish_cache() {
         steps.push("generate_static_cache");
+        steps.push("upload_static_cache");
+        steps.push("commit_cache_pointer");
     }
+    steps.push("create_signed_release_tag");
+    steps.push("generate_release_packs");
     if options.channel.is_some() {
         steps.push(if options.init_channel {
             "initialize_channel"
@@ -7758,27 +8043,31 @@ fn print_release_plan(
     printer.kv("Registry", registry_name);
     printer.kv("Directory", &dir.display().to_string());
     printer.kv("Release", &options.version.to_string());
-    printer.plain("1. ensure registry working tree is clean");
-    if let Some(cache_url) = &options.cache_url {
-        printer.plain(&format!(
-            "2. commit registry.toml cache pointer {cache_url} if needed"
-        ));
+    printer.plain("- ensure registry working tree is clean");
+    if options.store_publish.is_some() {
+        printer.plain("- publish store path into release metadata");
     }
-    printer.plain("3. create signed release tag if absent");
-    printer.plain("4. generate full pack and guaranteed compressed thin deltas");
-    if options.cache_output.is_some() {
-        printer.plain("5. generate static Nix cache files");
+    if options.should_publish_cache() {
+        printer.plain("- generate static Nix cache files");
+        printer.plain("- upload cache NARs and narinfos to every destination");
+        if let Some(cache_url) = &options.cache_url {
+            printer.plain(&format!(
+                "- commit registry.toml cache pointer {cache_url} once published"
+            ));
+        }
     }
+    printer.plain("- create signed release tag if absent");
+    printer.plain("- generate full pack and guaranteed compressed thin deltas");
     if let Some(channel) = &options.channel {
         let action = if options.init_channel {
             "initialize"
         } else {
             "advance"
         };
-        printer.plain(&format!("6. {action} channel {channel}"));
+        printer.plain(&format!("- {action} channel {channel}"));
     }
     if !options.upload_urls.is_empty() {
-        printer.plain("7. upload immutable files first and mutable refs/channels last");
+        printer.plain("- upload static git origin (immutable objects first, refs last)");
     }
 }
 
@@ -8452,6 +8741,36 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
+        ReleaseTreeOptions {
+            version: semver::Version::parse("1.0.0").unwrap(),
+            signing_key: tmp
+                .path()
+                .join("signing.key")
+                .to_string_lossy()
+                .into_owned(),
+            channel: None,
+            init_channel: false,
+            count: None,
+            partitions: None,
+            cache_dir: tmp.path().join("cache"),
+            cache_key: None,
+            cache_url: None,
+            cache_url_explicit: false,
+            cache_priority: 40,
+            cache_priority_explicit: false,
+            has_store_roots: false,
+            no_skip: false,
+            upload_urls: Vec::new(),
+            upload_auth: AuthOptions::default(),
+            dry_run: false,
+            resume: false,
+            jobs: None,
+            store_publish: None,
+            cache_max_age_days: 30,
+        }
+    }
+
     #[test]
     fn parse_sbat_csv_reads_component_generations() {
         let csv = "sbat,1,SBAT Version,sbat,1,https://x\naos,2,AOS,aos,2,https://aos\n# comment\n\nsystemd,1,systemd,systemd,1,https://systemd\n";
@@ -8824,6 +9143,101 @@ mod tests {
         );
         // A registry with no persisted defaults resolves to no destinations.
         assert!(resolve_upload_urls(&config, "other", &[]).is_empty());
+    }
+
+    #[test]
+    fn release_validation_rejects_cache_flags_without_publishing() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut options = test_release_options(&tmp);
+        options.cache_url = Some("https://cache.example".to_string());
+        options.cache_url_explicit = true;
+        assert!(
+            format!("{:#}", validate_release_options(&options).unwrap_err())
+                .contains("--cache-url requires an upload destination")
+        );
+
+        let mut options = test_release_options(&tmp);
+        options.cache_key = Some(tmp.path().join("narinfo.key"));
+        assert!(
+            format!("{:#}", validate_release_options(&options).unwrap_err())
+                .contains("--cache-key signs published narinfos")
+        );
+
+        let mut options = test_release_options(&tmp);
+        options.cache_priority_explicit = true;
+        assert!(
+            format!("{:#}", validate_release_options(&options).unwrap_err())
+                .contains("--cache-priority requires an upload destination")
+        );
+
+        let mut options = test_release_options(&tmp);
+        options.no_skip = true;
+        assert!(
+            format!("{:#}", validate_release_options(&options).unwrap_err())
+                .contains("--no-skip requires an upload destination")
+        );
+    }
+
+    #[test]
+    fn release_validation_rejects_cache_flags_when_publishing_without_roots() {
+        let tmp = TempDir::new().unwrap();
+        let mut options = test_release_options(&tmp);
+        options.upload_urls = vec!["file:///tmp/origin".to_string()];
+        options.cache_url = Some("https://cache.example".to_string());
+        options.cache_url_explicit = true;
+
+        assert!(
+            format!("{:#}", validate_release_options(&options).unwrap_err())
+                .contains("cache flags require registry store paths")
+        );
+    }
+
+    #[test]
+    fn release_cache_url_derives_from_single_http_upload_only() {
+        assert_eq!(
+            resolve_effective_release_cache_url(
+                None,
+                &["https://cache.example/root".to_string()],
+                true,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("https://cache.example/root"),
+        );
+        // Write-only single destinations cannot be advertised as a read URL.
+        for write_only in [
+            "file:///tmp/origin",
+            "s3://bucket/prefix",
+            "sftp://host/srv/cache",
+        ] {
+            assert!(
+                resolve_effective_release_cache_url(None, &[write_only.to_string()], true).is_err(),
+                "{write_only} should require an explicit --cache-url",
+            );
+        }
+        assert!(
+            resolve_effective_release_cache_url(
+                None,
+                &[
+                    "https://cache.example/a".to_string(),
+                    "https://cache.example/b".to_string(),
+                ],
+                true,
+            )
+            .is_err()
+        );
+        // An explicit --cache-url is always honored, even for write-only uploads.
+        assert_eq!(
+            resolve_effective_release_cache_url(
+                Some("https://cdn.example/cache"),
+                &["s3://bucket/prefix".to_string()],
+                true,
+            )
+            .unwrap()
+            .as_deref(),
+            Some("https://cdn.example/cache"),
+        );
     }
 
     #[test]
@@ -9203,6 +9617,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth,
             signing_keys: Default::default(),
             signing: None,
