@@ -1,22 +1,24 @@
 # Phase 5: one async runtime, full Cloudflare/native parity
 
-- **Status:** In progress (2026-06-16). **Data layer landed** (PR #99): the
-  async `Backend` trait, the shared `aos-registry-core::Database` (reads *and*
-  writes), and the worker's `D1Backend` all ship; the worker folds its read
-  path + Cron indexer onto `core::Database`. **Remaining work — the handler
-  unification** (this is where parity is won): move the facade, browse UI, JSON
-  API, RPC, auth, and producer console into one shared `axum` router in
+- **Status:** Complete (2026-06-17). **Data layer + handler unification landed**
+  (PR #99): the async `Backend` trait, the shared `aos-registry-core::Database`
+  (reads *and* writes), and the worker's `D1Backend` all ship. The handler
+  unification — where parity is won — is **done**: the facade, browse UI, JSON
+  API, RPC, auth, and producer console all live in one shared `axum` router in
   `core`, served natively via `axum::serve` and on Workers via a hand-rolled
   `worker`⇄`axum` bridge (the published `axum-cloudflare-adapter`s don't support
   the worker 0.4.x pin — see Open questions). The worker's hand-written
-  read-only fetch router (`handlers.rs`/`reads.rs`/`facade.rs`) is then deleted.
-  The wasm-feasibility
-  spike that gated the handler shape is **done** — results in
+  read-only fetch router is deleted; no application logic is duplicated. The
+  wasm-feasibility spike is in
   "[Spike results](#spike-results-2026-06-16-what-actually-compiles-to-wasm)"
   below; it forced the RPC transport decision (the `connectrpc` *server*
   runtime cannot target wasm, so the hub serves a single **Connect-JSON**
-  transport over shared `axum` handlers — see below). Still gated on the D1
-  transaction audit for the write sites.
+  transport over shared `axum` handlers — see below). The D1 transaction audit
+  for the write sites is resolved (synchronous anti-rollback floor-raise on
+  channel advance). The async `Mailer` Worker impl, install-time root bootstrap,
+  unified `core::indexer`, and `SurfaceWrite`/`PublishLease` (D1) ports ship.
+  The deployed wasm artifact is verified end-to-end under workerd + miniflare by
+  `pkgs.aos-registry-worker-e2e` (`just test-worker-e2e`).
 - **Audience:** `crates/aos-registry-hub/`, `crates/aos-registry-worker/`,
   `crates/aos-proto/`, the `aos` CLI (`crates/aos/`, `crates/aos-remote/`).
 
