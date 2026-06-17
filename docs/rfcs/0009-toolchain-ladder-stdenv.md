@@ -1,6 +1,6 @@
 # RFC-0009: A coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap`
 
-- **Status:** In progress — Phase 2 implemented
+- **Status:** In progress — Phase 3 implemented
 - **Date:** 2026-06-15
 - **PR:** _(to be filled)_
 - **Audience:** anyone working on `stdenv/` — the bootstrap chain
@@ -288,8 +288,15 @@ its successor.
   `sysconfig` and `distutils.sysconfig` metadata, and ship config scripts with
   AOS bash shebangs; and adversarial review found no serious ownership or
   install-layout issues.
-- [ ] **Phase 3 — `mkGlibc`.** Unify glibc across tiers; it is lower-variance
-  than gcc.
+- [x] **Phase 3 — `mkGlibc`. Implemented.** Unified glibc across tiers; it is
+  lower-variance than gcc. Verified for Phase 3: touched Nix files parse
+  locally; strict evaluation exposes the expected glibc names and gcc14 split
+  outputs; corrected remote builds of `[ gcc8.glibc gcc11.glibc gcc14.glibc ]`
+  succeeded on `builder-hil1-c13958ef`; the corrected logs show gcc8's
+  `CFLAGS` reaching configure and gcc14 using its `$TMPDIR/ccwrap/gcc` wrapper;
+  remote smoke checks confirm the glibc loaders/libraries and gcc14
+  bin/dev/static/getent output split; and adversarial review caught and verified
+  the configure-environment splice fix.
 - [ ] **Phase 4 — `mkGcc`.** Unify gcc across tiers; switch the final tier to
   `bootstrap = true` (stock `make bootstrap`) and retire the disabled
   self-recompile TODO.
