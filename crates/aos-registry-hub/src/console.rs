@@ -42,13 +42,12 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Form, Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{Form, Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::Router;
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
-use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS};
 use crate::config;
 use crate::db::{Database, RegistryRecord, SessionAuth as DbSession};
 use crate::domain::{iam, Permission, Principal, Role, Scope};
@@ -60,14 +59,10 @@ use crate::ui::console;
 /// [`console_router`](aos_registry_core::web::console::console_router).
 ///
 /// RFC-0004 Phase 5 (console-dedup stage B) moved the wasm-clean console
-/// handlers into the shared core crate. The routes that remain native are the
-/// ones this router registers:
-///
-/// - the **OIDC flow** (`/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`),
-///   which makes outbound [`reqwest`] calls through [`crate::auth::oidc`];
-/// - the **git-backed config** surface (`/{slug}/-/settings/config`,
-///   `/{slug}/-/changes`), which uses [`crate::gitwrite`] and
-///   [`crate::surface`].
+/// handlers into the shared core crate. The only routes that remain native are
+/// the ones this router registers: the **git-backed config** surface
+/// (`/{slug}/-/settings/config`, `/{slug}/-/changes`), which uses
+/// [`crate::gitwrite`] and [`crate::surface`].
 ///
 /// The pre-auth rate-limited `/login`, `/login/password` (stage D),
 /// `/auth/passkey/begin`, and `/activate` (stage E) paths moved to the shared
@@ -75,16 +70,17 @@ use crate::ui::console;
 /// the hub stamps in [`crate::server::inject_client_ip`] instead of the native
 /// peer socket, so they serve both shells. The `finish` halves of the passkey
 /// ceremony (`/account/passkeys/finish`, `/auth/passkey/finish`), which mint no
-/// rate-limit key, were already shared.
+/// rate-limit key, were already shared. The per-org **OIDC flow** (`/auth/sso`,
+/// `/auth/oidc/start`, `/auth/oidc/callback`) moved to the shared core router
+/// too (stage F): its token exchange and JWKS fetch go through the
+/// [`HttpClient`](aos_registry_core::web::console::ports::HttpClient) port
+/// (satisfied by [`crate::coreports::HubHttpClient`]).
 ///
 /// Every other console route is served by the shared core router. The
 /// nested-canonical fallback ([`dispatch_nested`]) still lives here and reuses
 /// the private handler helpers below for slugs whose canonical path has slashes.
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/auth/sso", post(login_sso))
-        .route("/auth/oidc/start", get(oidc_start))
-        .route("/auth/oidc/callback", get(oidc_callback))
         .route(
             "/{slug}/-/settings/config",
             get(config_edit).post(config_submit),
@@ -200,109 +196,10 @@ fn require_sudo(session: &Session) -> Result<(), Box<Response>> {
 // handlers moved to the shared core router in RFC-0004 Phase 5 (console-dedup
 // stage D). They rate-limit on the runtime-neutral `x-aos-client-ip` header the
 // hub stamps in [`crate::server::inject_client_ip`] instead of the native peer
-// socket, so they are wasm-clean and serve both shells. `login_sso` and the
-// OIDC flow below stay native (outbound `reqwest`).
-
-// -- OIDC single sign-on ----------------------------------------------------
-
-/// `POST /auth/sso` body: the org to begin an SSO login against.
-#[derive(serde::Deserialize)]
-struct SsoForm {
-    org: String,
-}
-
-/// `POST /auth/sso` — the no-JS "Sign in with SSO" button target.
-///
-/// Reached from the two-step login page when SSO is offered but not enforced;
-/// it simply begins the OIDC flow for the named org, mirroring a `GET` of
-/// `/auth/oidc/start?org=…`.
-async fn login_sso(State(state): State<Arc<AppState>>, Form(form): Form<SsoForm>) -> Response {
-    begin_oidc(&state, &form.org, None).await
-}
-
-/// `GET /auth/oidc/start?org=` query.
-#[derive(serde::Deserialize)]
-struct OidcStartQuery {
-    org: String,
-    #[serde(default)]
-    next: Option<String>,
-}
-
-/// `GET /auth/oidc/start?org=<slug>` — redirect into the org's IdP.
-///
-/// Looks up the org and stages the authorization-code + PKCE flow, then
-/// 302-redirects the browser to the IdP's authorization endpoint. An unknown
-/// org or an org without an IdP renders a clean error page (no stack trace).
-async fn oidc_start(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<OidcStartQuery>,
-) -> Response {
-    begin_oidc(&state, &query.org, query.next.as_deref()).await
-}
-
-/// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
-async fn begin_oidc(state: &AppState, org_slug: &str, next: Option<&str>) -> Response {
-    let org = match state.db.org_by_slug(org_slug).await {
-        Ok(Some(org)) => org,
-        Ok(None) => return sso_error("That organization does not exist."),
-        Err(err) => return internal(err),
-    };
-    match crate::auth::oidc::begin_login(&state.db, &state.external_url, org.id, next).await {
-        Ok(redirect) => Redirect::to(&redirect.url).into_response(),
-        Err(err) => {
-            tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
-            sso_error("Single sign-on is not configured for that organization.")
-        }
-    }
-}
-
-/// `GET /auth/oidc/callback?code=&state=` — complete the OIDC login.
-///
-/// Consumes the staged flow, exchanges the code, verifies the id_token, and on
-/// success creates a sudo-capable session and redirects to the flow's
-/// `redirect_after` (or `/`). Every failure renders a clean error page rather
-/// than leaking internals.
-async fn oidc_callback(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<crate::auth::oidc::CallbackParams>,
-) -> Response {
-    let login = match crate::auth::oidc::complete_login(
-        &state.db,
-        state.sealer.as_ref(),
-        &state.http,
-        &state.external_url,
-        &params,
-    )
-    .await
-    {
-        Ok(login) => login,
-        Err(err) => {
-            tracing::warn!(error = %format!("{err:#}"), "oidc callback failed");
-            return sso_error("Sign-in could not be completed. Please try again.");
-        }
-    };
-    // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
-    let cookie = match state
-        .db
-        .create_session(login.user_id, ABSOLUTE_LIFETIME_SECS, 1)
-        .await
-    {
-        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
-        Err(err) => return internal(err),
-    };
-    // Honor the staged redirect only for same-origin relative paths (a leading
-    // single `/`), so a forged `next` can never bounce the browser off-site.
-    let target = login
-        .redirect_after
-        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
-        .unwrap_or_else(|| "/".to_string());
-    ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
-}
-
-/// Render a clean SSO error page (no stack traces).
-fn sso_error(message: &str) -> Response {
-    Html(console::login_page(Some(message), None, Instant::now())).into_response()
-}
+// socket, so they are wasm-clean and serve both shells. The OIDC flow
+// (`/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`) moved to the shared
+// core router too (stage F): its token exchange and JWKS fetch go through the
+// [`HttpClient`](aos_registry_core::web::console::ports::HttpClient) port.
 
 // -- account ----------------------------------------------------------------
 

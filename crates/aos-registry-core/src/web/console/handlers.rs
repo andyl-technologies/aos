@@ -20,9 +20,11 @@
 //! native `ConnectInfo` peer socket and a reverse-proxy trust flag, they read the
 //! connecting client's IP from the runtime-neutral [`CLIENT_IP_HEADER`] each
 //! shell stamps on ingress (RFC-0004 Phase 5, console-dedup stages D and E). The
-//! remaining native-only handlers — the OIDC flow (outbound `reqwest`) and the
-//! git-backed config/change-request flows — stay in the native hub, which mounts
-//! them alongside this router.
+//! per-org OIDC flow ([`login_sso`], [`oidc_start`], [`oidc_callback`]) lives
+//! here too (stage F): its token exchange and JWKS fetch go through the
+//! [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
+//! The only remaining native-only handlers are the git-backed
+//! config/change-request flows, which stay in the native hub.
 //!
 //! # CSRF
 //!
@@ -593,6 +595,112 @@ async fn sso_enforced_for(
 /// The OIDC start path that redirects a browser into an org's IdP login.
 fn sso_start_path(org_slug: &str) -> String {
     format!("/auth/oidc/start?org={}", urlencode(org_slug))
+}
+
+// -- OIDC single sign-on ----------------------------------------------------
+//
+// The per-org OIDC authorization-code + PKCE flow (RFC-0004 Phase 5,
+// console-dedup stage F). The flow logic itself lives in
+// [`crate::auth::oidc`]; these handlers are its request edge. Its two network
+// calls (the token exchange and the JWKS fetch) go through the
+// [`HttpClient`](super::ports::HttpClient) port carried on [`ConsoleDeps`], so
+// the handlers are wasm-clean and the native hub and the Worker mount them from
+// this shared router.
+
+/// `POST /auth/sso` body: the org to begin an SSO login against.
+#[derive(serde::Deserialize)]
+pub(crate) struct SsoForm {
+    org: String,
+}
+
+/// `POST /auth/sso` — the no-JS "Sign in with SSO" button target.
+///
+/// Reached from the two-step login page when SSO is offered but not enforced;
+/// it simply begins the OIDC flow for the named org, mirroring a `GET` of
+/// `/auth/oidc/start?org=…`.
+pub(crate) async fn login_sso(deps: ConsoleDeps, Form(form): Form<SsoForm>) -> Response {
+    begin_oidc(&deps, &form.org, None).await
+}
+
+/// `GET /auth/oidc/start?org=` query.
+#[derive(serde::Deserialize)]
+pub(crate) struct OidcStartQuery {
+    org: String,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+/// `GET /auth/oidc/start?org=<slug>` — redirect into the org's IdP.
+///
+/// Looks up the org and stages the authorization-code + PKCE flow, then
+/// 302-redirects the browser to the IdP's authorization endpoint. An unknown
+/// org or an org without an IdP renders a clean error page (no stack trace).
+pub(crate) async fn oidc_start(deps: ConsoleDeps, Query(query): Query<OidcStartQuery>) -> Response {
+    begin_oidc(&deps, &query.org, query.next.as_deref()).await
+}
+
+/// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
+async fn begin_oidc(deps: &ConsoleDeps, org_slug: &str, next: Option<&str>) -> Response {
+    let org = match deps.db.org_by_slug(org_slug).await {
+        Ok(Some(org)) => org,
+        Ok(None) => return sso_error("That organization does not exist."),
+        Err(err) => return internal(err),
+    };
+    match crate::auth::oidc::begin_login(&deps.db, &deps.external_url, org.id, next).await {
+        Ok(redirect) => Redirect::to(&redirect.url).into_response(),
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
+            sso_error("Single sign-on is not configured for that organization.")
+        }
+    }
+}
+
+/// `GET /auth/oidc/callback?code=&state=` — complete the OIDC login.
+///
+/// Consumes the staged flow, exchanges the code, verifies the id_token, and on
+/// success creates a sudo-capable session and redirects to the flow's
+/// `redirect_after` (or `/`). Every failure renders a clean error page rather
+/// than leaking internals.
+pub(crate) async fn oidc_callback(
+    deps: ConsoleDeps,
+    Query(params): Query<crate::auth::oidc::CallbackParams>,
+) -> Response {
+    let login = match crate::auth::oidc::complete_login(
+        &deps.db,
+        deps.sealer.as_ref(),
+        deps.http.as_ref(),
+        &deps.external_url,
+        &params,
+    )
+    .await
+    {
+        Ok(login) => login,
+        Err(err) => {
+            tracing::warn!(error = %format!("{err:#}"), "oidc callback failed");
+            return sso_error("Sign-in could not be completed. Please try again.");
+        }
+    };
+    // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
+    let cookie = match deps
+        .db
+        .create_session(login.user_id, ABSOLUTE_LIFETIME_SECS, 1)
+        .await
+    {
+        Ok(secret) => set_cookie_header(&secret, ABSOLUTE_LIFETIME_SECS),
+        Err(err) => return internal(err),
+    };
+    // Honor the staged redirect only for same-origin relative paths (a leading
+    // single `/`), so a forged `next` can never bounce the browser off-site.
+    let target = login
+        .redirect_after
+        .filter(|p| p.starts_with('/') && !p.starts_with("//"))
+        .unwrap_or_else(|| "/".to_string());
+    ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
+}
+
+/// Render a clean SSO error page (no stack traces).
+fn sso_error(message: &str) -> Response {
+    Html(console::login_page(Some(message), None, Instant::now())).into_response()
 }
 
 // -- query / form param shapes ----------------------------------------------

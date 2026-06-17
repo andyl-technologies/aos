@@ -15,6 +15,14 @@ base64 = { workspace = true }
 ciborium = { workspace = true }
 p256 = { workspace = true }
 rsa = { workspace = true }
+# RS256 id_token verification for the per-org OIDC SSO flow (RFC-0004 Phase 5,
+# console-dedup stage F). `jwt-rustcrypto` builds the RSA verifying key from a
+# JWK's `(n, e)` components and decodes/validates the id_token, all over the
+# pure-Rust RustCrypto `rsa` crate (the same `rsa` this crate already uses for
+# WebAuthn) — no `ring`, no C. So the OIDC verifier is the identical code path on
+# the native hub and the Cloudflare Worker, and compiles to
+# `wasm32-unknown-unknown` with no C toolchain.
+jwt-rustcrypto = "0.2"
 # argon2 re-exports `password_hash::rand_core::OsRng` only when password-hash's
 # `getrandom` feature is on (the native build picks it up via workspace feature
 # unification; the standalone wasm build of this crate does not, so enable it

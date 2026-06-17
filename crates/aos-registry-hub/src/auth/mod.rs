@@ -36,7 +36,10 @@
 //!   COSE key decode, ES256/Ed25519/RS256 signature verification, and the
 //!   registration/assertion ceremonies.
 //! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow, JWKS-backed
-//!   RS256 id_token verification, and the [`oidc::SecretSealer`] seam.
+//!   RS256 id_token verification, and the [`oidc::SecretSealer`] seam. The flow
+//!   itself moved to [`aos_registry_core::auth::oidc`] (RFC-0004 Phase 5,
+//!   console-dedup stage F); this `oidc` module is a re-export shim so existing
+//!   `crate::auth::oidc::…` paths are unchanged.
 //! - [`extract`] — the axum extractors and middleware that gate requests:
 //!   [`extract::BearerAuth`], [`extract::SessionAuth`],
 //!   [`extract::MaybeSession`], plus the `/oauth2/token` handler.

@@ -28,7 +28,6 @@ rsa = { workspace = true }
 ciborium = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }
-jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
 tower-http = { workspace = true, features = ["catch-panic", "limit"] }
@@ -51,6 +50,11 @@ mysql = ["aos-registry-core/mysql"]
 
 [dev-dependencies]
 aos-cache = { workspace = true }
+# The OIDC SSO verifier moved to aos-registry-core (RFC-0004 Phase 5,
+# console-dedup stage F), so the hub no longer needs jsonwebtoken at build time.
+# The OIDC e2e test (`tests/oidc.rs`) still uses it to *encode* the signed
+# id_tokens its fake IdP serves, so it stays as a dev-dependency only.
+jsonwebtoken = { workspace = true }
 # Migration tests stage old-schema sqlite files with raw rusqlite, then reopen
 # them through the sqlx Database to assert the upgrade path (RFC-0004 Phase 5).
 rusqlite = { workspace = true }
