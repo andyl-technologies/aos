@@ -120,6 +120,22 @@ targets, because the live `/usr` tree is immutable. Sealing plaintext with
 `systemd-creds encrypt --with-key=tpm2` remains a host/runtime operation because
 TPM2 sealing requires a TPM context, not just the signed PCR public key.
 
+Install-at-boot desired files can also reference a system credential instead of
+embedding plaintext:
+
+```toml
+[desired.credentials.example]
+join-token = { system-credential = "bootstrap-token" }
+```
+
+During desired reconciliation, `apm` reads
+`/run/credentials/@system/bootstrap-token` and provisions the package-declared
+credstore source. This is the first-boot ingress path for SMBIOS-provided system
+credentials; the desired file carries only the system credential name. The
+credential then follows the package's signed metadata: plaintext credstore
+sources persist plaintext, while encrypted credstore sources are sealed before
+they are written.
+
 Multi-profile software — **meta-packages** (the Debian pattern: a near-empty
 payload + units + a dependency on the real package; `k3s-worker.deb` →
 `Depends: k3s`):

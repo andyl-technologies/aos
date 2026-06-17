@@ -18,7 +18,7 @@ use anyhow::{Context, Result, bail};
 use aos_core::output::Printer;
 
 use crate::config::ApmConfig;
-use crate::desired::DesiredPackageCredentials;
+use crate::desired::{DesiredCredentialValue, DesiredPackageCredentials};
 use crate::profile::Profile;
 use crate::profile::meta::list_meta;
 use crate::types::{
@@ -60,6 +60,24 @@ pub(crate) fn preflight_desired_credentials(
     installed: &[InstalledMeta],
     resolved_roots: &[PackageMeta],
 ) -> Result<()> {
+    preflight_desired_credentials_at_root(
+        config,
+        &aos_root_path(),
+        desired,
+        final_packages,
+        installed,
+        resolved_roots,
+    )
+}
+
+fn preflight_desired_credentials_at_root(
+    config: &ApmConfig,
+    root: &Path,
+    desired: &DesiredPackageCredentials,
+    final_packages: &BTreeSet<String>,
+    installed: &[InstalledMeta],
+    resolved_roots: &[PackageMeta],
+) -> Result<()> {
     if config.scope != ProfileScope::System || desired.is_empty() {
         return Ok(());
     }
@@ -89,7 +107,6 @@ pub(crate) fn preflight_desired_credentials(
         }
     }
 
-    let root = aos_root_path();
     for (package, package_credentials) in desired {
         if !final_packages.contains(package) {
             bail!(
@@ -103,7 +120,7 @@ pub(crate) fn preflight_desired_credentials(
         };
         validate_desired_package_credentials(
             &config.settings,
-            &root,
+            root,
             package,
             credentials,
             package_credentials,
@@ -188,7 +205,7 @@ fn materialize_package_credentials(
     root: &Path,
     package: &str,
     installed: &InstalledMeta,
-    desired_package: Option<&BTreeMap<String, String>>,
+    desired_package: Option<&BTreeMap<String, DesiredCredentialValue>>,
     restart_units: &mut BTreeSet<String>,
 ) -> Result<bool> {
     let apm = installed
@@ -218,10 +235,11 @@ fn materialize_package_credentials(
             .source
             .as_deref()
             .context("credential validation must require a source")?;
+        let plaintext = desired_credential_plaintext(root, package, &name, &value)?;
         let bytes = if credential.encrypted {
-            encrypt_desired_credential(settings, root, credential, value.as_bytes())?
+            encrypt_desired_credential(settings, root, credential, &plaintext)?
         } else {
-            value.into_bytes()
+            plaintext
         };
         if write_credential_source(root, source, &bytes)
             .with_context(|| format!("writing desired credential '{package}.{name}'"))?
@@ -239,11 +257,12 @@ fn validate_desired_package_credentials(
     root: &Path,
     package: &str,
     credentials: &[CredentialMeta],
-    desired_package: &BTreeMap<String, String>,
+    desired_package: &BTreeMap<String, DesiredCredentialValue>,
 ) -> Result<()> {
     let known_credentials = credential_lookup(credentials);
-    for name in desired_package.keys() {
+    for (name, value) in desired_package {
         validate_credential_name(name)?;
+        validate_desired_credential_value(root, package, name, value)?;
         let Some(credential) = known_credentials.get(name.as_str()) else {
             bail!(
                 "desired credentials for package '{package}' reference unknown credential '{name}'"
@@ -260,6 +279,67 @@ fn validate_desired_package_credentials(
         }
     }
     Ok(())
+}
+
+fn validate_desired_credential_value(
+    root: &Path,
+    package: &str,
+    name: &str,
+    value: &DesiredCredentialValue,
+) -> Result<()> {
+    if let DesiredCredentialValue::Source(source) = value {
+        validate_credential_name(&source.system_credential).with_context(|| {
+            format!("invalid desired system credential name '{package}.{name}'")
+        })?;
+        let path = system_credential_path(root, &source.system_credential)?;
+        let metadata = std::fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "reading system credential '{}' for desired credential '{}.{}' from {}",
+                source.system_credential,
+                package,
+                name,
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            bail!(
+                "system credential '{}' for desired credential '{}.{}' must be a regular file: {}",
+                source.system_credential,
+                package,
+                name,
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn desired_credential_plaintext(
+    root: &Path,
+    package: &str,
+    name: &str,
+    value: &DesiredCredentialValue,
+) -> Result<Vec<u8>> {
+    match value {
+        DesiredCredentialValue::Plaintext(value) => Ok(value.as_bytes().to_vec()),
+        DesiredCredentialValue::Source(source) => {
+            validate_desired_credential_value(root, package, name, value)?;
+            let path = system_credential_path(root, &source.system_credential)?;
+            std::fs::read(&path).with_context(|| {
+                format!(
+                    "reading system credential '{}' for desired credential '{}.{}' from {}",
+                    source.system_credential,
+                    package,
+                    name,
+                    path.display()
+                )
+            })
+        }
+    }
+}
+
+fn system_credential_path(root: &Path, name: &str) -> Result<PathBuf> {
+    rooted_absolute_path(root, &Path::new("/run/credentials/@system").join(name))
 }
 
 fn credential_lookup(credentials: &[CredentialMeta]) -> BTreeMap<&str, &CredentialMeta> {
@@ -684,6 +764,12 @@ mod tests {
         }
     }
 
+    fn system_credential_value(name: &str) -> DesiredCredentialValue {
+        DesiredCredentialValue::Source(crate::desired::DesiredCredentialSource {
+            system_credential: name.into(),
+        })
+    }
+
     #[test]
     fn materialize_package_credentials_writes_plaintext_persistent_and_live_sources() {
         let tmp = TempDir::new().unwrap();
@@ -782,6 +868,113 @@ mod tests {
     }
 
     #[test]
+    fn preflight_desired_credentials_rejects_missing_system_credential_source() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_credentials();
+        let desired = BTreeMap::from([(
+            "web".into(),
+            BTreeMap::from([(
+                "plain-token".into(),
+                system_credential_value("missing-token"),
+            )]),
+        )]);
+        let final_packages = BTreeSet::from(["web".to_string()]);
+
+        let err = preflight_desired_credentials_at_root(
+            &ApmConfig {
+                settings: ApmSettings::default(),
+                registries: Vec::new(),
+                scope: ProfileScope::System,
+            },
+            tmp.path(),
+            &desired,
+            &final_packages,
+            &[installed],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("reading system credential 'missing-token'"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn preflight_desired_credentials_rejects_non_regular_system_credential_source() {
+        let tmp = TempDir::new().unwrap();
+        let system_credential = tmp.path().join("run/credentials/@system/bootstrap-token");
+        std::fs::create_dir_all(&system_credential).unwrap();
+        let installed = installed_with_credentials();
+        let desired = BTreeMap::from([(
+            "web".into(),
+            BTreeMap::from([(
+                "plain-token".into(),
+                system_credential_value("bootstrap-token"),
+            )]),
+        )]);
+        let final_packages = BTreeSet::from(["web".to_string()]);
+
+        let err = preflight_desired_credentials_at_root(
+            &ApmConfig {
+                settings: ApmSettings::default(),
+                registries: Vec::new(),
+                scope: ProfileScope::System,
+            },
+            tmp.path(),
+            &desired,
+            &final_packages,
+            &[installed],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("must be a regular file"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn preflight_desired_credentials_rejects_symlink_system_credential_source() {
+        let tmp = TempDir::new().unwrap();
+        let system_credential = tmp.path().join("run/credentials/@system/bootstrap-token");
+        std::fs::create_dir_all(system_credential.parent().unwrap()).unwrap();
+        let target = tmp.path().join("bootstrap-token-target");
+        std::fs::write(&target, "from-system").unwrap();
+        std::os::unix::fs::symlink(&target, &system_credential).unwrap();
+        let installed = installed_with_credentials();
+        let desired = BTreeMap::from([(
+            "web".into(),
+            BTreeMap::from([(
+                "plain-token".into(),
+                system_credential_value("bootstrap-token"),
+            )]),
+        )]);
+        let final_packages = BTreeSet::from(["web".to_string()]);
+
+        let err = preflight_desired_credentials_at_root(
+            &ApmConfig {
+                settings: ApmSettings::default(),
+                registries: Vec::new(),
+                scope: ProfileScope::System,
+            },
+            tmp.path(),
+            &desired,
+            &final_packages,
+            &[installed],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("must be a regular file"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn materialize_package_credentials_writes_run_sources_only_to_live_root() {
         let tmp = TempDir::new().unwrap();
         let mut installed = installed_with_credentials();
@@ -807,6 +1000,103 @@ mod tests {
             "transient"
         );
         assert!(!tmp.path().join("var/etc/credstore/plain-token").exists());
+    }
+
+    #[test]
+    fn materialize_package_credentials_reads_system_credential_sources() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_credentials();
+        let system_credential = tmp.path().join("run/credentials/@system/bootstrap-token");
+        std::fs::create_dir_all(system_credential.parent().unwrap()).unwrap();
+        std::fs::write(&system_credential, "from-system").unwrap();
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "plain-token".into(),
+            DesiredCredentialValue::Source(crate::desired::DesiredCredentialSource {
+                system_credential: "bootstrap-token".into(),
+            }),
+        );
+        let mut restart = BTreeSet::new();
+
+        let changed = materialize_package_credentials(
+            &ApmSettings::default(),
+            tmp.path(),
+            "web",
+            &installed,
+            Some(&desired),
+            &mut restart,
+        )
+        .unwrap();
+
+        assert!(changed);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("etc/credstore/web/plain-token")).unwrap(),
+            "from-system"
+        );
+        assert!(restart.contains("web.service"));
+    }
+
+    #[test]
+    fn materialize_package_credentials_rejects_missing_system_credential_sources() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_credentials();
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "plain-token".into(),
+            DesiredCredentialValue::Source(crate::desired::DesiredCredentialSource {
+                system_credential: "missing-token".into(),
+            }),
+        );
+        let mut restart = BTreeSet::new();
+
+        let err = materialize_package_credentials(
+            &ApmSettings::default(),
+            tmp.path(),
+            "web",
+            &installed,
+            Some(&desired),
+            &mut restart,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("reading system credential 'missing-token'")
+        );
+    }
+
+    #[test]
+    fn materialize_package_credentials_rejects_symlink_system_credential_sources() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_credentials();
+        let system_credential = tmp.path().join("run/credentials/@system/bootstrap-token");
+        std::fs::create_dir_all(system_credential.parent().unwrap()).unwrap();
+        let target = tmp.path().join("bootstrap-token-target");
+        std::fs::write(&target, "from-system").unwrap();
+        std::os::unix::fs::symlink(&target, &system_credential).unwrap();
+        let mut desired = BTreeMap::new();
+        desired.insert(
+            "plain-token".into(),
+            DesiredCredentialValue::Source(crate::desired::DesiredCredentialSource {
+                system_credential: "bootstrap-token".into(),
+            }),
+        );
+        let mut restart = BTreeSet::new();
+
+        let err = materialize_package_credentials(
+            &ApmSettings::default(),
+            tmp.path(),
+            "web",
+            &installed,
+            Some(&desired),
+            &mut restart,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("must be a regular file"),
+            "{err:?}"
+        );
     }
 
     #[test]

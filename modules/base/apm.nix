@@ -24,8 +24,10 @@
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
   credentialNameRegex = "[A-Za-z0-9_.-]+";
+  credentialNameType = lib.types.strMatching credentialNameRegex;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
   desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+  desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
   uriEncode =
     builtins.replaceStrings
@@ -42,14 +44,37 @@
       ''
     else "data:,${encoded}";
 
+  systemCredentialEntries =
+    lib.mapAttrs
+    (_package: credentials:
+      lib.mapAttrs
+      (_name: systemCredential: {
+        system-credential = systemCredential;
+      })
+      credentials)
+    cfg.systemCredentials;
+  desiredCredentials = lib.recursiveUpdate cfg.credentials systemCredentialEntries;
+  credentialPackages =
+    lib.unique ((builtins.attrNames cfg.credentials) ++ (builtins.attrNames cfg.systemCredentials));
+  credentialConflicts =
+    lib.concatMap (
+      package: let
+        plaintextNames = builtins.attrNames (cfg.credentials.${package} or {});
+        systemNames = builtins.attrNames (cfg.systemCredentials.${package} or {});
+        overlaps = builtins.filter (name: builtins.elem name systemNames) plaintextNames;
+      in
+        builtins.map (name: "${package}.${name}") overlaps
+    )
+    credentialPackages;
+
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
     }
     // lib.optionalAttrs (cfg.config != {}) {
       config = cfg.config;
     }
-    // lib.optionalAttrs (cfg.credentials != {}) {
-      credentials = cfg.credentials;
+    // lib.optionalAttrs (desiredCredentials != {}) {
+      credentials = desiredCredentials;
     });
 
   desiredFile = {
@@ -172,6 +197,17 @@ in {
       '';
     };
 
+    systemCredentials = lib.mkOption {
+      type = desiredSystemCredentialsType;
+      default = {};
+      description = ''
+        Package-scoped system credential references to render under
+        `credentials.<package>` in `desired.toml`. `apm` reads plaintext from
+        `/run/credentials/@system/<name>` at first boot instead of embedding it
+        in the desired file.
+      '';
+    };
+
     includeRegistries = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -209,6 +245,14 @@ in {
         '';
       })
       (builtins.attrNames cfg.credentials)
+      ++ builtins.map (name: {
+        assertion = builtins.match packageNameRegex name != null;
+        message = ''
+          aos.apm.installAtBoot.systemCredentials.${name}: package credential
+          keys must be valid APM package names (${packageNameRegex}).
+        '';
+      })
+      (builtins.attrNames cfg.systemCredentials)
       ++ lib.concatLists (lib.mapAttrsToList (
           package: credentials:
             builtins.map (name: {
@@ -220,7 +264,41 @@ in {
             })
             (builtins.attrNames credentials)
         )
-        cfg.credentials);
+        cfg.credentials)
+      ++ lib.concatLists (lib.mapAttrsToList (
+          package: credentials:
+            builtins.map (name: {
+              assertion = builtins.match credentialNameRegex name != null;
+              message = ''
+                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
+                credential names must match ${credentialNameRegex}.
+              '';
+            })
+            (builtins.attrNames credentials)
+        )
+        cfg.systemCredentials)
+      ++ lib.concatLists (lib.mapAttrsToList (
+          package: credentials:
+            lib.mapAttrsToList (name: systemCredential: {
+              assertion = builtins.match credentialNameRegex systemCredential != null;
+              message = ''
+                aos.apm.installAtBoot.systemCredentials.${package}.${name}:
+                system credential names must match ${credentialNameRegex}.
+              '';
+            })
+            credentials
+        )
+        cfg.systemCredentials)
+      ++ [
+        {
+          assertion = credentialConflicts == [];
+          message = ''
+            aos.apm.installAtBoot credentials and systemCredentials must not
+            both define the same package credential(s):
+            ${builtins.concatStringsSep ", " credentialConflicts}.
+          '';
+        }
+      ];
 
     aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
 

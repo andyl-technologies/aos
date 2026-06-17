@@ -129,6 +129,7 @@
         packages = ["web" "worker"];
         config.web.env.TOKEN = "<tag>|{x}";
         credentials.web.join-token = "secret value";
+        systemCredentials.worker.join-token = "bootstrap-token";
       };
     }
   ];
@@ -170,6 +171,10 @@
     then throw "aos.apm.installAtBoot desired.toml is missing encoded credential table: ${desiredSource}"
     else if !(containsStr "join-token%20%3D%20%22secret%20value%22" desiredSource)
     then throw "aos.apm.installAtBoot desired.toml is missing encoded credential value: ${desiredSource}"
+    else if !(containsStr "%5Bcredentials.worker.join-token%5D" desiredSource)
+    then throw "aos.apm.installAtBoot desired.toml is missing encoded system credential table: ${desiredSource}"
+    else if !(containsStr "system-credential%20%3D%20%22bootstrap-token%22" desiredSource)
+    then throw "aos.apm.installAtBoot desired.toml is missing encoded system credential reference: ${desiredSource}"
     else if !(containsStr "name%20%3D%20%22example%22" registrySource)
     then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registrySource}"
     else if !(containsStr "example%3AEd25519%3AQUJDREVGR0g%3D" trustedKeysSource)
@@ -206,6 +211,39 @@
   in
     if forced.success
     then throw "aos.apm.installAtBoot.credentials must reject invalid credential names"
+    else "ok";
+
+  invalidInstallAtBootSystemCredentialSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.apm.installAtBoot = {
+        enable = true;
+        systemCredentials.web.join-token = "bad/name";
+      };
+    }
+  ];
+  apmInstallAtBootRejectsInvalidSystemCredentialName = let
+    forced = builtins.tryEval (invalidInstallAtBootSystemCredentialSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.apm.installAtBoot.systemCredentials must reject invalid system credential names"
+    else "ok";
+
+  conflictingInstallAtBootCredentialSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.apm.installAtBoot = {
+        enable = true;
+        credentials.web.join-token = "secret value";
+        systemCredentials.web.join-token = "bootstrap-token";
+      };
+    }
+  ];
+  apmInstallAtBootRejectsCredentialConflicts = let
+    forced = builtins.tryEval (conflictingInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.apm.installAtBoot must reject credentials/systemCredentials conflicts"
     else "ok";
 
   invalidRegistryNameSystem = mkSystem [
@@ -335,7 +373,7 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"

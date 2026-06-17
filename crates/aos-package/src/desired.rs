@@ -51,7 +51,34 @@ struct DesiredSection {
 pub(crate) type DesiredPackageConfig =
     BTreeMap<String, BTreeMap<String, BTreeMap<String, toml::Value>>>;
 /// Desired credential values keyed by package and credential name.
-pub(crate) type DesiredPackageCredentials = BTreeMap<String, BTreeMap<String, String>>;
+pub(crate) type DesiredPackageCredentials =
+    BTreeMap<String, BTreeMap<String, DesiredCredentialValue>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum DesiredCredentialValue {
+    Plaintext(String),
+    Source(DesiredCredentialSource),
+}
+
+impl From<String> for DesiredCredentialValue {
+    fn from(value: String) -> Self {
+        Self::Plaintext(value)
+    }
+}
+
+impl From<&str> for DesiredCredentialValue {
+    fn from(value: &str) -> Self {
+        Self::Plaintext(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) struct DesiredCredentialSource {
+    pub(crate) system_credential: String,
+}
 
 /// Reconcile explicit APM roots against a desired-package file.
 ///
@@ -252,6 +279,17 @@ impl DesiredFile {
                     format!("invalid desired credential name '{package}.{name}'")
                 })?;
             }
+            for (name, value) in package_credentials {
+                if let DesiredCredentialValue::Source(source) = value {
+                    crate::types::validate_credential_name(&source.system_credential)
+                        .with_context(|| {
+                            format!(
+                                "invalid desired system credential name '{}.{}'",
+                                package, name
+                            )
+                        })?;
+                }
+            }
         }
 
         Ok(Self {
@@ -351,8 +389,63 @@ join-token = "secret"
         assert!(desired.packages.contains("web"));
         assert_eq!(
             desired.credentials["web"]["join-token"],
-            "secret".to_string()
+            DesiredCredentialValue::Plaintext("secret".to_string())
         );
+    }
+
+    #[test]
+    fn desired_file_parse_system_credential_reference() {
+        let desired = DesiredFile::from_str(
+            r#"
+[desired]
+packages = ["web"]
+
+[desired.credentials.web]
+join-token = { system-credential = "bootstrap-token" }
+"#,
+        )
+        .unwrap();
+
+        let DesiredCredentialValue::Source(source) = &desired.credentials["web"]["join-token"]
+        else {
+            panic!("expected system credential source");
+        };
+        assert_eq!(source.system_credential, "bootstrap-token");
+    }
+
+    #[test]
+    fn desired_file_parse_system_credential_reference_table() {
+        let desired = DesiredFile::from_str(
+            r#"
+packages = ["web"]
+
+[credentials.web.join-token]
+system-credential = "bootstrap-token"
+"#,
+        )
+        .unwrap();
+
+        let DesiredCredentialValue::Source(source) = &desired.credentials["web"]["join-token"]
+        else {
+            panic!("expected system credential source");
+        };
+        assert_eq!(source.system_credential, "bootstrap-token");
+    }
+
+    #[test]
+    fn desired_file_rejects_system_credential_unknown_fields() {
+        let err = DesiredFile::from_str(
+            r#"
+packages = ["web"]
+
+[credentials.web.join-token]
+system-credential = "bootstrap-token"
+plaintext = "secret"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("invalid desired package TOML"));
     }
 
     #[test]
@@ -392,5 +485,23 @@ packages = ["web"]
         .unwrap_err();
 
         assert!(err.to_string().contains("invalid desired credential name"));
+    }
+
+    #[test]
+    fn desired_credentials_reject_invalid_system_credential_names() {
+        let err = DesiredFile::from_str(
+            r#"
+packages = ["web"]
+
+[credentials.web]
+join-token = { system-credential = "bad/name" }
+"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid desired system credential name")
+        );
     }
 }
