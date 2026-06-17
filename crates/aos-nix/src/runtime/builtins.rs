@@ -285,7 +285,7 @@ builtin_registry! {
     pub(crate) struct FindFileBuiltin;
     impl BuiltinInfo for FindFileBuiltin {
         const NAME: &'static [u8] = b"findFile";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FindFile;
     }
 
     pub(crate) struct FlakeRefToStringBuiltin;
@@ -528,7 +528,7 @@ builtin_registry! {
     pub(crate) struct NixPathBuiltin;
     impl BuiltinInfo for NixPathBuiltin {
         const NAME: &'static [u8] = b"nixPath";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::NixPathValue;
     }
 
     pub(crate) struct NixVersionBuiltin;
@@ -850,6 +850,8 @@ pub(crate) enum BuiltinExecution {
     NixVersionValue,
     /// The builtin evaluates to the pinned Nix language version integer.
     LangVersionValue,
+    /// The builtin evaluates to the configured Nix search path list.
+    NixPathValue,
     /// The builtin is a strict unary primitive operation.
     StrictUnary {
         /// The primitive operation executed by the tree-walk evaluator.
@@ -886,6 +888,8 @@ pub(crate) enum BuiltinExecution {
     Seq,
     /// The builtin evaluates `deepSeq`.
     DeepSeq,
+    /// The builtin evaluates `findFile`.
+    FindFile,
 }
 
 impl BuiltinExecution {
@@ -930,6 +934,9 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Pure,
             }),
             Self::StrictBinary { effect, .. } => Some(BuiltinDirect::StrictBinary { effect }),
+            Self::FindFile => Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::DirectBinary(_) => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Pure,
             }),
@@ -960,7 +967,8 @@ impl BuiltinExecution {
             | Self::CurrentTimeValue
             | Self::StoreDirValue
             | Self::NixVersionValue
-            | Self::LangVersionValue => None,
+            | Self::LangVersionValue
+            | Self::NixPathValue => None,
         }
     }
 
@@ -975,6 +983,7 @@ impl BuiltinExecution {
             | Self::ReadFile
             | Self::ReadFileType => Some(1),
             Self::StrictBinary { .. }
+            | Self::FindFile
             | Self::DirectBinary(_)
             | Self::Sort
             | Self::Seq
@@ -990,7 +999,8 @@ impl BuiltinExecution {
             | Self::CurrentTimeValue
             | Self::StoreDirValue
             | Self::NixVersionValue
-            | Self::LangVersionValue => None,
+            | Self::LangVersionValue
+            | Self::NixPathValue => None,
         }
     }
 }

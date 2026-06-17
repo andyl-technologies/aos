@@ -50,6 +50,8 @@ use crate::value::{Value, ValueTag};
 const TO_STRING_ATTR: &[u8] = b"__toString";
 const OUT_PATH_ATTR: &[u8] = b"outPath";
 const NAME_ATTR: &[u8] = b"name";
+const PATH_ATTR: &[u8] = b"path";
+const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
 const HASH_ATTR: &[u8] = b"hash";
 const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
@@ -63,6 +65,12 @@ const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 struct RegexCaptureMatch {
     range: std::ops::Range<usize>,
     groups: Vec<Option<std::ops::Range<usize>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedSearchPathEntry {
+    prefix: Vec<u8>,
+    path: Vec<u8>,
 }
 
 /// Evaluates an IR root to weak head normal form with the tree-walk oracle.
@@ -166,19 +174,61 @@ impl EvalOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeWalkOptions {
     store_dir: Vec<u8>,
+    search_path_base: Vec<u8>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
+    nix_path: Vec<NixSearchPathEntry>,
 }
 
 impl Default for TreeWalkOptions {
     fn default() -> Self {
         Self {
             store_dir: DEFAULT_STORE_DIR.to_vec(),
+            search_path_base: b"/".to_vec(),
             current_system: None,
             current_time: None,
             env_vars: BTreeMap::new(),
+            nix_path: Vec::new(),
         }
+    }
+}
+
+/// A configured entry in the Nix search path used by `<...>` and `findFile`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NixSearchPathEntry {
+    prefix: Vec<u8>,
+    path: Vec<u8>,
+}
+
+impl NixSearchPathEntry {
+    /// Creates a search-path entry from a lookup prefix and path.
+    ///
+    /// The empty prefix models bare search-path roots. The path text is kept
+    /// as provided so `builtins.nixPath` reflects configured entries without
+    /// normalizing their spelling.
+    ///
+    /// # Errors
+    ///
+    /// This constructor currently accepts all byte strings and does not fail.
+    pub fn new(
+        prefix: impl Into<Vec<u8>>,
+        path: impl Into<Vec<u8>>,
+    ) -> Result<Self, TreeWalkOptionsError> {
+        Ok(Self {
+            prefix: prefix.into(),
+            path: path.into(),
+        })
+    }
+
+    /// Returns the search-path prefix matched against lookup paths.
+    pub fn prefix(&self) -> &[u8] {
+        &self.prefix
+    }
+
+    /// Returns the configured filesystem path for this search-path entry.
+    pub fn path(&self) -> &[u8] {
+        &self.path
     }
 }
 
@@ -203,6 +253,24 @@ impl TreeWalkOptions {
             store_dir: normalize_store_dir(store_dir.into())?,
             ..Self::default()
         })
+    }
+
+    /// Creates evaluator options with a configured search-path base directory.
+    ///
+    /// Relative `NIX_PATH` and `findFile` entry paths are resolved against this
+    /// directory when search-path lookup runs. The default is `/`, keeping
+    /// evaluation independent from the ambient process working directory unless
+    /// a caller explicitly models that C++ Nix setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `search_path_base` is relative.
+    pub fn with_search_path_base(
+        search_path_base: impl Into<Vec<u8>>,
+    ) -> Result<Self, TreeWalkOptionsError> {
+        let mut options = Self::default();
+        options.set_search_path_base(search_path_base)?;
+        Ok(options)
     }
 
     /// Creates evaluator options with one configured environment variable.
@@ -266,6 +334,26 @@ impl TreeWalkOptions {
         Ok(())
     }
 
+    /// Replaces the configured search-path base directory.
+    ///
+    /// Relative search-path entry paths are resolved against this directory
+    /// during `<...>` and `builtins.findFile` lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `search_path_base` is relative.
+    pub fn set_search_path_base(
+        &mut self,
+        search_path_base: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.search_path_base = normalize_absolute_path(
+            search_path_base.into(),
+            b"/",
+            TreeWalkOptionsError::RelativeSearchPathBase,
+        )?;
+        Ok(())
+    }
+
     /// Replaces the configured target system.
     ///
     /// # Errors
@@ -319,9 +407,42 @@ impl TreeWalkOptions {
         self.env_vars.remove(name);
     }
 
+    /// Replaces the configured Nix search path.
+    ///
+    /// The evaluator never reads ambient `NIX_PATH`; callers must provide the
+    /// search-path entries they want `<...>`, `builtins.nixPath`, and
+    /// `builtins.findFile` to observe.
+    pub fn set_nix_path(&mut self, entries: impl IntoIterator<Item = NixSearchPathEntry>) {
+        self.nix_path.clear();
+        self.nix_path.extend(entries);
+    }
+
+    /// Appends one configured Nix search-path entry.
+    ///
+    /// This method accepts both absolute and relative paths. Relative entries
+    /// are resolved against [`TreeWalkOptions::search_path_base`] when lookup
+    /// runs.
+    ///
+    /// # Errors
+    ///
+    /// This method currently accepts all byte strings and does not fail.
+    pub fn add_nix_path_entry(
+        &mut self,
+        prefix: impl Into<Vec<u8>>,
+        path: impl Into<Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        self.nix_path.push(NixSearchPathEntry::new(prefix, path)?);
+        Ok(())
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
+    }
+
+    /// Returns the base directory for relative search-path entries.
+    pub fn search_path_base(&self) -> &[u8] {
+        &self.search_path_base
     }
 
     /// Returns the configured target system, if one is available.
@@ -338,6 +459,11 @@ impl TreeWalkOptions {
     pub fn env_var(&self, name: &[u8]) -> Option<&[u8]> {
         self.env_vars.get(name).map(Vec::as_slice)
     }
+
+    /// Returns the configured Nix search-path entries.
+    pub fn nix_path(&self) -> &[NixSearchPathEntry] {
+        &self.nix_path
+    }
 }
 
 /// Errors raised while configuring a tree-walk evaluator.
@@ -346,6 +472,10 @@ pub enum TreeWalkOptionsError {
     /// The configured Nix store directory is not an absolute path.
     #[error("Nix store directory must be absolute")]
     RelativeStoreDir,
+
+    /// The configured search-path base directory is not an absolute path.
+    #[error("Nix search-path base directory must be absolute")]
+    RelativeSearchPathBase,
 
     /// The configured target system is empty.
     #[error("Nix currentSystem value must not be empty")]
@@ -357,15 +487,27 @@ pub enum TreeWalkOptionsError {
 }
 
 fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
-    if store_dir.is_empty() {
-        return Ok(DEFAULT_STORE_DIR.to_vec());
+    normalize_absolute_path(
+        store_dir,
+        DEFAULT_STORE_DIR,
+        TreeWalkOptionsError::RelativeStoreDir,
+    )
+}
+
+fn normalize_absolute_path(
+    path: Vec<u8>,
+    empty_default: &[u8],
+    relative_error: TreeWalkOptionsError,
+) -> Result<Vec<u8>, TreeWalkOptionsError> {
+    if path.is_empty() {
+        return Ok(empty_default.to_vec());
     }
-    if !store_dir.starts_with(b"/") {
-        return Err(TreeWalkOptionsError::RelativeStoreDir);
+    if !path.starts_with(b"/") {
+        return Err(relative_error);
     }
 
     let mut components = Vec::new();
-    for component in store_dir.split(|byte| *byte == b'/') {
+    for component in path.split(|byte| *byte == b'/') {
         if component.is_empty() || component == b"." {
             continue;
         }
@@ -376,7 +518,7 @@ fn normalize_store_dir(store_dir: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsErr
         components.push(component);
     }
 
-    let mut normalized = Vec::with_capacity(store_dir.len());
+    let mut normalized = Vec::with_capacity(path.len());
     for component in components {
         normalized.push(b'/');
         normalized.extend_from_slice(component);
@@ -486,6 +628,100 @@ fn path_without_trailing_path_markers(path: &[u8]) -> &[u8] {
     &path[..end]
 }
 
+fn search_path_suffix<'a>(prefix: &[u8], lookup: &'a [u8]) -> Option<&'a [u8]> {
+    if prefix.is_empty() {
+        return Some(lookup);
+    }
+    if lookup == prefix {
+        return Some(&[]);
+    }
+    lookup
+        .strip_prefix(prefix)
+        .and_then(|suffix| suffix.strip_prefix(b"/"))
+}
+
+fn search_path_literal_lookup<'a>(
+    id: IrId,
+    span: Span,
+    literal: &'a [u8],
+) -> Result<&'a [u8], TreeWalkError> {
+    literal
+        .strip_prefix(b"<")
+        .and_then(|literal| literal.strip_suffix(b">"))
+        .ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSearchPathLiteral {
+                    id,
+                    literal: literal.to_vec(),
+                },
+                span,
+            )
+        })
+}
+
+fn join_search_path(
+    id: IrId,
+    span: Span,
+    base: &[u8],
+    path: &[u8],
+    suffix: &[u8],
+) -> Result<Vec<u8>, TreeWalkError> {
+    let mut joined = Vec::new();
+
+    if path.starts_with(b"/") {
+        append_search_path_component(id, span, &mut joined, path)?;
+    } else {
+        append_search_path_component(id, span, &mut joined, base)?;
+        append_search_path_component(id, span, &mut joined, path)?;
+    }
+
+    append_search_path_component(id, span, &mut joined, suffix)?;
+    TreeWalk::absolute_path_bytes_for_node(id, span, &joined)
+}
+
+fn append_search_path_component(
+    id: IrId,
+    span: Span,
+    joined: &mut Vec<u8>,
+    component: &[u8],
+) -> Result<(), TreeWalkError> {
+    if component.is_empty() {
+        return Ok(());
+    }
+
+    let needs_separator = !joined.is_empty() && !joined.ends_with(b"/");
+    let additional = component
+        .len()
+        .checked_add(usize::from(needs_separator))
+        .ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+    let len = joined.len().checked_add(additional).ok_or_else(|| {
+        TreeWalkError::new(
+            TreeWalkErrorKind::ByteAllocationFailed {
+                id,
+                len: usize::MAX,
+            },
+            span,
+        )
+    })?;
+    joined.try_reserve_exact(additional).map_err(|_| {
+        TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+    })?;
+
+    if needs_separator {
+        joined.push(b'/');
+    }
+    joined.extend_from_slice(component);
+    Ok(())
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk<'ir> {
@@ -581,6 +817,7 @@ impl<'ir> TreeWalk<'ir> {
             }
             IrKind::Str | IrKind::Uri => self.eval_string(id, &node),
             IrKind::Path => self.eval_path(id, &node),
+            IrKind::SearchPath => self.eval_search_path(id, &node),
             IrKind::Interp => self.eval_interp(id, &node),
             IrKind::LocalVar => self.eval_local_var(id, &node),
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
@@ -1046,7 +1283,8 @@ impl<'ir> TreeWalk<'ir> {
             | BuiltinExecution::CurrentTimeValue
             | BuiltinExecution::StoreDirValue
             | BuiltinExecution::NixVersionValue
-            | BuiltinExecution::LangVersionValue => select_builtin(self, builtin, id, span, symbol),
+            | BuiltinExecution::LangVersionValue
+            | BuiltinExecution::NixPathValue => select_builtin(self, builtin, id, span, symbol),
             _ => self
                 .heap
                 .alloc_primop(EvalPrimOp::new(symbol))
@@ -1248,6 +1486,210 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_path(NixString::from_bytes(path))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_search_path(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "search-path symbol payload"));
+        };
+        let lookup = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let lookup = Self::copy_bytes_for_node(id, node.span, lookup)?;
+        let lookup = search_path_literal_lookup(id, node.span, &lookup)?;
+        let entries = self
+            .options
+            .nix_path()
+            .iter()
+            .map(|entry| ResolvedSearchPathEntry {
+                prefix: entry.prefix().to_vec(),
+                path: entry.path().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        self.find_file_in_entries(id, node.span, &entries, lookup)
+    }
+
+    fn eval_nix_path_value(&mut self, id: IrId, span: Span) -> Result<Value, TreeWalkError> {
+        let entries = self.options.nix_path().to_vec();
+        let mut values = Vec::new();
+        values.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: entries.len(),
+                },
+                span,
+            )
+        })?;
+        let path_key = self.intern_builtin_attr_symbol(id, PATH_ATTR, span)?;
+        let prefix_key = self.intern_builtin_attr_symbol(id, PREFIX_ATTR, span)?;
+
+        for entry in entries {
+            let path = self.alloc_static_string(id, span, entry.path())?;
+            let prefix = self.alloc_static_string(id, span, entry.prefix())?;
+            let attrs = FlatAttrs::new(
+                vec![
+                    AttrEntry::new(path_key, path),
+                    AttrEntry::new(prefix_key, prefix),
+                ],
+                &self.symbols,
+            )
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+            let attrs = self.heap.alloc_attrs(0, attrs).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            values.push(attrs);
+        }
+
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_find_file_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        search_path_id: IrId,
+        search_path_span: Span,
+        search_path: Value,
+        lookup_id: IrId,
+        lookup_span: Span,
+        lookup: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let entries =
+            self.search_path_entries_from_value(search_path_id, search_path_span, search_path)?;
+        let lookup = self.context_free_string_bytes(lookup_id, lookup_span, lookup, "findFile")?;
+        self.find_file_in_entries(id, span, &entries, &lookup)
+    }
+
+    fn search_path_entries_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<ResolvedSearchPathEntry>, TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let list = self
+            .heap
+            .get_list(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let elements = Self::clone_list_elements(id, span, list)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let element = self.force_value(id, span, element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    span,
+                ));
+            }
+            let path = self.required_attr_value_by_name(id, element, PATH_ATTR, span)?;
+            let path = self.force_value(id, span, path)?;
+            let path = self.coerce_to_search_path_bytes(id, span, path, "findFile")?;
+            let prefix =
+                if let Some(prefix) = self.attr_value_by_name(id, element, PREFIX_ATTR, span)? {
+                    let prefix = self.force_value(id, span, prefix)?;
+                    self.context_free_string_bytes(id, span, prefix, "findFile")?
+                } else {
+                    Vec::new()
+                };
+            entries.push(ResolvedSearchPathEntry { prefix, path });
+        }
+        Ok(entries)
+    }
+
+    fn coerce_to_search_path_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(id, span, value)?;
+            return Self::copy_bytes_for_node(id, span, path.bytes());
+        }
+        let string = self.coerce_to_string(id, value, span)?;
+        self.context_free_string_bytes(id, span, string, op)
+    }
+
+    fn find_file_in_entries(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &[ResolvedSearchPathEntry],
+        lookup: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        for entry in entries {
+            let Some(suffix) = search_path_suffix(entry.prefix.as_slice(), lookup) else {
+                continue;
+            };
+            let candidate = join_search_path(
+                id,
+                span,
+                self.options.search_path_base(),
+                entry.path.as_slice(),
+                suffix,
+            )?;
+            match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
+                Ok(_) => {
+                    return self
+                        .heap
+                        .alloc_path(NixString::from_bytes(candidate))
+                        .map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                        });
+                }
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(source) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::PathStat {
+                            id,
+                            path: candidate,
+                            message: source.to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::SearchPathNotFound {
+                id,
+                lookup: lookup.to_vec(),
+            },
+            span,
+        ))
     }
 
     fn eval_interp(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -12796,6 +13238,7 @@ fn select_builtin(
         }
         BuiltinExecution::NixVersionValue => eval.alloc_static_string(id, span, PINNED_NIX_VERSION),
         BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
+        BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
         _ if builtin.first_class_arity().is_some() => eval
             .heap
             .alloc_primop(EvalPrimOp::new(symbol))
@@ -12836,6 +13279,25 @@ fn apply_builtin_direct(
         BuiltinExecution::StrictBinary { primop, .. } => {
             check_builtin_arity(call, 2, args.len())?;
             eval.eval_strict_binary_primop_direct(call, node, primop, args[0], args[1])
+        }
+        BuiltinExecution::FindFile => {
+            check_builtin_arity(call, 2, args.len())?;
+            let search_path = args[0];
+            let search_path_span = eval.node(search_path)?.span;
+            let search_path_value = eval.eval_node(search_path)?;
+            let lookup = args[1];
+            let lookup_span = eval.node(lookup)?.span;
+            let lookup_value = eval.eval_node(lookup)?;
+            eval.eval_find_file_primop(
+                call.id,
+                call.span,
+                search_path,
+                search_path_span,
+                search_path_value,
+                lookup,
+                lookup_span,
+                lookup_value,
+            )
         }
         BuiltinExecution::DirectBinary(primop) => {
             check_builtin_arity(call, 2, args.len())?;
@@ -12932,6 +13394,24 @@ fn apply_builtin(
                 primop,
                 args[0],
                 args[1],
+            )
+        }
+        BuiltinExecution::FindFile => {
+            check_builtin_arity(call, 2, args.len())?;
+            let search_path = args[0];
+            let search_path_value =
+                eval.force_value(search_path.id(), search_path.span(), search_path.value())?;
+            let lookup = args[1];
+            let lookup_value = eval.force_value(lookup.id(), lookup.span(), lookup.value())?;
+            eval.eval_find_file_primop(
+                call.id,
+                call.span,
+                search_path.id(),
+                search_path.span(),
+                search_path_value,
+                lookup.id(),
+                lookup.span(),
+                lookup_value,
             )
         }
         BuiltinExecution::DirectBinary(primop) => {
@@ -13492,6 +13972,22 @@ pub enum TreeWalkErrorKind {
         path: Vec<u8>,
         /// The filesystem diagnostic.
         message: String,
+    },
+    /// A Nix search-path lookup found no existing candidate.
+    #[error("search path lookup at node {id:?} did not find {lookup:?}")]
+    SearchPathNotFound {
+        /// The search-path node or primop id.
+        id: IrId,
+        /// The unresolved lookup bytes.
+        lookup: Vec<u8>,
+    },
+    /// A lowered search-path literal did not retain its `<...>` delimiters.
+    #[error("invalid search-path literal at node {id:?}: {literal:?}")]
+    InvalidSearchPathLiteral {
+        /// The malformed search-path node id.
+        id: IrId,
+        /// The malformed literal bytes.
+        literal: Vec<u8>,
     },
     /// A list spine buffer could not be reserved.
     #[error("failed to reserve {len} list elements at node {id:?}")]
@@ -14058,6 +14554,23 @@ mod tests {
         trim_command_stdout(output.stdout)
     }
 
+    fn cpp_nix_eval_json_with_env(oracle: &str, source: &str, env: &[(&str, &str)]) -> Vec<u8> {
+        let mut command = Command::new(oracle);
+        command.args(["--eval", "--strict", "--json", "--expr", source]);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let output = command
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        trim_command_stdout(output.stdout)
+    }
+
     fn cpp_nix_eval_string(oracle: &str, source: &str) -> Vec<u8> {
         let json = cpp_nix_eval_json(oracle, source);
         serde_json::from_slice::<String>(&json)
@@ -14077,6 +14590,17 @@ mod tests {
         options: TreeWalkOptions,
     ) {
         let reference = cpp_nix_eval_json(oracle, source);
+        let candidate = eval_json_bytes_with_options(source, options);
+        assert_eq!(candidate, reference, "expression diverged: {source}");
+    }
+
+    fn assert_cpp_nix_json_matches_tree_walk_with_options_and_env(
+        oracle: &str,
+        source: &str,
+        options: TreeWalkOptions,
+        env: &[(&str, &str)],
+    ) {
+        let reference = cpp_nix_eval_json_with_env(oracle, source, env);
         let candidate = eval_json_bytes_with_options(source, options);
         assert_eq!(candidate, reference, "expression diverged: {source}");
     }
@@ -14605,6 +15129,22 @@ mod tests {
             TreeWalkOptions::with_store_dir(b"relative/store".to_vec())
                 .expect_err("relative store dir is rejected"),
             TreeWalkOptionsError::RelativeStoreDir
+        );
+
+        let base = TreeWalkOptions::with_search_path_base(b"//tmp//aos-search/./".to_vec())
+            .expect("absolute search-path base normalizes");
+        assert_eq!(base.search_path_base(), b"/tmp/aos-search");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_search_path_base(b"/var//aos/search//".to_vec())
+            .expect("absolute search-path base sets");
+        assert_eq!(options.search_path_base(), b"/var/aos/search");
+
+        assert_eq!(
+            TreeWalkOptions::with_search_path_base(b"relative/search".to_vec())
+                .expect_err("relative search-path base is rejected"),
+            TreeWalkOptionsError::RelativeSearchPathBase
         );
     }
 
@@ -15627,6 +16167,203 @@ mod tests {
             return;
         };
         assert_cpp_nix_string_path_builtins_match_tree_walk(&oracle);
+    }
+
+    fn search_path_options(prefix: &[u8], path: &Path) -> TreeWalkOptions {
+        let mut options = TreeWalkOptions::new();
+        options
+            .add_nix_path_entry(prefix.to_vec(), path.as_os_str().as_bytes().to_vec())
+            .expect("search path entry configures");
+        options
+    }
+
+    fn relative_search_path_options(base: &Path, prefix: &[u8], path: &[u8]) -> TreeWalkOptions {
+        let mut options =
+            TreeWalkOptions::with_search_path_base(base.as_os_str().as_bytes().to_vec())
+                .expect("search-path base is absolute");
+        options
+            .add_nix_path_entry(prefix.to_vec(), path.to_vec())
+            .expect("relative search path entry configures");
+        options
+    }
+
+    fn search_path_fixture() -> (PathBuf, PathBuf, PathBuf) {
+        let root = unique_temp_dir("find-file");
+        let nixpkgs = root.join("nixpkgs");
+        let subdir = nixpkgs.join("subdir");
+        fs::create_dir_all(&subdir).expect("search path fixture creates");
+        fs::write(nixpkgs.join("default.nix"), b"{ }").expect("default file writes");
+        (root, nixpkgs, subdir)
+    }
+
+    #[test]
+    fn nix_path_value_reflects_configured_search_path() {
+        let (root, nixpkgs, _subdir) = search_path_fixture();
+        let options = search_path_options(b"nixpkgs", &nixpkgs);
+
+        let actual = eval_string_bytes_with_options("builtins.toJSON builtins.nixPath", options);
+        let expected = format!(
+            r#"[{{"path":{},"prefix":"nixpkgs"}}]"#,
+            nix_string_literal(&path_source(&nixpkgs))
+        );
+        assert_eq!(actual, expected.into_bytes());
+
+        let options = relative_search_path_options(&root, b"nixpkgs", b"nixpkgs/./");
+        let actual = eval_string_bytes_with_options("builtins.toJSON builtins.nixPath", options);
+        assert_eq!(
+            actual,
+            br#"[{"path":"nixpkgs/./","prefix":"nixpkgs"}]"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn find_file_and_search_path_return_path_values() {
+        let (root, nixpkgs, subdir) = search_path_fixture();
+        let prefixed = search_path_options(b"nixpkgs", &nixpkgs);
+        let bare = search_path_options(b"", &root);
+        let expected = path_source(&subdir);
+
+        for (source, options) in [
+            (
+                r#"let p = builtins.findFile builtins.nixPath "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+                prefixed.clone(),
+            ),
+            (
+                r#"let f = builtins.findFile; g = f builtins.nixPath; p = g "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+                prefixed.clone(),
+            ),
+            (
+                r#"let p = <nixpkgs/subdir>; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+                prefixed,
+            ),
+            (
+                r#"let p = builtins.findFile builtins.nixPath "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+                bare,
+            ),
+        ] {
+            let actual = eval_json_bytes_with_options(source, options);
+            let expected_json = format!(r#"["path",{}]"#, nix_string_literal(&expected));
+            assert_eq!(
+                actual,
+                expected_json.into_bytes(),
+                "source diverged: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_file_accepts_missing_prefix_and_relative_entries() {
+        let (root, nixpkgs, subdir) = search_path_fixture();
+        let expected = path_source(&subdir);
+
+        for (source, options) in [
+            (
+                format!(
+                    r#"let p = builtins.findFile [ {{ path = {}; }} ] "subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+                    nix_string_literal(&path_source(&nixpkgs))
+                ),
+                TreeWalkOptions::new(),
+            ),
+            (
+                r#"let p = builtins.findFile [ { path = "nixpkgs"; prefix = "nixpkgs"; } ] "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#.to_owned(),
+                TreeWalkOptions::with_search_path_base(root.as_os_str().as_bytes().to_vec())
+                    .expect("search-path base is absolute"),
+            ),
+            (
+                r#"let p = builtins.findFile [ { path = "nixpkgs"; } ] "subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#.to_owned(),
+                TreeWalkOptions::with_search_path_base(root.as_os_str().as_bytes().to_vec())
+                    .expect("search-path base is absolute"),
+            ),
+            (
+                r#"let p = <nixpkgs/subdir>; in [ (builtins.typeOf p) (builtins.toString p) ]"#.to_owned(),
+                relative_search_path_options(&root, b"nixpkgs", b"nixpkgs"),
+            ),
+        ] {
+            let actual = eval_json_bytes_with_options(&source, options);
+            let expected_json = format!(r#"["path",{}]"#, nix_string_literal(&expected));
+            assert_eq!(
+                actual,
+                expected_json.into_bytes(),
+                "source diverged: {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_file_reports_exhausted_search_path() {
+        let (_root, nixpkgs, _subdir) = search_path_fixture();
+        let options = search_path_options(b"nixpkgs", &nixpkgs);
+        let ir = lower(r#"builtins.findFile builtins.nixPath "nixpkgs/missing""#);
+        let error = eval_whnf_owned_with_options(&ir, options)
+            .expect_err("missing search-path lookup is rejected");
+
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::SearchPathNotFound { lookup, .. }
+                    if lookup == b"nixpkgs/missing"
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    fn assert_cpp_nix_find_file_and_search_path_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+        let (root, nixpkgs, subdir) = search_path_fixture();
+        let nixpkgs_source = nix_string_literal(&path_source(&nixpkgs));
+        let root_source = nix_string_literal(&path_source(&root));
+        let expected = path_source(&subdir);
+
+        for source in [
+            format!(
+                r#"let p = builtins.findFile [ {{ path = {nixpkgs_source}; prefix = "nixpkgs"; }} ] "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#
+            ),
+            format!(
+                r#"let p = builtins.findFile [ {{ path = {nixpkgs_source}; }} ] "subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#
+            ),
+            format!(
+                r#"let p = builtins.findFile [ {{ path = {root_source}; prefix = ""; }} ] "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#
+            ),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        let nix_path = format!("nixpkgs={}", path_source(&nixpkgs));
+        let options = search_path_options(b"nixpkgs", &nixpkgs);
+        for source in [
+            r#"builtins.head builtins.nixPath"#,
+            r#"let p = builtins.findFile builtins.nixPath "nixpkgs/subdir"; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+            r#"let p = <nixpkgs/subdir>; in [ (builtins.typeOf p) (builtins.toString p) ]"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk_with_options_and_env(
+                oracle,
+                source,
+                options.clone(),
+                &[("NIX_PATH", &nix_path)],
+            );
+        }
+
+        let actual = eval_string_bytes_with_options(
+            r#"builtins.toString <nixpkgs/subdir>"#,
+            search_path_options(b"nixpkgs", &nixpkgs),
+        );
+        assert_eq!(actual, expected.into_bytes());
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_find_file_and_search_path_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_find_file_and_search_path_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_find_file_and_search_path_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix findFile check");
+            return;
+        };
+        assert_cpp_nix_find_file_and_search_path_match_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_json_builtins_match_tree_walk(oracle: &str) {
@@ -26395,14 +27132,14 @@ mod tests {
 
     #[test]
     fn unsupported_nodes_report_kind_and_span() {
-        let ir = lower("<nixpkgs>");
-        let error = eval_whnf(&ir).expect_err("search paths are not implemented yet");
+        let ir = lower(r#"derivationStrict { name = "x"; }"#);
+        let error = eval_whnf(&ir).expect_err("derivationStrict is not implemented yet");
 
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::UnsupportedNode {
                 id: ir.root,
-                kind: IrKind::SearchPath,
+                kind: IrKind::DerivationStrict,
             }
         );
         assert_eq!(
