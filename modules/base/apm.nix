@@ -23,7 +23,9 @@
 
   packageNameRegex = "[A-Za-z0-9][A-Za-z0-9+._=-]*";
   packageNameType = lib.types.strMatching packageNameRegex;
+  credentialNameRegex = "[A-Za-z0-9_.-]+";
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
+  desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
 
   uriEncode =
     builtins.replaceStrings
@@ -45,11 +47,14 @@
     }
     // lib.optionalAttrs (cfg.config != {}) {
       config = cfg.config;
+    }
+    // lib.optionalAttrs (cfg.credentials != {}) {
+      credentials = cfg.credentials;
     });
 
   desiredFile = {
     path = "/etc/aos/packages.d/desired.toml";
-    mode = 420; # 0644
+    mode = 384; # 0600
     overwrite = true;
     contents.source = dataUrl desiredToml;
   };
@@ -156,6 +161,17 @@ in {
       '';
     };
 
+    credentials = lib.mkOption {
+      type = desiredCredentialsType;
+      default = {};
+      description = ''
+        Package-scoped credential plaintext to render under
+        `credentials.<package>` in `desired.toml` for first-boot
+        provisioning into signed package-declared systemd credstore
+        sources.
+      '';
+    };
+
     includeRegistries = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -184,7 +200,27 @@ in {
           be valid APM package names (${packageNameRegex}).
         '';
       })
-      (builtins.attrNames cfg.config);
+      (builtins.attrNames cfg.config)
+      ++ builtins.map (name: {
+        assertion = builtins.match packageNameRegex name != null;
+        message = ''
+          aos.apm.installAtBoot.credentials.${name}: package credential keys
+          must be valid APM package names (${packageNameRegex}).
+        '';
+      })
+      (builtins.attrNames cfg.credentials)
+      ++ lib.concatLists (lib.mapAttrsToList (
+          package: credentials:
+            builtins.map (name: {
+              assertion = builtins.match credentialNameRegex name != null;
+              message = ''
+                aos.apm.installAtBoot.credentials.${package}.${name}:
+                credential names must match ${credentialNameRegex}.
+              '';
+            })
+            (builtins.attrNames credentials)
+        )
+        cfg.credentials);
 
     aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
 

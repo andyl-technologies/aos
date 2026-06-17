@@ -42,6 +42,7 @@
 pub mod clean;
 pub mod config;
 pub(crate) mod config_artifact;
+pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
 pub mod download;
@@ -1841,9 +1842,7 @@ pub async fn run(
         }
         PackageCommand::Show {
             package, registry, ..
-        } => {
-            query::show(&config, package, registry.as_deref(), printer).await
-        }
+        } => query::show(&config, package, registry.as_deref(), printer).await,
         PackageCommand::Info {
             package,
             registry,

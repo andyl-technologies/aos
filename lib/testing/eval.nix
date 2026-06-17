@@ -128,6 +128,7 @@
         enable = true;
         packages = ["web" "worker"];
         config.web.env.TOKEN = "<tag>|{x}";
+        credentials.web.join-token = "secret value";
       };
     }
   ];
@@ -155,6 +156,8 @@
   in
     if findIgnitionDir "/etc/aos/packages.d" installAtBootIgnition.storage.directories == null
     then "unreachable"
+    else if installAtBootDesiredFile.mode != 384
+    then throw "aos.apm.installAtBoot desired.toml must be mode 0600"
     else if findIgnitionDir "/etc/apm/registries.d" installAtBootIgnition.storage.directories == null
     then "unreachable"
     else if !(containsStr "packages%20%3D%20%5B%22web%22%2C%20%22worker%22%5D" desiredSource)
@@ -163,6 +166,10 @@
     then throw "aos.apm.installAtBoot desired.toml is missing encoded config table: ${desiredSource}"
     else if !(containsStr "TOKEN%20%3D%20%22%3Ctag%3E%7C%7Bx%7D%22" desiredSource)
     then throw "aos.apm.installAtBoot desired.toml is missing encoded config value: ${desiredSource}"
+    else if !(containsStr "%5Bcredentials.web%5D" desiredSource)
+    then throw "aos.apm.installAtBoot desired.toml is missing encoded credential table: ${desiredSource}"
+    else if !(containsStr "join-token%20%3D%20%22secret%20value%22" desiredSource)
+    then throw "aos.apm.installAtBoot desired.toml is missing encoded credential value: ${desiredSource}"
     else if !(containsStr "name%20%3D%20%22example%22" registrySource)
     then throw "aos.apm.installAtBoot registry file is missing the registry name: ${registrySource}"
     else if !(containsStr "example%3AEd25519%3AQUJDREVGR0g%3D" trustedKeysSource)
@@ -183,6 +190,22 @@
   in
     if forced.success
     then throw "aos.apm.installAtBoot.config must reject invalid package names"
+    else "ok";
+
+  invalidInstallAtBootCredentialSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.apm.installAtBoot = {
+        enable = true;
+        credentials.web."bad/name" = "abc";
+      };
+    }
+  ];
+  apmInstallAtBootRejectsInvalidCredentialName = let
+    forced = builtins.tryEval (invalidInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.apm.installAtBoot.credentials must reject invalid credential names"
     else "ok";
 
   invalidRegistryNameSystem = mkSystem [
@@ -312,7 +335,7 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm install boot: ignition (${apmInstallAtBootIgnition}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"

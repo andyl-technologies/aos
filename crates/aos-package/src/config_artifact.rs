@@ -22,9 +22,29 @@ use crate::types::{
     validate_config_field_name,
 };
 
+#[derive(Debug, Default)]
+pub(crate) struct ConfigReconciliation {
+    changed: bool,
+    reload_units: BTreeSet<String>,
+    restart_units: BTreeSet<String>,
+}
+
+impl ConfigReconciliation {
+    pub(crate) fn changed(&self) -> bool {
+        self.changed
+    }
+
+    pub(crate) fn apply(self) -> Result<()> {
+        if self.changed {
+            apply_config_reconciliation(&aos_root_path(), self.reload_units, self.restart_units)?;
+        }
+        Ok(())
+    }
+}
+
 /// Materialize desired package config artifacts.
 ///
-/// Returns `true` when one or more materialized files changed.
+/// Returns the changed state and service reconciliation units.
 ///
 /// # Errors
 ///
@@ -35,9 +55,9 @@ pub(crate) async fn reconcile_desired_config(
     config: &ApmConfig,
     desired: &DesiredPackageConfig,
     printer: &Printer,
-) -> Result<bool> {
+) -> Result<ConfigReconciliation> {
     if config.scope != ProfileScope::System {
-        return Ok(false);
+        return Ok(ConfigReconciliation::default());
     }
 
     let profile = Profile::open_readonly(ProfileScope::System);
@@ -82,11 +102,14 @@ pub(crate) async fn reconcile_desired_config(
     }
 
     if changed {
-        apply_config_reconciliation(&root, reload_units, restart_units)?;
         printer.info("Reconciled desired package config artifacts.");
     }
 
-    Ok(changed)
+    Ok(ConfigReconciliation {
+        changed,
+        reload_units,
+        restart_units,
+    })
 }
 
 fn materialize_package_config(

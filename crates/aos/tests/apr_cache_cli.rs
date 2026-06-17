@@ -631,16 +631,17 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     let tool_hash = store_path_hash(&fixture.tool_store_path)?;
     let helper_hash = store_path_hash(&fixture.helper_store_path)?;
     let store_dir = registry_dir.join("store");
-    let tool_record =
-        fs::read_to_string(store_dir.join(&tool_hash[..2]).join(&tool_hash)).with_context(|| {
-            format!("reading published store/ record for tool {tool_hash}")
-        })?;
+    let tool_record = fs::read_to_string(store_dir.join(&tool_hash[..2]).join(&tool_hash))
+        .with_context(|| format!("reading published store/ record for tool {tool_hash}"))?;
     assert!(
         tool_record.contains(&format!("ia:sha256:{helper_hash}")),
         "published store/ record for the tool should record helper reference {helper_hash}:\n{tool_record}",
     );
     assert!(
-        store_dir.join(&helper_hash[..2]).join(&helper_hash).exists(),
+        store_dir
+            .join(&helper_hash[..2])
+            .join(&helper_hash)
+            .exists(),
         "published store/ graph should include a realisation record for the helper {helper_hash}",
     );
     assert!(
