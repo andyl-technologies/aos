@@ -251,7 +251,10 @@ async fn mint_upload_credentials_authz_scope_and_expiry() {
         body["uploadUrl"].as_str().unwrap(),
         "http://hub.test/acme/infra/prod/cdn"
     );
-    let expires_at = body["expiresAt"].as_str().unwrap().parse::<i64>().unwrap();
+    // Connect-JSON here uses canonical camelCase field names with native JSON
+    // scalars (int64 as a JSON number, not the proto3-canonical string form) —
+    // both ends share the `aos-proto-types` structs, so this stays consistent.
+    let expires_at = body["expiresAt"].as_i64().unwrap();
     // Near expiry: within the documented 1-hour TTL window.
     assert!(expires_at > before, "expiry is in the future");
     assert!(
