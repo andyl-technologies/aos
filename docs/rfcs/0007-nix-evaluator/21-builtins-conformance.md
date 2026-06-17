@@ -66,25 +66,25 @@ All predicates force their single argument to WHNF and return a `bool`. They
 never error on a "wrong" type — they answer the question. `typeOf` and
 `functionArgs` are the introspection escape hatches.
 
-- [ ] `isAttrs` (e) — true iff `e` forces to an attribute set.
-- [ ] `isList` (e) — true iff `e` forces to a list.
-- [ ] `isFunction` (e) — true iff `e` forces to a lambda, a primop, or a
+- [x] `isAttrs` (e) — true iff `e` forces to an attribute set.
+- [x] `isList` (e) — true iff `e` forces to a list.
+- [x] `isFunction` (e) — true iff `e` forces to a lambda, a primop, or a
       partially-applied primop (`PrimopApp`).
       - A partially-applied builtin (`builtins.map`) is a function value and
         must answer `true` (see [primops and the runtime ABI](10-primops-and-runtime-abi.md) §2.2).
-- [ ] `isString` (e) — true iff `e` forces to a string. Context-carrying strings
+- [x] `isString` (e) — true iff `e` forces to a string. Context-carrying strings
       still answer `true`; the context is invisible to the predicate.
-- [ ] `isInt` (e) — true iff `e` forces to an integer (`i64`). `1.0` is **not**
+- [x] `isInt` (e) — true iff `e` forces to an integer (`i64`). `1.0` is **not**
       an int.
-- [ ] `isFloat` (e) — true iff `e` forces to a float (`f64`). `1` is **not** a
+- [x] `isFloat` (e) — true iff `e` forces to a float (`f64`). `1` is **not** a
       float.
-- [ ] `isBool` (e) — true iff `e` forces to a boolean.
-- [ ] `isNull` (e) — true iff `e` forces to `null`. (Deprecated in idiom in
+- [x] `isBool` (e) — true iff `e` forces to a boolean.
+- [x] `isNull` (e) — true iff `e` forces to `null`. (Deprecated in idiom in
       favor of `e == null`, but still a live primop; must exist.)
-- [ ] `isPath` (e) — true iff `e` forces to a path value (distinct from a
+- [x] `isPath` (e) — true iff `e` forces to a path value (distinct from a
       string; see [language conformance](20-nix-language-conformance.md) on the
       path type).
-- [ ] `typeOf` (e) — returns the type name string. Parity-critical: the exact
+- [x] `typeOf` (e) — returns the type name string. Parity-critical: the exact
       spelling of each tag must match C++ Nix.
       - Returns one of exactly: `"int"`, `"float"`, `"bool"`, `"string"`,
         `"path"`, `"null"`, `"set"`, `"list"`, `"lambda"`. Note the type of an

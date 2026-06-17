@@ -12354,10 +12354,56 @@ mod tests {
         assert_eq!(eval("builtins.isAttrs [ 1 ]").as_bool(), Ok(false));
         assert_eq!(eval("builtins.isList [ 1 ]").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isFunction (x: x)").as_bool(), Ok(true));
+        assert_eq!(
+            eval("builtins.isFunction builtins.length").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction (builtins.map (x: x))").as_bool(),
+            Ok(true)
+        );
         assert_eq!(eval("builtins.isString \"x\"").as_bool(), Ok(true));
+        let ir = lower("builtins.isString \"x\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("isString argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"x".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+        assert_eq!(
+            evaluator
+                .eval_strict_unary_primop_value(
+                    ir.root,
+                    root.span,
+                    StrictUnaryPrimOp::IsString,
+                    argument,
+                    argument_span,
+                    value,
+                )
+                .expect("isString evaluates context-bearing strings")
+                .as_bool(),
+            Ok(true)
+        );
         assert_eq!(eval("builtins.isInt 1").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isInt 1.0").as_bool(), Ok(false));
         assert_eq!(eval("builtins.isFloat 1.0").as_bool(), Ok(true));
+        assert_eq!(eval("builtins.isFloat 1").as_bool(), Ok(false));
         assert_eq!(eval("builtins.isBool false").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isNull null").as_bool(), Ok(true));
         assert_eq!(eval("isNull null").as_bool(), Ok(true));
@@ -12365,6 +12411,7 @@ mod tests {
             eval("let isNull = x: false; in isNull null").as_bool(),
             Ok(false)
         );
+        assert_eq!(eval("builtins.isPath /tmp").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isPath \"not-path\"").as_bool(), Ok(false));
     }
 
@@ -12375,9 +12422,18 @@ mod tests {
         assert_eq!(eval_string_bytes("builtins.typeOf false"), b"bool");
         assert_eq!(eval_string_bytes("builtins.typeOf null"), b"null");
         assert_eq!(eval_string_bytes("builtins.typeOf \"x\""), b"string");
+        assert_eq!(eval_string_bytes("builtins.typeOf /tmp"), b"path");
         assert_eq!(eval_string_bytes("builtins.typeOf [ 1 ]"), b"list");
         assert_eq!(eval_string_bytes("builtins.typeOf { a = 1; }"), b"set");
         assert_eq!(eval_string_bytes("builtins.typeOf (x: x)"), b"lambda");
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf builtins.length"),
+            b"lambda"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.typeOf (builtins.map (x: x))"),
+            b"lambda"
+        );
     }
 
     #[test]
@@ -12893,6 +12949,49 @@ mod tests {
             r#"builtins.functionArgs ({ b ? 1, a, ... }@args: a)"#,
             r#"let f = builtins.functionArgs; in f ({ a, b ? 1 }: a)"#,
             r#"builtins.functionArgs builtins.length"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_type_predicates_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            "builtins.isAttrs { a = 1; }",
+            "builtins.isAttrs [ 1 ]",
+            "builtins.isList [ 1 ]",
+            "builtins.isFunction (x: x)",
+            "builtins.isFunction builtins.length",
+            "builtins.isFunction (builtins.map (x: x))",
+            "builtins.isString \"x\"",
+            "builtins.isInt 1",
+            "builtins.isInt 1.0",
+            "builtins.isFloat 1.0",
+            "builtins.isFloat 1",
+            "builtins.isBool false",
+            "builtins.isNull null",
+            "builtins.isPath /tmp",
+            "builtins.isPath \"not-path\"",
+            "builtins.typeOf 1",
+            "builtins.typeOf 1.0",
+            "builtins.typeOf false",
+            "builtins.typeOf null",
+            "builtins.typeOf \"x\"",
+            "builtins.typeOf /tmp",
+            "builtins.typeOf [ 1 ]",
+            "builtins.typeOf { a = 1; }",
+            "builtins.typeOf (x: x)",
+            "builtins.typeOf builtins.length",
+            "builtins.typeOf (builtins.map (x: x))",
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
