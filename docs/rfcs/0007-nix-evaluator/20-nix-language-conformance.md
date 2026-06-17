@@ -300,8 +300,9 @@ search paths, and store coercion.
       raw-byte lexicographic iteration permutation used by `builtins.attrNames`
       and `builtins.attrValues`; source-order data remains separate for
       construction-sensitive internals.
-- [ ] **Selection `s.a`** — select attribute `a`; missing attr is an error
-      (**must-error**).
+- [x] **Selection `s.a`** — selects attribute `a` from an attrset; the selected
+      value is forced by the surrounding demand. Missing attrs are must-errors,
+      and non-attr receivers are type errors.
 - [ ] **Attr-path selection `s.a.b.c`** — dotted path descends multiple levels;
       a missing intermediate is an error (**must-error**).
 - [ ] **Selection with `or` default `s.a.b or d`** — `or` supplies a default if
