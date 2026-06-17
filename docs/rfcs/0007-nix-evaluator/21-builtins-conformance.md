@@ -184,14 +184,14 @@ of its string inputs; context is string-granular, never byte-granular.
       - a lambda/other → type error.
       - `toString` of a derivation attrset uses its `outPath` and carries that
         output's context (the dependency-threading path).
-- [ ] `substring` (start len s) — substring of `s` from byte offset `start`,
+- [x] `substring` (start len s) — substring of `s` from byte offset `start`,
       length `len`. **Byte offsets, not codepoints.**
       - `len` may exceed the remaining length (clamped to end, no error).
       - A `start` past the end yields `""`. Negative `start` throws; negative
         `len` means "to the end" in C++ Nix (verify against pinned version and
         pin the behavior).
       - Preserves the **entire** context of `s` (Nix does not slice context).
-- [ ] `stringLength` (e) — length of `e` in **bytes** (after coercion to
+- [x] `stringLength` (e) — length of `e` in **bytes** (after coercion to
       string), not codepoints.
 - [x] `replaceStrings` (from to s) — simultaneously replace each occurrence of
       `from[i]` with `to[i]` in `s`, left-to-right, first matching pattern in
