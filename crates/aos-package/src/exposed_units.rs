@@ -272,6 +272,11 @@ fn exposed_packages_from_expose_dir(
             &units,
             &apm.permissions,
         )?;
+        validate_mac_profile_artifact(
+            &apm.name,
+            Path::new(&artifact.store_path),
+            &apm.permissions,
+        )?;
 
         for unit in &units {
             let path = artifact_root.join(unit);
@@ -373,6 +378,20 @@ struct NetworkPolicyEbpf {
     identity: String,
     hooks: Vec<String>,
     tcp: NetworkPolicyTcp,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MacProfileArtifact {
+    version: u32,
+    package: String,
+    backend: String,
+    #[serde(rename = "securityLabel")]
+    security_label: String,
+    #[serde(rename = "defaultDeny")]
+    default_deny: bool,
+    #[serde(rename = "profilePath")]
+    profile_path: Option<String>,
 }
 
 fn validate_network_policy_artifact(
@@ -498,6 +517,143 @@ fn validate_network_policy_artifact(
         );
     }
     Ok(())
+}
+
+fn validate_mac_profile_artifact(
+    package_name: &str,
+    artifact_store_path: &Path,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    let path = artifact_store_path.join("mac-profile.json");
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                bail!(
+                    "MAC profile artifact for package '{}' is not a regular file: {}",
+                    package_name,
+                    path.display()
+                );
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(());
+        }
+        Err(err) => return Err(err).with_context(|| format!("checking {}", path.display())),
+    }
+
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let profile: MacProfileArtifact =
+        serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    let expected_permissions = normalized_permissions(package_name, permissions);
+    let expected_label = expected_permissions
+        .security_label
+        .as_deref()
+        .context("normalized permissions have no security label")?;
+    let expected_default_deny = expected_permissions
+        .confinement
+        .as_ref()
+        .context("normalized permissions have no confinement summary")?
+        .class
+        != ConfinementClass::Unconfined;
+    let expected_profile_path =
+        expected_default_deny.then(|| format!("mac/apparmor/{expected_label}.profile"));
+
+    if profile.version != 1 {
+        bail!(
+            "MAC profile artifact for package '{}' has unsupported version {}",
+            package_name,
+            profile.version
+        );
+    }
+    if profile.package != package_name {
+        bail!(
+            "MAC profile artifact package mismatch: expected '{}', got '{}'",
+            package_name,
+            profile.package
+        );
+    }
+    if profile.backend != "apparmor" {
+        bail!(
+            "MAC profile artifact backend mismatch for package '{}'",
+            package_name
+        );
+    }
+    if profile.security_label != expected_label {
+        bail!(
+            "MAC profile artifact security label mismatch for package '{}'",
+            package_name
+        );
+    }
+    if profile.default_deny != expected_default_deny
+        || profile.profile_path.as_deref() != expected_profile_path.as_deref()
+    {
+        bail!(
+            "MAC profile artifact confinement mode mismatch for package '{}'",
+            package_name
+        );
+    }
+
+    let Some(profile_path) = expected_profile_path else {
+        return Ok(());
+    };
+    let profile_text =
+        read_artifact_regular_file_no_symlink(artifact_store_path, Path::new(&profile_path))
+            .with_context(|| {
+                format!(
+                    "MAC profile file for package '{}' is missing required {}",
+                    package_name, profile_path
+                )
+            })?;
+    let expected_profile = expected_apparmor_profile(expected_label);
+    if profile_text.trim_end() != expected_profile.trim_end() {
+        bail!(
+            "MAC profile file for package '{}' does not match the expected default-deny scaffold",
+            package_name
+        );
+    }
+    Ok(())
+}
+
+fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<String> {
+    let mut components = relative_path.components().peekable();
+    if components.peek().is_none() {
+        bail!("artifact-relative path is empty");
+    }
+
+    let mut current = root.to_path_buf();
+    while let Some(component) = components.next() {
+        let std::path::Component::Normal(component) = component else {
+            bail!(
+                "artifact-relative path contains unsupported component: {}",
+                relative_path.display()
+            );
+        };
+        current.push(component);
+        let metadata = std::fs::symlink_metadata(&current)
+            .with_context(|| format!("checking {}", current.display()))?;
+        if components.peek().is_some() {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                bail!(
+                    "artifact path component is not a non-symlink directory: {}",
+                    current.display()
+                );
+            }
+        } else if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            bail!(
+                "artifact path is not a non-symlink regular file: {}",
+                current.display()
+            );
+        }
+    }
+
+    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn expected_apparmor_profile(label: &str) -> String {
+    format!(
+        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package MAC profile scaffold.\n#include <tunables/global>\n\nprofile {label} flags=(attach_disconnected,mediate_deleted) {{\n  # Default deny until the backend-specific allow-rule renderer lands.\n  deny /** rwklx,\n  deny network,\n  deny capability,\n}}\n"
+    )
 }
 
 fn validate_socket_listener_permissions(
@@ -1866,6 +2022,7 @@ mod tests {
             }),
         };
         write_network_policy_file(&installed, &[], &[]);
+        write_mac_profile_file(&installed);
         installed
     }
 
@@ -2080,6 +2237,34 @@ mod tests {
         .unwrap();
     }
 
+    fn write_mac_profile_file(installed: &InstalledMeta) {
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let permissions = normalized_permissions(&apm.name, &apm.permissions);
+        let label = permissions.security_label.clone().unwrap();
+        let default_deny =
+            permissions.confinement.as_ref().unwrap().class != ConfinementClass::Unconfined;
+        let profile_path = default_deny.then(|| format!("mac/apparmor/{label}.profile"));
+        let policy = serde_json::json!({
+            "version": 1,
+            "package": apm.name,
+            "backend": "apparmor",
+            "securityLabel": label,
+            "defaultDeny": default_deny,
+            "profilePath": profile_path.clone(),
+        });
+        std::fs::write(
+            Path::new(&artifact).join("mac-profile.json"),
+            serde_json::to_string(&policy).unwrap(),
+        )
+        .unwrap();
+        if let Some(profile_path) = profile_path {
+            let profile_file = Path::new(&artifact).join(&profile_path);
+            std::fs::create_dir_all(profile_file.parent().unwrap()).unwrap();
+            std::fs::write(profile_file, expected_apparmor_profile(&label)).unwrap();
+        }
+    }
+
     fn remove_network_policy_file(installed: &InstalledMeta) {
         let apm = installed.apm.as_ref().unwrap();
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
@@ -2197,6 +2382,127 @@ mod tests {
         let err = exposed_packages(&profile, &[installed]).unwrap_err();
         assert!(
             err.to_string().contains("missing required network-policy"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_accepts_legacy_missing_mac_profile_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::remove_file(Path::new(&artifact).join("mac-profile.json")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_mac_profile_label_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let mac_path = Path::new(&artifact).join("mac-profile.json");
+        let mut mac: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&mac_path).unwrap()).unwrap();
+        mac["securityLabel"] = serde_json::json!("aos-pkg-other");
+        std::fs::write(&mac_path, serde_json::to_string(&mac).unwrap()).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(
+            err.to_string().contains("security label mismatch"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_mac_profile_file() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::remove_file(Path::new(&artifact).join("mac/apparmor/aos-pkg-web.profile"))
+            .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing required mac/apparmor/aos-pkg-web.profile"),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exposed_packages_rejects_mac_profile_parent_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        let external_mac = tmp.path().join("external-mac");
+        let external_profile = external_mac.join("apparmor/aos-pkg-web.profile");
+        std::fs::create_dir_all(external_profile.parent().unwrap()).unwrap();
+        std::fs::write(&external_profile, expected_apparmor_profile("aos-pkg-web")).unwrap();
+        std::fs::remove_dir_all(Path::new(&artifact).join("mac")).unwrap();
+        std::os::unix::fs::symlink(&external_mac, Path::new(&artifact).join("mac")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("not a non-symlink directory"),
             "{err:?}"
         );
     }
@@ -2650,6 +2956,7 @@ mod tests {
             mode: HostPathMode::ReadOnly,
         }];
         write_network_policy_file(&installed, &[], &[]);
+        write_mac_profile_file(&installed);
         write_service_unit(&installed, "[Service]\nExecStart=/bin/true\n");
         link_expose_artifact(&profile, &installed);
 
