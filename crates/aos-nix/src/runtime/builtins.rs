@@ -82,7 +82,7 @@ macro_rules! builtin_definitions {
             strict_unary LengthBuiltin, b"length", StrictUnaryPrimOp::Length;
             strict_binary LessThanBuiltin, b"lessThan", StrictBinaryPrimOp::LessThan;
             strict_unary ListToAttrsBuiltin, b"listToAttrs", StrictUnaryPrimOp::ListToAttrs;
-            unsupported MapBuiltin, b"map";
+            strict_binary MapBuiltin, b"map", StrictBinaryPrimOp::Map;
             unsupported MapAttrsBuiltin, b"mapAttrs";
             unsupported MatchBuiltin, b"match";
             strict_binary MulBuiltin, b"mul", StrictBinaryPrimOp::Mul;
@@ -526,6 +526,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"map"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"pathExists"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -606,6 +612,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"hashFile").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"map").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(builtin_metadata(b"all").unwrap().first_class_arity(), None);

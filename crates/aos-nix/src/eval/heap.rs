@@ -26,15 +26,39 @@ const PRIMOP_TYPE_TAG: u32 = 0x7072_696d;
 const PRIMOP_HANDLE_BYTES: usize = std::mem::size_of::<u64>() * 4;
 const PRIMOP_HANDLE_ALIGN: usize = std::mem::align_of::<u64>();
 
+/// The suspended work stored in a tree-walk thunk heap record.
+#[derive(Debug)]
+pub(crate) enum EvalThunkKind {
+    /// Evaluates a lowered IR body under captured lexical and dynamic scopes.
+    Node {
+        /// The lowered body to evaluate when forced.
+        body: IrId,
+        /// Captured lexical frames.
+        env: EvalEnv,
+        /// Captured dynamic `with` scopes.
+        with_env: EvalWithEnv,
+    },
+    /// Applies a forced function value to a lazy argument value.
+    Apply {
+        /// The IR node that produced the function.
+        function_id: IrId,
+        /// The source span associated with the function.
+        function_span: Span,
+        /// The forced function value.
+        function: Value,
+        /// The IR node that produced the argument.
+        argument_id: IrId,
+        /// The lazy argument value.
+        argument: Value,
+    },
+}
+
 /// A suspended tree-walk thunk heap record.
 ///
-/// The record stores the lowered thunk body, captured lexical and dynamic
-/// `with` environments, and serial state/result cell.
+/// The record stores deferred tree-walk work and a serial state/result cell.
 #[derive(Debug)]
 pub struct EvalThunk {
-    body: IrId,
-    env: EvalEnv,
-    with_env: EvalWithEnv,
+    kind: EvalThunkKind,
     cell: ThunkCell,
 }
 
@@ -52,26 +76,62 @@ impl EvalThunk {
     /// Creates a suspended thunk record with lexical and dynamic captures.
     pub fn with_captures(body: IrId, env: EvalEnv, with_env: EvalWithEnv) -> Self {
         Self {
-            body,
-            env,
-            with_env,
+            kind: EvalThunkKind::Node {
+                body,
+                env,
+                with_env,
+            },
             cell: ThunkCell::new(),
         }
     }
 
-    /// Returns the lowered body this thunk will evaluate when forced.
-    pub const fn body(&self) -> IrId {
-        self.body
+    /// Creates a suspended function-application thunk record.
+    pub const fn apply(
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Self {
+        Self {
+            kind: EvalThunkKind::Apply {
+                function_id,
+                function_span,
+                function,
+                argument_id,
+                argument,
+            },
+            cell: ThunkCell::new(),
+        }
     }
 
-    /// Returns the lexical environment captured when this thunk was allocated.
-    pub const fn env(&self) -> &EvalEnv {
-        &self.env
+    /// Returns the deferred work this thunk performs when forced.
+    pub(crate) const fn kind(&self) -> &EvalThunkKind {
+        &self.kind
     }
 
-    /// Returns the dynamic `with` environment captured when this thunk was allocated.
-    pub const fn with_scope_env(&self) -> &EvalWithEnv {
-        &self.with_env
+    /// Returns the lowered body this thunk will evaluate when forced, if any.
+    pub const fn body(&self) -> Option<IrId> {
+        match &self.kind {
+            EvalThunkKind::Node { body, .. } => Some(*body),
+            EvalThunkKind::Apply { .. } => None,
+        }
+    }
+
+    /// Returns the lexical environment captured when this thunk was allocated, if any.
+    pub const fn env(&self) -> Option<&EvalEnv> {
+        match &self.kind {
+            EvalThunkKind::Node { env, .. } => Some(env),
+            EvalThunkKind::Apply { .. } => None,
+        }
+    }
+
+    /// Returns the captured dynamic `with` environment, if any.
+    pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
+        match &self.kind {
+            EvalThunkKind::Node { with_env, .. } => Some(with_env),
+            EvalThunkKind::Apply { .. } => None,
+        }
     }
 
     /// Returns the serial state/result cell for this thunk.
@@ -906,9 +966,30 @@ mod tests {
         assert_eq!(value.tag(), ValueTag::Thunk);
         assert_eq!(heap.len(), 1);
         let thunk = heap.get_thunk(value).expect("thunk exists");
-        assert_eq!(thunk.body(), body);
+        assert_eq!(thunk.body(), Some(body));
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn allocates_apply_thunk_values_and_recovers_work() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let value = heap
+            .alloc_thunk(EvalThunk::apply(
+                IrId::new(1),
+                Span::new(0, 1),
+                Value::int(7),
+                IrId::new(2),
+                Value::bool(true),
+            ))
+            .expect("thunk allocates");
+
+        assert_eq!(value.tag(), ValueTag::Thunk);
+        assert_eq!(heap.len(), 1);
+        let thunk = heap.get_thunk(value).expect("thunk exists");
+        assert_eq!(thunk.body(), None);
+        assert!(matches!(thunk.kind(), EvalThunkKind::Apply { .. }));
+        assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
     }
 
     #[test]
@@ -1032,7 +1113,7 @@ mod tests {
         );
         assert_eq!(
             heap.get_thunk(thunk).expect("thunk exists").body(),
-            IrId::new(3)
+            Some(IrId::new(3))
         );
     }
 

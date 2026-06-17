@@ -30,7 +30,9 @@ use sha2::{Sha256, Sha512};
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
-use super::heap::{EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk};
+use super::heap::{
+    EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk, EvalThunkKind,
+};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
@@ -605,7 +607,10 @@ impl<'ir> TreeWalk<'ir> {
             .heap
             .get_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        Ok(self.node(thunk.body())?.kind == IrKind::Path)
+        let Some(body) = thunk.body() else {
+            return Ok(false);
+        };
+        Ok(self.node(body)?.kind == IrKind::Path)
     }
 
     fn consume_suspended_lazy_identity_thunk(
@@ -1464,6 +1469,28 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_apply_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        argument_id: IrId,
+        argument: Value,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_thunk(EvalThunk::apply(
+                function_id,
+                function_span,
+                function,
+                argument_id,
+                argument,
+            ))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
         if !value.is_thunk() {
             return Ok(value);
@@ -1473,7 +1500,6 @@ impl<'ir> TreeWalk<'ir> {
             .heap
             .clone_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let body = thunk.body();
         match thunk
             .cell()
             .begin_force()
@@ -1484,13 +1510,38 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
-                let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
-                let thunk_with_env = self.clone_with_scopes(id, thunk.with_scope_env(), span)?;
-                let saved_env = std::mem::replace(&mut self.env, thunk_env);
-                let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                let result = self.eval_node(body);
-                self.env = saved_env;
-                self.with_scopes = saved_with_scopes;
+                let result = match thunk.kind() {
+                    EvalThunkKind::Node {
+                        body,
+                        env,
+                        with_env,
+                    } => {
+                        let thunk_env = self.clone_env_frames(id, env, span)?;
+                        let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
+                        let saved_env = std::mem::replace(&mut self.env, thunk_env);
+                        let saved_with_scopes =
+                            std::mem::replace(&mut self.with_scopes, thunk_with_env);
+                        let result = self.eval_node(*body);
+                        self.env = saved_env;
+                        self.with_scopes = saved_with_scopes;
+                        result
+                    }
+                    EvalThunkKind::Apply {
+                        function_id,
+                        function_span,
+                        function,
+                        argument_id,
+                        argument,
+                    } => self.apply_lambda_value(
+                        id,
+                        span,
+                        *function_id,
+                        *function,
+                        *function_span,
+                        *argument_id,
+                        *argument,
+                    ),
+                };
                 let value = result?;
                 let value = guard.finish(value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Force { id, source }, span)
@@ -5787,6 +5838,173 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_map_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        list_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let list_span = self.node(list_id)?.span;
+        let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list_id,
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list_span,
+            ));
+        }
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_id,
+                        source,
+                    },
+                    list_span,
+                )
+            })?;
+            Self::clone_list_elements(list_id, list_span, list)?
+        };
+        if elements.is_empty() {
+            return self
+                .heap
+                .alloc_list(NixList::new(Vec::new()))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        let function_span = self.node(function_id)?.span;
+        let function = self.eval_node(function_id)?;
+        let function = self.force_value(function_id, function_span, function)?;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function_id,
+                    expected: "function",
+                    actual: function.tag(),
+                },
+                function_span,
+            ));
+        }
+
+        self.alloc_mapped_list(
+            id,
+            span,
+            function_id,
+            function_span,
+            function,
+            list_id,
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_map_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+        if elements.is_empty() {
+            return self
+                .heap
+                .alloc_list(NixList::new(Vec::new()))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
+
+        let function_value = self.force_value(function.id(), function.span(), function.value())?;
+        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function.id(),
+                    expected: "function",
+                    actual: function_value.tag(),
+                },
+                function.span(),
+            ));
+        }
+
+        self.alloc_mapped_list(
+            id,
+            span,
+            function.id(),
+            function.span(),
+            function_value,
+            list.id(),
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_mapped_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        list_id: IrId,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let mut mapped = Vec::new();
+        mapped.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            mapped.push(self.alloc_apply_thunk(
+                id,
+                span,
+                function_id,
+                function_span,
+                function,
+                list_id,
+                element,
+            )?);
+        }
+
+        self.heap
+            .alloc_list(NixList::new(mapped))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn eval_partition_primop(
         &mut self,
         id: IrId,
@@ -6583,6 +6801,7 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Filter => {
                 self.eval_filter_primop(call.id, call.span, first, second)
             }
+            StrictBinaryPrimOp::Map => self.eval_map_primop(call.id, call.span, first, second),
             StrictBinaryPrimOp::Partition => {
                 self.eval_partition_primop(call.id, call.span, first, second)
             }
@@ -6717,6 +6936,7 @@ impl<'ir> TreeWalk<'ir> {
                     right,
                 )
             }
+            StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
             StrictBinaryPrimOp::ElemAt
             | StrictBinaryPrimOp::GetAttr
             | StrictBinaryPrimOp::HasAttr
@@ -7533,7 +7753,9 @@ impl<'ir> TreeWalk<'ir> {
             .heap
             .clone_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let body = thunk.body();
+        let Some(body) = thunk.body() else {
+            return Ok(value);
+        };
         let body_node = *self.node(body)?;
         if !matches!(
             body_node.kind,
@@ -7542,8 +7764,14 @@ impl<'ir> TreeWalk<'ir> {
             return Ok(value);
         }
 
-        let thunk_env = self.clone_env_frames(id, thunk.env(), span)?;
-        let thunk_with_env = self.clone_with_scopes(id, thunk.with_scope_env(), span)?;
+        let Some(env) = thunk.env() else {
+            return Ok(value);
+        };
+        let Some(with_env) = thunk.with_scope_env() else {
+            return Ok(value);
+        };
+        let thunk_env = self.clone_env_frames(id, env, span)?;
+        let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
         let saved_env = std::mem::replace(&mut self.env, thunk_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
         let result = self.eval_nested_equality_operand(body);
@@ -9472,6 +9700,7 @@ enum StrictBinaryPrimOp {
     ConcatMap,
     Filter,
     GroupBy,
+    Map,
     Partition,
 }
 
@@ -10952,6 +11181,7 @@ mod tests {
             eval("builtins.isFunction builtins.tryEval").as_bool(),
             Ok(true)
         );
+        assert_eq!(eval("builtins.isFunction builtins.map").as_bool(), Ok(true));
         assert_eq!(
             eval("let x = builtins.break (1 / 0); in 42").as_int(),
             Ok(42)
@@ -11445,7 +11675,10 @@ mod tests {
             .expect("second value remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
 
@@ -11498,7 +11731,10 @@ mod tests {
             .expect("first tail element remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
         assert_eq!(
@@ -11674,7 +11910,10 @@ mod tests {
             .expect("attribute value remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -11810,7 +12049,10 @@ mod tests {
             .expect("inner list element remains lazy");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -11898,7 +12140,10 @@ mod tests {
             .expect("head result remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
 
@@ -11980,7 +12225,10 @@ mod tests {
             .expect("selected element remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -12598,6 +12846,136 @@ mod tests {
             TreeWalkErrorKind::Type {
                 id: function,
                 expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), function_span);
+    }
+
+    #[test]
+    fn map_primop_builds_lazy_mapped_elements() {
+        assert_eq!(
+            eval("builtins.length (builtins.map (x: x + 1) [ 1 2 ])").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.map (x: x + 1) [ 1 2 ]) 0").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.map (x: x + 1) [ 1 2 ]) 1").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.concatStringsSep \",\" (builtins.map builtins.toString [ 1 true null ])"
+            ),
+            b"1,1,"
+        );
+        assert_eq!(
+            eval("let m = builtins.map; in builtins.elemAt (m (x: x + 1) [ 1 ]) 0").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let xs = []; in builtins.length (builtins.map (builtins.throw \"function\") xs)")
+                .as_int(),
+            Ok(0)
+        );
+        assert_eq!(
+            eval("let f = x: x + 1; xs = [ 1 ]; in builtins.elemAt (builtins.map f xs) 0").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.map (x: builtins.throw \"mapped\") [ 1 ])").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("builtins.length (builtins.map (x: x) [ (builtins.throw \"element\") ])").as_int(),
+            Ok(1)
+        );
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.elemAt (builtins.map (x: builtins.throw \"mapped\") [ 1 ]) 0",
+        ))
+        .expect_err("mapped element is forced only when selected");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"mapped");
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.elemAt (builtins.map (x: x) [ (builtins.throw \"element\") ]) 0",
+        ))
+        .expect_err("source element thunk is still lazy until selected");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"element");
+    }
+
+    #[test]
+    fn map_primop_checks_list_before_function_for_nonempty_lists() {
+        assert_eq!(eval("builtins.length (builtins.map 1 [])").as_int(), Ok(0));
+        assert_eq!(
+            eval("builtins.length (builtins.map (builtins.throw \"function\") [])").as_int(),
+            Ok(0)
+        );
+
+        let ir = lower("builtins.map (builtins.throw \"function\") 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("map checks list before function");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: list,
+                expected: "list",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.map (x: x) (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let list = args[1];
+        let list_span = ir.arena.node(list).expect("list argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("map forces list argument");
+
+        assert_eq!(error.kind(), TreeWalkErrorKind::DivisionByZero { id: list });
+        assert_eq!(error.span(), list_span);
+
+        let ir = lower("builtins.map 1 [ 2 ]");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let function = args[0];
+        let function_span = ir
+            .arena
+            .node(function)
+            .expect("function argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("map requires a function on nonempty lists");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "function",
                 actual: ValueTag::Int,
             }
         );
@@ -13295,7 +13673,10 @@ mod tests {
             .expect("selected attr remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -13548,7 +13929,10 @@ mod tests {
             .expect("selected right value remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -13644,7 +14028,10 @@ mod tests {
             .expect("selected attr value remains a heap-owned thunk");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }
@@ -17956,7 +18343,10 @@ mod tests {
             .expect("list element thunk is heap-owned");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
 
@@ -17980,8 +18370,11 @@ mod tests {
             .get_thunk(element)
             .expect("list element thunk is heap-owned");
 
-        assert_eq!(element_thunk.env().frames().len(), 1);
-        let captured_x = element_thunk.env().frames()[0]
+        assert_eq!(
+            element_thunk.env().expect("node thunk env").frames().len(),
+            1
+        );
+        let captured_x = element_thunk.env().expect("node thunk env").frames()[0]
             .get(0)
             .expect("captured frame slot exists");
         assert_eq!(captured_x.tag(), ValueTag::Thunk);
@@ -17991,7 +18384,7 @@ mod tests {
         assert_eq!(x_thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
             ir.arena
-                .node(x_thunk.body())
+                .node(x_thunk.body().expect("thunk body exists"))
                 .expect("thunk body exists")
                 .kind,
             IrKind::BinOp
@@ -18031,7 +18424,10 @@ mod tests {
             .expect("left element thunk is heap-owned");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
         assert_eq!(list.get(1).expect("second").as_bool(), Ok(true));
@@ -18146,7 +18542,10 @@ mod tests {
             .expect("attr value thunk is heap-owned");
         assert_eq!(thunk.cell().state(), Ok(ThunkState::Suspended));
         assert_eq!(
-            ir.arena.node(thunk.body()).expect("thunk body exists").kind,
+            ir.arena
+                .node(thunk.body().expect("thunk body exists"))
+                .expect("thunk body exists")
+                .kind,
             IrKind::BinOp
         );
     }

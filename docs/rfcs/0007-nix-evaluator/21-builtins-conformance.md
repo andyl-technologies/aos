@@ -367,7 +367,7 @@ Forcing order is observable and must match (see
       language core's `==`.
 - [ ] `filter` (f list) — keep elements where `f elem` is `true`. Result order
       preserved. `f` forced per element.
-- [ ] `map` (f list) — list of `f elem` thunks; lazy in elements, strict in the
+- [x] `map` (f list) — list of `f elem` thunks; lazy in elements, strict in the
       argument list's spine.
 - [ ] `foldl'` (op nul list) — **strict** left fold: forces the accumulator at
       every step (its whole reason to exist over the non-strict `foldl`, which
