@@ -683,7 +683,6 @@
         };
         permissions = {
           network = "private";
-          tcp-connect = [443];
         };
         requires = [];
       };
@@ -693,7 +692,7 @@
   );
   landlockScriptDerivedExecRejected =
     if landlockScriptDerivedExec.success
-    then throw "expose renderer must reject script-derived Exec* commands for TCP Landlock services"
+    then throw "expose renderer must reject script-derived Exec* commands for Landlock services"
     else "ok";
   kernelModulePermissionMismatch = builtins.tryEval (
     (pkg.overrideAttrs (_: {
@@ -1027,6 +1026,7 @@ in
           firewall="$exposePath/units/aos-pkg-expose-smoke-firewall.service"
           netns="$exposePath/units/aos-pkg-expose-smoke-netns.service"
           manifest="$exposePath/manifest.json"
+          policy="$exposePath/network-policy.json"
 
           test -d "$exposePath/units"
           test -f "$unit"
@@ -1036,13 +1036,14 @@ in
           test -f "$firewall"
           test ! -f "$netns"
           test -f "$manifest"
+          test -f "$policy"
 
           grep -q 'Description=RFC-0001 expose smoke service' "$unit"
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service' "$unit"
-          grep -q 'ExecStart=${pkgs.bash}/bin/bash -c true' "$unit"
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
           grep -q "RootDirectory=$payload" "$unit"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
@@ -1138,6 +1139,8 @@ in
           grep -q '"expose-smoke.service"' "$manifest"
           grep -q '"var-lib-exposesmoke.mount"' "$manifest"
           grep -q '"modules":\["br_netfilter"\]' "$manifest"
+          grep -q '"landlock":{"abi":4,"fs":{"readOnly":\["/"\],"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke"\]}' \
+            "$policy"
           grep -q '"sysctl":{"net.ipv4.ip_forward":"1"}' "$manifest"
           grep -q '"allowedTCP":\[8000,8443\]' "$manifest"
           grep -q '"allowedUDP":\[5353\]' "$manifest"
@@ -1163,6 +1166,8 @@ in
           test -f "$minimal_manifest"
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
+            "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
           grep -q 'PrivateDevices=true' "$minimal_unit"
           grep -q '^CapabilityBoundingSet=$' "$minimal_unit"
@@ -1337,9 +1342,9 @@ in
             "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
-          grep -q 'ExecReload=.*/bin/aos-landlock --require-abi 4 --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecReload=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
           grep -q 'Wants=expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service' \
@@ -1425,11 +1430,11 @@ in
           test -f "$host_path_without_prepare_unit"
           test -f "$host_path_without_prepare_policy"
           grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
             "$host_path_without_prepare_unit"
           grep -q '"fs":{"readOnly":\[\],"readWrite":\["/srv/expose-smoke-rw"\]}' \
             "$host_path_without_prepare_policy"
-          grep -q '"readWrite":\["/tmp","/var/tmp","/srv/expose-smoke-rw"\]' \
+          grep -q '"readWrite":\["/tmp","/var/tmp","/var/lib/aos-pkg-expose-smoke","/srv/expose-smoke-rw"\]' \
             "$host_path_without_prepare_policy"
           test ! -f "$hostPathWithoutPrepareExposePath/units/aos-pkg-expose-smoke-host-paths.service"
           if grep -q 'aos-pkg-expose-smoke-host-paths.service' "$host_path_without_prepare_target"; then

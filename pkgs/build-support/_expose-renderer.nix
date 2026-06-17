@@ -1061,7 +1061,7 @@ in rec {
         inherit confinement;
       };
     landlockTcpEnabled = !rootEquivalent && (tcpBind != [] || tcpConnect != []);
-    landlockFsEnabled = !rootEquivalent && hostPaths != [];
+    landlockFsEnabled = !rootEquivalent;
     landlockEnabled = landlockTcpEnabled || landlockFsEnabled;
     landlockDefaultReadOnlyPaths = ["/"];
     landlockDefaultReadWritePaths = ["/tmp" "/var/tmp"];
@@ -1070,11 +1070,27 @@ in rec {
     );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
+    stateDirectoryNamesForUnit = unit: let
+      authoredServiceConfig = unit.serviceConfig or {};
+      values = asList (authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}");
+    in
+      builtins.filter (name: name != "") (
+        lib.concatMap (value: lib.splitString " " value) values
+      );
+    stateDirectoryPaths = uniqueUnits (
+      lib.concatMap (
+        unitName:
+          if lib.hasSuffix ".service" unitName
+          then builtins.map (name: "/var/lib/${name}") (stateDirectoryNamesForUnit units.${unitName})
+          else []
+      )
+      (builtins.attrNames units)
+    );
     landlockReadWritePaths =
       if landlockFsEnabled
       then
         uniqueUnits (
-          landlockDefaultReadWritePaths ++ readWriteHostPaths
+          landlockDefaultReadWritePaths ++ stateDirectoryPaths ++ readWriteHostPaths
         )
       else [];
     landlockReadOnlyPaths =

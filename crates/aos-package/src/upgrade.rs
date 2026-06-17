@@ -1331,7 +1331,7 @@ source_nar_hash = "sha256:oldsrc"
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "expose-artifact-v1"]
+requires-features = ["expose-v1", "expose-artifact-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-curl.target"
@@ -1365,7 +1365,7 @@ source_nar_hash = "sha256:oldsrc"
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "expose-artifact-v1"]
+requires-features = ["expose-v1", "expose-artifact-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-curl.target"

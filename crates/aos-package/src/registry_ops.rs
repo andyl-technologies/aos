@@ -2712,6 +2712,7 @@ fn package_platform_table(
             toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
             toml::Value::String(FEATURE_EXPOSE_ARTIFACT_V1.to_string()),
             toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
+            toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()),
         ];
         if !manifest.expose.requires.is_empty() {
             required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
@@ -2726,9 +2727,6 @@ fn package_platform_table(
             required_features.push(toml::Value::String(
                 FEATURE_CAPABILITY_ROUTES_V1.to_string(),
             ));
-        }
-        if manifest.permissions.has_network_policy() {
-            required_features.push(toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()));
         }
         table.insert(
             "requires-features".into(),
@@ -9818,11 +9816,11 @@ mod tests {
                 FEATURE_EXPOSE_V1,
                 FEATURE_EXPOSE_ARTIFACT_V1,
                 FEATURE_PERMISSIONS_V1,
+                FEATURE_NETWORK_POLICY_V1,
                 FEATURE_REQUIRES_V1,
                 FEATURE_CONFIG_V1,
                 FEATURE_RELOAD_V1,
                 FEATURE_CAPABILITY_ROUTES_V1,
-                FEATURE_NETWORK_POLICY_V1,
             ]
         );
         assert_eq!(
@@ -10023,6 +10021,7 @@ mod tests {
             })
             .unwrap();
         assert!(features.contains(&FEATURE_EXPOSE_ARTIFACT_V1));
+        assert!(features.contains(&FEATURE_NETWORK_POLICY_V1));
         assert_eq!(
             platform
                 .get("expose_artifact")
