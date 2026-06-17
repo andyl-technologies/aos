@@ -2,15 +2,16 @@
 //!
 //! Each builtin type declares its static execution strategy and documentation.
 //! The execution strategy derives direct-lowering and first-class arity
-//! metadata, and the registry below publishes those typed declarations for
-//! evaluator lookup and frontend passes.
+//! metadata, and the registry macro publishes those typed declarations as both
+//! the ordered `builtins` attrset inventory and the exact-name lookup used by
+//! evaluator dispatch and frontend passes.
 
 macro_rules! builtin_registry {
     (
         $(
             pub(crate) struct $ty:ident;
             impl BuiltinDefinition for $impl_ty:ident {
-                const NAME: &'static [u8] = $name:expr;
+                const NAME: &'static [u8] = $name:literal;
                 const EXECUTION: BuiltinExecution = $execution:expr;
                 $(const DOCS: &'static BuiltinDocs = $docs:expr;)?
             }
@@ -33,8 +34,18 @@ macro_rules! builtin_registry {
             )*
         ];
 
+        fn lookup_builtin_metadata(name: &[u8]) -> Option<BuiltinMetadata> {
+            match name {
+                $(
+                    $name => Some(<$ty as BuiltinDefinition>::METADATA),
+                )*
+                _ => None,
+            }
+        }
+
         /// Builtin declarations recognized by the resolver and evaluator.
-        pub(crate) const BUILTINS: BuiltinRegistry = BuiltinRegistry::new(BUILTIN_METADATA);
+        pub(crate) const BUILTINS: BuiltinRegistry =
+            BuiltinRegistry::new(BUILTIN_METADATA, lookup_builtin_metadata);
     };
 }
 
@@ -1266,12 +1277,16 @@ impl BuiltinMetadata {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BuiltinRegistry {
     metadata: &'static [BuiltinMetadata],
+    lookup: fn(&[u8]) -> Option<BuiltinMetadata>,
 }
 
 impl BuiltinRegistry {
     /// Creates a builtin registry from static metadata.
-    const fn new(metadata: &'static [BuiltinMetadata]) -> Self {
-        Self { metadata }
+    const fn new(
+        metadata: &'static [BuiltinMetadata],
+        lookup: fn(&[u8]) -> Option<BuiltinMetadata>,
+    ) -> Self {
+        Self { metadata, lookup }
     }
 
     /// Returns the number of builtin declarations.
@@ -1286,10 +1301,7 @@ impl BuiltinRegistry {
 
     /// Returns shared metadata for a builtin name.
     pub(crate) fn lookup(&self, name: &[u8]) -> Option<BuiltinMetadata> {
-        self.metadata
-            .iter()
-            .copied()
-            .find(|metadata| metadata.name() == name)
+        (self.lookup)(name)
     }
 
     /// Returns direct lowering metadata for a builtin name.
@@ -1341,6 +1353,15 @@ mod tests {
             .collect::<BTreeSet<_>>();
 
         assert_eq!(names.len(), BUILTINS.len());
+    }
+
+    #[test]
+    fn generated_builtin_lookup_covers_declared_metadata() {
+        for metadata in BUILTINS.iter().copied() {
+            assert_eq!(BUILTINS.lookup(metadata.name()), Some(metadata));
+        }
+        assert_eq!(BUILTINS.lookup(b"toXML\0"), None);
+        assert_eq!(BUILTINS.lookup(b"foldl"), None);
     }
 
     #[test]
