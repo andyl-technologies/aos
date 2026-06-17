@@ -43,12 +43,19 @@
     "BPF_EVENTS"
     "BPF_LSM"
     "SECURITY_LANDLOCK"
+    "DEBUG_KERNEL"
+    "DEBUG_INFO"
+    "DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT"
+    "DEBUG_INFO_COMPRESSED_NONE"
+    "DEBUG_INFO_BTF"
+    "DEBUG_INFO_BTF_MODULES"
   ];
 
   # Symbols required to hold a specific value (CONFIG_<name>=<value>).
   valueCommon = {
     DEFAULT_MMAP_MIN_ADDR = "65536";
     LSM = "'\"landlock,yama,integrity,selinux,bpf\"'";
+    PAHOLE_VERSION = "131";
   };
 
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module
@@ -63,6 +70,8 @@
     "DEVKMEM"
     "PROC_KCORE"
     "COMPAT_BRK"
+    "DEBUG_INFO_REDUCED"
+    "DEBUG_INFO_SPLIT"
   ];
 
   enabledX86 = [
