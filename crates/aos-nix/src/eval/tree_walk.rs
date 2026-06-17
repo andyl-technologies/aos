@@ -29535,6 +29535,17 @@ mod tests {
             }
         );
         assert_eq!(error.span(), argument_span);
+
+        let ir = lower(r#"builtins.toString { __toString = "bad"; outPath = "fallback"; }"#);
+        let error = eval_whnf_owned(&ir).expect_err("__toString takes precedence over outPath");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::String,
+                ..
+            }
+        ));
     }
 
     #[test]

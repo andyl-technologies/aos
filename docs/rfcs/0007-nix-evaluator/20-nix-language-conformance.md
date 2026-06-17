@@ -745,9 +745,9 @@ derivation-level (consumed by `derivationStrict`).
       including the recursive case (`__functor` whose value is itself a
       functor-set) and that this is how nixpkgs attaches metadata to callables.
       (Verified against the syntax page.)
-- [ ] **`__toString` (language-level)** — string-coercion hook for attrsets;
+- [x] **`__toString` (language-level)** — string-coercion hook for attrsets;
       `__toString self` is called, takes precedence over `outPath` (§2.4).
-- [ ] **`outPath` (language-level coercion)** — string-coercion fallback when
+- [x] **`outPath` (language-level coercion)** — string-coercion fallback when
       `__toString` is absent (§2.4); this is how derivations and flake inputs
       interpolate.
 - [ ] **`__structuredAttrs` (derivation-level)** — changes how `derivationStrict`
