@@ -198,6 +198,17 @@ in {
           "systemctl show -p MainPID --value test-http-server.service"
       ).strip())
 
+      # Record dbus's MainPID. gen-2 perturbs dbus.service (a serviceConfig
+      # limit), so the reconciler MUST act on it — but because dbus.service is
+      # reloadIfChanged it must *reload* (same daemon, same PID, live bus
+      # preserved), never restart. A restart would tear down the very bus the
+      # reconciler drives itself over and hang (the bug this guards). Asserted
+      # after the upgrade.
+      dbus_pid_before = int(target.succeed(
+          "systemctl show -p MainPID --value dbus.service"
+      ).strip())
+      assert dbus_pid_before > 0, "dbus.service has no MainPID before upgrade"
+
       # ── 2. Stage the registry in SYSTEM scope ───────────────────────
       # /etc/apm/registries.d/<name>.toml for the config + the package TOML in
       # the system cache dir /var/lib/apm/remote/<name>/packages/<letter>/.
@@ -324,6 +335,33 @@ in {
       assert http_pid_before == http_pid_after, (
           "test-http-server.service was restarted unnecessarily: PID "
           f"{http_pid_before} -> {http_pid_after}"
+      )
+
+      # ── 12b. The perturbed dbus.service was RELOADED, not restarted ──
+      # This is the regression guard for the dbus-self-restart hang. gen-2
+      # changed dbus.service's unit text, so the reconciler had to act on it.
+      # Because dbus.service is reloadIfChanged with an ExecReload, it must be
+      # reloaded in place: the daemon keeps running (same MainPID) and the
+      # system bus the reconciler drives itself over is never torn down. A
+      # restart would change the PID — and, over the bus, would have hung the
+      # whole `apm upgrade` (which is exactly the bug we fixed). The bus must
+      # still be live and dbus still active.
+      target.succeed("systemctl is-active dbus.service")
+      target.succeed("test -S /run/dbus/system_bus_socket")
+      dbus_pid_after = int(target.succeed(
+          "systemctl show -p MainPID --value dbus.service"
+      ).strip())
+      assert dbus_pid_before == dbus_pid_after, (
+          "dbus.service was RESTARTED instead of reloaded (the self-restart "
+          f"hang regressed): PID {dbus_pid_before} -> {dbus_pid_after}"
+      )
+      # And the reconcile plan itself classified dbus as a reload, not a
+      # restart — belt-and-suspenders against a future X-* regression.
+      assert "restarting dbus.service" not in out, (
+          "reconcile scheduled a dbus.service RESTART:\n" + out
+      )
+      assert "reloading  dbus.service" in out, (
+          "reconcile did not reload dbus.service as expected:\n" + out
       )
 
       # ── 13. No failed units after the reconcile ─────────────────────

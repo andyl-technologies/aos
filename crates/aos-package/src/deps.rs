@@ -82,6 +82,7 @@ struct InstalledPackageRef {
 /// live `nix-store` reference query fails.
 pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
+    crate::query::warn_unsynced_scope(config, printer);
     let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
 
@@ -164,6 +165,7 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
 /// loaded, or if `package` is neither installed nor in any registry.
 pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
+    crate::query::warn_unsynced_scope(config, printer);
 
     let profile = Profile::open_readonly(config.scope);
     let installed = meta::list_meta(&profile)?;
@@ -273,6 +275,7 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
 /// loaded, or if `package` is neither installed nor in any registry.
 pub async fn policy(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let registries = load_registries(config)?;
+    crate::query::warn_unsynced_scope(config, printer);
 
     // Check installed version.
     let profile = Profile::open_readonly(config.scope);

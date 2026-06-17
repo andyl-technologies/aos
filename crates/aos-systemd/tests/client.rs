@@ -5,7 +5,7 @@ mod common;
 
 use std::time::Duration;
 
-use aos_systemd::JobResult;
+use aos_systemd::{Error, JobResult};
 use common::Harness;
 
 /// Cap every client await so a logic bug surfaces as a fast failure rather
@@ -141,6 +141,47 @@ async fn concurrent_jobs_route_by_path() {
             JobResult::Failed
         };
         assert_eq!(outcome.result, expected, "unit u{i} routed to wrong result");
+    }
+}
+
+#[tokio::test]
+async fn bus_drop_with_pending_waiter_returns_error_not_hang() {
+    // Regression guard for the dbus.service self-restart hang: the reconcile
+    // drives systemd over the system bus and one of the units it restarts is
+    // dbus.service itself. Restarting the bus tears down the connection, so the
+    // job's terminal `JobRemoved` never arrives. The client MUST surface this
+    // as `JobSenderDropped` (the bus-died-mid-flight contract in error.rs),
+    // NOT park the awaiter forever.
+    //
+    // We model it deterministically: suppress the fake's terminal signal so the
+    // job stays "in flight", then close the server connection out from under
+    // the in-flight `restart_unit`. Without the fix the await never resolves and
+    // `with_timeout` fires; with it, the await returns `JobSenderDropped`.
+    let h = Harness::new().await;
+    h.suppress_job_emission();
+
+    let result = with_timeout(async {
+        // Drive the restart concurrently with the connection drop. The restart
+        // first issues the (successful) RestartUnit call — registering a waiter
+        // — then parks on the missing JobRemoved; only then do we kill the bus.
+        let (res, ()) = tokio::join!(h.client.restart_unit("dbus.service"), async {
+            wait_until(|| h.calls().contains(&"restart_unit".to_string())).await;
+            // Let the method reply land and the waiter register before the drop.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            h.close_server().await;
+        });
+        res
+    })
+    .await;
+
+    match result {
+        Err(Error::JobSenderDropped(unit)) => {
+            assert!(
+                unit.contains("job/"),
+                "JobSenderDropped should name the orphaned job path; got {unit:?}"
+            );
+        }
+        other => panic!("expected JobSenderDropped after bus drop, got {other:?}"),
     }
 }
 

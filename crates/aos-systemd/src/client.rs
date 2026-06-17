@@ -132,6 +132,14 @@ impl FailedUnitsReport {
 struct JobRegistry {
     waiters: HashMap<OwnedObjectPath, oneshot::Sender<JobResult>>,
     completed: HashMap<OwnedObjectPath, JobResult>,
+    /// Set once the `JobRemoved` signal stream closes — i.e. the bus connection
+    /// died. No further `JobRemoved` will ever arrive, so any pending or future
+    /// waiter can never be satisfied. Read under the same lock as `waiters` so
+    /// the close-side drain and the `await_job` registration are serialized:
+    /// every awaiter either gets drained or sees `closed` before parking, and
+    /// none is left to hang. The canonical case is the reconcile restarting
+    /// `dbus.service` and killing the very bus it was driving.
+    closed: bool,
 }
 
 /// Typed async client for `org.freedesktop.systemd1`.
@@ -151,6 +159,16 @@ pub struct SystemdClient {
 impl SystemdClient {
     /// Open the system bus, build the Manager proxy, `Subscribe()`, and start
     /// the background signal-handler tasks.
+    ///
+    /// Uses the shared **system bus** (`/run/dbus/system_bus_socket`), the same
+    /// transport nixpkgs `switch-to-configuration-ng` uses. (systemd's private
+    /// socket would decouple us from `dbus.service`, but it is a *direct*, non-
+    /// bus endpoint whose message framing zbus 5 cannot round-trip — it rejects
+    /// systemd's sender field as an invalid unique name. We therefore avoid
+    /// restarting the bus in the first place: `dbus.service` is `reloadIfChanged`
+    /// so the reconcile reloads rather than restarts it, and a connection that
+    /// dies mid-reconcile anyway is surfaced as a `JobSenderDropped` error
+    /// rather than an indefinite hang.)
     ///
     /// # Errors
     ///
@@ -217,8 +235,17 @@ impl SystemdClient {
                 }
                 let _ = event_tx.send(());
             }
-            // Stream closed = bus connection died; other consumers will see the
-            // error on their next .await.
+            // Stream closed = bus connection died (e.g. we just restarted
+            // dbus.service out from under our own connection). No more
+            // JobRemoved will ever arrive, so flip `closed` and drop every
+            // parked sender: each awaiting `await_job` then observes a closed
+            // oneshot and returns `JobSenderDropped` instead of hanging
+            // forever. Future `await_job` calls see `closed` and bail up front.
+            {
+                let mut reg = jobs_for_task.lock().unwrap();
+                reg.closed = true;
+                reg.waiters.clear();
+            }
         }));
 
         let reloading_for_task = reloading.clone();
@@ -326,6 +353,11 @@ impl SystemdClient {
                     job_path: path,
                     result,
                 });
+            }
+            // The signal stream already closed (bus died) — no JobRemoved can
+            // arrive, so don't park a waiter that would never wake.
+            if reg.closed {
+                return Err(Error::JobSenderDropped(path.as_str().to_string()));
             }
             let (tx, rx) = oneshot::channel();
             reg.waiters.insert(path.clone(), tx);
