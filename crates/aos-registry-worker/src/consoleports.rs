@@ -17,9 +17,12 @@
 //!   Unlike the native hub it cannot run a connect-time validating resolver, so
 //!   *hostname*-based SSRF is delegated to Cloudflare's egress policy rather than
 //!   blocked in code (see [`WorkerHttpClient`]).
-//! - [`WorkerChannelAdvancer`] — the hosted-key [`ChannelAdvancer`]. R2-backed
-//!   partition signing is not yet implemented on the Worker, so an advance
-//!   returns a clear error rather than a false success (a documented TODO).
+//! - [`WorkerReindexer`] — the [`Reindexer`] a hosted-key channel advance runs
+//!   after its signed partitions land. A channel advance is no longer a port:
+//!   the shared [`advance_channel`](aos_registry_core::signing::advance_channel)
+//!   signs the partitions with the D1-sealed hosted key and writes them to R2
+//!   through the [`SurfaceWriteProvider`](aos_registry_core::surface_write::SurfaceWriteProvider),
+//!   then defers the re-index to Cron through this no-op reindexer.
 //!
 //! The at-rest [`SecretSealer`](aos_registry_core::auth::seal::SecretSealer) the
 //! console's OIDC token exchange needs is the shared pure-Rust AES-256-GCM
@@ -32,7 +35,7 @@ use aos_registry_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_registry_core::db::RegistryRecord;
 use aos_registry_core::url_guard;
 use aos_registry_core::reindex::Reindexer;
-use aos_registry_core::web::console::ports::{AdvanceOutcome, ChannelAdvancer, HttpClient};
+use aos_registry_core::web::console::ports::HttpClient;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -181,32 +184,6 @@ impl HttpClient for WorkerHttpClient {
     }
 }
 
-/// The Worker's hosted-key [`ChannelAdvancer`] — not yet implemented.
-///
-/// On the native hub a channel advance signs the next partitions with the
-/// hub-held key and writes them to a filesystem/HTTP surface; the Worker's
-/// equivalent must sign against its R2 surface, which is not yet built. Rather
-/// than fake a success, [`advance`](ChannelAdvancer::advance) returns a clear
-/// error so the route is mounted and every other console path works, while a
-/// hosted-key advance fails loudly until R2-backed signing lands.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WorkerChannelAdvancer;
-
-#[async_trait(?Send)]
-impl ChannelAdvancer for WorkerChannelAdvancer {
-    async fn advance(
-        &self,
-        _registry: &RegistryRecord,
-        _channel_name: &str,
-        _target_semver: &str,
-        _count: usize,
-        _when: i64,
-    ) -> Result<AdvanceOutcome> {
-        // TODO(RFC-0004): R2-backed partition signing + re-index on the Worker.
-        bail!("hosted-key channel advance is not yet supported on the Cloudflare Worker target")
-    }
-}
-
 /// The Worker's [`Reindexer`]: defers re-indexing to the Cron-trigger indexer.
 ///
 /// The shared facade-write handler re-indexes a registry inline when a
@@ -230,11 +207,14 @@ pub struct WorkerReindexer;
 
 #[async_trait(?Send)]
 impl Reindexer for WorkerReindexer {
-    async fn reindex(&self, registry: &RegistryRecord) -> Result<()> {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
         worker::console_log!(
             "reindex of '{}' deferred to the Cron-trigger indexer",
             registry.slug
         );
-        Ok(())
+        // No inline index commit: the Cron indexer reconciles the D1 index
+        // later, so a hosted-key advance's audit row carries no index commit
+        // cross-reference on the Worker.
+        Ok(None)
     }
 }

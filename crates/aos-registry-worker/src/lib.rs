@@ -85,8 +85,10 @@
 //! - `workerlimit` — the D1-backed [`aos_registry_core::ratelimit::RateLimiter`].
 //! - `consoleports` — the Worker's console ports: the logging mailer, the
 //!   Fetch-API OIDC [`HttpClient`](aos_registry_core::web::console::ports::HttpClient),
-//!   and the (not-yet-implemented) hosted-key
-//!   [`ChannelAdvancer`](aos_registry_core::web::console::ports::ChannelAdvancer).
+//!   and the Cron-deferring [`Reindexer`](aos_registry_core::reindex::Reindexer)
+//!   over which the shared
+//!   [`advance_channel`](aos_registry_core::signing::advance_channel) signs a
+//!   hosted-key channel advance onto the R2 surface.
 //!
 //! # Build and deploy
 //!
@@ -145,7 +147,7 @@ mod entry {
     use axum::Router;
 
     use crate::consoleports::{
-        sealer_from_secret, WorkerChannelAdvancer, WorkerHttpClient, WorkerMailer, WorkerReindexer,
+        sealer_from_secret, WorkerHttpClient, WorkerMailer, WorkerReindexer,
     };
 
     /// Whether a request path is the worker-local one-shot schema setup.
@@ -185,8 +187,10 @@ mod entry {
     /// - the producer-console router ([`console_router`]) built from a
     ///   [`ConsoleDeps`], over the Worker's console ports
     ///   ([`crate::consoleports`]): the logging [`WorkerMailer`], the Fetch-API
-    ///   [`WorkerHttpClient`], the not-yet-implemented [`WorkerChannelAdvancer`],
-    ///   and the shared AES-GCM sealer from `HUB_SEAL_KEY`.
+    ///   [`WorkerHttpClient`], the Cron-deferring [`WorkerReindexer`] (over which
+    ///   a hosted-key channel advance runs the shared
+    ///   [`advance_channel`](aos_registry_core::signing::advance_channel)), and
+    ///   the shared AES-GCM sealer from `HUB_SEAL_KEY`.
     ///
     /// Both routers carry their own state, so they merge into one `Router<()>`
     /// exactly as the native hub composes them; the console's static paths win
@@ -269,9 +273,9 @@ mod entry {
             mailer: Arc::new(WorkerMailer),
             sealer,
             http: Arc::new(WorkerHttpClient),
-            advancer: Arc::new(WorkerChannelAdvancer),
             surface,
             surface_write,
+            reindexer,
         };
 
         Ok(aos_registry_core::connect::router(service).merge(console_router(console_deps)))

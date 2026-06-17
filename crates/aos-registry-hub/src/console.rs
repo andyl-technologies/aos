@@ -950,9 +950,14 @@ async fn advance_direct_action(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    let surface_write =
+        crate::coreports::HubSurfaceWriteProvider::new(std::sync::Arc::clone(&state.db));
+    let reindexer = crate::coreports::HubReindexer::new(std::sync::Arc::clone(&state.db));
     let result = crate::signing::advance_channel(
         &state.db,
         state.sealer.as_ref(),
+        &surface_write,
+        &reindexer,
         registry,
         name,
         release,

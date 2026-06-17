@@ -21,6 +21,7 @@ use aos_registry_hub::auth::extract::{mint_csrf_token, AuthState};
 use aos_registry_hub::auth::jwt::JwtKeys;
 use aos_registry_hub::auth::oidc::dev_sealer;
 use aos_registry_hub::auth::session::COOKIE_NAME;
+use aos_registry_hub::coreports::{HubReindexer, HubSurfaceWriteProvider};
 use aos_registry_hub::db::{Database, RegistryRecord};
 use aos_registry_hub::fetch::LocalFsFetch;
 use aos_registry_hub::indexer::index_and_record;
@@ -319,9 +320,13 @@ async fn hosted_advance_signs_writes_and_reindexes_verifiably() {
     );
 
     // Advance 10 partitions of `stable` to 1.1.0, signed by the hosted key.
+    let surface_write = HubSurfaceWriteProvider::new(Arc::clone(&db));
+    let reindexer = HubReindexer::new(Arc::clone(&db));
     let outcome = signing::advance_channel(
         &db,
         dev_sealer().as_ref(),
+        &surface_write,
+        &reindexer,
         &registry,
         "stable",
         "1.1.0",
@@ -387,9 +392,13 @@ async fn advance_below_the_floor_is_refused() {
     db.set_channel_floor(registry.id, "stable", "1.0.5")
         .await
         .unwrap();
+    let surface_write = HubSurfaceWriteProvider::new(Arc::clone(&db));
+    let reindexer = HubReindexer::new(Arc::clone(&db));
     let err = signing::advance_channel(
         &db,
         dev_sealer().as_ref(),
+        &surface_write,
+        &reindexer,
         &registry,
         "stable",
         "1.0.0",
@@ -412,9 +421,13 @@ async fn advance_to_unknown_release_errors_clearly() {
     let fixture = two_release_surface(&surface);
     let (db, registry) = serve_hosted(&surface, &fixture).await;
 
+    let surface_write = HubSurfaceWriteProvider::new(Arc::clone(&db));
+    let reindexer = HubReindexer::new(Arc::clone(&db));
     let err = signing::advance_channel(
         &db,
         dev_sealer().as_ref(),
+        &surface_write,
+        &reindexer,
         &registry,
         "stable",
         "9.9.9",
