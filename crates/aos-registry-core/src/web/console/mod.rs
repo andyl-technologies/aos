@@ -21,5 +21,5 @@ pub mod ports;
 pub mod router;
 
 pub use handlers::CLIENT_IP_HEADER;
-pub use ports::{AdvanceOutcome, ChannelAdvancer, ConsoleDeps, HttpClient};
+pub use ports::{ConsoleDeps, HttpClient};
 pub use router::console_router;

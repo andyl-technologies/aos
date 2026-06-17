@@ -30,7 +30,6 @@ use std::sync::Arc;
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
-use aos_registry_core::auth::seal::SecretSealer;
 use aos_registry_core::db::{Database, RegistryRecord};
 use aos_registry_core::fetch as core_fetch;
 use aos_registry_core::ratelimit as core_rl;
@@ -377,61 +376,6 @@ impl console_ports::HttpClient for HubHttpClient {
     }
 }
 
-/// The native [`ChannelAdvancer`](console_ports::ChannelAdvancer): the hub's
-/// [`signing`](crate::signing) module behind the shared console's hosted-key
-/// advance port.
-///
-/// Delegates the entire signing-and-publishing closure to
-/// [`crate::signing::advance_channel`] — key load, anti-rollback floor check,
-/// partition signing, atomic write, re-index, and audit — and maps its
-/// [`AdvanceResult`](crate::signing::AdvanceResult) (field-for-field) to the
-/// core [`AdvanceOutcome`](console_ports::AdvanceOutcome).
-pub struct HubChannelAdvancer {
-    /// The hub database the signer reads keys/floors from and writes the index
-    /// and audit rows to.
-    db: Arc<Database>,
-    /// The at-rest sealer that unseals the registry's hosted signing key.
-    sealer: Arc<dyn SecretSealer>,
-}
-
-impl HubChannelAdvancer {
-    /// Build the advancer over the hub database and at-rest sealer.
-    #[must_use]
-    pub fn new(db: Arc<Database>, sealer: Arc<dyn SecretSealer>) -> HubChannelAdvancer {
-        HubChannelAdvancer { db, sealer }
-    }
-}
-
-#[async_trait]
-impl console_ports::ChannelAdvancer for HubChannelAdvancer {
-    async fn advance(
-        &self,
-        registry: &RegistryRecord,
-        channel_name: &str,
-        target_semver: &str,
-        count: usize,
-        when: i64,
-    ) -> Result<console_ports::AdvanceOutcome> {
-        let result = crate::signing::advance_channel(
-            &self.db,
-            self.sealer.as_ref(),
-            registry,
-            channel_name,
-            target_semver,
-            count,
-            when,
-        )
-        .await?;
-        Ok(console_ports::AdvanceOutcome {
-            channel: result.channel,
-            release: result.release,
-            moved: result.moved,
-            at_target: result.at_target,
-            rollout_percent: result.rollout_percent,
-        })
-    }
-}
-
 /// The native [`Reindexer`](core_reindex::Reindexer): re-indexes a managed
 /// registry inline from its local surface and records an `index` audit row.
 ///
@@ -458,7 +402,7 @@ impl HubReindexer {
 
 #[async_trait]
 impl core_reindex::Reindexer for HubReindexer {
-    async fn reindex(&self, registry: &RegistryRecord) -> Result<()> {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
         let root = self
             .db
             .registry_surface_root(registry.id)
@@ -488,6 +432,6 @@ impl core_reindex::Reindexer for HubReindexer {
                 None,
             )
             .await?;
-        Ok(())
+        Ok(Some(outcome.commit))
     }
 }

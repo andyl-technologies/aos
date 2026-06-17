@@ -385,8 +385,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     router = router.fallback(nested_catch_all);
     // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
     // B): the wasm-clean management handlers, built over the hub's database,
-    // JWT keys, rate limiter, mailer, sealer, and the two native ports (the
-    // hardened reqwest `HttpClient` and the `signing`-backed `ChannelAdvancer`).
+    // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
+    // port, and the native surface read/write and reindex ports (over which the
+    // shared `signing::advance_channel` runs a hosted-key channel advance).
     // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
     // merged after `with_state` below. The hub's own `console::router()`
     // registers only the native-only routes (pre-auth login/activation, OIDC,
@@ -401,16 +402,13 @@ pub async fn router(state: Arc<AppState>) -> Router {
         mailer: Arc::clone(&state.mailer),
         sealer: Arc::clone(&state.sealer),
         http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        advancer: Arc::new(crate::coreports::HubChannelAdvancer::new(
-            Arc::clone(&state.db),
-            Arc::clone(&state.sealer),
-        )),
         surface: Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
             &state.db,
         ))),
         surface_write: Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
             &state.db,
         ))),
+        reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
     };
     let console_router = aos_registry_core::web::console::console_router(console_deps);
     // Kept for the outermost client-IP injection layer below, which runs after

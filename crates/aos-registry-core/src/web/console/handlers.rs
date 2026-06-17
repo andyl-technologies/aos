@@ -3328,8 +3328,9 @@ pub(crate) async fn channel_advance_direct(
 }
 
 /// The direct hosted-key advance action: sign and apply the advance through the
-/// [`ChannelAdvancer`](super::ports::ChannelAdvancer) port (or fall back to a
-/// prepared operation when no hosted key is bound).
+/// shared [`advance_channel`](crate::signing::advance_channel) over the
+/// console's surface-write and reindex ports (or fall back to a prepared
+/// operation when no hosted key is bound).
 async fn advance_direct_action(
     deps: &ConsoleDeps,
     session: &Session,
@@ -3362,10 +3363,18 @@ async fn advance_direct_action(
         .unwrap_or(256usize)
         .clamp(1, 256);
     let when = crate::clock::now_unix_secs();
-    let result = deps
-        .advancer
-        .advance(registry, name, release, count, when)
-        .await;
+    let result = crate::signing::advance_channel(
+        &deps.db,
+        deps.sealer.as_ref(),
+        deps.surface_write.as_ref(),
+        deps.reindexer.as_ref(),
+        registry,
+        name,
+        release,
+        count,
+        when,
+    )
+    .await;
     match result {
         Ok(outcome) => {
             let message = format!(

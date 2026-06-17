@@ -1145,8 +1145,8 @@ async fn main() -> Result<()> {
         }
         Command::Channel { command } => {
             let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
-            run_channel_command(&db, &root, command).await?;
+            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
+            run_channel_command(db, &root, command).await?;
         }
         Command::Webhook { command } => {
             let root = resolve_root(cli.root, false)?;
@@ -1426,7 +1426,7 @@ async fn run_hosted_key_command(
 ///
 /// This is the hosted-key path. It errors clearly when the registry has no
 /// hosted key, pointing at the prepared-operation/CLI flow instead.
-async fn run_channel_command(db: &Database, root: &Path, command: ChannelCommand) -> Result<()> {
+async fn run_channel_command(db: Arc<Database>, root: &Path, command: ChannelCommand) -> Result<()> {
     use aos_registry_hub::auth::seal::instance_sealer;
     match command {
         ChannelCommand::Advance {
@@ -1451,9 +1451,14 @@ async fn run_channel_command(db: &Database, root: &Path, command: ChannelCommand
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
+            let surface_write =
+                aos_registry_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(&db));
+            let reindexer = aos_registry_hub::coreports::HubReindexer::new(Arc::clone(&db));
             let outcome = aos_registry_hub::signing::advance_channel(
-                db,
+                &db,
                 sealer.as_ref(),
+                &surface_write,
+                &reindexer,
                 &registry,
                 &channel,
                 &semver,

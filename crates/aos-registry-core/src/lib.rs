@@ -54,6 +54,7 @@ pub mod lease;
 pub mod ratelimit;
 pub mod reindex;
 pub mod service;
+pub mod signing;
 pub mod stack;
 pub mod surface_write;
 pub mod url_guard;
