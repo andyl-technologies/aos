@@ -195,7 +195,7 @@ strings and string contexts.
 
 ### 2.5 String concatenation
 
-- [ ] **`+` on strings** — `"a" + "b"` concatenates characters *and unions the
+- [x] **`+` on strings** — `"a" + "b"` concatenates characters *and unions the
       string contexts* (§3). See §6 for the full `+` overload set.
 
 ---
@@ -216,7 +216,7 @@ are language-level and live here.
       NAR-hashed source store path to the context (and is observed as an `inputSrc`).
 - [ ] **Context attaches via `builtins.storePath`** — adds the path as a context
       element (builtin in doc 21; the propagation rule is here).
-- [ ] **Concatenation unions context** — `a + b` carries `context(a) ∪ context(b)`.
+- [x] **Concatenation unions context** — `a + b` carries `context(a) ∪ context(b)`.
 - [ ] **Interpolation unions context** — `"${a}${b}"` carries the union of every
       interpolated part's context.
 - [ ] **`//`, comparisons, and other ops do not fabricate context** — only
@@ -418,7 +418,7 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [ ] **int + int → int** — i64 arithmetic (§7).
 - [ ] **float + float → float**, and **int + float / float + int → float**
       (promotion, §7).
-- [ ] **string + string → string** — concatenation + context union (§2.5, §3).
+- [x] **string + string → string** — concatenation + context union (§2.5, §3).
 - [ ] **path + path → path**.
 - [ ] **path + string → path** (string must lack store-path context; §4).
 - [ ] **string + path → string** (path must exist, copied to store; §4).

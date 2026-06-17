@@ -19898,6 +19898,13 @@ mod tests {
                  };
                  a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
                  b = withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+               in builtins.getContext (a + b)"#,
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+                 a = withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                 b = withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
                  sep = withCtx ":" "/nix/store/cccccccccccccccccccccccccccccccc-sep";
                in builtins.getContext (builtins.concatStringsSep sep [ a b ])"#,
             r#"let
@@ -32661,6 +32668,22 @@ mod tests {
 
     #[test]
     fn string_add_unions_contexts() {
+        assert_eq!(
+            eval(
+                r#"let
+                     withCtx = text: path: builtins.appendContext text {
+                       ${path} = { path = true; };
+                     };
+                     aPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a";
+                     bPath = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b";
+                     result = withCtx "a" aPath + withCtx "b" bPath;
+                     ctx = builtins.getContext result;
+                   in result == "ab" && builtins.hasAttr aPath ctx && builtins.hasAttr bPath ctx"#
+            )
+            .as_bool(),
+            Ok(true)
+        );
+
         let ir = lower("1");
         let mut evaluator = TreeWalk::new(&ir);
         let node = *ir.arena.node(ir.root).expect("root exists");
