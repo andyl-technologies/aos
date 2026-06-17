@@ -833,8 +833,9 @@ the full edge model.
 The authoritative builtin set is **whatever the single pinned open-source C++ Nix
 version reports**. Concretely:
 
-- [ ] The exact `builtins.attrNames builtins` of the pinned `nix` is captured as
-      a golden fixture; the harness fails if aos-nix's set differs in membership
+- [x] The exact `builtins.attrNames builtins` of the pinned `nix` under the
+      harness-pinned `experimental-features = flakes` surface is captured as a
+      golden fixture; the harness fails if aos-nix's set differs in membership
       or order.
 - [ ] Every builtin whose existence is version-gated (noted inline above:
       `convertHash` ≥ 2.19, `readFileType` ≥ 2.14, `addDrvOutputDependencies`

@@ -17266,6 +17266,129 @@ mod tests {
     use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
 
+    const PINNED_BUILTIN_SURFACE_EXPERIMENTAL_FEATURES: &str = "flakes";
+
+    const PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES: &[&str] = &[
+        "abort",
+        "add",
+        "addDrvOutputDependencies",
+        "addErrorContext",
+        "all",
+        "any",
+        "appendContext",
+        "attrNames",
+        "attrValues",
+        "baseNameOf",
+        "bitAnd",
+        "bitOr",
+        "bitXor",
+        "break",
+        "builtins",
+        "catAttrs",
+        "ceil",
+        "compareVersions",
+        "concatLists",
+        "concatMap",
+        "concatStringsSep",
+        "convertHash",
+        "currentSystem",
+        "currentTime",
+        "deepSeq",
+        "derivation",
+        "derivationStrict",
+        "dirOf",
+        "div",
+        "elem",
+        "elemAt",
+        "false",
+        "fetchGit",
+        "fetchMercurial",
+        "fetchTarball",
+        "fetchTree",
+        "fetchurl",
+        "filter",
+        "filterSource",
+        "findFile",
+        "flakeRefToString",
+        "floor",
+        "foldl'",
+        "fromJSON",
+        "fromTOML",
+        "functionArgs",
+        "genList",
+        "genericClosure",
+        "getAttr",
+        "getContext",
+        "getEnv",
+        "getFlake",
+        "groupBy",
+        "hasAttr",
+        "hasContext",
+        "hashFile",
+        "hashString",
+        "head",
+        "import",
+        "intersectAttrs",
+        "isAttrs",
+        "isBool",
+        "isFloat",
+        "isFunction",
+        "isInt",
+        "isList",
+        "isNull",
+        "isPath",
+        "isString",
+        "langVersion",
+        "length",
+        "lessThan",
+        "listToAttrs",
+        "map",
+        "mapAttrs",
+        "match",
+        "mul",
+        "nixPath",
+        "nixVersion",
+        "null",
+        "parseDrvName",
+        "parseFlakeRef",
+        "partition",
+        "path",
+        "pathExists",
+        "placeholder",
+        "readDir",
+        "readFile",
+        "readFileType",
+        "removeAttrs",
+        "replaceStrings",
+        "scopedImport",
+        "seq",
+        "sort",
+        "split",
+        "splitVersion",
+        "storeDir",
+        "storePath",
+        "stringLength",
+        "sub",
+        "substring",
+        "tail",
+        "throw",
+        "toFile",
+        "toJSON",
+        "toPath",
+        "toString",
+        "toXML",
+        "trace",
+        "traceVerbose",
+        "true",
+        "tryEval",
+        "typeOf",
+        "unsafeDiscardOutputDependency",
+        "unsafeDiscardStringContext",
+        "unsafeGetAttrPos",
+        "warn",
+        "zipAttrsWith",
+    ];
+
     const LIB_NOT_BUILTIN_NAMES: &[&str] = &[
         "toLower",
         "toUpper",
@@ -17356,6 +17479,18 @@ mod tests {
         eval_string_bytes_with_options(&format!("builtins.toJSON ({source})"), options)
     }
 
+    fn pinned_builtin_name_bytes() -> Vec<Vec<u8>> {
+        PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES
+            .iter()
+            .map(|name| name.as_bytes().to_vec())
+            .collect()
+    }
+
+    fn pinned_builtin_names_json() -> Vec<u8> {
+        serde_json::to_vec(PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES)
+            .expect("pinned builtin fixture serializes")
+    }
+
     fn eval_xml_bytes(source: &str) -> Vec<u8> {
         eval_string_bytes(&format!("builtins.toXML ({source})"))
     }
@@ -17396,8 +17531,9 @@ mod tests {
     }
 
     fn cpp_nix_eval_json(oracle: &str, source: &str) -> Vec<u8> {
-        let output = Command::new(oracle)
-            .args(["--eval", "--strict", "--json", "--expr", source])
+        let mut command = Command::new(oracle);
+        command.args(["--eval", "--strict", "--json", "--expr", source]);
+        let output = command
             .output()
             .expect("C++ Nix oracle evaluates expression");
         assert!(
@@ -17406,6 +17542,41 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         trim_command_stdout(output.stdout)
+    }
+
+    fn cpp_nix_eval_json_with_nix_options(
+        oracle: &str,
+        source: &str,
+        options: &[(&str, &str)],
+    ) -> Vec<u8> {
+        let mut command = Command::new(oracle);
+        for (name, value) in options {
+            command.args(["--option", name, value]);
+        }
+        command.args(["--eval", "--strict", "--json", "--expr", source]);
+        let output = command
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        trim_command_stdout(output.stdout)
+    }
+
+    fn cpp_nix_eval_json_with_pinned_builtin_surface_features(
+        oracle: &str,
+        source: &str,
+    ) -> Vec<u8> {
+        cpp_nix_eval_json_with_nix_options(
+            oracle,
+            source,
+            &[(
+                "experimental-features",
+                PINNED_BUILTIN_SURFACE_EXPERIMENTAL_FEATURES,
+            )],
+        )
     }
 
     fn cpp_nix_eval_json_with_env(oracle: &str, source: &str, env: &[(&str, &str)]) -> Vec<u8> {
@@ -17438,16 +17609,6 @@ mod tests {
         assert_eq!(candidate, reference, "expression diverged: {source}");
     }
 
-    fn assert_cpp_nix_json_matches_tree_walk_with_options(
-        oracle: &str,
-        source: &str,
-        options: TreeWalkOptions,
-    ) {
-        let reference = cpp_nix_eval_json(oracle, source);
-        let candidate = eval_json_bytes_with_options(source, options);
-        assert_eq!(candidate, reference, "expression diverged: {source}");
-    }
-
     fn assert_cpp_nix_json_matches_tree_walk_with_options_and_env(
         oracle: &str,
         source: &str,
@@ -17466,17 +17627,29 @@ mod tests {
             TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
         options.set_current_time(1_700_000_000).expect("time valid");
 
+        let fixture = pinned_builtin_names_json();
         for source in [
             "builtins.attrNames builtins",
             "builtins.attrNames builtins.builtins",
-            "builtins.typeOf builtins.builtins",
         ] {
-            assert_cpp_nix_json_matches_tree_walk_with_options(oracle, source, options.clone());
+            let reference = cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, source);
+            assert_eq!(
+                reference, fixture,
+                "{source} should match the pinned builtin surface fixture",
+            );
+
+            let candidate = eval_json_bytes_with_options(source, options.clone());
+            assert_eq!(candidate, reference, "expression diverged: {source}");
         }
+
+        let type_source = "builtins.typeOf builtins.builtins";
+        let reference = cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, type_source);
+        let candidate = eval_json_bytes_with_options(type_source, options.clone());
+        assert_eq!(candidate, reference, "expression diverged: {type_source}");
 
         for name in LIB_NOT_BUILTIN_NAMES {
             let source = format!("builtins.hasAttr {} builtins", nix_string_literal(name));
-            let reference = cpp_nix_eval_json(oracle, &source);
+            let reference = cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, &source);
             assert_eq!(
                 reference, b"false",
                 "{name} should not appear in pinned C++ Nix builtins",
@@ -18016,6 +18189,32 @@ mod tests {
         for metadata in BUILTINS.iter().copied() {
             assert_eq!(lookup_builtin_by_name(metadata.name()), Some(metadata));
         }
+    }
+
+    #[test]
+    fn builtin_surface_matches_pinned_flakes_golden_fixture() {
+        let fixture = pinned_builtin_name_bytes();
+        assert_eq!(fixture.len(), BUILTINS.len());
+        assert!(fixture.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let registry_names = BUILTINS
+            .iter()
+            .map(|metadata| metadata.name().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(registry_names, fixture);
+
+        let mut options =
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec()).expect("system valid");
+        options.set_current_time(1_700_000_000).expect("time valid");
+
+        assert_eq!(
+            eval_list_string_bytes_with_options("builtins.attrNames builtins", options.clone()),
+            fixture,
+        );
+        assert_eq!(
+            eval_list_string_bytes_with_options("builtins.attrNames builtins.builtins", options),
+            fixture,
+        );
     }
 
     #[test]
