@@ -18,6 +18,11 @@
 ##!        restarts (its X-Reload-Triggers covers /etc/sysctl.d).
 ##!      - a newly-added unit gets installed and started.
 ##!      - a removed unit is stopped before the old unit file disappears.
+##!   4. perturbed dbus.service (a serviceConfig limit) → its unit text
+##!      changes, so the reconciler must act on the system message bus. Since
+##!      dbus.service is reloadIfChanged, this exercises reload-not-restart:
+##!      the bus the reconciler is driven over must NOT be torn down. Guards
+##!      the dbus-self-restart hang.
 ##!
 ##! No kernel change. No bootloader change. Pure /etc + systemd
 ##! reconciliation surface, which is exactly what this fixture exists
@@ -43,6 +48,15 @@
   environment.etc."aos/upgrade-test/marker.conf" = {
     text = "marker = 1\n";
   };
+
+  # Perturb dbus.service so its effective fingerprint differs between gen-1
+  # and gen-2, forcing the reconciler to act on the system message bus. This
+  # is the regression surface for the "restart dbus over its own bus" hang:
+  # because dbus.service is reloadIfChanged (modules/services/dbus.nix), the
+  # diff must schedule a *reload* (preserving the daemon's PID and the live
+  # bus), never a restart. The fleet test asserts exactly that. The added
+  # limit is innocuous; only the resulting unit-text change matters.
+  systemd.services.dbus.serviceConfig.LimitNOFILE = "16384";
 
   # test-http-server is ALREADY bundled on systems.server — the server
   # profile sets `aos.roles.test-http-server.bundle = true` and
