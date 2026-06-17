@@ -171,7 +171,7 @@ String primops must propagate **string context** exactly (see
 and §5 below). Unless noted, a string-producing primop **unions** the contexts
 of its string inputs; context is string-granular, never byte-granular.
 
-- [ ] `toString` (e) — coerce `e` to a string. The coercion rules are
+- [x] `toString` (e) — coerce `e` to a string. The coercion rules are
       load-bearing and must match exactly:
       - string → itself (context preserved);
       - path → its path string (and, in a derivation context, copies to store /

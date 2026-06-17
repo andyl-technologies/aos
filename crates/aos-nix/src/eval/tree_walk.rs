@@ -19334,6 +19334,60 @@ mod tests {
         assert_cpp_nix_string_coercion_contexts_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_to_string_builtin_matches_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let (dir, path) = temp_file_with_bytes("cpp-nix-to-string-path", b"abc");
+        let path = path_source(&path);
+
+        for source in [
+            r#"builtins.toString "x""#.to_owned(),
+            "builtins.toString 1".to_owned(),
+            "builtins.toString (-2)".to_owned(),
+            "builtins.toString 1.25".to_owned(),
+            "builtins.toString (-0.0)".to_owned(),
+            "builtins.toString true".to_owned(),
+            "builtins.toString false".to_owned(),
+            "builtins.toString null".to_owned(),
+            format!("builtins.toString {path}"),
+            "builtins.toString [ 1 \"x\" true false null ]".to_owned(),
+            "builtins.toString [ \"x\" [] \"y\" ]".to_owned(),
+            "builtins.toString [ [ \"a\" \"b\" ] [ \"c\" \"\" ] [ \"\" \"d\" ] ]".to_owned(),
+            "builtins.toString { __toString = self: 1; outPath = 1 / 0; }".to_owned(),
+            r#"builtins.toString { __toString = self: [ "a" "b" ]; }"#.to_owned(),
+            r#"builtins.toString { outPath = [ "a" "b" ]; }"#.to_owned(),
+            r#"let f = builtins.toString; in f [ "a" "b" ]"#.to_owned(),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        for source in [
+            "builtins.toString [ \"a\" (1 / 0) ]",
+            "builtins.toString (x: x)",
+            r#"builtins.toString { __toString = "bad"; outPath = "fallback"; }"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_to_string_builtin_matches_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_to_string_builtin_matches_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_to_string_builtin_matches_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix toString check");
+            return;
+        };
+        assert_cpp_nix_to_string_builtin_matches_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_string_path_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [
