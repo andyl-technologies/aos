@@ -15,6 +15,7 @@
   privateOutboundPeerIf = "aos${privateOutboundNetnsHash}p";
   privateOutboundNatTable = "aos_pkg_${privateOutboundNetnsHash}";
   privateOutboundHttpRuleComment = "aos-pkg-expose-lifecycle-outbound-http-test";
+  uidSharedPath = "/tmp/aos-expose-lifecycle-uid-shared";
 
   privatePackageCommand = pkgs.writeShellScriptBin "expose-lifecycle-private-command" ''
     state=/var/lib/aos-pkg-expose-lifecycle-private
@@ -30,6 +31,30 @@
     ${pkgs.coreutils}/bin/readlink /proc/self/ns/net > "$state/netns"
     ${pkgs.coreutils}/bin/readlink /proc/self/ns/user > "$state/userns"
     printf outbound-ok > "$state/result"
+  '';
+
+  uidWriterCommand = pkgs.writeShellScriptBin "expose-lifecycle-uid-writer-command" ''
+    set -eu
+    state=/var/lib/aos-pkg-expose-lifecycle-uid-writer
+    test -d ${uidSharedPath}
+    ${pkgs.coreutils}/bin/id -u > "$state/uid"
+    printf writer > ${uidSharedPath}/owned
+    ${pkgs.coreutils}/bin/chmod 0600 ${uidSharedPath}/owned
+    ${pkgs.coreutils}/bin/stat -c '%u:%a' ${uidSharedPath}/owned > "$state/owned_stat"
+    printf ready > "$state/result"
+    ${pkgs.coreutils}/bin/sleep infinity
+  '';
+
+  uidCheckerCommand = pkgs.writeShellScriptBin "expose-lifecycle-uid-checker-command" ''
+    set -eu
+    state=/var/lib/aos-pkg-expose-lifecycle-uid-checker
+    test -d ${uidSharedPath}
+    ${pkgs.coreutils}/bin/id -u > "$state/uid"
+    if ${pkgs.bash}/bin/bash -c 'printf checker > "$1"' _ ${uidSharedPath}/owned 2> "$state/write_error"; then
+      printf wrote > "$state/result"
+      exit 1
+    fi
+    printf denied > "$state/result"
   '';
 
   socketServer = pkgs.writeTextFile {
@@ -227,6 +252,88 @@
     };
   };
 
+  uidWriterPackage = pkgs.mkDerivation {
+    pname = "expose-lifecycle-uid-writer";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-lifecycle-uid-writer"
+          printf uid-writer-payload > "$out/share/expose-lifecycle-uid-writer/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-lifecycle-uid-writer.service" = {
+        description = "RFC-0001 live package UID identity writer";
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          Type = "simple";
+          ExecStart = "${uidWriterCommand}/bin/expose-lifecycle-uid-writer-command";
+          StateDirectory = "aos-pkg-expose-lifecycle-uid-writer";
+        };
+      };
+      permissions = {
+        network = "private";
+        capabilities = [];
+        devices = [];
+        host-paths = [
+          {
+            path = uidSharedPath;
+            mode = "rw";
+          }
+        ];
+        syscalls = "restricted";
+      };
+      requires = [];
+    };
+  };
+
+  uidCheckerPackage = pkgs.mkDerivation {
+    pname = "expose-lifecycle-uid-checker";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-lifecycle-uid-checker"
+          printf uid-checker-payload > "$out/share/expose-lifecycle-uid-checker/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-lifecycle-uid-checker.service" = {
+        description = "RFC-0001 live package UID identity checker";
+        wantedBy = ["multi-user.target"];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${uidCheckerCommand}/bin/expose-lifecycle-uid-checker-command";
+          StateDirectory = "aos-pkg-expose-lifecycle-uid-checker";
+        };
+      };
+      permissions = {
+        network = "private";
+        capabilities = [];
+        devices = [];
+        host-paths = [
+          {
+            path = uidSharedPath;
+            mode = "rw";
+          }
+        ];
+        syscalls = "restricted";
+      };
+      requires = [];
+    };
+  };
+
   seedPackageProfile = pkgs.writeShellScriptBin "seed-expose-lifecycle-profile" ''
     set -eu
     profile=/var/lib/profiles/system-packages
@@ -237,7 +344,9 @@
       expose-lifecycle-private ${privatePackage} ${privatePackage.expose} \
       expose-lifecycle-socket-provider ${socketProviderPackage} ${socketProviderPackage.expose} \
       expose-lifecycle-socket-consumer ${socketConsumerPackage} ${socketConsumerPackage.expose} \
-      expose-lifecycle-outbound ${privateOutboundPackage} ${privateOutboundPackage.expose} <<'PY'
+      expose-lifecycle-outbound ${privateOutboundPackage} ${privateOutboundPackage.expose} \
+      expose-lifecycle-uid-writer ${uidWriterPackage} ${uidWriterPackage.expose} \
+      expose-lifecycle-uid-checker ${uidCheckerPackage} ${uidCheckerPackage.expose} <<'PY'
     import json
     import pathlib
     import sys
@@ -295,6 +404,10 @@
           socketConsumerPackage.expose
           privateOutboundPackage
           privateOutboundPackage.expose
+          uidWriterPackage
+          uidWriterPackage.expose
+          uidCheckerPackage
+          uidCheckerPackage.expose
           seedPackageProfile
           pkgs.aos
           pkgs.curl
@@ -324,6 +437,8 @@ in
       vm.succeed("systemctl cat expose-lifecycle-provider.socket | grep -F '# /etc/systemd/system.attached/expose-lifecycle-provider.socket.d/50-aos-capability-routes.conf'")
       vm.succeed("systemctl cat aos-pkg-expose-lifecycle-socket-consumer.target | grep -F '# /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target.d/50-aos-capability-routes.conf'")
       vm.succeed("systemctl cat expose-lifecycle-outbound.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-outbound.service'")
+      vm.succeed("systemctl cat expose-lifecycle-uid-writer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-writer.service'")
+      vm.succeed("systemctl cat expose-lifecycle-uid-checker.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-checker.service'")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-private.service")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
       vm.succeed("grep -q '^PrivateNetwork=true$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
@@ -335,6 +450,8 @@ in
       vm.succeed("if grep -R -q '^NetworkNamespacePath=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
       vm.succeed("if grep -R -q '^JoinsNamespaceOf=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
       vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
+      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-uid-writer.service")
+      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-uid-checker.service")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-private.target")
       assert "private-ok" in vm.succeed(
@@ -356,6 +473,30 @@ in
           "systemctl show -p DynamicUser --value expose-lifecycle-private.service"
       )
       vm.succeed("systemctl stop aos-pkg-expose-lifecycle-private.target")
+
+      vm.succeed("rm -rf ${uidSharedPath}")
+      vm.succeed("mkdir -m 1777 ${uidSharedPath}")
+      vm.succeed("systemctl start aos-pkg-expose-lifecycle-uid-writer.target")
+      vm.wait_until_succeeds(
+          "test \"$(cat /var/lib/aos-pkg-expose-lifecycle-uid-writer/result)\" = ready",
+          timeout=30,
+      )
+      vm.succeed("systemctl start aos-pkg-expose-lifecycle-uid-checker.target")
+      assert "denied" in vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-uid-checker/result"
+      )
+      writer_uid = vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-uid-writer/uid"
+      ).strip()
+      checker_uid = vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-uid-checker/uid"
+      ).strip()
+      assert writer_uid != checker_uid
+      assert vm.succeed(
+          "cat /var/lib/aos-pkg-expose-lifecycle-uid-writer/owned_stat"
+      ).strip() == f"{writer_uid}:600"
+      vm.succeed("test \"$(cat ${uidSharedPath}/owned)\" = writer")
+      vm.succeed("systemctl stop aos-pkg-expose-lifecycle-uid-writer.target aos-pkg-expose-lifecycle-uid-checker.target")
 
       vm.succeed("systemctl stop aos-pkg-expose-lifecycle-socket-provider.target aos-pkg-expose-lifecycle-socket-consumer.target expose-lifecycle-provider.socket")
       vm.succeed("systemctl reset-failed expose-lifecycle-consumer.service")
