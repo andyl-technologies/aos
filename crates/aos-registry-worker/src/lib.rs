@@ -173,6 +173,11 @@ mod entry {
     const HUB_SEAL_KEY: &str = "HUB_SEAL_KEY";
     /// The Wrangler `[vars]` entry holding the hub's externally-reachable URL.
     const HUB_EXTERNAL_URL: &str = "HUB_EXTERNAL_URL";
+    /// Optional `[vars]` entry: the email-relay endpoint magic links are
+    /// `POST`ed to. Unset → [`WorkerMailer`] logs the link instead.
+    const HUB_EMAIL_API_URL: &str = "HUB_EMAIL_API_URL";
+    /// Optional secret: a `Bearer` token for the email relay above.
+    const HUB_EMAIL_API_TOKEN: &str = "HUB_EMAIL_API_TOKEN";
 
     /// Build the shared `axum` router over the Worker's D1/R2 bindings.
     ///
@@ -225,6 +230,11 @@ mod entry {
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
 
+        // Optional email relay for magic-link delivery; unset → WorkerMailer
+        // logs the link instead of sending it.
+        let email_api_url = env.var(HUB_EMAIL_API_URL).ok().map(|v| v.to_string());
+        let email_api_token = env.secret(HUB_EMAIL_API_TOKEN).ok().map(|s| s.to_string());
+
         // The limiter drives its own D1 counter table over a second D1 backend
         // handle (the binding is cheap to re-resolve and D1 handles are owned).
         let ratelimit: Arc<dyn RateLimiter> = Arc::new(
@@ -270,7 +280,7 @@ mod entry {
             external_url,
             dev: false,
             ratelimit,
-            mailer: Arc::new(WorkerMailer),
+            mailer: Arc::new(WorkerMailer::new(email_api_url, email_api_token)),
             sealer,
             http: Arc::new(WorkerHttpClient),
             surface,

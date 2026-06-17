@@ -6,10 +6,10 @@
 //! native hub satisfies those ports from its `coreports` module; this module is
 //! the Worker's mirror, satisfying the same ports from the Workers runtime:
 //!
-//! - [`WorkerMailer`] — the magic-link [`Mailer`]. The Workers runtime has no
-//!   synchronous SMTP, and the port method is synchronous, so this logs the
-//!   link via [`worker::console_log!`] (a real email-binding delivery is a
-//!   documented TODO).
+//! - [`WorkerMailer`] — the magic-link [`Mailer`] (now an `async` port). When
+//!   `HUB_EMAIL_API_URL` is configured it `POST`s the link to that email relay
+//!   over the Fetch API (optional `HUB_EMAIL_API_TOKEN` bearer); otherwise it
+//!   logs the link via [`worker::console_log!`] (the dev/unconfigured path).
 //! - [`WorkerHttpClient`] — the OIDC outbound [`HttpClient`], over the Workers
 //!   global Fetch API. It applies the literal-IP SSRF rejection
 //!   ([`url_guard::is_safe_remote_url`](aos_registry_core::url_guard::is_safe_remote_url))
@@ -75,21 +75,71 @@ pub fn sealer_from_secret(secret: &str) -> Result<Arc<dyn SecretSealer>> {
     Ok(Arc::new(AesGcmSealer::new(&key)?))
 }
 
-/// The Worker's magic-link [`Mailer`]: logs the link to the Worker console.
+/// The Worker's magic-link [`Mailer`]: delivers via an HTTP email relay, or
+/// logs the link when no relay is configured.
 ///
-/// The [`Mailer`] port method is synchronous and the Workers runtime offers no
-/// synchronous mail transport, so this emits the magic-link URL via
-/// [`worker::console_log!`] and reports success. An operator can follow the link
-/// from the Worker's tail logs; wiring real delivery through a Cloudflare Email
-/// Routing or transactional-email binding is a documented TODO.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WorkerMailer;
+/// When `HUB_EMAIL_API_URL` is set, [`send_magic_link`](Mailer::send_magic_link)
+/// `POST`s `{"to","link"}` JSON to it (with an optional `Bearer` token from
+/// `HUB_EMAIL_API_TOKEN`) over the Workers Fetch API — the operator points it at
+/// a relay that adapts to their provider (Cloudflare Email Routing worker,
+/// Resend, SendGrid, …). When the URL is unset, it falls back to emitting the
+/// link via [`worker::console_log!`] (the dev/unconfigured path), so a
+/// magic-link login still works from the Worker's tail logs. The endpoint is
+/// operator-controlled, so the relay URL itself is not SSRF-guarded here.
+pub struct WorkerMailer {
+    /// The email-relay endpoint (`HUB_EMAIL_API_URL`); `None` logs instead.
+    api_url: Option<String>,
+    /// An optional `Bearer` token (`HUB_EMAIL_API_TOKEN`) for the relay.
+    api_token: Option<String>,
+}
 
+impl WorkerMailer {
+    /// Build a mailer from the relay endpoint and optional bearer token.
+    ///
+    /// Empty strings are treated as absent, so an unset Wrangler var/secret
+    /// falls back to the logging path.
+    #[must_use]
+    pub fn new(api_url: Option<String>, api_token: Option<String>) -> WorkerMailer {
+        let clean = |v: Option<String>| v.filter(|s| !s.is_empty());
+        WorkerMailer {
+            api_url: clean(api_url),
+            api_token: clean(api_token),
+        }
+    }
+}
+
+#[async_trait(?Send)]
 impl Mailer for WorkerMailer {
-    fn send_magic_link(&self, email: &str, link_url: &str) -> Result<()> {
-        // TODO(RFC-0004): deliver via a Cloudflare email binding instead of
-        // logging. The link is visible to anyone reading the Worker tail logs.
-        worker::console_log!("magic link for {email}: {link_url} (WorkerMailer: not emailed)");
+    async fn send_magic_link(&self, email: &str, link_url: &str) -> Result<()> {
+        let Some(url) = self.api_url.as_deref() else {
+            // No relay configured: emit the link to the tail log (dev path).
+            worker::console_log!("magic link for {email}: {link_url} (HUB_EMAIL_API_URL unset; not emailed)");
+            return Ok(());
+        };
+        let body = serde_json::json!({ "to": email, "link": link_url }).to_string();
+        let mut headers = Headers::new();
+        headers
+            .set("Content-Type", "application/json")
+            .map_err(|err| anyhow::anyhow!("email relay: set header: {err}"))?;
+        if let Some(token) = &self.api_token {
+            headers
+                .set("Authorization", &format!("Bearer {token}"))
+                .map_err(|err| anyhow::anyhow!("email relay: set auth: {err}"))?;
+        }
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post)
+            .with_headers(headers)
+            .with_body(Some(body.into()));
+        let request = Request::new_with_init(url, &init)
+            .map_err(|err| anyhow::anyhow!("email relay: build request: {err}"))?;
+        let response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("email relay POST: {err}"))?;
+        let status = response.status_code();
+        if !(200..300).contains(&status) {
+            bail!("email relay returned HTTP {status}");
+        }
         Ok(())
     }
 }

@@ -412,7 +412,7 @@ pub(crate) async fn login_submit(
         "{}/auth/magic?token={secret}",
         deps.external_url.trim_end_matches('/'),
     );
-    if let Err(err) = deps.mailer.send_magic_link(&email, &link) {
+    if let Err(err) = deps.mailer.send_magic_link(&email, &link).await {
         tracing::warn!(error = %format!("{err:#}"), "magic link delivery failed");
     }
     // In `--dev` mode the mailer only logs, so surface the link on the page so a
