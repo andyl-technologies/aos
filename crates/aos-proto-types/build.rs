@@ -19,6 +19,12 @@ fn main() {
     // The structs are serialized as Connect-JSON request/response bodies; the
     // `prost` binary codec is incidental (unused on the wire).
     config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
+    // Canonical proto3-JSON field naming: a proto `org_slug` is `orgSlug` on the
+    // wire. This is the Connect-JSON contract (what the old connectrpc server
+    // emitted and what `aos hub`/`apm` + stock Connect clients expect), and since
+    // the hub handlers, the Worker, and the `aos-remote` client all share these
+    // structs, both ends stay consistent. RFC-0004 Phase 5.
+    config.type_attribute(".", "#[serde(rename_all = \"camelCase\")]");
     // Tolerate absent fields on decode — a Connect-JSON request need not carry
     // every optional field, and responses evolve additively.
     config.type_attribute(".", "#[serde(default)]");
