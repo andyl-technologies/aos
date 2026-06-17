@@ -29500,6 +29500,16 @@ mod tests {
     }
 
     #[test]
+    fn absolute_path_literals_are_absolute_path_values() {
+        assert_eq!(
+            eval_path_bytes_with_options("/etc/foo", TreeWalkOptions::new()),
+            b"/etc/foo"
+        );
+        assert_eq!(eval_string_bytes("builtins.typeOf /etc/foo"), b"path");
+        assert_eq!(eval("builtins.isPath /etc/foo").as_bool(), Ok(true));
+    }
+
+    #[test]
     fn path_interpolation_copies_sources_to_store_contexts() {
         let (dir, path) = temp_file_with_bytes("path-interpolation", b"abc");
         let path = path_source(&path);

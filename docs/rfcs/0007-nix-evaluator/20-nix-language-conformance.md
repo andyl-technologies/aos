@@ -254,7 +254,7 @@ search paths, and store coercion.
       absolute path value.
 - [x] **`./.` and `./` forms** — `./.` is the current directory; verify `./`
       acceptance against pinned Nix.
-- [ ] **Absolute path literal** — `/etc/foo`. A leading `/` makes it absolute.
+- [x] **Absolute path literal** — `/etc/foo`. A leading `/` makes it absolute.
 - [ ] **Home-relative path** — `~/foo` expands using the user's home directory.
       **Disallowed in pure evaluation mode** — verify whether AOS evaluates in
       pure mode and whether `~` paths can appear (likely **must-error** under
