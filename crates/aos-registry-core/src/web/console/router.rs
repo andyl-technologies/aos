@@ -90,9 +90,14 @@ fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
 /// ingress, so they need neither the native `ConnectInfo` socket nor a
 /// reverse-proxy trust flag.
 ///
-/// Routes intentionally omitted (served by the native hub): `/auth/passkey/begin`,
-/// `/activate`, `/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`,
-/// `/{slug}/-/settings/config`, and `/{slug}/-/changes`.
+/// The pre-auth `/auth/passkey/begin` (`POST`) and `/activate` (`GET` + `POST`)
+/// paths are served here too (RFC-0004 Phase 5, console-dedup stage E): like the
+/// login paths they rate-limit on the runtime-neutral
+/// [`CLIENT_IP_HEADER`](handlers::CLIENT_IP_HEADER) each shell stamps on ingress.
+///
+/// Routes intentionally omitted (served by the native hub): `/auth/sso`,
+/// `/auth/oidc/start`, `/auth/oidc/callback`, `/{slug}/-/settings/config`, and
+/// `/{slug}/-/changes`.
 #[must_use]
 pub fn console_router(deps: ConsoleDeps) -> Router {
     // Each route is a thin closure that recovers `ConsoleDeps` from the
@@ -165,9 +170,24 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/auth/passkey/begin",
+            post(|State(s): State<SharedState>, h: HeaderMap| {
+                send_bridge(handlers::passkey_login_begin(from_state(s), h))
+            }),
+        )
+        .route(
             "/auth/passkey/finish",
             post(|State(s): State<SharedState>, j: axum::Json<_>| {
                 send_bridge(handlers::passkey_login_finish(from_state(s), j))
+            }),
+        )
+        .route(
+            "/activate",
+            get(|State(s): State<SharedState>, h: HeaderMap, q: Query<_>| {
+                send_bridge(handlers::activate_form(from_state(s), h, q))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                send_bridge(handlers::activate_submit(from_state(s), h, f))
             }),
         )
         .route(
