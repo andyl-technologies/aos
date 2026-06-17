@@ -624,10 +624,24 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
         "{package_toml}",
     );
+    // RFC-0005: dependency edges live in the `store/` realisation graph, not
+    // the package TOML (which now records only store_path/closure_size). The
+    // published tool record must list the helper as a runtime dependency, and
+    // the helper must have its own realisation record.
+    let tool_hash = store_path_hash(&fixture.tool_store_path)?;
     let helper_hash = store_path_hash(&fixture.helper_store_path)?;
+    let store_dir = registry_dir.join("store");
+    let tool_record =
+        fs::read_to_string(store_dir.join(&tool_hash[..2]).join(&tool_hash)).with_context(|| {
+            format!("reading published store/ record for tool {tool_hash}")
+        })?;
     assert!(
-        package_toml.contains(&format!("\"{helper_hash}\"")),
-        "published package metadata should record helper reference {helper_hash}:\n{package_toml}",
+        tool_record.contains(&format!("ia:sha256:{helper_hash}")),
+        "published store/ record for the tool should record helper reference {helper_hash}:\n{tool_record}",
+    );
+    assert!(
+        store_dir.join(&helper_hash[..2]).join(&helper_hash).exists(),
+        "published store/ graph should include a realisation record for the helper {helper_hash}",
     );
     assert!(
         fs::read_to_string(registry_dir.join("registry.toml"))?
