@@ -2,134 +2,32 @@
 //!
 //! Plain string-building with strict escaping — no client-side framework
 //! is required for any page this module renders, which is the design
-//! floor RFC-0004 commits to. The SSR-framework decision (Leptos vs
-//! Dioxus) is an explicit open question; everything here sits behind the
-//! `ui` module boundary so that spike can replace the renderer without
-//! touching handlers.
+//! floor RFC-0004 commits to.
+//!
+//! The pure primitives (`escape`, `table`, `human_size`, `key_fingerprint`)
+//! and the producer-console *foundation* — the page chrome (`page_with_session`,
+//! `StateLine`, `SessionIndicator`, `Pager`, `csrf_field`, `brand`, `ago`, the
+//! small table/`meter`/`datalist`/`urlencode` helpers) — are single-sourced in
+//! the shared, wasm-clean [`aos_registry_core::web`] (RFC-0004 Phase 5,
+//! console-dedup stage A) so the hub, the producer console, and the eventual
+//! Worker render byte-identically. They are re-exported here so every
+//! `crate::ui::render::…` call site is unchanged.
+//!
+//! What stays native to the hub is the *task-local* session middleware seam:
+//! [`with_session_email`] scopes the signed-in identity per request and [`page`]
+//! reads it via [`current_session_indicator`], so the anonymous browse pages
+//! reflect the session in their masthead without threading the identity through
+//! every renderer. The shared chrome takes the indicator explicitly instead
+//! (its `wasm32` builds have no task-locals).
 
-use std::fmt::Write as _;
-use std::sync::OnceLock;
-
-/// The operator-configurable masthead brand (company/instance name).
-///
-/// Set once at server startup via [`set_brand`]; defaults to empty. When
-/// empty the masthead shows only the page crumbs (e.g. "log in"); when set,
-/// the name leads the masthead and titles every page.
-static BRAND: OnceLock<String> = OnceLock::new();
-
-/// Set the masthead brand once, at startup.
-///
-/// A no-op if called more than once (the first value wins), so it is safe
-/// to call unconditionally from `serve`.
-pub fn set_brand(name: impl Into<String>) {
-    let _ = BRAND.set(name.into());
-}
-
-/// The configured brand, or `""` when unset.
-#[must_use]
-pub fn brand() -> &'static str {
-    BRAND.get().map(String::as_str).unwrap_or("")
-}
-
-/// The masthead brand element for `brand`: a home link, or empty when unset.
-fn brand_span(brand: &str) -> String {
-    if brand.is_empty() {
-        String::new()
-    } else {
-        format!("<a class=\"brand\" href=\"/\">{}</a>", escape(brand))
-    }
-}
-
-/// The `<title>` text: `"<page> — <brand>"`, or `"<page> — Registry Hub"`
-/// when no brand is configured.
-fn page_title(brand: &str, title: &str) -> String {
-    if brand.is_empty() {
-        format!("{} — Registry Hub", escape(title))
-    } else {
-        format!("{} — {}", escape(title), escape(brand))
-    }
-}
-
-// The pure rendering primitives (`escape`, `table`, `human_size`,
-// `key_fingerprint`) are single-sourced in the shared, wasm-clean
-// [`aos_registry_core::web::render`] and re-exported here so the hub's richer
-// page builders, the producer console, and the shared browse surface render
-// byte-identically. The hub keeps its own session/brand/state-line page chrome
-// (`page_with_session`, `StateLine`, `SessionIndicator`, `brand`), which the
-// shared renderer parameterizes differently (an explicit `PageChrome`).
+// The pure rendering primitives and the console chrome live in the shared,
+// wasm-clean core crate; re-export them so the hub's richer page builders, the
+// producer console, and the shared browse surface render byte-identically.
+pub use aos_registry_core::web::console_render::{
+    ago, brand, csrf_field, datalist, live_table, meter, page_with_session, set_app_version,
+    set_brand, table_raw_headers, urlencode, Pager, SessionIndicator, StateLine,
+};
 pub use aos_registry_core::web::render::{escape, human_size, key_fingerprint, table};
-
-/// Data for the footer state line ("expose state" — every page carries
-/// the surface commit, index freshness, render time, and hub version).
-#[derive(Debug, Default, Clone)]
-pub struct StateLine {
-    /// Indexed surface commit (short form is rendered).
-    pub surface_commit: Option<String>,
-    /// Unix time of the last successful index.
-    pub indexed_at: Option<i64>,
-    /// Index state when not `fresh`.
-    pub state: Option<String>,
-    /// Handler entry time; when set, the footer shows "rendered NNms".
-    pub started: Option<std::time::Instant>,
-}
-
-impl StateLine {
-    /// A state line that only carries the render-time clock.
-    pub fn timed(started: std::time::Instant) -> Self {
-        Self {
-            started: Some(started),
-            ..Self::default()
-        }
-    }
-}
-
-/// The masthead session indicator: the logged-in email plus a logout link,
-/// or a "log in" link for an anonymous visitor.
-///
-/// Passed to [`page_with_session`] so every authenticated producer-console
-/// page shows who is signed in (RFC-0004's masthead "[log in]" affordance).
-/// `None` renders the anonymous indicator; the browse pages pass `None` and
-/// remain unchanged.
-#[derive(Debug, Default, Clone)]
-pub struct SessionIndicator {
-    /// The signed-in user's email, or `None` when anonymous.
-    pub email: Option<String>,
-}
-
-impl SessionIndicator {
-    /// A session indicator for the signed-in user `email`.
-    #[must_use]
-    pub fn signed_in(email: impl Into<String>) -> Self {
-        Self {
-            email: Some(email.into()),
-        }
-    }
-
-    /// Renders the indicator as the right-hand masthead HTML fragment.
-    ///
-    /// It always leads with a "registries" home link (so there is always a
-    /// way back to the instance home). When signed in it continues as the
-    /// primary navigation — the caller's organizations and account profile
-    /// (the entry points to all management pages) plus the email and a
-    /// log-out link; when anonymous it is the home link plus log-in.
-    fn render(&self) -> String {
-        match &self.email {
-            Some(email) => format!(
-                "<span class=\"session\">\
-                 <a href=\"/\">registries</a> · \
-                 <a href=\"/-/orgs\">organizations</a> · \
-                 <a href=\"/account\">account</a> · \
-                 <span class=\"who\">{}</span> · \
-                 <a href=\"/logout\">log out</a></span>",
-                escape(email),
-            ),
-            None => "<span class=\"session\">\
-                     <a href=\"/\">registries</a> · \
-                     <a href=\"/login\">log in</a></span>"
-                .to_string(),
-        }
-    }
-}
 
 tokio::task_local! {
     /// The signed-in user's email for the current request, set per-request
@@ -171,294 +69,9 @@ pub fn current_session_indicator() -> SessionIndicator {
 /// by the session middleware), so browse pages show the signed-in identity
 /// and navigation automatically; use [`page_with_session`] to pass an
 /// explicit indicator.
+#[must_use]
 pub fn page(title: &str, crumbs: &[(String, String)], body: &str, state: &StateLine) -> String {
     page_with_session(title, crumbs, body, state, &current_session_indicator())
-}
-
-/// Render a complete page, threading a masthead session indicator.
-///
-/// Identical to [`page`] but renders `session` on the right of the masthead
-/// — the signed-in email and a logout link, or the anonymous "log in" link.
-pub fn page_with_session(
-    title: &str,
-    crumbs: &[(String, String)],
-    body: &str,
-    state: &StateLine,
-    session: &SessionIndicator,
-) -> String {
-    let mut crumb_html = String::new();
-    for (i, (href, label)) in crumbs.iter().enumerate() {
-        if i > 0 {
-            crumb_html.push_str(" / ");
-        }
-        if href.is_empty() {
-            let _ = write!(crumb_html, "{}", escape(label));
-        } else {
-            let _ = write!(
-                crumb_html,
-                "<a href=\"{}\">{}</a>",
-                escape(href),
-                escape(label)
-            );
-        }
-    }
-
-    let mut statline = String::new();
-    if let Some(commit) = &state.surface_commit {
-        let _ = write!(
-            statline,
-            "surface {}",
-            escape(&commit[..commit.len().min(12)])
-        );
-    }
-    if let Some(at) = state.indexed_at {
-        if !statline.is_empty() {
-            statline.push_str(" · ");
-        }
-        let _ = write!(statline, "indexed at unix {at}");
-    }
-    if let Some(s) = &state.state {
-        if s != "fresh" {
-            if !statline.is_empty() {
-                statline.push_str(" · ");
-            }
-            let _ = write!(statline, "index state: {}", escape(s));
-        }
-    }
-    if !statline.is_empty() {
-        statline.push_str(" · ");
-    }
-    let _ = write!(statline, "aos-registry-hub {}", env!("CARGO_PKG_VERSION"));
-    if let Some(started) = state.started {
-        let _ = write!(statline, " · rendered {}ms", started.elapsed().as_millis());
-    }
-
-    // The brand is operator-configurable (default empty): when set it
-    // leads the masthead and titles every page; when empty the crumbs lead.
-    let brand_span = brand_span(brand());
-    let page_title = page_title(brand(), title);
-
-    format!(
-        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{page_title}</title>\n\
-         <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n\
-         <script src=\"/_assets/app.js\" defer></script>\n</head>\n<body>\n\
-         <header class=\"masthead\">{brand_span}\
-         <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
-         <main>\n{body}\n</main>\n\
-         <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
-        session = session.render(),
-    )
-}
-
-/// Render a table whose header cells are pre-rendered HTML.
-///
-/// Identical to [`table`] but each header is inserted into its `<th>` as-is
-/// (not escaped), so callers can embed sort links or other markup; body cells
-/// follow the same as-is contract as [`table`].
-pub fn table_raw_headers(headers: &[String], rows: &[Vec<String>]) -> String {
-    let mut out = String::from("<table>\n<thead><tr>");
-    for header in headers {
-        let _ = write!(out, "<th>{header}</th>");
-    }
-    out.push_str("</tr></thead>\n<tbody>\n");
-    for row in rows {
-        out.push_str("<tr>");
-        for cell in row {
-            let _ = write!(out, "<td>{cell}</td>");
-        }
-        out.push_str("</tr>\n");
-    }
-    out.push_str("</tbody>\n</table>\n");
-    out
-}
-
-/// Render a table tagged for the live-search enhancement (`search.js`).
-///
-/// Identical to [`table`] but adds `data-live-list` and a `data-live-noun`
-/// so the client script can filter the `<tbody>` rows in place; `noun` is
-/// the plural label shown in the result count ("registries", "packages").
-pub fn live_table(headers: &[&str], rows: &[Vec<String>], noun: &str) -> String {
-    let plain = table(headers, rows);
-    plain.replacen(
-        "<table>",
-        &format!("<table data-live-list data-live-noun=\"{}\">", escape(noun)),
-        1,
-    )
-}
-
-/// Percent-encode a string for safe inclusion in a URL query value.
-#[must_use]
-pub fn urlencode(text: &str) -> String {
-    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
-}
-
-/// Render a solid horizontal progress meter filled to `percent` (0–100).
-///
-/// A bordered track with a fill element whose width is a `pct-N` class (CSS,
-/// in 5% steps) rather than an inline `style="width:…"` — the strict
-/// `default-src 'self'` CSP forbids inline styles. Drawing the bar as a styled
-/// box rather than repeated block glyphs avoids the hairline gaps that
-/// `█`-tiling leaves between cells.
-#[must_use]
-pub fn meter(percent: usize) -> String {
-    let pct = (percent.min(100) + 2) / 5 * 5; // nearest 5%
-    format!("<span class=\"meter\"><span class=\"meter-fill pct-{pct}\"></span></span>")
-}
-
-/// Render a `<datalist id="…">` of `<option>`s for native input autocomplete.
-///
-/// An `<input list="id">` bound to this list gets browser-native suggestions
-/// with no JavaScript. Empty values are skipped; every value is escaped.
-#[must_use]
-pub fn datalist(id: &str, values: &[String]) -> String {
-    let mut out = format!("<datalist id=\"{}\">", escape(id));
-    for value in values {
-        if value.is_empty() {
-            continue;
-        }
-        let _ = write!(out, "<option value=\"{}\">", escape(value));
-    }
-    out.push_str("</datalist>\n");
-    out
-}
-
-/// A one-based pagination window over a list of `total` items.
-///
-/// Construct with [`Pager::new`], which clamps the requested page into
-/// `1..=pages()`; slice the current page's items with [`Pager::slice`] and
-/// render the prev/next navigation with [`Pager::nav`]. The same type backs
-/// every paginated list (registries, organizations, packages, audit) so they
-/// share one off-by-one-free implementation and one look.
-///
-/// ```no_run
-/// use aos_registry_hub::ui::render::Pager;
-/// let items: Vec<u32> = (0..250).collect();
-/// let pager = Pager::new(2, 100, items.len());
-/// assert_eq!(pager.page(), 2);
-/// assert_eq!(pager.pages(), 3);
-/// assert_eq!(pager.slice(&items).len(), 100);
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct Pager {
-    page: usize,
-    per_page: usize,
-    total: usize,
-}
-
-impl Pager {
-    /// Build a pager, clamping `requested_page` (1-based) into the valid
-    /// range and `per_page` to at least 1.
-    #[must_use]
-    pub fn new(requested_page: usize, per_page: usize, total: usize) -> Self {
-        let per_page = per_page.max(1);
-        let pages = total.div_ceil(per_page).max(1);
-        let page = requested_page.max(1).min(pages);
-        Self {
-            page,
-            per_page,
-            total,
-        }
-    }
-
-    /// The clamped, 1-based current page.
-    #[must_use]
-    pub fn page(self) -> usize {
-        self.page
-    }
-
-    /// The total number of pages (at least 1, even when `total` is 0).
-    #[must_use]
-    pub fn pages(self) -> usize {
-        self.total.div_ceil(self.per_page).max(1)
-    }
-
-    /// The current page's half-open item range `start..end`.
-    #[must_use]
-    pub fn range(self) -> (usize, usize) {
-        let start = (self.page - 1) * self.per_page;
-        let end = start.saturating_add(self.per_page).min(self.total);
-        (start.min(self.total), end)
-    }
-
-    /// Slice `items` to the current page, tolerating a slice shorter than
-    /// `total` (returns an empty slice if the window is past the end).
-    #[must_use]
-    pub fn slice<T>(self, items: &[T]) -> &[T] {
-        let (start, end) = self.range();
-        let start = start.min(items.len());
-        let end = end.min(items.len());
-        &items[start..end]
-    }
-
-    /// Render the `‹ first · prev · page N of M · next · last ›` navigation,
-    /// or an empty string when there is only one page.
-    ///
-    /// `path` is the page's own path; `query` is the already-encoded query
-    /// string to preserve across navigation (search terms, sort, facets),
-    /// without a leading `?`/`&` and without any `page=` pair — empty when
-    /// there is nothing to preserve. Each link appends `page=N`.
-    #[must_use]
-    pub fn nav(self, path: &str, query: &str) -> String {
-        self.nav_with(path, query, "page")
-    }
-
-    /// Like [`Pager::nav`] but with a custom page-parameter name, so several
-    /// independent paginators can coexist on one page (e.g. a dashboard's
-    /// `members_page` and `registries_page`).
-    #[must_use]
-    pub fn nav_with(self, path: &str, query: &str, page_param: &str) -> String {
-        let pages = self.pages();
-        if pages <= 1 {
-            return String::new();
-        }
-        let href = |n: usize| -> String {
-            let raw = if query.is_empty() {
-                format!("{path}?{page_param}={n}")
-            } else {
-                format!("{path}?{query}&{page_param}={n}")
-            };
-            escape(&raw)
-        };
-        let mut out = String::from("<p class=\"pager\">");
-        if self.page > 1 {
-            let _ = write!(out, "<a href=\"{}\">⏮ first</a> ", href(1));
-            let _ = write!(out, "<a href=\"{}\">← prev</a> ", href(self.page - 1));
-        }
-        let _ = write!(
-            out,
-            "<span class=\"of\">page {} of {pages}</span>",
-            self.page
-        );
-        if self.page < pages {
-            let _ = write!(out, " <a href=\"{}\">next →</a>", href(self.page + 1));
-            let _ = write!(out, " <a href=\"{}\">last ⏭</a>", href(pages));
-        }
-        out.push_str("</p>\n");
-        out
-    }
-}
-
-/// Format a Unix timestamp as a coarse relative age ("38s ago",
-/// "4m ago", "3h ago", "2d ago").
-///
-/// Timestamps in the future (clock skew) render as "0s ago".
-pub fn ago(unix: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let delta = (now - unix).max(0);
-    if delta < 60 {
-        format!("{delta}s ago")
-    } else if delta < 3600 {
-        format!("{}m ago", delta / 60)
-    } else if delta < 86400 {
-        format!("{}h ago", delta / 3600)
-    } else {
-        format!("{}d ago", delta / 86400)
-    }
 }
 
 #[cfg(test)]
@@ -495,19 +108,6 @@ mod tests {
         assert!(html.contains("<p>body</p>"));
         assert!(html.contains("registries</a>"));
         assert!(html.contains("rendered"), "footer carries render time");
-    }
-
-    #[test]
-    fn brand_span_and_title_reflect_the_configured_brand() {
-        // Empty brand: no masthead brand element, neutral page title.
-        assert_eq!(brand_span(""), "");
-        assert_eq!(page_title("", "log in"), "log in — Registry Hub");
-        // Configured brand: a home-linked element + branded title, escaped.
-        assert_eq!(
-            brand_span("Acme <Co>"),
-            "<a class=\"brand\" href=\"/\">Acme &lt;Co&gt;</a>"
-        );
-        assert_eq!(page_title("Acme", "log in"), "log in — Acme");
     }
 
     #[test]

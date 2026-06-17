@@ -671,6 +671,12 @@ async fn main() -> Result<()> {
                 None => state_brand(&app_state).await?,
             };
             aos_registry_hub::ui::render::set_brand(brand);
+            // The console footer label is single-sourced in core; set it to this
+            // binary's name + version so the footer reflects the serving hub.
+            aos_registry_hub::ui::render::set_app_version(concat!(
+                "aos-registry-hub ",
+                env!("CARGO_PKG_VERSION")
+            ));
             let state = Arc::new(app_state);
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

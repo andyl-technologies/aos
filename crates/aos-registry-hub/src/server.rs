@@ -1995,13 +1995,12 @@ fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> b
 }
 
 /// Extract the `__Host-aos_session` cookie value from a request's headers.
+///
+/// A thin wrapper over the runtime-neutral
+/// [`aos_registry_core::web::session::session_secret_from_headers`] so the hub
+/// and the Worker parse the cookie identically.
 pub(crate) fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    let prefix = format!("{}=", crate::auth::session::COOKIE_NAME);
-    cookies
-        .split(';')
-        .map(str::trim)
-        .find_map(|pair| pair.strip_prefix(&prefix).map(str::to_string))
+    aos_registry_core::web::session::session_secret_from_headers(headers)
 }
 
 /// Percent-decode a URL path, leaving invalid sequences as-is.

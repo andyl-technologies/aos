@@ -14,11 +14,31 @@
 //!   ([`crate::connect`]) turns into an HTTP response. Browse reads
 //!   anonymously, so only `public` registries resolve.
 //!
+//! The producer console's foundation is shared the same way (RFC-0004 Phase 5,
+//! console-dedup stage A):
+//!
+//! - [`session`] — runtime-neutral session extraction: turn a request's
+//!   `Cookie` header plus a [`Database`](crate::db::Database) into a resolved,
+//!   validated [`ResolvedSession`](session::ResolvedSession).
+//! - [`csrf`] — the per-session synchronizer-token CSRF defenses
+//!   ([`mint_csrf_token`](csrf::mint_csrf_token),
+//!   [`connect_or_csrf_ok`](csrf::connect_or_csrf_ok)).
+//! - [`console_render`] — the console page chrome
+//!   ([`page_with_session`](console_render::page_with_session),
+//!   [`StateLine`](console_render::StateLine),
+//!   [`SessionIndicator`](console_render::SessionIndicator),
+//!   [`Pager`](console_render::Pager)) and every console page builder, made
+//!   transport- and task-local-free (session email, brand, and CSRF token are
+//!   parameters).
+//!
 //! The shared Connect-JSON router ([`crate::connect`]) mounts the browse routes
 //! under the reserved `/` and `/{slug}/-/…` paths, more specific than the
 //! machine-surface facade wildcard, so the two never collide.
 
 pub mod browse;
+pub mod console_render;
+pub mod csrf;
 pub mod render;
+pub mod session;
 
 pub use render::PageChrome;
