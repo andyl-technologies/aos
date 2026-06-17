@@ -13066,6 +13066,13 @@ mod tests {
         );
 
         assert_eq!(
+            eval_string_bytes(
+                "builtins.concatStringsSep \",\" (builtins.attrValues { a = \"a\"; _ = \"_\"; aa = \"aa\"; A = \"A\"; })"
+            ),
+            b"A,_,a,aa"
+        );
+
+        assert_eq!(
             eval_list_string_bytes(
                 "let builtins = { attrValues = x: [ \"local\" ]; }; in builtins.attrValues { a = 1; }"
             ),

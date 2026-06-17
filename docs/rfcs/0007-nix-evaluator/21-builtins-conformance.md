@@ -307,10 +307,10 @@ depends on and that [attribute sets and hidden classes](09-attribute-sets-hidden
 commits to reproducing. Any primop that returns names/values in attr order must
 emit them in this sorted order, not insertion order.
 
-- [ ] `attrNames` (set) — list of attribute names, **sorted bytewise**. The
+- [x] `attrNames` (set) — list of attribute names, **sorted bytewise**. The
       single most order-sensitive builtin; a mis-sort here propagates into
       `derivationStrict` env coercion order.
-- [ ] `attrValues` (set) — list of values in the **same sorted-by-name order**
+- [x] `attrValues` (set) — list of values in the **same sorted-by-name order**
       as `attrNames` (not insertion order). Must agree with `attrNames` exactly.
 - [ ] `getAttr` (s set) — `set.${s}`; throws if absent. Strict in `s` and the
       set spine.
