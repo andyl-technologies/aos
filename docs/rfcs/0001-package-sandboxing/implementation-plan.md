@@ -532,9 +532,10 @@ profiles per machine. `test-http-server-pair` uses that selector for a
 socket-activated package, `apm-systemd-client` uses it for a manual-start
 test-unit package, and the k3s fleet smoke tests use it for the high-privilege
 k3s meta-packages. The legacy `apm-systemd-client-test` role module is now
-retired; that fleet test is package-only. The role tree and `roles = [...]`
-fleet surface still exist, so the broader role-to-package dissolution, security
-policy split, and full fleet-spec rename remain open.
+retired, and the legacy k3s role-family modules are now retired; those fleet
+tests are package-only. The role tree and `roles = [...]` fleet surface still
+exist, so the broader role-to-package dissolution, security policy split, and
+full fleet-spec rename remain open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 

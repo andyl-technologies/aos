@@ -451,17 +451,17 @@ for its manifest. It is still a container like every other package, but its
 `[permissions]` manifest declares host network, broad capabilities,
 cgroup-delegate, host-paths, and kernel-modules, so its container is a
 packaging/lifecycle wrapper, not a security boundary. It needs host privilege
-that a default sandbox would deny. The current k3s-worker module
-(`modules/roles/kubernetes/k3s-worker.nix`) already shows why:
+that a default sandbox would deny. The k3s-worker exposed package
+(`pkgs/kubernetes/k3s-worker.nix`, via
+`pkgs/kubernetes/_k3s-expose-package.nix`) already shows why:
 
 ```nix
-kernel.modules = common.kernelModules;          # br_netfilter, vxlan, ip_set — GLOBAL
-firewall.allowedTCP = [10250];                  # host kubelet port
-systemd.services.k3s = {
-  wantedBy = ["multi-user.target"];
-  serviceConfig = {
+expose = {
+  kernel.modules = common.kernelModules;        # br_netfilter, vxlan, ip_set - GLOBAL
+  firewall.allowedTCP = [10250];                # host kubelet port
+  units."k3s.service".serviceConfig = {
     EnvironmentFile = "/etc/rancher/k3s/k3s.env";
-    Delegate = "yes";                            # k3s manages its own cgroup subtree
+    Delegate = "yes";                           # k3s manages its own cgroup subtree
   };
 };
 ```

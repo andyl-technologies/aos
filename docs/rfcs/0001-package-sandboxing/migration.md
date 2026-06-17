@@ -186,19 +186,19 @@ through `expose`, and privilege is declared in a signed `[permissions]` manifest
 (see [`permissions.md`](permissions.md)). There is no "container vs host-gated"
 split — only an empty manifest (full sandbox) vs. a long one (k3s).
 
-| Current role | Likely manifest | Disposition |
+| Package | Likely manifest | Disposition |
 |---|---|---|
 | `test-http-server` | empty (`network = "private"`) | **Tightly-sandboxed.** Single Python `http.server` unit, no host privilege, no kernel modules — the canonical first `expose` package. |
 | `aos-registry-server` | minimal (host port exposure only) | **Tightly-sandboxed.** git-daemon + `aos serve` cache; host net exposure but no kernel/sysctl needs. Good second target. |
 | `apm-systemd-client-test` | empty | Sandboxed; it exists to exercise apm/systemd D-Bus, not to need privilege. |
-| `kubernetes/k3s-worker` | high-privilege (host net + caps + cgroup-delegate + host-paths + kernel-modules) | **High-privilege host unit** (see below). |
-| `kubernetes/k3s-control-plane` | high-privilege | **High-privilege host unit.** |
-| `kubernetes/k3s-combined` | high-privilege | **High-privilege host unit.** |
+| `k3s-worker` | high-privilege (host net + caps + cgroup-delegate + host-paths + kernel-modules) | **High-privilege host unit** (see below). |
+| `k3s-control-plane` | high-privilege | **High-privilege host unit.** |
+| `k3s-combined` | high-privilege | **High-privilege host unit.** |
 
 ### The k3s case (honest about the limit)
 
 k3s is the package where a *sandbox* benefit disappears, and the design must not
-pretend otherwise. `modules/roles/kubernetes/k3s-worker.nix` already declares
+pretend otherwise. `pkgs/kubernetes/_k3s-expose-package.nix` already declares
 `kernel.modules = [ "br_netfilter" "vxlan" "ip_set" ]`, `net.ipv4.ip_forward`
 and bridge sysctls, ports 10250/8472, and a service with `Delegate = "yes"` /
 `TasksMax = "infinity"`. Those become entries in k3s's `[permissions]` manifest,
@@ -256,7 +256,8 @@ and the fleet suite).
 - Extend `mkDerivation` with the filtered `expose` attribute and the build-time
   unit/manifest renderer, reusing the pure `systemdLib` / `render-role.nix`
   functions (verified pure — [`authoring.md`](authoring.md)).
-- No package is migrated yet; the role tree still drives every system.
+- At this historical increment, no package was migrated yet; the role tree
+  still drove every system.
 - **Reviewable as:** "does `expose` render the same units/manifest the role tree
   would, at build time?"
 - **Gate:** `checks.eval` + `checks.vm.boot` pass; the renderer output matches

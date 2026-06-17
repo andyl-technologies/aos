@@ -605,22 +605,9 @@
     if credentialAuthoredImportCollision.success
     then throw "expose renderer must reject authored ImportCredential collisions with expose.config.credentials"
     else "ok";
-  serverSystem = mkSystem ../../systems/server.nix;
-  k3sWorkerRole = serverSystem.config.aos.roles.k3s-worker;
   k3sWorkerPackage = pkgs.k3s-worker;
   k3sControlPlanePackage = pkgs.k3s-control-plane;
   k3sCombinedPackage = pkgs.k3s-combined;
-  roleSystemdLinkTarget = unitName: let
-    matches =
-      builtins.filter
-      (link: link.path == "/etc/systemd/system/${unitName}")
-      (k3sWorkerRole.ignitionConfig.storage.links or []);
-  in
-    if builtins.length matches == 1
-    then (builtins.head matches).target
-    else throw "expected exactly one k3s-worker role ignition link for ${unitName}";
-  k3sWorkerRoleUnitPath = roleSystemdLinkTarget "k3s.service";
-  k3sWorkerRolePreflightPath = roleSystemdLinkTarget "k3s-preflight.service";
   overridden = pkg.overrideAttrs (_: {
     expose = {
       units."expose-smoke-override.service" = {
@@ -1020,7 +1007,6 @@ in
     k3sWorkerExposePath = k3sWorkerPackage.expose;
     k3sControlPlaneExposePath = k3sControlPlanePackage.expose;
     k3sCombinedExposePath = k3sCombinedPackage.expose;
-    inherit k3sWorkerRoleUnitPath k3sWorkerRolePreflightPath;
     inherit
       reservedCollisionRejected
       privilegedExecPrefixRejected
@@ -1455,10 +1441,12 @@ in
             echo "unconfined host path package must not run through aos-landlock" >&2
             exit 1
           fi
-          grep -q 'RestrictAddressFamilies=AF_NETLINK' \
-            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
-          grep -q 'CapabilityBoundingSet=CAP_NET_ADMIN' \
-            "$unconfinedExposePath/units/expose-smoke-unconfined.service"
+          for directive in RootDirectory MountAPIVFS ProtectSystem NoNewPrivileges BindPaths BindReadOnlyPaths CapabilityBoundingSet AmbientCapabilities DeviceAllow DevicePolicy PrivateDevices RestrictAddressFamilies SystemCallFilter SystemCallErrorNumber; do
+            if grep -q "^$directive=" "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
+              echo "unconfined package must not render host-unit sandbox directive $directive" >&2
+              exit 1
+            fi
+          done
           grep -q 'PrivateUsers=false' \
             "$unconfinedExposePath/units/expose-smoke-unconfined.service"
           grep -q 'DynamicUser=false' \
@@ -1610,8 +1598,16 @@ in
           k3s_combined_target="$k3sCombinedExposePath/units/aos-pkg-k3s-combined.target"
           k3s_combined_host_paths="$k3sCombinedExposePath/units/aos-pkg-k3s-combined-host-paths.service"
           k3s_combined_manifest="$k3sCombinedExposePath/manifest.json"
-          k3s_role_unit="$k3sWorkerRoleUnitPath"
-          k3s_role_preflight="$k3sWorkerRolePreflightPath"
+          require_host_unit() {
+            service_name="$1"
+            unit_path="$2"
+            for directive in RootDirectory MountAPIVFS ProtectSystem NoNewPrivileges BindPaths BindReadOnlyPaths ProtectKernelModules ProtectKernelTunables ProtectKernelLogs ProtectClock ProtectHostname MemoryDenyWriteExecute LockPersonality CapabilityBoundingSet AmbientCapabilities DeviceAllow DevicePolicy PrivateDevices RestrictAddressFamilies ProtectControlGroups SystemCallFilter SystemCallErrorNumber; do
+              if grep -q "^$directive=" "$unit_path"; then
+                echo "$service_name must be an unconfined host unit; found $directive" >&2
+                exit 1
+              fi
+            done
+          }
           test -f "$k3s_worker_unit"
           test -f "$k3sWorkerExposePath/units/k3s-preflight.service"
           test -f "$k3s_worker_target"
@@ -1623,77 +1619,7 @@ in
           test -f "$k3s_combined_unit"
           test -f "$k3s_combined_target"
           test -f "$k3s_combined_host_paths"
-          test -f "$k3s_role_unit"
-          test -f "$k3s_role_preflight"
           test ! -f "$k3sWorkerExposePath/units/aos-pkg-k3s-worker-netns.service"
-
-          require_role_line() {
-            key="$1"
-            role_line=$(grep "^$key=" "$k3s_role_unit")
-            test -n "$role_line"
-            grep -Fxq "$role_line" "$k3s_worker_unit"
-          }
-          require_role_words() {
-            key="$1"
-            role_line=$(sed -n "s|^$key=||p" "$k3s_role_unit")
-            package_line=$(sed -n "s|^$key=||p" "$k3s_worker_unit")
-            test -n "$role_line"
-            test -n "$package_line"
-            for word in $role_line; do
-              case " $package_line " in
-                *" $word "*) ;;
-                *)
-                  echo "k3s worker package unit lost role $key word $word" >&2
-                  exit 1
-                  ;;
-              esac
-            done
-          }
-          require_role_path_environment() {
-            role_path=$(sed -n 's|^Environment="PATH=||p' "$k3s_role_unit" | sed 's|"$||')
-            package_path=$(sed -n 's|^Environment="PATH=||p' "$k3s_worker_unit" | sed 's|"$||')
-            test -n "$role_path"
-            test -n "$package_path"
-            old_ifs=$IFS
-            IFS=:
-            for path_entry in $role_path; do
-              case ":$package_path:" in
-                *":$path_entry:"*) ;;
-                *)
-                  echo "k3s worker package unit lost role PATH entry $path_entry" >&2
-                  IFS=$old_ifs
-                  exit 1
-                  ;;
-              esac
-            done
-            IFS=$old_ifs
-          }
-          require_preflight_line() {
-            key="$1"
-            role_line=$(grep "^$key=" "$k3s_role_preflight")
-            test -n "$role_line"
-            grep -Fxq "$role_line" "$k3sWorkerExposePath/units/k3s-preflight.service"
-          }
-
-          require_role_line Description
-          require_role_path_environment
-          require_role_line EnvironmentFile
-          require_role_line ExecStart
-          require_role_line KillMode
-          require_role_line LimitNOFILE
-          require_role_line LimitNPROC
-          require_role_line LimitCORE
-          require_role_line TasksMax
-          require_role_line TimeoutStartSec
-          require_role_line Restart
-          require_role_line RestartSec
-          require_role_words After
-          require_role_words Wants
-          require_role_words Requisite
-          require_preflight_line Description
-          require_preflight_line ConditionPathExists
-          require_preflight_line EnvironmentFile
-          require_preflight_line ExecStart
 
           grep -q 'Description=Lightweight Kubernetes (agent / worker)' "$k3s_worker_unit"
           if grep -q 'X-OnlyManualStart=true' "$k3s_worker_unit"; then
@@ -1705,7 +1631,19 @@ in
           grep -q 'KillMode=process' "$k3s_worker_unit"
           grep -q 'Requisite=k3s-preflight.service' "$k3s_worker_unit"
           grep -q 'After=.*k3s-preflight.service' "$k3s_worker_unit"
-          grep -q 'PrivateNetwork=false' "$k3s_worker_unit"
+          grep -q 'Wants=network-online.target' "$k3s_worker_unit"
+          grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_worker_unit"
+          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_worker_unit"
+          grep -q 'LimitNOFILE=1048576' "$k3s_worker_unit"
+          grep -q 'LimitNPROC=infinity' "$k3s_worker_unit"
+          grep -q 'LimitCORE=infinity' "$k3s_worker_unit"
+          grep -q 'TasksMax=infinity' "$k3s_worker_unit"
+          grep -q 'TimeoutStartSec=infinity' "$k3s_worker_unit"
+          grep -q 'Restart=always' "$k3s_worker_unit"
+          grep -q 'RestartSec=5s' "$k3s_worker_unit"
+          grep -q 'ConditionPathExists=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'ExecStart=.*/k3s-preflight-start' "$k3sWorkerExposePath/units/k3s-preflight.service"
           if grep -q 'NetworkNamespacePath=' "$k3s_worker_unit"; then
             echo "k3s worker must stay on host networking" >&2
             exit 1
@@ -1713,16 +1651,6 @@ in
           grep -q 'Delegate=true' "$k3s_worker_unit"
           grep -q 'PrivateUsers=false' "$k3s_worker_unit"
           grep -q 'DynamicUser=false' "$k3s_worker_unit"
-          grep -q 'ProtectControlGroups=false' "$k3s_worker_unit"
-          grep -q 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
-            "$k3s_worker_unit"
-          grep -q 'AmbientCapabilities=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_RESOURCE CAP_SYS_PTRACE' \
-            "$k3s_worker_unit"
-          grep -q 'RestrictAddressFamilies=AF_NETLINK' "$k3s_worker_unit"
-          grep -q 'DeviceAllow=/dev/net/tun rwm' "$k3s_worker_unit"
-          grep -q 'DeviceAllow=/dev/kmsg rwm' "$k3s_worker_unit"
-          grep -q 'DeviceAllow=/dev/fuse rwm' "$k3s_worker_unit"
-          grep -q 'PrivateDevices=false' "$k3s_worker_unit"
           if grep -q 'ProtectProc=' "$k3s_worker_unit"; then
             echo "root-equivalent k3s worker must not get ProtectProc= hardening" >&2
             exit 1
@@ -1731,12 +1659,9 @@ in
             echo "root-equivalent k3s worker must not get ProcSubset= hardening" >&2
             exit 1
           fi
-          grep -q 'BindPaths=/var/lib/rancher' "$k3s_worker_unit"
-          grep -q 'BindPaths=/var/lib/kubelet' "$k3s_worker_unit"
-          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_worker_unit"
-          grep -q 'BindPaths=/etc/rancher/node' "$k3s_worker_unit"
-          grep -q 'BindReadOnlyPaths=/lib/modules' "$k3s_worker_unit"
-          grep -q 'RootDirectory=' "$k3sWorkerExposePath/units/k3s-preflight.service"
+          require_host_unit "k3s worker" "$k3s_worker_unit"
+          require_host_unit "k3s worker preflight" "$k3sWorkerExposePath/units/k3s-preflight.service"
+          grep -q 'StateDirectory=rancher/k3s kubelet' "$k3s_worker_unit"
           grep -q 'PartOf=aos-pkg-k3s-worker.target' "$k3sWorkerExposePath/units/k3s-preflight.service"
           if grep -q 'SystemCallFilter=' "$k3s_worker_unit"; then
             echo "k3s worker privileged syscall profile must not render a restrictive SystemCallFilter" >&2
@@ -1767,13 +1692,17 @@ in
           grep -q 'WantedBy=aos-pkg-k3s-control-plane.target' "$k3s_control_plane_unit"
           grep -q 'ExecStart=${pkgs.k3s}/bin/k3s server --disable-agent' \
             "$k3s_control_plane_unit"
-          grep -q 'BindPaths=/var/lib/rancher' "$k3s_control_plane_unit"
-          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_control_plane_unit"
-          grep -q 'BindPaths=/etc/rancher/node' "$k3s_control_plane_unit"
-          if grep -q 'BindPaths=/var/lib/kubelet' "$k3s_control_plane_unit"; then
-            echo "k3s control-plane package must not bind kubelet state" >&2
-            exit 1
-          fi
+          require_host_unit "k3s control-plane" "$k3s_control_plane_unit"
+          grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_control_plane_unit"
+          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_control_plane_unit"
+          grep -q 'LimitNOFILE=1048576' "$k3s_control_plane_unit"
+          grep -q 'LimitNPROC=infinity' "$k3s_control_plane_unit"
+          grep -q 'LimitCORE=infinity' "$k3s_control_plane_unit"
+          grep -q 'TasksMax=infinity' "$k3s_control_plane_unit"
+          grep -q 'TimeoutStartSec=infinity' "$k3s_control_plane_unit"
+          grep -q 'Restart=always' "$k3s_control_plane_unit"
+          grep -q 'RestartSec=5s' "$k3s_control_plane_unit"
+          grep -q 'StateDirectory=rancher/k3s' "$k3s_control_plane_unit"
           grep -q 'Wants=aos-pkg-k3s-control-plane.slice k3s-preflight.service k3s.service aos-pkg-k3s-control-plane-host-paths.service aos-pkg-k3s-control-plane-modules.service aos-pkg-k3s-control-plane-sysctl.service aos-pkg-k3s-control-plane-firewall.service' \
             "$k3s_control_plane_target"
           grep -q 'Description=Prepare host path directories for k3s-control-plane' \
@@ -1788,10 +1717,17 @@ in
             "$k3s_combined_unit"
           grep -q 'WantedBy=aos-pkg-k3s-combined.target' "$k3s_combined_unit"
           grep -Fxq 'ExecStart=${pkgs.k3s}/bin/k3s server' "$k3s_combined_unit"
-          grep -q 'BindPaths=/var/lib/rancher' "$k3s_combined_unit"
-          grep -q 'BindPaths=/var/lib/kubelet' "$k3s_combined_unit"
-          grep -q 'BindPaths=/etc/rancher/k3s' "$k3s_combined_unit"
-          grep -q 'BindPaths=/etc/rancher/node' "$k3s_combined_unit"
+          require_host_unit "k3s combined" "$k3s_combined_unit"
+          grep -q 'Environment="PATH=.*${pkgs.k3s}/bin' "$k3s_combined_unit"
+          grep -q 'EnvironmentFile=/etc/rancher/k3s/k3s.env' "$k3s_combined_unit"
+          grep -q 'LimitNOFILE=1048576' "$k3s_combined_unit"
+          grep -q 'LimitNPROC=infinity' "$k3s_combined_unit"
+          grep -q 'LimitCORE=infinity' "$k3s_combined_unit"
+          grep -q 'TasksMax=infinity' "$k3s_combined_unit"
+          grep -q 'TimeoutStartSec=infinity' "$k3s_combined_unit"
+          grep -q 'Restart=always' "$k3s_combined_unit"
+          grep -q 'RestartSec=5s' "$k3s_combined_unit"
+          grep -q 'StateDirectory=rancher/k3s kubelet' "$k3s_combined_unit"
           grep -q 'Wants=aos-pkg-k3s-combined.slice k3s-preflight.service k3s.service aos-pkg-k3s-combined-host-paths.service aos-pkg-k3s-combined-modules.service aos-pkg-k3s-combined-sysctl.service aos-pkg-k3s-combined-firewall.service' \
             "$k3s_combined_target"
           grep -q 'Description=Prepare host path directories for k3s-combined' \

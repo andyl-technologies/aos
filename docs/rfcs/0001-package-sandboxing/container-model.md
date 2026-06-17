@@ -370,8 +370,8 @@ Three modes, selected by the manifest's `network` permission:
 ## cgroup delegation
 
 `Delegate=yes` on the nspawn service hands the container a delegated cgroup
-subtree it can subdivide. This is the same mechanism k3s already relies on
-today: `modules/roles/kubernetes/k3s-worker.nix` sets
+subtree it can subdivide. This is the same mechanism the k3s exposed packages
+already rely on today: `pkgs/kubernetes/_k3s-expose-package.nix` sets
 
 ```nix
 serviceConfig = {
@@ -571,7 +571,7 @@ state, and every one of these grants is an explicit entry in its
 `[permissions]` manifest (see [permissions.md](permissions.md)):
 
 - **Kernel modules are global.** k3s declares `kernel-modules = ["br_netfilter",
-  "vxlan", "ip_set"]` (in `modules/roles/kubernetes/k3s-worker.nix`). There is no
+  "vxlan", "ip_set"]` (via `pkgs/kubernetes/_k3s-expose-package.nix`). There is no
   per-container module namespace — these load into the host kernel via
   `aos-pkg-k3s-worker-modules.service` regardless of any container. The container
   cannot own them; this is a host-fulfilled, allowlisted permission (the host
@@ -626,7 +626,7 @@ The isolation benefit is near zero. The honest recommendation:
 ### The `KillMode=process` regression (restart kills every pod)
 
 The single biggest cost of wrapping k3s in nspawn, and it must not be glossed:
-today's bare unit (`modules/roles/kubernetes/k3s-worker.nix`) sets
+today's host unit (`pkgs/kubernetes/_k3s-expose-package.nix`) sets
 `KillMode=process` — deliberately, inherited from upstream k3s packaging — so
 stopping or upgrading `k3s.service` kills only the k3s supervisor process.
 containerd, the shims, and **all pod processes survive the restart**. That is

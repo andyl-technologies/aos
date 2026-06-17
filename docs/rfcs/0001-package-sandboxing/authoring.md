@@ -168,9 +168,9 @@ k3s-worker = mkDerivation {
 };
 ```
 
-The agent/server divergence that lives in `k3s-worker.nix` vs.
-`k3s-control-plane.nix` today moves here one-to-one; `_k3s-common.nix`
-survives as a shared let-binding. Whether `expose` goes on the payload or a
+The agent/server divergence now lives in `pkgs/kubernetes/k3s-worker.nix` vs.
+`pkgs/kubernetes/k3s-control-plane.nix`; `_k3s-common.nix` survives as a
+shared let-binding. Whether `expose` goes on the payload or a
 meta-package is a per-package judgment call over **one** mechanism — not a
 schema fork.
 
@@ -196,8 +196,8 @@ A package-owned artifact is static per version — it cannot read host config at
 eval. That is exactly what the signed `[permissions]` manifest requires (a
 manifest that varied per-host could not be registry-signed), and it matches
 the distro norm: static units that read runtime config from `/etc`
-([config.md](config.md)). The k3s modules already comply — `k3s.env` is
-runtime config, not eval-time parameterization. Per-host variation is config
+([config.md](config.md)). The k3s exposed packages already comply: `k3s.env`
+is runtime config, not eval-time parameterization. Per-host variation is config
 delivery, never unit-text variation.
 
 ## Open
