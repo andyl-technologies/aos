@@ -423,7 +423,7 @@ impl BuiltinInfo for FromJsonBuiltin {
 pub(crate) struct FromTomlBuiltin;
 impl BuiltinInfo for FromTomlBuiltin {
     const NAME: &'static [u8] = b"fromTOML";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::FromToml);
 }
 
 pub(crate) struct FunctionArgsBuiltin;
@@ -1142,6 +1142,7 @@ pub(crate) enum StrictUnaryPrimOp {
     ParseDrvName,
     SplitVersion,
     FromJson,
+    FromToml,
     ToString,
     ToJson,
     ConvertHash,
@@ -1467,7 +1468,12 @@ mod tests {
                 effect: BuiltinEffect::Pure
             })
         );
-        assert_eq!(direct_builtin(b"fromTOML"), None);
+        assert_eq!(
+            direct_builtin(b"fromTOML"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
     }
 
     #[test]
@@ -1589,7 +1595,7 @@ mod tests {
         assert_eq!(builtin_metadata(b"true").unwrap().first_class_arity(), None);
         assert_eq!(
             builtin_metadata(b"fromTOML").unwrap().first_class_arity(),
-            None
+            Some(1)
         );
     }
 

@@ -437,7 +437,7 @@ blobs and derivation attributes — see
 - [ ] `toXML` (e) — serialize `e` to Nix's XML plist-like format (the
       `nix-instantiate --xml` representation). Rarely used downstream but a real
       primop; must exist and match bytes if exercised.
-- [ ] `fromTOML` (e) — parse a TOML string to a Nix value. nixpkgs uses this for
+- [x] `fromTOML` (e) — parse a TOML string to a Nix value. nixpkgs uses this for
       `Cargo.toml`-driven derivations, so it is genuinely load-bearing.
       - Match C++ Nix's TOML parser behavior, including its handling of dates
         and the known assertion-failure edge cases (the bundled `toml11`

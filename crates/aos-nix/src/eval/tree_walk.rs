@@ -29,6 +29,7 @@ use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
 use thiserror::Error;
+use toml::Value as TomlValue;
 
 use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 use super::heap::{
@@ -2217,6 +2218,9 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictUnaryPrimOp::FromJson => {
                 self.eval_from_json_primop(argument, argument_span, value)
+            }
+            StrictUnaryPrimOp::FromToml => {
+                self.eval_from_toml_primop(argument, argument_span, value)
             }
             StrictUnaryPrimOp::ToString => {
                 self.eval_to_string_primop(id, span, argument, argument_span, value)
@@ -4671,6 +4675,38 @@ impl<'ir> TreeWalk<'ir> {
         self.value_from_json(argument, argument_span, json)
     }
 
+    fn eval_from_toml_primop(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let bytes = self.context_free_string_bytes(argument, argument_span, value, "fromTOML")?;
+        let source = std::str::from_utf8(&bytes).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::TomlParse {
+                    id: argument,
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let normalized = normalize_toml_numeric_overflows(source);
+        let toml: TomlValue = normalized
+            .as_str()
+            .parse()
+            .map_err(|source: toml::de::Error| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::TomlParse {
+                        id: argument,
+                        message: source.to_string(),
+                    },
+                    argument_span,
+                )
+            })?;
+        self.value_from_toml(argument, argument_span, toml)
+    }
+
     fn value_from_json(
         &mut self,
         id: IrId,
@@ -4739,6 +4775,80 @@ impl<'ir> TreeWalk<'ir> {
                         )
                     })?;
                     let value = self.value_from_json(id, span, value)?;
+                    entries.push(AttrEntry::new(symbol, value));
+                }
+                let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span)
+                })?;
+                self.heap.alloc_attrs(0, attrs).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
+        }
+    }
+
+    fn value_from_toml(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: TomlValue,
+    ) -> Result<Value, TreeWalkError> {
+        match value {
+            TomlValue::String(value) => self.alloc_static_string(id, span, value.as_bytes()),
+            TomlValue::Integer(value) => Ok(Value::int(value)),
+            TomlValue::Float(value) => Ok(Value::float(value)),
+            TomlValue::Boolean(value) => Ok(Value::bool(value)),
+            TomlValue::Datetime(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::TomlUnsupportedValue {
+                    id,
+                    kind: "datetime",
+                },
+                span,
+            )),
+            TomlValue::Array(values) => {
+                let mut elements = Vec::new();
+                elements.try_reserve_exact(values.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ListAllocationFailed {
+                            id,
+                            len: values.len(),
+                        },
+                        span,
+                    )
+                })?;
+                for value in values {
+                    elements.push(self.value_from_toml(id, span, value)?);
+                }
+                self.heap
+                    .alloc_list(NixList::new(elements))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                    })
+            }
+            TomlValue::Table(values) => {
+                let mut entries = Vec::new();
+                entries.try_reserve_exact(values.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Attr {
+                            id,
+                            source: AttrError::AllocationFailed {
+                                entries: values.len(),
+                            },
+                        },
+                        span,
+                    )
+                })?;
+                for (key, value) in values {
+                    let symbol = self.symbols.intern(key.as_bytes()).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::SymbolIntern {
+                                id,
+                                source: source.kind().clone(),
+                            },
+                            span,
+                        )
+                    })?;
+                    let value = self.value_from_toml(id, span, value)?;
                     entries.push(AttrEntry::new(symbol, value));
                 }
                 let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
@@ -11397,6 +11507,375 @@ fn trim_version_leading_zeroes(bytes: &[u8]) -> &[u8] {
     &bytes[first_non_zero..]
 }
 
+fn normalize_toml_numeric_overflows(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut normalized = String::new();
+    let mut changed = false;
+    let mut last = 0usize;
+    let mut index = 0usize;
+    let mut array_depth = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'#' => {
+                index = skip_toml_comment(bytes, index);
+            }
+            b'"' => {
+                index = skip_toml_basic_string(bytes, index);
+            }
+            b'\'' => {
+                index = skip_toml_literal_string(bytes, index);
+            }
+            b'[' if array_depth == 0 && toml_line_prefix_is_whitespace(bytes, index) => {
+                index = skip_toml_comment(bytes, index);
+            }
+            b'[' => {
+                array_depth += 1;
+                index += 1;
+            }
+            b']' => {
+                array_depth = array_depth.saturating_sub(1);
+                index += 1;
+            }
+            _ => {
+                if let Some((end, replacement)) = normalize_toml_float_at(source, index)
+                    .or_else(|| normalize_toml_integer_at(source, index))
+                {
+                    normalized.push_str(&source[last..index]);
+                    normalized.push_str(&replacement);
+                    last = end;
+                    index = end;
+                    changed = true;
+                } else {
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    if changed {
+        normalized.push_str(&source[last..]);
+        normalized
+    } else {
+        source.to_owned()
+    }
+}
+
+fn toml_line_prefix_is_whitespace(bytes: &[u8], start: usize) -> bool {
+    let mut line_start = start;
+    while line_start > 0 && !matches!(bytes[line_start - 1], b'\n' | b'\r') {
+        line_start -= 1;
+    }
+    bytes[line_start..start]
+        .iter()
+        .all(|byte| matches!(byte, b' ' | b'\t'))
+}
+
+fn skip_toml_comment(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r') {
+        index += 1;
+    }
+    index
+}
+
+fn skip_toml_basic_string(bytes: &[u8], mut index: usize) -> usize {
+    if bytes.get(index..index + 3) == Some(b"\"\"\"") {
+        index += 3;
+        while index < bytes.len() {
+            if bytes.get(index..index + 3) == Some(b"\"\"\"") {
+                return index + 3;
+            }
+            if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                index += 2;
+            } else {
+                index += 1;
+            }
+        }
+        return index;
+    }
+
+    index += 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 1 < bytes.len() {
+            index += 2;
+        } else if bytes[index] == b'"' {
+            return index + 1;
+        } else {
+            index += 1;
+        }
+    }
+    index
+}
+
+fn skip_toml_literal_string(bytes: &[u8], mut index: usize) -> usize {
+    if bytes.get(index..index + 3) == Some(b"'''") {
+        index += 3;
+        while index < bytes.len() {
+            if bytes.get(index..index + 3) == Some(b"'''") {
+                return index + 3;
+            }
+            index += 1;
+        }
+        return index;
+    }
+
+    index += 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\'' {
+            return index + 1;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn normalize_toml_float_at(source: &str, start: usize) -> Option<(usize, String)> {
+    let bytes = source.as_bytes();
+    if !toml_integer_has_start_boundary(bytes, start) {
+        return None;
+    }
+
+    let mut integer_start = start;
+    if matches!(bytes[start], b'+' | b'-') {
+        integer_start += 1;
+    }
+    if !bytes.get(integer_start).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+
+    let mut end = integer_start;
+    while bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+    {
+        end += 1;
+    }
+    if !toml_integer_underscores_are_valid(&source[integer_start..end], 10)
+        || !toml_decimal_leading_zeroes_are_valid(&source[integer_start..end])
+    {
+        return None;
+    }
+
+    let mut is_float = false;
+    if bytes.get(end) == Some(&b'.') {
+        let fraction_start = end + 1;
+        let mut fraction_end = fraction_start;
+        while bytes
+            .get(fraction_end)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+        {
+            fraction_end += 1;
+        }
+        if !toml_integer_underscores_are_valid(&source[fraction_start..fraction_end], 10) {
+            return None;
+        }
+        end = fraction_end;
+        is_float = true;
+    }
+
+    if matches!(bytes.get(end), Some(b'e' | b'E')) {
+        let mut exponent_start = end + 1;
+        if matches!(bytes.get(exponent_start), Some(b'+' | b'-')) {
+            exponent_start += 1;
+        }
+        let mut exponent_end = exponent_start;
+        while bytes
+            .get(exponent_end)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+        {
+            exponent_end += 1;
+        }
+        if !toml_integer_underscores_are_valid(&source[exponent_start..exponent_end], 10) {
+            return None;
+        }
+        end = exponent_end;
+        is_float = true;
+    }
+
+    if !is_float || !toml_integer_has_value_terminator(bytes, end) {
+        return None;
+    }
+
+    let cleaned = source[start..end].replace('_', "");
+    let value = cleaned.parse::<f64>().ok()?;
+    if value.is_infinite() {
+        Some((
+            end,
+            if value.is_sign_negative() {
+                "-inf".to_owned()
+            } else {
+                "inf".to_owned()
+            },
+        ))
+    } else {
+        None
+    }
+}
+
+fn normalize_toml_integer_at(source: &str, start: usize) -> Option<(usize, String)> {
+    let bytes = source.as_bytes();
+    if !toml_integer_has_start_boundary(bytes, start) {
+        return None;
+    }
+
+    let mut digits_start = start;
+    let mut sign = 1i8;
+    if matches!(bytes[start], b'+' | b'-') {
+        sign = if bytes[start] == b'-' { -1 } else { 1 };
+        digits_start += 1;
+    }
+    if !bytes.get(digits_start).is_some_and(u8::is_ascii_digit) {
+        return None;
+    }
+
+    let (base, end) = if digits_start == start
+        && bytes.get(digits_start) == Some(&b'0')
+        && matches!(bytes.get(digits_start + 1), Some(b'x' | b'o' | b'b'))
+    {
+        let base = match bytes.get(digits_start + 1).copied() {
+            Some(b'x') => 16,
+            Some(b'o') => 8,
+            Some(b'b') => 2,
+            _ => return None,
+        };
+        let mut end = digits_start + 2;
+        while bytes
+            .get(end)
+            .is_some_and(|byte| toml_integer_digit_or_underscore(*byte, base))
+        {
+            end += 1;
+        }
+        if end == digits_start + 2
+            || !toml_integer_underscores_are_valid(&source[digits_start + 2..end], base)
+        {
+            return None;
+        }
+        (base, end)
+    } else {
+        let mut end = digits_start;
+        while bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_digit() || *byte == b'_')
+        {
+            end += 1;
+        }
+        if !toml_integer_underscores_are_valid(&source[digits_start..end], 10) {
+            return None;
+        }
+        if !toml_decimal_leading_zeroes_are_valid(&source[digits_start..end]) {
+            return None;
+        }
+        (10, end)
+    };
+
+    if !toml_integer_has_value_terminator(bytes, end) {
+        return None;
+    }
+
+    normalized_toml_integer_replacement(&source[start..end], base, sign).map(|value| (end, value))
+}
+
+fn toml_integer_has_start_boundary(bytes: &[u8], start: usize) -> bool {
+    let Some(byte) = bytes.get(start).copied() else {
+        return false;
+    };
+    let starts_integer = byte.is_ascii_digit()
+        || (matches!(byte, b'+' | b'-') && bytes.get(start + 1).is_some_and(u8::is_ascii_digit));
+    if !starts_integer {
+        return false;
+    }
+    start == 0
+        || !matches!(
+            bytes[start - 1],
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.' | b'+' | b'-'
+        )
+}
+
+fn toml_integer_has_value_terminator(bytes: &[u8], end: usize) -> bool {
+    let mut index = end;
+    while matches!(bytes.get(index), Some(b' ' | b'\t')) {
+        index += 1;
+    }
+    matches!(
+        bytes.get(index),
+        None | Some(b'\n' | b'\r' | b'#' | b',' | b']' | b'}')
+    )
+}
+
+fn toml_integer_digit_or_underscore(byte: u8, base: u32) -> bool {
+    byte == b'_'
+        || match base {
+            2 => matches!(byte, b'0' | b'1'),
+            8 => matches!(byte, b'0'..=b'7'),
+            16 => byte.is_ascii_hexdigit(),
+            _ => byte.is_ascii_digit(),
+        }
+}
+
+fn toml_integer_underscores_are_valid(raw: &str, base: u32) -> bool {
+    let bytes = raw.as_bytes();
+    if bytes.is_empty() || matches!(bytes.first(), Some(b'_')) || matches!(bytes.last(), Some(b'_'))
+    {
+        return false;
+    }
+    for window in bytes.windows(2) {
+        if window == b"__" {
+            return false;
+        }
+    }
+    bytes.iter().all(|byte| match *byte {
+        b'_' => true,
+        byte => toml_integer_digit_or_underscore(byte, base),
+    })
+}
+
+fn toml_decimal_leading_zeroes_are_valid(raw: &str) -> bool {
+    let mut digits = raw.bytes().filter(|byte| *byte != b'_');
+    digits.next() != Some(b'0') || digits.next().is_none()
+}
+
+fn normalized_toml_integer_replacement(raw: &str, base: u32, sign: i8) -> Option<String> {
+    match base {
+        10 => normalized_toml_decimal_replacement(raw, sign),
+        2 => normalized_toml_binary_replacement(raw),
+        8 | 16 => normalized_toml_unsigned_saturating_replacement(raw, base),
+        _ => None,
+    }
+}
+
+fn normalized_toml_decimal_replacement(raw: &str, sign: i8) -> Option<String> {
+    let cleaned = raw.replace('_', "");
+    match cleaned.parse::<i128>() {
+        Ok(value) if value < i64::MIN as i128 => Some(i64::MIN.to_string()),
+        Ok(value) if value > i64::MAX as i128 => Some(i64::MAX.to_string()),
+        Ok(_) => None,
+        Err(_) if sign < 0 => Some(i64::MIN.to_string()),
+        Err(_) => Some(i64::MAX.to_string()),
+    }
+}
+
+fn normalized_toml_unsigned_saturating_replacement(raw: &str, base: u32) -> Option<String> {
+    let digits = raw[2..].replace('_', "");
+    match u128::from_str_radix(&digits, base) {
+        Ok(value) if value <= i64::MAX as u128 => None,
+        Ok(_) | Err(_) => Some(i64::MAX.to_string()),
+    }
+}
+
+fn normalized_toml_binary_replacement(raw: &str) -> Option<String> {
+    let digits = raw[2..].replace('_', "");
+    let significant = digits.trim_start_matches('0');
+    if significant.len() <= 63 {
+        return None;
+    }
+
+    let mut value = 0u64;
+    for byte in significant.bytes() {
+        value = (value << 1) | u64::from(byte == b'1');
+    }
+    Some((value as i64).to_string())
+}
+
 fn dir_name_range(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.is_empty() {
         return None;
@@ -12458,6 +12937,22 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The unsupported runtime tag.
         actual: ValueTag,
+    },
+    /// A TOML string failed to parse.
+    #[error("TOML parse failed at node {id:?}: {message}")]
+    TomlParse {
+        /// The string-valued node that was parsed as TOML.
+        id: IrId,
+        /// The parser diagnostic.
+        message: String,
+    },
+    /// A parsed TOML value has no C++ Nix `fromTOML` representation.
+    #[error("unsupported TOML {kind} at node {id:?}")]
+    TomlUnsupportedValue {
+        /// The string-valued node that produced the unsupported value.
+        id: IrId,
+        /// The unsupported TOML value category.
+        kind: &'static str,
     },
     /// A regular expression failed to compile.
     #[error("regular expression at node {id:?} failed to compile: {message}")]
@@ -14022,6 +14517,86 @@ mod tests {
             "builtins.fromJSON 1",
             "builtins.toJSON [ (x: x) ]",
             "builtins.toJSON [ 1 (1 / 0) ]",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_from_toml_builtin_matches_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.fromTOML """#,
+            r#"builtins.fromTOML ''
+                a = 1
+                b = 1.5
+                c = true
+                d = "x"
+                e = [1, "x", true, [2]]
+
+                [owner]
+                name = "Tom"
+            ''"#,
+            r#"builtins.fromTOML ''
+                [[fruit]]
+                name = "apple"
+                [[fruit]]
+                name = "banana"
+            ''"#,
+            r#"builtins.fromTOML ''
+                positive = 9223372036854775808
+                negative = -9223372036854775809
+                hex = 0x8000000000000000
+                octal = 0o1000000000000000000000
+                binary_min = 0b1000000000000000000000000000000000000000000000000000000000000000
+                binary_minus_one = 0b1111111111111111111111111111111111111111111111111111111111111111
+                binary_wrapped = 0b10000000000000000000000000000000000000000000000000000000000000000
+            ''"#,
+            r#"builtins.fromTOML ''
+                [9223372036854775808]
+                value = "key"
+            ''"#,
+            r#"builtins.fromTOML ''
+                "a.b" = 1
+                a.b = 2
+            ''"#,
+            r#"builtins.fromTOML ''
+                pos_inf = inf
+                neg_inf = -inf
+                nan = nan
+            ''"#,
+            r#"builtins.fromTOML ''
+                positive = 1e999
+                positive_signed = +1e999
+                negative = -1e999
+                fraction = 1.0e999
+            ''"#,
+            r#"let f = builtins.fromTOML; in f "a = 1""#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in [
+            r#"builtins.fromTOML "a = null""#,
+            r#"builtins.fromTOML "a = 1979-05-27T07:32:00Z""#,
+            r#"builtins.fromTOML "a = 1979-05-27""#,
+            r#"builtins.fromTOML "a = 07:32:00""#,
+            r#"builtins.fromTOML "a = 09223372036854775808""#,
+            r#"builtins.fromTOML "a = -09223372036854775809""#,
+            r#"builtins.fromTOML "a = 0_9223372036854775808""#,
+            r#"builtins.fromTOML "a = +0x8000000000000000""#,
+            r#"builtins.fromTOML "a = 01e999""#,
+            r#"builtins.fromTOML "a = 1_e999""#,
+            r#"builtins.fromTOML "a = +01e999""#,
+            "builtins.fromTOML \"a = 1\na = 2\"",
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
@@ -21600,6 +22175,240 @@ mod tests {
             TreeWalkErrorKind::StringContextNotAllowed {
                 id: argument,
                 op: "fromJSON",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn from_toml_primop_decodes_toml_values() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.fromTOML ''
+                    a = 1
+                    b = 1.5
+                    c = true
+                    d = "x"
+                    e = [1, "x", true, [2]]
+
+                    [owner]
+                    name = "Tom"
+                ''"#
+            ),
+            br#"{"a":1,"b":1.5,"c":true,"d":"x","e":[1,"x",true,[2]],"owner":{"name":"Tom"}}"#
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.fromTOML ''
+                    [[fruit]]
+                    name = "apple"
+                    [[fruit]]
+                    name = "banana"
+                ''"#
+            ),
+            br#"{"fruit":[{"name":"apple"},{"name":"banana"}]}"#
+        );
+        assert_eq!(
+            eval("let f = builtins.fromTOML; in (f \"a = 1\").a").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let builtins = { fromTOML = value: { local = true; }; }; in (builtins.fromTOML \"a = 1\").local")
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn from_toml_primop_matches_cpp_nix_integer_overflow_quirks() {
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.fromTOML ''
+                    positive = 9223372036854775808
+                    negative = -9223372036854775809
+                    hex = 0x8000000000000000
+                    octal = 0o1000000000000000000000
+                    binary_min = 0b1000000000000000000000000000000000000000000000000000000000000000
+                    binary_minus_one = 0b1111111111111111111111111111111111111111111111111111111111111111
+                    binary_wrapped = 0b10000000000000000000000000000000000000000000000000000000000000000
+                ''"#
+            ),
+            br#"{"binary_min":-9223372036854775808,"binary_minus_one":-1,"binary_wrapped":0,"hex":9223372036854775807,"negative":-9223372036854775808,"octal":9223372036854775807,"positive":9223372036854775807}"#
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.fromTOML ''
+                    [9223372036854775808]
+                    value = "key"
+                ''"#
+            ),
+            br#"{"9223372036854775808":{"value":"key"}}"#
+        );
+        assert_eq!(
+            eval_json_bytes(
+                r#"builtins.fromTOML ''
+                    positive = 1e999
+                    positive_signed = +1e999
+                    negative = -1e999
+                    fraction = 1.0e999
+                ''"#
+            ),
+            br#"{"fraction":null,"negative":null,"positive":null,"positive_signed":null}"#
+        );
+    }
+
+    #[test]
+    fn from_toml_numeric_overflow_normalizer_skips_non_values() {
+        let source = "9223372036854775808 = \"key\"\n\
+                      s = \"9223372036854775808\"\n\
+                      l = '9223372036854775808'\n\
+                      # 9223372036854775808\n\
+                      [9223372036854775808]\n\
+                      value = \"key\"\n\
+                      nested = [\n\
+                        [9223372036854775808]\n\
+                      ]\n\
+                      bad_leading = 09223372036854775808\n\
+                      bad_signed_hex = +0x8000000000000000\n\
+                      float = 1e999\n\
+                      signed_float = -1.0e999\n\
+                      bad_float = 01e999\n\
+                      bad_float_underscore = 1_e999\n\
+                      v = 9223372036854775808\n";
+        assert_eq!(
+            normalize_toml_numeric_overflows(source),
+            "9223372036854775808 = \"key\"\n\
+                      s = \"9223372036854775808\"\n\
+                      l = '9223372036854775808'\n\
+                      # 9223372036854775808\n\
+                      [9223372036854775808]\n\
+                      value = \"key\"\n\
+                      nested = [\n\
+                        [9223372036854775807]\n\
+                      ]\n\
+                      bad_leading = 09223372036854775808\n\
+                      bad_signed_hex = +0x8000000000000000\n\
+                      float = inf\n\
+                      signed_float = -inf\n\
+                      bad_float = 01e999\n\
+                      bad_float_underscore = 1_e999\n\
+                      v = 9223372036854775807\n"
+        );
+    }
+
+    #[test]
+    fn from_toml_primop_checks_argument_and_toml() {
+        let ir = lower("builtins.fromTOML 1");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("fromTOML requires a string");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower(r#"builtins.fromTOML "a = null""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("invalid TOML is rejected");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::TomlParse { id, .. } if id == argument
+        ));
+        assert_eq!(error.span(), argument_span);
+
+        let ir = lower(r#"builtins.fromTOML "a = 1979-05-27T07:32:00Z""#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("TOML datetimes are rejected");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::TomlUnsupportedValue {
+                id: argument,
+                kind: "datetime",
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        for source in [
+            r#"builtins.fromTOML "a = 09223372036854775808""#,
+            r#"builtins.fromTOML "a = -09223372036854775809""#,
+            r#"builtins.fromTOML "a = 0_9223372036854775808""#,
+            r#"builtins.fromTOML "a = +0x8000000000000000""#,
+            r#"builtins.fromTOML "a = 01e999""#,
+            r#"builtins.fromTOML "a = 1_e999""#,
+            r#"builtins.fromTOML "a = +01e999""#,
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("malformed TOML number is rejected");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::TomlParse { .. }),
+                "expected TOML parse error for {source}, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn from_toml_primop_rejects_string_context() {
+        let ir = lower("builtins.fromTOML \"a = 1\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("fromTOML argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"a = 1".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_from_toml_primop(argument, argument_span, value)
+            .expect_err("fromTOML rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "fromTOML",
             }
         );
         assert_eq!(error.span(), argument_span);

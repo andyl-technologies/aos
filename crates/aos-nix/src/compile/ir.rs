@@ -1901,6 +1901,7 @@ mod tests {
                 "builtins.fromJSON \"{\\\"a\\\":1}\"",
                 b"fromJSON".as_slice(),
             ),
+            ("builtins.fromTOML \"a = 1\"", b"fromTOML".as_slice()),
             ("builtins.toString 1", b"toString".as_slice()),
             ("builtins.toJSON { a = 1; }", b"toJSON".as_slice()),
             ("builtins.tryEval 1", b"tryEval".as_slice()),
@@ -3042,11 +3043,15 @@ mod tests {
 
     #[test]
     fn unmodeled_pure_builtins_remain_applications() {
-        let ir = lowered("builtins.fromTOML \"\"");
+        let ir = lowered("builtins.addErrorContext \"ctx\" 1");
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::Apply);
         let IrData::Pair { first, .. } = root.data else {
             panic!("apply payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = node(&ir, first).data else {
+            panic!("inner apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
     }
