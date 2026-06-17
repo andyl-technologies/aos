@@ -18812,6 +18812,56 @@ mod tests {
         assert_cpp_nix_identity_constants_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_control_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let (dir, path) = temp_file_with_bytes("cpp-nix-break-path", b"abc");
+        let path = path_source(&path);
+
+        for source in [
+            "builtins.break 7".to_owned(),
+            "let f = builtins.break; in f 9".to_owned(),
+            "let x = builtins.break (1 / 0); in 42".to_owned(),
+            "builtins.seq (builtins.break (1 / 0)) 7".to_owned(),
+            "builtins.deepSeq (builtins.break [ (1 / 0) ]) 7".to_owned(),
+            "(builtins.break (1 + 2)) == 3".to_owned(),
+            r#"builtins.break ("a" + "b") + "c""#.to_owned(),
+            "let x = builtins.break [ 1 2 ]; y = builtins.seq x 0; in y + builtins.length x"
+                .to_owned(),
+            "let f = builtins.break (x: x); in f 1".to_owned(),
+            "builtins.isInt (builtins.break (1 + 2))".to_owned(),
+            format!("builtins.isPath (builtins.break {path})"),
+            format!("builtins.typeOf (builtins.break {path})"),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        for source in [
+            "builtins.length (builtins.break [ 1 2 ])",
+            "builtins.add (builtins.break (builtins.break (1 + 2))) 1",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_control_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_control_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_control_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix control check");
+            return;
+        };
+        assert_cpp_nix_control_builtins_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_attrset_builtin_semantics_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [

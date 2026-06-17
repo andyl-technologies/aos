@@ -548,9 +548,11 @@ a given mode does so identically.
       on settings, may abort if warnings-as-errors is set). Introduced Nix
       ≥ 2.23; note for the version pin and reproduce the abort-on-strict-warn
       gating.
-- [ ] `break` (v) — drop into the debugger REPL when `--debugger` is active,
-      otherwise return `v` unchanged. Effect: interactive only; in non-debugger
-      (the AOS batch) mode it is the identity and must be transparent.
+- [x] `break` (v) — drop into the debugger REPL when `--debugger` is active,
+      otherwise return `v` as a thunk-visible lazy identity. Effect:
+      interactive only; in non-debugger (the AOS batch) mode it does not enter a
+      debugger, but it still preserves C++ Nix's observable thunk wrapper
+      behavior at strictness boundaries.
 
 `getFlake` and `exec` are also effectful but are **out of scope / stubbed** —
 see §13 and §17.
