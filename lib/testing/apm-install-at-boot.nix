@@ -36,6 +36,7 @@ in
 
       desired = vm.succeed("cat /etc/aos/packages.d/desired.toml")
       assert "packages = []" in desired, desired
+      vm.succeed("test \"$(stat -c %a /etc/aos/packages.d/desired.toml)\" = 600")
 
       registry = vm.succeed("cat /etc/apm/registries.d/example.toml")
       assert 'name = "example"' in registry, registry

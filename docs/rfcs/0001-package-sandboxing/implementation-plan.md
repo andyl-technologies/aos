@@ -378,9 +378,13 @@ apm at first boot; define upgrade/rollback.
       are declared in signed `expose.config` metadata, validated against the
       manifest-declared required/optional field set, materialized under
       `/var/etc` + `/etc`, and bound into sandboxed units before start for
-      desired-file installs. Secrets via TPM2-sealed systemd-creds
-      (`SetCredentialEncrypted=`, signed-PCR-11 policy) remain open
-      ([`config.md`](config.md)).
+      desired-file installs. Desired-file credential entries now validate
+      against signed `expose.config.credentials`, provision `/etc` and `/run`
+      credstore source paths, and encrypt encrypted credentials with
+      `systemd-creds encrypt --with-key=tpm2 --tpm2-public-key-pcrs=11` using
+      the measured-boot PCR public key. Prebuilt `/usr/lib` credential blobs,
+      inline encrypted payload production, and external system-credential ingress
+      remain open ([`config.md`](config.md)).
 - [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
@@ -403,10 +407,13 @@ now renders `LoadCredentialEncrypted=` / `LoadCredential=` into the consuming
 service units; when a credential declares a credstore `source`, the renderer
 emits `name:/path` plus `ConditionPathExists=` so missing credential blobs fail
 closed. Inline encrypted payload metadata renders `SetCredentialEncrypted=`.
-Bare-name imports remain an explicit appetite/import declaration. Offline
-`systemd-creds encrypt`, signed-PCR-11 policy generation, and provisioning of the
-credstore/system credential payloads remain open and keep the phase at ◐ rather
-than ☑.
+Bare-name imports remain an explicit appetite/import declaration. Desired files
+can now provision signed package-declared `/etc` and `/run` credstore sources;
+encrypted desired credentials are sealed with signed-PCR-11 policy, and measured
+boot publishes the PCR public key at `/etc/aos/pcr-sign.pem` for that path.
+Offline/package-time encrypted `/usr/lib` blobs, inline ciphertext production
+helpers, and external system-credential ingestion remain open and keep the phase
+at ◐ rather than ☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 

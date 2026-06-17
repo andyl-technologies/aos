@@ -98,12 +98,17 @@ Relevant AOS surfaces, for grounding:
 
 - `lib/modules/systemd/lib.nix` has an `assertKeyIsSystemdCredential` helper
   that validates fields marked `@<credential-name>`, but AOS does **not** yet
-  expose systemd's credential system as a first-class module option. The
-  exposed-package renderer can emit `LoadCredential=` /
+  expose systemd's credential system as a general first-class module option.
+  The exposed-package renderer can emit `LoadCredential=` /
   `LoadCredentialEncrypted=` for service units, including fail-closed
   `name:/path` imports from systemd credstore directories, and
-  `SetCredentialEncrypted=` for signed inline encrypted payloads, but a general
-  module surface remains open.
+  `SetCredentialEncrypted=` for signed inline encrypted payloads. For
+  install-at-boot desired files, `credentials.<package>.<name>` entries now
+  provision signed package-declared `/etc/credstore*` or `/run/credstore*`
+  sources. Encrypted desired credentials are produced with
+  `systemd-creds encrypt --with-key=tpm2 --tpm2-public-key-pcrs=11` using
+  `[settings].credential_pcr_public_key` or the measured-boot default
+  `/etc/aos/pcr-sign.pem`; `/usr/lib/credstore*` remains immutable/vendor-owned.
 - `pkgs/system/systemd.nix` controls the systemd build flags. The credential
   substrate is verified by `checks.systemd-credentials`: `systemd-creds`, signed
   PCR TPM2 encryption flags, credstore tmpfiles entries, `systemd-measure`, TPM2
@@ -509,18 +514,17 @@ The systemd substrate is verified by `checks.systemd-credentials`: AOS exposes
 and generator, signed-PCR TPM2 encryption flags, and the cryptsetup TPM2 token
 plugin.
 
-- **AOS module surface.** No first-class module option wraps
-  `SetCredentialEncrypted=` / `LoadCredentialEncrypted=` /
-  `--tpm2-public-key-pcrs` yet (the existing `assertKeyIsSystemdCredential`
-  helper only validates `@<name>` field markers). Exposed-package credential
-  metadata now renders `LoadCredentialEncrypted=<name>` or
-  `LoadCredential=<name>` into consuming service units. When the metadata
-  declares a credstore `source`, it renders `name:/path` with
-  `ConditionPathExists=` so missing blobs fail closed; bare-name imports remain
-  an appetite/import declaration. Inline encrypted payload metadata renders
-  `SetCredentialEncrypted=<name>:<ciphertext>` in signed unit text. The
-  `mkDerivation`/module-side `systemd-creds encrypt` step and an offline
-  PCR-policy signing key still need wiring.
+- **AOS module surface.** Exposed-package credential metadata now renders
+  `LoadCredentialEncrypted=<name>` or `LoadCredential=<name>` into consuming
+  service units. When the metadata declares a credstore `source`, it renders
+  `name:/path` with `ConditionPathExists=` so missing blobs fail closed; bare-name
+  imports remain an appetite/import declaration. Inline encrypted payload
+  metadata renders `SetCredentialEncrypted=<name>:<ciphertext>` in signed unit
+  text. Desired files now provision `/etc` and `/run` credstore sources and
+  encrypt encrypted credentials with the signed-PCR-11 policy. Still open:
+  helper support for producing package/vendor `/usr/lib/credstore.encrypted`
+  blobs, producing inline encrypted payload metadata, and ingesting external
+  system credentials such as SMBIOS-provided first-boot secrets.
 - **nspawn handoff.** The host→container `--load-credential` path for full-init
   containers (the Option 1 caveat: container must run systemd as PID 1) still
   needs an end-to-end test; k3s, being a nominal/host-privileged container, is
@@ -584,12 +588,15 @@ requirements vs. nice-to-haves — that prioritization is itself open.
 2. **Hot-reload — in scope for v1?** If yes, which shape: watch-file reloader,
    registry push, or a systemd reload path? If no, document restart-to-apply as
    the contract.
-3. **Encrypted credential production.** Which package/module helper owns
-   `systemd-creds encrypt`, signed PCR policy selection, and sealing-key
-   custody for credstore-source and inline encrypted payload metadata?
-4. **Credential provisioning.** Which first-boot path seals or imports
-   per-instance plaintext into encrypted systemd credentials without leaving the
-   plaintext in `/var/etc`?
+3. **Encrypted credential production.** Desired-file `/etc` and `/run`
+   credstore provisioning owns one runtime path for `systemd-creds encrypt` and
+   signed-PCR-11 policy selection. Which package/module helper owns offline
+   `/usr/lib/credstore.encrypted` blobs, inline encrypted payload metadata, and
+   sealing-key custody?
+4. **Credential provisioning.** Desired-file provisioning covers host-authored
+   plaintext that is consumed by `apm` and sealed into credstore payloads. Which
+   first-boot path imports external system credentials, for example
+   SMBIOS-provided secrets, without persisting plaintext in `/var/etc`?
 5. **Credential read audit.** Do we need to log which process read which
    secret? systemd credentials don't provide it natively; a registry/apm path
    could.

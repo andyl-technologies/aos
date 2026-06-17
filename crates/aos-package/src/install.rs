@@ -732,7 +732,7 @@ fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> s
 }
 
 /// Load registries from the config's cache directory.
-fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
+pub(crate) fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, &platform())
 }

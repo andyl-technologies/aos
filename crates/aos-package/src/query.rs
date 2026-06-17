@@ -26,9 +26,7 @@ use super::profile::meta::{list_meta, orphaned_by_registry};
 use super::registry::{Registry, RegistrySet, store_path_hash};
 use super::store;
 use super::sysroot_lock;
-use super::types::{
-    ConfinementMeta, InstalledMeta, PackageMeta, PermissionsMeta, ProfileScope,
-};
+use super::types::{ConfinementMeta, InstalledMeta, PackageMeta, PermissionsMeta, ProfileScope};
 use aos_core::output::{OutputMode, Printer};
 
 // ---------------------------------------------------------------------------
