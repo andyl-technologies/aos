@@ -285,11 +285,12 @@ input set. Each gets adversarial differential coverage.
 - [x] `appendContext` (s context) — merge a reflected context (the
       `getContext`-shaped attrset) back into `s`'s context. The inverse pairing
       with `getContext`; the merge must be a context **union**.
-- [ ] `storePath` (path) — turn a path that is *already* in the store into a
+- [x] `storePath` (path) — turn a path that is *already* in the store into a
       string with a context element naming the store-path root (so it becomes
       an `input_source`), unioned with any existing string context on the
-      argument. Errors if the path is not a valid store path, and C++ Nix also
-      verifies that the path exists/can be realized in the store.
+      argument. Errors if the path is not a valid store path; pinned C++ Nix
+      accepts syntactically valid store roots even when the path is not present
+      locally.
       - Disabled under pure-/restricted-eval; flag accordingly (§13, §16).
 - [ ] `outputOf` (drv-ref output-name) — produce the deriving path string for a
       named output of a (possibly CA / not-yet-known) derivation reference,
@@ -618,7 +619,7 @@ eval (network access is disabled unless explicitly allowed).
       `$out` before it exists. The placeholder bytes are *hashed* into
       derivations, so they must be byte-identical to C++ Nix's scheme (see
       [derivation and store compatibility](11-derivation-and-store-compatibility.md) §5.3).
-- [ ] `storePath` (path) — (also §5) assert a path is in the store and return it
+- [x] `storePath` (path) — (also §5) assert a path is in the store and return it
       as a context-carrying string; gated under restricted/pure eval.
 - [x] `storeDir` (value) — the store directory string (`"/nix/store"`). A
       constant; feeds path computation. (Listed also in §14 as a constant.)
