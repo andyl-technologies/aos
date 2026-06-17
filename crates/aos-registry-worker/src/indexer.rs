@@ -38,8 +38,8 @@
 //!
 //! All D1 reads and writes go through the shared
 //! [`Backend`](aos_registry_core::backend::Backend) over the
-//! [`D1Backend`](crate::d1backend::D1Backend), exactly as the read path does
-//! ([`crate::reads`]). This is deliberate: the backend binds integers as JS
+//! [`D1Backend`](crate::d1backend::D1Backend), the same engine the shared read
+//! path uses. This is deliberate: the backend binds integers as JS
 //! numbers (not the `worker` crate's BigInt, which the pinned 2024-09-09 workerd
 //! D1 rejects) and reads NULL columns cleanly, so the indexer's writes and
 //! floor reads run on the same engine the hub's `Database` uses. The indexer

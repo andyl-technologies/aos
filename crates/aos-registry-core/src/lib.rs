@@ -54,4 +54,5 @@ pub mod service;
 pub mod stack;
 pub mod url_guard;
 pub mod value;
+pub mod web;
 pub mod webhook;
