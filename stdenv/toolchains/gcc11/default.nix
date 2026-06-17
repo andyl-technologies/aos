@@ -159,7 +159,7 @@
     autoconf = scope.mkAutotoolsTool scope.manifest.autoconf;
     automake = scope.mkAutotoolsTool scope.manifest.automake;
     gperf = scope.mkAutotoolsTool scope.manifest.gperf;
-    python3 = prev.python3;
+    python3 = scope.mkAutotoolsTool scope.manifest.python3;
 
     # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
     bash = scope.mkAutotoolsTool scope.manifest.bash;

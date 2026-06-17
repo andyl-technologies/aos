@@ -173,7 +173,7 @@
     autoconf = scope.mkAutotoolsTool scope.manifest.autoconf;
     automake = scope.mkAutotoolsTool scope.manifest.automake;
     gperf = scope.mkAutotoolsTool scope.manifest.gperf;
-    python3 = prev.python3;
+    python3 = scope.mkAutotoolsTool scope.manifest.python3;
 
     # Compression tools (needed so tar can decompress .tar.xz/.tar.bz2 in the production stdenv)
     xz = callPackage ./xz.nix {};
