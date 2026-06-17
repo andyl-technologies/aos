@@ -22,6 +22,7 @@ pub mod channel;
 pub mod fetch;
 pub mod git;
 pub mod keys;
+pub mod membership;
 pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
@@ -389,6 +390,7 @@ pub(crate) mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -434,6 +436,7 @@ pub(crate) mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,

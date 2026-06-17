@@ -915,9 +915,6 @@ pub enum RegistryCommand {
         /// Resolve signing key path from [registry.signing_keys] by keys.toml id
         #[arg(long = "key-id")]
         key_id: Option<String>,
-        /// Output directory for generated static cache files
-        #[arg(long = "cache-output")]
-        cache_output: Option<PathBuf>,
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long = "cache-key")]
         cache_key: Option<PathBuf>,
@@ -925,8 +922,11 @@ pub enum RegistryCommand {
         #[arg(long = "cache-url")]
         cache_url: Option<String>,
         /// Priority for generated nix-cache-info and registry [[caches]]
-        #[arg(long = "cache-priority", default_value = "40")]
-        cache_priority: u32,
+        #[arg(long = "cache-priority")]
+        cache_priority: Option<u32>,
+        /// Regenerate and re-upload paths even when local or remote entries exist
+        #[arg(long = "no-skip")]
+        no_skip: bool,
         /// Backend URL to upload the static origin to; repeat for multiple destinations
         /// (default: the upload_urls persisted by `origin config`)
         #[arg(long = "upload-url")]
@@ -1360,7 +1360,7 @@ pub enum CacheCommand {
     Generate {
         /// Output directory for generated static cache files
         #[arg(long)]
-        output: PathBuf,
+        output: Option<PathBuf>,
         /// Nix narinfo signing key file in `name:base64-secret` form
         #[arg(long)]
         key: Option<PathBuf>,
@@ -1387,6 +1387,21 @@ pub enum CacheCommand {
         /// Parallel compression jobs for the static cache (default: CPU count)
         #[arg(long)]
         jobs: Option<usize>,
+        /// Regenerate and re-upload paths even when local or remote entries exist
+        #[arg(long = "no-skip")]
+        no_skip: bool,
+    },
+    /// Garbage-collect old internally staged static-cache files
+    Gc {
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+        /// Maximum unused age in days before deleting a staged narinfo/NAR pair
+        #[arg(long = "max-age")]
+        max_age: Option<u64>,
+        /// Report candidates without deleting them
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -2164,10 +2179,10 @@ async fn run_registry(
             partitions,
             key,
             key_id,
-            cache_output,
             cache_key,
             cache_url,
             cache_priority,
+            no_skip,
             upload_urls,
             auth,
             dry_run,
@@ -2198,10 +2213,10 @@ async fn run_registry(
                 partitions.as_deref(),
                 key.as_deref(),
                 key_id.as_deref(),
-                cache_output.as_deref(),
                 cache_key.as_deref(),
                 cache_url.as_deref(),
                 *cache_priority,
+                *no_skip,
                 upload_urls,
                 auth,
                 *dry_run,
@@ -3091,6 +3106,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
