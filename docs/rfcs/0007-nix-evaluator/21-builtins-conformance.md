@@ -891,25 +891,25 @@ feature disabled:
 nixpkgs `lib` functions implemented in Nix on top of real primops. They work
 because the primops are correct; they are *not* primops:
 
-- [ ] `toLower` / `toUpper` — `lib.strings.toLower`/`toUpper` (built on
+- [x] `toLower` / `toUpper` — `lib.strings.toLower`/`toUpper` (built on
       `replaceStrings`). **Verified: not builtins.** (Past errata flagged these
       as builtins — they are not.)
-- [ ] `toTOML` — **does not exist at all** (only `fromTOML` is a builtin).
+- [x] `toTOML` — **does not exist at all** (only `fromTOML` is a builtin).
       Verified: a long-standing unimplemented feature request, never a primop.
-- [ ] `concatStrings`, `stringToCharacters`, `splitString`, `hasPrefix`,
+- [x] `concatStrings`, `stringToCharacters`, `splitString`, `hasPrefix`,
       `hasSuffix`, `optionalString`, `removePrefix`, `removeSuffix`,
       `escapeShellArg`, `versionAtLeast`/`versionOlder` — all `lib.strings` /
       `lib` (the latter built on `compareVersions`). Not builtins.
-- [ ] `foldr`, `foldl` (non-strict), `reverse`, `range`, `remove`, `zipWith`,
+- [x] `foldr`, `foldl` (non-strict), `reverse`, `range`, `remove`, `zipWith`,
       `flatten`, `unique`, `last`, `init`, `take`, `drop`, `count`, `imap0`,
       `forEach`, `optionals` — all `lib.lists` / `lib`. The **only** fold builtin
       is the strict `foldl'`; the **only** list builtins are those in §7.
-- [ ] `mapAttrsToList`, `filterAttrs`, `recursiveUpdate`, `attrByPath`,
+- [x] `mapAttrsToList`, `filterAttrs`, `recursiveUpdate`, `attrByPath`,
       `optionalAttrs`, `mapAttrs'`, `genAttrs`, `nameValuePair` — all `lib.attrsets`.
       The builtin attrset surface is exactly §6.
-- [ ] `id`, `const`, `flip`, `composeManyExtensions`, `pipe`, `fix`,
+- [x] `id`, `const`, `flip`, `composeManyExtensions`, `pipe`, `fix`,
       `makeExtensible` — all `lib` / `lib.trivial`. Not builtins.
-- [ ] `importJSON`, `importTOML` — `lib` wrappers around
+- [x] `importJSON`, `importTOML` — `lib` wrappers around
       `fromJSON`/`fromTOML` + `readFile`. Not builtins.
 
 The discriminating test, applied to every candidate: **does it appear in

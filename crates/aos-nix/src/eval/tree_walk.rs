@@ -17266,6 +17266,56 @@ mod tests {
     use crate::syntax::{Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
 
+    const LIB_NOT_BUILTIN_NAMES: &[&str] = &[
+        "toLower",
+        "toUpper",
+        "toTOML",
+        "concatStrings",
+        "stringToCharacters",
+        "splitString",
+        "hasPrefix",
+        "hasSuffix",
+        "optionalString",
+        "removePrefix",
+        "removeSuffix",
+        "escapeShellArg",
+        "versionAtLeast",
+        "versionOlder",
+        "foldr",
+        "foldl",
+        "reverse",
+        "range",
+        "remove",
+        "zipWith",
+        "flatten",
+        "unique",
+        "last",
+        "init",
+        "take",
+        "drop",
+        "count",
+        "imap0",
+        "forEach",
+        "optionals",
+        "mapAttrsToList",
+        "filterAttrs",
+        "recursiveUpdate",
+        "attrByPath",
+        "optionalAttrs",
+        "mapAttrs'",
+        "genAttrs",
+        "nameValuePair",
+        "id",
+        "const",
+        "flip",
+        "composeManyExtensions",
+        "pipe",
+        "fix",
+        "makeExtensible",
+        "importJSON",
+        "importTOML",
+    ];
+
     fn lower(source: &str) -> Ir {
         lower_ir(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
             .expect("source lowers")
@@ -17422,6 +17472,18 @@ mod tests {
             "builtins.typeOf builtins.builtins",
         ] {
             assert_cpp_nix_json_matches_tree_walk_with_options(oracle, source, options.clone());
+        }
+
+        for name in LIB_NOT_BUILTIN_NAMES {
+            let source = format!("builtins.hasAttr {} builtins", nix_string_literal(name));
+            let reference = cpp_nix_eval_json(oracle, &source);
+            assert_eq!(
+                reference, b"false",
+                "{name} should not appear in pinned C++ Nix builtins",
+            );
+
+            let candidate = eval_json_bytes_with_options(&source, options.clone());
+            assert_eq!(candidate, reference, "expression diverged: {source}");
         }
     }
 
@@ -20087,6 +20149,19 @@ mod tests {
             "builtins.toHashFormat or 42",
         ] {
             assert_eq!(eval(source).as_int(), Ok(42));
+        }
+    }
+
+    #[test]
+    fn lib_catalogue_entries_are_not_builtin_attrs() {
+        for name in LIB_NOT_BUILTIN_NAMES {
+            let source = format!(r#"builtins.hasAttr "{name}" builtins"#);
+
+            assert_eq!(
+                eval(&source).as_bool(),
+                Ok(false),
+                "{name} must not be exposed as a builtin attr",
+            );
         }
     }
 

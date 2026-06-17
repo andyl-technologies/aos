@@ -1523,9 +1523,62 @@ mod tests {
         let ast = resolved("foldl'");
         assert_eq!(node(&ast, ast.root).kind, NodeKind::GlobalVar);
 
-        let error = resolve(parse_str("toLower").expect("source parses"))
-            .expect_err("toLower is not global");
-        assert!(matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)));
+        for name in [
+            "toLower",
+            "toUpper",
+            "toTOML",
+            "concatStrings",
+            "stringToCharacters",
+            "splitString",
+            "hasPrefix",
+            "hasSuffix",
+            "optionalString",
+            "removePrefix",
+            "removeSuffix",
+            "escapeShellArg",
+            "versionAtLeast",
+            "versionOlder",
+            "foldr",
+            "foldl",
+            "reverse",
+            "range",
+            "remove",
+            "zipWith",
+            "flatten",
+            "unique",
+            "last",
+            "init",
+            "take",
+            "drop",
+            "count",
+            "imap0",
+            "forEach",
+            "optionals",
+            "mapAttrsToList",
+            "filterAttrs",
+            "recursiveUpdate",
+            "attrByPath",
+            "optionalAttrs",
+            "mapAttrs'",
+            "genAttrs",
+            "nameValuePair",
+            "id",
+            "const",
+            "flip",
+            "composeManyExtensions",
+            "pipe",
+            "fix",
+            "makeExtensible",
+            "importJSON",
+            "importTOML",
+        ] {
+            let error =
+                resolve(parse_str(name).expect("source parses")).expect_err("name is not global");
+            assert!(
+                matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)),
+                "{name} should not be classified as a global builtin",
+            );
+        }
 
         let error =
             resolve(parse_str("missing").expect("source parses")).expect_err("missing name errors");
