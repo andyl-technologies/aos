@@ -587,14 +587,18 @@ Full spec: [`enforcement.md`](enforcement.md).
       package-expose lifecycle VM that two live dynamic-user package units with
       the same writable host-path grant receive distinct UIDs and cannot
       overwrite each other's `0600` file.
-- [ ] **CI gate.** `checks.eval` runs `systemd-analyze security --threshold=<N>`
-      per generated unit; a unit worse than its tier allows fails the build
-      (k3s/`unconfined` is the documented exception, not a silent pass).
+- [x] **CI gate.** `checks.eval` runs the AOS-built `systemd-analyze security`
+      offline against rendered package workload services with the default
+      threshold equivalent to 5.5; a unit worse than the gate fails the build.
+      Generated host-side side-effect units stay outside the workload-service
+      gate, and `unconfined` packages such as k3s are counted as documented
+      skips rather than silent passes.
 
 **Closes.** D20; strengthens D2, D10.
 
-**EXIT CRITERIA.** A default-manifest package's unit scores within its tier's
-`systemd-analyze` threshold; its Landlock ruleset denies an out-of-manifest path
+**EXIT CRITERIA.** A default-manifest package's workload service scores within
+the default `systemd-analyze` threshold; its Landlock ruleset denies an
+out-of-manifest path
 in a VM test *with a host-path hole present* (proves namespace-independence); its
 MAC profile loads and denies a default-denied operation.
 

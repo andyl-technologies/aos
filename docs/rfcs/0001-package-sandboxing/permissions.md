@@ -109,10 +109,11 @@ last-resort observer/enforcer that catches anything the static layers missed.
 > **Authoritative spec:** [enforcement.md](enforcement.md) is the normative
 > definition of the layered stack — namespaces+caps+seccomp + Landlock +
 > generated MAC profile + eBPF-LSM, all derived from the manifest. It also owns
-> the **full systemd hardening baseline** every generated unit inherits and the
-> **per-package `systemd-analyze security --threshold` CI gate** that fails the
-> build if a unit's exposure score regresses. This doc defines the manifest and
-> the field→layer mapping; `enforcement.md` defines how each layer is rendered.
+> the **full systemd hardening baseline** every generated workload service
+> inherits and the **per-package `systemd-analyze security --threshold` CI
+> gate** that fails the build if a workload service's exposure score regresses.
+> This doc defines the manifest and the field→layer mapping; `enforcement.md`
+> defines how each layer is rendered.
 
 ### `security-label` is no longer an inert field
 

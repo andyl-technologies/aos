@@ -1,8 +1,8 @@
-# lib/testing/eval.nix — Layer 1: Pure Nix evaluation checks
+# lib/testing/eval.nix — Layer 1: Evaluation and rendered-artifact checks
 #
-# No builds, no VMs. Verifies the system configuration evaluates without
-# error. The fact that this derivation can be instantiated proves the
-# module graph resolves successfully.
+# No VMs and no host tools. Instantiation forces the module graph to resolve;
+# the derivation then runs AOS-built tools over evaluated artifacts that need
+# command-line validation.
 #
 # Usage:
 #   nix-build -A checks.eval
@@ -285,6 +285,13 @@
   exposedPackagePathsJson = builtins.toJSON (
     builtins.map (name: packagesWithExpose.${name}.expose.outPath) exposedPackageNames
   );
+  packageExposeSecurityGateEntries = builtins.toJSON (
+    builtins.map (name: {
+      inherit name;
+      expose = builtins.toString packagesWithExpose.${name}.expose;
+    })
+    exposedPackageNames
+  );
   exposeEnumeration =
     if !(builtins.elem "expose-smoke" exposedPackageNames)
     then throw "packagesWithExpose must include pkgs.expose-smoke"
@@ -356,17 +363,107 @@
     then throw "aos.packages must reject policy names that do not match the package target"
     else "ok";
 in
-  # Use a raw derivation with AOS bash so we don't pull in host tools.
-  # The real verification happens at Nix eval time: the builtins.toJSON calls
-  # force the system config, so any module error causes an instantiation
-  # failure before the builder even runs.
+  # Use a raw derivation with AOS bash so we don't pull in host tools. The
+  # builtins.toJSON calls still force the system config at instantiation time;
+  # the builder covers rendered artifacts that require AOS command-line tools.
   builtins.derivation {
     name = "aos-eval-checks-0";
     system = lib.system;
     builder = "${pkgs.bash}/bin/bash";
+    inherit packageExposeSecurityGateEntries;
+    passAsFile = ["packageExposeSecurityGateEntries"];
     args = [
       "-c"
       ''
+        set -euo pipefail
+
+        jq=${pkgs.jq}/bin/jq
+        systemd_analyze=${pkgs.systemd}/bin/systemd-analyze
+        coreutils=${pkgs.coreutils}/bin
+        security_threshold=55
+        security_units=0
+        security_skipped=0
+        security_skipped_names=
+        security_failed=0
+
+        is_allowed_unconfined_package() {
+          case "$1" in
+            k3s-combined|k3s-control-plane|k3s-worker)
+              return 0
+              ;;
+            *)
+              return 1
+              ;;
+          esac
+        }
+
+        is_side_effect_unit() {
+          package_name=$1
+          unit_name=$2
+          case "$unit_name" in
+            aos-pkg-"$package_name"-host-paths.service|aos-pkg-"$package_name"-modules.service|aos-pkg-"$package_name"-sysctl.service|aos-pkg-"$package_name"-firewall.service|aos-pkg-"$package_name"-netns.service)
+              return 0
+              ;;
+            *)
+              return 1
+              ;;
+          esac
+        }
+
+        check_package_security() {
+          entry=$1
+          package_name=$(printf '%s\n' "$entry" | "$jq" -r '.name')
+          expose_path=$(printf '%s\n' "$entry" | "$jq" -r '.expose')
+          manifest="$expose_path/manifest.json"
+          confinement_class=$("$jq" -r '.permissions.confinement.class // "sandboxed"' "$manifest")
+          if [ "$confinement_class" = unconfined ]; then
+            if ! is_allowed_unconfined_package "$package_name"; then
+              echo "systemd security gate found unexpected unconfined package: $package_name" >&2
+              security_failed=1
+              return 0
+            fi
+            security_skipped=$((security_skipped + 1))
+            security_skipped_names="$security_skipped_names''${security_skipped_names:+,}$package_name"
+            return 0
+          fi
+
+          tmp=$("$coreutils"/mktemp -d)
+          "$coreutils"/mkdir -p "$tmp/etc/systemd/system"
+          "$coreutils"/cp -a "$expose_path/units/." "$tmp/etc/systemd/system/"
+
+          shopt -s nullglob
+          for service_path in "$expose_path"/units/*.service; do
+            unit_name=''${service_path##*/}
+            if is_side_effect_unit "$package_name" "$unit_name"; then
+              continue
+            fi
+            security_units=$((security_units + 1))
+            report="$tmp/$unit_name.security"
+            if ! "$systemd_analyze" security --offline=yes --threshold="$security_threshold" --root="$tmp" "$unit_name" >"$report" 2>&1; then
+              echo "systemd security gate failed for $package_name:$unit_name" >&2
+              "$coreutils"/cat "$report" >&2
+              security_failed=1
+            fi
+          done
+          shopt -u nullglob
+
+          "$coreutils"/chmod -R u+w "$tmp" 2>/dev/null || true
+          "$coreutils"/rm -rf "$tmp" 2>/dev/null || true
+        }
+
+        while IFS= read -r entry; do
+          check_package_security "$entry"
+        done < <("$jq" -c '.[]' "$packageExposeSecurityGateEntriesPath")
+
+        if [ "$security_units" -eq 0 ]; then
+          echo "systemd security gate did not check any workload services" >&2
+          exit 1
+        fi
+
+        if [ "$security_failed" -ne 0 ]; then
+          exit 1
+        fi
+
         echo "==> AOS Evaluation Checks"
         echo ""
 
@@ -377,6 +474,7 @@ in
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"
+        echo "systemd gate:   $security_units workload services under threshold $security_threshold; $security_skipped allowlisted unconfined package(s) skipped: ''${security_skipped_names:-none}"
         echo "package policy: baked profile (${packagePolicyModule}), preset requires bundle (${packagePolicyRejectsPresetWithoutBundle}), target mismatch (${packagePolicyRejectsWrongTarget})"
 
         # Force the build attributes to ensure they evaluate
