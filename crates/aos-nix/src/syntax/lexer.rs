@@ -748,8 +748,10 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if self.starts_with(b"$${") {
-                self.cursor += 3;
+            if byte == b'$' {
+                if !self.consume_string_dollar_run() {
+                    break;
+                }
                 continue;
             }
 
@@ -791,8 +793,10 @@ impl<'a> Lexer<'a> {
                 break;
             }
 
-            if self.starts_with(b"$${") {
-                self.cursor += 3;
+            if self.peek_byte() == Some(b'$') {
+                if !self.consume_string_dollar_run() {
+                    break;
+                }
                 continue;
             }
 
@@ -845,6 +849,29 @@ impl<'a> Lexer<'a> {
 
     fn indented_string_closes_here(&self) -> bool {
         self.starts_with(b"''") && !matches!(self.peek_offset(2), Some(b'\'' | b'$' | b'\\'))
+    }
+
+    fn consume_string_dollar_run(&mut self) -> bool {
+        let start = self.cursor;
+        while self.peek_byte() == Some(b'$') {
+            self.cursor += 1;
+        }
+        let run = self.cursor - start;
+        if self.peek_byte() != Some(b'{') {
+            return true;
+        }
+
+        if run == 1 {
+            self.cursor = start;
+            return false;
+        }
+
+        if run % 2 == 0 {
+            self.cursor += 1;
+        } else {
+            self.cursor = start + run - 1;
+        }
+        true
     }
 
     fn path_fragment_is_done(&self) -> bool {

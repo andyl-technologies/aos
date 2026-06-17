@@ -95,17 +95,19 @@ rest at parse time (`parse-fail-*` conformance cases).
 
 ### 2.1 Double-quoted strings
 
-- [ ] **Basic `"..."`** — UTF-8 byte string (Nix strings are byte strings, not
+- [x] **Basic `"..."`** — byte string (Nix strings are byte strings, not
       validated Unicode; preserve bytes exactly).
-- [ ] **Escapes** — `\"` (quote), `\\` (backslash), `\n`, `\r`, `\t`, and `\${`
+- [x] **Escapes** — `\"` (quote), `\\` (backslash), `\n`, `\r`, `\t`, and `\${`
       (literal dollar-brace, suppresses interpolation). `\` before any other
       character yields that character literally. Verify the full escape set
       against pinned Nix.
-- [ ] **`$${`** — renders as a literal `${` without escaping (a `$` not followed
-      by `{` is literal; `$$` collapses appropriately). Verify exact `$`-run
-      handling against pinned Nix.
-- [ ] **Embedded newlines** — a literal newline inside `"..."` is allowed and
-      preserved verbatim.
+- [x] **`$${` / dollar runs** — `$$` does not collapse in double-quoted strings.
+      An even-length run of dollars before `{` is literal (`$${` stays `$${`,
+      `$$$${` stays `$$$${`); an odd-length run leaves the final `${` to open
+      interpolation (`$$${` starts interpolation at the third `$`). Verify exact
+      `$`-run handling against pinned Nix.
+- [x] **Embedded newlines** — a literal newline inside `"..."` is allowed and
+      preserved; literal `\r` and `\r\n` normalize to `\n`, matching pinned Nix.
 
 ### 2.2 Indented strings (`''...''`)
 

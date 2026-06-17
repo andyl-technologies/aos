@@ -2379,10 +2379,50 @@ mod tests {
     fn double_quoted_strings_decode_escape_forms() {
         let ast = parse("\"\\n\\r\\t\\\\\\\"\\${ $${\"");
         assert_eq!(string_bytes(&ast, ast.root), b"\n\r\t\\\"${ $${");
+
+        let ast = parse("\"\\x\\ \\$\\a\"");
+        assert_eq!(string_bytes(&ast, ast.root), b"x $a");
+    }
+
+    #[test]
+    fn double_quoted_strings_preserve_raw_bytes() {
+        let ast = parse_bytes(b"\"raw-\xff-byte\"").expect("string bytes parse");
+        assert_eq!(string_bytes(&ast, ast.root), b"raw-\xff-byte");
+    }
+
+    #[test]
+    fn double_quoted_strings_handle_dollar_runs_like_pinned_nix() {
+        let ast = parse("\"$${\"");
+        assert_eq!(string_bytes(&ast, ast.root), b"$${");
+
+        let ast = parse("\"$$${x}\"");
+        let root = node(&ast, ast.root);
+        assert_eq!(root.kind, NodeKind::Interp);
+        let NodeData::Children(fragments) = root.data else {
+            panic!("interpolation fragments expected");
+        };
+        let fragments = child_ids(&ast, fragments);
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(string_bytes(&ast, fragments[0]), b"$$");
+        let interpolation = node(&ast, fragments[1]);
+        assert_eq!(interpolation.kind, NodeKind::Interp);
+        let NodeData::Node(expr) = interpolation.data else {
+            panic!("interpolation expression expected");
+        };
+        assert_eq!(node(&ast, expr).kind, NodeKind::Ident);
+        assert_eq!(string_bytes(&ast, expr), b"x");
+
+        let ast = parse("\"$$$${\"");
+        assert_eq!(string_bytes(&ast, ast.root), b"$$$${");
+
+        parse_str("\"$$${\"").expect_err("third dollar opens an unterminated interpolation");
     }
 
     #[test]
     fn double_quoted_strings_normalize_literal_crlf() {
+        let ast = parse("\"a\nb\"");
+        assert_eq!(string_bytes(&ast, ast.root), b"a\nb");
+
         let ast = parse("\"a\rb\r\nc\"");
         assert_eq!(string_bytes(&ast, ast.root), b"a\nb\nc");
     }
@@ -2403,6 +2443,10 @@ mod tests {
     fn indented_strings_decode_escape_forms() {
         let ast = parse("''''$ ''' ''\\n ''\\r ''\\t ''\\x ''${ $${''");
         assert_eq!(string_bytes(&ast, ast.root), b"$ '' \n \r \t x ${ $${");
+
+        let ast = parse("''$$$${''");
+        assert_eq!(string_bytes(&ast, ast.root), b"$$$${");
+        parse_str("''$$${''").expect_err("odd dollar run opens interpolation");
     }
 
     #[test]
