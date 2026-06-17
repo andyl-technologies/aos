@@ -11235,6 +11235,18 @@ mod tests {
             Ok(true)
         );
         assert_eq!(
+            eval("builtins.isFunction builtins.head").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.tail").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.concatLists").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval_string_bytes("builtins.typeOf builtins.length"),
             b"lambda"
         );
@@ -11854,6 +11866,21 @@ mod tests {
             ),
             vec![b"local".to_vec()]
         );
+        assert_eq!(
+            eval_list_ints("let f = builtins.tail; in f [ 1 2 3 ]"),
+            vec![2, 3]
+        );
+
+        let ir = lower("let f = builtins.tail; in f [ 1 (1 / 0) true ]");
+        let outcome = eval_whnf_owned(&ir).expect("first-class tail evaluates");
+        let heap = outcome.heap();
+        let list = heap
+            .get_list(outcome.value())
+            .expect("tail result is heap-owned");
+
+        assert_eq!(list.len(), 2);
+        let lazy_division = list.get(0).expect("first tail element");
+        assert_eq!(lazy_division.tag(), ValueTag::Thunk);
     }
 
     #[test]
@@ -12138,6 +12165,10 @@ mod tests {
             vec![1, 2, 3]
         );
         assert_eq!(eval_list_ints("builtins.concatLists []"), Vec::<i64>::new());
+        assert_eq!(
+            eval_list_ints("let f = builtins.concatLists; in f [ [ 1 ] [] [ 2 3 ] ]"),
+            vec![1, 2, 3]
+        );
 
         let ir = lower("builtins.concatLists [ [ true (1 / 0) ] [] ]");
         let outcome = eval_whnf_owned(&ir).expect("concatLists evaluates");
@@ -12161,6 +12192,17 @@ mod tests {
                 .kind,
             IrKind::BinOp
         );
+
+        let ir = lower("let f = builtins.concatLists; in f [ [ true (1 / 0) ] [] ]");
+        let outcome = eval_whnf_owned(&ir).expect("first-class concatLists evaluates");
+        let heap = outcome.heap();
+        let list = heap
+            .get_list(outcome.value())
+            .expect("concatLists result is a list");
+
+        assert_eq!(list.len(), 2);
+        assert_eq!(list.get(0).expect("first").as_bool(), Ok(true));
+        assert_eq!(list.get(1).expect("second").tag(), ValueTag::Thunk);
     }
 
     #[test]
@@ -12254,6 +12296,10 @@ mod tests {
         );
 
         assert_eq!(eval("builtins.head [ true (1 / 0) ]").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let f = builtins.head; in f [ true (1 / 0) ]").as_bool(),
+            Ok(true)
+        );
         assert_eq!(
             eval_string_bytes("let builtins = { head = x: \"local\"; }; in builtins.head [ 1 ]"),
             b"local"

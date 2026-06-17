@@ -356,12 +356,12 @@ List primops are mostly pure structural transforms. Laziness is per-element:
 Forcing order is observable and must match (see
 [primops and the runtime ABI](10-primops-and-runtime-abi.md) §5.3 on `foldl'`).
 
-- [ ] `head` (list) — first element; throws on empty. Forces the spine, not the
+- [x] `head` (list) — first element; throws on empty. Forces the spine, not the
       element (returns the element thunk).
-- [ ] `tail` (list) — all but the first; throws on empty.
+- [x] `tail` (list) — all but the first; throws on empty.
 - [x] `elemAt` (xs n) — zero-based index; throws out of range. Forces the list
       spine and `n`.
-- [ ] `length` (list) — element count. Forces only the spine.
+- [x] `length` (list) — element count. Forces only the spine.
 - [ ] `elem` (x xs) — membership by **structural equality**; forces elements as
       it scans (short-circuits on match). Equality semantics must match the
       language core's `==`.
@@ -384,7 +384,7 @@ Forcing order is observable and must match (see
         [primops and the runtime ABI](10-primops-and-runtime-abi.md) §5.2).
       - With no/identity comparator semantics, falls back to `lessThan`-style
         ordering — pin exact behavior.
-- [ ] `concatLists` (lists) — flatten one level: concatenate a list of lists.
+- [x] `concatLists` (lists) — flatten one level: concatenate a list of lists.
 - [x] `concatMap` (f list) — `concatLists (map f list)`, but a single primop;
       `f` must return a list per element.
 - [x] `all` (pred list) — `true` iff `pred` holds for every element;
