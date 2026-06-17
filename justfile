@@ -76,6 +76,12 @@ test-vm suite="":
 test-fleet suite="":
     {{AOS}} test fleet {{suite}}
 
+# Run the deployed-Worker e2e: boots the wasm artifact under workerd+miniflare
+# and asserts the live request surface. Built in-sandbox, exec'd outside it
+# (workerd's tcmalloc needs /sys, like fleet VM tests need /dev/kvm).
+test-worker-e2e:
+    bin=`nix-build -A pkgs.aos-registry-worker-e2e --no-out-link`; exec "$bin/bin/aos-registry-worker-e2e"
+
 # ===========================================================================
 # Development
 # ===========================================================================
