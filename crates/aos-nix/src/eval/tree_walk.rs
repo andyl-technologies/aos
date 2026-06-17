@@ -1114,8 +1114,15 @@ pub struct TreeWalk<'ir> {
     warning_output: Vec<EvalWarningOutput>,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
+    known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct KnownDerivation {
+    hash_derivation_modulo: [u8; 32],
+    output_names: BTreeSet<String>,
 }
 
 impl<'ir> TreeWalk<'ir> {
@@ -1137,6 +1144,7 @@ impl<'ir> TreeWalk<'ir> {
             warning_output: Vec::new(),
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
+            known_derivations: BTreeMap::new(),
             lazy_identity_thunks: BTreeSet::new(),
         }
     }
@@ -1912,9 +1920,8 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
-        let hash = derivation.hash_derivation_modulo(|_| {
-            unreachable!("input derivation contexts are rejected before hashing")
-        });
+        let input_hashes = self.known_derivation_hashes_for_inputs(id, node.span, &derivation)?;
+        let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
         derivation
             .calculate_output_paths(&name, &hash)
             .map_err(|source| {
@@ -1926,6 +1933,7 @@ impl<'ir> TreeWalk<'ir> {
                     node.span,
                 )
             })?;
+        let known_hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
         let drv_path = derivation
             .calculate_derivation_path(&name)
             .map_err(|source| {
@@ -1937,6 +1945,7 @@ impl<'ir> TreeWalk<'ir> {
                     node.span,
                 )
             })?;
+        self.remember_derivation(drv_path.clone(), &derivation, known_hash);
         self.alloc_derivation_strict_result(id, node.span, &derivation, &drv_path)
     }
 
@@ -2014,44 +2023,129 @@ impl<'ir> TreeWalk<'ir> {
         context: &StringContext,
     ) -> Result<(), TreeWalkError> {
         for element in context {
+            let store_path = Self::context_store_path(id, span, element.path())?;
             match element.kind() {
                 ContextKind::OpaquePath => {
-                    let path = Self::copy_bytes_for_node(id, span, element.path())?;
-                    let store_path =
-                        nix_compat::store_path::StorePath::<String>::from_absolute_path(&path)
-                            .map_err(|source| {
-                                TreeWalkError::new(
-                                    TreeWalkErrorKind::DerivationPath {
-                                        id,
-                                        path: path.clone(),
-                                        message: source.to_string(),
-                                    },
-                                    span,
-                                )
-                            })?;
                     derivation.input_sources.insert(store_path);
                 }
                 ContextKind::SingleOutput => {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                            id,
-                            feature: "input derivation output contexts",
-                        },
-                        span,
-                    ));
+                    let output = element.output().ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::DerivationStrict {
+                                id,
+                                message: "single-output context is missing an output name"
+                                    .to_owned(),
+                            },
+                            span,
+                        )
+                    })?;
+                    let output =
+                        Self::derivation_utf8_string(id, span, "input derivation output", output)?;
+                    derivation
+                        .input_derivations
+                        .entry(store_path)
+                        .or_default()
+                        .insert(output);
                 }
                 ContextKind::DeepDerivation => {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                            id,
-                            feature: "deep derivation input contexts",
-                        },
-                        span,
-                    ));
+                    let known = self.known_derivations.get(&store_path).ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::DerivationStrict {
+                                id,
+                                message: format!(
+                                    "input derivation {} is not known",
+                                    store_path.to_absolute_path()
+                                ),
+                            },
+                            span,
+                        )
+                    })?;
+                    derivation
+                        .input_derivations
+                        .entry(store_path.clone())
+                        .or_default()
+                        .extend(known.output_names.iter().cloned());
+                    derivation.input_sources.insert(store_path);
                 }
             }
         }
         Ok(())
+    }
+
+    fn context_store_path(
+        id: IrId,
+        span: Span,
+        path: &[u8],
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let path = Self::copy_bytes_for_node(id, span, path)?;
+        nix_compat::store_path::StorePath::<String>::from_absolute_path(&path).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationPath {
+                    id,
+                    path,
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn known_derivation_hashes_for_inputs(
+        &self,
+        id: IrId,
+        span: Span,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>, TreeWalkError> {
+        let mut hashes = BTreeMap::new();
+        for input in derivation.input_derivations.keys() {
+            let known = self.known_derivations.get(input).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!(
+                            "input derivation {} is not known",
+                            input.to_absolute_path()
+                        ),
+                    },
+                    span,
+                )
+            })?;
+            hashes.insert(input.clone(), known.hash_derivation_modulo);
+        }
+        Ok(hashes)
+    }
+
+    fn hash_derivation_modulo_with_inputs(
+        derivation: &nix_compat::derivation::Derivation,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    ) -> [u8; 32] {
+        derivation.hash_derivation_modulo(|drv_path| {
+            let key = drv_path.to_owned();
+            if let Some(hash) = input_hashes.get(&key) {
+                *hash
+            } else {
+                // `known_derivation_hashes_for_inputs` pre-validates the
+                // derivation's input set, but `nix-compat` requires an
+                // infallible lookup callback.
+                [0; 32]
+            }
+        })
+    }
+
+    fn remember_derivation(
+        &mut self,
+        drv_path: nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+        hash_derivation_modulo: [u8; 32],
+    ) {
+        let output_names = derivation.outputs.keys().cloned().collect();
+        self.known_derivations.insert(
+            drv_path,
+            KnownDerivation {
+                hash_derivation_modulo,
+                output_names,
+            },
+        );
     }
 
     fn alloc_derivation_strict_result(
@@ -33438,6 +33532,36 @@ mod tests {
         assert_eq!(
             eval_json_bytes(source),
             br#"{"drvContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"allOutputs":true}},"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","names":["drvPath","out"],"out":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","outContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_observes_contexts_as_inputs() {
+        let source = r#"let
+             base = derivationStrict {
+               name = "base";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+             opaque = builtins.appendContext "src" {
+               "/nix/store/cccccccccccccccccccccccccccccccc-src" = { path = true; };
+             };
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+               input = "${base.out}${opaque}";
+             };
+           in {
+             baseDrv = base.drvPath;
+             baseOut = base.out;
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"baseDrv":"/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv","baseOut":"/nix/store/c9hhy38jds9ffzzqwkb50vrv2pi8x614-base","drvPath":"/nix/store/g517w28ijkgqc1p2hqwrnjwh1lblnavz-x.drv","out":"/nix/store/7alc4f6hbky5mkzhqqsmyw7mk354i4mh-x"}"#.to_vec()
         );
     }
 

@@ -228,7 +228,7 @@ are language-level and live here.
       [compatibility constraints](02-compatibility-constraints.md) §5.3). Exact
       per-builtin rules are in doc 21; the invariant — *don't drop context across
       an op Nix preserves it across* — is enforced here.
-- [ ] **Context is observed by `derivationStrict`** — the union of all string
+- [x] **Context is observed by `derivationStrict`** — the union of all string
       contexts handed to `derivationStrict` becomes `inputDrvs`/`inputSrcs`. This
       is the only place context becomes a `.drv` byte (doc 11/21).
 - [ ] **Context-element kinds round-trip** — plain store path, `=drv`
