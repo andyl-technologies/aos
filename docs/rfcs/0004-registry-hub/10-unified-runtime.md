@@ -188,10 +188,14 @@ pub trait Blobs {
 
 ### Seams the producer console / write path still need
 
-The audit of `aos-registry-hub` surfaced four more native-only couplings that
-the write/console/auth path depends on. Three are *already* trait-shaped in
-`core`; one is not. All resolve the same way — a port with a native and a
-worker impl, the logic above it written once:
+The audit of `aos-registry-hub` surfaced more native-only couplings that the
+write/console/auth path depends on. **All are now resolved** — each is a port
+with a native and a worker impl, the logic above it written once. The surface
+*write* path that backs all of them is `core::surface_write::SurfaceWrite`
+(native filesystem with safe-join + symlink containment + atomic temp-rename;
+worker R2 `put`/`delete`), and it backs the three write consumers now shared on
+both shells: the facade artifact-upload `PUT`, the git-backed config/change
+flow, and hosted-key channel advance (`core::signing`). The couplings:
 
 - `SecretSealer` (**exists** in `core::auth::seal`) — seals OIDC client
   secrets and hosted-key seeds at rest (AES-256-GCM). Native builds it from a
@@ -202,11 +206,12 @@ worker impl, the logic above it written once:
   currently logs the link via `console_log!` (a real email-binding delivery is
   a documented TODO — the port method is synchronous and the Workers runtime
   has no synchronous mail transport).
-- **Publish lease** (**not yet a trait**) — `facade.rs` guards concurrent
-  pointer-flips with an in-memory `std::sync::Mutex<LeaseMap>`, which is
-  per-isolate and meaningless across Worker invocations. Becomes a `Lease`
-  port backed by a conditional D1 `UPDATE … WHERE expires_at < ?` (or a
-  Durable Object) — atomic across the edge.
+- **Publish lease** (**now a trait** — `core::lease::PublishLease`) — the
+  native hub keeps its in-memory `Mutex<LeaseMap>` (`InMemoryLease`) behind the
+  port; the worker's `D1PublishLease` is a conditional upsert (take iff no row /
+  `deadline <= now` / holder is mine; release iff mine) over the
+  `publish_leases` D1 table — atomic across the edge. Wired into the facade
+  `PUT` for mutable-pointer flips.
 - **Rate limiter** (**now a trait** — `core::ratelimit::RateLimiter`) — the
   native hub keeps its in-memory token bucket behind the port; the worker's
   `D1RateLimiter` meters over a D1 counter table, so the per-isolate problem is
