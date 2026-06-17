@@ -499,13 +499,20 @@ unification) are the remaining work that wins parity.
 - ~~Can the shared `axum` router (incl. RPC) run on wasm?~~ **Resolved by the
   spike:** the router yes, the `connectrpc` *server* no — hence the single
   Connect-JSON transport over shared `axum` handlers (above).
-- **Connect-JSON body shape: plain `serde` vs canonical proto3-JSON.** Since we
-  own both ends (the hub and `aos-remote`'s client), the `aos-proto-types` serde
-  derives can define the JSON shape directly — simplest, no `pbjson`. The cost
-  is that a *stock* Buf/Connect client (camelCase, int64-as-string, base64
-  bytes) would not interop out of the box. If third-party Connect clients become
-  a requirement, switch the codec to canonical proto3-JSON (`pbjson-build`)
-  without changing any handler or service logic. Defaulting to plain `serde`.
+- **Connect-JSON body shape — RESOLVED: camelCase field names + native JSON
+  scalars.** `aos-proto-types` derives `serde` with `#[serde(rename_all =
+  "camelCase")]`, so fields are canonical proto3-JSON names (`orgSlug`,
+  `nextPageToken`, `expiresAt`) — this is what the old connectrpc server emitted
+  and what the hub tests assert. It is *not* fully canonical proto3-JSON: int64
+  is a JSON **number**, not the proto3-canonical string, and there's no
+  base64-bytes/enum-as-string handling. That's fine because all consumers
+  (the hub handlers, the Worker, the `aos-remote` client, `apr`/`apm`) share the
+  same `aos-proto-types` structs, so both ends agree. (Lesson learned: the
+  field-name half *was* contract-load-bearing — plain snake_case 404'd
+  `{"orgSlug":…}` requests; the int64-as-string half was not, and only one test
+  assumed it.) Upgrade path if a *stock* Buf/Connect client ever needs byte-exact
+  canonical proto3-JSON: swap the serde derives for `pbjson-build` — no handler
+  or service change.
 - **`axum-cloudflare-adapter` ↔ `worker` version skew — RESOLVED: hand-roll the
   bridge, drop the adapter.** No adapter release supports the AOS pin: 0.12
   needs `worker` 0.2 + `axum` 0.7, and 0.14 jumps to `worker` 0.5 + `axum` 0.8 —
