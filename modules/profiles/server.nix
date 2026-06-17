@@ -60,7 +60,6 @@ in {
       ++ k3sCommon.runtimePath;
 
     aos.roles.aos-registry-server.bundle = true;
-    aos.roles.test-http-server.bundle = true;
     aos.roles.aos-test-agent.bundle = true;
 
     aos.packages.k3s-control-plane = {
@@ -83,6 +82,12 @@ in {
 
     aos.packages.test-http-server = {
       package = pkgs.test-http-server;
+      bundle = true;
+      preset = false;
+    };
+
+    aos.packages.test-static-cache-server = {
+      package = pkgs.test-static-cache-server;
       bundle = true;
       preset = false;
     };

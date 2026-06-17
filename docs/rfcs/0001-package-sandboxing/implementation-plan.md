@@ -531,11 +531,15 @@ have an additive `packages = [...]` selector that seeds selected bundled package
 profiles per machine. `test-http-server-pair` uses that selector for a
 socket-activated package, `apm-systemd-client` uses it for a manual-start
 test-unit package, and the k3s fleet smoke tests use it for the high-privilege
-k3s meta-packages. The legacy `apm-systemd-client-test` role module is now
-retired, and the legacy k3s role-family modules are now retired; those fleet
-tests are package-only. The role tree and `roles = [...]` fleet surface still
-exist, so the broader role-to-package dissolution, security policy split, and
-full fleet-spec rename remain open.
+k3s meta-packages. Registry fleet tests use a separate
+`test-static-cache-server` exposed package when they need to serve generated
+cache files from `/var/lib/sysreg-cache`, keeping the canonical `test-http-server` package
+tightly sandboxed. The legacy `test-http-server`,
+`apm-systemd-client-test`, and k3s role-family modules are now retired; those
+fleet tests are package-only. The role tree and `roles = [...]` fleet surface
+still exist for `aos-registry-server` and `aos-test-agent`, so the broader
+role-to-package dissolution, security policy split, and full fleet-spec rename
+remain open.
 
 **Closes.** D14; the [`migration.md`](migration.md) increments.
 

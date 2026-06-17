@@ -139,6 +139,7 @@ in {
       # though the client-side curl works fine. Diagnosed once;
       # documenting here so it doesn't get rediscovered.
       server.wait_for_unit("aos-registry-server-gitd.service", timeout=60)
+      server.wait_for_unit("aos-registry-server-firewall.service", timeout=60)
       server.wait_for_unit("aos-registry-server-cache.service", timeout=60)
       client.wait_until_succeeds(
           "curl -sf --max-time 5 http://server:15000/default/nix-cache-info",

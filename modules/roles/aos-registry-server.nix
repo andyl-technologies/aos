@@ -17,9 +17,8 @@
 ##! `roles = ["aos-registry-server"]` shorthand, which synthesises
 ##! the same merge entry.
 ##!
-##! Mirrors `modules/roles/test-http-server.nix`'s shape; see that
-##! file for the rationale on splitting unit-definition from
-##! host-local side effects.
+##! Like the other legacy roles, it splits unit-definition from host-local
+##! side effects while the role tree is being dissolved into exposed packages.
 {
   config,
   lib,
@@ -29,6 +28,8 @@
   cfg = config.aos.roles.aos-registry-server;
 
   tomlFmt = lib.formats.toml {inherit lib pkgs;};
+  registryPorts = [9418 15000];
+  registryPortList = lib.concatStringsSep ", " (builtins.map builtins.toString registryPorts);
 
   # `serveToml` builds a *derivation* whose `$out/serve.toml` is the
   # rendered file; we hand the store path to `environment.etc` via
@@ -93,7 +94,25 @@ in {
         # 15000 for `apm install` (NAR download from the cache). Set
         # unconditionally so they ride the role's ignitionConfig and
         # take effect only on hosts that activate the role.
-        firewall.allowedTCP = [9418 15000];
+        firewall.allowedTCP = registryPorts;
+
+        # Role firewall drop-ins are no longer included by the base
+        # nftables ruleset; apply this remaining role's ports with the
+        # same live set mutation pattern used by exposed packages.
+        systemd.services.aos-registry-server-firewall = {
+          description = "Apply firewall rules for the AOS registry server";
+          wantedBy = ["multi-user.target"];
+          after = ["nftables.service"];
+          requires = ["nftables.service"];
+          unitConfig.ReloadPropagatedFrom = "nftables.service";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.nftables}/sbin/nft add element inet filter allowed_tcp { ${registryPortList} }";
+            ExecReload = "${pkgs.nftables}/sbin/nft add element inet filter allowed_tcp { ${registryPortList} }";
+            ExecStop = "${pkgs.nftables}/sbin/nft delete element inet filter allowed_tcp { ${registryPortList} }";
+          };
+        };
 
         # git daemon — read-only, plaintext. --listen=0.0.0.0 so the
         # fleet's multicast L2 (192.168.50.0/24) reaches it.
@@ -261,6 +280,16 @@ in {
             description = "aos serve unit is active";
             script = ''
               vm.wait_for_unit("aos-registry-server-cache.service", timeout=30)
+            '';
+          }
+          {
+            name = "firewall-active";
+            description = "registry listener ports are added to the firewall";
+            script = ''
+              vm.wait_for_unit("aos-registry-server-firewall.service", timeout=30)
+              allowed = vm.succeed("nft list set inet filter allowed_tcp")
+              assert "9418" in allowed, allowed
+              assert "15000" in allowed, allowed
             '';
           }
           {
