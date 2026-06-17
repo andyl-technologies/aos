@@ -387,8 +387,10 @@ apm at first boot; define upgrade/rollback.
       `credstore.encrypted/aos/<package>/<name>` expose-artifact blobs, keep
       build-only inputs out of `manifest.json`, and project those blobs under
       `/run/credstore.encrypted/aos/...` before package targets start. Inline
-      encrypted payload production and external system-credential ingress remain
-      open ([`config.md`](config.md)).
+      encrypted payload production remains open. External system-credential
+      ingress now works through desired values of
+      `{ system-credential = "<name>" }`, read from
+      `/run/credentials/@system/<name>` ([`config.md`](config.md)).
 - [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
@@ -418,8 +420,8 @@ boot publishes the PCR public key at `/etc/aos/pcr-sign.pem` for that path.
 Offline/package-time vendor blobs now build through `encryptedFile` metadata
 for already sealed ciphertext and are projected by `apm` under the AOS-owned
 runtime credstore namespace at `/run/credstore.encrypted/aos/...`. Inline
-ciphertext production helpers and external system-credential ingestion remain
-open and keep the phase at ◐ rather than ☑.
+ciphertext production helpers remain open and keep the phase at ◐ rather than
+☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
