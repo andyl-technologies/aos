@@ -15175,6 +15175,22 @@ mod tests {
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
+
+        let options = TreeWalkOptions::with_env_var(
+            b"AOS_NIX_TEST_GET_ENV".to_vec(),
+            b"configured-value".to_vec(),
+        );
+        for source in [
+            r#"builtins.getEnv "AOS_NIX_TEST_GET_ENV""#,
+            r#"let getEnv = builtins.getEnv; in getEnv "AOS_NIX_TEST_GET_ENV""#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk_with_options_and_env(
+                oracle,
+                source,
+                options.clone(),
+                &[("AOS_NIX_TEST_GET_ENV", "configured-value")],
+            );
+        }
     }
 
     fn assert_cpp_nix_to_json_matches_tree_walk(oracle: &str, source: &str) {

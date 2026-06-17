@@ -360,6 +360,7 @@ builtin_registry! {
         const NAME: &'static [u8] = b"getEnv";
         const EXECUTION: BuiltinExecution =
             BuiltinExecution::effectful_strict_unary(StrictUnaryPrimOp::GetEnv);
+        const DOCS: &'static BuiltinDocs = &GET_ENV_DOCS;
     }
 
     pub(crate) struct GetFlakeBuiltin;
@@ -1138,6 +1139,10 @@ static HASH_FILE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the hex digest of a file's contents.",
 };
 
+static GET_ENV_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns a configured environment variable or an empty string.",
+};
+
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the pinned Nix language version.",
 };
@@ -1620,6 +1625,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"hashFile").unwrap().docs().summary(),
             "Returns the hex digest of a file's contents."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"getEnv").unwrap().docs().summary(),
+            "Returns a configured environment variable or an empty string."
         );
         assert_eq!(
             BUILTINS.lookup(b"langVersion").unwrap().docs().summary(),

@@ -517,9 +517,10 @@ a given mode does so identically.
 - [ ] `readFileType` (p) — the type string of `p` alone (`"regular"`,
       `"directory"`, `"symlink"`, `"unknown"`) without listing a directory.
       - Introduced Nix ≥ 2.14. Effect: a stat/lstat. Note for the version pin.
-- [ ] `getEnv` (s) — value of environment variable `s`, or `""` if unset.
-      Effect: the environment. **Returns `""` under pure-eval** regardless of the
-      real environment — reproduce this gating. Cache key = the variable's value.
+- [x] `getEnv` (s) — value of a configured environment variable, or `""` if
+      unset. Effect: the environment. The evaluator never reads the ambient
+      process environment; pure/default evaluation leaves the option map empty,
+      so every lookup returns `""`. Cache key = the configured variable's value.
       - nixpkgs reads `NIX_PATH`-adjacent vars and `IN_NIX_SHELL`-style vars via
         this; the empty-in-pure-mode behavior is what keeps pure eval
         reproducible.
@@ -799,7 +800,7 @@ omitted (they are keyed by their argument value hashes like any expression).
 | `readFileType` | path lstat | the type string | restrict/pure: path allowed |
 | `hashFile` | file contents | the file content hash (== the result) | restrict/pure: path allowed |
 | `path` / `filterSource` | source tree | NAR/store-path hash of the copied tree | network/path gating |
-| `getEnv` | env variable | the variable's current value | **pure-eval: forced to `""`** |
+| `getEnv` | configured env variable | configured value or `""` when absent | pure/default options are empty |
 | `currentSystem` | evaluator config | the configured system string | disabled under pure-eval |
 | `currentTime` | wall clock | **not soundly cacheable**: taint the memo; do not persist a result that observed it | n/a |
 | `fetchurl` | network (FOD) | the declared `sha256` (fixed-output: stable) | restrict-eval: must allow URL |
