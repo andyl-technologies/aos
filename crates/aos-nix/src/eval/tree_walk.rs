@@ -6005,6 +6005,147 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn eval_gen_list_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        generator_id: IrId,
+        length_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let length_span = self.node(length_id)?.span;
+        let length_value = self.eval_node(length_id)?;
+        let length_value = self.force_value(length_id, length_span, length_value)?;
+        let length = self.expect_int(length_id, length_value, length_span)?;
+        let length = self.expect_non_negative_list_length(length_id, length, length_span)?;
+
+        let generator_span = self.node(generator_id)?.span;
+        let generator = self.eval_node(generator_id)?;
+        let generator = self.force_value(generator_id, generator_span, generator)?;
+        if !matches!(generator.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: generator_id,
+                    expected: "function",
+                    actual: generator.tag(),
+                },
+                generator_span,
+            ));
+        }
+
+        self.alloc_generated_list(
+            id,
+            span,
+            generator_id,
+            generator_span,
+            generator,
+            length_id,
+            length,
+        )
+    }
+
+    fn eval_gen_list_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        generator: EvalPrimOpArg,
+        length: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let length_value = self.force_value(length.id(), length.span(), length.value())?;
+        let length_value = self.expect_int(length.id(), length_value, length.span())?;
+        let length_value =
+            self.expect_non_negative_list_length(length.id(), length_value, length.span())?;
+
+        let generator_value =
+            self.force_value(generator.id(), generator.span(), generator.value())?;
+        if !matches!(generator_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: generator.id(),
+                    expected: "function",
+                    actual: generator_value.tag(),
+                },
+                generator.span(),
+            ));
+        }
+
+        self.alloc_generated_list(
+            id,
+            span,
+            generator.id(),
+            generator.span(),
+            generator_value,
+            length.id(),
+            length_value,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn alloc_generated_list(
+        &mut self,
+        id: IrId,
+        span: Span,
+        generator_id: IrId,
+        generator_span: Span,
+        generator: Value,
+        length_id: IrId,
+        length: usize,
+    ) -> Result<Value, TreeWalkError> {
+        let mut generated = Vec::new();
+        generated.try_reserve_exact(length).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed { id, len: length },
+                span,
+            )
+        })?;
+        for index in 0..length {
+            let index = i64::try_from(index).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListLengthOverflow {
+                        id: length_id,
+                        len: length,
+                    },
+                    span,
+                )
+            })?;
+            generated.push(self.alloc_apply_thunk(
+                id,
+                span,
+                generator_id,
+                generator_span,
+                generator,
+                length_id,
+                Value::int(index),
+            )?);
+        }
+
+        self.heap
+            .alloc_list(NixList::new(generated))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn expect_non_negative_list_length(
+        &self,
+        id: IrId,
+        length: i64,
+        span: Span,
+    ) -> Result<usize, TreeWalkError> {
+        if length < 0 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::NegativeListLength { id, length },
+                span,
+            ));
+        }
+        usize::try_from(length).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListLengthOverflow {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })
+    }
+
     fn eval_partition_primop(
         &mut self,
         id: IrId,
@@ -6801,6 +6942,9 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Filter => {
                 self.eval_filter_primop(call.id, call.span, first, second)
             }
+            StrictBinaryPrimOp::GenList => {
+                self.eval_gen_list_primop(call.id, call.span, first, second)
+            }
             StrictBinaryPrimOp::Map => self.eval_map_primop(call.id, call.span, first, second),
             StrictBinaryPrimOp::Partition => {
                 self.eval_partition_primop(call.id, call.span, first, second)
@@ -6936,6 +7080,7 @@ impl<'ir> TreeWalk<'ir> {
                     right,
                 )
             }
+            StrictBinaryPrimOp::GenList => self.eval_gen_list_primop_value(id, span, first, second),
             StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
             StrictBinaryPrimOp::ElemAt
             | StrictBinaryPrimOp::GetAttr
@@ -9699,6 +9844,7 @@ enum StrictBinaryPrimOp {
     Any,
     ConcatMap,
     Filter,
+    GenList,
     GroupBy,
     Map,
     Partition,
@@ -10158,6 +10304,14 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The overflowing list length.
         len: usize,
+    },
+    /// A builtin list length argument was negative.
+    #[error("negative list length {length} at node {id:?}")]
+    NegativeListLength {
+        /// The length-valued node whose signed value was invalid.
+        id: IrId,
+        /// The negative length.
+        length: i64,
     },
     /// `replaceStrings` received pattern and replacement lists of different lengths.
     #[error("replaceStrings at node {id:?} received {from_len} patterns but {to_len} replacements")]
@@ -11182,6 +11336,10 @@ mod tests {
             Ok(true)
         );
         assert_eq!(eval("builtins.isFunction builtins.map").as_bool(), Ok(true));
+        assert_eq!(
+            eval("builtins.isFunction builtins.genList").as_bool(),
+            Ok(true)
+        );
         assert_eq!(
             eval("let x = builtins.break (1 / 0); in 42").as_int(),
             Ok(42)
@@ -12850,6 +13008,137 @@ mod tests {
             }
         );
         assert_eq!(error.span(), function_span);
+    }
+
+    #[test]
+    fn gen_list_primop_builds_lazy_indexed_elements() {
+        assert_eq!(
+            eval("builtins.length (builtins.genList (x: builtins.throw \"generated\") 2)").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (builtins.genList (x: x * x) 5) 4").as_int(),
+            Ok(16)
+        );
+        assert_eq!(
+            eval_string_bytes(
+                "builtins.concatStringsSep \",\" (builtins.genList builtins.toString 3)"
+            ),
+            b"0,1,2"
+        );
+        assert_eq!(
+            eval("let g = builtins.genList; in builtins.elemAt (g (x: x + 1) 2) 1").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let n = 2; f = x: x + 1; in builtins.elemAt (builtins.genList f n) 1").as_int(),
+            Ok(2)
+        );
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.elemAt (builtins.genList (x: builtins.throw \"generated\") 2) 0",
+        ))
+        .expect_err("generated element is forced only when selected");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"generated");
+    }
+
+    #[test]
+    fn gen_list_primop_checks_length_before_generator() {
+        let ir =
+            lower("builtins.genList (builtins.throw \"function\") (builtins.throw \"length\")");
+
+        let error = eval_whnf_owned(&ir).expect_err("genList forces length before generator");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"length");
+
+        let error = eval_whnf_owned(&lower(
+            "let g = builtins.genList; in g (builtins.throw \"function\") (builtins.throw \"length\")",
+        ))
+        .expect_err("first-class genList forces length before generator");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"length");
+
+        let ir = lower("builtins.genList 1 0");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let generator = args[0];
+        let generator_span = ir
+            .arena
+            .node(generator)
+            .expect("generator argument exists")
+            .span;
+
+        let error = eval_whnf_owned(&ir).expect_err("genList checks generator after length");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: generator,
+                expected: "function",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), generator_span);
+
+        let error = eval_whnf_owned(&lower(
+            "builtins.length (builtins.genList (builtins.throw \"function\") 0)",
+        ))
+        .expect_err("genList checks generator even for empty results");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"function");
+
+        let ir = lower("builtins.genList (x: x) 1.2");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let length = args[1];
+        let length_span = ir.arena.node(length).expect("length argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("genList length must be an integer");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: length,
+                expected: "int",
+                actual: ValueTag::Float,
+            }
+        );
+        assert_eq!(error.span(), length_span);
+
+        let ir = lower("builtins.genList (x: x) (-1)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let length = args[1];
+        let length_span = ir.arena.node(length).expect("length argument exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("genList rejects negative lengths");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::NegativeListLength {
+                id: length,
+                length: -1
+            }
+        );
+        assert_eq!(error.span(), length_span);
     }
 
     #[test]

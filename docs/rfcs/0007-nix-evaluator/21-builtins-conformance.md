@@ -374,7 +374,7 @@ Forcing order is observable and must match (see
       is *not* a builtin — `lib.foldr`/`foldl` are Nix-level). The worker/wrapper
       optimization keys off this strictness (see
       [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md)).
-- [ ] `genList` (generator length) — `[ (generator 0) … (generator (length-1)) ]`,
+- [x] `genList` (generator length) — `[ (generator 0) … (generator (length-1)) ]`,
       elements as thunks. Negative length throws.
 - [ ] `sort` (comparator list) — sort with a binary `comparator` (`a: b: bool`,
       true iff `a` strictly before `b`).

@@ -1994,6 +1994,7 @@ mod tests {
             ("builtins.all (x: true) [ 1 ]", b"all".as_slice()),
             ("builtins.any (x: false) [ 1 ]", b"any".as_slice()),
             ("builtins.filter (x: true) [ 1 ]", b"filter".as_slice()),
+            ("builtins.genList (x: x) 1", b"genList".as_slice()),
             ("builtins.map (x: x) [ 1 ]", b"map".as_slice()),
             (
                 "builtins.partition (x: true) [ 1 ]",

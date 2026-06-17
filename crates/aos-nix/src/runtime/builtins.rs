@@ -55,7 +55,7 @@ macro_rules! builtin_definitions {
             strict_unary FromJsonBuiltin, b"fromJSON", StrictUnaryPrimOp::FromJson;
             unsupported FromTomlBuiltin, b"fromTOML";
             strict_unary FunctionArgsBuiltin, b"functionArgs", StrictUnaryPrimOp::FunctionArgs;
-            unsupported GenListBuiltin, b"genList";
+            strict_binary GenListBuiltin, b"genList", StrictBinaryPrimOp::GenList;
             unsupported GenericClosureBuiltin, b"genericClosure";
             direct_binary GetAttrBuiltin, b"getAttr", StrictBinaryPrimOp::GetAttr;
             strict_unary GetContextBuiltin, b"getContext", StrictUnaryPrimOp::GetContext;
@@ -532,6 +532,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"genList"),
+            Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(
             direct_builtin(b"pathExists"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -616,6 +622,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"map").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"genList").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(builtin_metadata(b"all").unwrap().first_class_arity(), None);
