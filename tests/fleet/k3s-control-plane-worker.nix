@@ -2,13 +2,12 @@
 # for the k3s-control-plane + k3s-worker pair.
 #
 # Topology:
-#   controlplane: aos.roles.k3s-control-plane (k3s server --disable-agent)
-#   worker:       aos.roles.k3s-worker        (k3s agent)
+#   controlplane: pkgs.k3s-control-plane (k3s server --disable-agent)
+#   worker:       pkgs.k3s-worker        (k3s agent)
 #
 # Both receive `K3S_TOKEN` via instanceMetadata.config.storage.files.
 # The worker additionally receives `K3S_URL` pointing at the control
-# plane's hostname (resolved by the fleet identity fragment's
-# /etc/hosts to the harness-assigned 192.168.50.10).
+# plane's harness-assigned IP.
 #
 # Test cadence:
 #   1. Wait for k3s-preflight + k3s on each machine.
@@ -17,8 +16,8 @@
 #      registration covers the round trip: token ok, TLS ok, agent
 #      pulled flannel config from the API server, kubelet started.
 {
+  mkSystem,
   pkgs,
-  systems,
   ...
 }: let
   # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts
@@ -103,6 +102,28 @@
         flannel-iface: eth0
       '';
   };
+
+  controlPlaneSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.k3s-control-plane = {
+        package = pkgs.k3s-control-plane;
+        bundle = true;
+        preset = false;
+      };
+    }
+  ];
+
+  workerSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.k3s-worker = {
+        package = pkgs.k3s-worker;
+        bundle = true;
+        preset = false;
+      };
+    }
+  ];
 in {
   name = "k3s-control-plane-worker";
   # k3s server takes ~30-45s to become Ready on a 2-vCPU VM
@@ -120,30 +141,71 @@ in {
   # worker→.11.
   machines = {
     controlplane = {
-      system = systems.server;
-      roles = ["k3s-control-plane"];
-      instanceMetadata.config.storage.files = [
-        (envFile ''
-          K3S_TOKEN=${testToken}
-        '')
-        (configFile "192.168.50.10")
-      ];
+      system = controlPlaneSystem;
+      packages = ["k3s-control-plane"];
+      instanceMetadata.config.storage = {
+        files = [
+          (envFile ''
+            K3S_TOKEN=${testToken}
+          '')
+          (configFile "192.168.50.10")
+        ];
+      };
     };
 
     worker = {
-      system = systems.server;
-      roles = ["k3s-worker"];
-      instanceMetadata.config.storage.files = [
-        (envFile ''
-          K3S_TOKEN=${testToken}
-          K3S_URL=https://controlplane:6443
-        '')
-        (configFile "192.168.50.11")
-      ];
+      system = workerSystem;
+      packages = ["k3s-worker"];
+      instanceMetadata.config.storage = {
+        files = [
+          (envFile ''
+            K3S_TOKEN=${testToken}
+            K3S_URL=https://192.168.50.10:6443
+          '')
+          (configFile "192.168.50.11")
+        ];
+      };
     };
   };
 
   testScript = ''
+    def dump_unit(machine, unit):
+        print(f"--- {machine.name}: systemctl status {unit} ---")
+        print(
+            machine.succeed(
+                f"systemctl status --no-pager -l {unit} 2>&1 || true",
+                timeout=30,
+            )
+        )
+        print(f"--- {machine.name}: journalctl -u {unit} ---")
+        print(
+            machine.succeed(
+                f"journalctl -u {unit} --no-pager -n 200 2>&1 || true",
+                timeout=30,
+            )
+        )
+
+    def wait_unit_active(machine, unit, timeout):
+        try:
+            machine.wait_until_succeeds(
+                f"systemctl is-active {unit}", timeout=timeout
+            )
+        except Exception:
+            dump_unit(machine, unit)
+            print(f"--- {machine.name}: failed units ---")
+            print(machine.succeed("systemctl --failed --no-pager 2>&1 || true"))
+            print(f"--- {machine.name}: pending jobs ---")
+            print(machine.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+            raise
+
+    # ── Package activation targets ─────────────────────────────────
+    controlplane.wait_until_succeeds(
+        "systemctl is-active aos-pkg-k3s-control-plane.target", timeout=60
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active aos-pkg-k3s-worker.target", timeout=60
+    )
+
     # ── Pre-flight on each machine ─────────────────────────────────
     # k3s-preflight is a oneshot — `is-active` returns "active"
     # only after exit-0. A failure here means either ignition
@@ -158,19 +220,13 @@ in {
         "systemctl is-active k3s-preflight.service", timeout=60
     )
 
-    # ── k3s.service active on both ─────────────────────────────────
+    # ── Control-plane service active ────────────────────────────────
     # `Type=notify` flips active once k3s emits READY=1 on its
     # sd_notify socket. For `--disable-agent`, that's apiserver +
-    # startup-hooks ready; for the agent it's kubelet up +
-    # node-registration done. On 2-vCPU VMs cert-gen + apiserver
+    # startup-hooks ready. On 2-vCPU VMs cert-gen + apiserver
     # bootstrap typically takes 60-120s; the timeout below has
     # slack for a slow runner.
-    controlplane.wait_until_succeeds(
-        "systemctl is-active k3s.service", timeout=240
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active k3s.service", timeout=240
-    )
+    wait_unit_active(controlplane, "k3s.service", timeout=240)
 
     # ── Apiserver reachable + healthy on the control plane ────────
     # /healthz returns the literal string "ok" when the apiserver
@@ -190,15 +246,32 @@ in {
         timeout=60,
     )
 
+    # ── Worker service active ───────────────────────────────────────
+    try:
+        wait_unit_active(worker, "k3s.service", timeout=240)
+    except Exception:
+        dump_unit(controlplane, "k3s.service")
+        print("--- controlplane: listeners ---")
+        print(controlplane.succeed("${pkgs.iproute2}/sbin/ss -ltnp 2>&1 || true"))
+        print("--- controlplane: nft ruleset ---")
+        print(controlplane.succeed("${pkgs.nftables}/sbin/nft list ruleset 2>&1 || true"))
+        print("--- worker: host resolution ---")
+        print(worker.succeed("cat /etc/hosts 2>&1 || true"))
+        print("--- worker: tcp probe 192.168.50.10:6443 ---")
+        print(
+            worker.succeed(
+                "${pkgs.coreutils}/bin/timeout 5 ${pkgs.bash}/bin/bash -c '</dev/tcp/192.168.50.10/6443' 2>&1 || true"
+            )
+        )
+        raise
+
     # ── Worker registered + Ready ─────────────────────────────────
     # With `--disable-agent`, the control-plane is invisible in
     # `kubectl get nodes` — only the worker registers. Asserting
     # the worker reaches Ready proves the full join round-trip:
-    # token verified, TLS verified against the auto-computed SAN
-    # list (which includes the hostname "controlplane" via
-    # /etc/hosts + os.Hostname()), agent pulled flannel config
-    # from the apiserver, kubelet started, configureNode wrote
-    # the Node object.
+    # token verified, TLS verified against the server SAN list,
+    # agent pulled flannel config from the apiserver, kubelet
+    # started, configureNode wrote the Node object.
     controlplane.wait_until_succeeds(
         r"""${pkgs.k3s}/bin/kubectl --kubeconfig=/etc/rancher/k3s/k3s.yaml \
             get node worker \

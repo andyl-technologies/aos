@@ -487,8 +487,9 @@ false` packages stay baked but inert: they are present in the image without
 being seeded into the package profile, attached, or enabled. Fleet tests now
 have an additive `packages = [...]` selector that seeds selected bundled package
 profiles per machine. `test-http-server-pair` uses that selector for a
-socket-activated package, and `apm-systemd-client` uses it for a manual-start
-test-unit package. The role tree and `roles = [...]` fleet surface still exist,
+socket-activated package, `apm-systemd-client` uses it for a manual-start
+test-unit package, and the k3s fleet smoke tests use it for the high-privilege
+k3s meta-packages. The role tree and `roles = [...]` fleet surface still exist,
 so the broader role-to-package dissolution, security policy split, and full
 fleet-spec rename remain open.
 

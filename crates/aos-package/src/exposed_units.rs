@@ -623,6 +623,24 @@ fn write_exact_preset(root: &Path, targets: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExposedTargetStartMode {
+    AwaitJob,
+    QueueOnly,
+}
+
+fn exposed_target_start_mode_from_env(value: Option<std::ffi::OsString>) -> ExposedTargetStartMode {
+    if value.is_some() {
+        ExposedTargetStartMode::QueueOnly
+    } else {
+        ExposedTargetStartMode::AwaitJob
+    }
+}
+
+fn exposed_target_start_mode() -> ExposedTargetStartMode {
+    exposed_target_start_mode_from_env(std::env::var_os("AOS_EXPOSE_START_NO_WAIT"))
+}
+
 async fn apply_systemd_changes(
     root: &Path,
     current_targets: &BTreeSet<String>,
@@ -630,16 +648,26 @@ async fn apply_systemd_changes(
 ) -> Result<()> {
     if root == Path::new("/") {
         let client = SystemdClient::connect().await?;
+        let start_mode = exposed_target_start_mode();
         client.daemon_reload().await?;
         preset_targets(root, current_targets)?;
         apply_attached_unit_diff(&client, attached_diff).await?;
         for target in current_targets {
-            let outcome = client.start_unit(target).await?;
-            if !outcome.result.is_done() {
-                bail!(
-                    "systemd failed to start exposed package target {target}: {}",
-                    outcome.result.label()
-                );
+            match start_mode {
+                ExposedTargetStartMode::QueueOnly => {
+                    client.start_unit_no_wait(target).await.with_context(|| {
+                        format!("queueing start for exposed package target {target}")
+                    })?;
+                }
+                ExposedTargetStartMode::AwaitJob => {
+                    let outcome = client.start_unit(target).await?;
+                    if !outcome.result.is_done() {
+                        bail!(
+                            "systemd failed to start exposed package target {target}: {}",
+                            outcome.result.label()
+                        );
+                    }
+                }
             }
         }
     } else {
@@ -916,12 +944,29 @@ fn aos_root_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use tempfile::TempDir;
 
     use crate::types::{
         ApmMeta, CapabilityKind, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
         ProvidedCapabilityMeta, RequiredCapabilityMeta, SysrootImageEntry,
     };
+
+    #[test]
+    fn exposed_target_start_mode_defaults_to_awaited_jobs() {
+        assert_eq!(
+            exposed_target_start_mode_from_env(None),
+            ExposedTargetStartMode::AwaitJob
+        );
+    }
+
+    #[test]
+    fn exposed_target_start_mode_queues_jobs_when_env_is_present() {
+        assert_eq!(
+            exposed_target_start_mode_from_env(Some(OsString::new())),
+            ExposedTargetStartMode::QueueOnly
+        );
+    }
 
     fn installed_with_expose(
         tmp: &TempDir,

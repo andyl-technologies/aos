@@ -11,7 +11,7 @@
   ...
 }: let
   cfg = config.aos.roles.k3s-worker;
-  common = import ./_k3s-common.nix {inherit lib pkgs;};
+  common = import ../../../pkgs/kubernetes/_k3s-common.nix {inherit lib pkgs;};
   required = ["K3S_TOKEN" "K3S_URL"];
 in {
   config = lib.mkMerge [
