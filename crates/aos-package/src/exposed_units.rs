@@ -18,8 +18,9 @@ use crate::profile::meta::list_meta;
 use crate::profile::{Generation, Profile};
 use crate::registry::store_path_hash;
 use crate::types::{
-    CapabilityKind, ConfinementClass, CredentialMeta, ExposeMeta, InstalledMeta, NetworkPermission,
-    PermissionsMeta, ProfileScope, ProvidedCapabilityMeta, RequiredCapabilityMeta,
+    CapabilityKind, ConfinementClass, CredentialMeta, ExposeMeta, HostPathMode, InstalledMeta,
+    NetworkPermission, PermissionsMeta, ProfileScope, ProvidedCapabilityMeta,
+    RequiredCapabilityMeta,
 };
 use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
@@ -332,6 +333,8 @@ struct NetworkPolicyArtifact {
     #[serde(rename = "securityLabel")]
     security_label: String,
     tcp: NetworkPolicyTcp,
+    #[serde(default)]
+    fs: NetworkPolicyFs,
     landlock: NetworkPolicyLandlock,
     ebpf: NetworkPolicyEbpf,
 }
@@ -343,11 +346,22 @@ struct NetworkPolicyTcp {
     connect: Vec<u16>,
 }
 
+#[derive(Debug, Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct NetworkPolicyFs {
+    #[serde(rename = "readOnly")]
+    read_only: Vec<String>,
+    #[serde(rename = "readWrite")]
+    read_write: Vec<String>,
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NetworkPolicyLandlock {
     abi: u32,
     tcp: NetworkPolicyTcp,
+    #[serde(default)]
+    fs: NetworkPolicyFs,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -404,6 +418,8 @@ fn validate_network_policy_artifact(
         bind: expected_permissions.tcp_bind.clone(),
         connect: expected_permissions.tcp_connect.clone(),
     };
+    let expected_fs = expected_manifest_fs(&expected_permissions);
+    let expected_landlock_fs = expected_landlock_fs(&expected_permissions);
 
     if policy.version != 1 {
         bail!(
@@ -437,6 +453,12 @@ fn validate_network_policy_artifact(
     {
         bail!(
             "network policy artifact TCP grants differ from admitted permissions for package '{}'",
+            package_name
+        );
+    }
+    if policy.fs != expected_fs || policy.landlock.fs != expected_landlock_fs {
+        bail!(
+            "network policy artifact filesystem grants differ from admitted permissions for package '{}'",
             package_name
         );
     }
@@ -531,6 +553,17 @@ fn validate_landlock_wrappers(
 
 fn expected_landlock_args(permissions: &PermissionsMeta) -> Vec<String> {
     let mut args = vec!["--require-abi".to_string(), "4".to_string()];
+    if !permissions.host_paths.is_empty() {
+        let fs = expected_landlock_fs(permissions);
+        for path in fs.read_only {
+            args.push("--fs-ro".to_string());
+            args.push(path);
+        }
+        for path in fs.read_write {
+            args.push("--fs-rw".to_string());
+            args.push(path);
+        }
+    }
     for port in &permissions.tcp_bind {
         args.push("--tcp-bind".to_string());
         args.push(port.to_string());
@@ -541,6 +574,56 @@ fn expected_landlock_args(permissions: &PermissionsMeta) -> Vec<String> {
     }
     args.push("--".to_string());
     args
+}
+
+fn expected_manifest_fs(permissions: &PermissionsMeta) -> NetworkPolicyFs {
+    let mut read_only = Vec::new();
+    let mut read_write = Vec::new();
+    for host_path in &permissions.host_paths {
+        match host_path.mode {
+            HostPathMode::ReadOnly => read_only.push(host_path.path.clone()),
+            HostPathMode::Rw => read_write.push(host_path.path.clone()),
+        }
+    }
+    NetworkPolicyFs {
+        read_only,
+        read_write,
+    }
+}
+
+fn expected_landlock_fs(permissions: &PermissionsMeta) -> NetworkPolicyFs {
+    let unconfined = permissions
+        .confinement
+        .as_ref()
+        .is_some_and(|confinement| confinement.class == ConfinementClass::Unconfined);
+    if permissions.host_paths.is_empty() || unconfined {
+        return NetworkPolicyFs {
+            read_only: Vec::new(),
+            read_write: Vec::new(),
+        };
+    }
+
+    let mut read_write = vec!["/tmp".to_string(), "/var/tmp".to_string()];
+    for host_path in &permissions.host_paths {
+        if host_path.mode == HostPathMode::Rw && !read_write.contains(&host_path.path) {
+            read_write.push(host_path.path.clone());
+        }
+    }
+
+    let mut read_only = vec!["/".to_string()];
+    for host_path in &permissions.host_paths {
+        if host_path.mode == HostPathMode::ReadOnly
+            && !read_only.contains(&host_path.path)
+            && !read_write.contains(&host_path.path)
+        {
+            read_only.push(host_path.path.clone());
+        }
+    }
+
+    NetworkPolicyFs {
+        read_only,
+        read_write,
+    }
 }
 
 fn trusted_landlock_wrapper_path() -> Result<String> {
@@ -1533,8 +1616,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::types::{
-        ApmMeta, CapabilityKind, CredentialMeta, ExposeArtifactMeta, ExposeMeta, InstalledMeta,
-        ProvidedCapabilityMeta, RequiredCapabilityMeta, SysrootImageEntry,
+        ApmMeta, CapabilityKind, CredentialMeta, ExposeArtifactMeta, ExposeMeta,
+        HostPathPermission, InstalledMeta, ProvidedCapabilityMeta, RequiredCapabilityMeta,
+        SysrootImageEntry,
     };
 
     #[test]
@@ -1764,7 +1848,9 @@ mod tests {
         let apm = installed.apm.as_ref().unwrap();
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         let permissions = normalized_permissions(&apm.name, &apm.permissions);
-        let label = permissions.security_label.unwrap();
+        let manifest_fs = expected_manifest_fs(&permissions);
+        let landlock_fs = expected_landlock_fs(&permissions);
+        let label = permissions.security_label.clone().unwrap();
         let mode = permissions.network.unwrap_or(NetworkPermission::Private);
         let policy = serde_json::json!({
             "version": 1,
@@ -1775,11 +1861,19 @@ mod tests {
                 "bind": tcp_bind,
                 "connect": tcp_connect,
             },
+            "fs": {
+                "readOnly": manifest_fs.read_only,
+                "readWrite": manifest_fs.read_write,
+            },
             "landlock": {
                 "abi": 4,
                 "tcp": {
                     "bind": tcp_bind,
                     "connect": tcp_connect,
+                },
+                "fs": {
+                    "readOnly": landlock_fs.read_only,
+                    "readWrite": landlock_fs.read_write,
                 },
             },
             "ebpf": {
@@ -1906,6 +2000,76 @@ mod tests {
     }
 
     #[test]
+    fn exposed_packages_accepts_legacy_tcp_policy_without_fs_fields() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.tcp_connect = vec![443];
+        write_network_policy_file(&installed, &[], &[443]);
+
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let policy_path = Path::new(&artifact).join("network-policy.json");
+        let mut policy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+        policy.as_object_mut().unwrap().remove("fs");
+        policy["landlock"].as_object_mut().unwrap().remove("fs");
+        std::fs::write(&policy_path, serde_json::to_string(&policy).unwrap()).unwrap();
+
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStart={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_network_policy_host_paths_outside_metadata() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.host_paths = vec![HostPathPermission {
+            path: "/srv/data".into(),
+            mode: HostPathMode::Rw,
+        }];
+        write_network_policy_file(&installed, &[], &[]);
+
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let policy_path = Path::new(&artifact).join("network-policy.json");
+        let mut policy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&policy_path).unwrap()).unwrap();
+        policy["landlock"]["fs"]["readWrite"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("/srv/other"));
+        std::fs::write(&policy_path, serde_json::to_string(&policy).unwrap()).unwrap();
+
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+        assert!(
+            err.to_string().contains("filesystem grants differ"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn exposed_packages_rejects_missing_landlock_wrapper_for_network_policy() {
         let tmp = TempDir::new().unwrap();
         let profile = Profile {
@@ -1988,6 +2152,37 @@ mod tests {
     }
 
     #[test]
+    fn exposed_packages_rejects_landlock_wrapper_with_missing_host_path() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.host_paths = vec![HostPathPermission {
+            path: "/srv/data".into(),
+            mode: HostPathMode::Rw,
+        }];
+        write_network_policy_file(&installed, &[], &[]);
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStart={wrapper} --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string().contains("invalid aos-landlock arguments"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
     fn exposed_packages_rejects_untrusted_landlock_wrapper_path() {
         let tmp = TempDir::new().unwrap();
         let profile = Profile {
@@ -2031,6 +2226,64 @@ mod tests {
                 "[Service]\nExecStartPre={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\nExecStart={wrapper} --require-abi 4 --tcp-connect 443 -- /bin/true\n"
             ),
         );
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_accepts_landlock_wrapper_for_host_paths() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        installed.apm.as_mut().unwrap().permissions.host_paths = vec![
+            HostPathPermission {
+                path: "/srv/public".into(),
+                mode: HostPathMode::ReadOnly,
+            },
+            HostPathPermission {
+                path: "/srv/data".into(),
+                mode: HostPathMode::Rw,
+            },
+        ];
+        write_network_policy_file(&installed, &[], &[]);
+        let wrapper = trusted_landlock_wrapper_for_test();
+        write_service_unit(
+            &installed,
+            &format!(
+                "[Service]\nExecStart={wrapper} --require-abi 4 --fs-ro / --fs-ro /srv/public --fs-rw /tmp --fs-rw /var/tmp --fs-rw /srv/data -- /bin/true\n"
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_accepts_unconfined_host_paths_without_landlock_wrapper() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let permissions = &mut installed.apm.as_mut().unwrap().permissions;
+        permissions.privileged_users = true;
+        permissions.host_paths = vec![HostPathPermission {
+            path: "/srv/data".into(),
+            mode: HostPathMode::ReadOnly,
+        }];
+        write_network_policy_file(&installed, &[], &[]);
+        write_service_unit(&installed, "[Service]\nExecStart=/bin/true\n");
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();

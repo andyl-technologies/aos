@@ -36,10 +36,12 @@
   capabilityType = "^CAP_[A-Z0-9_]+$";
   capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
+  hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
   sysctlKeyType = "^[A-Za-z0-9_.-]+$";
   sysctlValueType = "^[^[:space:]]+$";
   securityLabelType = "^[A-Za-z0-9._-]+$";
+  landlockWritableTempPrefixes = ["/tmp" "/var/tmp"];
 
   throwIfNot = lib.throwIfNot;
 
@@ -153,7 +155,20 @@
         throwIfNot
         (builtins.elem hostPath.mode ["read-only" "rw"])
         "permissions.host-paths mode must be `read-only` or `rw`"
-        (hostPath // {path = validateAbsolutePath "host path" hostPath.path;})
+        (
+          let
+            checkedPath = validatePathHasNoParent "host path" (
+              throwIfNot
+              (builtins.match hostPathType (validateAbsolutePath "host path" hostPath.path) != null)
+              "host path contains unsupported characters: ${builtins.toString hostPath.path}"
+              hostPath.path
+            );
+          in
+            throwIfNot
+            (!(hostPath.mode == "read-only" && hasAnyPrefix landlockWritableTempPrefixes checkedPath))
+            "read-only host paths under /tmp or /var/tmp would be writable through the package Landlock temp grants: ${checkedPath}"
+            (hostPath // {path = checkedPath;})
+        )
       )
     );
 
@@ -1046,16 +1061,39 @@ in rec {
         inherit confinement;
       };
     landlockTcpEnabled = !rootEquivalent && (tcpBind != [] || tcpConnect != []);
-    landlockArgs =
-      ["--require-abi" "4"]
-      ++ lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
-      ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect;
-    landlockPrefix = "${pkgs.aos-landlock}/bin/aos-landlock ${builtins.concatStringsSep " " landlockArgs} --";
+    landlockFsEnabled = !rootEquivalent && hostPaths != [];
+    landlockEnabled = landlockTcpEnabled || landlockFsEnabled;
+    landlockDefaultReadOnlyPaths = ["/"];
+    landlockDefaultReadWritePaths = ["/tmp" "/var/tmp"];
     readOnlyHostPaths = builtins.map (hostPath: hostPath.path) (
       builtins.filter (hostPath: hostPath.mode == "read-only") hostPaths
     );
     readWriteHostPaths =
       builtins.map (hostPath: hostPath.path) rwHostPaths;
+    landlockReadWritePaths =
+      if landlockFsEnabled
+      then
+        uniqueUnits (
+          landlockDefaultReadWritePaths ++ readWriteHostPaths
+        )
+      else [];
+    landlockReadOnlyPaths =
+      if landlockFsEnabled
+      then
+        builtins.filter (
+          path: !(builtins.elem path landlockReadWritePaths)
+        )
+        (uniqueUnits (landlockDefaultReadOnlyPaths ++ readOnlyHostPaths))
+      else [];
+    landlockArgs =
+      ["--require-abi" "4"]
+      ++ lib.optionals landlockFsEnabled (
+        lib.concatMap (path: ["--fs-ro" path]) landlockReadOnlyPaths
+        ++ lib.concatMap (path: ["--fs-rw" path]) landlockReadWritePaths
+      )
+      ++ lib.concatMap (port: ["--tcp-bind" (builtins.toString port)]) tcpBind
+      ++ lib.concatMap (port: ["--tcp-connect" (builtins.toString port)]) tcpConnect;
+    landlockPrefix = "${pkgs.aos-landlock}/bin/aos-landlock ${builtins.concatStringsSep " " landlockArgs} --";
     undeclaredPreparedHostPathDirectories =
       builtins.filter (
         path: !(builtins.elem path readWriteHostPaths)
@@ -1227,12 +1265,12 @@ in rec {
       );
       scriptSupported =
         throwIfNot
-        (!(landlockTcpEnabled && scriptDerivedExecs != []))
-        "mkDerivation expose.units.${unitName} for package '${packageName}' uses script-derived service commands with TCP Landlock policy (${builtins.concatStringsSep ", " scriptDerivedExecText}); use explicit serviceConfig.Exec* commands so the generated wrapper can preserve the sandbox boundary"
+        (!(landlockEnabled && scriptDerivedExecs != []))
+        "mkDerivation expose.units.${unitName} for package '${packageName}' uses script-derived service commands with Landlock policy (${builtins.concatStringsSep ", " scriptDerivedExecText}); use explicit serviceConfig.Exec* commands so the generated wrapper can preserve the sandbox boundary"
         true;
     in
       builtins.seq scriptSupported (
-        lib.optionalAttrs landlockTcpEnabled wrappedExecConfig
+        lib.optionalAttrs landlockEnabled wrappedExecConfig
       );
 
     sandboxServiceConfig = unitName: unit: let
@@ -1729,11 +1767,19 @@ in rec {
         bind = tcpBind;
         connect = tcpConnect;
       };
+      fs = {
+        readOnly = readOnlyHostPaths;
+        readWrite = readWriteHostPaths;
+      };
       landlock = {
         abi = 4;
         tcp = {
           bind = tcpBind;
           connect = tcpConnect;
+        };
+        fs = {
+          readOnly = landlockReadOnlyPaths;
+          readWrite = landlockReadWritePaths;
         };
       };
       ebpf = {

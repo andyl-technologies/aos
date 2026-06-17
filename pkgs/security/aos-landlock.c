@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <linux/landlock.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -14,12 +15,76 @@
 #define LANDLOCK_CREATE_RULESET_VERSION (1U << 0)
 #endif
 
+#ifndef LANDLOCK_ACCESS_FS_EXECUTE
+#define LANDLOCK_ACCESS_FS_EXECUTE (1ULL << 0)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_WRITE_FILE
+#define LANDLOCK_ACCESS_FS_WRITE_FILE (1ULL << 1)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_READ_FILE
+#define LANDLOCK_ACCESS_FS_READ_FILE (1ULL << 2)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_READ_DIR
+#define LANDLOCK_ACCESS_FS_READ_DIR (1ULL << 3)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_DIR
+#define LANDLOCK_ACCESS_FS_REMOVE_DIR (1ULL << 4)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_REMOVE_FILE
+#define LANDLOCK_ACCESS_FS_REMOVE_FILE (1ULL << 5)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_CHAR
+#define LANDLOCK_ACCESS_FS_MAKE_CHAR (1ULL << 6)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_DIR
+#define LANDLOCK_ACCESS_FS_MAKE_DIR (1ULL << 7)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_REG
+#define LANDLOCK_ACCESS_FS_MAKE_REG (1ULL << 8)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SOCK
+#define LANDLOCK_ACCESS_FS_MAKE_SOCK (1ULL << 9)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_FIFO
+#define LANDLOCK_ACCESS_FS_MAKE_FIFO (1ULL << 10)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_BLOCK
+#define LANDLOCK_ACCESS_FS_MAKE_BLOCK (1ULL << 11)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_MAKE_SYM
+#define LANDLOCK_ACCESS_FS_MAKE_SYM (1ULL << 12)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_REFER
+#define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
+#endif
+
+#ifndef LANDLOCK_ACCESS_FS_TRUNCATE
+#define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
+#endif
+
 #ifndef LANDLOCK_ACCESS_NET_BIND_TCP
 #define LANDLOCK_ACCESS_NET_BIND_TCP (1ULL << 0)
 #endif
 
 #ifndef LANDLOCK_ACCESS_NET_CONNECT_TCP
 #define LANDLOCK_ACCESS_NET_CONNECT_TCP (1ULL << 1)
+#endif
+
+#ifndef LANDLOCK_RULE_PATH_BENEATH
+#define LANDLOCK_RULE_PATH_BENEATH 1
 #endif
 
 #ifndef LANDLOCK_RULE_NET_PORT
@@ -36,11 +101,33 @@ struct port_list {
     size_t cap;
 };
 
+struct path_rule {
+    char *path;
+    __u64 access;
+};
+
+struct path_list {
+    struct path_rule *items;
+    size_t len;
+    size_t cap;
+};
+
+static const __u64 FS_READ_ACCESS = LANDLOCK_ACCESS_FS_EXECUTE
+    | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
+
+static const __u64 FS_WRITE_ACCESS = LANDLOCK_ACCESS_FS_WRITE_FILE
+    | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
+    | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
+    | LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK
+    | LANDLOCK_ACCESS_FS_MAKE_FIFO | LANDLOCK_ACCESS_FS_MAKE_BLOCK
+    | LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER
+    | LANDLOCK_ACCESS_FS_TRUNCATE;
+
 static void usage(FILE *stream)
 {
     fprintf(stream,
-        "usage: aos-landlock [--require-abi N] [--tcp-bind PORT] "
-        "[--tcp-connect PORT] -- COMMAND [ARG...]\n");
+        "usage: aos-landlock [--require-abi N] [--fs-ro PATH] [--fs-rw PATH] "
+        "[--tcp-bind PORT] [--tcp-connect PORT] -- COMMAND [ARG...]\n");
 }
 
 static int parse_u32(const char *text, unsigned int *out)
@@ -96,6 +183,49 @@ static int add_port(struct port_list *ports, uint16_t port)
     return 0;
 }
 
+static int add_path(struct path_list *paths, const char *path, __u64 access)
+{
+    size_t i;
+    struct path_rule *new_items;
+    size_t new_cap;
+    char *copy;
+
+    if (path[0] != '/') {
+        fprintf(stderr, "aos-landlock: path must be absolute: %s\n", path);
+        return -1;
+    }
+
+    for (i = 0; i < paths->len; i++) {
+        if (strcmp(paths->items[i].path, path) == 0) {
+            fprintf(stderr, "aos-landlock: duplicate filesystem path %s\n",
+                path);
+            return -1;
+        }
+    }
+
+    if (paths->len == paths->cap) {
+        new_cap = paths->cap == 0 ? 4 : paths->cap * 2;
+        new_items = realloc(paths->items, new_cap * sizeof(*paths->items));
+        if (new_items == NULL) {
+            perror("aos-landlock: realloc");
+            return -1;
+        }
+        paths->items = new_items;
+        paths->cap = new_cap;
+    }
+
+    copy = strdup(path);
+    if (copy == NULL) {
+        perror("aos-landlock: strdup");
+        return -1;
+    }
+
+    paths->items[paths->len].path = copy;
+    paths->items[paths->len].access = access;
+    paths->len++;
+    return 0;
+}
+
 static long landlock_create_ruleset_raw(const struct landlock_ruleset_attr *attr,
     size_t size, __u32 flags)
 {
@@ -134,8 +264,39 @@ static int add_net_rules(int ruleset_fd, const struct port_list *ports,
     return 0;
 }
 
+static int add_path_rules(int ruleset_fd, const struct path_list *paths)
+{
+    size_t i;
+
+    for (i = 0; i < paths->len; i++) {
+        int path_fd;
+        struct landlock_path_beneath_attr rule = {
+            .allowed_access = paths->items[i].access,
+        };
+
+        path_fd = open(paths->items[i].path, O_PATH | O_CLOEXEC);
+        if (path_fd < 0) {
+            fprintf(stderr, "aos-landlock: failed to open %s: %s\n",
+                paths->items[i].path, strerror(errno));
+            return -1;
+        }
+
+        rule.parent_fd = path_fd;
+        if (landlock_add_rule_raw(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &rule,
+                0)
+            != 0) {
+            fprintf(stderr, "aos-landlock: failed to add path rule %s: %s\n",
+                paths->items[i].path, strerror(errno));
+            close(path_fd);
+            return -1;
+        }
+        close(path_fd);
+    }
+    return 0;
+}
+
 static int apply_landlock(unsigned int require_abi, const struct port_list *bind_ports,
-    const struct port_list *connect_ports)
+    const struct port_list *connect_ports, const struct path_list *paths)
 {
     long abi;
     int ruleset_fd;
@@ -157,6 +318,10 @@ static int apply_landlock(unsigned int require_abi, const struct port_list *bind
         return -1;
     }
 
+    if (paths->len > 0) {
+        ruleset.handled_access_fs = FS_READ_ACCESS | FS_WRITE_ACCESS;
+    }
+
     ruleset_fd = (int)landlock_create_ruleset_raw(&ruleset, sizeof(ruleset), 0);
     if (ruleset_fd < 0) {
         fprintf(stderr, "aos-landlock: failed to create ruleset: %s\n",
@@ -167,6 +332,8 @@ static int apply_landlock(unsigned int require_abi, const struct port_list *bind
     if (add_net_rules(ruleset_fd, bind_ports, LANDLOCK_ACCESS_NET_BIND_TCP) != 0
         || add_net_rules(ruleset_fd, connect_ports,
                LANDLOCK_ACCESS_NET_CONNECT_TCP)
+            != 0
+        || add_path_rules(ruleset_fd, paths)
             != 0) {
         close(ruleset_fd);
         return -1;
@@ -194,6 +361,7 @@ int main(int argc, char **argv)
 {
     struct port_list bind_ports = {0};
     struct port_list connect_ports = {0};
+    struct path_list paths = {0};
     unsigned int require_abi = 4;
     int command_index = -1;
     int i;
@@ -211,6 +379,21 @@ int main(int argc, char **argv)
             if (++i >= argc || parse_u32(argv[i], &require_abi) != 0
                 || require_abi == 0) {
                 fprintf(stderr, "aos-landlock: invalid --require-abi value\n");
+                usage(stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--fs-ro") == 0) {
+            if (++i >= argc
+                || add_path(&paths, argv[i], FS_READ_ACCESS) != 0) {
+                fprintf(stderr, "aos-landlock: invalid --fs-ro value\n");
+                usage(stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--fs-rw") == 0) {
+            if (++i >= argc
+                || add_path(&paths, argv[i], FS_READ_ACCESS | FS_WRITE_ACCESS)
+                    != 0) {
+                fprintf(stderr, "aos-landlock: invalid --fs-rw value\n");
                 usage(stderr);
                 return 2;
             }
@@ -241,7 +424,7 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    if (apply_landlock(require_abi, &bind_ports, &connect_ports) != 0) {
+    if (apply_landlock(require_abi, &bind_ports, &connect_ports, &paths) != 0) {
         return 1;
     }
 

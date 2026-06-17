@@ -70,6 +70,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
     "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
 ];
+const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
 const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
     "/usr/lib/credstore.encrypted",
     "/etc/credstore.encrypted",
@@ -831,9 +832,9 @@ impl PermissionsMeta {
                 .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
     }
 
-    /// Returns whether this manifest carries explicit TCP network policy.
+    /// Returns whether this manifest carries explicit Landlock/eBPF policy.
     pub fn has_network_policy(&self) -> bool {
-        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty()
+        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty() || !self.host_paths.is_empty()
     }
 
     /// Computes the RFC-0001 confinement summary from permission grants.
@@ -1344,7 +1345,7 @@ pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMe
         validate_absolute_path(device, "device")?;
     }
     for host_path in &permissions.host_paths {
-        validate_absolute_path(&host_path.path, "host path")?;
+        validate_host_path_permission(host_path)?;
     }
     for module in &permissions.kernel_modules {
         validate_kernel_module_name(module)?;
@@ -1410,6 +1411,36 @@ pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
         return Ok(());
     }
     bail!("{kind} must be an absolute path: {path}")
+}
+
+fn validate_host_path_permission(host_path: &HostPathPermission) -> Result<()> {
+    validate_absolute_path(&host_path.path, "host path")?;
+    let path = Path::new(&host_path.path);
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("host path must not contain '..': {}", host_path.path);
+    }
+    if !host_path.path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!(
+            "host path contains unsupported characters: {:?}",
+            host_path.path
+        );
+    }
+    if host_path.mode == HostPathMode::ReadOnly
+        && LANDLOCK_WRITABLE_TEMP_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+    {
+        bail!(
+            "read-only host paths under /tmp or /var/tmp would be writable through the package Landlock temp grants: {}",
+            host_path.path
+        );
+    }
+    Ok(())
 }
 
 fn validate_config_artifact_name(name: &str) -> Result<()> {
@@ -3327,6 +3358,7 @@ last_update = "2026-02-13T10:30:00Z"
                 FEATURE_EXPOSE_ARTIFACT_V1.into(),
                 FEATURE_PERMISSIONS_V1.into(),
                 FEATURE_REQUIRES_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
             ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
@@ -3381,6 +3413,44 @@ last_update = "2026-02-13T10:30:00Z"
         assert_eq!(parsed.expose, meta.expose);
         assert_eq!(parsed.expose_artifact, meta.expose_artifact);
         assert_eq!(parsed.permissions, meta.permissions);
+    }
+
+    #[test]
+    fn permissions_reject_host_paths_with_unsupported_characters() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/srv/my data".into(),
+                mode: HostPathMode::Rw,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("host path contains unsupported characters"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn permissions_reject_read_only_temp_host_paths() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/tmp/package-cache".into(),
+                mode: HostPathMode::ReadOnly,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("read-only host paths under /tmp or /var/tmp"),
+            "{err:?}"
+        );
     }
 
     #[test]
