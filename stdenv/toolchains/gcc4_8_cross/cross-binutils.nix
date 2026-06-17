@@ -27,7 +27,8 @@ in
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
         cd "$TMPDIR"
-        cp -r ${src} "$TMPDIR/src"
+        mkdir -p "$TMPDIR/src"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/src" && tar xf -)
         chmod -R u+w "$TMPDIR/src"
 
         # Touch all files first, then touch generated .c/.h to prevent regeneration
@@ -54,8 +55,8 @@ in
           --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline --disable-sim \
           --with-sysroot=/
 
-        make -j"$NIX_BUILD_CORES"
-        make install
+        make -j"$NIX_BUILD_CORES" MAKEINFO=true
+        make install MAKEINFO=true
 
         echo "Cross binutils 2.25 (${buildPlatform.config} → ${hostPlatform.config}) installed to $out"
       ''

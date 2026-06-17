@@ -11,13 +11,54 @@
   hostPlatform,
   targetPlatform,
 }: let
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkTierStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
   in
     fn (auto // overrides);
 
-  scope = {
+  manifestToolNames = [
+    "perl"
+    "texinfo"
+    "help2man"
+    "m4"
+    "flex"
+    "bison"
+    "autoconf"
+    "automake"
+    "gperf"
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "tar"
+    "gzip"
+    "patch"
+  ];
+
+  baseScope = {
     inherit
       prev
       buildPlatform
@@ -35,33 +76,69 @@
     linuxHeaders = callPackage ./linux-headers.nix {};
     glibc = callPackage ./glibc.nix {};
 
-    # Phase 3.5: Autotools rebuilt with THIS tier's gcc + prev.glibc
-    # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
-    # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
-    perl = callPackage ./perl.nix {};
-    texinfo = callPackage ./texinfo.nix {};
-    help2man = callPackage ./help2man.nix {};
-    m4 = callPackage ./m4.nix {};
-    flex = callPackage ./flex.nix {};
-    bison = callPackage ./bison.nix {}; # 3.0.4 upgrade (satisfies glibc 2.28 bison >= 2.7)
-    autoconf = callPackage ./autoconf.nix {};
-    automake = callPackage ./automake.nix {};
-    gperf = callPackage ./gperf.nix {}; # needs C++ (first available in this tier)
+    # Shared mini-stdenv for gcc4_4's POSIX/autotools tools. The default
+    # compiler profile is this tier's gcc with the previous tier binutils/libc,
+    # matching the raw derivations. Individual manifest entries can still
+    # select the full previous compiler profile where that was the old behavior.
+    tierBuildStdenv = mkTierStdenv {
+      tc = {
+        inherit (scope) gcc;
+        inherit (prev) binutils glibc;
+        inherit
+          (prev)
+          coreutils
+          findutils
+          gnumake
+          gawk
+          grep
+          sed
+          tar
+          gzip
+          diffutils
+          patch
+          bash
+          ;
+      };
+      staticDefault = true;
+    };
 
-    # Phase 4: POSIX tools built with THIS.gcc + THIS.binutils + THIS.glibc
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
+    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = scope.tierBuildStdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit hostPlatform prev;
+      inherit
+        (scope)
+        gcc
+        bzip2
+        m4
+        flex
+        bison
+        perl
+        autoconf
+        automake
+        texinfo
+        help2man
+        ;
+    };
+
     bzip2 = callPackage ./bzip2.nix {};
-    patch = callPackage ./patch.nix {};
   };
+
+  manifestTools = mkManifestTools {
+    manifest = baseScope.manifest;
+    mkTool = baseScope.mkAutotoolsTool;
+    names = manifestToolNames;
+  };
+
+  scope = baseScope // manifestTools;
 in {
   inherit
     (scope)

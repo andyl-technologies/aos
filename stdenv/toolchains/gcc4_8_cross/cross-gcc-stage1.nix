@@ -42,15 +42,19 @@ in
         export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${crossBinutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin:${prev.m4}/bin:${prev.flex}/bin:${prev.bison}/bin:${prev.texinfo}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${gccSrc} "$TMPDIR/gcc-4.8.5"
+        mkdir -p "$TMPDIR/gcc-4.8.5"
+        (cd ${gccSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5"
 
         # In-tree GMP, MPFR, MPC
-        cp -r ${gmpSrc} "$TMPDIR/gcc-4.8.5/gmp"
+        mkdir -p "$TMPDIR/gcc-4.8.5/gmp"
+        (cd ${gmpSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/gmp" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/gmp"
-        cp -r ${mpfrSrc} "$TMPDIR/gcc-4.8.5/mpfr"
+        mkdir -p "$TMPDIR/gcc-4.8.5/mpfr"
+        (cd ${mpfrSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpfr" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpfr"
-        cp -r ${mpcSrc} "$TMPDIR/gcc-4.8.5/mpc"
+        mkdir -p "$TMPDIR/gcc-4.8.5/mpc"
+        (cd ${mpcSrc} && tar cf - .) | (cd "$TMPDIR/gcc-4.8.5/mpc" && tar xf -)
         chmod -R u+w "$TMPDIR/gcc-4.8.5/mpc"
 
         SRC="$TMPDIR/gcc-4.8.5"
