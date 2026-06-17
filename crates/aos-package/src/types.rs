@@ -1222,6 +1222,13 @@ pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
         }
         for unit in &credential.units {
             validate_unit_name(unit)?;
+            if !unit.ends_with(".service") {
+                bail!(
+                    "credential '{}' references non-service expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
         }
     }
 
@@ -3298,6 +3305,21 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(err.to_string().contains("unknown expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_non_service_units() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                units: vec!["webapp.socket".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
     }
 
     #[test]
