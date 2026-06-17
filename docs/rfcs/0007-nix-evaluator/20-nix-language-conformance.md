@@ -295,10 +295,11 @@ search paths, and store coercion.
 
 ### 5.1 Literals and selection
 
-- [ ] **Literal `{ a = 1; b = 2; }`** — unordered source, but iteration order is
-      **symbol-collation order** (observable in the ATerm env block; owned by
-      [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md),
-      flagged here because it is the observable surface).
+- [x] **Literal `{ a = 1; b = 2; }`** — unordered source, but observable
+      traversal is **symbol-collation order**. AOS flat attrsets store a
+      raw-byte lexicographic iteration permutation used by `builtins.attrNames`
+      and `builtins.attrValues`; source-order data remains separate for
+      construction-sensitive internals.
 - [ ] **Selection `s.a`** — select attribute `a`; missing attr is an error
       (**must-error**).
 - [ ] **Attr-path selection `s.a.b.c`** — dotted path descends multiple levels;

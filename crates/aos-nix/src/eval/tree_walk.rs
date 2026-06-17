@@ -22459,6 +22459,24 @@ mod tests {
     }
 
     #[test]
+    fn attrset_literal_iteration_uses_symbol_collation_order() {
+        assert_eq!(
+            eval_list_string_bytes("builtins.attrNames { z = 1; A = 2; aa = 3; _ = 4; a = 5; }"),
+            vec![
+                b"A".to_vec(),
+                b"_".to_vec(),
+                b"a".to_vec(),
+                b"aa".to_vec(),
+                b"z".to_vec(),
+            ]
+        );
+        assert_eq!(
+            eval_list_ints("builtins.attrValues { z = 1; A = 2; aa = 3; _ = 4; a = 5; }"),
+            vec![2, 4, 5, 3, 1]
+        );
+    }
+
+    #[test]
     fn attr_names_primop_type_checks_argument() {
         let ir = lower("builtins.attrNames 1");
         let root = ir.arena.node(ir.root).expect("root exists");
