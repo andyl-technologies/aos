@@ -529,10 +529,10 @@ a given mode does so identically.
       **Not soundly cacheable**; nixpkgs avoids it in pure paths. aos-nix must
       treat any memo that observed `currentTime` as non-reusable across runs
       (or refuse to persist it) — see §13/§15.
-- [ ] `currentSystem` (value) — the host system string (`"x86_64-linux"`).
-      Effect: build-time configuration, but **constant per evaluator config**.
-      Cache key = the configured system string. Disabled under pure-eval (flakes
-      pass `system` explicitly).
+- [x] `currentSystem` (value) — the configured target system string
+      (`"x86_64-linux"`). Effect: build-time configuration, but **constant per
+      evaluator config**. Cache key = the configured system string. Unavailable
+      when unset, which models pure-eval mode.
 - [ ] `trace` (e1 e2) — print `e1` (to stderr) and return `e2`. Effect: a
       side-effecting print; *pure* in its return value. Parity matters only for
       *which* traces fire (a function of forcing order), not the text, for `.drv`
@@ -773,7 +773,8 @@ on them.
       `{ prefix; path; }`). The evaluator never reads ambient `NIX_PATH`; callers
       provide the entries through `TreeWalkOptions` so `<nixpkgs>` resolution and
       nixpkgs introspection agree with the configured/pinned search path.
-- [ ] `currentSystem` (string) — (also §10) the host system; constant per config.
+- [x] `currentSystem` (string) — (also §10) the configured target system;
+      constant per evaluator config and unavailable when unset.
 - [ ] `currentTime` (integer) — (also §10) start-of-eval Unix time; the one
       genuinely non-deterministic constant.
 - [x] `storeDir` (string) — (also §11) `"/nix/store"`.

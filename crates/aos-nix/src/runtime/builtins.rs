@@ -187,6 +187,7 @@ builtin_registry! {
     impl BuiltinDefinition for CurrentSystemBuiltin {
         const NAME: &'static [u8] = b"currentSystem";
         const EXECUTION: BuiltinExecution = BuiltinExecution::CurrentSystemValue;
+        const DOCS: &'static BuiltinDocs = &CURRENT_SYSTEM_DOCS;
     }
 
     pub(crate) struct CurrentTimeBuiltin;
@@ -1136,6 +1137,10 @@ static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a string with reflected string context appended.",
 };
 
+static CURRENT_SYSTEM_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Returns the configured target system when available.",
+};
+
 static HASH_FILE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns the hex digest of a file's contents.",
 };
@@ -1626,6 +1631,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"appendContext").unwrap().docs().summary(),
             "Returns a string with reflected string context appended."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"currentSystem").unwrap().docs().summary(),
+            "Returns the configured target system when available."
         );
         assert_eq!(
             BUILTINS.lookup(b"hashFile").unwrap().docs().summary(),
