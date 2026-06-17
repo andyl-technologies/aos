@@ -1756,7 +1756,13 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             ));
         };
-        builtin.apply_direct(self, BuiltinCall::new(id, node.span, symbol), node, args)
+        apply_builtin_direct(
+            self,
+            builtin,
+            BuiltinCall::new(id, node.span, symbol),
+            node,
+            args,
+        )
     }
 
     fn eval_strict_unary_primop_value(
@@ -7322,7 +7328,12 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             ));
         }
-        builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args)
+        apply_builtin(
+            self,
+            builtin,
+            BuiltinCall::new(id, span, primop.symbol()),
+            &args,
+        )
     }
 
     fn eval_strict_ternary_primop_direct(
@@ -8082,7 +8093,7 @@ impl<'ir> TreeWalk<'ir> {
                 )),
             };
         };
-        if !builtin.is_available(self) {
+        if !builtin_is_available(self, builtin) {
             return match default {
                 Some(default) => self.eval_node(default).map(Some),
                 None => Err(TreeWalkError::new(
@@ -8095,13 +8106,13 @@ impl<'ir> TreeWalk<'ir> {
             };
         }
         if path.len() == 1 {
-            return builtin.select(self, id, node.span, *symbol).map(Some);
+            return select_builtin(self, builtin, id, node.span, *symbol).map(Some);
         }
 
         match default {
             Some(default) => self.eval_node(default).map(Some),
             None => {
-                let value = builtin.select(self, id, node.span, *symbol)?;
+                let value = select_builtin(self, builtin, id, node.span, *symbol)?;
                 Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
                         id,
@@ -8207,7 +8218,8 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         Ok(Some(Value::bool(
             path.len() == 1
-                && lookup_builtin_by_name(name).is_some_and(|builtin| builtin.is_available(self)),
+                && lookup_builtin_by_name(name)
+                    .is_some_and(|builtin| builtin_is_available(self, builtin)),
         )))
     }
 
@@ -9503,355 +9515,248 @@ impl BuiltinCall {
     }
 }
 
-trait Builtin: Sync {
-    fn metadata(&self) -> BuiltinMetadata;
-
-    fn name(&self) -> &'static [u8] {
-        self.metadata().name()
-    }
-
-    fn is_available(&self, _eval: &TreeWalk<'_>) -> bool {
-        true
-    }
-
-    fn first_class_arity(&self) -> Option<usize> {
-        self.metadata().first_class_arity()
-    }
-
-    #[allow(dead_code)]
-    fn docs(&self) -> &'static BuiltinDocs {
-        self.metadata().docs()
-    }
-
-    fn select(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        id: IrId,
-        span: Span,
-        symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        if self.first_class_arity().is_some() {
-            return eval
-                .heap
-                .alloc_primop(EvalPrimOp::new(symbol))
-                .map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
-                });
-        }
-        Err(TreeWalkError::new(
-            TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
-            span,
-        ))
-    }
-
-    fn apply_direct(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        _args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        Err(TreeWalkError::new(
-            TreeWalkErrorKind::UnsupportedPrimOp {
-                id: call.id,
-                symbol: call.symbol,
-            },
-            call.span,
-        ))
-    }
-
-    fn apply(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        Err(TreeWalkError::new(
-            TreeWalkErrorKind::UnsupportedPrimOp {
-                id: call.id,
-                symbol: call.symbol,
-            },
-            call.span,
-        ))
+fn builtin_is_available(eval: &TreeWalk<'_>, builtin: BuiltinMetadata) -> bool {
+    match builtin.execution() {
+        BuiltinExecution::CurrentSystemValue => eval.options.current_system().is_some(),
+        BuiltinExecution::CurrentTimeValue => eval.options.current_time().is_some(),
+        _ => true,
     }
 }
 
-trait UnsupportedBuiltin: BuiltinInfo + Sync {}
-
-fn unsupported_builtin_metadata<T: UnsupportedBuiltin>() -> BuiltinMetadata {
-    <T as BuiltinInfo>::METADATA
-}
-
-macro_rules! unsupported_builtin {
-    ($ty:ident) => {
-        impl UnsupportedBuiltin for $ty {}
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                unsupported_builtin_metadata::<Self>()
-            }
+fn select_builtin(
+    eval: &mut TreeWalk<'_>,
+    builtin: BuiltinMetadata,
+    id: IrId,
+    span: Span,
+    symbol: Symbol,
+) -> Result<Value, TreeWalkError> {
+    match builtin.execution() {
+        BuiltinExecution::TrueValue => Ok(Value::bool(true)),
+        BuiltinExecution::FalseValue => Ok(Value::bool(false)),
+        BuiltinExecution::NullValue => Ok(Value::null()),
+        BuiltinExecution::CurrentSystemValue => {
+            let Some(current_system) = eval.options.current_system() else {
+                return unsupported_builtin_attr(id, span, symbol);
+            };
+            let current_system = current_system.to_vec();
+            eval.alloc_static_string(id, span, &current_system)
         }
-    };
-}
-
-trait EffectfulUnaryUnsupportedBuiltin: BuiltinInfo + Sync {}
-
-fn effectful_unary_unsupported_builtin_metadata<T: EffectfulUnaryUnsupportedBuiltin>()
--> BuiltinMetadata {
-    <T as BuiltinInfo>::METADATA
-}
-
-macro_rules! effectful_unary_unsupported_builtin {
-    ($ty:ident) => {
-        impl EffectfulUnaryUnsupportedBuiltin for $ty {}
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                effectful_unary_unsupported_builtin_metadata::<Self>()
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                _node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 1, args.len())?;
-                eval.eval_node(args[0])?;
-                Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnsupportedPrimOp {
-                        id: call.id,
-                        symbol: call.symbol,
-                    },
-                    call.span,
-                ))
-            }
+        BuiltinExecution::CurrentTimeValue => {
+            let Some(current_time) = eval.options.current_time() else {
+                return unsupported_builtin_attr(id, span, symbol);
+            };
+            Ok(Value::int(current_time))
         }
-    };
-}
-
-trait StrictUnaryBuiltin: BuiltinInfo + Sync {
-    const PRIMOP: StrictUnaryPrimOp;
-}
-
-macro_rules! strict_unary_builtin {
-    ($ty:ident, $primop:expr) => {
-        impl StrictUnaryBuiltin for $ty {
-            const PRIMOP: StrictUnaryPrimOp = $primop;
+        BuiltinExecution::StoreDirValue => {
+            let store_dir = eval.options.store_dir().to_vec();
+            eval.alloc_static_string(id, span, &store_dir)
         }
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                _node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 1, args.len())?;
-                let argument = args[0];
-                let argument_span = eval.node(argument)?.span;
-                let value = eval.eval_node(argument)?;
-                eval.eval_strict_unary_primop_value(
-                    call.id,
-                    call.span,
-                    <Self as StrictUnaryBuiltin>::PRIMOP,
-                    argument,
-                    argument_span,
-                    value,
-                )
-            }
-
-            fn apply(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                args: &[EvalPrimOpArg],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 1, args.len())?;
-                let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
-                eval.eval_strict_unary_primop_value(
-                    call.id,
-                    call.span,
-                    <Self as StrictUnaryBuiltin>::PRIMOP,
-                    argument.id(),
-                    argument.span(),
-                    value,
-                )
-            }
-        }
-    };
+        BuiltinExecution::NixVersionValue => eval.alloc_static_string(id, span, PINNED_NIX_VERSION),
+        BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
+        _ if builtin.first_class_arity().is_some() => eval
+            .heap
+            .alloc_primop(EvalPrimOp::new(symbol))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)),
+        _ => unsupported_builtin_attr(id, span, symbol),
+    }
 }
 
-trait LazyUnaryBuiltin: BuiltinInfo + Sync {}
-
-fn lazy_unary_builtin_metadata<T: LazyUnaryBuiltin>() -> BuiltinMetadata {
-    <T as BuiltinInfo>::METADATA
+fn apply_builtin_direct(
+    eval: &mut TreeWalk<'_>,
+    builtin: BuiltinMetadata,
+    call: BuiltinCall,
+    node: &IrNode,
+    args: &[IrId],
+) -> Result<Value, TreeWalkError> {
+    match builtin.execution() {
+        BuiltinExecution::StrictUnary { primop, .. } => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_node(argument)?;
+            eval.eval_strict_unary_primop_value(
+                call.id,
+                call.span,
+                primop,
+                argument,
+                argument_span,
+                value,
+            )
+        }
+        BuiltinExecution::LazyUnary => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_lazy_node(argument)?;
+            eval.eval_lazy_identity_value(argument, argument_span, value)
+        }
+        BuiltinExecution::StrictBinary { primop, .. } => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_strict_binary_primop_direct(call, node, primop, args[0], args[1])
+        }
+        BuiltinExecution::DirectBinary(primop) => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_direct_binary_primop_direct(call, node, primop, args[0], args[1])
+        }
+        BuiltinExecution::DirectTernary(primop) => {
+            check_builtin_arity(call, 3, args.len())?;
+            eval.eval_strict_ternary_primop_direct(call, primop, args[0], args[1], args[2])
+        }
+        BuiltinExecution::TryEval => {
+            check_builtin_arity(call, 1, args.len())?;
+            eval.eval_try_eval_direct(call.id, call.span, args[0])
+        }
+        BuiltinExecution::PathExists => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_node(argument)?;
+            eval.eval_path_exists_primop(argument, argument_span, value)
+        }
+        BuiltinExecution::ReadDir => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_node(argument)?;
+            eval.eval_read_dir_primop(call.id, call.span, argument, argument_span, value)
+        }
+        BuiltinExecution::ReadFile => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_node(argument)?;
+            eval.eval_read_file_primop(call.id, call.span, argument, argument_span, value)
+        }
+        BuiltinExecution::ReadFileType => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_span = eval.node(argument)?.span;
+            let value = eval.eval_node(argument)?;
+            eval.eval_read_file_type_primop(call.id, call.span, argument, argument_span, value)
+        }
+        BuiltinExecution::Seq => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_seq_primop(args[0], args[1])
+        }
+        BuiltinExecution::DeepSeq => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_deep_seq_primop(args[0], args[1])
+        }
+        BuiltinExecution::EffectfulUnaryUnsupported => {
+            check_builtin_arity(call, 1, args.len())?;
+            eval.eval_node(args[0])?;
+            unsupported_primop(call)
+        }
+        _ => unsupported_primop(call),
+    }
 }
 
-macro_rules! lazy_unary_builtin {
-    ($ty:ident) => {
-        impl LazyUnaryBuiltin for $ty {}
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                lazy_unary_builtin_metadata::<Self>()
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                _node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 1, args.len())?;
-                let argument = args[0];
-                let argument_span = eval.node(argument)?.span;
-                let value = eval.eval_lazy_node(argument)?;
-                eval.eval_lazy_identity_value(argument, argument_span, value)
-            }
-
-            fn apply(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                args: &[EvalPrimOpArg],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 1, args.len())?;
-                let argument = args[0];
-                eval.eval_lazy_identity_value(argument.id(), argument.span(), argument.value())
-            }
+fn apply_builtin(
+    eval: &mut TreeWalk<'_>,
+    builtin: BuiltinMetadata,
+    call: BuiltinCall,
+    args: &[EvalPrimOpArg],
+) -> Result<Value, TreeWalkError> {
+    match builtin.execution() {
+        BuiltinExecution::StrictUnary { primop, .. } => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+            eval.eval_strict_unary_primop_value(
+                call.id,
+                call.span,
+                primop,
+                argument.id(),
+                argument.span(),
+                value,
+            )
         }
-    };
+        BuiltinExecution::LazyUnary => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            eval.eval_lazy_identity_value(argument.id(), argument.span(), argument.value())
+        }
+        BuiltinExecution::StrictBinary { primop, .. } => {
+            check_builtin_arity(call, 2, args.len())?;
+            eval.eval_strict_binary_primop_value(
+                call.id,
+                call.span,
+                call.symbol,
+                primop,
+                args[0],
+                args[1],
+            )
+        }
+        BuiltinExecution::TryEval => {
+            check_builtin_arity(call, 1, args.len())?;
+            eval.eval_try_eval_value(call.id, call.span, args[0])
+        }
+        BuiltinExecution::PathExists => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+            eval.eval_path_exists_primop(argument.id(), argument.span(), value)
+        }
+        BuiltinExecution::ReadDir => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+            eval.eval_read_dir_primop(call.id, call.span, argument.id(), argument.span(), value)
+        }
+        BuiltinExecution::ReadFile => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+            eval.eval_read_file_primop(call.id, call.span, argument.id(), argument.span(), value)
+        }
+        BuiltinExecution::ReadFileType => {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+            eval.eval_read_file_type_primop(
+                call.id,
+                call.span,
+                argument.id(),
+                argument.span(),
+                value,
+            )
+        }
+        BuiltinExecution::Seq => {
+            check_builtin_arity(call, 2, args.len())?;
+            let first = args[0];
+            let value = eval.force_value(first.id(), first.span(), first.value())?;
+            eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)?;
+            Ok(args[1].value())
+        }
+        BuiltinExecution::DeepSeq => {
+            check_builtin_arity(call, 2, args.len())?;
+            let first = args[0];
+            let value = eval.force_value(first.id(), first.span(), first.value())?;
+            if !eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)? {
+                let mut visited = Vec::new();
+                eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
+            }
+            Ok(args[1].value())
+        }
+        _ => unsupported_primop(call),
+    }
 }
 
-trait StrictBinaryBuiltin: BuiltinInfo + Sync {
-    const PRIMOP: StrictBinaryPrimOp;
+fn unsupported_primop(call: BuiltinCall) -> Result<Value, TreeWalkError> {
+    Err(TreeWalkError::new(
+        TreeWalkErrorKind::UnsupportedPrimOp {
+            id: call.id,
+            symbol: call.symbol,
+        },
+        call.span,
+    ))
 }
 
-macro_rules! strict_binary_builtin {
-    ($ty:ident, $primop:expr) => {
-        impl StrictBinaryBuiltin for $ty {
-            const PRIMOP: StrictBinaryPrimOp = $primop;
-        }
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 2, args.len())?;
-                eval.eval_strict_binary_primop_direct(
-                    call,
-                    node,
-                    <Self as StrictBinaryBuiltin>::PRIMOP,
-                    args[0],
-                    args[1],
-                )
-            }
-
-            fn apply(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                args: &[EvalPrimOpArg],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 2, args.len())?;
-                eval.eval_strict_binary_primop_value(
-                    call.id,
-                    call.span,
-                    call.symbol,
-                    <Self as StrictBinaryBuiltin>::PRIMOP,
-                    args[0],
-                    args[1],
-                )
-            }
-        }
-    };
-}
-
-trait DirectBinaryBuiltin: BuiltinInfo + Sync {
-    const PRIMOP: DirectBinaryPrimOp;
-}
-
-macro_rules! direct_binary_builtin {
-    ($ty:ident, $primop:expr) => {
-        impl DirectBinaryBuiltin for $ty {
-            const PRIMOP: DirectBinaryPrimOp = $primop;
-        }
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 2, args.len())?;
-                eval.eval_direct_binary_primop_direct(
-                    call,
-                    node,
-                    <Self as DirectBinaryBuiltin>::PRIMOP,
-                    args[0],
-                    args[1],
-                )
-            }
-        }
-    };
-}
-
-trait DirectTernaryBuiltin: BuiltinInfo + Sync {
-    const PRIMOP: StrictTernaryPrimOp;
-}
-
-macro_rules! direct_ternary_builtin {
-    ($ty:ident, $primop:expr) => {
-        impl DirectTernaryBuiltin for $ty {
-            const PRIMOP: StrictTernaryPrimOp = $primop;
-        }
-
-        impl Builtin for $ty {
-            fn metadata(&self) -> BuiltinMetadata {
-                <Self as BuiltinInfo>::METADATA
-            }
-
-            fn apply_direct(
-                &self,
-                eval: &mut TreeWalk<'_>,
-                call: BuiltinCall,
-                _node: &IrNode,
-                args: &[IrId],
-            ) -> Result<Value, TreeWalkError> {
-                check_builtin_arity(call, 3, args.len())?;
-                eval.eval_strict_ternary_primop_direct(
-                    call,
-                    <Self as DirectTernaryBuiltin>::PRIMOP,
-                    args[0],
-                    args[1],
-                    args[2],
-                )
-            }
-        }
-    };
+fn unsupported_builtin_attr(id: IrId, span: Span, symbol: Symbol) -> Result<Value, TreeWalkError> {
+    Err(TreeWalkError::new(
+        TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
+        span,
+    ))
 }
 
 fn check_builtin_arity(
@@ -9874,532 +9779,18 @@ fn check_builtin_arity(
     ))
 }
 
-macro_rules! builtin_registry {
-    ($($kind:ident $ty:ident $(, $name:expr $(, $primop:expr)? )?;)*) => {
-        $(builtin_registry!(@declare $kind $ty $(, $name $(, $primop)? )?);)*
-
-        static BUILTIN_REGISTRY: &[&dyn Builtin] = &[
-            $(&$ty,)*
-        ];
-    };
-
-    (@declare custom_value $ty:ident, $name:expr) => {};
-
-    (@declare custom_strict_unary $ty:ident, $name:expr) => {};
-
-    (@declare strict_lazy_binary $ty:ident, $name:expr) => {};
-
-    (@declare derivation_strict $ty:ident, $name:expr) => {
-        unsupported_builtin!($ty);
-    };
-
-    (@declare strict_unary $ty:ident, $name:expr, $primop:expr) => {
-        strict_unary_builtin!($ty, $primop);
-    };
-
-    (@declare lazy_unary $ty:ident, $name:expr) => {
-        lazy_unary_builtin!($ty);
-    };
-
-    (@declare effectful_strict_unary $ty:ident, $name:expr, $primop:expr) => {
-        strict_unary_builtin!($ty, $primop);
-    };
-
-    (@declare custom_effectful_strict_unary $ty:ident, $name:expr) => {};
-
-    (@declare strict_binary $ty:ident, $name:expr, $primop:expr) => {
-        strict_binary_builtin!($ty, $primop);
-    };
-
-    (@declare effectful_strict_binary $ty:ident, $name:expr, $primop:expr) => {
-        strict_binary_builtin!($ty, $primop);
-    };
-
-    (@declare direct_binary $ty:ident, $name:expr, $primop:expr) => {
-        direct_binary_builtin!($ty, $primop);
-    };
-
-    (@declare direct_ternary $ty:ident, $name:expr, $primop:expr) => {
-        direct_ternary_builtin!($ty, $primop);
-    };
-
-    (@declare unsupported $ty:ident, $name:expr) => {
-        unsupported_builtin!($ty);
-    };
-
-    (@declare effectful_unary_unsupported $ty:ident, $name:expr) => {
-        effectful_unary_unsupported_builtin!($ty);
-    };
+fn lookup_builtin_by_name(name: &[u8]) -> Option<BuiltinMetadata> {
+    builtin_metadata(name)
 }
 
-impl Builtin for TrueBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        _id: IrId,
-        _span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        Ok(Value::bool(true))
-    }
-}
-
-impl Builtin for FalseBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        _id: IrId,
-        _span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        Ok(Value::bool(false))
-    }
-}
-
-impl Builtin for NullBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        _id: IrId,
-        _span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        Ok(Value::null())
-    }
-}
-
-impl Builtin for CurrentSystemBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn is_available(&self, eval: &TreeWalk<'_>) -> bool {
-        eval.options.current_system().is_some()
-    }
-
-    fn select(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        id: IrId,
-        span: Span,
-        symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        let Some(current_system) = eval.options.current_system() else {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
-                span,
-            ));
-        };
-        let current_system = current_system.to_vec();
-        eval.alloc_static_string(id, span, &current_system)
-    }
-}
-
-impl Builtin for CurrentTimeBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn is_available(&self, eval: &TreeWalk<'_>) -> bool {
-        eval.options.current_time().is_some()
-    }
-
-    fn select(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        id: IrId,
-        span: Span,
-        symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        let Some(current_time) = eval.options.current_time() else {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
-                span,
-            ));
-        };
-        Ok(Value::int(current_time))
-    }
-}
-
-impl Builtin for StoreDirBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        id: IrId,
-        span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        let store_dir = eval.options.store_dir().to_vec();
-        eval.alloc_static_string(id, span, &store_dir)
-    }
-}
-
-impl Builtin for NixVersionBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        id: IrId,
-        span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        eval.alloc_static_string(id, span, PINNED_NIX_VERSION)
-    }
-}
-
-impl Builtin for LangVersionBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn select(
-        &self,
-        _eval: &mut TreeWalk<'_>,
-        _id: IrId,
-        _span: Span,
-        _symbol: Symbol,
-    ) -> Result<Value, TreeWalkError> {
-        Ok(Value::int(PINNED_NIX_LANG_VERSION))
-    }
-}
-
-impl Builtin for TryEvalBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        eval.eval_try_eval_direct(call.id, call.span, args[0])
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        eval.eval_try_eval_value(call.id, call.span, args[0])
-    }
-}
-
-impl Builtin for PathExistsBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let argument_span = eval.node(argument)?.span;
-        let value = eval.eval_node(argument)?;
-        eval.eval_path_exists_primop(argument, argument_span, value)
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
-        eval.eval_path_exists_primop(argument.id(), argument.span(), value)
-    }
-}
-
-impl Builtin for ReadDirBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let argument_span = eval.node(argument)?.span;
-        let value = eval.eval_node(argument)?;
-        eval.eval_read_dir_primop(call.id, call.span, argument, argument_span, value)
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
-        eval.eval_read_dir_primop(call.id, call.span, argument.id(), argument.span(), value)
-    }
-}
-
-impl Builtin for ReadFileBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let argument_span = eval.node(argument)?.span;
-        let value = eval.eval_node(argument)?;
-        eval.eval_read_file_primop(call.id, call.span, argument, argument_span, value)
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
-        eval.eval_read_file_primop(call.id, call.span, argument.id(), argument.span(), value)
-    }
-}
-
-impl Builtin for ReadFileTypeBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let argument_span = eval.node(argument)?.span;
-        let value = eval.eval_node(argument)?;
-        eval.eval_read_file_type_primop(call.id, call.span, argument, argument_span, value)
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 1, args.len())?;
-        let argument = args[0];
-        let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
-        eval.eval_read_file_type_primop(call.id, call.span, argument.id(), argument.span(), value)
-    }
-}
-
-impl Builtin for SeqBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 2, args.len())?;
-        eval.eval_seq_primop(args[0], args[1])
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 2, args.len())?;
-        let first = args[0];
-        let value = eval.force_value(first.id(), first.span(), first.value())?;
-        eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)?;
-        Ok(args[1].value())
-    }
-}
-
-impl Builtin for DeepSeqBuiltin {
-    fn metadata(&self) -> BuiltinMetadata {
-        <Self as BuiltinInfo>::METADATA
-    }
-
-    fn apply_direct(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        _node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 2, args.len())?;
-        eval.eval_deep_seq_primop(args[0], args[1])
-    }
-
-    fn apply(
-        &self,
-        eval: &mut TreeWalk<'_>,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError> {
-        check_builtin_arity(call, 2, args.len())?;
-        let first = args[0];
-        let value = eval.force_value(first.id(), first.span(), first.value())?;
-        if !eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)? {
-            let mut visited = Vec::new();
-            eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
-        }
-        Ok(args[1].value())
-    }
-}
-
-builtin_definitions!(builtin_registry);
-
-fn lookup_builtin_by_name(name: &[u8]) -> Option<&'static dyn Builtin> {
-    BUILTIN_REGISTRY
-        .iter()
-        .copied()
-        .find(|builtin| builtin.name() == name)
-}
-
-fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<&'static dyn Builtin> {
+fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<BuiltinMetadata> {
     symbols.resolve(symbol).and_then(lookup_builtin_by_name)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StrictUnaryPrimOp {
-    Abort,
-    IsAttrs,
-    IsList,
-    IsFunction,
-    IsString,
-    IsInt,
-    IsFloat,
-    IsBool,
-    IsNull,
-    IsPath,
-    TypeOf,
-    Length,
-    AttrNames,
-    AttrValues,
-    Tail,
-    FunctionArgs,
-    Head,
-    Ceil,
-    Floor,
-    HasContext,
-    GetContext,
-    GetEnv,
-    AddDrvOutputDependencies,
-    UnsafeDiscardOutputDependency,
-    UnsafeDiscardStringContext,
-    StringLength,
-    BaseNameOf,
-    DirOf,
-    ParseDrvName,
-    SplitVersion,
-    FromJson,
-    ToString,
-    ToJson,
-    ConvertHash,
-    ListToAttrs,
-    ConcatLists,
-    Throw,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ThrowAbortOp {
     Throw,
     Abort,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StrictTernaryPrimOp {
-    FoldlStrict,
-    ReplaceStrings,
-    Substring,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StrictBinaryPrimOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    BitAnd,
-    BitOr,
-    BitXor,
-    CompareVersions,
-    ElemAt,
-    LessThan,
-    HashString,
-    HashFile,
-    All,
-    Any,
-    ConcatMap,
-    Filter,
-    GenList,
-    GroupBy,
-    Map,
-    Partition,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DirectBinaryPrimOp {
-    GetAttr,
-    HasAttr,
-    RemoveAttrs,
-    IntersectAttrs,
-    CatAttrs,
-    Elem,
-    ConcatStringsSep,
 }
 
 #[derive(Debug, Default)]
@@ -11277,8 +10668,7 @@ mod tests {
         IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
     use crate::runtime::builtins::{
-        BUILTIN_METADATA, BuiltinDirect, BuiltinEffect, BuiltinMetadata, builtin_metadata,
-        direct_builtin,
+        BUILTIN_METADATA, BuiltinDirect, BuiltinEffect, BuiltinMetadata, direct_builtin,
     };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{Symbol, SymbolTable, parse_str};
@@ -11585,30 +10975,15 @@ mod tests {
     }
 
     #[test]
-    fn builtin_registry_matches_shared_builtin_names() {
-        let registry_names = BUILTIN_REGISTRY
-            .iter()
-            .map(|builtin| builtin.name())
-            .collect::<BTreeSet<_>>();
-        let scope_names = BUILTIN_METADATA
+    fn builtin_lookup_uses_shared_metadata_registry() {
+        let metadata_names = BUILTIN_METADATA
             .iter()
             .map(BuiltinMetadata::name)
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(registry_names.len(), BUILTIN_REGISTRY.len());
-        assert_eq!(scope_names.len(), BUILTIN_METADATA.len());
-        assert_eq!(registry_names, scope_names);
-    }
-
-    #[test]
-    fn builtin_trait_metadata_comes_from_shared_records() {
-        for builtin in BUILTIN_REGISTRY {
-            let metadata =
-                builtin_metadata(builtin.name()).expect("executor builtin has shared metadata");
-
-            assert_eq!(builtin.metadata(), metadata);
-            assert_eq!(builtin.first_class_arity(), metadata.first_class_arity());
-            assert_eq!(builtin.docs(), metadata.docs());
+        assert_eq!(metadata_names.len(), BUILTIN_METADATA.len());
+        for metadata in BUILTIN_METADATA {
+            assert_eq!(lookup_builtin_by_name(metadata.name()), Some(*metadata));
         }
     }
 
