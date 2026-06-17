@@ -14,6 +14,7 @@
   ...
 }: let
   cfg = config.aos.profiles.server;
+  k3sCommon = import ../../pkgs/kubernetes/_k3s-common.nix {inherit lib pkgs;};
 in {
   options.aos.profiles.server = {
     enable = lib.mkOption {
@@ -47,21 +48,38 @@ in {
     aos.security.level = lib.mkDefault "standard";
 
     # System packages for server administration
-    environment.systemPackages = [
-      pkgs.procps-ng
-      pkgs.lsof
-      pkgs.iproute2
-      pkgs.ethtool
-      pkgs.curl
-      pkgs.jq
-    ];
+    environment.systemPackages =
+      [
+        pkgs.procps-ng
+        pkgs.lsof
+        pkgs.iproute2
+        pkgs.ethtool
+        pkgs.curl
+        pkgs.jq
+      ]
+      ++ k3sCommon.runtimePath;
 
     aos.roles.aos-registry-server.bundle = true;
-    aos.roles.k3s-control-plane.bundle = true;
-    aos.roles.k3s-worker.bundle = true;
-    aos.roles.k3s-combined.bundle = true;
     aos.roles.test-http-server.bundle = true;
     aos.roles.aos-test-agent.bundle = true;
+
+    aos.packages.k3s-control-plane = {
+      package = lib.mkDefault pkgs.k3s-control-plane;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
+
+    aos.packages.k3s-worker = {
+      package = lib.mkDefault pkgs.k3s-worker;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
+
+    aos.packages.k3s-combined = {
+      package = lib.mkDefault pkgs.k3s-combined;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
 
     aos.packages.test-http-server = {
       package = pkgs.test-http-server;

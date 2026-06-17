@@ -1339,9 +1339,10 @@ in rec {
       authoredServiceConfig = unit.serviceConfig or {};
       checkedAuthoredServiceConfig =
         validateNoPrivilegedExecPrefixes packageName unitName authoredServiceConfig;
+      unconfined = confinementClass == "unconfined";
     in
       checkedAuthoredServiceConfig
-      // {
+      // lib.optionalAttrs (!unconfined) {
         RootDirectory = "${payloadRoot}";
         MountAPIVFS = true;
         ProtectSystem = "strict";
@@ -1350,6 +1351,38 @@ in rec {
         TemporaryFileSystem = ["/tmp" "/var/tmp"];
         StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
         NoNewPrivileges = true;
+        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
+        BindPaths = readWriteHostPaths;
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RestrictSUIDSGID = true;
+      }
+      // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
+        StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
+      }
+      // lib.optionalAttrs unconfined {
+        Slice = packageSlice;
+      }
+      // lib.optionalAttrs (unconfined && cgroupDelegate) {
+        Delegate = true;
+      }
+      // lib.optionalAttrs (unconfined && privilegedUsers) {
+        DynamicUser = false;
+        PrivateUsers = false;
+      }
+      // lib.optionalAttrs (unconfined && network == "private") {
+        PrivateNetwork = true;
+      }
+      // lib.optionalAttrs (unconfined && network == "private-outbound") {
+        PrivateNetwork = false;
+        NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+      }
+      // lib.optionalAttrs (!unconfined) {
         DynamicUser = !privilegedUsers;
         PrivateUsers =
           if privilegedUsers
@@ -1362,24 +1395,14 @@ in rec {
         Delegate = cgroupDelegate;
         CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
         AmbientCapabilities = builtins.concatStringsSep " " capabilities;
-        BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
-        BindPaths = readWriteHostPaths;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectKernelLogs = true;
-        ProtectClock = true;
         ProtectControlGroups =
           if cgroupDelegate
           then false
           else "private";
-        ProtectHostname = true;
         SystemCallArchitectures = "native";
         RestrictAddressFamilies = addressFamilies;
         RestrictNamespaces = !privilegedUsers;
         RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
         Slice = packageSlice;
       }
       // lib.optionalAttrs (!rootEquivalent) {
@@ -1388,7 +1411,7 @@ in rec {
       }
       // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
       // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
-      // syscallFilterFor syscallProfile
+      // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile)
       // lib.optionalAttrs (network == "private-outbound") {
         PrivateNetwork = false;
         NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";

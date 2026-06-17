@@ -115,7 +115,7 @@ k3s is the motivating high-privilege package, and it is the clearest place the
 - **k3s declares host network and cgroups.** CNI configures host routes/bridges;
   kubelet manages host cgroups. A real netns/cgroup boundary breaks pod
   networking. So k3s's manifest declares `network = "host"` and `cgroup-delegate`
-  (`Delegate=yes`, already set in `modules/roles/kubernetes/k3s-worker.nix`),
+  (`Delegate=yes`, set by `pkgs/kubernetes/_k3s-expose-package.nix`),
   yielding effectively a **nominal** boundary (mount isolation only).
 - Conclusion: for k3s the wrapper is a **packaging/lifecycle wrapper, not a
   security boundary**, and the signed manifest says so plainly. The real

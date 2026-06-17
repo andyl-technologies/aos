@@ -52,10 +52,10 @@ The current, working config path for k3s is plain and worth stating exactly,
 because every option below is measured against it.
 
 k3s reaches config via a systemd `EnvironmentFile`, and the file is written
-by Ignition at first boot. From `modules/roles/kubernetes/k3s-worker.nix`:
+by Ignition at first boot. From `pkgs/kubernetes/_k3s-expose-package.nix`:
 
 ```nix
-serviceConfig.EnvironmentFile = "/etc/rancher/k3s/k3s.env";
+units."k3s.service".serviceConfig.EnvironmentFile = "/etc/rancher/k3s/k3s.env";
 ```
 
 and a preflight service guards it so a missing file fails cleanly rather than
