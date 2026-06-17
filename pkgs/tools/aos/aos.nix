@@ -11,6 +11,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-ebpf-net-policy,
   pkg-config,
   protobuf,
   systemd,
@@ -64,7 +65,7 @@ in
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    runtimeDeps = [openssl aos-landlock] ++ runtimeTools;
+    runtimeDeps = [openssl aos-landlock aos-ebpf-net-policy] ++ runtimeTools;
 
     preBuild = ''
       export OPENSSL_DIR="${openssl}"
@@ -74,6 +75,8 @@ in
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
+      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
     '';
 
     doCheck = true;
@@ -96,6 +99,8 @@ in
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
+      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER

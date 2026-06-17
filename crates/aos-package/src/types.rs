@@ -59,6 +59,9 @@ pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
 /// Registry feature flag for RFC-0001 generated MAC profile artifacts.
 pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
 
+/// Registry feature flag for RFC-0001 generated eBPF network policy loaders.
+pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -69,6 +72,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_CAPABILITY_ROUTES_V1,
     FEATURE_NETWORK_POLICY_V1,
     FEATURE_MAC_PROFILE_V1,
+    FEATURE_EBPF_NET_POLICY_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -1108,6 +1112,9 @@ pub fn validate_supported_package_meta_with(
         if !expose.provides.is_empty() || !expose.uses.is_empty() {
             require_feature(meta, FEATURE_CAPABILITY_ROUTES_V1)?;
         }
+        if expose_uses_ebpf_net_policy(&meta.name, expose) {
+            require_feature(meta, FEATURE_EBPF_NET_POLICY_V1)?;
+        }
         for required in &expose.requires {
             validate_package_name(required)
                 .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
@@ -1142,6 +1149,11 @@ fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
         "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
         meta.name
     )
+}
+
+fn expose_uses_ebpf_net_policy(package_name: &str, expose: &ExposeMeta) -> bool {
+    let unit = format!("aos-pkg-{package_name}-ebpf.service");
+    expose.units.iter().any(|candidate| candidate == &unit)
 }
 
 /// Validate an RFC-0001 exposure metadata block.
@@ -3931,6 +3943,53 @@ last_update = "2026-02-13T10:30:00Z"
 
         meta.requires_features
             .push(FEATURE_CAPABILITY_ROUTES_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_ebpf_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Web application".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_EBPF_NET_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_EBPF_NET_POLICY_V1.into());
         validate_supported_package_meta(&meta).unwrap();
     }
 

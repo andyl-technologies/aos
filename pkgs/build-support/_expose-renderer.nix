@@ -988,6 +988,8 @@ in rec {
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";
     firewallUnit = "aos-pkg-${packageName}-firewall.service";
     netnsUnit = "aos-pkg-${packageName}-netns.service";
+    ebpfUnit = "aos-pkg-${packageName}-ebpf.service";
+    packageSlice = "aos-pkg-${packageName}.slice";
     reservedCollisions =
       builtins.filter (
         unit: builtins.elem unit authoredUnitNames
@@ -1043,8 +1045,9 @@ in rec {
     sideEffectUnitNames =
       lib.optional (prepareHostPathDirectories != []) hostPathsUnit
       ++ [modulesUnit sysctlUnit firewallUnit]
-      ++ lib.optional (network == "private-outbound") netnsUnit;
-    reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit];
+      ++ lib.optional (network == "private-outbound") netnsUnit
+      ++ lib.optional (confinementClass != "unconfined") ebpfUnit;
+    reservedUnitNames = [target hostPathsUnit modulesUnit sysctlUnit firewallUnit netnsUnit ebpfUnit packageSlice];
     capabilities = permissions.capabilities or [];
     tcpBind = permissions.tcp-bind or [];
     tcpConnect = permissions.tcp-connect or [];
@@ -1163,6 +1166,18 @@ in rec {
     );
     netnsHash = builtins.substring 0 8 (builtins.hashString "sha256" packageName);
     netnsName = "aos-pkg-${packageName}";
+    systemdSliceCgroupPath = slice: let
+      base = lib.removeSuffix ".slice" slice;
+      parts = lib.splitString "-" base;
+      prefixes = builtins.genList (
+        i: builtins.concatStringsSep "-" (lib.take (i + 1) parts)
+      ) (builtins.length parts);
+    in
+      builtins.concatStringsSep "/" (builtins.map (prefix: "${prefix}.slice") prefixes);
+    ebpfEnabled = confinementClass != "unconfined";
+    ebpfPolicyPathPlaceholder = "@AOS_EXPOSE_ARTIFACT@/network-policy.json";
+    ebpfCgroupPath = "/sys/fs/cgroup/${systemdSliceCgroupPath packageSlice}";
+    ebpfCommand = "${pkgs.aos-ebpf-net-policy}/bin/aos-ebpf-net-policy run --policy ${ebpfPolicyPathPlaceholder} --cgroup ${ebpfCgroupPath} --object ${pkgs.aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o";
     netnsHostIf = "aos${netnsHash}h";
     netnsPeerIf = "aos${netnsHash}p";
     netnsSubnetIndex =
@@ -1365,6 +1380,7 @@ in rec {
         RestrictSUIDSGID = true;
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
+        Slice = packageSlice;
       }
       // lib.optionalAttrs (!rootEquivalent) {
         ProtectProc = "invisible";
@@ -1378,7 +1394,7 @@ in rec {
         NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
       };
 
-    memberUnitNames = authoredUnitNames ++ sideEffectUnitNames;
+    memberUnitNames = [packageSlice] ++ authoredUnitNames ++ sideEffectUnitNames;
     socketActivatedServiceFor = name: unit: let
       socketConfig = unit.socketConfig or {};
       accept = socketConfig.Accept or false;
@@ -1787,12 +1803,55 @@ in rec {
             ExecStopPost = netnsStopCommand;
           };
         };
+      }
+      // lib.optionalAttrs ebpfEnabled {
+        "${ebpfUnit}" = {
+          description = "Attach eBPF network policy for ${packageName}";
+          wantedBy = [target];
+          partOf = [target];
+          before = authoredUnitNames;
+          serviceConfig = {
+            Type = "notify";
+            NotifyAccess = "main";
+            Slice = packageSlice;
+            ExecStart = ebpfCommand;
+            NoNewPrivileges = true;
+            CapabilityBoundingSet = "CAP_BPF CAP_NET_ADMIN CAP_SYS_RESOURCE";
+            AmbientCapabilities = "";
+            LimitMEMLOCK = "infinity";
+            PrivateDevices = true;
+            DevicePolicy = "closed";
+            PrivateNetwork = true;
+            PrivateTmp = true;
+            ProtectSystem = "strict";
+            ProtectHome = true;
+            ProtectClock = true;
+            ProtectHostname = true;
+            ProtectKernelLogs = true;
+            ProtectKernelModules = true;
+            ProtectProc = "invisible";
+            ProcSubset = "pid";
+            SystemCallArchitectures = "native";
+            RestrictAddressFamilies = ["AF_UNIX"];
+            RestrictNamespaces = true;
+            RestrictRealtime = true;
+            RestrictSUIDSGID = true;
+            LockPersonality = true;
+            MemoryDenyWriteExecute = true;
+            UMask = "0077";
+          };
+        };
       };
     synthesizedUnits = builtins.seq reservedUnitsAvailable (
       builtins.seq preparedHostPathDirectoriesAvailable (
         builtins.mapAttrs addTargetMembership units
         // sideEffectUnits
         // {
+          "${packageSlice}" = {
+            description = "Package cgroup slice for ${packageName}";
+            wantedBy = [target];
+            partOf = [target];
+          };
           "${target}" = {
             description = "Activation target for ${packageName}";
             wants = uniqueUnits targetMemberUnitNames;
@@ -1902,6 +1961,21 @@ in rec {
         cp "$apparmorProfilePath" "$out/${macProfilePath}"
       ''
       else "";
+    ebpfArtifactPathCommands =
+      if ebpfEnabled
+      then ''
+        chmod u+w "$out/units"
+        for unit in "$out"/units/*.service; do
+          [ -e "$unit" ] || continue
+          if grep -q '@AOS_EXPOSE_ARTIFACT@' "$unit"; then
+            tmp="$unit.tmp"
+            sed "s|@AOS_EXPOSE_ARTIFACT@|$out|g" "$unit" > "$tmp"
+            rm -f "$unit"
+            mv "$tmp" "$unit"
+          fi
+        done
+      ''
+      else "";
     runCommandAttrs =
       {
         unitsDrv = rendered.unitsDrv;
@@ -1932,6 +2006,7 @@ in rec {
         cp "$networkPolicyPath" "$out/network-policy.json"
         cp "$macProfilePath" "$out/mac-profile.json"
         ${macProfileCommands}
+        ${ebpfArtifactPathCommands}
         ${credentialBlobCommands}
       ''
     ));
