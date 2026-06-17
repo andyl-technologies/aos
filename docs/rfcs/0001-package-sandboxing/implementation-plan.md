@@ -382,9 +382,13 @@ apm at first boot; define upgrade/rollback.
       against signed `expose.config.credentials`, provision `/etc` and `/run`
       credstore source paths, and encrypt encrypted credentials with
       `systemd-creds encrypt --with-key=tpm2 --tpm2-public-key-pcrs=11` using
-      the measured-boot PCR public key. Prebuilt `/usr/lib` credential blobs,
-      inline encrypted payload production, and external system-credential ingress
-      remain open ([`config.md`](config.md)).
+      the measured-boot PCR public key. Package-time `encryptedFile`
+      declarations now vendor already encrypted
+      `credstore.encrypted/aos/<package>/<name>` expose-artifact blobs, keep
+      build-only inputs out of `manifest.json`, and project those blobs under
+      `/run/credstore.encrypted/aos/...` before package targets start. Inline
+      encrypted payload production and external system-credential ingress remain
+      open ([`config.md`](config.md)).
 - [x] **Hot-reload plumbing (D25).** The manifest declares whether the service
       supports reload; a config change runs `systemctl reload-or-restart`
       (`Type=notify-reload`/`RELOADING=1` where supported, restart otherwise).
@@ -411,9 +415,11 @@ Bare-name imports remain an explicit appetite/import declaration. Desired files
 can now provision signed package-declared `/etc` and `/run` credstore sources;
 encrypted desired credentials are sealed with signed-PCR-11 policy, and measured
 boot publishes the PCR public key at `/etc/aos/pcr-sign.pem` for that path.
-Offline/package-time encrypted `/usr/lib` blobs, inline ciphertext production
-helpers, and external system-credential ingestion remain open and keep the phase
-at ◐ rather than ☑.
+Offline/package-time vendor blobs now build through `encryptedFile` metadata
+for already sealed ciphertext and are projected by `apm` under the AOS-owned
+runtime credstore namespace at `/run/credstore.encrypted/aos/...`. Inline
+ciphertext production helpers and external system-credential ingestion remain
+open and keep the phase at ◐ rather than ☑.
 
 **Closes when complete.** D8 (install half), D9, D11, D16, D18, D24, D25.
 

@@ -26,6 +26,7 @@ use crate::types::{
 };
 
 const DEFAULT_CREDENTIAL_PCR_PUBLIC_KEY: &str = "/etc/aos/pcr-sign.pem";
+const GENERATED_CREDENTIAL_RUN_PREFIX: &str = "/run/credstore.encrypted/aos";
 
 #[derive(Debug, Default)]
 pub(crate) struct CredentialReconciliation {
@@ -283,6 +284,13 @@ fn validate_provisionable_source(
             credential.name
         );
     }
+    if is_at_or_under(source_path, Path::new(GENERATED_CREDENTIAL_RUN_PREFIX)) {
+        bail!(
+            "desired credential '{}.{}' targets AOS generated credential namespace '{source}'; use a package encryptedFile declaration for generated blobs or a non-aos /etc or /run credstore source for desired provisioning",
+            package,
+            credential.name
+        );
+    }
     if credential.ciphertext.is_some() {
         bail!(
             "desired credential '{}.{}' cannot override signed inline ciphertext",
@@ -464,6 +472,12 @@ fn credential_targets(root: &Path, source: &str) -> Result<Vec<CredentialTarget>
         return credential_targets_for_prefix(root, source, "/etc/credstore");
     }
     if is_under(source, Path::new("/run/credstore.encrypted")) {
+        if is_at_or_under(source, Path::new(GENERATED_CREDENTIAL_RUN_PREFIX)) {
+            bail!(
+                "desired credential source '{}' is in the AOS generated credential namespace and cannot be provisioned",
+                source.display()
+            );
+        }
         return Ok(vec![CredentialTarget {
             path: rooted_absolute_path(root, source)?,
             directory_root: root.join("run/credstore.encrypted"),
@@ -528,6 +542,10 @@ fn rooted_absolute_path(root: &Path, path: &Path) -> Result<PathBuf> {
 
 fn is_under(path: &Path, prefix: &Path) -> bool {
     path != prefix && path.starts_with(prefix)
+}
+
+fn is_at_or_under(path: &Path, prefix: &Path) -> bool {
+    path == prefix || path.starts_with(prefix)
 }
 
 fn apply_credential_reconciliation(root: &Path, restart_units: BTreeSet<String>) -> Result<()> {
@@ -855,6 +873,33 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("immutable source path"));
+    }
+
+    #[test]
+    fn materialize_package_credentials_rejects_generated_projection_sources() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_credentials();
+        let expose = installed.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        expose.config.credentials[3].source =
+            Some("/run/credstore.encrypted/aos/web/vendor-secret".into());
+        let mut desired = BTreeMap::new();
+        desired.insert("vendor-secret".into(), "value".into());
+        let mut restart = BTreeSet::new();
+
+        let err = materialize_package_credentials(
+            &ApmSettings::default(),
+            tmp.path(),
+            "web",
+            &installed,
+            Some(&desired),
+            &mut restart,
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("AOS generated credential namespace")
+        );
     }
 
     #[test]

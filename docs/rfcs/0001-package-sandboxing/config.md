@@ -102,13 +102,16 @@ Relevant AOS surfaces, for grounding:
   The exposed-package renderer can emit `LoadCredential=` /
   `LoadCredentialEncrypted=` for service units, including fail-closed
   `name:/path` imports from systemd credstore directories, and
-  `SetCredentialEncrypted=` for signed inline encrypted payloads. For
-  install-at-boot desired files, `credentials.<package>.<name>` entries now
-  provision signed package-declared `/etc/credstore*` or `/run/credstore*`
-  sources. Encrypted desired credentials are produced with
-  `systemd-creds encrypt --with-key=tpm2 --tpm2-public-key-pcrs=11` using
-  `[settings].credential_pcr_public_key` or the measured-boot default
-  `/etc/aos/pcr-sign.pem`; `/usr/lib/credstore*` remains immutable/vendor-owned.
+  `SetCredentialEncrypted=` for signed inline encrypted payloads. Package-time
+  `encryptedFile` credential declarations vendor already encrypted blobs,
+  serialize only the generated
+  `/run/credstore.encrypted/aos/<package>/<name>` source path in the manifest,
+  and `apm` projects those blobs into the live runtime credstore before package
+  targets start. For install-at-boot desired files,
+  `credentials.<package>.<name>` entries now provision signed package-declared
+  `/etc/credstore*` or `/run/credstore*` sources. Encrypted desired credentials
+  use `[settings].credential_pcr_public_key` or the measured-boot default
+  `/etc/aos/pcr-sign.pem`; `/usr/lib/credstore*` remains package/vendor-owned.
 - `pkgs/system/systemd.nix` controls the systemd build flags. The credential
   substrate is verified by `checks.systemd-credentials`: `systemd-creds`, signed
   PCR TPM2 encryption flags, credstore tmpfiles entries, `systemd-measure`, TPM2
@@ -394,9 +397,10 @@ overlay, nothing for an operator to hand-edit):
    credstore — distinct from the mutable `/etc/credstore.encrypted/`), consumed
    by name with `ImportCredential=` / `LoadCredentialEncrypted=`.
 
-Both are produced offline with `systemd-creds encrypt`. Crucially the *plaintext*
-never lands on the target's writable disk: the artifact that ships is already
-ciphertext, decryptable only on a host whose TPM2 satisfies the sealing policy.
+Both are pre-produced outside the package build in a host/runtime sealing
+context with `systemd-creds encrypt`. Crucially the *plaintext* never lands on
+the target's writable disk: the artifact that ships is already ciphertext,
+decryptable only on a host whose TPM2 satisfies the sealing policy.
 
 ### How secrets are sealed (the policy that matters)
 
@@ -520,11 +524,15 @@ plugin.
   `name:/path` with `ConditionPathExists=` so missing blobs fail closed; bare-name
   imports remain an appetite/import declaration. Inline encrypted payload
   metadata renders `SetCredentialEncrypted=<name>:<ciphertext>` in signed unit
-  text. Desired files now provision `/etc` and `/run` credstore sources and
-  encrypt encrypted credentials with the signed-PCR-11 policy. Still open:
-  helper support for producing package/vendor `/usr/lib/credstore.encrypted`
-  blobs, producing inline encrypted payload metadata, and ingesting external
-  system credentials such as SMBIOS-provided first-boot secrets.
+  text. Package-time helpers now vendor already encrypted
+  `credstore.encrypted/aos/<package>/<name>` expose-artifact blobs from
+  `encryptedFile` declarations without serializing those build inputs into
+  `manifest.json`, and `apm` projects them under
+  `/run/credstore.encrypted/aos/...` before starting package targets. Desired files now
+  provision `/etc` and `/run` credstore sources and encrypt encrypted credentials
+  with the signed-PCR-11 policy. Still open: producing inline encrypted payload
+  metadata and ingesting external system credentials such as SMBIOS-provided
+  first-boot secrets.
 - **nspawn handoff.** The host→container `--load-credential` path for full-init
   containers (the Option 1 caveat: container must run systemd as PID 1) still
   needs an end-to-end test; k3s, being a nominal/host-privileged container, is
@@ -590,9 +598,11 @@ requirements vs. nice-to-haves — that prioritization is itself open.
    the contract.
 3. **Encrypted credential production.** Desired-file `/etc` and `/run`
    credstore provisioning owns one runtime path for `systemd-creds encrypt` and
-   signed-PCR-11 policy selection. Which package/module helper owns offline
-   `/usr/lib/credstore.encrypted` blobs, inline encrypted payload metadata, and
-   sealing-key custody?
+   signed-PCR-11 policy selection. Package-time `encryptedFile` declarations
+   can only vendor already sealed expose-artifact blobs that project under
+   `/run/credstore.encrypted/aos/...`; TPM2 sealing itself requires the target
+   TPM context. Which helper owns inline encrypted payload metadata, and how is
+   sealing-key custody surfaced for fleet operators?
 4. **Credential provisioning.** Desired-file provisioning covers host-authored
    plaintext that is consumed by `apm` and sealed into credstore payloads. Which
    first-boot path imports external system credentials, for example

@@ -96,6 +96,30 @@ mkDerivation {
 }
 ```
 
+Package-time encrypted credentials use the same signed `expose.config`
+metadata. A source-backed credential can point at an operator-managed credstore
+path, while a package/vendor blob can carry an already encrypted credential from
+the Nix store:
+
+```nix
+expose.config.credentials = [
+  {
+    name = "join-token";
+    encryptedFile = "${sealedToken}/join-token.cred";
+    units = ["example.service"];
+  }
+];
+```
+
+The renderer copies the opaque ciphertext into the expose artifact under
+`credstore.encrypted/aos/<package>/<name>` and serializes only
+`source = "/run/credstore.encrypted/aos/<package>/<name>"` in
+`manifest.json`; the `encryptedFile` build input does not leak into metadata.
+`apm` projects that AOS-owned runtime credstore subtree before starting package
+targets, because the live `/usr` tree is immutable. Sealing plaintext with
+`systemd-creds encrypt --with-key=tpm2` remains a host/runtime operation because
+TPM2 sealing requires a TPM context, not just the signed PCR public key.
+
 Multi-profile software — **meta-packages** (the Debian pattern: a near-empty
 payload + units + a dependency on the real package; `k3s-worker.deb` →
 `Depends: k3s`):
