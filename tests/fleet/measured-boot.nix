@@ -17,7 +17,7 @@
 #      policy still unseals, and PCR 7 is unchanged.
 #
 # Single image-boot machine with a vTPM (server-measured-boot: server +
-# SB-signed + PCR-policy-signed image + the bundled aos-test-agent role).
+# SB-signed + PCR-policy-signed image + the bundled aos-test-agent package).
 {
   lib,
   pkgs,
@@ -96,7 +96,7 @@ in {
       bootMode = "image";
       imageDiskMiB = 16384;
       tpm = true;
-      roles = ["aos-test-agent"];
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;
@@ -142,6 +142,17 @@ in {
               )
           except Exception:
               print(f"=== {label}: multi-user.target stalled — diagnostics ===")
+              failed = target.succeed("systemctl --failed --no-legend 2>&1 || true").strip()
+              if failed:
+                  print("--- failed units ---")
+                  print(failed)
+                  for line in failed.splitlines():
+                      fields = line.split()
+                      unit = fields[1] if fields and fields[0] == "*" else fields[0]
+                      print(f"--- journalctl -u {unit} -b ---")
+                      print(target.succeed(
+                          f"journalctl -u {unit} -b --no-pager -n 120 2>&1 || true"
+                      ))
               for cmd in (
                   "systemctl list-jobs --no-pager",
                   "systemctl --failed --no-pager",

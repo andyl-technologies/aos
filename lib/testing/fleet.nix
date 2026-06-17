@@ -61,6 +61,7 @@
   dataUrl = content: "data:,${uriEncode content}";
 
   mkFleetPackageFragment = m: let
+    hasPackage = package: builtins.elem package m.packages;
     mkDir = path: {
       inherit path;
       mode = 493; # 0755
@@ -72,6 +73,37 @@
       overwrite = true;
       contents.source = dataUrl text;
     };
+    mkLink = path: target: {
+      inherit path target;
+      hard = false;
+      overwrite = true;
+    };
+    agentPackage = m.system.config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
+    agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
+    agentUnit = ''
+      [Unit]
+      Description=AOS VM Test Guest Agent
+
+      [Service]
+      Type=simple
+      ExecStart=${agentPath}
+      Restart=on-failure
+      RestartSec=1
+      Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+
+      [Install]
+      WantedBy=multi-user.target
+    '';
+    agentDirs = lib.optionals (hasPackage "aos-test-agent") [
+      (mkDir "/etc/systemd/system")
+      (mkDir "/etc/systemd/system/multi-user.target.wants")
+    ];
+    agentFiles =
+      lib.optional (hasPackage "aos-test-agent")
+      (mkFile "/etc/systemd/system/aos-test-agent.service" agentUnit);
+    agentLinks =
+      lib.optional (hasPackage "aos-test-agent")
+      (mkLink "/etc/systemd/system/multi-user.target.wants/aos-test-agent.service" "../aos-test-agent.service");
   in
     if m.packages == []
     then {
@@ -83,15 +115,19 @@
     }
     else {
       storage = {
-        directories = [
-          (mkDir "/etc/aos/packages.d")
-        ];
-        files = [
-          (mkFile "/etc/aos/packages.d/fleet-seed" (
-            lib.concatMapStrings (package: "${package}\n") m.packages
-          ))
-        ];
-        links = [];
+        directories =
+          [
+            (mkDir "/etc/aos/packages.d")
+          ]
+          ++ agentDirs;
+        files =
+          [
+            (mkFile "/etc/aos/packages.d/fleet-seed" (
+              lib.concatMapStrings (package: "${package}\n") m.packages
+            ))
+          ]
+          ++ agentFiles;
+        links = agentLinks;
       };
     };
 

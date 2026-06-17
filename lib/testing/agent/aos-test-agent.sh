@@ -21,8 +21,8 @@ set -u
 # Test disks populate the FHS dirs (and /usr/local/bin wrappers must
 # shadow everything), so those come first; the inherited PATH is kept
 # as a fallback for image-boot machines, where there is no merged
-# /usr/bin and the aos-test-agent role unit provides the tool paths
-# via Environment= (modules/roles/aos-test-agent.nix).
+# /usr/bin and the exposed aos-test-agent package unit provides the
+# tool paths via Environment= (pkgs/tests/aos-test-agent.nix).
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 
 MAX=$((16 * 1024 * 1024))

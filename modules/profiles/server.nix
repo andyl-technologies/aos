@@ -60,7 +60,11 @@ in {
       ++ k3sCommon.runtimePath;
 
     aos.roles.aos-registry-server.bundle = true;
-    aos.roles.aos-test-agent.bundle = true;
+    aos.packages.aos-test-agent = {
+      package = pkgs.aos-test-agent;
+      bundle = true;
+      preset = false;
+    };
 
     aos.packages.k3s-control-plane = {
       package = lib.mkDefault pkgs.k3s-control-plane;

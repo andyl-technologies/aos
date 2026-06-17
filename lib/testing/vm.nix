@@ -217,8 +217,9 @@
       # only fall back to vsock when no virtio port shows up after a
       # short wait (Firecracker's transport).
       # The script body lives in agent/aos-test-agent.sh — shared with
-      # the aos-test-agent role (modules/roles/aos-test-agent.nix),
-      # which bakes the same bytes into image-boot fleet machines.
+      # the aos-test-agent exposed package
+      # (pkgs/tests/aos-test-agent.nix), which bakes the same bytes
+      # into image-boot fleet machines.
       # One source of truth for the agent protocol.
       cp ${./agent/aos-test-agent.sh} rootfs/opt/aos-test/bin/aos-test-agent
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent

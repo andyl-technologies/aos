@@ -4,7 +4,7 @@
 ##! on, pointed at the throwaway `secure-boot-test-keys`. Its image's UKI
 ##! and sd-boot are db-signed, and it ships the guest-side enrollment
 ##! tooling (efitools + `aos-sb-enroll`). The server profile already
-##! bundles the `aos-test-agent` role (so the fleet harness can drive
+##! bundles the `aos-test-agent` package (so the fleet harness can drive
 ##! it); `tests/fleet/secure-boot.nix` boots this image, enrolls keys,
 ##! reboots into enforcing mode, and asserts SB is active — then tampers
 ##! the UKI and asserts the firmware refuses it.
