@@ -26,7 +26,7 @@ macro_rules! builtin_definitions {
             strict_unary CeilBuiltin, b"ceil", StrictUnaryPrimOp::Ceil;
             strict_binary CompareVersionsBuiltin, b"compareVersions", StrictBinaryPrimOp::CompareVersions;
             strict_unary ConcatListsBuiltin, b"concatLists", StrictUnaryPrimOp::ConcatLists;
-            direct_binary ConcatMapBuiltin, b"concatMap", StrictBinaryPrimOp::ConcatMap;
+            strict_binary ConcatMapBuiltin, b"concatMap", StrictBinaryPrimOp::ConcatMap;
             direct_binary ConcatStringsSepBuiltin, b"concatStringsSep", StrictBinaryPrimOp::ConcatStringsSep;
             strict_unary ConvertHashBuiltin, b"convertHash", StrictUnaryPrimOp::ConvertHash;
             custom_value CurrentSystemBuiltin, b"currentSystem";
@@ -634,6 +634,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"partition").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"concatMap").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

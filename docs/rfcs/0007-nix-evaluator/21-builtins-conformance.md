@@ -385,7 +385,7 @@ Forcing order is observable and must match (see
       - With no/identity comparator semantics, falls back to `lessThan`-style
         ordering — pin exact behavior.
 - [ ] `concatLists` (lists) — flatten one level: concatenate a list of lists.
-- [ ] `concatMap` (f list) — `concatLists (map f list)`, but a single primop;
+- [x] `concatMap` (f list) — `concatLists (map f list)`, but a single primop;
       `f` must return a list per element.
 - [x] `all` (pred list) — `true` iff `pred` holds for every element;
       short-circuits on first `false`. Empty list → `true`.

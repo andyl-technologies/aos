@@ -6519,11 +6519,12 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
         let function = self.eval_node(function_id)?;
-        if function.tag() != ValueTag::Lambda {
+        let function = self.force_value(function_id, function_span, function)?;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: function_id,
-                    expected: "lambda",
+                    expected: "function",
                     actual: function.tag(),
                 },
                 function_span,
@@ -6532,6 +6533,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -6555,11 +6557,88 @@ impl<'ir> TreeWalk<'ir> {
             Self::clone_list_elements(list_id, list_span, list)?
         };
 
+        self.eval_concat_map_elements(
+            id,
+            span,
+            function_id,
+            function_span,
+            function,
+            list_id,
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_concat_map_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let function_value = self.force_value(function.id(), function.span(), function.value())?;
+        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function.id(),
+                    expected: "function",
+                    actual: function_value.tag(),
+                },
+                function.span(),
+            ));
+        }
+
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+
+        self.eval_concat_map_elements(
+            id,
+            span,
+            function.id(),
+            function.span(),
+            function_value,
+            list.id(),
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_concat_map_elements(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        list_id: IrId,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
         let mut output = Vec::new();
         for element in elements {
             let mapped = self.apply_lambda_value(
-                function_id,
-                function_span,
+                id,
+                span,
                 function_id,
                 function,
                 function_span,
@@ -7336,6 +7415,9 @@ impl<'ir> TreeWalk<'ir> {
             StrictBinaryPrimOp::Any => {
                 self.eval_all_any_primop_value(id, span, AllAnyOp::Any, first, second)
             }
+            StrictBinaryPrimOp::ConcatMap => {
+                self.eval_concat_map_primop_value(id, span, first, second)
+            }
             StrictBinaryPrimOp::Filter => self.eval_filter_primop_value(id, span, first, second),
             StrictBinaryPrimOp::GenList => self.eval_gen_list_primop_value(id, span, first, second),
             StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
@@ -7350,7 +7432,6 @@ impl<'ir> TreeWalk<'ir> {
             | StrictBinaryPrimOp::CatAttrs
             | StrictBinaryPrimOp::Elem
             | StrictBinaryPrimOp::ConcatStringsSep
-            | StrictBinaryPrimOp::ConcatMap
             | StrictBinaryPrimOp::GroupBy => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
                 span,
@@ -11594,6 +11675,10 @@ mod tests {
         assert_eq!(eval("builtins.isFunction builtins.all").as_bool(), Ok(true));
         assert_eq!(eval("builtins.isFunction builtins.any").as_bool(), Ok(true));
         assert_eq!(
+            eval("builtins.isFunction builtins.concatMap").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval("builtins.isFunction builtins.filter").as_bool(),
             Ok(true)
         );
@@ -13090,6 +13175,21 @@ mod tests {
             Ok(1)
         );
         assert_eq!(
+            eval("builtins.elemAt (builtins.concatMap builtins.attrValues [ { a = 1; } { b = 2; } ]) 1")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (let f = builtins.concatMap; in f builtins.attrValues [ { a = 1; } { b = 2; } ])")
+                .as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("let f = x: []; xs = [ (1 / 0) ]; in builtins.length (builtins.concatMap f xs)")
+                .as_int(),
+            Ok(0)
+        );
+        assert_eq!(
             eval("let builtins = { concatMap = f: list: [ 42 ]; }; in builtins.concatMap (x: []) [] == [ 42 ]")
                 .as_bool(),
             Ok(true)
@@ -13138,11 +13238,42 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: function,
-                expected: "lambda",
+                expected: "function",
                 actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), function_span);
+
+        let error = eval_whnf_owned(&lower(
+            "let f = builtins.concatMap; in f (builtins.throw \"function\") (builtins.throw \"list\")",
+        ))
+        .expect_err("first-class concatMap forces function before list");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"function");
+
+        let error = eval_whnf_owned(&lower("let f = builtins.concatMap; in f (x: [ x ]) 1"))
+            .expect_err("first-class concatMap requires a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("let f = builtins.concatMap; in f (x: 1) [ \"a\" ]"))
+            .expect_err("first-class concatMap requires list results");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
 
         let ir = lower("builtins.concatMap (x: [ x ]) 1");
         let root = ir.arena.node(ir.root).expect("root exists");
