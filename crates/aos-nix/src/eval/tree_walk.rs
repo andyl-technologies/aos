@@ -29479,6 +29479,27 @@ mod tests {
     }
 
     #[test]
+    fn dot_slash_dot_resolves_to_path_literal_base() {
+        let dir = unique_temp_dir("dot-slash-dot-path");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(dir.as_os_str().as_bytes().to_vec())
+            .expect("path-literal base configures");
+
+        assert_eq!(
+            eval_path_bytes_with_options("./.", options.clone()),
+            dir.as_os_str().as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.typeOf ./.", options),
+            b"path"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn path_interpolation_copies_sources_to_store_contexts() {
         let (dir, path) = temp_file_with_bytes("path-interpolation", b"abc");
         let path = path_source(&path);

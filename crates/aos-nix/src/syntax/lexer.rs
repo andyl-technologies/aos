@@ -916,6 +916,10 @@ impl<'a> Lexer<'a> {
             break;
         }
 
+        if matches!(&self.source[self.cursor..cursor], b"./" | b"../") {
+            return false;
+        }
+
         saw_slash
     }
 
@@ -1318,6 +1322,21 @@ mod tests {
                 TokenKind::Path,
                 TokenKind::Whitespace,
                 TokenKind::Path,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn dot_slash_dot_is_path_but_dot_slash_is_not() {
+        let kinds = lex_kinds("./. ./").expect("lexes");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Path,
+                TokenKind::Whitespace,
+                TokenKind::Dot,
+                TokenKind::Slash,
                 TokenKind::Eof,
             ]
         );

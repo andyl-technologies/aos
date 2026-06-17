@@ -252,7 +252,7 @@ search paths, and store coercion.
       least one `/` to be recognized as a path). Resolved relative to the
       *directory of the file being evaluated* (the base directory), producing an
       absolute path value.
-- [ ] **`./.` and `./` forms** — `./.` is the current directory; verify `./`
+- [x] **`./.` and `./` forms** — `./.` is the current directory; verify `./`
       acceptance against pinned Nix.
 - [ ] **Absolute path literal** — `/etc/foo`. A leading `/` makes it absolute.
 - [ ] **Home-relative path** — `~/foo` expands using the user's home directory.

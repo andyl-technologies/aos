@@ -2476,6 +2476,23 @@ mod tests {
     }
 
     #[test]
+    fn dot_slash_dot_is_path_but_dot_slash_is_syntax_error() {
+        let ast = parse("./.");
+        assert_eq!(node(&ast, ast.root).kind, NodeKind::Path);
+        assert_eq!(string_bytes(&ast, ast.root), b"./.");
+
+        let error = parse_str("./").expect_err("bare ./ is not a path expression");
+        assert_eq!(error.span(), Span::new(0, 1));
+        assert!(matches!(
+            error.kind(),
+            ParseErrorKind::UnexpectedToken {
+                found: TokenKind::Dot,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn double_quoted_strings_decode_escape_forms() {
         let ast = parse("\"\\n\\r\\t\\\\\\\"\\${ $${\"");
         assert_eq!(string_bytes(&ast, ast.root), b"\n\r\t\\\"${ $${");
