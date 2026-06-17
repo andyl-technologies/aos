@@ -193,9 +193,9 @@ of its string inputs; context is string-granular, never byte-granular.
       - Preserves the **entire** context of `s` (Nix does not slice context).
 - [ ] `stringLength` (e) — length of `e` in **bytes** (after coercion to
       string), not codepoints.
-- [ ] `replaceStrings` (from to s) — simultaneously replace each occurrence of
-      `from[i]` with `to[i]` in `s`, left-to-right, longest-match-at-position
-      first-listed-wins, non-overlapping, single pass.
+- [x] `replaceStrings` (from to s) — simultaneously replace each occurrence of
+      `from[i]` with `to[i]` in `s`, left-to-right, first matching pattern in
+      `from` order wins at each position, non-overlapping, single pass.
       - The empty pattern `""` matches at every position (including end) and is
         a documented edge case used in nixpkgs; reproduce the exact insertion
         behavior.
@@ -205,10 +205,10 @@ of its string inputs; context is string-granular, never byte-granular.
       - Unions the separator's context and every element's context.
       - Element coercion follows `toString` rules (so a list element that is a
         derivation contributes its `outPath` + context).
-- [ ] `splitVersion` (s) — split a version string into its component parts
+- [x] `splitVersion` (s) — split a version string into its component parts
       (digit runs and non-digit runs become elements; separators dropped).
       Returns a list of strings.
-- [ ] `compareVersions` (s1 s2) — return `-1`, `0`, or `1` per Nix's version
+- [x] `compareVersions` (s1 s2) — return `-1`, `0`, or `1` per Nix's version
       ordering algorithm (the same one `nix-env -u` uses).
       - The algorithm has specific rules for empty components and for `"pre"`
         sorting *before* the empty component; these are non-obvious and must be
@@ -229,13 +229,14 @@ of its string inputs; context is string-granular, never byte-granular.
       - This interleaving shape is the surprising part and is exactly what
         nixpkgs' `lib.splitString`-adjacent code consumes; reproduce precisely.
       - Same regex-dialect caveat as `match`.
-- [ ] `parseDrvName` (s) — split a derivation name `"foo-1.2"` into
-      `{ name = "foo"; version = "1.2"; }` at the first dash that is followed by
-      a digit. Edge cases (no version, leading digits) must match.
-- [ ] `baseNameOf` (x) — the final path component of a coerced string/path.
+- [x] `parseDrvName` (s) — split a derivation name `"foo-1.2"` into
+      `{ name = "foo"; version = "1.2"; }` at the first dash followed by a
+      non-ASCII-alphabetic byte. A trailing dash does not split. Edge cases (no
+      version, leading digits) must match.
+- [x] `baseNameOf` (x) — the final path component of a coerced string/path.
       Trailing-slash and empty-string behavior must match. **String-granular**:
       operates on the string form; context is preserved.
-- [ ] `dirOf` (s) — everything but the final component (the "directory" of a
+- [x] `dirOf` (s) — everything but the final component (the "directory" of a
       coerced string/path). On a path returns a path; on a string returns a
       string. Root/`.`/no-slash edge cases must match.
 
@@ -914,7 +915,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
       `replaceStrings`) context union.
 - [ ] `attrNames` / `attrValues` / `mapAttrs` / `groupBy` sorted-by-name order.
 - [ ] `sort` stability and tie-breaking; `lessThan` cross-type/list ordering.
-- [ ] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
+- [x] `compareVersions` / `splitVersion` / `parseDrvName` exact algorithms.
 - [ ] `match` / `split` regex dialect (named risk vs. Rust `regex`).
 - [ ] `div` truncate-toward-zero; int/float promotion and float rendering.
 - [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.

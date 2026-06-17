@@ -1235,6 +1235,12 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         match value.tag() {
             ValueTag::String => Ok(value),
+            ValueTag::Path => {
+                let path = self.clone_path_value(id, span, value)?;
+                self.heap.alloc_string(path).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
             ValueTag::Attrs => self.coerce_attrs_to_string(id, value, span),
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -3578,6 +3584,34 @@ impl<'ir> TreeWalk<'ir> {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
+        if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(argument, argument_span, value)?;
+            let result = match dir_name_range(path.bytes()) {
+                Some((start, len)) => {
+                    path.substring_preserve_context(start, len)
+                        .map_err(|source| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::String {
+                                    id: argument,
+                                    source,
+                                },
+                                argument_span,
+                            )
+                        })?
+                }
+                None => context_free_dot_string(argument, argument_span)?,
+            };
+            return self.heap.alloc_path(result).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            });
+        }
+
         let string = self.coerce_to_string(argument, value, argument_span)?;
         let result = {
             let string = self.heap.get_string(string).map_err(|source| {
@@ -4613,6 +4647,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<NixString, TreeWalkError> {
         match value.tag() {
             ValueTag::String => self.clone_string_value(value_id, value_span, value),
+            ValueTag::Path => self.clone_path_value(value_id, value_span, value),
             ValueTag::Int => Ok(NixString::from_bytes(
                 (value.payload_bits() as i64).to_string().into_bytes(),
             )),
@@ -13075,6 +13110,56 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_string_path_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        let version = cpp_nix_version(&oracle);
+        assert!(
+            version.contains("(Nix) 2.24."),
+            "expected a C++ Nix 2.24.x oracle, got {version}"
+        );
+        eprintln!("C++ Nix oracle: {version}");
+
+        for source in [
+            r#"builtins.substring 1 3 "abcdef""#,
+            r#"builtins.substring 1 2 { outPath = "abcd"; }"#,
+            r#"let slice = builtins.substring 1; take2 = slice 2; in take2 "abcd""#,
+            r#"builtins.stringLength "a\n""#,
+            r#"builtins.stringLength { __toString = self: self.name; name = "custom"; }"#,
+            r#"builtins.replaceStrings [ "a" "bc" ] [ "x" "Y" ] "abcabc""#,
+            r#"builtins.replaceStrings [ "" ] [ "x" ] "ab""#,
+            r#"builtins.replaceStrings [ "a" "ab" ] [ "X" "Y" ] "ababa""#,
+            r#"builtins.replaceStrings [ "ab" "a" ] [ "Y" "X" ] "ababa""#,
+            r#"let replace = builtins.replaceStrings [ "a" ]; swap = replace [ "b" ]; in swap "a""#,
+            r#"builtins.concatStringsSep ":" [ "a" { outPath = "b"; } { __toString = self: "c"; } ]"#,
+            r#"let join = builtins.concatStringsSep ","; in join [ "a" "b" ]"#,
+            r#"builtins.splitVersion "1.0pre2""#,
+            r#"builtins.splitVersion "foo-1.2_bar""#,
+            r#"builtins.splitVersion "1+2~pre""#,
+            r#"builtins.compareVersions "1.0pre2" "1.0pre10""#,
+            r#"builtins.compareVersions "1a" "1.0""#,
+            r#"builtins.compareVersions "1.0" "1.0.0""#,
+            r#"let cmp = builtins.compareVersions "1.2"; in cmp "1.10""#,
+            r#"builtins.parseDrvName "foo-1.2""#,
+            r#"builtins.parseDrvName "foo--1""#,
+            r#"builtins.parseDrvName "foo-.1""#,
+            r#"builtins.parseDrvName "foo-_1""#,
+            r#"builtins.parseDrvName "foo-A-1""#,
+            r#"builtins.parseDrvName "foo-""#,
+            r#"builtins.parseDrvName "-1""#,
+            r#"builtins.baseNameOf "/a/b/""#,
+            r#"builtins.dirOf "/a/b/""#,
+            r#"builtins.baseNameOf "a//""#,
+            r#"builtins.dirOf "a//""#,
+            r#"builtins.baseNameOf "//a""#,
+            r#"builtins.dirOf "//a""#,
+            r#"builtins.dirOf { __toString = self: "/a/b"; }"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+    }
+
+    #[test]
     fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
         for (source, name) in [
             ("builtins.exec or 42", b"exec".as_slice()),
@@ -18139,6 +18224,22 @@ mod tests {
             b"-1"
         );
         assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-.1\").name"),
+            b"foo"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-.1\").version"),
+            b".1"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-_1\").name"),
+            b"foo"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-_1\").version"),
+            b"_1"
+        );
+        assert_eq!(
             eval_string_bytes("(builtins.parseDrvName \"foo-A-1\").name"),
             b"foo-A"
         );
@@ -18155,6 +18256,14 @@ mod tests {
             "é-1".as_bytes()
         );
         assert_eq!(eval_string_bytes("(builtins.parseDrvName \"\").name"), b"");
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-\").name"),
+            b"foo-"
+        );
+        assert_eq!(
+            eval_string_bytes("(builtins.parseDrvName \"foo-\").version"),
+            b""
+        );
         assert_eq!(
             eval_string_bytes("(builtins.parseDrvName \"-1\").version"),
             b"1"
@@ -19005,6 +19114,44 @@ mod tests {
             }
         );
         assert_eq!(error.span(), path_span);
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn string_coercion_primops_accept_paths_without_store_copy() {
+        let (dir, path) = temp_file_with_bytes("path-string-coercion", b"abc");
+        let path = path_source(&path);
+        let expected_dir = path_source(&dir);
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString {path}")),
+            path.as_bytes()
+        );
+        assert_eq!(
+            eval(&format!("builtins.stringLength {path}")).as_int(),
+            Ok(path.len() as i64)
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.substring 0 1 {path}")),
+            b"/"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.concatStringsSep \",\" [ \"x\" {path} ]")),
+            format!("x,{path}").as_bytes()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.baseNameOf {path}")),
+            b"data.txt"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.typeOf (builtins.dirOf {path})")),
+            b"path"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.toString (builtins.dirOf {path})")),
+            expected_dir.as_bytes()
+        );
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }
