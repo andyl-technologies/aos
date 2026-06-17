@@ -402,7 +402,8 @@ directory/namespace/socket capability-route drop-ins. Signed credential metadata
 now renders `LoadCredentialEncrypted=` / `LoadCredential=` into the consuming
 service units; when a credential declares a credstore `source`, the renderer
 emits `name:/path` plus `ConditionPathExists=` so missing credential blobs fail
-closed. Bare-name imports remain an explicit appetite/import declaration. Offline
+closed. Inline encrypted payload metadata renders `SetCredentialEncrypted=`.
+Bare-name imports remain an explicit appetite/import declaration. Offline
 `systemd-creds encrypt`, signed-PCR-11 policy generation, and provisioning of the
 credstore/system credential payloads remain open and keep the phase at ◐ rather
 than ☑.

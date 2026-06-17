@@ -127,6 +127,12 @@
     "credential source path contains unsupported characters: ${builtins.toString path}"
     path;
 
+  validateCredentialCiphertext = ciphertext:
+    throwIfNot
+    (builtins.isString ciphertext && builtins.match "[A-Za-z0-9_./+=-]+" ciphertext != null)
+    "credential ciphertext contains unsupported characters"
+    ciphertext;
+
   validateHostPath = hostPath:
     throwIfNot
     (builtins.isAttrs hostPath)
@@ -413,7 +419,7 @@
     "expose.config.credentials entries must be attrsets"
     (
       let
-        allowedKeys = ["name" "source" "units" "encrypted"];
+        allowedKeys = ["name" "source" "ciphertext" "units" "encrypted"];
         extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames credential);
         name =
           throwIfNot
@@ -425,6 +431,10 @@
           if credential ? source
           then validateCredentialSource encrypted credential.source
           else null;
+        ciphertext =
+          if credential ? ciphertext
+          then validateCredentialCiphertext credential.ciphertext
+          else null;
         units =
           builtins.map
           (validateServiceUnitName "expose.config.credentials.units")
@@ -433,10 +443,21 @@
         throwIfNot
         (extraKeys == [])
         "expose.config.credentials entry contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
-        ({
-          inherit name units encrypted;
-        }
-        // lib.optionalAttrs (source != null) {inherit source;})
+        (
+          throwIfNot
+          (!(source != null && ciphertext != null))
+          "credential '${name}' must not declare both source and ciphertext"
+          (
+            throwIfNot
+            (!(ciphertext != null && !encrypted))
+            "credential '${name}' declares ciphertext but is not encrypted"
+            ({
+              inherit name units encrypted;
+            }
+            // lib.optionalAttrs (source != null) {inherit source;}
+            // lib.optionalAttrs (ciphertext != null) {inherit ciphertext;})
+          )
+        )
     );
 
   validateCredentialSource = encrypted: source: let
@@ -468,14 +489,26 @@
       config;
     allowedKeys = ["artifacts" "credentials"];
     extraKeys = builtins.filter (key: !(builtins.elem key allowedKeys)) (builtins.attrNames checkedConfig);
+    artifacts = builtins.map (validateConfigArtifact packageName) (validateList "expose.config.artifacts" (checkedConfig.artifacts or []));
+    credentials = builtins.map validateCredential (validateList "expose.config.credentials" (checkedConfig.credentials or []));
+    credentialNames = builtins.map (credential: credential.name) credentials;
+    duplicateCredentialNames =
+      lib.unique (
+        builtins.filter (
+          name: builtins.length (builtins.filter (candidate: candidate == name) credentialNames) > 1
+        )
+        credentialNames
+      );
   in
     throwIfNot
     (extraKeys == [])
     "expose.config contains unknown keys: ${builtins.concatStringsSep ", " extraKeys}"
-    {
-      artifacts = builtins.map (validateConfigArtifact packageName) (validateList "expose.config.artifacts" (checkedConfig.artifacts or []));
-      credentials = builtins.map validateCredential (validateList "expose.config.credentials" (checkedConfig.credentials or []));
-    };
+    (
+      throwIfNot
+      (duplicateCredentialNames == [])
+      "expose.config.credentials declares duplicate credential name(s): ${builtins.concatStringsSep ", " duplicateCredentialNames}"
+      {inherit artifacts credentials;}
+    );
 
   validateProvidedCapability = capability:
     throwIfNot
@@ -962,16 +995,20 @@ in rec {
       then "${credential.name}:${credential.source}"
       else credential.name;
 
-    credentialSpecName = spec: let
-      text = builtins.toString spec;
-      match = builtins.match "([^:]+)(:.*)?" text;
-    in
-      if match == null
-      then text
-      else builtins.head match;
+    credentialSetEncryptedSpec = credential: "${credential.name}:${credential.ciphertext}";
 
-    assertNoCredentialLoadCollisions = unitName: authoredSpecs: generatedSpecs: let
-      authoredNames = builtins.map credentialSpecName authoredSpecs;
+    credentialSpecParts = spec: lib.splitString ":" (builtins.toString spec);
+
+    credentialSpecName = spec: builtins.head (credentialSpecParts spec);
+
+    credentialImportSpecNames = spec: let
+      parts = credentialSpecParts spec;
+    in
+      if builtins.length parts > 1
+      then [(builtins.head parts) (builtins.elemAt parts 1)]
+      else [builtins.head parts];
+
+    assertNoCredentialDirectiveCollisions = unitName: authoredNames: generatedSpecs: let
       generatedNames = builtins.map credentialSpecName generatedSpecs;
       collisions = lib.unique (
         builtins.filter (name: builtins.elem name authoredNames) generatedNames
@@ -979,36 +1016,62 @@ in rec {
     in
       throwIfNot
       (collisions == [])
-      "mkDerivation expose.units.${unitName} for package '${packageName}' declares LoadCredential*/LoadCredentialEncrypted= for credential(s) also declared by expose.config.credentials: ${builtins.concatStringsSep ", " collisions}"
+      "mkDerivation expose.units.${unitName} for package '${packageName}' declares LoadCredential*/SetCredential* for credential(s) also declared by expose.config.credentials: ${builtins.concatStringsSep ", " collisions}"
       true;
 
     credentialServiceConfigFor = unitName: authoredServiceConfig: let
       credentials = credentialsForUnit unitName;
       authoredLoadCredentials = asList (authoredServiceConfig.LoadCredential or []);
       authoredLoadEncryptedCredentials = asList (authoredServiceConfig.LoadCredentialEncrypted or []);
+      authoredSetCredentials = asList (authoredServiceConfig.SetCredential or []);
+      authoredSetEncryptedCredentials = asList (authoredServiceConfig.SetCredentialEncrypted or []);
+      authoredImportCredentials = asList (authoredServiceConfig.ImportCredential or []);
+      importCredentialsAvailable =
+        throwIfNot
+        (authoredImportCredentials == [] || credentials == [])
+        "mkDerivation expose.units.${unitName} for package '${packageName}' must not mix authored ImportCredential= with expose.config.credentials metadata"
+        true;
+      authoredCredentialNames =
+        builtins.map credentialSpecName (
+          authoredLoadCredentials
+          ++ authoredLoadEncryptedCredentials
+          ++ authoredSetCredentials
+          ++ authoredSetEncryptedCredentials
+        )
+        ++ builtins.concatMap credentialImportSpecNames authoredImportCredentials;
       loadCredentials =
         builtins.map credentialLoadSpec (
-          builtins.filter (credential: !credential.encrypted) credentials
+          builtins.filter (credential: !credential.encrypted && !(credential ? ciphertext)) credentials
         );
       loadEncryptedCredentials =
         builtins.map credentialLoadSpec (
-          builtins.filter (credential: credential.encrypted) credentials
+          builtins.filter (credential: credential.encrypted && !(credential ? ciphertext)) credentials
+        );
+      setEncryptedCredentials =
+        builtins.map credentialSetEncryptedSpec (
+          builtins.filter (credential: credential ? ciphertext) credentials
         );
       credentialIdsAvailable =
-        assertNoCredentialLoadCollisions
+        assertNoCredentialDirectiveCollisions
         unitName
-        (authoredLoadCredentials ++ authoredLoadEncryptedCredentials)
-        (loadCredentials ++ loadEncryptedCredentials);
+        authoredCredentialNames
+        (loadCredentials ++ loadEncryptedCredentials ++ setEncryptedCredentials);
     in
-      builtins.seq credentialIdsAvailable (
-        lib.optionalAttrs (loadCredentials != []) {
-          LoadCredential =
-            lib.unique (authoredLoadCredentials ++ loadCredentials);
-        }
-        // lib.optionalAttrs (loadEncryptedCredentials != []) {
-          LoadCredentialEncrypted =
-            lib.unique (authoredLoadEncryptedCredentials ++ loadEncryptedCredentials);
-        }
+      builtins.seq importCredentialsAvailable (
+        builtins.seq credentialIdsAvailable (
+          lib.optionalAttrs (loadCredentials != []) {
+            LoadCredential =
+              lib.unique (authoredLoadCredentials ++ loadCredentials);
+          }
+          // lib.optionalAttrs (loadEncryptedCredentials != []) {
+            LoadCredentialEncrypted =
+              lib.unique (authoredLoadEncryptedCredentials ++ loadEncryptedCredentials);
+          }
+          // lib.optionalAttrs (setEncryptedCredentials != []) {
+            SetCredentialEncrypted =
+              lib.unique (authoredSetEncryptedCredentials ++ setEncryptedCredentials);
+          }
+        )
       );
 
     sandboxServiceConfig = unitName: authoredServiceConfig: let
