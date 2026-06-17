@@ -125,6 +125,28 @@ async fn managed_indexed(message: &str) -> (Arc<Database>, tempfile::TempDir, Re
     (db, dir, registry)
 }
 
+/// Resolve the core surface read/write ports for a registry, the way the shared
+/// `propose_config_change` flow is wired in `server.rs`.
+async fn surface_ports(
+    db: &Arc<Database>,
+    registry: &RegistryRecord,
+) -> (
+    Box<dyn aos_registry_core::fetch::SurfaceFetch>,
+    Box<dyn aos_registry_core::surface_write::SurfaceWrite>,
+) {
+    use aos_registry_core::fetch::SurfaceProvider as _;
+    use aos_registry_core::surface_write::SurfaceWriteProvider as _;
+    let fetch = aos_registry_hub::coreports::HubSurfaceProvider::new(Arc::clone(db))
+        .fetcher(registry)
+        .await
+        .unwrap();
+    let writer = aos_registry_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(db))
+        .writer(registry)
+        .await
+        .unwrap();
+    (fetch, writer)
+}
+
 // -- propose_config_change: records change-set + ref + audit, signed commit ---
 
 #[tokio::test]
@@ -134,9 +156,12 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
     let sealer = aos_registry_hub::auth::oidc::dev_sealer();
 
     let new_toml = "[registry]\nname = \"demo\"\ndescription = \"edited via change request\"\n";
+    let (fetch, writer) = surface_ports(&db, &registry).await;
     let proposed = gitwrite::propose_config_change(
         &db,
         sealer.as_ref(),
+        fetch.as_ref(),
+        writer.as_ref(),
         &registry,
         "registry.toml",
         new_toml,
@@ -430,9 +455,12 @@ async fn git_service_log_diff_and_change_requests() {
 
     // Create a change request so ListChangeRequests has something to return.
     let new_toml = "[registry]\nname = \"demo\"\ndescription = \"changed\"\n";
+    let (fetch, writer) = surface_ports(&db, &registry).await;
     let proposed = gitwrite::propose_config_change(
         &db,
         sealer.as_ref(),
+        fetch.as_ref(),
+        writer.as_ref(),
         &registry,
         "registry.toml",
         new_toml,

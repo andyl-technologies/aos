@@ -24,6 +24,7 @@
 //!   [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry) and
 //!   re-boxes it as a core [`SurfaceFetch`] via [`CoreFetchAdapter`].
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -33,6 +34,7 @@ use aos_registry_core::auth::seal::SecretSealer;
 use aos_registry_core::db::{Database, RegistryRecord};
 use aos_registry_core::fetch as core_fetch;
 use aos_registry_core::ratelimit as core_rl;
+use aos_registry_core::surface_write as core_sw;
 use aos_registry_core::web::console::ports as console_ports;
 
 /// Map a core [`RateClass`](core_rl::RateClass) to the hub's own
@@ -156,6 +158,96 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
         let hub_fetch = crate::gitwrite::fetcher_for_registry(&self.db, registry).await?;
         Ok(Box::new(CoreFetchAdapter(hub_fetch)))
     }
+}
+
+/// The native [`SurfaceWriteProvider`](core_sw::SurfaceWriteProvider): resolves
+/// a per-registry filesystem writer over the hub's storage bindings.
+///
+/// Resolves the registry's storage-binding root — the *same* root
+/// [`HubSurfaceProvider`]/[`crate::fetch::LocalFsFetch`] read from — and returns
+/// a [`LocalFsWrite`] rooted there. A registration-only registry has no writable
+/// root, so [`writer`](core_sw::SurfaceWriteProvider::writer) errors clearly.
+pub struct HubSurfaceWriteProvider {
+    /// The hub database, used to resolve a registry's storage-binding root.
+    db: Arc<Database>,
+}
+
+impl HubSurfaceWriteProvider {
+    /// Build a write provider over the hub database.
+    #[must_use]
+    pub fn new(db: Arc<Database>) -> HubSurfaceWriteProvider {
+        HubSurfaceWriteProvider { db }
+    }
+}
+
+#[async_trait]
+impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
+    async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn core_sw::SurfaceWrite>> {
+        let root = self
+            .db
+            .registry_surface_root(registry.id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "registry '{}' has no writable storage root (registration-only)",
+                    registry.slug
+                )
+            })?;
+        Ok(Box::new(LocalFsWrite { root }))
+    }
+}
+
+/// A filesystem-backed [`SurfaceWrite`](core_sw::SurfaceWrite) rooted at a
+/// registry's storage binding.
+///
+/// Every logical surface path is resolved with the hub's
+/// [`safe_join`](crate::fetch::safe_join) (rejecting `..` and absolute
+/// components) before any IO, and writes go through an atomic temp-file +
+/// rename so a concurrent reader never sees a half-written object — the exact
+/// path-safety and atomicity semantics the hub's original `gitwrite` enforced.
+struct LocalFsWrite {
+    /// The registry's storage-binding root the logical paths resolve under.
+    root: PathBuf,
+}
+
+#[async_trait]
+impl core_sw::SurfaceWrite for LocalFsWrite {
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        let target = crate::fetch::safe_join(&self.root, path)
+            .with_context(|| format!("resolving surface path {path}"))?;
+        write_atomic(&target, bytes).await
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        let target = crate::fetch::safe_join(&self.root, path)
+            .with_context(|| format!("resolving surface path {path}"))?;
+        match tokio::fs::remove_file(&target).await {
+            Ok(()) => Ok(()),
+            // Idempotent: a missing object is a successful delete.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err).with_context(|| format!("deleting {}", target.display())),
+        }
+    }
+}
+
+/// Write `bytes` to `target` atomically (temp file + rename), creating parents.
+///
+/// Mirrors the hub's original `gitwrite::write_atomic` so a concurrent reader
+/// never observes a half-written object or ref.
+async fn write_atomic(target: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let tmp = target.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&tmp, bytes)
+        .await
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, target)
+        .await
+        .with_context(|| format!("renaming into {}", target.display()))?;
+    Ok(())
 }
 
 /// Maximum response-body size for an OIDC outbound call: 1 MiB.

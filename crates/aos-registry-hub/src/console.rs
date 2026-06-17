@@ -42,10 +42,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::get;
 use axum::Router;
 use crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token};
 use crate::config;
@@ -58,34 +56,21 @@ use crate::ui::console;
 /// [`crate::server::router`] alongside the shared
 /// [`console_router`](aos_registry_core::web::console::console_router).
 ///
-/// RFC-0004 Phase 5 (console-dedup stage B) moved the wasm-clean console
-/// handlers into the shared core crate. The only routes that remain native are
-/// the ones this router registers: the **git-backed config** surface
-/// (`/{slug}/-/settings/config`, `/{slug}/-/changes`), which uses
-/// [`crate::gitwrite`] and [`crate::surface`].
+/// RFC-0004 Phase 5 moved **every** flat console route into the shared core
+/// crate — including (stage H3) the git-backed config/change-request flow
+/// (`/{slug}/-/settings/config`, `/{slug}/-/changes`), now served by the core
+/// router over the
+/// [`SurfaceWriteProvider`](aos_registry_core::surface_write::SurfaceWriteProvider)
+/// and [`SurfaceProvider`](aos_registry_core::fetch::SurfaceProvider) ports. So
+/// this router registers no flat routes at all.
 ///
-/// The pre-auth rate-limited `/login`, `/login/password` (stage D),
-/// `/auth/passkey/begin`, and `/activate` (stage E) paths moved to the shared
-/// core router: they now meter on the runtime-neutral `x-aos-client-ip` header
-/// the hub stamps in [`crate::server::inject_client_ip`] instead of the native
-/// peer socket, so they serve both shells. The `finish` halves of the passkey
-/// ceremony (`/account/passkeys/finish`, `/auth/passkey/finish`), which mint no
-/// rate-limit key, were already shared. The per-org **OIDC flow** (`/auth/sso`,
-/// `/auth/oidc/start`, `/auth/oidc/callback`) moved to the shared core router
-/// too (stage F): its token exchange and JWKS fetch go through the
-/// [`HttpClient`](aos_registry_core::web::console::ports::HttpClient) port
-/// (satisfied by [`crate::coreports::HubHttpClient`]).
-///
-/// Every other console route is served by the shared core router. The
-/// nested-canonical fallback ([`dispatch_nested`]) still lives here and reuses
-/// the private handler helpers below for slugs whose canonical path has slashes.
+/// What stays native is the **nested-canonical fallback**: the flat core routes
+/// capture only a single-segment slug, so a registry whose canonical path has
+/// slashes (`acme/infra/prod/cdn`) is dispatched by [`dispatch_nested`] from the
+/// hub's catch-all, reusing the private handler helpers below — exactly as for
+/// the other per-registry console pages (tokens, serving, keys, channels).
 pub fn router() -> Router<Arc<AppState>> {
     Router::new()
-        .route(
-            "/{slug}/-/settings/config",
-            get(config_edit).post(config_submit),
-        )
-        .route("/{slug}/-/changes", get(changes))
 }
 
 // -- session helpers --------------------------------------------------------
@@ -630,31 +615,6 @@ fn parse_form(body: &str) -> std::collections::HashMap<String, String> {
 /// The string value of `key` in a decoded form, or `""` when absent.
 fn field<'a>(fields: &'a std::collections::HashMap<String, String>, key: &str) -> &'a str {
     fields.get(key).map(String::as_str).unwrap_or("")
-}
-
-// -- registry resolution for console pages ----------------------------------
-
-/// Resolve a registry by its flat slug, or by longest-prefix over the full
-/// request path for a nested-canonical slug.
-///
-/// The flat `/{slug}/...` routes capture only the first segment, so a nested
-/// registry's settings page must reconstruct the canonical prefix from the
-/// request URI.
-async fn resolve_registry(
-    state: &AppState,
-    slug: &str,
-    uri: &axum::http::Uri,
-) -> anyhow::Result<Option<RegistryRecord>> {
-    if let Some(reg) = state.db.registry_by_slug(slug).await? {
-        return Ok(Some(reg));
-    }
-    // Nested: strip the trailing `/-/...` marker and resolve by prefix.
-    let path = uri.path().trim_start_matches('/');
-    let head = path.split("/-/").next().unwrap_or(path);
-    match resolve_by_prefix(state, head.trim_end_matches('/')).await? {
-        Some((reg, _)) => Ok(Some(reg)),
-        None => Ok(None),
-    }
 }
 
 // -- registry tokens --------------------------------------------------------
@@ -1307,29 +1267,6 @@ async fn publishes_view(
 
 // -- git-backed config change requests --------------------------------------
 
-/// `GET /{slug}/-/settings/config` — the git-backed config-edit page.
-///
-/// Renders the current committed `registry.toml` in a textarea for a
-/// `registry.configure`-bearing admin to edit and submit as a change request.
-async fn config_edit(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-) -> Response {
-    let session = match require_session(&state, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    config_edit_view(&state, &session, &registry, None).await
-}
-
 /// Render the config-edit page, optionally with a just-created change-request
 /// `result` (its change id and merge command).
 async fn config_edit_view(
@@ -1373,46 +1310,15 @@ async fn current_registry_toml(
         return Ok(String::new());
     };
     let head = crate::surface::object::Oid::from_hex(&head_hex)?;
-    let fetch = crate::gitwrite::fetcher_for_registry(&state.db, registry).await?;
+    use aos_registry_core::fetch::SurfaceProvider as _;
+    let fetch = crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+        .fetcher(registry)
+        .await?;
     Ok(
         crate::gitwrite::load_committed_file(fetch.as_ref(), head, "registry.toml")
             .await?
             .unwrap_or_default(),
     )
-}
-
-/// The config-edit submission form body.
-#[derive(serde::Deserialize)]
-struct ConfigForm {
-    #[serde(default)]
-    csrf: String,
-    contents: String,
-}
-
-/// `POST /{slug}/-/settings/config` — submit a git-backed config change request.
-///
-/// CSRF-checked, `registry.configure`-gated: writes the draft-signed change
-/// request to `refs/hub/changes/<id>` via
-/// [`crate::gitwrite::propose_config_change`] and re-renders the page with the
-/// new change id and the `apr change merge` command to run.
-async fn config_submit(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<ConfigForm>,
-) -> Response {
-    let session = match require_session(&state, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    config_submit_action(&state, &session, &registry, &form.csrf, &form.contents).await
 }
 
 /// Process a config-change submission for a resolved registry.
@@ -1437,9 +1343,25 @@ async fn config_submit_action(
     {
         return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
     }
+    use aos_registry_core::fetch::SurfaceProvider as _;
+    use aos_registry_core::surface_write::SurfaceWriteProvider as _;
+    let fetch = match crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+        .fetcher(registry)
+        .await
+    {
+        Ok(fetch) => fetch,
+        Err(err) => return internal(err),
+    };
+    let write_provider = crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db));
+    let writer = match write_provider.writer(registry).await {
+        Ok(writer) => writer,
+        Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+    };
     let proposed = crate::gitwrite::propose_config_change(
         &state.db,
         state.sealer.as_ref(),
+        fetch.as_ref(),
+        writer.as_ref(),
         registry,
         "registry.toml",
         contents,
@@ -1467,30 +1389,6 @@ async fn config_submit_action(
         }
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
-}
-
-/// `GET /{slug}/-/changes` — the git-backed change-request list page.
-///
-/// Lists the registry's git-backed change requests with their file diffs and
-/// promotion commands. Gated to `audit.read` (admin+), matching the access
-/// matrix for the configuration/change surface.
-async fn changes(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-) -> Response {
-    let session = match require_session(&state, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&state, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    changes_view(&state, &session, &registry).await
 }
 
 /// Render the change-request list page for a resolved registry.

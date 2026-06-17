@@ -8,11 +8,19 @@
 //!
 //! The OIDC flow is shared here too (RFC-0004 Phase 5, console-dedup stage F):
 //! its two network calls go through the
-//! [`HttpClient`](super::ports::HttpClient) port, so it is wasm-clean. The only
-//! routes that stay in the native hub are the git-backed config/change-request
-//! flows (which use the hub's `gitwrite`/`surface` modules). The hub mounts
-//! those alongside this router on the same top-level router, so no path is
-//! registered twice.
+//! [`HttpClient`](super::ports::HttpClient) port, so it is wasm-clean.
+//!
+//! The git-backed config/change-request flow is shared here too (RFC-0004
+//! Phase 5, stage H3): its base-commit reads go through the
+//! [`SurfaceProvider`](crate::fetch::SurfaceProvider) read port and its
+//! draft-object writes through the new
+//! [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider) write
+//! port, so the loose-object/ref writes and the committed-file reads are
+//! store-neutral. With it shared, **every** console route runs on both shells;
+//! the only thing that stays native is the hub's nested-canonical fallback
+//! ([`crate::web`] is single-segment; a registry whose canonical path has
+//! slashes is dispatched by the hub's own catch-all, exactly as for the other
+//! per-registry pages).
 //!
 //! # The wasm `Send` bridge
 //!
@@ -101,8 +109,12 @@ fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
 /// exchange and JWKS fetch go through the
 /// [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
 ///
-/// Routes intentionally omitted (served by the native hub): the git-backed
-/// `/{slug}/-/settings/config` and `/{slug}/-/changes` flows.
+/// The git-backed config/change-request flow (`/{slug}/-/settings/config`
+/// GET + POST, `/{slug}/-/changes` GET) is served here too (RFC-0004 Phase 5,
+/// stage H3): its base-commit reads go through the
+/// [`SurfaceProvider`](crate::fetch::SurfaceProvider) port and its draft writes
+/// through the [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider)
+/// port, so no route stays native-only.
 #[must_use]
 pub fn console_router(deps: ConsoleDeps) -> Router {
     // Each route is a thin closure that recovers `ConsoleDeps` from the
@@ -415,6 +427,21 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             "/{slug}/-/publishes",
             get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
                 send_bridge(handlers::publishes(from_state(s), h, u, p))
+            }),
+        )
+        .route(
+            "/{slug}/-/settings/config",
+            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
+                send_bridge(handlers::config_edit(from_state(s), h, u, p))
+            })
+            .post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::config_submit(from_state(s), h, u, p, f))
+            }),
+        )
+        .route(
+            "/{slug}/-/changes",
+            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
+                send_bridge(handlers::changes(from_state(s), h, u, p))
             }),
         )
         .with_state(into_state(deps))
