@@ -931,7 +931,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
 - [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
 - [x] `placeholder` byte-identical placeholder scheme.
-- [ ] `nixVersion`/`langVersion` spoofing for feature-gate parity.
+- [x] `nixVersion`/`langVersion` spoofing for feature-gate parity.
 - [ ] `builtins` set membership and order.
 
 ---

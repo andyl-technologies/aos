@@ -14953,13 +14953,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
     fn cpp_nix_identity_constants_match_tree_walk() {
         let oracle = cpp_nix_oracle();
         let version = cpp_nix_version(&oracle);
         assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
+            version.ends_with(" 2.24.12") || version.ends_with("(Nix) 2.24.12"),
+            "expected pinned C++ Nix 2.24.12 oracle, got {version}"
         );
         eprintln!("C++ Nix oracle: {version}");
 
@@ -14974,12 +14974,20 @@ mod tests {
             "builtins ? false",
             "builtins ? null",
             "builtins ? storeDir",
+            "builtins ? nixVersion",
+            "builtins ? langVersion",
             "builtins.typeOf builtins.true",
             "builtins.typeOf builtins.false",
             "builtins.typeOf builtins.null",
             "builtins.storeDir",
             "builtins.typeOf builtins.storeDir",
             "builtins.storeDir or \"fallback\"",
+            "builtins.nixVersion",
+            "builtins.typeOf builtins.nixVersion",
+            "builtins.nixVersion or \"fallback\"",
+            "builtins.langVersion",
+            "builtins.typeOf builtins.langVersion",
+            "builtins.langVersion or 42",
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
         }
