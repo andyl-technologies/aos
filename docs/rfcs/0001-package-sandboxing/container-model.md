@@ -109,11 +109,14 @@ Why this must be evaluated head-to-head before implementation:
   multi-unit init tree — currently a set of approximately zero (k3s is one
   binary plus a preflight, both expressible as host units under the target).
 - **Socket activation and verity favor it too** (verified, systemd 259):
-  socket units with `PrivateNetwork=` + `JoinsNamespaceOf=` pass **named** fds
-  natively into a sandboxed unit, while nspawn forwards `$LISTEN_FDS` only to
-  a `--boot` init and drops fd names (`LISTEN_FDNAMES` forwarding is an open
-  RFE, systemd#17764), needing `systemd-socket-proxyd` as a bridge. And
-  `RootImage=` carries dm-verity natively (`RootHash=`, `RootVerity=`,
+  host-namespace socket units pass **named** fds natively into a
+  `PrivateNetwork=` sandboxed unit, while nspawn forwards `$LISTEN_FDS` only
+  to a `--boot` init and drops fd names (`LISTEN_FDNAMES` forwarding is an
+  open RFE, systemd#17764), needing `systemd-socket-proxyd` as a bridge.
+  `PrivateNetwork=` + `JoinsNamespaceOf=` on socket units is reserved for the
+  different shape where the listen socket itself must bind inside a shared
+  private namespace. The same substrate also lets
+  `RootImage=` carry dm-verity natively (`RootHash=`, `RootVerity=`,
   `RootHashSignature=`, v246+) — signed container roots extending the registry
   trust chain to runtime integrity (now in scope and built — see
   [attestation.md](attestation.md)). The `RootImage=` + `DynamicUser=` +

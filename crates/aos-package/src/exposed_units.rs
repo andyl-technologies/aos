@@ -449,6 +449,21 @@ fn validate_routed_socket_unit(
             route.unit
         );
     }
+    for directive in ["PrivateNetwork", "NetworkNamespacePath", "JoinsNamespaceOf"] {
+        if parsed
+            .sections
+            .values()
+            .any(|section| section.contains_key(directive))
+        {
+            bail!(
+                "provider package '{}' capability '{}' references socket unit '{}' that declares {}=; routed socket capabilities keep provider sockets in the host network namespace",
+                provider.name,
+                provided.name,
+                unit,
+                directive
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1025,6 +1040,78 @@ mod tests {
         }
     }
 
+    fn routed_socket_fixture(
+        tmp: &TempDir,
+        socket_text: &str,
+    ) -> (Profile, InstalledMeta, InstalledMeta) {
+        let mut provider = installed_with_expose(tmp, "provider", "pkghash111", "artifacthash111");
+        let provider_artifact = provider
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&provider_artifact).join("units/provider.socket"),
+            socket_text,
+        )
+        .unwrap();
+        let provider_expose = provider.apm.as_mut().unwrap().expose.as_mut().unwrap();
+        provider_expose.units.push("provider.socket".into());
+        provider_expose.provides = vec![ProvidedCapabilityMeta {
+            name: "api".into(),
+            kind: CapabilityKind::Socket,
+            path: None,
+            unit: Some("provider.socket".into()),
+        }];
+
+        let mut consumer = installed_with_expose(tmp, "consumer", "pkghash222", "artifacthash222");
+        consumer.apm.as_mut().unwrap().expose.as_mut().unwrap().uses =
+            vec![RequiredCapabilityMeta {
+                provider: "provider".into(),
+                name: "api".into(),
+                kind: CapabilityKind::Socket,
+                unit: "consumer.service".into(),
+            }];
+
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for installed in [&provider, &consumer] {
+            let artifact = installed
+                .apm
+                .as_ref()
+                .unwrap()
+                .expose_artifact
+                .as_ref()
+                .unwrap()
+                .store_path
+                .clone();
+            std::os::unix::fs::symlink(
+                &artifact,
+                profile
+                    .current_path()
+                    .join("expose")
+                    .join(store_path_hash(&artifact)),
+            )
+            .unwrap();
+        }
+
+        (profile, provider, consumer)
+    }
+
+    fn routed_socket_error(socket_text: &str) -> anyhow::Error {
+        let tmp = TempDir::new().unwrap();
+        let (profile, provider, consumer) = routed_socket_fixture(&tmp, socket_text);
+
+        exposed_packages(&profile, &[provider, consumer]).unwrap_err()
+    }
+
     #[test]
     fn rebuild_generation_expose_roots_links_artifacts_once() {
         let tmp = TempDir::new().unwrap();
@@ -1117,6 +1204,40 @@ mod tests {
             assert!(!dir.join("stale.service").exists());
             assert!(dir.join("aos-pkg-web.target").symlink_metadata().is_ok());
             assert!(dir.join("web.service").symlink_metadata().is_ok());
+        }
+    }
+
+    #[test]
+    fn write_attached_units_removes_stale_routed_socket_namespace_dropins() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let (profile, provider, consumer) =
+            routed_socket_fixture(&tmp, "[Socket]\nListenStream=127.0.0.1:18080\n");
+        let packages = exposed_packages(&profile, &[provider, consumer]).unwrap();
+
+        for dir in attached_dirs(&root) {
+            let stale_dropin_dir = dir.join("provider.socket.d");
+            std::fs::create_dir_all(&stale_dropin_dir).unwrap();
+            std::fs::write(
+                stale_dropin_dir.join("10-local.conf"),
+                "[Unit]\nJoinsNamespaceOf=other.service\n[Socket]\nPrivateNetwork=true\nNetworkNamespacePath=/run/netns/aos-pkg-provider\n",
+            )
+            .unwrap();
+        }
+
+        write_attached_units(&root, &packages).unwrap();
+
+        for dir in attached_dirs(&root) {
+            assert!(!dir.join("provider.socket.d/10-local.conf").exists());
+            let route_dropin = std::fs::read_to_string(
+                dir.join("provider.socket.d/50-aos-capability-routes.conf"),
+            )
+            .unwrap();
+            assert!(route_dropin.contains("Service=consumer.service"));
+            assert!(route_dropin.contains("FileDescriptorName=aos-provider-api"));
+            assert!(!route_dropin.contains("PrivateNetwork="));
+            assert!(!route_dropin.contains("NetworkNamespacePath="));
+            assert!(!route_dropin.contains("JoinsNamespaceOf="));
         }
     }
 
@@ -1528,6 +1649,27 @@ mod tests {
 
         assert!(format!("{err:#}").contains("uses socket unit 'provider.socket'"));
         assert!(format!("{err:#}").contains("routed to both"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_routed_socket_namespace_directives() {
+        for (directive, socket_text) in [
+            (
+                "PrivateNetwork",
+                "[Socket]\nListenStream=127.0.0.1:18080\nPrivateNetwork=true\n",
+            ),
+            (
+                "NetworkNamespacePath",
+                "[Socket]\nListenStream=127.0.0.1:18080\nNetworkNamespacePath=/run/netns/aos-pkg-provider\n",
+            ),
+            (
+                "JoinsNamespaceOf",
+                "[Unit]\nJoinsNamespaceOf=other.service\n[Socket]\nListenStream=127.0.0.1:18080\n",
+            ),
+        ] {
+            let err = routed_socket_error(socket_text);
+            assert!(format!("{err:#}").contains(&format!("declares {directive}=")));
+        }
     }
 
     #[test]

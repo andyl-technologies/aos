@@ -431,17 +431,23 @@ the prior generation's units.
       upgrade root those artifacts and `expose.images`, and the lifecycle VM
       asserts the active package root.
 - [ ] **Networking modes (D3).** *inbound-only private* (default): host-owned
-      socket units pass **named** fds into the sandboxed unit (`PrivateNetwork=`
-      on both + socket `JoinsNamespaceOf=`). *private with outbound*: the gated
+      socket units pass **named** fds into the sandboxed `PrivateNetwork=`
+      service; the socket unit intentionally stays in the host namespace.
+      `PrivateNetwork=` + `JoinsNamespaceOf=` on the socket is only for the
+      different shape where the listen socket must bind inside a shared private
+      namespace. *private with outbound*: the gated
       `aos-pkg-<n>-netns.service` from P3 (named netns + veth, host side
       systemd-networkd) + `NetworkNamespacePath=`, **plus Landlock TCP
       bind/connect rules on the allowed ports** ([`enforcement.md`](enforcement.md)).
       *host*: k3s and peers. Partial coverage exists: the runtime route
       generator emits named-fd socket drop-ins, the lifecycle VM now exercises
       package-manager reconciliation plus cross-package named-fd inbound
-      activation, and it performs a real private-outbound netns HTTP request.
-      Landlock TCP policy, eBPF policy, and the exact socket namespace shape
-      remain before this item is complete.
+      activation, the route validator rejects socket namespace directives that
+      would move routed provider sockets out of the host namespace, the
+      attached-unit writer drops stale provider-socket drop-ins before writing
+      AOS route drop-ins, and the VM performs a real private-outbound netns HTTP
+      request. The default socket namespace shape is now verified and covered;
+      Landlock TCP policy and eBPF policy remain before this item is complete.
 - [ ] **Per-package network policy via eBPF** (Cilium-style per-identity), not
       only host-global nftables base-set mutation — the SOTA for per-package L3/L4
       ([`container-model.md`](container-model.md) networking).
