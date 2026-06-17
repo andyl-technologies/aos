@@ -438,7 +438,7 @@ blobs and derivation attributes — see
 - [x] `fromJSON` (e) — parse a JSON string to a Nix value. Numbers become int or
       float per JSON syntax; objects become attrsets (duplicate-key behavior must
       match); result strings carry **no** context.
-- [ ] `toXML` (e) — serialize `e` to Nix's XML plist-like format (the
+- [x] `toXML` (e) — serialize `e` to Nix's XML plist-like format (the
       `nix-instantiate --xml` representation). Rarely used downstream but a real
       primop; must exist and match bytes if exercised.
 - [x] `fromTOML` (e) — parse a TOML string to a Nix value. nixpkgs uses this for

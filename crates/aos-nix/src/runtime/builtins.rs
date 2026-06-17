@@ -734,7 +734,7 @@ builtin_registry! {
     pub(crate) struct ToXmlBuiltin;
     impl BuiltinDefinition for ToXmlBuiltin {
         const NAME: &'static [u8] = b"toXML";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::ToXml);
     }
 
     pub(crate) struct TraceBuiltin;
@@ -1066,6 +1066,7 @@ pub(crate) enum StrictUnaryPrimOp {
     ToPath,
     ToString,
     ToJson,
+    ToXml,
     ConvertHash,
     ListToAttrs,
     ConcatLists,
