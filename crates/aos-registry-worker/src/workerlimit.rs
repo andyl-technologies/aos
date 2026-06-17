@@ -24,28 +24,20 @@
 //! );
 //! ```
 //!
-//! Each [`check`](RateLimiter::check) computes the current window from `now`,
-//! reads the row's count, and — if admitting the attempt keeps the window at or
-//! under the class budget — increments it and allows; otherwise it denies
-//! without counting (so a denied attempt never consumes budget). Stale rows for
-//! past windows are left in place; a periodic sweep (or the Cron indexer) can
-//! prune `window < current` rows. This is intentionally a **fixed window**, not
-//! a sliding window or a leaky bucket: it is simple, correct under the Worker's
-//! single-threaded-per-isolate execution, and adequate for the burst budgets the
-//! service enforces.
-//!
-//! # TODO
-//!
-//! The increment is a read-then-write pair rather than one atomic
-//! `INSERT … ON CONFLICT DO UPDATE … RETURNING`, so two *concurrent* isolates
-//! racing the same key could each admit a request at the budget boundary
-//! (over-admitting by at most the number of concurrent isolates). For the
-//! current `CreateOrg`-only usage this is safe: `CreateOrg` is additionally
-//! bounded by the DB-enforced [`MAX_ORGS_PER_OWNER`] cap, so a momentary
-//! over-admit cannot accumulate namespace pollution. Tighten to a single atomic
-//! upsert (or a Durable Object) if a class without a hard backstop is metered.
-//!
-//! [`MAX_ORGS_PER_OWNER`]: aos_registry_core::ratelimit::MAX_ORGS_PER_OWNER
+//! Each [`check`](RateLimiter::check) computes the current window from `now` and
+//! runs a single atomic conditional upsert
+//! (`INSERT … ON CONFLICT DO UPDATE SET count = count + 1 WHERE count < budget
+//! RETURNING count`): it inserts the first attempt or increments an existing
+//! count only while the window stays under the class budget, and otherwise
+//! denies without counting (so a denied attempt never consumes budget). Because
+//! the increment and the budget test live in one statement that SQLite
+//! serializes, two *concurrent* isolates racing the same key cannot both admit
+//! at the budget boundary — there is no read-then-write window to over-admit
+//! through. Stale rows for past windows are left in place; a periodic sweep (or
+//! the Cron indexer) can prune `window < current` rows. This is intentionally a
+//! **fixed window**, not a sliding window or a leaky bucket: it is simple,
+//! correct under the Worker's single-threaded-per-isolate execution, and
+//! adequate for the burst budgets the service enforces.
 
 use async_trait::async_trait;
 
@@ -128,39 +120,40 @@ impl D1RateLimiter {
         }
     }
 
-    /// Read the current count for `(class, key, window)`, defaulting to zero.
-    async fn current_count(&self, class: &str, key: &str, window: i64) -> anyhow::Result<i64> {
+    /// Atomically admit one attempt against the window budget.
+    ///
+    /// Runs a single conditional upsert: the first attempt in a window inserts
+    /// the row at `count = 1`; a later attempt increments an existing row only
+    /// while `count < budget`. SQLite serializes the statement, so two
+    /// concurrent isolates racing the same key cannot both increment past the
+    /// boundary, and the `WHERE count < ?` guard makes a window already at
+    /// budget a no-op — a denied attempt never consumes further budget.
+    ///
+    /// Returns `true` when the attempt was recorded (admitted) and `false`
+    /// when the window was already at budget (denied). `RETURNING count` emits
+    /// the post-increment count on the insert/update paths and no row when the
+    /// conditional update is skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the upsert fails (a D1 access error).
+    async fn admit(&self, class: &str, key: &str, window: i64, budget: i64) -> anyhow::Result<bool> {
         let rows = self
             .backend
             .query(
-                "SELECT count FROM rate_limits WHERE class = ? AND key = ? AND window = ?",
-                &[
-                    Value::Text(class.to_string()),
-                    Value::Text(key.to_string()),
-                    Value::Int(window),
-                ],
-            )
-            .await?;
-        match rows.first() {
-            Some(row) => row.get::<i64>(0),
-            None => Ok(0),
-        }
-    }
-
-    /// Record one admitted attempt, inserting the window row or bumping it.
-    async fn record(&self, class: &str, key: &str, window: i64) -> anyhow::Result<()> {
-        self.backend
-            .execute(
                 "INSERT INTO rate_limits (class, key, window, count) VALUES (?, ?, ?, 1) \
-                 ON CONFLICT(class, key, window) DO UPDATE SET count = count + 1",
+                 ON CONFLICT(class, key, window) DO UPDATE SET count = count + 1 \
+                   WHERE count < ? \
+                 RETURNING count",
                 &[
                     Value::Text(class.to_string()),
                     Value::Text(key.to_string()),
                     Value::Int(window),
+                    Value::Int(budget),
                 ],
             )
             .await?;
-        Ok(())
+        Ok(!rows.is_empty())
     }
 }
 
@@ -171,29 +164,21 @@ impl RateLimiter for D1RateLimiter {
         let budget = D1RateLimiter::budget(class);
         let window = now.div_euclid(WINDOW_SECS);
 
-        let count = match self.current_count(name, key, window).await {
-            Ok(count) => count,
+        match self.admit(name, key, window, budget).await {
+            Ok(true) => RateDecision::Allowed,
+            Ok(false) => {
+                // Seconds until this fixed window resets, for `Retry-After`.
+                let window_end = (window + 1) * WINDOW_SECS;
+                let retry_after = (window_end - now).max(1);
+                RateDecision::Limited { retry_after }
+            }
             Err(err) => {
                 // Fail open: a counter-store error must not wedge the hub. The
                 // metered operations carry their own DB-enforced backstops
                 // (e.g. MAX_ORGS_PER_OWNER for CreateOrg).
-                worker::console_error!("rate_limits read failed ({name}/{key}): {err:#}");
-                return RateDecision::Allowed;
+                worker::console_error!("rate_limits upsert failed ({name}/{key}): {err:#}");
+                RateDecision::Allowed
             }
-        };
-
-        if count >= budget {
-            // Seconds until this fixed window resets, for `Retry-After`.
-            let window_end = (window + 1) * WINDOW_SECS;
-            let retry_after = (window_end - now).max(1);
-            return RateDecision::Limited { retry_after };
         }
-
-        if let Err(err) = self.record(name, key, window).await {
-            // The read admitted the attempt; a failed write is logged but the
-            // request still proceeds (fail open, as above).
-            worker::console_error!("rate_limits write failed ({name}/{key}): {err:#}");
-        }
-        RateDecision::Allowed
     }
 }
