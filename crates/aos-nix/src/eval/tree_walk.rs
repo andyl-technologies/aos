@@ -2020,7 +2020,47 @@ impl<'ir> TreeWalk<'ir> {
             StrictUnaryPrimOp::ConcatLists => {
                 self.eval_concat_lists_primop(id, span, argument, argument_span, value)
             }
+            StrictUnaryPrimOp::Throw => {
+                self.eval_throw_abort_primop(ThrowAbortOp::Throw, argument, argument_span, value)
+            }
+            StrictUnaryPrimOp::Abort => {
+                self.eval_throw_abort_primop(ThrowAbortOp::Abort, argument, argument_span, value)
+            }
         }
+    }
+
+    fn eval_throw_abort_primop(
+        &mut self,
+        op: ThrowAbortOp,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let message = self.coerce_to_string(argument, value, argument_span)?;
+        let message = self.heap.get_string(message).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: argument,
+                    source,
+                },
+                argument_span,
+            )
+        })?;
+        let message = Self::copy_bytes_for_node(argument, argument_span, message.bytes())?;
+
+        Err(TreeWalkError::new(
+            match op {
+                ThrowAbortOp::Throw => TreeWalkErrorKind::Thrown {
+                    id: argument,
+                    message,
+                },
+                ThrowAbortOp::Abort => TreeWalkErrorKind::Aborted {
+                    id: argument,
+                    message,
+                },
+            },
+            argument_span,
+        ))
     }
 
     fn eval_float_to_int_primop(
@@ -9265,6 +9305,7 @@ fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<&'s
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StrictUnaryPrimOp {
+    Abort,
     IsAttrs,
     IsList,
     IsFunction,
@@ -9300,6 +9341,13 @@ enum StrictUnaryPrimOp {
     ConvertHash,
     ListToAttrs,
     ConcatLists,
+    Throw,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThrowAbortOp {
+    Throw,
+    Abort,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10162,6 +10210,22 @@ pub enum TreeWalkErrorKind {
         /// The failed assertion node id.
         id: IrId,
     },
+    /// `builtins.throw` raised a catchable evaluation error.
+    #[error("thrown error at node {id:?}: {message:?}")]
+    Thrown {
+        /// The message argument node.
+        id: IrId,
+        /// The coerced message bytes.
+        message: Vec<u8>,
+    },
+    /// `builtins.abort` raised a fatal evaluation error.
+    #[error("evaluation aborted at node {id:?}: {message:?}")]
+    Aborted {
+        /// The message argument node.
+        id: IrId,
+        /// The coerced message bytes.
+        message: Vec<u8>,
+    },
     /// The node kind is outside this evaluator slice.
     #[error("unsupported tree-walk node {kind:?} at {id:?}")]
     UnsupportedNode {
@@ -10740,6 +10804,8 @@ mod tests {
         assert_eq!(eval("builtins ? length").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? break").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? getEnv").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? throw").as_bool(), Ok(true));
+        assert_eq!(eval("builtins ? abort").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? nixVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? langVersion").as_bool(), Ok(true));
         assert_eq!(eval("builtins ? currentSystem").as_bool(), Ok(false));
@@ -10782,6 +10848,14 @@ mod tests {
         );
         assert_eq!(
             eval("let f = builtins.isFunction; in f builtins.convertHash").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.throw").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("builtins.isFunction builtins.abort").as_bool(),
             Ok(true)
         );
         assert_eq!(
@@ -10879,6 +10953,134 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn throw_and_abort_raise_distinct_errors() {
+        let ir = lower("builtins.throw \"boom\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let message_id = args[0];
+        let message_span = ir.arena.node(message_id).expect("message exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("throw raises");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Thrown {
+                id: message_id,
+                message: b"boom".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), message_span);
+
+        let error = eval_whnf_owned(&lower("let f = builtins.throw; in f \"boom\""))
+            .expect_err("first-class throw raises");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"boom");
+
+        let ir = lower("builtins.abort \"boom\"");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let message_id = args[0];
+        let message_span = ir.arena.node(message_id).expect("message exists").span;
+
+        let error = eval_whnf_owned(&ir).expect_err("abort raises");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Aborted {
+                id: message_id,
+                message: b"boom".to_vec(),
+            }
+        );
+        assert_eq!(error.span(), message_span);
+
+        let error = eval_whnf_owned(&lower("let f = builtins.abort; in f \"boom\""))
+            .expect_err("first-class abort raises");
+        let TreeWalkErrorKind::Aborted { message, .. } = error.kind() else {
+            panic!("expected aborted error");
+        };
+        assert_eq!(message, b"boom");
+    }
+
+    #[test]
+    fn throw_and_abort_coerce_messages_before_raising() {
+        let ir = lower("builtins.throw { __toString = self: \"coerced\"; }");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let message_id = args[0];
+
+        let error = eval_whnf_owned(&ir).expect_err("throw raises after coercion");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Thrown {
+                id: message_id,
+                message: b"coerced".to_vec(),
+            }
+        );
+
+        for source in ["builtins.throw 1", "builtins.abort 1"] {
+            let ir = lower(source);
+            let root = ir.arena.node(ir.root).expect("root exists");
+            let IrData::PrimOp { args, .. } = root.data else {
+                panic!("root is a primop");
+            };
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            let message_id = args[0];
+            let message_span = ir.arena.node(message_id).expect("message exists").span;
+
+            let error = eval_whnf_owned(&ir).expect_err("message coercion fails first");
+
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    id: message_id,
+                    expected: "string",
+                    actual: ValueTag::Int,
+                },
+                "{source}"
+            );
+            assert_eq!(error.span(), message_span, "{source}");
+        }
+    }
+
+    #[test]
+    fn throw_and_abort_remain_lazy_until_demanded() {
+        assert_eq!(
+            eval("let x = builtins.throw \"boom\"; in 1").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("{ a = builtins.abort \"boom\"; b = 2; }.b").as_int(),
+            Ok(2)
+        );
+
+        let error = eval_whnf_owned(&lower("builtins.seq (builtins.throw \"boom\") 1"))
+            .expect_err("seq demands throw");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"boom");
+
+        let error = eval_whnf_owned(&lower("builtins.deepSeq [ (builtins.abort \"boom\") ] 1"))
+            .expect_err("deepSeq demands abort");
+        let TreeWalkErrorKind::Aborted { message, .. } = error.kind() else {
+            panic!("expected aborted error");
+        };
+        assert_eq!(message, b"boom");
     }
 
     #[test]

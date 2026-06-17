@@ -7,7 +7,7 @@
 macro_rules! builtin_definitions {
     ($registry:ident) => {
         $registry! {
-            unsupported AbortBuiltin, b"abort";
+            strict_unary AbortBuiltin, b"abort", StrictUnaryPrimOp::Abort;
             strict_binary AddBuiltin, b"add", StrictBinaryPrimOp::Add;
             strict_unary AddDrvOutputDependenciesBuiltin, b"addDrvOutputDependencies", StrictUnaryPrimOp::AddDrvOutputDependencies;
             unsupported AddErrorContextBuiltin, b"addErrorContext";
@@ -112,7 +112,7 @@ macro_rules! builtin_definitions {
             strict_binary SubBuiltin, b"sub", StrictBinaryPrimOp::Sub;
             direct_ternary SubstringBuiltin, b"substring", StrictTernaryPrimOp::Substring;
             strict_unary TailBuiltin, b"tail", StrictUnaryPrimOp::Tail;
-            unsupported ThrowBuiltin, b"throw";
+            strict_unary ThrowBuiltin, b"throw", StrictUnaryPrimOp::Throw;
             unsupported ToFileBuiltin, b"toFile";
             unsupported ToHashFormatBuiltin, b"toHashFormat";
             strict_unary ToJsonBuiltin, b"toJSON", StrictUnaryPrimOp::ToJson;
