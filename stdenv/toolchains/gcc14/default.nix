@@ -12,6 +12,24 @@
   hostPlatform,
   targetPlatform,
 }: let
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkTierStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   callPackage = path: overrides: let
     fn = import path;
     auto = builtins.intersectAttrs (builtins.functionArgs fn) scope;
@@ -22,16 +40,40 @@
   # Has prev.glibc (2.34) crt*.o in its specs dir; pinned to prev because
   # that is the only glibc that exists at this point. Consumed only by the
   # tier-internal builds (binutils, linuxHeaders, glibc, bzip2) and as the
-  # host compiler for the stage-2 rebuild — never exposed downstream.
+  # host compiler for the final bootstrapped GCC — never exposed downstream.
   gccRaw = callPackage ./gcc.nix {};
 
-  # Phase 4: stage-2 GCC 14.3.0 self-recompiled by gccRaw against THIS
-  # tier's glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what
-  # the wrapper (and therefore stdenv.gcc) points at, so the production
-  # compiler's closure is free of the pre-tier bootstrap chain.
+  # Phase 4: final GCC 14.3.0 bootstrapped by gccRaw against THIS tier's
+  # glibc-2.39 / binutils-2.41 / linux-headers-6.12. This is what the wrapper
+  # (and therefore stdenv.gcc) points at, so the production compiler's closure
+  # is free of the pre-tier bootstrap chain.
   gccStage2 = callPackage ./gcc-stage2.nix {gccStage1 = gccRaw;};
 
-  scope = {
+  manifestToolNames = [
+    "perl"
+    "texinfo"
+    "help2man"
+    "m4"
+    "flex"
+    "bison"
+    "autoconf"
+    "automake"
+    "gperf"
+    "python3"
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "tar"
+    "gzip"
+    "patch"
+  ];
+
+  baseScope = {
     inherit
       prev
       buildPlatform
@@ -39,7 +81,7 @@
       targetPlatform
       ;
 
-    # GCC wrapper around stage-2: passes -B${glibc}/lib / -idirafter
+    # GCC wrapper around the final bootstrapped compiler: passes -B${glibc}/lib / -idirafter
     # ${glibc.dev}/include for cc-wrapper-symmetry and for callers that probe
     # `gcc -v`. Stage-2's own specs file already has these baked in, so
     # these flags are belt-and-suspenders.
@@ -54,12 +96,12 @@
           export PATH="${prev.coreutils}/bin"
           mkdir -p $out/bin
 
-          echo '#!/bin/sh' > $out/bin/gcc
+          echo '#!${prev.bash}/bin/bash' > $out/bin/gcc
           echo 'exec ${gccStage2}/bin/gcc -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/gcc
           chmod +x $out/bin/gcc
 
           if [ -f "${gccStage2}/bin/g++" ]; then
-            echo '#!/bin/sh' > $out/bin/g++
+            echo '#!${prev.bash}/bin/bash' > $out/bin/g++
             echo 'exec ${gccStage2}/bin/g++ -B${scope.glibc}/lib -idirafter ${scope.glibc.dev}/include "$@"' >> $out/bin/g++
             chmod +x $out/bin/g++
           fi
@@ -67,7 +109,7 @@
           [ -f "$out/bin/gcc" ] && [ ! -e "$out/bin/cc" ] && ln -sf gcc $out/bin/cc
           [ -f "$out/bin/g++" ] && [ ! -e "$out/bin/c++" ] && ln -sf g++ $out/bin/c++
 
-          # Symlink all other binaries from stage-2 GCC
+          # Symlink all other binaries from the final bootstrapped GCC.
           for f in ${gccStage2}/bin/*; do
             bn=$(basename "$f")
             [ ! -e "$out/bin/$bn" ] && ln -s "$f" "$out/bin/$bn"
@@ -91,19 +133,59 @@
     linuxHeaders = callPackage ./linux-headers.nix {gcc = gccRaw;};
     glibc = callPackage ./glibc.nix {gcc = gccRaw;};
 
-    # Phase 3.5: Autotools rebuilt with wrapped gcc + binutils + glibc
-    # Order: perl/texinfo/help2man first (no m4/flex/bison deps),
-    # then m4/flex/bison/autoconf/automake (can use real texinfo/help2man)
-    perl = callPackage ./perl.nix {};
-    texinfo = callPackage ./texinfo.nix {};
-    help2man = callPackage ./help2man.nix {};
-    m4 = callPackage ./m4.nix {};
-    flex = callPackage ./flex.nix {};
-    bison = callPackage ./bison.nix {};
-    autoconf = callPackage ./autoconf.nix {};
-    automake = callPackage ./automake.nix {};
-    gperf = callPackage ./gperf.nix {};
-    python3 = prev.python3;
+    # Shared mini-stdenv for gcc14's POSIX/autotools tools. Use the wrapped
+    # final bootstrapped compiler and this tier's split glibc outputs; the build shell
+    # remains previous-tier bash while gcc14 bash is being built.
+    tierBuildStdenv = mkTierStdenv {
+      tc = {
+        inherit (scope) gcc binutils glibc;
+        inherit
+          (prev)
+          coreutils
+          findutils
+          gnumake
+          gawk
+          grep
+          sed
+          tar
+          gzip
+          diffutils
+          patch
+          bash
+          ;
+      };
+      staticDefault = true;
+      staticNoPie = true;
+    };
+
+    mkAutotoolsTool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = scope.tierBuildStdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit buildPlatform hostPlatform;
+      inherit
+        (scope)
+        glibc
+        m4
+        flex
+        bison
+        perl
+        autoconf
+        automake
+        texinfo
+        help2man
+        bash
+        coreutils
+        grep
+        ;
+    };
 
     # Compression tools (needed so tar can decompress .tar.xz/.tar.bz2 in the production stdenv)
     xz = callPackage ./xz.nix {};
@@ -111,23 +193,18 @@
 
     # Build tools
     patchelf = callPackage ./patchelf.nix {};
-
-    # Phase 4: POSIX tools built with wrapped gcc + binutils + glibc
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
-    patch = callPackage ./patch.nix {};
   };
+
+  manifestTools = mkManifestTools {
+    manifest = baseScope.manifest;
+    mkTool = baseScope.mkAutotoolsTool;
+    names = manifestToolNames;
+  };
+
+  scope = baseScope // manifestTools;
 in {
-  # Expose the unwrapped gcc-14.3.0-stage2 (the let-binding above the
-  # scope, since scope wraps it via the cc-wrapper). Needed by
+  # Expose the unwrapped final gcc-14.3.0 (the let-binding above the scope,
+  # since scope wraps it via the cc-wrapper). Needed by
   # pkgs.gccUnwrapped so the perl Config scrub can target the unwrapped
   # path that Configure records.
   inherit gccStage2;

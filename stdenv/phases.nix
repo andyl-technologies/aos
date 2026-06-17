@@ -10,12 +10,25 @@
 # Each returns a list of { name; script; } records for mkDerivation's `phases`.
 #
 let
-  unpackPhase = {
+  unpackPhaseFor = {unpackMode ? "copy"}: let
+    dirUnpack =
+      if unpackMode == "copy"
+      then ''
+        cp -r "$src" source
+        chmod -R u+w source
+      ''
+      else if unpackMode == "tar-pipe"
+      then ''
+        mkdir source
+        (cd "$src" && tar cf - .) | (cd source && tar xf -)
+        chmod -R u+w source
+      ''
+      else throw "stdenv/phases.nix: unsupported unpackMode '${unpackMode}'";
+  in {
     name = "unpack";
     script = ''
       if [ -d "$src" ]; then
-        cp -r "$src" source
-        chmod -R u+w source
+        ${dirUnpack}
       elif [ -f "$src" ]; then
         case "$src" in
           *.tar.gz|*.tgz)   tar xzf "$src" ;;
@@ -39,6 +52,31 @@ let
           cd "$(ls -d */)"
         fi
       fi
+    '';
+  };
+
+  unpackPhase = unpackPhaseFor {};
+
+  freezeAutotoolsTimestampsPhase = {
+    name = "freeze-autotools-timestamps";
+    script = ''
+      export AUTOCONF=true AUTOHEADER=true ACLOCAL=true AUTOMAKE=true
+      : "''${MAKEINFO:=true}"
+      export MAKEINFO
+
+      if [ -d doc ]; then
+        find doc -type f -links +1 -exec "''${CONFIG_SHELL:-bash}" -c 'cp "$1" "$1.tmp" && mv "$1.tmp" "$1"' _ {} \; 2>/dev/null || true
+      fi
+
+      # Touch autotools inputs first, generated C/header files next, then
+      # configure and Makefile outputs. This keeps older tarballs from
+      # regenerating with whichever autotools happen to be on PATH.
+      find . -type f \( -name '*.y' -o -name '*.l' -o -name '*.gperf' -o -name 'Makefile.am' -o -name 'configure.ac' -o -name 'configure.in' -o -name 'acinclude.m4' \) -exec touch {} + 2>/dev/null || true
+      sleep 1
+      find . -type f \( -name '*.c' -o -name '*.h' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.hh' -o -name '*.hpp' -o -name '*-kw.h' \) -exec touch {} + 2>/dev/null || true
+      sleep 1
+      find . \( -name 'configure' -o -name 'Makefile.in' -o -name 'aclocal.m4' -o -name 'config.h.in' \) -exec touch {} + 2>/dev/null || true
+      find . \( -name '*.1' -o -name '*.info' \) -exec touch {} + 2>/dev/null || true
     '';
   };
 
@@ -147,9 +185,18 @@ in rec {
   autoconfPhases = {
     doCheck ? true,
     checkTarget ? "check",
+    unpackMode ? "copy",
+    freezeAutotoolsTimestamps ? false,
   }:
     [
-      unpackPhase
+      (unpackPhaseFor {inherit unpackMode;})
+    ]
+    ++ (
+      if freezeAutotoolsTimestamps
+      then [freezeAutotoolsTimestampsPhase]
+      else []
+    )
+    ++ [
       {
         name = "configure";
         script = ''

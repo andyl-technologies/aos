@@ -12,7 +12,8 @@
 #   $propagatedDeps   — space-separated list of propagated dependency paths
 #   $NIX_BUILD_CORES  — number of parallel build jobs
 
-set -euo pipefail
+set -eu
+set -o pipefail 2>/dev/null || true
 
 # Initialize common build variables (safe for set -u / nounset)
 : "${CFLAGS:=}"

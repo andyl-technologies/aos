@@ -48,13 +48,17 @@ in
         export PATH="${prev.coreutils}/bin:${crossGccStage1}/bin:${crossBinutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.diffutils}/bin:${prev.patch}/bin:${prev.bash}/bin"
         export CONFIG_SHELL="${prev.bash}/bin/bash"
 
-        cp -r ${src} "$TMPDIR/glibc-2.17"
+        mkdir -p "$TMPDIR/glibc-2.17"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/glibc-2.17" && tar xf -)
         chmod -R u+w "$TMPDIR/glibc-2.17"
 
         SRC="$TMPDIR/glibc-2.17"
 
         # Fix hardcoded /bin/pwd
         ${prev.sed}/bin/sed -i 's|/bin/pwd|pwd|g' "$SRC/configure"
+        # glibc 2.17's generated configure predates GNU make 4.x and
+        # incorrectly rejects it as too new.
+        ${prev.sed}/bin/sed -i 's/3\.79\* | 3\.\[89\]\*)/3.79* | 3.[89]* | 4.*)/' "$SRC/configure"
         find "$SRC" -name configure -exec chmod +x {} + 2>/dev/null || true
         find "$SRC" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
         find "$SRC" -name install-sh -exec chmod +x {} + 2>/dev/null || true
@@ -91,7 +95,15 @@ in
         # nscd may cause multiple-definition errors — tolerate
         make -j"$NIX_BUILD_CORES" || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
-        make install || true
+        make install-bootstrap-headers=yes install-headers || true
+        make -k install PERL=true || true
+        mkdir -p "$out/lib"
+        cp -f libc.a "$out/lib/"
+        for obj in csu/crt1.o csu/gcrt1.o csu/Mcrt1.o csu/Scrt1.o csu/crti.o csu/crtn.o; do
+          if [ -f "$obj" ]; then
+            cp -f "$obj" "$out/lib/"
+          fi
+        done
         test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
         test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 
@@ -112,12 +124,28 @@ in
         fi
         # gnu/stubs-{32,64}.h
         mkdir -p "$out/include/gnu"
+        printf '#include <gnu/stubs-${stubsSuffix}.h>\n' > "$out/include/gnu/stubs.h"
         touch "$out/include/gnu/stubs-${stubsSuffix}.h"
 
-        # Copy linux headers into glibc output for downstream use
-        cp -r "${linuxHeaders}/include/linux" "$out/include/" 2>/dev/null || true
-        cp -r "${linuxHeaders}/include/asm" "$out/include/" 2>/dev/null || true
-        cp -r "${linuxHeaders}/include/asm-generic" "$out/include/" 2>/dev/null || true
+        # glibc's partial install can leave read-only empty kernel header
+        # directories behind. Replace them with the sanitized linuxHeaders
+        # output so downstream target-libgcc and POSIX tools can include
+        # <linux/...> through the glibc include tree.
+        for dir in linux asm asm-generic; do
+          if [ -e "$out/include/$dir" ]; then
+            chmod -R u+w "$out/include/$dir" 2>/dev/null || true
+            rm -rf "$out/include/$dir"
+          fi
+        done
+        (
+          cd "${linuxHeaders}/include"
+          tar cf - linux asm asm-generic
+        ) | (
+          cd "$out/include"
+          tar --no-same-owner --no-same-permissions -xf -
+        )
+        test -f "$out/include/linux/limits.h" || { echo "FATAL: linux headers not installed"; exit 1; }
+        test -f "$out/include/asm/types.h" || { echo "FATAL: asm headers not installed"; exit 1; }
 
         echo "Cross glibc 2.17 (${hostPlatform.config}) installed to $out"
       ''

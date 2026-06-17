@@ -86,7 +86,6 @@ in
           --build=${buildPlatform.config} \
           --host=${hostPlatform.config} \
           --with-headers="${linuxHeaders}/include" \
-          --disable-shared \
           --disable-profile \
           --disable-nscd \
           --disable-timezone-tools \
@@ -98,14 +97,14 @@ in
           libc_cv_forced_unwind=yes \
           libc_cv_c_cleanup=yes
 
-        # nscd may cause multiple-definition errors — tolerate
+        # nscd may cause multiple-definition errors — tolerate.
         make -j"$NIX_BUILD_CORES" || true
         test -f libc.a || { echo "FATAL: libc.a not built"; exit 1; }
         make install || true
         test -f "$out/lib/libc.a" || { echo "FATAL: libc.a not installed"; exit 1; }
         test -f "$out/include/stdio.h" || { echo "FATAL: headers not installed"; exit 1; }
 
-        # elf.h and link.h may not be installed with --disable-shared
+        # elf.h and link.h may not be installed by the partial install path.
         for h in elf/elf.h elf/link.h; do
           bn="$(basename "$h")"
           if [ ! -f "$out/include/$bn" ] && [ -f "$SRC/$h" ]; then
