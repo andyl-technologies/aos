@@ -213,6 +213,7 @@
           encrypted = true;
         }
       ];
+      permissions.tcp-bind = [18081];
     };
   };
   unknownConfigUnit = builtins.tryEval (
@@ -694,6 +695,60 @@
     if landlockScriptDerivedExec.success
     then throw "expose renderer must reject script-derived Exec* commands for Landlock services"
     else "ok";
+  socketMissingTcpBind = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-missing-tcp-bind.socket".socketConfig.ListenStream = "127.0.0.1:18082";
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  socketMissingTcpBindRejected =
+    if socketMissingTcpBind.success
+    then throw "expose renderer must reject TCP socket listeners without matching permissions.tcp-bind grants"
+    else "ok";
+  socketListenStreamsMissingTcpBind = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-listen-streams-missing-tcp-bind.socket".listenStreams = ["127.0.0.1:18083"];
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  socketListenStreamsMissingTcpBindRejected =
+    if socketListenStreamsMissingTcpBind.success
+    then throw "expose renderer must reject typed listenStreams without matching permissions.tcp-bind grants"
+    else "ok";
+  socketListenStreamReset = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-listen-stream-reset.socket".socketConfig.ListenStream = [
+          "127.0.0.1:18084"
+          ""
+        ];
+        permissions = {
+          network = "private";
+        };
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  socketListenStreamResetAccepted =
+    if socketListenStreamReset.success
+    then "ok"
+    else throw "expose renderer must honor empty ListenStream reset semantics";
   kernelModulePermissionMismatch = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -970,6 +1025,9 @@ in
       reservedCollisionRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
+      socketMissingTcpBindRejected
+      socketListenStreamsMissingTcpBindRejected
+      socketListenStreamResetAccepted
       kernelModulePermissionMismatchRejected
       unknownConfigUnitRejected
       credentialNonServiceUnitRejected
@@ -1281,6 +1339,9 @@ in
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
+          test "$socketMissingTcpBindRejected" = ok
+          test "$socketListenStreamsMissingTcpBindRejected" = ok
+          test "$socketListenStreamResetAccepted" = ok
           test "$kernelModulePermissionMismatchRejected" = ok
           test "$undeclaredPreparedHostPathDirectoryRejected" = ok
           test "$readOnlyPreparedHostPathDirectoryRejected" = ok

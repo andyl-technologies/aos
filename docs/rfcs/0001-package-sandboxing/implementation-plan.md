@@ -544,7 +544,7 @@ Full spec: [`enforcement.md`](enforcement.md).
 
 **Deliverables.**
 
-- [ ] **Landlock layer (D20).** The `expose` renderer emits Landlock policy from
+- [x] **Landlock layer (D20).** The `expose` renderer emits Landlock policy from
       the manifest. Current coverage: `tcp-bind` /
       `tcp-connect` are rendered into `network-policy.json`, workload
       service exec commands are prefixed with the AOS-built `aos-landlock`
@@ -555,9 +555,9 @@ Full spec: [`enforcement.md`](enforcement.md).
       for `sandboxed-with-holes` packages and applies default filesystem
       confinement (`/` read-only plus writable package temp/state roots) for
       non-root-equivalent empty manifests. Holds even when a namespace is
-      shared — the layer for `sandboxed-with-holes` packages. Remaining
-      coverage: host-owned socket listener validation against the
-      socket-capability / `tcp-bind` contract.
+      shared — the layer for `sandboxed-with-holes` packages. Host-owned TCP
+      socket listeners are validated against the socket-capability /
+      `tcp-bind` contract before units can be attached.
 - [ ] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
       for MVP unless an SELinux base policy ships); loaded by `apm` at install.
