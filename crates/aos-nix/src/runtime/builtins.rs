@@ -61,7 +61,7 @@ macro_rules! builtin_definitions {
             strict_unary GetContextBuiltin, b"getContext", StrictUnaryPrimOp::GetContext;
             effectful_strict_unary GetEnvBuiltin, b"getEnv", StrictUnaryPrimOp::GetEnv;
             unsupported GetFlakeBuiltin, b"getFlake";
-            direct_binary GroupByBuiltin, b"groupBy", StrictBinaryPrimOp::GroupBy;
+            strict_binary GroupByBuiltin, b"groupBy", StrictBinaryPrimOp::GroupBy;
             direct_binary HasAttrBuiltin, b"hasAttr", StrictBinaryPrimOp::HasAttr;
             strict_unary HasContextBuiltin, b"hasContext", StrictUnaryPrimOp::HasContext;
             effectful_strict_binary HashFileBuiltin, b"hashFile", StrictBinaryPrimOp::HashFile;
@@ -638,6 +638,10 @@ mod tests {
         );
         assert_eq!(
             builtin_metadata(b"concatMap").unwrap().first_class_arity(),
+            Some(2)
+        );
+        assert_eq!(
+            builtin_metadata(b"groupBy").unwrap().first_class_arity(),
             Some(2)
         );
         assert_eq!(

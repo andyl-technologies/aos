@@ -6706,11 +6706,12 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let function_span = self.node(function_id)?.span;
         let function = self.eval_node(function_id)?;
-        if function.tag() != ValueTag::Lambda {
+        let function = self.force_value(function_id, function_span, function)?;
+        if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop) {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: function_id,
-                    expected: "lambda",
+                    expected: "function",
                     actual: function.tag(),
                 },
                 function_span,
@@ -6719,6 +6720,7 @@ impl<'ir> TreeWalk<'ir> {
 
         let list_span = self.node(list_id)?.span;
         let list_value = self.eval_node(list_id)?;
+        let list_value = self.force_value(list_id, list_span, list_value)?;
         if list_value.tag() != ValueTag::List {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
@@ -6742,6 +6744,83 @@ impl<'ir> TreeWalk<'ir> {
             Self::clone_list_elements(list_id, list_span, list)?
         };
 
+        self.eval_group_by_elements(
+            id,
+            span,
+            function_id,
+            function_span,
+            function,
+            list_id,
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_group_by_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function: EvalPrimOpArg,
+        list: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let function_value = self.force_value(function.id(), function.span(), function.value())?;
+        if !matches!(function_value.tag(), ValueTag::Lambda | ValueTag::Primop) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: function.id(),
+                    expected: "function",
+                    actual: function_value.tag(),
+                },
+                function.span(),
+            ));
+        }
+
+        let list_value = self.force_value(list.id(), list.span(), list.value())?;
+        if list_value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: list.id(),
+                    expected: "list",
+                    actual: list_value.tag(),
+                },
+                list.span(),
+            ));
+        }
+        let elements = {
+            let list_value = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list.id(),
+                        source,
+                    },
+                    list.span(),
+                )
+            })?;
+            Self::clone_list_elements(list.id(), list.span(), list_value)?
+        };
+
+        self.eval_group_by_elements(
+            id,
+            span,
+            function.id(),
+            function.span(),
+            function_value,
+            list.id(),
+            elements,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn eval_group_by_elements(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        function_span: Span,
+        function: Value,
+        list_id: IrId,
+        elements: Vec<Value>,
+    ) -> Result<Value, TreeWalkError> {
         let mut groups: Vec<(Symbol, Vec<Value>)> = Vec::new();
         groups.try_reserve_exact(elements.len()).map_err(|_| {
             TreeWalkError::new(
@@ -6756,8 +6835,8 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         for element in elements {
             let key = self.apply_lambda_value(
-                function_id,
-                function_span,
+                id,
+                span,
                 function_id,
                 function,
                 function_span,
@@ -7420,6 +7499,7 @@ impl<'ir> TreeWalk<'ir> {
             }
             StrictBinaryPrimOp::Filter => self.eval_filter_primop_value(id, span, first, second),
             StrictBinaryPrimOp::GenList => self.eval_gen_list_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::GroupBy => self.eval_group_by_primop_value(id, span, first, second),
             StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
             StrictBinaryPrimOp::Partition => {
                 self.eval_partition_primop_value(id, span, first, second)
@@ -7431,8 +7511,7 @@ impl<'ir> TreeWalk<'ir> {
             | StrictBinaryPrimOp::IntersectAttrs
             | StrictBinaryPrimOp::CatAttrs
             | StrictBinaryPrimOp::Elem
-            | StrictBinaryPrimOp::ConcatStringsSep
-            | StrictBinaryPrimOp::GroupBy => Err(TreeWalkError::new(
+            | StrictBinaryPrimOp::ConcatStringsSep => Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
                 span,
             )),
@@ -11688,6 +11767,10 @@ mod tests {
             Ok(true)
         );
         assert_eq!(
+            eval("builtins.isFunction builtins.groupBy").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
             eval("builtins.isFunction builtins.partition").as_bool(),
             Ok(true)
         );
@@ -13346,7 +13429,28 @@ mod tests {
             Ok(3)
         );
         assert_eq!(
+            eval("builtins.length (builtins.groupBy builtins.typeOf [ 1 \"x\" 2 ]).int").as_int(),
+            Ok(2)
+        );
+        assert_eq!(
+            eval("builtins.length (let f = builtins.groupBy; in f builtins.typeOf [ 1 \"x\" 2 ]).string")
+                .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
             eval("builtins.length (builtins.groupBy (x: \"k\") [ (1 / 0) ]).k").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval(
+                "let f = x: \"k\"; xs = [ (1 / 0) ]; in builtins.length (builtins.groupBy f xs).k"
+            )
+            .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let g = builtins.groupBy; in builtins.length (g (x: \"k\") [ (1 / 0) ]).k")
+                .as_int(),
             Ok(1)
         );
         assert_eq!(
@@ -13403,11 +13507,42 @@ mod tests {
             error.kind(),
             TreeWalkErrorKind::Type {
                 id: function,
-                expected: "lambda",
+                expected: "function",
                 actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), function_span);
+
+        let error = eval_whnf_owned(&lower(
+            "let f = builtins.groupBy; in f (builtins.throw \"function\") (builtins.throw \"list\")",
+        ))
+        .expect_err("first-class groupBy forces function before list");
+        let TreeWalkErrorKind::Thrown { message, .. } = error.kind() else {
+            panic!("expected thrown error");
+        };
+        assert_eq!(message, b"function");
+
+        let error = eval_whnf_owned(&lower("let f = builtins.groupBy; in f (x: \"k\") 1"))
+            .expect_err("first-class groupBy requires a list");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower("let f = builtins.groupBy; in f (x: 1) [ \"a\" ]"))
+            .expect_err("first-class groupBy requires string keys");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
 
         let ir = lower("builtins.groupBy (x: \"k\") 1");
         let root = ir.arena.node(ir.root).expect("root exists");
