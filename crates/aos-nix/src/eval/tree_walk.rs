@@ -29241,6 +29241,33 @@ mod tests {
     }
 
     #[test]
+    fn path_coercion_context_is_observed_by_derivation_strict_as_input_src() {
+        let (dir, path) = temp_file_with_bytes("path-context-input-src", b"abc");
+        let path = path_source(&path);
+        let source = format!(
+            r#"let
+                 d = derivationStrict {{
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                   src = {path};
+                 }};
+               in {{
+                 drvPath = d.drvPath;
+                 out = d.out;
+                 srcContext = builtins.getContext "${{{path}}}";
+               }}"#
+        );
+
+        assert_eq!(
+            eval_json_bytes(&source),
+            br#"{"drvPath":"/nix/store/jwfqrwzg1mpqn9fc0x8g3ml72nisim2i-x.drv","out":"/nix/store/z6ky3vpva494v17vnc8xrzx6rv8nrycr-x","srcContext":{"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt":{"path":true}}}"#.to_vec()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn path_store_coercion_serializes_source_trees_and_symlinks() {
         let dir = unique_temp_dir("path-source-tree");
         let tree = dir.join("tree");

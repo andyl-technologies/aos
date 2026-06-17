@@ -212,7 +212,7 @@ are language-level and live here.
 
 - [x] **Context attaches on coercion of a derivation** — interpolating/`toString`-ing
       a derivation attaches its `=drv`/output context element.
-- [ ] **Context attaches on path coercion** — coercing a path to a string adds the
+- [x] **Context attaches on path coercion** — coercing a path to a string adds the
       NAR-hashed source store path to the context (and is observed as an `inputSrc`).
 - [ ] **Context attaches via `builtins.storePath`** — adds the path as a context
       element (builtin in doc 21; the propagation rule is here).
