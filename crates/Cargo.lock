@@ -241,12 +241,14 @@ dependencies = [
  "md-5",
  "nix-compat",
  "regex",
+ "reqwest",
  "serde_json",
  "sha1 0.10.6",
  "sha2 0.10.9",
  "thiserror",
  "toml",
  "tracing",
+ "url",
  "xxhash-rust",
 ]
 
@@ -3493,6 +3495,7 @@ checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
  "futures-util",
  "http 1.4.1",

@@ -436,12 +436,19 @@ static BUILTINS: [BuiltinDoc; 93] = [
     // ------------------------------------------------------------------
     BuiltinDoc {
         name: "fetchurl",
-        type_sig: "string -> path",
+        type_sig: "string | attrs -> path",
         summary: "Download a URL into the Nix store.",
         body: "Fetches the given URL and stores the result as a fixed-output \
-               derivation.  Unlike `fetchTarball`, it does NOT unpack the file.",
-        parameters: &[("url", "URL to fetch.")],
-        examples: &[r#"builtins.fetchurl "https://example.com/data.txt""#],
+               store path.  Unlike `fetchTarball`, it does NOT unpack the file. \
+               Can take either a URL string or an attribute set with `url`, \
+               `sha256`, and `name`.  Pure evaluation requires `sha256`; \
+               restricted evaluation requires network URLs to match an allowed \
+               URI prefix.",
+        parameters: &[("arg", "URL string, or set with `url`, `sha256`, `name`.")],
+        examples: &[
+            r#"builtins.fetchurl "https://example.com/data.txt""#,
+            "builtins.fetchurl {\n  url = \"https://example.com/data.txt\";\n  sha256 = \"0000000000000000000000000000000000000000000000000000\";\n}",
+        ],
         see_also: &["fetchTarball", "fetchGit"],
     },
     // ------------------------------------------------------------------

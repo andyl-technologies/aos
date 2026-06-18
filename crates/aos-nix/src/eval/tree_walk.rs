@@ -33,6 +33,7 @@ use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
 use thiserror::Error;
 use toml::Value as TomlValue;
+use url::Url;
 
 use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
@@ -71,6 +72,7 @@ const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
 const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
 const IMPURE_ATTR: &[u8] = b"__impure";
 const PATH_ATTR: &[u8] = b"path";
+const URL_ATTR: &[u8] = b"url";
 const FILTER_ATTR: &[u8] = b"filter";
 const RECURSIVE_ATTR: &[u8] = b"recursive";
 const SHA256_ATTR: &[u8] = b"sha256";
@@ -92,6 +94,8 @@ const UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-upstream-output:";
 const TRACE_PREFIX: &[u8] = b"trace: ";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
 const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
+const EMPTY_FETCHURL_SHA256_WARNING: &[u8] =
+    b"found empty hash, assuming 'sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='";
 const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
     b"while evaluating the error message passed to builtins.addErrorContext";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
@@ -584,6 +588,7 @@ pub struct TreeWalkOptions {
     home_dir: Option<Vec<u8>>,
     eval_mode: EvalMode,
     allowed_paths: Vec<Vec<u8>>,
+    allowed_uris: Vec<Vec<u8>>,
     current_system: Option<Vec<u8>>,
     current_time: Option<i64>,
     trace_verbose: bool,
@@ -602,6 +607,7 @@ impl Default for TreeWalkOptions {
             home_dir: None,
             eval_mode: EvalMode::default(),
             allowed_paths: Vec::new(),
+            allowed_uris: Vec::new(),
             current_system: None,
             current_time: None,
             trace_verbose: false,
@@ -945,6 +951,43 @@ impl TreeWalkOptions {
         self.allowed_paths.clear();
     }
 
+    /// Appends one allowed URI prefix for restricted network fetches.
+    ///
+    /// URI entries are byte prefixes, matching Nix's `allowed-uris` policy
+    /// shape. For example, `https://cache.example/` allows every URL under
+    /// that prefix, while `github:` allows the whole `github:` scheme.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if `uri` is empty.
+    pub fn add_allowed_uri(&mut self, uri: impl Into<Vec<u8>>) -> Result<(), TreeWalkOptionsError> {
+        let uri = normalize_allowed_uri(uri.into())?;
+        self.allowed_uris.push(uri);
+        Ok(())
+    }
+
+    /// Replaces the allowed URI prefixes for restricted network fetches.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeWalkOptionsError`] if any URI prefix is empty.
+    pub fn set_allowed_uris(
+        &mut self,
+        uris: impl IntoIterator<Item = Vec<u8>>,
+    ) -> Result<(), TreeWalkOptionsError> {
+        let mut allowed_uris = Vec::new();
+        for uri in uris {
+            allowed_uris.push(normalize_allowed_uri(uri)?);
+        }
+        self.allowed_uris = allowed_uris;
+        Ok(())
+    }
+
+    /// Clears all allowed URI prefixes.
+    pub fn clear_allowed_uris(&mut self) {
+        self.allowed_uris.clear();
+    }
+
     /// Replaces the configured target system.
     ///
     /// # Errors
@@ -1071,6 +1114,11 @@ impl TreeWalkOptions {
         &self.allowed_paths
     }
 
+    /// Returns the configured allowed URI prefixes.
+    pub fn allowed_uris(&self) -> &[Vec<u8>] {
+        &self.allowed_uris
+    }
+
     fn path_is_allowed(&self, path: &[u8]) -> bool {
         self.allowed_paths
             .iter()
@@ -1084,6 +1132,12 @@ impl TreeWalkOptions {
                 .iter()
                 .filter_map(|allowed| canonicalize_policy_path(allowed))
                 .any(|allowed| path_is_under_root(path, &allowed))
+    }
+
+    fn uri_is_allowed(&self, uri: &[u8]) -> bool {
+        self.allowed_uris
+            .iter()
+            .any(|allowed| uri.starts_with(allowed))
     }
 
     /// Returns the configured target system, if one is available.
@@ -1145,6 +1199,10 @@ pub enum TreeWalkOptionsError {
     #[error("Nix allowed filesystem paths must be absolute")]
     RelativeAllowedPath,
 
+    /// A configured allowed URI prefix is empty.
+    #[error("Nix allowed URI prefixes must not be empty")]
+    EmptyAllowedUri,
+
     /// The configured target system is empty.
     #[error("Nix currentSystem value must not be empty")]
     EmptyCurrentSystem,
@@ -1183,6 +1241,14 @@ fn normalize_allowed_path(path: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError
     }
 
     Ok(normalize_absolute_path_bytes(&path))
+}
+
+fn normalize_allowed_uri(uri: Vec<u8>) -> Result<Vec<u8>, TreeWalkOptionsError> {
+    if uri.is_empty() {
+        return Err(TreeWalkOptionsError::EmptyAllowedUri);
+    }
+
+    Ok(uri)
 }
 
 fn normalize_required_absolute_path(
@@ -1555,6 +1621,13 @@ impl ImportGlobalScope {
 struct TextStoreEntry {
     contents: Vec<u8>,
     references: StringContext,
+}
+
+#[derive(Clone, Debug)]
+struct FetchUrlArguments {
+    url: Vec<u8>,
+    name: String,
+    expected_sha256: Option<[u8; 32]>,
 }
 
 /// A safe recursive evaluator for lowered IR.
@@ -7941,6 +8014,447 @@ impl TreeWalk {
         self.heap
             .alloc_string(path)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_fetchurl_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let args = self.fetchurl_arguments(argument, argument_span, value)?;
+        if self.options.eval_mode() == EvalMode::Pure && args.expected_sha256.is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrlHashRequired {
+                    id: argument,
+                    url: args.url,
+                    mode: EvalMode::Pure,
+                },
+                argument_span,
+            ));
+        }
+
+        let parsed = Self::parse_fetchurl_url(argument, argument_span, &args.url)?;
+        self.check_fetchurl_access(argument, argument_span, &args.url, &parsed)?;
+
+        let expected_path = if let Some(expected) = args.expected_sha256 {
+            let path = self.fetchurl_store_path_from_digest(
+                argument,
+                argument_span,
+                &args.url,
+                &args.name,
+                &expected,
+            )?;
+            if self.fetchurl_can_reuse_store_path(
+                argument,
+                argument_span,
+                &args.url,
+                &parsed,
+                &path,
+            )? {
+                return self.alloc_fetchurl_path_value(id, span, path);
+            }
+            Some(path)
+        } else {
+            None
+        };
+
+        let contents = self.fetchurl_bytes(argument, argument_span, &args.url, &parsed)?;
+        let digest = Self::sha256_array(&contents);
+        if let Some(expected) = args.expected_sha256 {
+            if expected != digest {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchUrlHashMismatch {
+                        id: argument,
+                        url: args.url,
+                        expected: expected.to_vec(),
+                        actual: digest.to_vec(),
+                    },
+                    argument_span,
+                ));
+            }
+        }
+
+        let path = match expected_path {
+            Some(path) => path,
+            None => self.fetchurl_store_path_from_digest(
+                argument,
+                argument_span,
+                &args.url,
+                &args.name,
+                &digest,
+            )?,
+        };
+        self.text_store.insert(
+            path.clone(),
+            TextStoreEntry {
+                contents,
+                references: StringContext::empty(),
+            },
+        );
+        self.alloc_fetchurl_path_value(id, span, path)
+    }
+
+    fn fetchurl_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchUrlArguments, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            let url = self.context_free_string_bytes(id, span, value, "fetchurl")?;
+            let name = self.fetchurl_default_store_name(id, span, &url)?;
+            let name = Self::fetchurl_store_name(id, span, &url, &name)?.to_owned();
+            return Ok(FetchUrlArguments {
+                url,
+                name,
+                expected_sha256: None,
+            });
+        }
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "set or string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        self.validate_fetchurl_attrs(id, span, value)?;
+
+        let url_value = self.required_attr_value_by_name(id, value, URL_ATTR, span)?;
+        let url_value = self.force_value(id, span, url_value)?;
+        let url = self.context_free_string_bytes(id, span, url_value, "fetchurl")?;
+
+        let name = if let Some(name_value) = self.attr_value_by_name(id, value, NAME_ATTR, span)? {
+            let name_value = self.force_value(id, span, name_value)?;
+            self.context_free_string_bytes(id, span, name_value, "fetchurl")?
+        } else {
+            self.fetchurl_default_store_name(id, span, &url)?
+        };
+        let name = Self::fetchurl_store_name(id, span, &url, &name)?.to_owned();
+
+        let expected_sha256 = if let Some(hash_value) =
+            self.attr_value_by_name(id, value, SHA256_ATTR, span)?
+        {
+            let hash_value = self.force_value(id, span, hash_value)?;
+            let hash = self.context_free_string_bytes(id, span, hash_value, "fetchurl")?;
+            if hash.is_empty() {
+                self.emit_warning_output(id, span, EMPTY_FETCHURL_SHA256_WARNING.to_vec())?;
+                Some([0_u8; 32])
+            } else {
+                let (algorithm, digest) =
+                    self.decode_convert_hash(id, span, &hash, Some(HashStringAlgorithm::Sha256))?;
+                if algorithm != HashStringAlgorithm::Sha256 {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::HashAlgorithmMismatch {
+                            id,
+                            hash,
+                            expected: b"sha256".to_vec(),
+                        },
+                        span,
+                    ));
+                }
+                if digest.len() != 32 {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::HashAlgorithmMismatch {
+                            id,
+                            hash,
+                            expected: b"sha256".to_vec(),
+                        },
+                        span,
+                    ));
+                }
+                let mut fixed = [0_u8; 32];
+                fixed.copy_from_slice(&digest);
+                Some(fixed)
+            }
+        } else {
+            None
+        };
+
+        Ok(FetchUrlArguments {
+            url,
+            name,
+            expected_sha256,
+        })
+    }
+
+    fn validate_fetchurl_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !matches!(key, URL_ATTR | NAME_ATTR | SHA256_ATTR) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFetchUrlAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn fetchurl_default_store_name(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut end = url.len();
+        while end > 0 && url[end - 1] == b'/' {
+            end -= 1;
+        }
+        let trimmed = &url[..end];
+        let start = trimmed
+            .iter()
+            .rposition(|byte| *byte == b'/')
+            .map_or(0, |index| index.saturating_add(1));
+        let name = &trimmed[start..];
+        if name.is_empty() {
+            return Ok(b"source".to_vec());
+        }
+        Self::copy_bytes_for_node(id, span, name)
+    }
+
+    fn fetchurl_store_name<'a>(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        nix_compat::store_path::validate_name(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrlStoreName {
+                    id,
+                    url: url.to_vec(),
+                    name: name.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetchurl_store_path_from_digest(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &str,
+        digest: &[u8; 32],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let fixed_digest = Self::flat_source_fixed_output_digest(id, span, digest)?;
+        self.store_path_bytes_from_fingerprint_parts(
+            id,
+            span,
+            url,
+            b"output:out",
+            name,
+            &fixed_digest,
+        )
+    }
+
+    fn alloc_fetchurl_path_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+    ) -> Result<Value, TreeWalkError> {
+        let context = StringContext::singleton(ContextElement::opaque_path(path.clone()).map_err(
+            |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+        )?)
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        self.heap
+            .alloc_string(NixString::new(path, context))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn parse_fetchurl_url(id: IrId, span: Span, url: &[u8]) -> Result<Url, TreeWalkError> {
+        let url_text = std::str::from_utf8(url).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrl {
+                    id,
+                    url: url.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
+        Url::parse(url_text).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrl {
+                    id,
+                    url: url.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetchurl_can_reuse_store_path(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+        store_path: &[u8],
+    ) -> Result<bool, TreeWalkError> {
+        if self.text_store.contains_key(store_path) {
+            return Ok(true);
+        }
+        if !Path::new(OsStr::from_bytes(store_path)).exists() {
+            return Ok(false);
+        }
+        if parsed.scheme() != "file" {
+            return Ok(true);
+        }
+
+        let source_path = Self::fetchurl_file_path(id, span, url, parsed)?;
+        Ok(!source_path.exists())
+    }
+
+    fn fetchurl_file_path(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<PathBuf, TreeWalkError> {
+        parsed.to_file_path().map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrl {
+                    id,
+                    url: url.to_vec(),
+                    message: "file URL cannot be converted to a local path".to_owned(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn check_fetchurl_access(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<(), TreeWalkError> {
+        match parsed.scheme() {
+            "file" if self.options.eval_mode() == EvalMode::Restricted => {
+                let path = Self::fetchurl_file_path(id, span, url, parsed)?;
+                self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+            }
+            "http" | "https"
+                if self.options.eval_mode() == EvalMode::Restricted
+                    && !self.options.uri_is_allowed(url) =>
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchUrlAccessDenied {
+                        id,
+                        url: url.to_vec(),
+                        mode: EvalMode::Restricted,
+                    },
+                    span,
+                ));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn fetchurl_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match parsed.scheme() {
+            "file" => {
+                let path = Self::fetchurl_file_path(id, span, url, parsed)?;
+                let bytes = path.as_os_str().as_bytes();
+                if self.options.eval_mode() == EvalMode::Restricted {
+                    self.check_filesystem_path_access(id, span, bytes)?;
+                }
+                fs::read(&path).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::FetchUrl {
+                            id,
+                            url: url.to_vec(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })
+            }
+            "http" | "https" => {
+                let response = reqwest::blocking::get(parsed.as_str()).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::FetchUrl {
+                            id,
+                            url: url.to_vec(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?;
+                let response = response.error_for_status().map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::FetchUrl {
+                            id,
+                            url: url.to_vec(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?;
+                response
+                    .bytes()
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::FetchUrl {
+                                id,
+                                url: url.to_vec(),
+                                message: source.to_string(),
+                            },
+                            span,
+                        )
+                    })
+            }
+            scheme => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchUrl {
+                    id,
+                    url: url.to_vec(),
+                    message: format!("unsupported URL scheme {scheme:?}"),
+                },
+                span,
+            )),
+        }
     }
 
     fn validate_path_primop_attrs(
@@ -20439,6 +20953,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_path_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::Fetchurl => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_fetchurl_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -20679,6 +21200,17 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let argument = args[0];
                 let value = eval.force_primop_arg(argument)?;
                 eval.eval_path_primop(call.id, call.span, argument.id(), argument.span(), value)
+            }
+            BuiltinExecution::Fetchurl => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_fetchurl_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
             }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
@@ -21569,6 +22101,72 @@ pub enum TreeWalkErrorKind {
         /// The actual SHA-256 digest bytes.
         actual: Vec<u8>,
     },
+    /// `builtins.fetchurl` used an unsupported argument attribute.
+    #[error("unsupported fetchurl argument at node {id:?}: {attr:?}")]
+    UnsupportedFetchUrlAttr {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// `builtins.fetchurl` could not derive or validate the output store name.
+    #[error(
+        "failed to derive fetchurl store name at node {id:?} url {url:?} name {name:?}: {message}"
+    )]
+    FetchUrlStoreName {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The rejected store name bytes.
+        name: Vec<u8>,
+        /// The store-name diagnostic.
+        message: String,
+    },
+    /// `builtins.fetchurl` could not fetch or read its URL.
+    #[error("failed to fetch URL at node {id:?} url {url:?}: {message}")]
+    FetchUrl {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The fetch diagnostic.
+        message: String,
+    },
+    /// An evaluation mode rejected `builtins.fetchurl` network access.
+    #[error("{mode:?} evaluation forbids fetchurl network access at node {id:?} url {url:?}")]
+    FetchUrlAccessDenied {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that denied access.
+        mode: EvalMode,
+    },
+    /// Pure evaluation rejected an unpinned `builtins.fetchurl` request.
+    #[error("{mode:?} evaluation requires a sha256 for fetchurl at node {id:?} url {url:?}")]
+    FetchUrlHashRequired {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that required a hash.
+        mode: EvalMode,
+    },
+    /// `builtins.fetchurl` downloaded bytes with a different SHA-256 digest.
+    #[error(
+        "fetchurl hash mismatch at node {id:?} url {url:?}: expected {expected:?}, got {actual:?}"
+    )]
+    FetchUrlHashMismatch {
+        /// The fetchurl argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The expected SHA-256 digest bytes.
+        expected: Vec<u8>,
+        /// The actual SHA-256 digest bytes.
+        actual: Vec<u8>,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -22304,7 +22902,6 @@ mod tests {
         "fetchMercurial",
         "fetchTarball",
         "fetchTree",
-        "fetchurl",
         "flakeRefToString",
         "getFlake",
         "parseFlakeRef",
@@ -23803,6 +24400,7 @@ mod tests {
         let defaulted = TreeWalkOptions::new();
         assert_eq!(defaulted.eval_mode(), EvalMode::Impure);
         assert!(defaulted.allowed_paths().is_empty());
+        assert!(defaulted.allowed_uris().is_empty());
 
         let restricted = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         assert_eq!(restricted.eval_mode(), EvalMode::Restricted);
@@ -23821,6 +24419,22 @@ mod tests {
         options.clear_allowed_paths();
         assert!(options.allowed_paths().is_empty());
 
+        options
+            .add_allowed_uri(b"https://cache.example/".to_vec())
+            .expect("allowed URI prefix configures");
+        assert_eq!(
+            options.allowed_uris(),
+            &[b"https://cache.example/".to_vec()]
+        );
+        assert!(options.uri_is_allowed(b"https://cache.example/source.tar.gz"));
+        assert!(!options.uri_is_allowed(b"https://other.example/source.tar.gz"));
+        options
+            .set_allowed_uris(vec![b"github:".to_vec()])
+            .expect("allowed URI prefixes replace");
+        assert_eq!(options.allowed_uris(), &[b"github:".to_vec()]);
+        options.clear_allowed_uris();
+        assert!(options.allowed_uris().is_empty());
+
         assert_eq!(
             options
                 .add_allowed_path(b"relative/path".to_vec())
@@ -23832,6 +24446,12 @@ mod tests {
                 .add_allowed_path(Vec::new())
                 .expect_err("empty allowed paths are rejected"),
             TreeWalkOptionsError::RelativeAllowedPath
+        );
+        assert_eq!(
+            options
+                .add_allowed_uri(Vec::new())
+                .expect_err("empty allowed URI prefixes are rejected"),
+            TreeWalkOptionsError::EmptyAllowedUri
         );
     }
 
@@ -27915,6 +28535,7 @@ mod tests {
 
         let recursive_digest = "11a71b4754d812f4aea20161c533bdaa112ac5c853013e65d3aa9640b5735230";
         let flat_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let file_url = nix_string_literal(&format!("file://{path}"));
         for source in [
             format!("builtins.path {{ path = {path}; }}"),
             format!("builtins.path {{ path = {}; }}", nix_string_literal(&path)),
@@ -27927,6 +28548,11 @@ mod tests {
             ),
             format!(
                 "builtins.path {{ path = {path}; recursive = false; filter = path: type: builtins.throw \"called\"; }}"
+            ),
+            format!("builtins.fetchurl {file_url}"),
+            format!("builtins.fetchurl {{ url = {file_url}; sha256 = \"{flat_digest}\"; }}"),
+            format!(
+                "let fetchurl = builtins.fetchurl; in fetchurl {{ url = {file_url}; sha256 = \"{flat_digest}\"; name = \"renamed\"; }}"
             ),
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, &source);
@@ -36564,6 +37190,325 @@ mod tests {
         );
 
         fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_fetches_file_urls_and_records_context() {
+        let (dir, path) = temp_file_with_bytes("fetchurl", b"abc");
+        let url = format!("file://{}", path_source(&path));
+        let url = nix_string_literal(&url);
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let sri = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+        let nix32 = "1b8m03r63zqhnjf7l5wnldhh7c134ap5vpj0850ymkq1iyzicy5s";
+        let store_path = b"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt";
+        let renamed = b"/nix/store/hy1mq1p855x9m96mxz4b9qaf1w0jjl5q-renamed";
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.fetchurl {url}")),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; }}"
+            )),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.fetchurl {{ url = {url}; sha256 = \"{sri}\"; }}"
+            )),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.fetchurl {{ url = {url}; sha256 = \"{nix32}\"; }}"
+            )),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let fetchurl = builtins.fetchurl; in fetchurl {{ url = {url}; sha256 = \"{digest}\"; name = \"renamed\"; }}"
+            )),
+            renamed
+        );
+        assert_eq!(
+            eval_json_bytes(&format!(
+                "builtins.getContext (builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; }})"
+            )),
+            br#"{"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt":{"path":true}}"#.to_vec()
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let p = builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; }}; in builtins.readFile p"
+            )),
+            b"abc"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let p = builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; }}; in builtins.hashFile \"sha256\" p"
+            )),
+            digest.as_bytes()
+        );
+        assert_eq!(
+            eval_json_bytes(&format!(
+                "let p = builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; }}; in [ (builtins.pathExists p) (builtins.readFileType p) ]"
+            )),
+            br#"[true,"regular"]"#.to_vec()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_uses_raw_url_basename_for_default_name() {
+        let (dir, path) = temp_file_with_bytes("fetchurl-query", b"abc");
+        let url = format!("file://{}?foo=bar", path_source(&path));
+        let url = nix_string_literal(&url);
+
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.fetchurl {{ url = {url}; sha256 = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; }}"
+            )),
+            b"/nix/store/cnsr0sbn6xzksm6fa7dh81a1d2yxx0fk-data.txt?foo=bar"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_rejects_invalid_arguments() {
+        let (dir, path) = temp_file_with_bytes("fetchurl-invalid", b"abc");
+        let url = format!("file://{}", path_source(&path));
+        let url = nix_string_literal(&url);
+
+        let ir = lower(&format!(
+            "builtins.fetchurl {{ url = {url}; sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("hash mismatch rejects fetchurl");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchUrlHashMismatch { .. }
+        ));
+
+        let ir = lower(&format!(
+            "builtins.fetchurl {{ url = {url}; sha256 = \"\"; }}"
+        ));
+        let mut evaluator = TreeWalk::new(&ir);
+        let error = evaluator
+            .eval_root()
+            .expect_err("empty fetchurl hash warns and then mismatches real content");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchUrlHashMismatch { expected, .. }
+                if expected.as_slice() == [0_u8; 32]
+        ));
+        assert_eq!(evaluator.warning_output().len(), 1);
+        assert_warning_output(
+            evaluator
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            EMPTY_FETCHURL_SHA256_WARNING,
+        );
+
+        let ir = lower(&format!(
+            "builtins.fetchurl {{ url = {url}; sha256 = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; bogus = 1; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("unknown fetchurl attr rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchUrlAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let ir = lower(
+            r#"builtins.fetchurl { sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; }"#,
+        );
+        let error = eval_whnf_owned(&ir).expect_err("missing url rejects fetchurl");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let ir = lower(&format!(
+            "builtins.fetchurl {{ url = {url}; sha256 = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; name = \"bad/name\"; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("invalid store name rejects fetchurl");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchUrlStoreName { .. }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_obeys_eval_mode_gates() {
+        let (dir, path) = temp_file_with_bytes("fetchurl-mode", b"abc");
+        let path = path_source(&path);
+        let url = nix_string_literal(&format!("file://{path}"));
+        let source = format!("builtins.fetchurl {url}");
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&source),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure eval rejects unpinned fetchurl before URL access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchUrlHashRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    "builtins.fetchurl {{ url = {url}; sha256 = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"; }}"
+                ),
+                TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+            ),
+            b"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt"
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(
+                r#"builtins.fetchurl { url = "https://cache.example/data.txt"; sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; }"#,
+            ),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted eval rejects disallowed network fetchurl before network access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchUrlAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_reuses_materialized_fixed_output_paths_before_fetching() {
+        let (dir, path) = temp_file_with_bytes("fetchurl-reuse", b"abc");
+        let path = path_source(&path);
+        let url = nix_string_literal(&format!("file://{path}"));
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let expected_path = String::from_utf8(eval_string_bytes(&format!(
+            "builtins.fetchurl {{ url = {url}; sha256 = \"{digest}\"; name = \"cached\"; }}"
+        )))
+        .expect("store paths are UTF-8");
+
+        let pure_source = format!(
+            r#"[
+              (builtins.fetchurl {{ url = {url}; sha256 = "{digest}"; name = "cached"; }})
+              (builtins.fetchurl {{ url = "https://example.invalid/missing"; sha256 = "{digest}"; name = "cached"; }})
+            ]"#
+        );
+        let pure_options = TreeWalkOptions::with_eval_mode(EvalMode::Pure);
+        assert_eq!(
+            eval_json_bytes_with_options(&pure_source, pure_options),
+            format!(r#"["{expected_path}","{expected_path}"]"#).into_bytes()
+        );
+
+        let restricted_source = format!(
+            r#"[
+              (builtins.fetchurl {{ url = {url}; sha256 = "{digest}"; name = "cached"; }})
+              (builtins.fetchurl {{ url = "https://cache.example/missing"; sha256 = "{digest}"; name = "cached"; }})
+            ]"#
+        );
+        let mut restricted_options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_path(path.as_bytes().to_vec())
+            .expect("allowed path accepts absolute path");
+        restricted_options
+            .add_allowed_uri(b"https://cache.example/".to_vec())
+            .expect("allowed URI prefix configures");
+        assert_eq!(
+            eval_json_bytes_with_options(&restricted_source, restricted_options),
+            format!(r#"["{expected_path}","{expected_path}"]"#).into_bytes()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_rejects_reuse_through_restricted_file_url_policy() {
+        let (allowed_dir, allowed_path) = temp_file_with_bytes("fetchurl-allowed", b"abc");
+        let (blocked_dir, blocked_path) = temp_file_with_bytes("fetchurl-blocked", b"abc");
+        let allowed_path = path_source(&allowed_path);
+        let blocked_path = path_source(&blocked_path);
+        let allowed_url = nix_string_literal(&format!("file://{allowed_path}"));
+        let blocked_url = nix_string_literal(&format!("file://{blocked_path}"));
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let source = format!(
+            r#"builtins.toJSON [
+              (builtins.fetchurl {{ url = {allowed_url}; sha256 = "{digest}"; name = "cached"; }})
+              (builtins.fetchurl {{ url = {blocked_url}; sha256 = "{digest}"; name = "cached"; }})
+            ]"#
+        );
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(allowed_path.as_bytes().to_vec())
+            .expect("allowed path accepts absolute path");
+
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("restricted file URL policy is checked before fixed-output reuse");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                path,
+                mode: EvalMode::Restricted,
+                ..
+            } if path.as_slice() == blocked_path.as_bytes()
+        ));
+
+        fs::remove_dir_all(allowed_dir).expect("allowed temp directory removes");
+        fs::remove_dir_all(blocked_dir).expect("blocked temp directory removes");
+    }
+
+    #[test]
+    fn fetchurl_primop_reuses_existing_configured_store_paths() {
+        let store_dir = unique_temp_dir("fetchurl-store");
+        let mut options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let (source_dir, source_path) = temp_file_with_bytes("fetchurl-existing-store", b"abc");
+        let source_url = nix_string_literal(&format!("file://{}", path_source(&source_path)));
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let expected_path = eval_string_bytes_with_options(
+            &format!(
+                r#"builtins.fetchurl {{ url = {source_url}; sha256 = "{digest}"; name = "cached"; }}"#
+            ),
+            options.clone(),
+        );
+        let expected_path_text = std::str::from_utf8(&expected_path)
+            .expect("store path is UTF-8")
+            .to_owned();
+        let expected_path_buf = PathBuf::from(expected_path_text.clone());
+        fs::create_dir_all(
+            expected_path_buf
+                .parent()
+                .expect("store path has parent directory"),
+        )
+        .expect("store directory creates");
+        fs::write(&expected_path_buf, b"abc").expect("existing store path writes");
+        options.set_eval_mode(EvalMode::Pure);
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    r#"builtins.fetchurl {{ url = "https://example.invalid/missing"; sha256 = "{digest}"; name = "cached"; }}"#
+                ),
+                options,
+            ),
+            expected_path,
+        );
+
+        fs::remove_dir_all(source_dir).expect("source temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 
     #[test]

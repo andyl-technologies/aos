@@ -1937,6 +1937,10 @@ mod tests {
             ("builtins.readDir ./foo", b"readDir".as_slice()),
             ("builtins.pathExists ./foo", b"pathExists".as_slice()),
             ("builtins.path { path = ./foo; }", b"path".as_slice()),
+            (
+                "builtins.fetchurl \"file:///tmp/aos-fetchurl-test\"",
+                b"fetchurl".as_slice(),
+            ),
             ("builtins.readFileType ./foo", b"readFileType".as_slice()),
             ("builtins.getEnv \"HOME\"", b"getEnv".as_slice()),
             (

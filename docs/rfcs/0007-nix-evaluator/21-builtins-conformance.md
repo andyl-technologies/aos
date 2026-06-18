@@ -594,10 +594,18 @@ eval (network access is disabled unless explicitly allowed).
         rejection of derivation-output contents context, support for downgraded
         opaque contexts, and text-store visibility through `readFile`,
         `readFileType`, `pathExists`, `hashFile`, `import`, and `scopedImport`.
-- [ ] `fetchurl` (arg) — fetch a URL to the store; `arg` is a URL string or
+- [x] `fetchurl` (arg) — fetch a URL to the store; `arg` is a URL string or
       `{ url; sha256 ? …; name ? …; }`. **Fixed-output** when a hash is given, so
       its output store path is known at eval time (the foundational
-      reproducibility property). Network effect; gated under restricted eval.
+      reproducibility property). Pure eval requires a declared `sha256`;
+      restricted eval gates network fetches through `allowed-uris`.
+      - Implemented for `file`, `http`, and `https` URLs, string and attrset
+        arguments, optional `sha256` in supported hash encodings, optional
+        explicit `name`, flat fixed-output store-path construction, opaque path
+        context, in-memory store visibility through `readFile`, `readFileType`,
+        `pathExists`, and `hashFile`, raw URL basename handling, empty-hash
+        placeholder warnings, fixed-output early return for already materialized
+        paths, pure-mode hash pinning, and restricted-mode URI prefix gating.
 - [ ] `fetchTarball` (args) — fetch and **unpack** a tarball; `args` is a URL or
       `{ url; sha256 ? …; name ? …; }`. Returns the unpacked store path. Note the
       `sha256` here is the hash of the *unpacked* tree (`r:sha256`), unlike
@@ -845,7 +853,7 @@ omitted (they are keyed by their argument value hashes like any expression).
 | `getEnv` | configured env variable | configured value or `""` when absent | pure/default options are empty |
 | `currentSystem` | evaluator config | the configured system string | disabled under pure-eval |
 | `currentTime` | wall clock | **not soundly cacheable**: taint the memo; do not persist a result that observed it | n/a |
-| `fetchurl` | network (FOD) | the declared `sha256` (fixed-output: stable) | restrict-eval: must allow URL |
+| `fetchurl` | network (FOD) | the declared `sha256` (fixed-output: stable) | pure: requires `sha256`; restrict-eval: must allow URL |
 | `fetchTarball` | network (FOD) | the declared `sha256` of the unpacked tree | restrict-eval gating |
 | `fetchGit` | network/git | `(url, rev)`; dirty-tree → tainted | restrict-eval gating |
 | `fetchTree` | network | the locked-input narHash | pure-eval requires locked input |

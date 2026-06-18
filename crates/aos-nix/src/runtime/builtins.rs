@@ -2,7 +2,8 @@
 //!
 //! Each builtin marker type implements [`BuiltinDefinition`] with its static
 //! execution strategy, documentation, and top-level name policy. The execution
-//! strategy derives direct-lowering and first-class arity metadata, and the
+//! strategy provides default direct-lowering and first-class arity metadata, and
+//! custom builtins can override those fields in their definition impl. The
 //! declaration macro publishes those typed definitions as both the ordered
 //! `builtins` attrset inventory and the exact-name lookup used by evaluator
 //! dispatch and frontend passes.
@@ -312,7 +313,13 @@ define_builtins! {
     pub(crate) struct FetchurlBuiltin;
     impl BuiltinDefinition for FetchurlBuiltin {
         const NAME: &'static [u8] = b"fetchurl";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Fetchurl;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Effectful,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
+        const DOCS: &'static BuiltinDocs = &FETCHURL_DOCS;
     }
 
     pub(crate) struct FilterBuiltin;
@@ -966,6 +973,8 @@ pub(crate) enum BuiltinExecution {
     Path,
     /// The builtin evaluates `filterSource`.
     FilterSource,
+    /// The builtin evaluates `fetchurl`.
+    Fetchurl,
     /// The builtin evaluates `readDir`.
     ReadDir,
     /// The builtin evaluates `readFile`.
@@ -1086,6 +1095,7 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::Unsupported { .. }
+            | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1129,6 +1139,7 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported { arity } => Some(arity),
             Self::BuiltinsValue
+            | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1338,6 +1349,10 @@ static GET_ENV_DOCS: BuiltinDocs = BuiltinDocs {
 
 static GENERIC_CLOSURE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Computes the transitive closure of keyed attribute sets.",
+};
+
+static FETCHURL_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Fetches a URL as a fixed-output store path.",
 };
 
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1801,6 +1816,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"fetchurl"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"readDir"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -1887,7 +1908,6 @@ mod tests {
             b"fetchMercurial".as_slice(),
             b"fetchTarball".as_slice(),
             b"fetchTree".as_slice(),
-            b"fetchurl".as_slice(),
             b"flakeRefToString".as_slice(),
             b"getFlake".as_slice(),
             b"parseFlakeRef".as_slice(),
@@ -1901,6 +1921,10 @@ mod tests {
         }
         assert_eq!(
             BUILTINS.lookup(b"path").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"fetchurl").unwrap().first_class_arity(),
             Some(1)
         );
         assert_eq!(
@@ -2107,6 +2131,7 @@ mod tests {
             b"derivation".as_slice(),
             b"derivationStrict".as_slice(),
             b"fetchMercurial".as_slice(),
+            b"fetchurl".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),
             b"readFile".as_slice(),
@@ -2140,8 +2165,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_metadata_stays_derived_from_execution_strategy() {
+    fn default_builtin_metadata_stays_derived_from_execution_strategy() {
         for metadata in BUILTINS.iter() {
+            if metadata.name() == b"fetchurl" {
+                continue;
+            }
             let execution = metadata.execution();
             assert_eq!(metadata.direct(), execution.direct(), "{metadata:?}");
             assert_eq!(
@@ -2160,6 +2188,27 @@ mod tests {
                 "{metadata:?}",
             );
         }
+    }
+
+    #[test]
+    fn custom_builtin_metadata_stays_attached_to_definition() {
+        let fetchurl = BUILTINS
+            .lookup(b"fetchurl")
+            .expect("fetchurl builtin is registered");
+
+        assert_eq!(fetchurl.execution(), BuiltinExecution::Fetchurl);
+        assert_eq!(
+            fetchurl.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(fetchurl.first_class_arity(), Some(1));
+        assert!(fetchurl.requires_native_cli_fallback());
+        assert_eq!(
+            fetchurl.docs().summary(),
+            "Fetches a URL as a fixed-output store path."
+        );
     }
 
     #[test]
@@ -2191,6 +2240,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"getEnv").unwrap().docs().summary(),
             "Returns a configured environment variable or an empty string."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"fetchurl").unwrap().docs().summary(),
+            "Fetches a URL as a fixed-output store path."
         );
         assert_eq!(
             BUILTINS.lookup(b"langVersion").unwrap().docs().summary(),
