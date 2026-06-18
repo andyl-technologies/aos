@@ -617,7 +617,7 @@ eval (network access is disabled unless explicitly allowed).
       pinned set uses it (§17).
 - [ ] `fetchMercurial` (args) — hg analogue of `fetchGit`. Almost never used in
       AOS; implement to existence, likely **stubbed** beyond presence (§17).
-- [ ] `findFile` (search-path lookup-path) — the engine behind `<nixpkgs>`-style
+- [x] `findFile` (search-path lookup-path) — the engine behind `<nixpkgs>`-style
       angle-bracket lookup: resolve `lookup-path` against `search-path`
       (the `NIX_PATH`/`-I` entries). Returns the resolved path.
       - For byte-identical `.drv` output, `<nixpkgs>` must resolve to the **same
@@ -626,6 +626,12 @@ eval (network access is disabled unless explicitly allowed).
         [primops and the runtime ABI](10-primops-and-runtime-abi.md) §6.4). A
         wrong resolution is a silent catastrophic divergence.
       - `nixPath` (§14) is the reflected value of the search path.
+      - Implemented for evaluator-supplied search paths, angle-bracket lookup,
+        `builtins.nixPath` reflection, explicit `builtins.findFile`, prefix
+        matching, ordered fallback, relative entries, path-value returns,
+        pure/restricted filesystem policy, and positive/negative lookup caching.
+        C++ Nix oracle coverage exists but remains opt-in through
+        `AOS_NIX_ORACLE`.
 - [x] `placeholder` (output) — return the stable placeholder string Nix uses for
       a not-yet-known output path (`/<hash>` form) so build scripts can reference
       `$out` before it exists. The placeholder bytes are *hashed* into
