@@ -1942,6 +1942,13 @@ mod tests {
         static_attr_name(ast, path[0])
     }
 
+    fn binary(ast: &ParsedAst, id: NodeId) -> (BinOpKind, NodeId, NodeId) {
+        let NodeData::Binary { op, lhs, rhs } = node(ast, id).data else {
+            panic!("binary payload expected");
+        };
+        (op, lhs, rhs)
+    }
+
     fn static_attr_name(ast: &ParsedAst, segment: NodeId) -> &[u8] {
         let segment = node(ast, segment);
         match segment.kind {
@@ -2022,12 +2029,89 @@ mod tests {
     }
 
     #[test]
+    fn pratt_parser_matches_nix_operator_precedence_and_associativity() {
+        let ast = parse("f x.y");
+        let root = node(&ast, ast.root);
+        let NodeData::Pair { second, .. } = root.data else {
+            panic!("application payload expected");
+        };
+        assert_eq!(root.kind, NodeKind::Apply);
+        assert_eq!(node(&ast, second).kind, NodeKind::Select);
+
+        let ast = parse("f a b");
+        let root = node(&ast, ast.root);
+        let NodeData::Pair { first, .. } = root.data else {
+            panic!("application payload expected");
+        };
+        assert_eq!(root.kind, NodeKind::Apply);
+        assert_eq!(node(&ast, first).kind, NodeKind::Apply);
+
+        let ast = parse("- -x");
+        let root = node(&ast, ast.root);
+        let NodeData::Unary { op, operand } = root.data else {
+            panic!("unary payload expected");
+        };
+        assert_eq!(op, UnaryOpKind::Neg);
+        assert_eq!(node(&ast, operand).kind, NodeKind::UnaryOp);
+
+        let ast = parse("! a == b");
+        let (op, lhs, _) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Eq);
+        assert_eq!(node(&ast, lhs).kind, NodeKind::UnaryOp);
+
+        let ast = parse("a ++ b ++ c");
+        let (op, _, rhs) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Concat);
+        assert_eq!(binary(&ast, rhs).0, BinOpKind::Concat);
+
+        let ast = parse("a * b / c");
+        let (op, lhs, _) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Div);
+        assert_eq!(binary(&ast, lhs).0, BinOpKind::Mul);
+
+        let ast = parse("a + b - c");
+        let (op, lhs, _) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Sub);
+        assert_eq!(binary(&ast, lhs).0, BinOpKind::Add);
+
+        let ast = parse("a // b // c");
+        let (op, _, rhs) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Update);
+        assert_eq!(binary(&ast, rhs).0, BinOpKind::Update);
+
+        let ast = parse("a && b && c");
+        let (op, lhs, _) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::And);
+        assert_eq!(binary(&ast, lhs).0, BinOpKind::And);
+
+        let ast = parse("a || b || c");
+        let (op, lhs, _) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Or);
+        assert_eq!(binary(&ast, lhs).0, BinOpKind::Or);
+
+        let ast = parse("a -> b -> c");
+        let (op, _, rhs) = binary(&ast, ast.root);
+        assert_eq!(op, BinOpKind::Impl);
+        assert_eq!(binary(&ast, rhs).0, BinOpKind::Impl);
+    }
+
+    #[test]
     fn rejects_non_associative_equality_chains() {
-        let error = parse_str("a == b == c").expect_err("equality chaining is rejected");
-        assert_eq!(
-            error.kind(),
-            &ParseErrorKind::NonAssociativeOperator { operator: "==" }
-        );
+        for (source, operator) in [
+            ("a == b == c", "=="),
+            ("a != b != c", "!="),
+            ("a < b < c", "<"),
+            ("a <= b <= c", "<="),
+            ("a > b > c", ">"),
+            ("a >= b >= c", ">="),
+            ("s ? a ? b", "?"),
+        ] {
+            let error = parse_str(source).expect_err("operator chaining is rejected");
+            assert_eq!(
+                error.kind(),
+                &ParseErrorKind::NonAssociativeOperator { operator }
+            );
+        }
     }
 
     #[test]

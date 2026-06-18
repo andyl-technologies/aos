@@ -417,39 +417,37 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 | 14 | `->` | `e -> e` | Logical implication | **right** |
 | 15 | `\|>` `<\|` | `e \|> f`, `f <\| e` | Pipe (experimental) | left / right |
 
-- [ ] **`.` selection — precedence 1, non-associative** — binds tighter than
+- [x] **`.` selection — precedence 1, non-associative** — binds tighter than
       application; `f x.y` is `f (x.y)`.
-- [ ] **Function application — precedence 2, left** — `f a b` ≡ `((f a) b)`
+- [x] **Function application — precedence 2, left** — `f a b` ≡ `((f a) b)`
       (currying, §8).
-- [ ] **Unary `-` negation — precedence 3, non-associative** — applies to a
-      number; `- - x` requires verification (non-assoc may forbid `--`). Verify
-      against pinned Nix.
-- [ ] **`?` has-attr — precedence 4, non-associative** (§5.2).
-- [ ] **`++` list concat — precedence 5, RIGHT-associative** — `a ++ b ++ c` ≡
-      `a ++ (b ++ c)`. Right-assoc is easy to get wrong; verify.
-- [ ] **`*` `/` — precedence 6, left** — numeric multiply/divide. `/` here is
+- [x] **Unary `-` negation — precedence 3, prefix** — applies to a number. Pinned
+      Nix accepts chained prefix negation (`let x = 1; in - -x`); AOS parses it
+      as nested negation.
+- [x] **`?` has-attr — precedence 4, non-associative** (§5.2).
+- [x] **`++` list concat — precedence 5, RIGHT-associative** — `a ++ b ++ c` ≡
+      `a ++ (b ++ c)`.
+- [x] **`*` `/` — precedence 6, left** — numeric multiply/divide. `/` here is
       division (the path `/` is a *lexical* distinction, not this operator; §4).
-- [ ] **`+` `-` — precedence 7, left** — numeric add/subtract.
-- [ ] **`!` logical NOT — precedence 8, non-associative** — note it binds *looser*
-      than arithmetic, so `! a == b` parses per the table (verify the exact
-      grouping `! (a == b)` vs `(! a) == b` against pinned Nix — `!`(8) vs
-      `==`(11) means `!` binds tighter, so `(!a) == b`).
-- [ ] **`//` update — precedence 9, RIGHT-associative** — `a // b // c` ≡
+- [x] **`+` `-` — precedence 7, left** — numeric add/subtract.
+- [x] **`!` logical NOT — precedence 8, prefix** — AOS matches pinned Nix:
+      `! a == b` parses as `(!a) == b`; `!` is looser than arithmetic but tighter
+      than equality.
+- [x] **`//` update — precedence 9, RIGHT-associative** — `a // b // c` ≡
       `a // (b // c)`. Right-assoc + right-bias means `c`'s keys win.
-- [ ] **Comparison `< <= > >=` — precedence 10, non-associative** — `a < b < c` is
-      a **parse/type error** (non-assoc); verify.
-- [ ] **Equality `== !=` — precedence 11, non-associative** (§7).
-- [ ] **`&&` — precedence 12, left, short-circuits** — RHS not forced if LHS is
+- [x] **Comparison `< <= > >=` — precedence 10, non-associative** — `a < b < c` is
+      a parse error.
+- [x] **Equality `== !=` — precedence 11, non-associative** (§7).
+- [x] **`&&` — precedence 12, left, short-circuits** — RHS not forced if LHS is
       `false`.
-- [ ] **`||` — precedence 13, left, short-circuits** — RHS not forced if LHS is
+- [x] **`||` — precedence 13, left, short-circuits** — RHS not forced if LHS is
       `true`.
-- [ ] **`->` implication — precedence 14, RIGHT-associative** — `a -> b` ≡
+- [x] **`->` implication — precedence 14, RIGHT-associative** — `a -> b` ≡
       `!a || b`; short-circuits (RHS not forced if LHS is `false`). `a -> b -> c`
       ≡ `a -> (b -> c)`.
-- [ ] **Pipe `|>` / `<|` — precedence 15 (experimental)** — verify whether the
-      pinned Nix has the pipe-operators experimental feature enabled and whether
-      AOS uses it; if not enabled, `|>`/`<|` must be a **parse error**. Mark
-      **verify against pinned Nix feature flags**.
+- [x] **Pipe `|>` / `<|` — precedence 15 (experimental)** — pinned Nix reports
+      `pipe-operators` disabled by default; AOS rejects `|>`/`<|` without a
+      feature gate.
 
 ### 6.1 `+` operator overloads (precedence 7)
 
