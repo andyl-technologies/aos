@@ -34912,13 +34912,31 @@ mod tests {
 
     #[test]
     fn absent_pinned_builtin_attrs_use_defaults() {
-        for source in [
-            "builtins.exec or 42",
-            "builtins.fetchClosure or 42",
-            "builtins.outputOf or 42",
-            "builtins.toHashFormat or 42",
+        for (name, source) in [
+            ("exec", "builtins.exec or 42"),
+            ("fetchClosure", "builtins.fetchClosure or 42"),
+            ("outputOf", "builtins.outputOf or 42"),
+            ("toHashFormat", "builtins.toHashFormat or 42"),
         ] {
             assert_eq!(eval(source).as_int(), Ok(42));
+            assert_eq!(
+                eval_with_options(source, TreeWalkOptions::with_eval_mode(EvalMode::Pure)).as_int(),
+                Ok(42),
+                "{name} should remain absent/defaultable under pure evaluation",
+            );
+
+            let attr_probe = format!("builtins ? {name}");
+            assert_eq!(
+                eval(&attr_probe).as_bool(),
+                Ok(false),
+                "{name} should be absent from the default builtins attrset",
+            );
+            assert_eq!(
+                eval_with_options(&attr_probe, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+                    .as_bool(),
+                Ok(false),
+                "{name} should be absent from the pure builtins attrset",
+            );
         }
     }
 

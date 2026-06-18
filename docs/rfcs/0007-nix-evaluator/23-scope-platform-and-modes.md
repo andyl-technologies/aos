@@ -149,7 +149,15 @@ the manual's enumeration:
       environment directly, and pure mode hides even `TreeWalkOptions`-configured
       environment values after normal argument validation, returning the Nix
       empty-string result.
-- [ ] **`exec`** and other impure escape hatches are disabled.
+- [x] **`exec`** and other impure escape hatches are disabled. The pinned C++
+      Nix 2.24.12 flakes builtin surface does not expose `builtins.exec`, and
+      aos-nix keeps it absent from the registry and `builtins` attrset in both
+      default and pure evaluation. Related absent escape-hatch builtins from
+      this surface (`fetchClosure`, `outputOf`) remain absent/defaultable under
+      pure mode, and the same probe keeps `toHashFormat` from becoming a
+      top-level builtin by accident. No command-execution or hidden
+      dynamic-derivation capability is reachable through the native builtin
+      registry.
 - [x] **`$NIX_PATH` and `-I` are ignored**; impure path resolution is off. The
       evaluator never reads ambient `NIX_PATH`, and pure mode makes configured
       search-path entries invisible to `builtins.nixPath` and `<...>` lookup;
