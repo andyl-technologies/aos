@@ -483,6 +483,23 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
     r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
     r = rpc_route!(r, "/aos.registry.v1.GitService/ListChangeRequests", list_change_requests);
+    // CacheService (RFC-0004 "11-caches")
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/CreateCache", create_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCache", get_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCaches", list_caches);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/UpdateCache", update_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/DeleteCache", delete_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/LinkCache", link_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/UnlinkCache", unlink_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheLinks", list_cache_links);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/SetCacheGcPolicy", set_cache_gc_policy);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCacheGcPolicy", get_cache_gc_policy);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/PinCachePath", pin_cache_path);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/UnpinCachePath", unpin_cache_path);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheRoots", list_cache_roots);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/SearchCache", search_cache);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCacheObject", get_cache_object);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheGcRuns", list_cache_gc_runs);
     // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
     // eliding the body) for the registry machine path, registered LAST. The
     // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over
