@@ -591,10 +591,15 @@ the current spec. Phases are orderable; A lands first, E last.
       first); a fully-rooted over-cap cache logs a quota-breach warning rather
       than evicting a rooted path (a formal audit-log event is a later add).
       Unit-tested.
-- [ ] **LRU access signal:** `last_accessed_at` tapped by the proxied facade;
-      optional `access_log_source` CDN-log ingestion for direct frontends;
-      documented age-based fallback when neither is present (correctness via
-      roots is unaffected).
+- [x] **LRU access signal:** a narinfo read taps `last_accessed_at` via
+      `Database::touch_cache_object` — debounced to ≤1 write/object/hour so a
+      high-QPS substituter doesn't turn every read into a write. Tapped on both
+      shells: the worker through the shared `cache_facade_fetch`, the native hub
+      at its streaming serve path. The signal is advisory — GC correctness comes
+      from roots, so a missed touch only affects eviction order. Unit-tested
+      (debounce no-op + past-window update + absent no-op). **Remaining (optional,
+      with the proxy slice):** `access_log_source` CDN-log ingestion for Direct
+      frontends; until then the age/upload-order fallback applies.
 - [x] **Cross-visibility enforcement:** `link_cache` rejects advertising a cache
       less visible than the registry (its consumers couldn't read the
       substituter) and warns (structured log) on a less-visible registry rooting

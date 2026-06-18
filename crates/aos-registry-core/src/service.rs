@@ -3014,6 +3014,16 @@ impl RpcService {
         let Some(bytes) = fetch.fetch(path).await.map_err(RpcError::internal)? else {
             return Ok(None);
         };
+        // Tap the LRU access signal on a narinfo read — the canonical "this path
+        // was requested" event a substituter emits before fetching the NAR.
+        // Best-effort and debounced (see `Database::touch_cache_object`): a
+        // failure or a no-op never affects the served bytes.
+        if let Some(hash) = path.strip_suffix(".narinfo").filter(|h| !h.contains('/')) {
+            let _ = self
+                .db
+                .touch_cache_object(cache.id, hash, clock::now_unix_secs())
+                .await;
+        }
         Ok(Some(FacadeObject {
             bytes,
             content_type: keymap::content_type(path),
