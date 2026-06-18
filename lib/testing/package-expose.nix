@@ -1219,7 +1219,7 @@ in
           grep -q 'StateDirectory=aos-pkg-expose-smoke' "$unit"
           grep -q 'NoNewPrivileges=true' "$unit"
           grep -q 'DynamicUser=true' "$unit"
-          grep -q 'PrivateUsers=identity' "$unit"
+          grep -q 'PrivateUsers=false' "$unit"
           grep -q 'PrivateNetwork=true' "$unit"
           grep -q 'PrivateDevices=true' "$unit"
           grep -q 'DevicePolicy=closed' "$unit"
@@ -1230,7 +1230,7 @@ in
           grep -q 'ProtectKernelModules=true' "$unit"
           grep -q 'ProtectKernelLogs=true' "$unit"
           grep -q 'ProtectControlGroups=private' "$unit"
-          grep -q 'SystemCallFilter=@system-service' "$unit"
+          grep -q 'SystemCallFilter=@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self' "$unit"
           grep -q 'SystemCallErrorNumber=EPERM' "$unit"
           grep -q 'SystemCallArchitectures=native' "$unit"
           grep -q 'ProtectClock=true' "$unit"
@@ -1333,6 +1333,7 @@ in
           grep -q 'DevicePolicy=closed' "$mac"
           grep -q 'PrivateNetwork=true' "$mac"
           grep -q 'ProtectSystem=full' "$mac"
+          grep -q 'ReadWritePaths=/etc/selinux /var/lib/selinux' "$mac"
           grep -q 'ProtectHome=true' "$mac"
           grep -q 'RestrictAddressFamilies=AF_UNIX' "$mac"
           grep -q 'RestrictNamespaces=true' "$mac"
@@ -1413,6 +1414,9 @@ in
           grep -Fq 'allow aos_x2eexpose_x2dsmoke_t self:process { execmem execstack execheap };' "$selinux_source"
           grep -Fq 'allow aos_x2eexpose_x2dsmoke_t self:process2 { nnp_transition nosuid_transition };' "$selinux_source"
           grep -Fq 'allow aos_x2eexpose_x2dsmoke_t file_type:file execmod;' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t root_t:dir { getattr open read search };' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t tmpfs_t:dir { getattr open read search };' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t var_lib_t:dir { getattr open read search };' "$selinux_source"
           grep -Fq 'allow aos_x2eexpose_x2dsmoke_t unlabeled_t:file { execute execute_no_trans execmod getattr map open read };' "$selinux_source"
 
           minimal_unit="$minimalExposePath/units/expose-minimal.service"
@@ -1470,6 +1474,8 @@ in
           grep -Fq '"profilePath":"mac/selinux/aos_x2dpkg_x2dexpose_x2dminimal.pp"' "$minimal_mac_profile"
           grep -Fq 'module aos_x2dpkg_x2dexpose_x2dminimal 1.0;' "$minimal_selinux_source"
           grep -Fq 'typeattribute aos_x2dpkg_x2dexpose_x2dminimal_t domain;' "$minimal_selinux_source"
+          grep -Fq 'allow aos_x2dpkg_x2dexpose_x2dminimal_t file_type:file execmod;' "$minimal_selinux_source"
+          grep -Fq 'allow aos_x2dpkg_x2dexpose_x2dminimal_t tmp_t:dir { getattr open read search };' "$minimal_selinux_source"
           grep -Fq 'allow kernel_t aos_x2dpkg_x2dexpose_x2dminimal_t:process dyntransition;' "$minimal_selinux_source"
           if grep -q '"kernel-modules"\|"capabilities"\|"devices"\|"host-paths"\|"cgroup-delegate"\|"privileged-users"\|"network"' \
             "$minimal_manifest"; then
@@ -1586,7 +1592,7 @@ in
           grep -q 'Group=aos-static' "$static_user_unit"
           grep -q 'StateDirectory=expose-smoke-static' "$static_user_unit"
           grep -q 'DynamicUser=false' "$static_user_unit"
-          grep -q 'PrivateUsers=identity' "$static_user_unit"
+          grep -q 'PrivateUsers=false' "$static_user_unit"
           if grep -q 'DynamicUser=true' "$static_user_unit"; then
             echo "static User= services must not receive generated DynamicUser=true" >&2
             exit 1

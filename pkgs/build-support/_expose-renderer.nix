@@ -810,11 +810,14 @@
   hasAnyPrefix = prefixes: path:
     builtins.any (prefix: path == prefix || lib.hasPrefix "${prefix}/" path) prefixes;
 
-  syscallFilterFor = profile:
+  syscallFilterFor = profile: enableLandlock:
     if profile == "privileged"
     then {}
     else {
-      SystemCallFilter = "@system-service";
+      SystemCallFilter =
+        if enableLandlock
+        then "@system-service landlock_create_ruleset landlock_add_rule landlock_restrict_self"
+        else "@system-service";
       SystemCallErrorNumber = "EPERM";
     };
 
@@ -1456,7 +1459,7 @@ in rec {
             // lib.optionalAttrs (!unconfined) {
               DynamicUser = generatedDynamicUser;
               PrivateUsers =
-                if privilegedUsers
+                if privilegedUsers || macProfileEnabled
                 then false
                 else "identity";
               PrivateNetwork = network == "private";
@@ -1482,7 +1485,7 @@ in rec {
             }
             // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
             // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
-            // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile)
+            // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile landlockEnabled)
             // lib.optionalAttrs (network == "private-outbound") {
               PrivateNetwork = false;
               NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
@@ -1921,6 +1924,7 @@ in rec {
             PrivateNetwork = true;
             PrivateTmp = true;
             ProtectSystem = "full";
+            ReadWritePaths = "/etc/selinux /var/lib/selinux";
             ProtectHome = true;
             ProtectClock = true;
             ProtectHostname = true;
@@ -2083,7 +2087,12 @@ in rec {
       require {
         type init_t;
         type kernel_t;
+        type root_t;
+        type tmp_t;
+        type tmpfs_t;
         type unlabeled_t;
+        type var_lib_t;
+        type var_t;
         attribute domain;
         attribute file_type;
         role system_r;
@@ -2108,9 +2117,18 @@ in rec {
       allow ${macTypeName} self:process { execmem execstack execheap };
       allow ${macTypeName} self:process2 { nnp_transition nosuid_transition };
       allow ${macTypeName} file_type:file execmod;
+      allow ${macTypeName} root_t:dir { getattr open read search };
+      allow ${macTypeName} tmp_t:dir { getattr open read search };
+      allow ${macTypeName} tmp_t:lnk_file { getattr read };
+      allow ${macTypeName} tmpfs_t:dir { getattr open read search };
+      allow ${macTypeName} tmpfs_t:lnk_file { getattr read };
       allow ${macTypeName} unlabeled_t:dir { getattr open read search };
       allow ${macTypeName} unlabeled_t:file { execute execute_no_trans execmod getattr map open read };
       allow ${macTypeName} unlabeled_t:lnk_file { getattr read };
+      allow ${macTypeName} var_t:dir { getattr open read search };
+      allow ${macTypeName} var_t:lnk_file { getattr read };
+      allow ${macTypeName} var_lib_t:dir { getattr open read search };
+      allow ${macTypeName} var_lib_t:lnk_file { getattr read };
     '';
     macProfileCommands =
       if macProfileEnabled
