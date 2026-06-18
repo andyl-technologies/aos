@@ -578,41 +578,42 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ## 8. Functions
 
-- [ ] **Single-param lambda `x: body`** — `x` binds the argument in `body`.
-- [ ] **Currying** — `x: y: body` is a one-arg function returning a one-arg
+- [x] **Single-param lambda `x: body`** — `x` binds the argument in `body`.
+- [x] **Currying** — `x: y: body` is a one-arg function returning a one-arg
       function; application is left-associative (§6).
-- [ ] **Attrset pattern `{ a, b }: body`** — destructures an attrset argument;
-      requires *exactly* `a` and `b` present.
-- [ ] **Missing required attr errors** — calling `{ a, b }: …` with `{ a = 1; }`
-      is a **must-error** ("called without required argument 'b'").
-- [ ] **Extra attr without `...` errors** — calling `{ a }: …` with
-      `{ a = 1; b = 2; }` is a **must-error** ("called with unexpected argument
-      'b'"). Verify the exact message class.
-- [ ] **Defaults `{ a ? d }: body`** — `d` is used if `a` is absent; `d` may
-      reference *other pattern variables* (`{ a, b ? a }:`) — verify the scope of
-      defaults (can a default see later params? earlier? the `@`-binding?) against
-      pinned Nix.
-- [ ] **Default laziness** — `d` is only evaluated when the attr is absent (§10).
-- [ ] **Ellipsis `{ a, ... }: body`** — allows (and ignores) extra attributes.
-- [ ] **`@`-pattern, name on left: `args@{ a, ... }: body`** — `args` binds the
-      *whole passed attrset*.
-- [ ] **`@`-pattern, name on right: `{ a, ... } @ args: body`** — equivalent form;
-      both must be accepted.
-- [ ] **`args@` excludes defaults** — "`args` does *not* include any default
+- [x] **Attrset pattern `{ a, b }: body`** — destructures an attrset argument;
+      requires exactly `a` and `b` present; present values remain lazy until
+      demanded.
+- [x] **Missing required attr errors** — calling `{ a, b }: …` with `{ a = 1; }`
+      is a **must-error**; pinned Nix reports `function 'anonymous lambda' called
+      without required argument 'b'`.
+- [x] **Extra attr without `...` errors** — calling `{ a }: …` with
+      `{ a = 1; b = 2; }` is a **must-error**; pinned Nix reports
+      `function 'anonymous lambda' called with unexpected argument 'b'`.
+- [x] **Defaults `{ a ? d }: body`** — `d` is used if `a` is absent; default
+      expressions may reference earlier formals, later formals, and an
+      `@`-binding for the original argument attrset.
+- [x] **Default laziness** — `d` is only evaluated when the attr is absent and
+      the formal's value is demanded (§10).
+- [x] **Ellipsis `{ a, ... }: body`** — allows and ignores extra attributes;
+      ignored values remain lazy.
+- [x] **`@`-pattern, name on left: `args@{ a, ... }: body`** — `args` binds the
+      whole passed attrset.
+- [x] **`@`-pattern, name on right: `{ a, ... } @ args: body`** — equivalent
+      form; both are accepted.
+- [x] **`args@` excludes defaults** — "`args` does *not* include any default
       values specified with `?`" — `args` is the attrset *as passed*, before
-      defaults are filled. Reproduce this exactly (verified against the syntax
-      page).
-- [ ] **Pattern + `@` strictness** — without `...`, an `@`-pattern still rejects
-      unexpected attrs (the `@`-binding does not relax the closed-set check).
-      Verify.
-- [ ] **Argument is forced to WHNF for pattern match** — matching `{ a, b }:`
+      defaults are filled.
+- [x] **Pattern + `@` strictness** — without `...`, an `@`-pattern still rejects
+      unexpected attrs; the `@`-binding does not relax the closed-set check.
+- [x] **Argument is forced to WHNF for pattern match** — matching `{ a, b }:`
       forces the argument to an attrset (WHNF) to enumerate keys; values stay
-      lazy. Verify.
-- [ ] **Direct function equality is false** (cross-ref §7.3) — a function value
+      lazy.
+- [x] **Direct function equality is false** (cross-ref §7.3) — a function value
       compares unequal to everything under *direct* `==`, including itself; note
       the nested pointer-equality wart in §7.3 (a shared function inside compared
       containers can compare equal by identity).
-- [ ] **Functions are not coercible to string** (cross-ref §2.4) —
+- [x] **Functions are not coercible to string** (cross-ref §2.4) —
       interpolating a function is a **must-error**.
 
 ---

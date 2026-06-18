@@ -21271,6 +21271,89 @@ mod tests {
         assert_cpp_nix_comparison_semantics_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_function_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "(x: x + 1) 2",
+            "let f = x: x; in f (1 + 2)",
+            "let f = x: 7; in f (1 / 0)",
+            "let x = 1; f = y: x + y; in f 2",
+            "let x = 1; f = y: x + y; in let x = 10; in f x",
+            "let f = x: x; or = 2; in f or",
+            "(x: y: x + y) 1 2",
+            "((x: y: x) (1 + 2)) 0",
+            "builtins.typeOf (x: x)",
+            "let f = x: x; in f == f",
+            "({ a, b }: a + b) { a = 1; b = 2; }",
+            "({ a, b }: 1) { a = builtins.throw \"a\"; b = builtins.throw \"b\"; }",
+            "({ a, ... }: a) { a = 1; b = builtins.throw \"b\"; }",
+            "({ a ? 1 + 2 }: a) {}",
+            "({ a ? builtins.throw \"default\" }: 7) {}",
+            "({ a ? builtins.throw \"default\" }: 7) { a = builtins.throw \"provided\"; }",
+            "({ a ? 1 }: a) { a = 7; }",
+            "({ a, b ? a + 1 }: b) { a = 2; }",
+            "({ a ? b, b }: a) { b = 2; }",
+            "(args@{ a ? args.b, ... }: a) { b = 2; }",
+            "(args@{ a, ... }: args.b) { a = 1; b = 2; }",
+            "({ a, ... } @ args: args.b) { a = 1; b = 2; }",
+            "({ a ? 1 } @ args: args ? a) {}",
+            "({ a ? 1 } @ args: args ? a) { a = 2; }",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        assert_cpp_nix_and_tree_walk_reject_with_final_error(
+            oracle,
+            "({ a, b }: a) { a = 1; }",
+            "function 'anonymous lambda' called without required argument 'b'",
+            |kind| matches!(kind, TreeWalkErrorKind::MissingFormalAttribute { .. }),
+        );
+        assert_cpp_nix_and_tree_walk_reject_with_final_error(
+            oracle,
+            "({ a }: a) { a = 1; b = 2; }",
+            "function 'anonymous lambda' called with unexpected argument 'b'",
+            |kind| matches!(kind, TreeWalkErrorKind::UnexpectedFormalAttribute { .. }),
+        );
+        assert_cpp_nix_and_tree_walk_reject_with_final_error(
+            oracle,
+            "({ a } @ args: a) { a = 1; b = 2; }",
+            "function 'anonymous lambda' called with unexpected argument 'b'",
+            |kind| matches!(kind, TreeWalkErrorKind::UnexpectedFormalAttribute { .. }),
+        );
+
+        assert_cpp_nix_and_tree_walk_reject_expression(oracle, "({ a }: a) 1");
+        assert_cpp_nix_and_tree_walk_reject_expression(oracle, "builtins.toString (x: x)");
+        assert_cpp_nix_and_tree_walk_reject_expression(oracle, r#""${x: x}""#);
+
+        assert_cpp_nix_and_tree_walk_throw_message(
+            oracle,
+            "({ a }: 1) (builtins.throw \"arg\")",
+            "arg",
+        );
+        assert_cpp_nix_and_tree_walk_throw_message(
+            oracle,
+            "({ a ? builtins.throw \"default\" }: a) {}",
+            "default",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_function_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_function_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_function_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix function check");
+            return;
+        };
+        assert_cpp_nix_function_semantics_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [
