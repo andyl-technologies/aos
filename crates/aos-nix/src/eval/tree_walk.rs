@@ -70,11 +70,6 @@ const OUTPUT_HASH_ALGO_ATTR: &[u8] = b"outputHashAlgo";
 const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
 const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
 const IMPURE_ATTR: &[u8] = b"__impure";
-const ALLOWED_REFERENCES_ATTR: &[u8] = b"allowedReferences";
-const DISALLOWED_REFERENCES_ATTR: &[u8] = b"disallowedReferences";
-const ALLOWED_REQUISITES_ATTR: &[u8] = b"allowedRequisites";
-const DISALLOWED_REQUISITES_ATTR: &[u8] = b"disallowedRequisites";
-const EXPORT_REFERENCES_GRAPH_ATTR: &[u8] = b"exportReferencesGraph";
 const PATH_ATTR: &[u8] = b"path";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
@@ -2713,8 +2708,6 @@ impl TreeWalk {
                 continue;
             }
 
-            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
-
             let rendered =
                 self.derivation_to_string_value(id, span, argument, argument_span, value)?;
             let (bytes, value_context) = rendered.into_parts();
@@ -3280,29 +3273,6 @@ impl TreeWalk {
             &mut json.bytes,
             context,
         )
-    }
-
-    fn reject_unsupported_derivation_strict_attr(
-        &self,
-        id: IrId,
-        span: Span,
-        key: &[u8],
-    ) -> Result<(), TreeWalkError> {
-        let feature = match key {
-            ALLOWED_REFERENCES_ATTR
-            | DISALLOWED_REFERENCES_ATTR
-            | ALLOWED_REQUISITES_ATTR
-            | DISALLOWED_REQUISITES_ATTR
-            | EXPORT_REFERENCES_GRAPH_ATTR => Some("reference constraints"),
-            _ => None,
-        };
-        if let Some(feature) = feature {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedDerivationStrictFeature { id, feature },
-                span,
-            ));
-        }
-        Ok(())
     }
 
     fn configure_derivation_fixed_output(
@@ -39407,6 +39377,52 @@ mod tests {
                 "{source}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn derivation_strict_supports_reference_constraint_attrs() {
+        let source = r#"let
+             allowed = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               allowedReferences = [ "out" ];
+             };
+             combined = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               disallowedReferences = [ "out" ];
+               allowedRequisites = [ "out" ];
+               disallowedRequisites = [ "out" ];
+             };
+             graph = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               exportReferencesGraph = [ "foo" "bar" ];
+             };
+             integer = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               allowedReferences = 1;
+             };
+           in {
+             allowedDrv = allowed.drvPath;
+             allowedOut = allowed.out;
+             combinedDrv = combined.drvPath;
+             combinedOut = combined.out;
+             graphDrv = graph.drvPath;
+             graphOut = graph.out;
+             integerDrv = integer.drvPath;
+             integerOut = integer.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"allowedDrv":"/nix/store/mpqxk9x7ch6mhlxsl3l50hrfp8plpc2c-foo.drv","allowedOut":"/nix/store/sgc5h0s5r6lx51354xbrcy061qflsch2-foo","combinedDrv":"/nix/store/fbnc7w27pbca6vrmwqlik6a6jv753152-foo.drv","combinedOut":"/nix/store/qksvm54k9gdb59ksf3kc9d91yb7dzq4i-foo","graphDrv":"/nix/store/dfyfp6n0879bzpg67941va1pbby7qc3k-foo.drv","graphOut":"/nix/store/974srlr8l7zk8mqn73nsdq4vniyg3i35-foo","integerDrv":"/nix/store/jqzxf4g629r6d2jj5vl2xpjn5nza5pw9-foo.drv","integerOut":"/nix/store/hy5q2xh2q0lvhbkvww0f0cbywg87a5bk-foo"}"#.to_vec()
+        );
     }
 
     #[test]
