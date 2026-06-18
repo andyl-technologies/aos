@@ -2534,6 +2534,17 @@ impl TreeWalk {
             if ignore_nulls && value.tag() == ValueTag::Null {
                 continue;
             }
+            if key == CONTENT_ADDRESSED_ATTR {
+                if self.expect_bool(id, value, span)? {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                            id,
+                            feature: "content-addressed derivations",
+                        },
+                        span,
+                    ));
+                }
+            }
 
             self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
 
@@ -2590,6 +2601,7 @@ impl TreeWalk {
                 .outputs
                 .insert("out".to_owned(), nix_compat::derivation::Output::default());
         }
+        Self::configure_derivation_fixed_output(id, span, &mut derivation)?;
         for output_name in derivation.outputs.keys() {
             derivation
                 .environment
@@ -2856,10 +2868,6 @@ impl TreeWalk {
         key: &[u8],
     ) -> Result<(), TreeWalkError> {
         let feature = match key {
-            OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
-                Some("fixed-output derivations")
-            }
-            CONTENT_ADDRESSED_ATTR => Some("content-addressed derivations"),
             ALLOWED_REFERENCES_ATTR
             | DISALLOWED_REFERENCES_ATTR
             | ALLOWED_REQUISITES_ATTR
@@ -2874,6 +2882,115 @@ impl TreeWalk {
             ));
         }
         Ok(())
+    }
+
+    fn configure_derivation_fixed_output(
+        id: IrId,
+        span: Span,
+        derivation: &mut nix_compat::derivation::Derivation,
+    ) -> Result<(), TreeWalkError> {
+        let Some(hash) =
+            Self::derivation_env_attr_utf8(id, span, "outputHash", derivation, OUTPUT_HASH_ATTR)?
+        else {
+            return Ok(());
+        };
+
+        let hash_algo = Self::derivation_env_attr_utf8(
+            id,
+            span,
+            "outputHashAlgo",
+            derivation,
+            OUTPUT_HASH_ALGO_ATTR,
+        )?
+        .and_then(|algo| nix_compat::nixhash::HashAlgo::try_from(algo).ok());
+
+        let nix_hash = if hash.is_empty() {
+            let hash_algo = hash_algo.ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: "empty outputHash requires explicit outputHashAlgo".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+            let digest = vec![0; hash_algo.digest_length()];
+            nix_compat::derivation::NixHash::from_algo_and_digest(hash_algo, &digest).map_err(
+                |source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: format!("invalid outputHash: {source}"),
+                        },
+                        span,
+                    )
+                },
+            )?
+        } else {
+            nix_compat::derivation::NixHash::from_str(hash, hash_algo).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("invalid outputHash: {source}"),
+                    },
+                    span,
+                )
+            })?
+        };
+
+        let ca_hash = match Self::derivation_env_attr_utf8(
+            id,
+            span,
+            "outputHashMode",
+            derivation,
+            OUTPUT_HASH_MODE_ATTR,
+        )? {
+            None | Some("flat") => nix_compat::derivation::CAHash::Flat(nix_hash),
+            Some("recursive") => nix_compat::derivation::CAHash::Nar(nix_hash),
+            Some(mode) => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("invalid outputHashMode {mode:?}"),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        derivation
+            .outputs
+            .entry("out".to_owned())
+            .or_default()
+            .ca_hash = Some(ca_hash);
+        Ok(())
+    }
+
+    fn derivation_env_attr_utf8<'a>(
+        id: IrId,
+        span: Span,
+        field: &'static str,
+        derivation: &'a nix_compat::derivation::Derivation,
+        key: &[u8],
+    ) -> Result<Option<&'a str>, TreeWalkError> {
+        let key = Self::derivation_utf8_string(id, span, "environment name", key)?;
+        derivation
+            .environment
+            .get(&key)
+            .map(|value| {
+                std::str::from_utf8(value.as_ref()).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStringUtf8 {
+                            id,
+                            field,
+                            bytes: value.to_vec(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })
+            })
+            .transpose()
     }
 
     fn validate_derivation_strict_before_paths(
@@ -2894,6 +3011,35 @@ impl TreeWalk {
 
         for output_name in derivation.outputs.keys() {
             Self::validate_derivation_strict_output_name(id, span, output_name)?;
+        }
+        let fixed_outputs = derivation
+            .outputs
+            .iter()
+            .filter(|(_, output)| output.is_fixed())
+            .map(|(output_name, _)| output_name)
+            .collect::<Vec<_>>();
+        if !fixed_outputs.is_empty() {
+            if derivation.outputs.len() != 1 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: "fixed-output derivations must have exactly one output".to_owned(),
+                    },
+                    span,
+                ));
+            }
+            if fixed_outputs[0] != "out" {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!(
+                            "fixed-output derivation output must be \"out\", not {:?}",
+                            fixed_outputs[0]
+                        ),
+                    },
+                    span,
+                ));
+            }
         }
 
         for (input_derivation_path, output_names) in &derivation.input_derivations {
@@ -38876,6 +39022,231 @@ mod tests {
             eval_json_bytes(source),
             br#"{"drvPath":"/nix/store/4ljrbgdg50gl74wbgr53yvv23ap9bfrz-x.drv","out":"/nix/store/j6kab8pd56kjnp4z2zsvwcsdm7fmn37f-x"}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_strict_supports_fixed_output_derivations() {
+        let source = r#"let
+             mk = attrs: derivationStrict ({
+               name = "foo";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             } // attrs);
+             flat = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "sha256";
+               outputHashMode = "flat";
+             };
+             recursive = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+             omittedMode = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "sha256";
+             };
+             omittedAlgo = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashMode = "recursive";
+             };
+             raw = mk {
+               outputHash = "4374173a8cbe88de152b609f96f46e958bcf65762017474eec5a05ec2bd61530";
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+             emptyAlgo = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "";
+               outputHashMode = "recursive";
+             };
+             bogusAlgo = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "bogus";
+               outputHashMode = "recursive";
+             };
+             dashAlgo = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "sha-256";
+               outputHashMode = "recursive";
+             };
+             upperAlgo = mk {
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+               outputHashAlgo = "SHA256";
+               outputHashMode = "recursive";
+             };
+             emptyHash = mk {
+               outputHash = "";
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+           in {
+             bogusAlgo = bogusAlgo.out;
+             bogusAlgoDrv = bogusAlgo.drvPath;
+             dashAlgo = dashAlgo.out;
+             dashAlgoDrv = dashAlgo.drvPath;
+             drvFlat = flat.drvPath;
+             drvRecursive = recursive.drvPath;
+             emptyAlgo = emptyAlgo.out;
+             emptyAlgoDrv = emptyAlgo.drvPath;
+             emptyHash = emptyHash.out;
+             emptyHashDrv = emptyHash.drvPath;
+             flat = flat.out;
+             omittedAlgo = omittedAlgo.out;
+             omittedMode = omittedMode.out;
+             raw = raw.out;
+             recursive = recursive.out;
+             upperAlgo = upperAlgo.out;
+             upperAlgoDrv = upperAlgo.drvPath;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"bogusAlgo":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","bogusAlgoDrv":"/nix/store/2y7fz2ii2r75dvrxsqc2z3px3v159lzq-foo.drv","dashAlgo":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","dashAlgoDrv":"/nix/store/lbpn865wvns79mxjz1nf532s61rxvpv3-foo.drv","drvFlat":"/nix/store/jl08sl0js08lghpzy0vr5lz64wyf4vny-foo.drv","drvRecursive":"/nix/store/yxkyw9zabh90wi2ak4j2f43xx44j35k6-foo.drv","emptyAlgo":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","emptyAlgoDrv":"/nix/store/18fky491dplc3n09l99491ji924jv02j-foo.drv","emptyHash":"/nix/store/1dcapabdb1anckxk8md1m0dpqx5jmm73-foo","emptyHashDrv":"/nix/store/35lwba14kzq02b5mvk01v2rh042rdagf-foo.drv","flat":"/nix/store/q4pkwkxdib797fhk22p0k3g1q32jmxvf-foo","omittedAlgo":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","omittedMode":"/nix/store/q4pkwkxdib797fhk22p0k3g1q32jmxvf-foo","raw":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","recursive":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","upperAlgo":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","upperAlgoDrv":"/nix/store/3jp0xvy6sw6wfz1p2i3ja8swb2bjaaak-foo.drv"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_supports_disabled_content_addressed_marker() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "foo";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               __contentAddressed = false;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+           in {
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/y73d5vkljj9wx7hxjpfswzv5m2cgz6xw-foo.drv","names":["drvPath","out"],"out":"/nix/store/i4v7l2ia22fdp6d1nfy4w836zbg3h6hv-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_unsupported_content_addressed_derivations() {
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __contentAddressed = true;
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+        ))
+        .expect_err("content-addressed derivations are still feature-gated");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                feature: "content-addressed derivations",
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __contentAddressed = 1;
+               }"#,
+        ))
+        .expect_err("content-addressed marker must be a bool");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn derivation_strict_rejects_invalid_fixed_output_derivations() {
+        for source in [
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "";
+                 outputHashAlgo = "";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "";
+                 outputHashAlgo = "bogus";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "4374173a8cbe88de152b609f96f46e958bcf65762017474eec5a05ec2bd61530";
+                 outputHashAlgo = "bogus";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "4374173a8cbe88de152b609f96f46e958bcf65762017474eec5a05ec2bd61530";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "bad";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+                 outputHashAlgo = "sha1";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = [ "out" "dev" ];
+                 outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = [ "dev" ];
+                 outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("invalid fixed-output derivation is rejected");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::DerivationStrict { .. }),
+                "{source}: {error:?}"
+            );
+        }
     }
 
     #[test]
