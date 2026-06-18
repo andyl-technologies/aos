@@ -730,9 +730,11 @@ async fn device_authorization(
 ///
 /// Hand-formats the [exposition format] (no client dependency, per the
 /// hermetic build) from live database counts: total registries and a
-/// per-`state` breakdown, the webhook-delivery queue depth by lifecycle, and a
-/// `build_info` gauge carrying the crate version as a label. Every series is
-/// preceded by its `# HELP`/`# TYPE` lines.
+/// per-`state` breakdown, the webhook-delivery queue depth by lifecycle,
+/// managed-cache totals (caches, objects, bytes) and lifetime GC counters
+/// (runs by outcome, bytes reclaimed), and a `build_info` gauge carrying the
+/// crate version as a label. Every series is preceded by its `# HELP`/`# TYPE`
+/// lines.
 ///
 /// [exposition format]: https://prometheus.io/docs/instrumenting/exposition_formats/
 async fn metrics(State(state): State<Arc<AppState>>) -> Response {
@@ -807,6 +809,31 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
          aos_registry_hub_webhook_deliveries{{status=\"pending\"}} {pending}\n\
          aos_registry_hub_webhook_deliveries{{status=\"delivered\"}} {delivered}\n\
          aos_registry_hub_webhook_deliveries{{status=\"failed\"}} {failed}"
+    );
+    let cm = state.db.cache_metrics().await?;
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_caches_total Managed binary caches (live).\n\
+         # TYPE aos_registry_hub_caches_total gauge\n\
+         aos_registry_hub_caches_total {}\n\
+         # HELP aos_registry_hub_cache_objects_total Indexed cache objects across live caches.\n\
+         # TYPE aos_registry_hub_cache_objects_total gauge\n\
+         aos_registry_hub_cache_objects_total {}\n\
+         # HELP aos_registry_hub_cache_bytes_total Stored cache bytes across live caches.\n\
+         # TYPE aos_registry_hub_cache_bytes_total gauge\n\
+         aos_registry_hub_cache_bytes_total {}",
+        cm.cache_count, cm.object_count, cm.used_bytes
+    );
+    let _ = writeln!(
+        out,
+        "# HELP aos_registry_hub_cache_gc_runs Cache GC runs by outcome (lifetime).\n\
+         # TYPE aos_registry_hub_cache_gc_runs counter\n\
+         aos_registry_hub_cache_gc_runs{{status=\"ok\"}} {}\n\
+         aos_registry_hub_cache_gc_runs{{status=\"failed\"}} {}\n\
+         # HELP aos_registry_hub_cache_gc_freed_bytes Bytes reclaimed by cache GC (lifetime).\n\
+         # TYPE aos_registry_hub_cache_gc_freed_bytes counter\n\
+         aos_registry_hub_cache_gc_freed_bytes {}",
+        cm.gc_runs_ok, cm.gc_runs_failed, cm.gc_freed_bytes
     );
     let _ = writeln!(
         out,

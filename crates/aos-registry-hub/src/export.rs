@@ -6,9 +6,10 @@
 //! module produces both halves:
 //!
 //! - [`export_org`] returns an [`ExportManifest`] — the org row, its projects,
-//!   its registries' metadata, its memberships, its tokens' **metadata only**
-//!   (never a hash or secret), its storage bindings (paths, no credentials),
-//!   an audit slice, and the configuration-changeset history.
+//!   its registries' metadata, its managed caches' metadata, its memberships,
+//!   its tokens' **metadata only** (never a hash or secret), its storage
+//!   bindings (paths, no credentials), an audit slice, and the
+//!   configuration-changeset history.
 //! - [`export_registry_surface`] copies a registry's on-disk surface
 //!   (`registry_surface_root`) into a destination directory — a portable,
 //!   re-servable git + nix-cache surface.
@@ -23,6 +24,8 @@
 //!   "projects": [ { "path": "infra", "name": "Infra", … } ],
 //!   "registries": [ { "slug": "acme/infra/prod/cdn", "visibility": "private",
 //!                     "prefix": "cdn", "trust_keys": [ … ] } ],
+//!   "caches": [ { "slug": "acme-cache", "visibility": "public",
+//!                 "prefix": "cache", "priority": 40, "compression": "zstd" } ],
 //!   "memberships": [ { "principal_kind": "user", "principal_id": 1,
 //!                      "scope": "acme", "role": "owner" } ],
 //!   "tokens": [ { "id": "…", "scope": "acme/infra/prod/cdn",
@@ -72,6 +75,28 @@ pub struct ExportRegistry {
     pub trust_keys: Vec<String>,
     /// Whether indexing requires signatures.
     pub require_signatures: bool,
+}
+
+/// One exported managed cache's metadata (no NAR/narinfo surface bytes — those
+/// copy separately, like a registry's surface).
+#[derive(Debug, Clone, Serialize)]
+pub struct ExportCache {
+    /// URL slug the cache is served under (globally unique).
+    pub slug: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Visibility: `public`, `internal`, or `private`.
+    pub visibility: String,
+    /// Sub-prefix under the storage binding root.
+    pub prefix: String,
+    /// `nix-cache-info` `Priority` (substituter ordering; lower = preferred).
+    pub priority: i64,
+    /// Default NAR compression (`zstd` | `xz` | `none`).
+    pub compression: String,
+    /// `nix-cache-info` `WantMassQuery` flag.
+    pub want_mass_query: bool,
+    /// Soft-delete tombstone (unix seconds), or `None` while live.
+    pub deleted_at: Option<i64>,
 }
 
 /// One exported membership grant.
@@ -171,6 +196,8 @@ pub struct ExportManifest {
     pub projects: Vec<ExportProject>,
     /// The org's registries' metadata.
     pub registries: Vec<ExportRegistry>,
+    /// The org's managed binary caches' metadata.
+    pub caches: Vec<ExportCache>,
     /// The org's membership grants.
     pub memberships: Vec<ExportMembership>,
     /// The org's tokens' metadata (no secrets).
@@ -185,10 +212,10 @@ pub struct ExportManifest {
 
 /// Build an [`ExportManifest`] for one org from its SQL system of record.
 ///
-/// Gathers the org row, projects, registries, memberships, token metadata
-/// (redacted), storage bindings, the audit slice at or below the org scope,
-/// and the changeset history. Resolves the org including soft-deleted ones
-/// (export runs during the offboarding grace window).
+/// Gathers the org row, projects, registries, managed caches, memberships,
+/// token metadata (redacted), storage bindings, the audit slice at or below the
+/// org scope, and the changeset history. Resolves the org including soft-deleted
+/// ones (export runs during the offboarding grace window).
 ///
 /// # Errors
 ///
@@ -221,6 +248,22 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
             prefix: r.prefix,
             trust_keys: r.trust_keys,
             require_signatures: r.require_signatures,
+        })
+        .collect();
+
+    let caches = db
+        .list_caches_for_org(org.id)
+        .await?
+        .into_iter()
+        .map(|c| ExportCache {
+            slug: c.slug,
+            name: c.name,
+            visibility: c.visibility,
+            prefix: c.prefix,
+            priority: c.priority,
+            compression: c.compression,
+            want_mass_query: c.want_mass_query,
+            deleted_at: c.deleted_at,
         })
         .collect();
 
@@ -313,6 +356,7 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
         org_created_at: org.created_at,
         projects,
         registries,
+        caches,
         memberships,
         tokens,
         storage_bindings,
