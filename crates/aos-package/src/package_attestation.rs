@@ -14,7 +14,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,11 +32,13 @@ const TPM2_CREATEEK_ENV: &str = "AOS_TPM2_CREATEEK";
 const TPM2_CREATEAK_ENV: &str = "AOS_TPM2_CREATEAK";
 const TPM2_READPUBLIC_ENV: &str = "AOS_TPM2_READPUBLIC";
 const TPM2_QUOTE_ENV: &str = "AOS_TPM2_QUOTE";
+const TPM2_PCRREAD_ENV: &str = "AOS_TPM2_PCRREAD";
 const TPM2_FLUSHCONTEXT_ENV: &str = "AOS_TPM2_FLUSHCONTEXT";
 const TPM2_TCTI_ENV: &str = "AOS_TPM2_TCTI";
 const PCR_INDEX: u8 = 15;
 const PCR_BANK: &str = "sha256";
 const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
+const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 
@@ -53,8 +55,17 @@ const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 /// events, the event log cannot be written, or live PCR extension fails.
 pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
     let events = measurement_events(root, installed)?;
-    append_event_log(root, &events)?;
-    if root == Path::new("/") {
+    let live_root = root == Path::new("/");
+    let needs_baseline = live_root && !event_log_has_records(root)?;
+    let mut logged_events = Vec::with_capacity(events.len() + usize::from(live_root));
+    if needs_baseline {
+        let pcr15 = read_current_pcr15()
+            .context("reading current PCR 15 before first live package measurement")?;
+        logged_events.push(pcr_baseline_event(&pcr15));
+    }
+    logged_events.extend(events.iter().cloned());
+    append_event_log(root, &logged_events)?;
+    if live_root {
         let pcrextend = trusted_systemd_pcrextend_path()?;
         extend_pcr15(&pcrextend, &events)?;
     }
@@ -66,6 +77,8 @@ struct MeasurementEvent {
     event_type: &'static str,
     word: String,
     digest: String,
+    extends_pcr: bool,
+    pcr_value: Option<String>,
     package: Option<MeasuredPackage>,
     package_count: Option<usize>,
 }
@@ -87,6 +100,8 @@ struct EventLogRecord<'a> {
     digest: &'a str,
     event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pcr_value: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     package: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     version: Option<&'a str>,
@@ -106,6 +121,7 @@ struct OwnedEventLogRecord {
     event_type: String,
     digest: String,
     event: String,
+    pcr_value: Option<String>,
     package: Option<String>,
     version: Option<String>,
     root_digest: Option<String>,
@@ -120,6 +136,19 @@ pub(crate) struct PackageEventLogVerification {
     pub pcr15: String,
     /// Number of package tuple events validated against the registry catalog.
     pub package_count: usize,
+}
+
+/// A registry or image-seed golden package measurement catalog entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PackageMeasurementCatalogEntry {
+    /// Package name.
+    pub name: String,
+    /// Package version.
+    pub version: String,
+    /// Expected package root digest.
+    pub root_digest: String,
+    /// Expected package measurement tuple.
+    pub measurement: String,
 }
 
 /// Files produced by the local TPM quote agent primitive.
@@ -147,6 +176,8 @@ pub(crate) struct PackageQuoteArtifacts {
     pub quote_signature: String,
     /// Serialized quoted PCR values.
     pub quote_pcrs: String,
+    /// Quoted PCR 15 value as lowercase SHA-256 hex.
+    pub quoted_pcr15: String,
     /// Non-fatal cleanup warnings from TPM context flushing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub flush_warnings: Vec<String>,
@@ -160,16 +191,18 @@ struct PendingPackageSet {
 }
 
 fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<MeasurementEvent>> {
-    let mut packages = installed
-        .iter()
-        .filter_map(|entry| {
-            let apm = entry.apm.as_ref()?;
-            if !apm.explicit || apm.expose.is_none() {
-                return None;
-            }
-            Some(measured_package(root, entry, apm))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let mut packages = Vec::new();
+    for entry in installed {
+        let Some(apm) = entry.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || apm.expose.is_none() {
+            continue;
+        }
+        if let Some(package) = measured_package(root, apm)? {
+            packages.push(package);
+        }
+    }
     packages.sort_by(|left, right| {
         left.name
             .cmp(&right.name)
@@ -187,8 +220,10 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
     Ok(events)
 }
 
-fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
-    let root_digest = package_root_digest(entry, apm);
+fn measured_package(root: &Path, apm: &ApmMeta) -> Result<Option<MeasuredPackage>> {
+    let Some(root_digest) = attested_package_root_digest(apm) else {
+        return Ok(None);
+    };
     let manifest_digest = package_manifest_digest(root, apm)?;
     let package = MeasuredPackage {
         name: apm.name.clone(),
@@ -213,33 +248,25 @@ fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result
         }
     }
 
-    Ok(package)
+    Ok(Some(package))
 }
 
-fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
+fn attested_package_root_digest(apm: &ApmMeta) -> Option<String> {
     if let Some(root_hash) = &apm.attestation.root_hash {
-        return canonical_digest(root_hash);
+        return Some(canonical_digest(root_hash));
     }
 
     if let Some(expose) = &apm.expose
         && let Some(root_hash) = expose
             .images
             .iter()
-            .find_map(|image| image.root_hash.as_deref())
+            .find(|image| image.root_hash_sig.is_some())
+            .and_then(|image| image.root_hash.as_deref())
     {
-        return canonical_digest(root_hash);
+        return Some(canonical_digest(root_hash));
     }
 
-    canonical_digest(&entry.apm.as_ref().map_or_else(
-        || entry.store_path.clone(),
-        |apm| {
-            if apm.source_nar_hash.is_empty() {
-                entry.store_path.clone()
-            } else {
-                apm.source_nar_hash.clone()
-            }
-        },
-    ))
+    None
 }
 
 fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
@@ -293,16 +320,41 @@ pub(crate) fn package_manifest_digest_bytes(bytes: &[u8]) -> String {
 /// Returns an error when the log is malformed, PCR replay does not match
 /// `expected_pcr15`, or any package tuple is missing from or disagrees with
 /// the registry catalog.
+#[cfg(test)]
 pub(crate) fn verify_package_event_log_against_catalog(
     event_log: &str,
     expected_pcr15: &str,
     catalog: &[PackageMeta],
 ) -> Result<PackageEventLogVerification> {
+    let catalog = package_measurement_catalog_from_package_meta(catalog)?;
+    verify_package_event_log_against_measurement_catalog(event_log, expected_pcr15, None, &catalog)
+}
+
+/// Replays and verifies the package event log against explicit catalog entries.
+///
+/// This is used by fleet verification paths that combine registry metadata
+/// with image-seeded package metadata before checking a quoted PCR 15 value.
+///
+/// # Errors
+///
+/// Returns an error when the log is malformed, PCR replay does not match
+/// `expected_pcr15`, or any package tuple is missing from or disagrees with
+/// the supplied golden catalog.
+pub(crate) fn verify_package_event_log_against_measurement_catalog(
+    event_log: &str,
+    expected_pcr15: &str,
+    expected_baseline_pcr15: Option<&str>,
+    catalog: &[PackageMeasurementCatalogEntry],
+) -> Result<PackageEventLogVerification> {
     let expected_pcr15 = parse_sha256_hex("expected PCR 15", expected_pcr15)?;
+    let expected_baseline_pcr15 = expected_baseline_pcr15
+        .map(|pcr15| parse_sha256_hex("expected baseline PCR 15", pcr15))
+        .transpose()?;
     let catalog = package_measurement_catalog(catalog)?;
     let mut pcr = [0u8; 32];
     let mut package_count = 0usize;
     let mut pending_package_set: Option<PendingPackageSet> = None;
+    let mut saw_baseline = false;
     let mut saw_package_set = false;
 
     for (index, line) in event_log.lines().enumerate() {
@@ -320,10 +372,28 @@ pub(crate) fn verify_package_event_log_against_catalog(
                 index + 1
             );
         }
-        extend_replayed_pcr(&mut pcr, &recorded_digest)?;
-
         match record.event_type.as_str() {
+            PCR_BASELINE_EVENT_TYPE => {
+                if index != 0 {
+                    bail!("PCR baseline event must be the first package event log record");
+                }
+                if pending_package_set
+                    .as_ref()
+                    .is_some_and(|pending| pending.remaining != 0)
+                {
+                    bail!(
+                        "package event log line {} resets PCR before the previous set completed",
+                        index + 1
+                    );
+                }
+                let Some(expected_baseline_pcr15) = expected_baseline_pcr15.as_deref() else {
+                    bail!("PCR baseline event requires an expected baseline PCR 15 value");
+                };
+                pcr = parse_pcr_baseline_record(index + 1, &record, expected_baseline_pcr15)?;
+                saw_baseline = true;
+            }
             PACKAGE_SET_EVENT_TYPE => {
+                extend_replayed_pcr(&mut pcr, &recorded_digest)?;
                 if pending_package_set
                     .as_ref()
                     .is_some_and(|pending| pending.remaining != 0)
@@ -337,6 +407,7 @@ pub(crate) fn verify_package_event_log_against_catalog(
                 pending_package_set = Some(parse_package_set_record(index + 1, &record)?);
             }
             PACKAGE_EVENT_TYPE => {
+                extend_replayed_pcr(&mut pcr, &recorded_digest)?;
                 let Some(pending) = pending_package_set.as_mut() else {
                     bail!(
                         "package event log line {} appears before a package-set event",
@@ -379,6 +450,9 @@ pub(crate) fn verify_package_event_log_against_catalog(
 
     if !saw_package_set {
         bail!("package event log contains no package-set event");
+    }
+    if expected_baseline_pcr15.is_some() && !saw_baseline {
+        bail!("expected baseline PCR 15 was supplied but the event log has no PCR baseline event");
     }
     if pending_package_set
         .as_ref()
@@ -504,6 +578,8 @@ pub(crate) fn produce_package_quote(
                 os_arg(&quote_signature),
                 os_arg("-o"),
                 os_arg(&quote_pcrs),
+                os_arg("-F"),
+                os_arg("values"),
                 os_arg("-g"),
                 os_arg("sha256"),
             ],
@@ -531,6 +607,7 @@ pub(crate) fn produce_package_quote(
     }
 
     result?;
+    let quoted_pcr15 = quoted_pcr15_from_values_file(&quote_pcrs)?;
 
     Ok(PackageQuoteArtifacts {
         nonce,
@@ -544,8 +621,32 @@ pub(crate) fn produce_package_quote(
         quote_message: display_path(&quote_message),
         quote_signature: display_path(&quote_signature),
         quote_pcrs: display_path(&quote_pcrs),
+        quoted_pcr15,
         flush_warnings,
     })
+}
+
+fn read_current_pcr15() -> Result<String> {
+    let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
+    let tcti = tpm2_tcti()?;
+    let mut command = Command::new(&pcrread);
+    command.arg(format!("{PCR_BANK}:{PCR_INDEX}"));
+    if let Some(tcti) = tcti {
+        command.env("TPM2TOOLS_TCTI", tcti);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("running {}", pcrread.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}\nstdout:\n{}\nstderr:\n{}",
+            pcrread.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    parse_tpm2_pcrread_pcr15(&String::from_utf8_lossy(&output.stdout))
 }
 
 /// Replays only the PCR 15 digest for a package event log.
@@ -575,7 +676,16 @@ fn replay_package_event_log_pcr15(event_log: &str) -> Result<String> {
                 index + 1
             );
         }
-        extend_replayed_pcr(&mut pcr, &recorded_digest)?;
+        if record.event_type == PCR_BASELINE_EVENT_TYPE {
+            let expected = record
+                .pcr_value
+                .as_deref()
+                .context("test PCR baseline record missing pcr_value")?;
+            let expected = parse_prefixed_sha256_hex("test PCR baseline value", expected)?;
+            pcr = parse_pcr_baseline_record(index + 1, &record, &expected)?;
+        } else {
+            extend_replayed_pcr(&mut pcr, &recorded_digest)?;
+        }
     }
     Ok(hex::encode(pcr))
 }
@@ -587,6 +697,8 @@ fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
         event_type: PACKAGE_EVENT_TYPE,
         word,
         digest,
+        extends_pcr: true,
+        pcr_value: None,
         package: Some(package),
         package_count: None,
     })
@@ -610,8 +722,25 @@ fn package_set_event(package_events: &[MeasurementEvent]) -> MeasurementEvent {
         event_type: PACKAGE_SET_EVENT_TYPE,
         word,
         digest,
+        extends_pcr: true,
+        pcr_value: None,
         package: None,
         package_count: Some(package_events.len()),
+    }
+}
+
+fn pcr_baseline_event(pcr15: &str) -> MeasurementEvent {
+    let pcr15 = canonical_digest(pcr15);
+    let word = length_prefixed_word("aos-pcr-baseline-v1", &[("pcr-value", pcr15.clone())]);
+    let digest = format!("sha256:{}", digest_for_word(&word));
+    MeasurementEvent {
+        event_type: PCR_BASELINE_EVENT_TYPE,
+        word,
+        digest,
+        extends_pcr: false,
+        pcr_value: Some(pcr15),
+        package: None,
+        package_count: None,
     }
 }
 
@@ -690,24 +819,34 @@ fn parse_length_prefixed_word(schema: &str, word: &str) -> Result<BTreeMap<Strin
     Ok(fields)
 }
 
-fn package_measurement_catalog(
+pub(crate) fn package_measurement_catalog_from_package_meta(
     catalog: &[PackageMeta],
+) -> Result<Vec<PackageMeasurementCatalogEntry>> {
+    Ok(catalog
+        .iter()
+        .filter_map(|meta| {
+            let measurement = meta.attestation.measurement.as_ref()?;
+            let root_digest = meta.attestation.root_hash.as_ref()?;
+            let _root_digest_signature = meta.attestation.root_hash_sig.as_ref()?;
+            Some(PackageMeasurementCatalogEntry {
+                name: meta.name.clone(),
+                version: meta.version.clone(),
+                root_digest: root_digest.clone(),
+                measurement: measurement.clone(),
+            })
+        })
+        .collect::<Vec<_>>())
+}
+
+fn package_measurement_catalog(
+    catalog: &[PackageMeasurementCatalogEntry],
 ) -> Result<BTreeMap<(String, String), (String, String)>> {
     let mut measurements = BTreeMap::new();
-    for meta in catalog {
-        let Some(measurement) = &meta.attestation.measurement else {
-            continue;
-        };
-        let measurement = parse_sha256_hex("registry package measurement", measurement)?;
-        let root_hash = meta
-            .attestation
-            .root_hash
-            .as_deref()
-            .map(|root_hash| parse_sha256_hex("registry package root_hash", root_hash))
-            .transpose()?
-            .unwrap_or_default();
-        let key = (meta.name.clone(), meta.version.clone());
-        let value = (measurement, root_hash);
+    for entry in catalog {
+        let measurement = parse_sha256_hex("registry package measurement", &entry.measurement)?;
+        let root_digest = canonical_digest(&entry.root_digest);
+        let key = (entry.name.clone(), entry.version.clone());
+        let value = (measurement, root_digest);
         if let Some(existing) = measurements.insert(key.clone(), value.clone())
             && existing != value
         {
@@ -719,6 +858,41 @@ fn package_measurement_catalog(
         }
     }
     Ok(measurements)
+}
+
+fn parse_tpm2_pcrread_pcr15(output: &str) -> Result<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        let Some(value) = line.strip_prefix(&format!("{PCR_INDEX}:")) else {
+            continue;
+        };
+        let value = value.trim().strip_prefix("0x").unwrap_or(value.trim());
+        return Ok(format!(
+            "sha256:{}",
+            parse_sha256_hex("PCR 15 value", value)?
+        ));
+    }
+    bail!("tpm2_pcrread output did not contain PCR 15");
+}
+
+fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
+    const SHA256_SIZE: usize = 32;
+    const QUOTED_PCR_COUNT: usize = 4;
+    const PCR15_INDEX_IN_SELECTION: usize = 3;
+
+    let bytes =
+        fs::read(path).with_context(|| format!("reading quoted PCR values {}", path.display()))?;
+    let expected = SHA256_SIZE * QUOTED_PCR_COUNT;
+    if bytes.len() != expected {
+        bail!(
+            "quoted PCR values file {} is {} bytes, expected {expected}",
+            path.display(),
+            bytes.len()
+        );
+    }
+    let start = SHA256_SIZE * PCR15_INDEX_IN_SELECTION;
+    let end = start + SHA256_SIZE;
+    Ok(hex::encode(&bytes[start..end]))
 }
 
 fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Result<()> {
@@ -741,6 +915,35 @@ fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Res
         );
     }
     Ok(())
+}
+
+fn parse_pcr_baseline_record(
+    line: usize,
+    record: &OwnedEventLogRecord,
+    expected_baseline_pcr15: &str,
+) -> Result<[u8; 32]> {
+    let fields = parse_length_prefixed_word("aos-pcr-baseline-v1", &record.event)
+        .with_context(|| format!("parsing PCR baseline event word on line {line}"))?;
+    let pcr_value = fields
+        .get("pcr-value")
+        .with_context(|| format!("PCR baseline event on line {line} is missing pcr-value"))?;
+    let json_value = record
+        .pcr_value
+        .as_deref()
+        .with_context(|| format!("PCR baseline event on line {line} is missing pcr_value"))?;
+    if json_value != pcr_value {
+        bail!("PCR baseline event on line {line} pcr_value does not match the measured word");
+    }
+    let pcr_value = parse_prefixed_sha256_hex("PCR baseline value", pcr_value)?;
+    if pcr_value != expected_baseline_pcr15 {
+        bail!("PCR baseline event on line {line} does not match the expected baseline PCR 15");
+    }
+    let bytes = hex::decode(&pcr_value)
+        .with_context(|| format!("decoding PCR baseline value on line {line}"))?;
+    let pcr: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        anyhow::anyhow!("PCR baseline decoded to {} bytes", bytes.len())
+    })?;
+    Ok(pcr)
 }
 
 fn parse_package_set_record(
@@ -813,17 +1016,14 @@ fn verify_package_record(
     }
 
     let key = (package.to_string(), version.to_string());
-    let (catalog_measurement, catalog_root_hash) = catalog.get(&key).with_context(|| {
+    let (catalog_measurement, catalog_root_digest) = catalog.get(&key).with_context(|| {
         format!("registry catalog has no golden measurement for {package} {version}")
     })?;
     if catalog_measurement != recorded_digest {
         bail!("package event on line {line} does not match the registry golden measurement");
     }
-    if !catalog_root_hash.is_empty() {
-        let root_digest = parse_prefixed_sha256_hex("package event root_digest", root_digest)?;
-        if catalog_root_hash != &root_digest {
-            bail!("package event on line {line} root digest does not match the registry catalog");
-        }
+    if catalog_root_digest != &canonical_digest(root_digest) {
+        bail!("package event on line {line} root digest does not match the registry catalog");
     }
     Ok(())
 }
@@ -850,6 +1050,9 @@ fn event_digest_hex(event: &str) -> String {
 
 fn extend_pcr15(pcrextend: &Path, events: &[MeasurementEvent]) -> Result<()> {
     for event in events {
+        if !event.extends_pcr {
+            continue;
+        }
         let status = Command::new(pcrextend)
             .arg("--graceful")
             .arg(format!("--bank={PCR_BANK}"))
@@ -915,6 +1118,15 @@ fn flush_quote_contexts(
     warnings
 }
 
+fn event_log_has_records(root: &Path) -> Result<bool> {
+    let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
+    match fs::read_to_string(&path) {
+        Ok(log) => Ok(log.lines().any(|line| !line.trim().is_empty())),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
 fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
     let parent = path
@@ -942,6 +1154,7 @@ fn event_log_line(event: &MeasurementEvent) -> Result<String> {
         event_type: event.event_type,
         digest: &event.digest,
         event: &event.word,
+        pcr_value: event.pcr_value.as_deref(),
         package: package.map(|package| package.name.as_str()),
         version: package.map(|package| package.version.as_str()),
         root_digest: package.map(|package| package.root_digest.as_str()),
@@ -1330,6 +1543,28 @@ mod tests {
     }
 
     #[test]
+    fn package_measurement_skips_packages_without_signed_root() {
+        let tmp = TempDir::new().expect("tempdir");
+        let mut installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let apm = installed.apm.as_mut().expect("apm metadata");
+        let image = apm
+            .expose
+            .as_mut()
+            .expect("expose metadata")
+            .images
+            .first_mut()
+            .expect("image metadata");
+        image.root_hash = None;
+        image.root_hash_sig = None;
+
+        let events = measurement_events(tmp.path(), &[installed]).expect("events");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, PACKAGE_SET_EVENT_TYPE);
+        assert_eq!(events[0].package_count, Some(0));
+    }
+
+    #[test]
     fn package_measurement_changes_when_manifest_changes() {
         let tmp = TempDir::new().expect("tempdir");
         let first = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
@@ -1414,6 +1649,73 @@ mod tests {
             verify_package_event_log_against_catalog(&log, &pcr15, &catalog).expect("verify log");
 
         assert_eq!(verified.pcr15, pcr15);
+        assert_eq!(verified.package_count, 1);
+    }
+
+    #[test]
+    fn package_event_log_verifier_replays_from_pcr_baseline() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let installed = installed_fixture(&tmp, manifest);
+        let apm = installed.apm.as_ref().expect("apm metadata");
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest_digest = package_manifest_digest_bytes(manifest);
+        let measurement =
+            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+        let baseline = format!("sha256:{}", "11".repeat(32));
+        let mut events = vec![pcr_baseline_event(&baseline)];
+        events.extend(measurement_events(tmp.path(), &[installed]).expect("events"));
+        append_event_log(tmp.path(), &events).expect("append log");
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let catalog =
+            package_measurement_catalog_from_package_meta(&[catalog_meta(root_hash, &measurement)])
+                .expect("catalog");
+
+        let verified = verify_package_event_log_against_measurement_catalog(
+            &log,
+            &pcr15,
+            Some(&baseline),
+            &catalog,
+        )
+        .expect("verify log");
+
+        assert_eq!(verified.pcr15, pcr15);
+        assert_eq!(verified.package_count, 1);
+        assert_ne!(
+            pcr15,
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn package_measurement_catalog_entries_round_trip_through_json() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let mut installed = installed_fixture(&tmp, manifest);
+        let apm = installed.apm.as_mut().expect("apm metadata");
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest_digest = package_manifest_digest_bytes(manifest);
+        let measurement =
+            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+
+        measure_activated_packages(tmp.path(), &[installed]).expect("measure");
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let json = serde_json::to_string(&vec![PackageMeasurementCatalogEntry {
+            name: "web".into(),
+            version: "1.0".into(),
+            root_digest: root_hash.into(),
+            measurement,
+        }])
+        .expect("serialize catalog");
+        let catalog =
+            serde_json::from_str::<Vec<PackageMeasurementCatalogEntry>>(&json).expect("catalog");
+
+        let verified =
+            verify_package_event_log_against_measurement_catalog(&log, &pcr15, None, &catalog)
+                .expect("verify seed catalog");
+
         assert_eq!(verified.package_count, 1);
     }
 
@@ -1572,6 +1874,46 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{wrong:#}").contains("absolute tpm2_quote"));
+    }
+
+    #[test]
+    fn quote_pcr_values_extracts_pcr15() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("quote.pcrs");
+        let mut values = Vec::new();
+        values.extend([0x07; 32]);
+        values.extend([0x0b; 32]);
+        values.extend([0x0c; 32]);
+        values.extend([0x15; 32]);
+        fs::write(&path, values).expect("pcr values");
+
+        let pcr15 = quoted_pcr15_from_values_file(&path).expect("quoted pcr15");
+
+        assert_eq!(pcr15, "15".repeat(32));
+    }
+
+    #[test]
+    fn quote_pcr_values_rejects_unexpected_size() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("quote.pcrs");
+        fs::write(&path, [0u8; 31]).expect("pcr values");
+
+        let err = quoted_pcr15_from_values_file(&path).unwrap_err();
+
+        assert!(format!("{err:#}").contains("expected 128"));
+    }
+
+    #[test]
+    fn tpm2_pcrread_parser_extracts_pcr15() {
+        let output = format!(
+            "sha256:\n  7: 0x{}\n  15: 0x{}\n",
+            "07".repeat(32),
+            "ab".repeat(32)
+        );
+
+        let pcr15 = parse_tpm2_pcrread_pcr15(&output).expect("pcr15");
+
+        assert_eq!(pcr15, format!("sha256:{}", "ab".repeat(32)));
     }
 
     #[test]

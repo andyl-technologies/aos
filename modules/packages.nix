@@ -60,31 +60,59 @@
 
   packageTarget = package:
     package.package.expose.passthru.manifest.expose.target;
+  packageHasSignedRoot = package:
+    lib.any
+    (image: ((image.root_hash or "") != "" || (image.root_hash_file or "") != "") && (image.root_hash_sig or "") != "")
+    (package.package.expose.passthru.manifest.expose.images or []);
 
   packageMetaFile = name: package: let
     packageHash = storePathHash package.package;
     packageVersion = package.package.version or "0";
   in
     pkgs.runCommand "aos-package-${name}-meta.json" {
-      buildDeps = [pkgs.jq];
+      buildDeps = [pkgs.coreutils pkgs.jq];
       preferLocalBuild = true;
       allowSubstitutes = false;
     } ''
       set -eu
       mkdir -p "$out"
+      manifest=${package.package.expose}/manifest.json
+      package_store_path=${lib.escapeShellArg (builtins.toString package.package)}
+      package_name=${lib.escapeShellArg name}
+      package_version=${lib.escapeShellArg packageVersion}
       jq -n \
-        --slurpfile manifest ${package.package.expose}/manifest.json \
-        --arg store_path ${lib.escapeShellArg (builtins.toString package.package)} \
-        --arg name ${lib.escapeShellArg name} \
-        --arg version ${lib.escapeShellArg packageVersion} \
+        --slurpfile manifest "$manifest" \
+        --arg store_path "$package_store_path" \
+        --arg name "$package_name" \
+        --arg version "$package_version" \
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
         -e '(($manifest[0].expose | type) == "object") and (($manifest[0].permissions | type) == "object")' >/dev/null
+
+      root_hash=$(jq -r '[.expose.images[]? | select((.root_hash // "") != "" and (.root_hash_sig // "") != "")][0].root_hash // ""' "$manifest")
+      root_hash_sig=$(jq -r '[.expose.images[]? | select((.root_hash // "") != "" and (.root_hash_sig // "") != "")][0].root_hash_sig // ""' "$manifest")
+      if [ -n "$root_hash" ]; then
+        case "$root_hash" in
+          sha256:*) root_digest="$root_hash" ;;
+          sha256-*) root_digest="sha256:''${root_hash#sha256-}" ;;
+          *) root_digest="$root_hash" ;;
+        esac
+        root_digest=$(printf '%s' "$root_digest" | tr 'A-F' 'a-f')
+      else
+        root_digest="$package_store_path"
+      fi
+      manifest_digest="sha256:$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+      word="aos-package-v1|name=''${#package_name}:$package_name|version=''${#package_version}:$package_version|root-digest=''${#root_digest}:$root_digest|manifest-digest=''${#manifest_digest}:$manifest_digest"
+      measurement="sha256:$(printf '%s' "$word" | sha256sum | cut -d ' ' -f 1)"
+
       jq -n \
-        --slurpfile manifest ${package.package.expose}/manifest.json \
-        --arg store_path ${lib.escapeShellArg (builtins.toString package.package)} \
-        --arg name ${lib.escapeShellArg name} \
-        --arg version ${lib.escapeShellArg packageVersion} \
+        --slurpfile manifest "$manifest" \
+        --arg store_path "$package_store_path" \
+        --arg name "$package_name" \
+        --arg version "$package_version" \
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
+        --arg root_hash "$root_hash" \
+        --arg root_hash_sig "$root_hash_sig" \
+        --arg measurement "$measurement" \
         '{
           store_path: $store_path,
           pushed_at: 1,
@@ -108,9 +136,32 @@
               nar_hash: "sha256:aos-image",
               nar_size: 1
             },
-            permissions: $manifest[0].permissions
+            permissions: $manifest[0].permissions,
+            attestation: (
+              if $root_hash == "" then {}
+              else {
+                root_hash: $root_hash,
+                root_hash_sig: $root_hash_sig,
+                measurement: $measurement
+              }
+              end
+            )
           }
         }' > "$out/${packageHash}.json"
+
+      if [ -n "$root_hash" ]; then
+        jq -n \
+          --arg name "$package_name" \
+          --arg version "$package_version" \
+          --arg root_digest "$root_digest" \
+          --arg measurement "$measurement" \
+          '{
+            name: $name,
+            version: $version,
+            root_digest: $root_digest,
+            measurement: $measurement
+          }' > "$out/${packageHash}.attestation.json"
+      fi
     '';
 
   packageSeedBundle =
@@ -140,6 +191,34 @@
         )
         presetExposedPackages
       )}
+    '';
+
+  packageAttestationCatalog = let
+    metaFiles =
+      lib.mapAttrsToList (
+        name: package: let
+          packageHash = storePathHash package.package;
+          metaFile = packageMetaFile name package;
+        in "${metaFile}/${packageHash}.attestation.json"
+      )
+      (lib.filterAttrs (_: package: packageHasSignedRoot package) exposedBundledPackages);
+  in
+    pkgs.runCommand "aos-package-attestation-catalog.json" {
+      buildDeps = [pkgs.jq];
+      preferLocalBuild = true;
+      allowSubstitutes = false;
+    } ''
+      set -eu
+      mkdir -p "$out"
+      ${
+        if metaFiles == []
+        then ''
+          printf '[]\n' > "$out/package-attestation-catalog.json"
+        ''
+        else ''
+          jq -s '.' ${lib.escapeShellArgs metaFiles} > "$out/package-attestation-catalog.json"
+        ''
+      }
     '';
 
   enabledPresetLines =
@@ -251,6 +330,10 @@ in {
           ]
         )
         exposedBundledPackages);
+
+    environment.etc."aos/package-attestation-catalog.json" = lib.mkIf (exposedBundledPackages != {}) {
+      source = "${packageAttestationCatalog}/package-attestation-catalog.json";
+    };
 
     systemd.services.aos-seed-baked-packages = lib.mkIf (exposedBundledPackages != {}) {
       description = "Seed baked AOS package profile";

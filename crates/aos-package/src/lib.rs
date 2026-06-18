@@ -78,6 +78,7 @@ pub mod verify;
 pub(crate) mod testutil;
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -91,6 +92,8 @@ use types::{
     ProfileScope, RegistryUploadAuthConfig, validate_branch_name, validate_channel_name,
     validate_commit_hash, validate_git_ref_name, validate_registry_name,
 };
+
+const PACKAGE_ATTESTATION_SEED_CATALOG: &str = "/etc/aos/package-attestation-catalog.json";
 
 /// Environment-variable documentation appended to `apm`/`apr` long help.
 pub const ENVIRONMENT_HELP: &str = "Environment:
@@ -445,6 +448,9 @@ pub enum PackageCommand {
         /// Quoted PCR 15 value as SHA-256 hex
         #[arg(long)]
         pcr15: String,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
     },
     /// Hidden: produce an RFC-0001 package attestation TPM quote.
     #[command(name = "_test-produce-package-attestation-quote", hide = true)]
@@ -2005,8 +2011,13 @@ pub async fn run(
             exposed_units::reconcile_system_profile(&config, printer).await
         }
         PackageCommand::TestVerifyPackageAttestation {
-            event_log, pcr15, ..
-        } => run_test_verify_package_attestation(&config, event_log, pcr15, printer),
+            event_log,
+            pcr15,
+            pcr15_baseline,
+            ..
+        } => {
+            run_test_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer)
+        }
         PackageCommand::TestProducePackageAttestationQuote { .. } => {
             unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
         }
@@ -2030,6 +2041,7 @@ fn run_test_verify_package_attestation(
     config: &config::ApmConfig,
     event_log: &PathBuf,
     pcr15: &str,
+    pcr15_baseline: &Option<String>,
     printer: &Printer,
 ) -> Result<()> {
     let log = fs::read_to_string(event_log)
@@ -2040,8 +2052,30 @@ fn run_test_verify_package_attestation(
         .iter()
         .flat_map(|registry| registry.package_versions().cloned())
         .collect::<Vec<_>>();
-    let verified =
-        package_attestation::verify_package_event_log_against_catalog(&log, pcr15, &catalog)?;
+    let mut catalog = package_attestation::package_measurement_catalog_from_package_meta(&catalog)?;
+    match fs::read_to_string(PACKAGE_ATTESTATION_SEED_CATALOG) {
+        Ok(seed_catalog) => {
+            let seed_catalog = serde_json::from_str::<
+                Vec<package_attestation::PackageMeasurementCatalogEntry>,
+            >(&seed_catalog)
+            .with_context(|| {
+                format!(
+                    "parsing package attestation seed catalog {PACKAGE_ATTESTATION_SEED_CATALOG}"
+                )
+            })?;
+            catalog.extend(seed_catalog);
+        }
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| format!("reading {PACKAGE_ATTESTATION_SEED_CATALOG}"));
+        }
+    }
+    let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
+        &log,
+        pcr15,
+        pcr15_baseline.as_deref(),
+        &catalog,
+    )?;
 
     if printer.mode() == OutputMode::Json {
         printer.json(&serde_json::json!({
