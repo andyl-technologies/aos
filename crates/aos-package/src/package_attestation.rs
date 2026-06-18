@@ -127,8 +127,13 @@ fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result
 
     if let Some(expected) = &apm.attestation.measurement {
         let expected = canonical_digest(expected);
-        let actual = digest_for_word(&package_tuple_word(&package));
-        if expected != format!("sha256:{actual}") {
+        let actual = package_measurement_digest(
+            &package.name,
+            &package.version,
+            &package.root_digest,
+            &package.manifest_digest,
+        );
+        if expected != actual {
             bail!(
                 "attestation measurement for package '{}' does not match installed metadata",
                 apm.name
@@ -171,7 +176,7 @@ fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
         if manifest.is_file() {
             let bytes = fs::read(&manifest)
                 .with_context(|| format!("reading expose manifest {}", manifest.display()))?;
-            return Ok(format!("sha256:{}", digest_hex(&bytes)));
+            return Ok(package_manifest_digest_bytes(&bytes));
         }
         if root == Path::new("/") {
             bail!(
@@ -184,7 +189,28 @@ fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
 
     let bytes = serde_json::to_vec(&apm.permissions)
         .with_context(|| format!("serializing permissions for package '{}'", apm.name))?;
-    Ok(format!("sha256:{}", digest_hex(&bytes)))
+    Ok(package_manifest_digest_bytes(&bytes))
+}
+
+/// Returns the RFC-0001 golden package measurement tuple digest.
+pub(crate) fn package_measurement_digest(
+    name: &str,
+    version: &str,
+    root_digest: &str,
+    manifest_digest: &str,
+) -> String {
+    let package = MeasuredPackage {
+        name: name.to_string(),
+        version: version.to_string(),
+        root_digest: canonical_digest(root_digest),
+        manifest_digest: canonical_digest(manifest_digest),
+    };
+    format!("sha256:{}", digest_for_word(&package_tuple_word(&package)))
+}
+
+/// Returns the manifest digest format used in package measurement events.
+pub(crate) fn package_manifest_digest_bytes(bytes: &[u8]) -> String {
+    format!("sha256:{}", digest_hex(bytes))
 }
 
 fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
@@ -361,8 +387,8 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        ApmMeta, ExposeArtifactMeta, ExposeMeta, HostPathMode, HostPathPermission, InstalledMeta,
-        NetworkPermission, PermissionsMeta, SysrootImageEntry,
+        ApmMeta, AttestationMeta, ExposeArtifactMeta, ExposeMeta, HostPathMode, HostPathPermission,
+        InstalledMeta, NetworkPermission, PermissionsMeta, SysrootImageEntry,
     };
     use tempfile::TempDir;
 
@@ -468,6 +494,50 @@ mod tests {
             .clone();
 
         assert_ne!(first_digest, second_digest);
+    }
+
+    #[test]
+    fn package_measurement_accepts_matching_registry_measurement() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let mut installed = installed_fixture(&tmp, manifest);
+        let apm = installed.apm.as_mut().expect("apm metadata");
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest_digest = package_manifest_digest_bytes(manifest);
+        apm.attestation = AttestationMeta {
+            root_hash: Some(root_hash.into()),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+            provenance: None,
+            measurement: Some(package_measurement_digest(
+                &apm.name,
+                &apm.version,
+                root_hash,
+                &manifest_digest,
+            )),
+        };
+
+        measurement_events(tmp.path(), &[installed]).expect("matching measurement");
+    }
+
+    #[test]
+    fn package_measurement_rejects_mismatched_registry_measurement() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let mut installed = installed_fixture(&tmp, manifest);
+        let apm = installed.apm.as_mut().expect("apm metadata");
+        apm.attestation = AttestationMeta {
+            root_hash: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+            provenance: None,
+            measurement: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+        };
+
+        let err = measurement_events(tmp.path(), &[installed]).unwrap_err();
+        assert!(format!("{err:#}").contains("does not match installed metadata"));
     }
 
     #[test]
