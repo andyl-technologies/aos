@@ -708,4 +708,94 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
     // Without `?explore`, the same path downloads the raw NAR bytes.
     let (status, _headers, _) = get(&app, "/acme-cache/nar/test.nar").await;
     assert_eq!(status, StatusCode::OK);
+
+    // A `Range:` request is answered `206 Partial Content` with a `Content-Range`
+    // and exactly the requested slice — the shared streaming `cache_serve` path
+    // (the same one the Worker uses) honors ranges.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/acme-cache/nar/test.nar")
+                .header(header::RANGE, "bytes=0-3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT);
+    let cr = resp
+        .headers()
+        .get(header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(cr.starts_with("bytes 0-3/"), "content-range: {cr}");
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(body.len(), 4, "ranged body is exactly the 4 requested bytes");
+}
+
+/// The unified streaming cache-read path gates a non-public cache: an anonymous
+/// machine read of a `private` cache's narinfo is refused (never `200`), the same
+/// `require_cache_read` gate the Worker applies — visibility is enforced before
+/// any byte streams. (A public cache serves anonymously, asserted above.)
+#[tokio::test]
+async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let cache = db
+        .create_cache(
+            Some(org),
+            "priv-cache",
+            "Priv",
+            binding,
+            "pc",
+            None,
+            "private",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    db.upsert_cache_object(&aos_hub_core::db::CacheObject {
+        cache_id: cache,
+        store_hash: "aaaa".into(),
+        store_name: "aaaa-x-1.0".into(),
+        nar_url: "nar/aa.nar".into(),
+        nar_hash: "sha256:aa".into(),
+        nar_size: 1,
+        file_hash: "aa".into(),
+        file_size: 1,
+        compression: "none".into(),
+        deriver: None,
+        refs: vec![],
+        sig: None,
+        ca: None,
+        uploaded_at: 0,
+        last_accessed_at: None,
+    })
+    .await
+    .unwrap();
+    // Put the narinfo on the surface too, so a missing gate would actually serve.
+    std::fs::create_dir_all(root.path().join("pc")).unwrap();
+    std::fs::write(
+        root.path().join("pc/aaaa.narinfo"),
+        b"StorePath: /nix/store/aaaa-x-1.0\n",
+    )
+    .unwrap();
+
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
+
+    // Anonymous machine read of the private cache's narinfo must NOT serve bytes.
+    let (status, _, _) = get(&app, "/priv-cache/aaaa.narinfo").await;
+    assert_ne!(status, StatusCode::OK, "private cache must gate anonymous reads");
 }

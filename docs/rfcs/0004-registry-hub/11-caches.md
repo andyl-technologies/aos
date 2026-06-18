@@ -529,15 +529,18 @@ the current spec. Phases are orderable; A lands first, E last.
       signature assertion. **Fixed en route:** the native PUT facade never reached
       caches (only HEAD did) — `nix copy --to <hub>/<cache>` 404'd on the native
       hub; the PUT route now mirrors HEAD's cache fallthrough.
-- [x] **Streaming reads (native):** the native hub streams cache NAR/narinfo
-      from disk (`facade::cache_serve_file`: `tokio::fs` + `ReaderStream` +
-      `Body::from_stream`, symlink-contained) instead of buffering, and honors
-      `Range: bytes=…` with `206 Partial Content` + `Content-Range` +
-      `Accept-Ranges` (`nix-cache-info` generated; substituter HEAD probes
-      supported). **Remaining:** push the same through the worker — a
-      `fetch_range` on the shared `SurfaceFetch` port over R2 ranged GET + the
-      `worker`⇄`axum` bridge streaming below (the worker still buffers, no
-      regression).
+- [x] **Streaming reads (UNIFIED, both shells):** there is now **one** shared
+      streaming cache-read path — `RpcService::cache_serve` over
+      `SurfaceFetch::fetch_stream` (returning a streaming `axum::body::Body` +
+      total + served range) — that **both** the native hub and the Worker route
+      through (the native-only `cache_serve_file` was deleted). Each shell's
+      fetcher supplies the stream: native `LocalFsFetch` via `tokio` `ReaderStream`
+      (seek + `take` for ranges), Worker R2 via a ranged GET whose `ByteStream` is
+      `SendWrapper`-wrapped into the axum body. `nix-cache-info` is generated,
+      `Range: bytes=…` → `206` + `Content-Range` + `Accept-Ranges`, visibility +
+      presign-`302` enforced once. A large NAR never buffers into memory on either
+      shell. Range/206 is integration-tested on native; the Worker serves it
+      through the streaming bridge below.
 - [x] **Cache write facade (buffered):** `cache_writer` write-port (fs + R2)
       and shared `put_machine_path`/`head_machine_path` cache fallthrough →
       `put_cache_path`, so `nix copy --to <hub>/<cache>` works on **both** the
@@ -549,12 +552,14 @@ the current spec. Phases are orderable; A lands first, E last.
       coherent. **Remaining (with #19):** stream the body (R2 multipart / local
       streamed write) + `Content-Length`/byte-counter quota instead of buffering,
       and `MintCacheUploadCredentials` (presigned/scoped-credential upload).
-- [ ] **Streaming Worker bridge:** stream request and response bodies through
-      the `worker`⇄`axum` boundary (`worker::Body`/`ByteStream` ⇄
-      `axum::body::Body`), replacing `req.bytes()` / `to_bytes(usize::MAX)` /
-      `Response::from_bytes` in `bridge.rs` — the enabler without which facade
-      streaming is re-buffered at the edge (verify `Range`/`206` passthrough end
-      to end under workerd).
+- [x] **Streaming Worker bridge:** `bridge.rs::to_worker` streams the router's
+      response body straight to the Workers runtime via `Response::from_stream`
+      over `axum::body::Body::into_data_stream()` (worker 0.4.2 `from_stream`;
+      `futures-util` `TryStreamExt`) — no `to_bytes(usize::MAX)` / `from_bytes`,
+      so a cache NAR the shared `cache_serve` streams from R2 never lands fully in
+      the isolate. Combined with the unified streaming read above, the Worker
+      serves NAR/narinfo end to end without buffering. (Request-body streaming is
+      a follow-up; uploads are `MAX_UPLOAD_BYTES`-capped, so they stay buffered.)
 - [x] Serve the read facade for caches via `facade_fetch` (slug falls through
       registry→cache) pointed at the cache binding+prefix — `nix-cache-info`
       generated from the cache config, `<hash>.narinfo`/`nar/<file>` as

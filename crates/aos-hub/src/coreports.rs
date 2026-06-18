@@ -94,6 +94,17 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         crate::fetch::SurfaceFetch::fetch(self, path).await
     }
 
+    /// Streams the file from disk (`tokio` `ReaderStream`, Range-aware) instead
+    /// of buffering — the native side of the shared `cache_serve` path, so a
+    /// large NAR never lands in memory.
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<core_fetch::StreamedRead>> {
+        self.stream_read(path, range).await
+    }
+
     /// Forwards to the hub fetcher's efficient `metadata`-based size (avoids a
     /// full read, and probes a never-written binding cleanly as `None`).
     async fn size(&self, path: &str) -> Result<Option<u64>> {

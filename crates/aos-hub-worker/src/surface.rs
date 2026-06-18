@@ -94,6 +94,65 @@ impl SurfaceFetch for R2SurfaceFetch {
         Ok(Some(bytes))
     }
 
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        use futures_util::TryStreamExt as _;
+
+        let key = keymap::r2_key(&self.prefix, path);
+        // A ranged GET pushes the byte range down to R2 — the object's bytes are
+        // never fully read into the isolate; the body streams chunk by chunk.
+        let mut get = self.bucket.get(&key);
+        if let Some((start, end)) = range {
+            let r = if end == u64::MAX {
+                worker::Range::OffsetToEnd { offset: start }
+            } else {
+                worker::Range::OffsetWithLength {
+                    offset: start,
+                    length: end - start + 1,
+                }
+            };
+            get = get.range(r);
+        }
+        let object = get
+            .execute()
+            .await
+            .map_err(|err| anyhow::anyhow!("R2 get {key}: {err}"))?;
+        let Some(object) = object else {
+            return Ok(None);
+        };
+        let total = object.size();
+        // The inclusive range actually served (clamped to the object), or `None`
+        // for a whole-object read.
+        let served = match range {
+            Some((start, end)) if start < total => Some((start, end.min(total.saturating_sub(1)))),
+            _ => None,
+        };
+        let Some(body) = object.body() else {
+            return Ok(Some(aos_hub_core::fetch::StreamedRead {
+                body: axum::body::Body::empty(),
+                total,
+                range: served,
+            }));
+        };
+        let stream = body
+            .stream()
+            .map_err(|err| anyhow::anyhow!("R2 stream {key}: {err}"))?
+            .map_err(|err| std::io::Error::other(err.to_string()));
+        // `axum::body::Body::from_stream` requires `Send`; the R2 `ByteStream` is
+        // `!Send`. `SendWrapper` makes it `Send` (sound on the single-threaded
+        // Worker), so the *same* `StreamedRead` the native file path returns
+        // flows through the shared `cache_serve` and the streaming bridge.
+        let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(stream));
+        Ok(Some(aos_hub_core::fetch::StreamedRead {
+            body,
+            total,
+            range: served,
+        }))
+    }
+
     async fn size(&self, path: &str) -> Result<Option<u64>> {
         let key = keymap::r2_key(&self.prefix, path);
         // R2 `head` returns object metadata (including the size) without
