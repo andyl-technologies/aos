@@ -262,6 +262,7 @@ mod entry {
             Arc::clone(&surface_write),
             Arc::clone(&lease),
             Arc::clone(&reindexer),
+            Some(Arc::clone(&sealer)),
         ));
 
         let console_deps = ConsoleDeps {

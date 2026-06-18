@@ -57,6 +57,7 @@ pub mod indexer;
 pub mod gitwrite;
 pub mod keymap;
 pub mod lease;
+pub mod nix_sign;
 pub mod ratelimit;
 pub mod reindex;
 pub mod service;

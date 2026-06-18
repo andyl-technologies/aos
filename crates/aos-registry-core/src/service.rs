@@ -550,6 +550,13 @@ pub struct RpcService {
     /// The native hub re-indexes synchronously from the local surface; the Worker
     /// defers to its Cron-trigger indexer (a logged no-op).
     pub reindexer: Arc<dyn Reindexer>,
+    /// The secret sealer ([`SecretSealer`](crate::auth::seal::SecretSealer)) used
+    /// to unseal a cache's hosted Ed25519 key for server-side narinfo signing.
+    ///
+    /// `None` disables hub-side signing — a key-bearing cache then relies on the
+    /// uploader's own `Sig:` lines (BYO signing). Both shells wire their sealer
+    /// (the native `HUB_SEAL_KEY` sealer; the Worker's `HUB_SEAL_KEY` binding).
+    pub sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
 }
 
 impl RpcService {
@@ -565,6 +572,7 @@ impl RpcService {
         surface_write: Arc<dyn SurfaceWriteProvider>,
         lease: Arc<dyn PublishLease>,
         reindexer: Arc<dyn Reindexer>,
+        sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
     ) -> Self {
         Self {
             db,
@@ -575,6 +583,7 @@ impl RpcService {
             surface_write,
             lease,
             reindexer,
+            sealer,
         }
     }
 
@@ -3061,6 +3070,36 @@ impl RpcService {
         if body.len() > MAX_UPLOAD_BYTES {
             return FacadeWrite::TooLarge;
         }
+        // Server-side narinfo signing: a key-bearing cache signs each uploaded
+        // root-level `<hash>.narinfo` with its hosted Ed25519 key (replacing any
+        // prior hub sig, preserving other keys' sigs), so consumers can verify
+        // against the cache's trusted-public-key. NARs are content-addressed and
+        // never signed. Requires both a hosted key and a wired sealer; without a
+        // sealer the uploader's own `Sig:` lines pass through unchanged. A
+        // sign/unseal failure fails the upload rather than silently storing an
+        // unsigned narinfo for a cache that promises signatures.
+        let signed_holder: Option<Vec<u8>> = if let (Some(_hash), Some(key_id), Some(sealer)) = (
+            path.strip_suffix(".narinfo").filter(|h| !h.contains('/')),
+            cache.hosted_key_id,
+            self.sealer.as_ref(),
+        ) {
+            let text = match std::str::from_utf8(body) {
+                Ok(text) => text,
+                Err(_) => return FacadeWrite::BadPath("narinfo is not valid UTF-8"),
+            };
+            let (key_name, signing_key, _public) =
+                match self.db.load_hosted_signing_key(sealer.as_ref(), key_id).await {
+                    Ok(key) => key,
+                    Err(err) => return internal_write(err),
+                };
+            match crate::nix_sign::sign_narinfo(text, &key_name, &signing_key) {
+                Ok(signed) => Some(signed.into_bytes()),
+                Err(err) => return internal_write(err),
+            }
+        } else {
+            None
+        };
+        let body: &[u8] = signed_holder.as_deref().unwrap_or(body);
         let writer = match self.surface_write.cache_writer(cache).await {
             Ok(writer) => writer,
             Err(err) => {

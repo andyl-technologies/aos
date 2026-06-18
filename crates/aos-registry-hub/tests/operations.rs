@@ -608,3 +608,79 @@ async fn link_cache_rejects_advertising_a_less_visible_cache() {
     .await;
     assert_eq!(status, StatusCode::OK, "{_v}");
 }
+
+/// End-to-end: a key-bearing cache signs uploaded narinfo with its hosted
+/// Ed25519 key, and the served narinfo carries the hub `Sig:` line.
+#[tokio::test]
+async fn keyed_cache_signs_uploaded_narinfo() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
+        .unwrap();
+    // A hosted key sealed with the same dev sealer the test AppState wires.
+    let sealer = aos_registry_hub::auth::oidc::dev_sealer();
+    db.create_hosted_key(sealer.as_ref(), org, "acme-cache-key")
+        .await
+        .unwrap();
+    let key_id = db
+        .hosted_key_by_name(org, "acme-cache-key")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    db.create_cache(
+        Some(org),
+        "signed-cache",
+        "Signed",
+        binding,
+        "sc",
+        Some(key_id),
+        "public",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
+    // A cache admin (token grant + live owner membership).
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner")
+        .await
+        .unwrap();
+    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let narinfo = "StorePath: /nix/store/aaaa-foo-1.0\nURL: nar/bbbb.nar.zst\n\
+                   Compression: zstd\nNarHash: sha256:1xyz\nNarSize: 100\nReferences: \n";
+    let (status, _) = put(
+        &app,
+        "/signed-cache/aaaa.narinfo",
+        &token,
+        narinfo.as_bytes().to_vec(),
+    )
+    .await;
+    assert!(status.is_success(), "upload status {status}");
+
+    // GET the served narinfo back; it must carry the hub signature line.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/signed-cache/aaaa.narinfo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("Sig: acme-cache-key:"),
+        "served narinfo must carry the hub signature: {text}"
+    );
+    assert!(text.contains("StorePath: /nix/store/aaaa-foo-1.0"), "{text}");
+}

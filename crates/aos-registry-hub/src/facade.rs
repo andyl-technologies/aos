@@ -100,6 +100,7 @@ fn write_service(state: &AppState) -> RpcService {
         ))),
         Arc::clone(&state.leases) as Arc<dyn aos_registry_core::lease::PublishLease>,
         Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        Some(Arc::clone(&state.sealer)),
     )
 }
 
