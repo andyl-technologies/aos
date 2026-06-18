@@ -318,7 +318,13 @@ define_builtins! {
     pub(crate) struct FetchTreeBuiltin;
     impl BuiltinDefinition for FetchTreeBuiltin {
         const NAME: &'static [u8] = b"fetchTree";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FetchTree;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Effectful,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
+        const DOCS: &'static BuiltinDocs = &FETCH_TREE_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
@@ -991,6 +997,8 @@ pub(crate) enum BuiltinExecution {
     FetchGit,
     /// The builtin evaluates `fetchTarball`.
     FetchTarball,
+    /// The builtin evaluates `fetchTree`.
+    FetchTree,
     /// The builtin evaluates `readDir`.
     ReadDir,
     /// The builtin evaluates `readFile`.
@@ -1113,6 +1121,7 @@ impl BuiltinExecution {
             Self::Unsupported { .. }
             | Self::FetchGit
             | Self::FetchTarball
+            | Self::FetchTree
             | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
@@ -1159,6 +1168,7 @@ impl BuiltinExecution {
             Self::BuiltinsValue
             | Self::FetchGit
             | Self::FetchTarball
+            | Self::FetchTree
             | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
@@ -1381,6 +1391,10 @@ static FETCH_GIT_DOCS: BuiltinDocs = BuiltinDocs {
 
 static FETCH_TARBALL_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Fetches and unpacks a tarball as a recursive fixed-output store path.",
+};
+
+static FETCH_TREE_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Fetches supported typed tree inputs as fixed-output store paths.",
 };
 
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
@@ -2158,6 +2172,7 @@ mod tests {
             b"derivation".as_slice(),
             b"derivationStrict".as_slice(),
             b"fetchMercurial".as_slice(),
+            b"fetchTree".as_slice(),
             b"fetchurl".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),
@@ -2194,7 +2209,10 @@ mod tests {
     #[test]
     fn default_builtin_metadata_stays_derived_from_execution_strategy() {
         for metadata in BUILTINS.iter() {
-            if matches!(metadata.name(), b"fetchurl" | b"fetchGit" | b"fetchTarball") {
+            if matches!(
+                metadata.name(),
+                b"fetchurl" | b"fetchGit" | b"fetchTarball" | b"fetchTree"
+            ) {
                 continue;
             }
             let execution = metadata.execution();
@@ -2272,6 +2290,24 @@ mod tests {
             fetch_tarball.docs().summary(),
             "Fetches and unpacks a tarball as a recursive fixed-output store path."
         );
+
+        let fetch_tree = BUILTINS
+            .lookup(b"fetchTree")
+            .expect("fetchTree builtin is registered");
+
+        assert_eq!(fetch_tree.execution(), BuiltinExecution::FetchTree);
+        assert_eq!(
+            fetch_tree.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(fetch_tree.first_class_arity(), Some(1));
+        assert!(fetch_tree.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_tree.docs().summary(),
+            "Fetches supported typed tree inputs as fixed-output store paths."
+        );
     }
 
     #[test]
@@ -2311,6 +2347,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"fetchTarball").unwrap().docs().summary(),
             "Fetches and unpacks a tarball as a recursive fixed-output store path."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"fetchTree").unwrap().docs().summary(),
+            "Fetches supported typed tree inputs as fixed-output store paths."
         );
         assert_eq!(
             BUILTINS.lookup(b"langVersion").unwrap().docs().summary(),

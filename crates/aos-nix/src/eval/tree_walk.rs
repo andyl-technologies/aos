@@ -24,6 +24,7 @@ use std::{
     rc::Rc,
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
+    time::UNIX_EPOCH,
 };
 
 use base64::Engine as _;
@@ -85,6 +86,12 @@ const REF_ATTR: &[u8] = b"ref";
 const SUBMODULES_ATTR: &[u8] = b"submodules";
 const SHALLOW_ATTR: &[u8] = b"shallow";
 const ALL_REFS_ATTR: &[u8] = b"allRefs";
+const EXPORT_IGNORE_ATTR: &[u8] = b"exportIgnore";
+const UNPACK_ATTR: &[u8] = b"unpack";
+const VERIFY_COMMIT_ATTR: &[u8] = b"verifyCommit";
+const KEYTYPE_ATTR: &[u8] = b"keytype";
+const PUBLIC_KEY_ATTR: &[u8] = b"publicKey";
+const PUBLIC_KEYS_ATTR: &[u8] = b"publicKeys";
 const SHORT_REV_ATTR: &[u8] = b"shortRev";
 const DIRTY_REV_ATTR: &[u8] = b"dirtyRev";
 const DIRTY_SHORT_REV_ATTR: &[u8] = b"dirtyShortRev";
@@ -1664,6 +1671,7 @@ struct FetchGitArguments {
     submodules: bool,
     shallow: bool,
     all_refs: bool,
+    export_ignore: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1677,6 +1685,52 @@ struct FetchGitResult {
     last_modified_date: Vec<u8>,
     nar_hash: Vec<u8>,
     submodules: bool,
+}
+
+#[derive(Clone, Debug)]
+enum FetchTreeArguments {
+    Path {
+        path: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    },
+    File {
+        url: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    },
+    Tarball {
+        url: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    },
+    Git {
+        args: FetchGitArguments,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        expected_rev_count: Option<usize>,
+        dirty_rev: Option<Vec<u8>>,
+        dirty_short_rev: Option<Vec<u8>>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct FetchTreeResult {
+    out_path: Vec<u8>,
+    nar_hash: Vec<u8>,
+    last_modified: Option<i64>,
+    last_modified_date: Option<Vec<u8>>,
+    rev: Option<Vec<u8>>,
+    dirty_rev: Option<Vec<u8>>,
+    dirty_short_rev: Option<Vec<u8>>,
+    rev_count: Option<usize>,
+    submodules: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8258,6 +8312,7 @@ impl TreeWalk {
             &repo,
             checkout_dir,
             exported_dir,
+            args.export_ignore,
             Path::new(""),
             true,
         )?;
@@ -8339,6 +8394,7 @@ impl TreeWalk {
             &repo,
             &local_path,
             exported_dir,
+            args.export_ignore,
             Path::new(""),
             &excluded_paths,
             true,
@@ -8393,6 +8449,7 @@ impl TreeWalk {
                 submodules: false,
                 shallow: false,
                 all_refs: false,
+                export_ignore: true,
             });
         }
         if value.tag() != ValueTag::Attrs {
@@ -8436,6 +8493,7 @@ impl TreeWalk {
             self.optional_fetch_git_bool_attr(id, span, value, SUBMODULES_ATTR, false)?;
         let shallow = self.optional_fetch_git_bool_attr(id, span, value, SHALLOW_ATTR, false)?;
         let all_refs = self.optional_fetch_git_bool_attr(id, span, value, ALL_REFS_ATTR, false)?;
+        let export_ignore = !submodules;
 
         Ok(FetchGitArguments {
             url,
@@ -8445,6 +8503,7 @@ impl TreeWalk {
             submodules,
             shallow,
             all_refs,
+            export_ignore,
         })
     }
 
@@ -8551,7 +8610,8 @@ impl TreeWalk {
         };
         if let Some(reference) = &args.reference {
             push_param(&mut uri, b"ref", Some(reference));
-        } else {
+        }
+        if args.export_ignore {
             push_param(&mut uri, b"exportIgnore", Some(b"1"));
         }
         if let Some(rev) = &args.rev {
@@ -9089,10 +9149,14 @@ impl TreeWalk {
         repo: &git2::Repository,
         source: &Path,
         target: &Path,
+        export_ignore: bool,
         relative: &Path,
         is_root: bool,
     ) -> Result<bool, TreeWalkError> {
-        if !is_root && Self::fetch_git_export_ignored(id, span, url, repo, relative)? {
+        if export_ignore
+            && !is_root
+            && Self::fetch_git_export_ignored(id, span, url, repo, relative)?
+        {
             return Ok(false);
         }
 
@@ -9122,6 +9186,7 @@ impl TreeWalk {
                     repo,
                     &entry.path(),
                     &target.join(entry.file_name()),
+                    export_ignore,
                     &child_relative,
                     false,
                 )? {
@@ -9168,6 +9233,7 @@ impl TreeWalk {
         repo: &git2::Repository,
         source: &Path,
         target: &Path,
+        export_ignore: bool,
         relative: &Path,
         excluded_paths: &BTreeSet<Vec<u8>>,
         is_root: bool,
@@ -9175,7 +9241,10 @@ impl TreeWalk {
         if !is_root && Self::fetch_git_path_is_excluded(relative, excluded_paths) {
             return Ok(false);
         }
-        if !is_root && Self::fetch_git_export_ignored(id, span, url, repo, relative)? {
+        if export_ignore
+            && !is_root
+            && Self::fetch_git_export_ignored(id, span, url, repo, relative)?
+        {
             return Ok(false);
         }
 
@@ -9205,6 +9274,7 @@ impl TreeWalk {
                     repo,
                     &entry.path(),
                     &target.join(entry.file_name()),
+                    export_ignore,
                     &child_relative,
                     excluded_paths,
                     false,
@@ -9286,6 +9356,1307 @@ impl TreeWalk {
             TreeWalkErrorKind::FetchGit {
                 id,
                 url: url.to_vec(),
+                message: source.to_string(),
+            },
+            span,
+        )
+    }
+
+    fn eval_fetch_tree_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let args = self.fetch_tree_arguments(argument, argument_span, value)?;
+        self.check_fetch_tree_locked(argument, argument_span, &args)?;
+        let result = match args {
+            FetchTreeArguments::Path {
+                path,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+            } => self.eval_fetch_tree_path(
+                argument,
+                argument_span,
+                path,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+            )?,
+            FetchTreeArguments::File {
+                url,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+                ..
+            } => self.eval_fetch_tree_file(
+                argument,
+                argument_span,
+                url,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+            )?,
+            FetchTreeArguments::Tarball {
+                url,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+                ..
+            } => self.eval_fetch_tree_tarball(
+                argument,
+                argument_span,
+                url,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+                rev_count,
+            )?,
+            FetchTreeArguments::Git {
+                args,
+                expected_nar_hash,
+                expected_last_modified,
+                expected_rev_count,
+                dirty_rev,
+                dirty_short_rev,
+            } => self.eval_fetch_tree_git(
+                argument,
+                argument_span,
+                args,
+                expected_nar_hash,
+                expected_last_modified,
+                expected_rev_count,
+                dirty_rev,
+                dirty_short_rev,
+            )?,
+        };
+        self.alloc_fetch_tree_result(id, span, result)
+    }
+
+    fn fetch_tree_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            let input = self.context_free_string_bytes(id, span, value, "fetchTree")?;
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input,
+                    message: "string flake references are not implemented by the native evaluator"
+                        .to_owned(),
+                },
+                span,
+            ));
+        }
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "set or string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        if self
+            .attr_value_by_name(id, value, NAME_ATTR, span)?
+            .is_some()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedFetchTreeAttr {
+                    id,
+                    attr: NAME_ATTR.to_vec(),
+                },
+                span,
+            ));
+        }
+
+        let type_value = self.required_attr_value_by_name(id, value, TYPE_ATTR, span)?;
+        let type_value = self.force_value(id, span, type_value)?;
+        let input_type = self.context_free_string_bytes(id, span, type_value, "fetchTree")?;
+        match input_type.as_slice() {
+            b"path" => self.fetch_tree_path_arguments(id, span, value),
+            b"file" => self.fetch_tree_file_arguments(id, span, value),
+            b"tarball" => self.fetch_tree_tarball_arguments(id, span, value),
+            b"git" => self.fetch_tree_git_arguments(id, span, value),
+            _ => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: input_type,
+                    message: "unsupported fetchTree input type".to_owned(),
+                },
+                span,
+            )),
+        }
+    }
+
+    fn fetch_tree_path_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                PATH_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+            ],
+        )?;
+        let path_value = self.required_attr_value_by_name(id, value, PATH_ATTR, span)?;
+        let path = self.fetch_tree_path_argument_bytes(id, span, path_value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        Ok(FetchTreeArguments::Path {
+            path,
+            expected_nar_hash,
+            expected_last_modified,
+            rev,
+            rev_count,
+        })
+    }
+
+    fn fetch_tree_file_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                UNPACK_ATTR,
+            ],
+        )?;
+        let url = self.required_fetch_tree_url(id, span, value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        let _unpack = self.optional_fetch_tree_bool_attr(id, span, value, UNPACK_ATTR, false)?;
+        Ok(FetchTreeArguments::File {
+            url,
+            expected_nar_hash,
+            expected_last_modified,
+            rev,
+            rev_count,
+        })
+    }
+
+    fn fetch_tree_tarball_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                UNPACK_ATTR,
+            ],
+        )?;
+        let url = self.required_fetch_tree_url(id, span, value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        let _unpack = self.optional_fetch_tree_bool_attr(id, span, value, UNPACK_ATTR, true)?;
+        Ok(FetchTreeArguments::Tarball {
+            url,
+            expected_nar_hash,
+            expected_last_modified,
+            rev,
+            rev_count,
+        })
+    }
+
+    fn fetch_tree_git_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                SHALLOW_ATTR,
+                SUBMODULES_ATTR,
+                ALL_REFS_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_COUNT_ATTR,
+                EXPORT_IGNORE_ATTR,
+                DIRTY_REV_ATTR,
+                DIRTY_SHORT_REV_ATTR,
+                VERIFY_COMMIT_ATTR,
+                KEYTYPE_ATTR,
+                PUBLIC_KEY_ATTR,
+                PUBLIC_KEYS_ATTR,
+            ],
+        )?;
+        let url = self.required_fetch_tree_url(id, span, value)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let reference = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)?;
+        let submodules =
+            self.optional_fetch_tree_bool_attr(id, span, value, SUBMODULES_ATTR, false)?;
+        let shallow = self.optional_fetch_tree_bool_attr(id, span, value, SHALLOW_ATTR, true)?;
+        let all_refs = self.optional_fetch_tree_bool_attr(id, span, value, ALL_REFS_ATTR, false)?;
+        let export_ignore =
+            self.optional_fetch_tree_bool_attr(id, span, value, EXPORT_IGNORE_ATTR, !submodules)?;
+        let dirty_rev = self.optional_fetch_tree_string_attr(id, span, value, DIRTY_REV_ATTR)?;
+        let dirty_short_rev =
+            self.optional_fetch_tree_string_attr(id, span, value, DIRTY_SHORT_REV_ATTR)?;
+        if dirty_rev.is_some() != dirty_short_rev.is_some() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: DIRTY_REV_ATTR.to_vec(),
+                    message: "fetchTree git dirtyRev and dirtyShortRev must be provided together"
+                        .to_owned(),
+                },
+                span,
+            ));
+        }
+        self.validate_fetch_tree_git_verified_fetch_attrs(id, span, value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let expected_rev_count =
+            self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+
+        Ok(FetchTreeArguments::Git {
+            args: FetchGitArguments {
+                url,
+                name: "source".to_owned(),
+                rev,
+                reference,
+                submodules,
+                shallow,
+                all_refs,
+                export_ignore,
+            },
+            expected_nar_hash,
+            expected_last_modified,
+            expected_rev_count,
+            dirty_rev,
+            dirty_short_rev,
+        })
+    }
+
+    fn validate_fetch_tree_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        allowed: &[&[u8]],
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !allowed.iter().any(|allowed| *allowed == key) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFetchTreeAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_fetch_tree_git_verified_fetch_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        if let Some(keytype) = self.attr_value_by_name(id, value, KEYTYPE_ATTR, span)? {
+            let keytype = self.force_value(id, span, keytype)?;
+            self.context_free_string_bytes(id, span, keytype, "fetchTree")?;
+        }
+        if let Some(public_key) = self.attr_value_by_name(id, value, PUBLIC_KEY_ATTR, span)? {
+            let public_key = self.force_value(id, span, public_key)?;
+            let _ = self.context_free_string_bytes(id, span, public_key, "fetchTree")?;
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: PUBLIC_KEY_ATTR.to_vec(),
+                    message:
+                        "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                },
+                span,
+            ));
+        }
+        if self
+            .attr_value_by_name(id, value, PUBLIC_KEYS_ATTR, span)?
+            .is_some()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: PUBLIC_KEYS_ATTR.to_vec(),
+                    message:
+                        "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                },
+                span,
+            ));
+        }
+        if let Some(verify_commit) = self.attr_value_by_name(id, value, VERIFY_COMMIT_ATTR, span)? {
+            let verify_commit = self.force_value(id, span, verify_commit)?;
+            if self.expect_bool(id, verify_commit, span)? {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTree {
+                        id,
+                        input: VERIFY_COMMIT_ATTR.to_vec(),
+                        message: "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_tree_path_argument_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        let path = self.coerce_to_path_string(id, span, value)?;
+        self.validate_ifd_path_context(id, span, &path, "fetchTree")?;
+        let bytes =
+            Self::copy_bytes_for_node(id, span, path_without_trailing_path_markers(path.bytes()))?;
+        if !Path::new(OsStr::from_bytes(&bytes)).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute { id, path: bytes },
+                span,
+            ));
+        }
+        self.realize_import_from_derivation(id, span, &path, "fetchTree")?;
+        Ok(bytes)
+    }
+
+    fn required_fetch_tree_url(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url_value = self.required_attr_value_by_name(id, value, URL_ATTR, span)?;
+        let url_value = self.force_value(id, span, url_value)?;
+        self.context_free_string_bytes(id, span, url_value, "fetchTree")
+    }
+
+    fn optional_fetch_tree_string_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        attr: &[u8],
+    ) -> Result<Option<Vec<u8>>, TreeWalkError> {
+        let Some(attr_value) = self.attr_value_by_name(id, value, attr, span)? else {
+            return Ok(None);
+        };
+        let attr_value = self.force_value(id, span, attr_value)?;
+        self.context_free_string_bytes(id, span, attr_value, "fetchTree")
+            .map(Some)
+    }
+
+    fn optional_fetch_tree_int_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        attr: &[u8],
+    ) -> Result<Option<i64>, TreeWalkError> {
+        let Some(attr_value) = self.attr_value_by_name(id, value, attr, span)? else {
+            return Ok(None);
+        };
+        let attr_value = self.force_value(id, span, attr_value)?;
+        self.expect_int(id, attr_value, span).map(Some)
+    }
+
+    fn optional_fetch_tree_usize_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        attr: &[u8],
+    ) -> Result<Option<usize>, TreeWalkError> {
+        let Some(value) = self.optional_fetch_tree_int_attr(id, span, value, attr)? else {
+            return Ok(None);
+        };
+        usize::try_from(value).map(Some).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: attr.to_vec(),
+                    message: "fetchTree integer attribute must be non-negative".to_owned(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn optional_fetch_tree_bool_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        attr: &[u8],
+        default: bool,
+    ) -> Result<bool, TreeWalkError> {
+        let Some(attr_value) = self.attr_value_by_name(id, value, attr, span)? else {
+            return Ok(default);
+        };
+        let attr_value = self.force_value(id, span, attr_value)?;
+        self.expect_bool(id, attr_value, span)
+    }
+
+    fn optional_fetch_tree_nar_hash_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+        let Some(hash) = self.optional_fetch_tree_string_attr(id, span, value, NAR_HASH_ATTR)?
+        else {
+            return Ok(None);
+        };
+        self.decode_fetch_tree_nar_hash(id, span, &hash).map(Some)
+    }
+
+    fn decode_fetch_tree_nar_hash(
+        &self,
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+    ) -> Result<[u8; 32], TreeWalkError> {
+        let (algorithm, digest) =
+            self.decode_convert_hash(id, span, hash, Some(HashStringAlgorithm::Sha256))?;
+        if algorithm != HashStringAlgorithm::Sha256 || digest.len() != 32 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::HashAlgorithmMismatch {
+                    id,
+                    hash: hash.to_vec(),
+                    expected: b"sha256".to_vec(),
+                },
+                span,
+            ));
+        }
+        let mut fixed = [0_u8; 32];
+        fixed.copy_from_slice(&digest);
+        Ok(fixed)
+    }
+
+    fn check_fetch_tree_locked(
+        &self,
+        id: IrId,
+        span: Span,
+        args: &FetchTreeArguments,
+    ) -> Result<(), TreeWalkError> {
+        if self.options.eval_mode() != EvalMode::Pure {
+            return Ok(());
+        }
+        let locked = match args {
+            FetchTreeArguments::Path {
+                expected_nar_hash, ..
+            }
+            | FetchTreeArguments::File {
+                expected_nar_hash, ..
+            }
+            | FetchTreeArguments::Tarball {
+                expected_nar_hash, ..
+            } => expected_nar_hash.is_some(),
+            FetchTreeArguments::Git { args, .. } => args.rev.is_some(),
+        };
+        if locked {
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                id,
+                input: Self::fetch_tree_input(args),
+                mode: EvalMode::Pure,
+            },
+            span,
+        ))
+    }
+
+    fn fetch_tree_input(args: &FetchTreeArguments) -> Vec<u8> {
+        match args {
+            FetchTreeArguments::Path { path, .. } => path.clone(),
+            FetchTreeArguments::File { url, .. } | FetchTreeArguments::Tarball { url, .. } => {
+                url.clone()
+            }
+            FetchTreeArguments::Git { args, .. } => Self::fetch_tree_git_canonical_uri(args),
+        }
+    }
+
+    fn fetch_tree_git_canonical_uri(args: &FetchGitArguments) -> Vec<u8> {
+        let mut uri = Vec::new();
+        uri.extend_from_slice(b"git+");
+        uri.extend_from_slice(&args.url);
+        let mut separator = b'?';
+        let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
+            uri.push(separator);
+            separator = b'&';
+            uri.extend_from_slice(key);
+            if let Some(value) = value {
+                uri.push(b'=');
+                uri.extend_from_slice(value);
+            }
+        };
+        if let Some(rev) = &args.rev {
+            push_param(&mut uri, b"rev", Some(rev));
+        }
+        if let Some(reference) = &args.reference {
+            push_param(&mut uri, b"ref", Some(reference));
+        }
+        if args.shallow {
+            push_param(&mut uri, b"shallow", Some(b"1"));
+        }
+        if args.submodules {
+            push_param(&mut uri, b"submodules", Some(b"1"));
+        }
+        if args.export_ignore {
+            push_param(&mut uri, b"exportIgnore", Some(b"1"));
+        }
+        uri
+    }
+
+    fn eval_fetch_tree_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        self.check_fetch_tree_path_access(id, span, &path)?;
+        let source = Path::new(OsStr::from_bytes(&path));
+        let digest = self.source_path_nar_sha256(id, span, source, None)?;
+        Self::check_fetch_tree_hash(id, span, &path, expected_nar_hash, &digest)?;
+        let last_modified = Self::fetch_tree_last_modified(id, span, &path, source)?;
+        Self::check_fetch_tree_last_modified(
+            id,
+            span,
+            &path,
+            expected_last_modified,
+            last_modified,
+        )?;
+        let last_modified_date = Self::format_fetch_git_date(id, span, &path, last_modified)?;
+        let nar_hash = Self::encode_convert_hash_digest(
+            id,
+            span,
+            HashStringAlgorithm::Sha256,
+            ConvertHashFormat::Sri,
+            &digest,
+        )?;
+        let out_path = self.fetch_tree_store_path_from_digest(id, span, &path, &digest)?;
+        self.materialize_fetch_tree_store_path(id, span, &path, source, &out_path, &digest)?;
+        Ok(FetchTreeResult {
+            out_path,
+            nar_hash,
+            last_modified: Some(last_modified),
+            last_modified_date: Some(last_modified_date),
+            rev,
+            dirty_rev: None,
+            dirty_short_rev: None,
+            rev_count,
+            submodules: None,
+        })
+    }
+
+    fn eval_fetch_tree_file(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        let contents = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
+        let temp_dir = Self::fetch_tarball_temp_dir(id, span, &url)?;
+        let source = temp_dir.join("source");
+        let write_result = fs::write(&source, contents)
+            .map_err(|source| Self::fetch_tree_error(id, span, &url, source));
+        if let Err(error) = write_result {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(error);
+        }
+        let result = self.eval_fetch_tree_materialized_file(
+            id,
+            span,
+            url,
+            &source,
+            expected_nar_hash,
+            rev,
+            rev_count,
+        );
+        let _ = fs::remove_dir_all(&temp_dir);
+        let mut result = result?;
+        if let Some(last_modified) = expected_last_modified {
+            result.last_modified = Some(last_modified);
+            result.last_modified_date = Some(Self::format_fetch_git_date(
+                id,
+                span,
+                b"fetchTree",
+                last_modified,
+            )?);
+        }
+        Ok(result)
+    }
+
+    fn eval_fetch_tree_materialized_file(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: Vec<u8>,
+        source: &Path,
+        expected_nar_hash: Option<[u8; 32]>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        let digest = self.source_path_nar_sha256(id, span, source, None)?;
+        Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
+        let nar_hash = Self::encode_convert_hash_digest(
+            id,
+            span,
+            HashStringAlgorithm::Sha256,
+            ConvertHashFormat::Sri,
+            &digest,
+        )?;
+        let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, &digest)?;
+        self.materialize_fetch_tree_store_path(id, span, &url, source, &out_path, &digest)?;
+        Ok(FetchTreeResult {
+            out_path,
+            nar_hash,
+            last_modified: None,
+            last_modified_date: None,
+            rev,
+            dirty_rev: None,
+            dirty_short_rev: None,
+            rev_count,
+            submodules: None,
+        })
+    }
+
+    fn eval_fetch_tree_tarball(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: Vec<u8>,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Option<Vec<u8>>,
+        rev_count: Option<usize>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        let contents = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
+        let temp_dir = Self::fetch_tarball_temp_dir(id, span, &url)?;
+        let unpack_dir = temp_dir.join("unpacked");
+        if let Err(source) = fs::create_dir(&unpack_dir) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            return Err(Self::fetch_tree_error(id, span, &url, source));
+        }
+        let unpacked_root = match Self::unpack_fetch_tarball_archive(
+            id,
+            span,
+            &url,
+            &parsed,
+            &contents,
+            &unpack_dir,
+        )
+        .and_then(|()| Self::fetch_tarball_unpacked_root(id, span, &url, &unpack_dir))
+        {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(error);
+            }
+        };
+
+        let result = (|| {
+            let digest = self.source_path_nar_sha256(id, span, &unpacked_root, None)?;
+            Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
+            let last_modified = Self::fetch_tree_last_modified(id, span, &url, &unpacked_root)?;
+            Self::check_fetch_tree_last_modified(
+                id,
+                span,
+                &url,
+                expected_last_modified,
+                last_modified,
+            )?;
+            let last_modified_date = Self::format_fetch_git_date(id, span, &url, last_modified)?;
+            let nar_hash = Self::encode_convert_hash_digest(
+                id,
+                span,
+                HashStringAlgorithm::Sha256,
+                ConvertHashFormat::Sri,
+                &digest,
+            )?;
+            let out_path = self.fetch_tree_store_path_from_digest(id, span, &url, &digest)?;
+            self.materialize_fetch_tree_store_path(
+                id,
+                span,
+                &url,
+                &unpacked_root,
+                &out_path,
+                &digest,
+            )?;
+            Ok(FetchTreeResult {
+                out_path,
+                nar_hash,
+                last_modified: Some(last_modified),
+                last_modified_date: Some(last_modified_date),
+                rev,
+                dirty_rev: None,
+                dirty_short_rev: None,
+                rev_count,
+                submodules: None,
+            })
+        })();
+        let _ = fs::remove_dir_all(&temp_dir);
+        result
+    }
+
+    fn eval_fetch_tree_git(
+        &mut self,
+        id: IrId,
+        span: Span,
+        args: FetchGitArguments,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        expected_rev_count: Option<usize>,
+        dirty_rev: Option<Vec<u8>>,
+        dirty_short_rev: Option<Vec<u8>>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        let canonical_uri = Self::fetch_tree_git_canonical_uri(&args);
+        self.check_fetch_tree_git_access(id, span, &canonical_uri)?;
+
+        let mut checkout_args = args.clone();
+        if args.shallow && Self::fetch_git_local_worktree_path(&args.url).is_some() {
+            checkout_args.shallow = false;
+        }
+        let temp_dir = Self::fetch_git_temp_dir(id, span, &args.url)?;
+        let checkout_dir = temp_dir.join("checkout");
+        let exported_dir = temp_dir.join("exported");
+        let result =
+            self.eval_fetch_git_into_store(id, span, checkout_args, &checkout_dir, &exported_dir);
+        let _ = fs::remove_dir_all(&temp_dir);
+        let result = result?;
+
+        if let Some(expected) = expected_nar_hash {
+            let actual = self.decode_fetch_tree_nar_hash(id, span, &result.nar_hash)?;
+            Self::check_fetch_tree_hash(id, span, &args.url, Some(expected), &actual)?;
+        }
+        Self::check_fetch_tree_last_modified(
+            id,
+            span,
+            &args.url,
+            expected_last_modified,
+            result.last_modified,
+        )?;
+        if let Some(expected) = expected_rev_count {
+            Self::check_fetch_tree_rev_count(id, span, &args.url, expected, result.rev_count)?;
+        }
+
+        let dirty = result.dirty_rev.is_some();
+        let locked_dirty = dirty_rev.is_some();
+        let rev_count = if !dirty
+            && !locked_dirty
+            && (args.rev.is_none() || !args.shallow || expected_rev_count.is_some())
+        {
+            Some(result.rev_count)
+        } else {
+            None
+        };
+        Ok(FetchTreeResult {
+            out_path: result.out_path,
+            nar_hash: result.nar_hash,
+            last_modified: Some(result.last_modified),
+            last_modified_date: Some(result.last_modified_date),
+            rev: (!dirty && !locked_dirty).then(|| result.rev.into_bytes()),
+            dirty_rev: dirty_rev.or_else(|| result.dirty_rev.map(String::into_bytes)),
+            dirty_short_rev: dirty_short_rev
+                .or_else(|| result.dirty_short_rev.map(String::into_bytes)),
+            rev_count,
+            submodules: Some(result.submodules),
+        })
+    }
+
+    fn check_fetch_tree_path_access(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if !Path::new(OsStr::from_bytes(path)).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute {
+                    id,
+                    path: path.to_vec(),
+                },
+                span,
+            ));
+        }
+        if self.options.eval_mode() == EvalMode::Restricted {
+            self.check_filesystem_path_access(id, span, path)?;
+        }
+        Ok(())
+    }
+
+    fn check_fetch_tree_url_access(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<(), TreeWalkError> {
+        match parsed.scheme() {
+            "file" if self.options.eval_mode() == EvalMode::Restricted => {
+                let path = Self::fetchurl_file_path(id, span, url, parsed)?;
+                if !self.options.uri_is_allowed(url) {
+                    self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+                }
+            }
+            "http" | "https"
+                if self.options.eval_mode() == EvalMode::Restricted
+                    && !self.options.uri_is_allowed(url) =>
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTreeAccessDenied {
+                        id,
+                        input: url.to_vec(),
+                        mode: EvalMode::Restricted,
+                    },
+                    span,
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn check_fetch_tree_git_access(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Restricted
+            && !self.options.uri_is_allowed(canonical_uri)
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTreeAccessDenied {
+                    id,
+                    input: canonical_uri.to_vec(),
+                    mode: EvalMode::Restricted,
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn parse_fetch_tree_url(id: IrId, span: Span, url: &[u8]) -> Result<Url, TreeWalkError> {
+        let text = std::str::from_utf8(url)
+            .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+        Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, url, source))
+    }
+
+    fn fetch_tree_url_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match parsed.scheme() {
+            "file" => {
+                let path = Self::fetchurl_file_path(id, span, url, parsed)?;
+                if self.options.eval_mode() == EvalMode::Restricted
+                    && !self.options.uri_is_allowed(url)
+                {
+                    self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+                }
+                fs::read(&path).map_err(|source| Self::fetch_tree_error(id, span, url, source))
+            }
+            "http" | "https" => {
+                let response = reqwest::blocking::get(parsed.as_str())
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = response
+                    .error_for_status()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                response
+                    .bytes()
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))
+            }
+            scheme => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: url.to_vec(),
+                    message: format!("unsupported URL scheme {scheme:?}"),
+                },
+                span,
+            )),
+        }
+    }
+
+    fn check_fetch_tree_hash(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        expected: Option<[u8; 32]>,
+        actual: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        if let Some(expected) = expected {
+            if &expected != actual {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTreeHashMismatch {
+                        id,
+                        input: input.to_vec(),
+                        expected: expected.to_vec(),
+                        actual: actual.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_fetch_tree_last_modified(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        expected: Option<i64>,
+        actual: i64,
+    ) -> Result<(), TreeWalkError> {
+        if let Some(expected) = expected {
+            if expected != actual {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTreeLastModifiedMismatch {
+                        id,
+                        input: input.to_vec(),
+                        expected,
+                        actual,
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_fetch_tree_rev_count(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        expected: usize,
+        actual: usize,
+    ) -> Result<(), TreeWalkError> {
+        if expected == actual {
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTreeRevCountMismatch {
+                id,
+                input: input.to_vec(),
+                expected,
+                actual,
+            },
+            span,
+        ))
+    }
+
+    fn fetch_tree_last_modified(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        path: &Path,
+    ) -> Result<i64, TreeWalkError> {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let mut last_modified = Self::fetch_tree_metadata_modified(id, span, input, &metadata)?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)
+                .map_err(|source| Self::fetch_tree_error(id, span, input, source))?
+            {
+                let entry =
+                    entry.map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+                let child_modified =
+                    Self::fetch_tree_last_modified(id, span, input, &entry.path())?;
+                last_modified = last_modified.max(child_modified);
+            }
+        }
+        Ok(last_modified)
+    }
+
+    fn fetch_tree_metadata_modified(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        metadata: &fs::Metadata,
+    ) -> Result<i64, TreeWalkError> {
+        let modified = metadata
+            .modified()
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let duration = modified
+            .duration_since(UNIX_EPOCH)
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        i64::try_from(duration.as_secs()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: input.to_vec(),
+                    message: "lastModified does not fit in Nix int".to_owned(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetch_tree_store_path_from_digest(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        digest: &[u8; 32],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        self.store_path_bytes_from_fingerprint_parts(id, span, input, b"source", "source", digest)
+    }
+
+    fn materialize_fetch_tree_store_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        source: &Path,
+        store_path: &[u8],
+        digest: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let target = Path::new(OsStr::from_bytes(store_path));
+        if target.exists() {
+            return self.validate_fetch_tree_store_path_digest(id, span, input, store_path, digest);
+        }
+        let Some(parent) = target.parent() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: input.to_vec(),
+                    message: format!("store path has no parent: {}", target.display()),
+                },
+                span,
+            ));
+        };
+        fs::create_dir_all(parent)
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+
+        let temp_target = Self::fetch_tarball_temp_store_path(id, span, input, parent, target)?;
+        if let Err(source) = Self::copy_fetch_tarball_tree(source, &temp_target) {
+            Self::remove_fetch_tarball_temp_path(&temp_target);
+            return Err(Self::fetch_tree_error(id, span, input, source));
+        }
+        match fs::rename(&temp_target, target) {
+            Ok(()) => Ok(()),
+            Err(source) => {
+                Self::remove_fetch_tarball_temp_path(&temp_target);
+                if target.exists() {
+                    self.validate_fetch_tree_store_path_digest(
+                        id, span, input, store_path, digest,
+                    )?;
+                    return Ok(());
+                }
+                Err(Self::fetch_tree_error(id, span, input, source))
+            }
+        }
+    }
+
+    fn validate_fetch_tree_store_path_digest(
+        &mut self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        store_path: &[u8],
+        expected: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let actual =
+            self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
+        if actual.as_slice() == expected {
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTreeHashMismatch {
+                id,
+                input: input.to_vec(),
+                expected: expected.to_vec(),
+                actual: actual.to_vec(),
+            },
+            span,
+        ))
+    }
+
+    fn alloc_fetch_tree_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        result: FetchTreeResult,
+    ) -> Result<Value, TreeWalkError> {
+        let out_path_symbol = self.intern_builtin_attr_symbol(id, OUT_PATH_ATTR, span)?;
+        let nar_hash_symbol = self.intern_builtin_attr_symbol(id, NAR_HASH_ATTR, span)?;
+        let last_modified_symbol = self.intern_builtin_attr_symbol(id, LAST_MODIFIED_ATTR, span)?;
+        let last_modified_date_symbol =
+            self.intern_builtin_attr_symbol(id, LAST_MODIFIED_DATE_ATTR, span)?;
+        let rev_symbol = self.intern_builtin_attr_symbol(id, REV_ATTR, span)?;
+        let short_rev_symbol = self.intern_builtin_attr_symbol(id, SHORT_REV_ATTR, span)?;
+        let dirty_rev_symbol = self.intern_builtin_attr_symbol(id, DIRTY_REV_ATTR, span)?;
+        let dirty_short_rev_symbol =
+            self.intern_builtin_attr_symbol(id, DIRTY_SHORT_REV_ATTR, span)?;
+        let rev_count_symbol = self.intern_builtin_attr_symbol(id, REV_COUNT_ATTR, span)?;
+        let submodules_symbol = self.intern_builtin_attr_symbol(id, SUBMODULES_ATTR, span)?;
+
+        let out_path = self.alloc_fetchurl_path_value(id, span, result.out_path)?;
+        let nar_hash = self.alloc_static_string(id, span, &result.nar_hash)?;
+        let mut entries = vec![
+            AttrEntry::new(nar_hash_symbol, nar_hash),
+            AttrEntry::new(out_path_symbol, out_path),
+        ];
+
+        if let Some(last_modified) = result.last_modified {
+            entries.push(AttrEntry::new(
+                last_modified_symbol,
+                Value::int(last_modified),
+            ));
+        }
+        if let Some(last_modified_date) = result.last_modified_date {
+            let last_modified_date = self.alloc_static_string(id, span, &last_modified_date)?;
+            entries.push(AttrEntry::new(
+                last_modified_date_symbol,
+                last_modified_date,
+            ));
+        }
+        if let Some(rev) = result.rev {
+            let short_rev_len = rev.len().min(7);
+            let short_rev = self.alloc_static_string(id, span, &rev[..short_rev_len])?;
+            let rev = self.alloc_static_string(id, span, &rev)?;
+            entries.push(AttrEntry::new(rev_symbol, rev));
+            entries.push(AttrEntry::new(short_rev_symbol, short_rev));
+        }
+        if let Some(dirty_rev) = result.dirty_rev {
+            let dirty_rev = self.alloc_static_string(id, span, &dirty_rev)?;
+            entries.push(AttrEntry::new(dirty_rev_symbol, dirty_rev));
+        }
+        if let Some(dirty_short_rev) = result.dirty_short_rev {
+            let dirty_short_rev = self.alloc_static_string(id, span, &dirty_short_rev)?;
+            entries.push(AttrEntry::new(dirty_short_rev_symbol, dirty_short_rev));
+        }
+        if let Some(rev_count) = result.rev_count {
+            let rev_count = i64::try_from(rev_count).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTree {
+                        id,
+                        input: Vec::new(),
+                        message: "revision count does not fit in Nix int".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+            entries.push(AttrEntry::new(rev_count_symbol, Value::int(rev_count)));
+        }
+        if let Some(submodules) = result.submodules {
+            entries.push(AttrEntry::new(submodules_symbol, Value::bool(submodules)));
+        }
+
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn fetch_tree_error(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        source: impl std::fmt::Display,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::FetchTree {
+                id,
+                input: input.to_vec(),
                 message: source.to_string(),
             },
             span,
@@ -22803,6 +24174,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetch_tarball_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::FetchTree => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_fetch_tree_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -23070,6 +24448,17 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
                 eval.eval_fetch_tarball_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
+            BuiltinExecution::FetchTree => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_fetch_tree_primop(
                     call.id,
                     call.span,
                     argument.id(),
@@ -24164,6 +25553,86 @@ pub enum TreeWalkErrorKind {
         /// The actual SHA-256 digest bytes.
         actual: Vec<u8>,
     },
+    /// `builtins.fetchTree` used an unsupported input attribute.
+    #[error("unsupported fetchTree input attribute at node {id:?}: {attr:?}")]
+    UnsupportedFetchTreeAttr {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// `builtins.fetchTree` could not fetch, copy, or materialize its input.
+    #[error("failed to fetch tree at node {id:?} input {input:?}: {message}")]
+    FetchTree {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The fetch diagnostic.
+        message: String,
+    },
+    /// An evaluation mode rejected `builtins.fetchTree` input access.
+    #[error("{mode:?} evaluation forbids fetchTree access at node {id:?} input {input:?}")]
+    FetchTreeAccessDenied {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The evaluation mode that denied access.
+        mode: EvalMode,
+    },
+    /// Pure evaluation rejected an unlocked `builtins.fetchTree` input.
+    #[error("{mode:?} evaluation requires a locked fetchTree input at node {id:?}: {input:?}")]
+    FetchTreeLockedInputRequired {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The unlocked input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The evaluation mode that required a locked input.
+        mode: EvalMode,
+    },
+    /// `builtins.fetchTree` materialized a tree with a different recursive SHA-256 digest.
+    #[error(
+        "fetchTree hash mismatch at node {id:?} input {input:?}: expected {expected:?}, got {actual:?}"
+    )]
+    FetchTreeHashMismatch {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The expected SHA-256 digest bytes.
+        expected: Vec<u8>,
+        /// The actual SHA-256 digest bytes.
+        actual: Vec<u8>,
+    },
+    /// `builtins.fetchTree` observed a lastModified value different from the lock data.
+    #[error(
+        "fetchTree lastModified mismatch at node {id:?} input {input:?}: expected {expected}, got {actual}"
+    )]
+    FetchTreeLastModifiedMismatch {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The expected lastModified Unix timestamp.
+        expected: i64,
+        /// The actual lastModified Unix timestamp.
+        actual: i64,
+    },
+    /// `builtins.fetchTree` observed a revCount value different from the lock data.
+    #[error(
+        "fetchTree revCount mismatch at node {id:?} input {input:?}: expected {expected}, got {actual}"
+    )]
+    FetchTreeRevCountMismatch {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The input path, URL, or canonical fetcher URI bytes.
+        input: Vec<u8>,
+        /// The expected revision count.
+        expected: usize,
+        /// The actual revision count.
+        actual: usize,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -24896,7 +26365,6 @@ mod tests {
 
     const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &[
         "fetchMercurial",
-        "fetchTree",
         "flakeRefToString",
         "getFlake",
         "parseFlakeRef",
@@ -40160,6 +41628,7 @@ mod tests {
             submodules: false,
             shallow: false,
             all_refs: true,
+            export_ignore: true,
         });
         assert_eq!(
             all_refs_canonical_uri,
@@ -40179,6 +41648,7 @@ mod tests {
             submodules: true,
             shallow: true,
             all_refs: false,
+            export_ignore: false,
         });
         assert_eq!(
             canonical_uri,
@@ -40220,6 +41690,389 @@ mod tests {
         fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
         fs::remove_dir_all(tagged_repo_dir).expect("tagged repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_path_input_returns_locked_tree_metadata() {
+        let dir = unique_temp_dir("fetch-tree-path");
+        let source_dir = dir.join("source");
+        fs::create_dir(&source_dir).expect("source directory creates");
+        fs::write(source_dir.join("file.txt"), b"path-data").expect("source file writes");
+        fs::create_dir(source_dir.join("sub")).expect("source subdirectory creates");
+        fs::write(source_dir.join("sub").join("nested.txt"), b"nested")
+            .expect("source nested file writes");
+        let store_dir = unique_temp_dir("fetch-tree-path-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let path = nix_string_literal(&path_source(&source_dir));
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {{ type = "path"; path = {path}; }};
+                in {{
+                  keys = builtins.attrNames x;
+                  data = builtins.readFile "${{x.outPath}}/file.txt";
+                  nested = builtins.readFile "${{x.outPath}}/sub/nested.txt";
+                  narHash = x.narHash;
+                  pathValue = x.outPath;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree path JSON parses");
+        assert_eq!(
+            value["keys"],
+            serde_json::json!(["lastModified", "lastModifiedDate", "narHash", "outPath"])
+        );
+        assert_eq!(value["data"], "path-data");
+        assert_eq!(value["nested"], "nested");
+        assert!(
+            value["narHash"]
+                .as_str()
+                .expect("narHash is a string")
+                .starts_with("sha256-")
+        );
+        assert!(
+            value["pathValue"]
+                .as_str()
+                .expect("pathValue is a string")
+                .starts_with(path_source(&store_dir).as_str())
+        );
+
+        let mut pure_options = options.clone();
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let nar_hash = value["narHash"].as_str().expect("narHash is a string");
+        let pure_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {{ type = "path"; path = {path}; narHash = "{nar_hash}"; }};
+                in x.narHash
+                "#
+            ),
+            pure_options,
+        );
+        assert_eq!(
+            pure_json,
+            serde_json::to_vec(nar_hash).expect("narHash JSON serializes")
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "path"; path = {path}; }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure fetchTree path requires narHash");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(dir).expect("source temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_file_and_tarball_inputs_materialize_expected_store_paths() {
+        let (file_dir, file_path) = temp_file_with_bytes("fetch-tree-file", b"plain-data");
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-tarball");
+        let store_dir = unique_temp_dir("fetch-tree-file-tarball-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let file_url = nix_string_literal(&format!("file://{}", path_source(&file_path)));
+        let tarball_url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let
+                  file = builtins.fetchTree {{ type = "file"; url = {file_url}; }};
+                  fileUnpack = builtins.fetchTree {{ type = "file"; url = {file_url}; unpack = true; }};
+                  tarball = builtins.fetchTree {{
+                    type = "tarball";
+                    url = {tarball_url};
+                    narHash = "{recursive_digest}";
+                    rev = "abcdef1234567890";
+                    revCount = 7;
+                  }};
+                  tarballNoUnpack = builtins.fetchTree {{
+                    type = "tarball";
+                    url = {tarball_url};
+                    narHash = "{recursive_digest}";
+                    unpack = false;
+                  }};
+                in {{
+                  fileKeys = builtins.attrNames file;
+                  fileData = builtins.readFile file.outPath;
+                  fileUnpackData = builtins.readFile fileUnpack.outPath;
+                  tarballKeys = builtins.attrNames tarball;
+                  tarballData = builtins.readFile "${{tarball.outPath}}/file.txt";
+                  tarballNested = builtins.readFile "${{tarball.outPath}}/sub/nested.txt";
+                  tarballNoUnpackData = builtins.readFile "${{tarballNoUnpack.outPath}}/file.txt";
+                  tarballRev = tarball.rev;
+                  tarballShortRev = tarball.shortRev;
+                  tarballRevCount = tarball.revCount;
+                }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree file/tarball JSON parses");
+        assert_eq!(value["fileKeys"], serde_json::json!(["narHash", "outPath"]));
+        assert_eq!(value["fileData"], "plain-data");
+        assert_eq!(value["fileUnpackData"], "plain-data");
+        assert_eq!(
+            value["tarballKeys"],
+            serde_json::json!([
+                "lastModified",
+                "lastModifiedDate",
+                "narHash",
+                "outPath",
+                "rev",
+                "revCount",
+                "shortRev"
+            ])
+        );
+        assert_eq!(value["tarballData"], "data");
+        assert_eq!(value["tarballNested"], "inner");
+        assert_eq!(value["tarballNoUnpackData"], "data");
+        assert_eq!(value["tarballRev"], "abcdef1234567890");
+        assert_eq!(value["tarballShortRev"], "abcdef1");
+        assert_eq!(value["tarballRevCount"], 7);
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; }}"#
+        )))
+        .expect_err("wrong fetchTree tarball hash rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeHashMismatch { .. }
+        ));
+
+        fs::remove_dir_all(file_dir).expect("file temp directory removes");
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_git_input_returns_flake_lock_metadata() {
+        let (repo_dir, _) = git_repo_with_file("fetch-tree-git");
+        let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
+        fs::write(
+            repo_dir.join(".gitattributes"),
+            b"ignored.txt export-ignore\n",
+        )
+        .expect("git attributes file writes");
+        fs::write(repo_dir.join("ignored.txt"), b"ignored").expect("ignored file writes");
+        let mut index = repo.index().expect("git index opens");
+        for path in [".gitattributes", "ignored.txt"] {
+            index
+                .add_path(Path::new(path))
+                .expect("git fixture path stages");
+        }
+        index.write().expect("git index writes");
+        drop(index);
+        let oid = git_commit_index(&repo, "export-ignore fixture commit", 1_700_000_060);
+        let store_dir = unique_temp_dir("fetch-tree-git-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url_text = format!("file://{}", path_source(&repo_dir));
+        let url = nix_string_literal(&url_text);
+        let rev = oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let
+                  shallow = builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; }};
+                  noExportIgnore = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    exportIgnore = false;
+                  }};
+                  dirty = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    dirtyRev = "{rev}-dirty";
+                    dirtyShortRev = "dirty-lock";
+                  }};
+                  full = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    shallow = false;
+                    revCount = 2;
+                  }};
+                in {{
+                  keys = builtins.attrNames shallow;
+                  rev = shallow.rev;
+                  shortRev = shallow.shortRev;
+                  submodules = shallow.submodules;
+                  hasRevCount = shallow ? revCount;
+                  data = builtins.readFile "${{shallow.outPath}}/data.txt";
+                  ignored = builtins.pathExists "${{shallow.outPath}}/ignored.txt";
+                  noExportIgnored = builtins.readFile "${{noExportIgnore.outPath}}/ignored.txt";
+                  dirtyKeys = builtins.attrNames dirty;
+                  dirtyRev = dirty.dirtyRev;
+                  dirtyShortRev = dirty.dirtyShortRev;
+                  dirtyHasRev = dirty ? rev;
+                  fullRevCount = full.revCount;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree git JSON parses");
+        assert_eq!(
+            value["keys"],
+            serde_json::json!([
+                "lastModified",
+                "lastModifiedDate",
+                "narHash",
+                "outPath",
+                "rev",
+                "shortRev",
+                "submodules"
+            ])
+        );
+        assert_eq!(value["rev"], rev);
+        assert_eq!(value["shortRev"], &rev[..7]);
+        assert_eq!(value["submodules"], false);
+        assert_eq!(value["hasRevCount"], false);
+        assert_eq!(value["data"], "git-data");
+        assert_eq!(value["ignored"], false);
+        assert_eq!(value["noExportIgnored"], "ignored");
+        assert_eq!(
+            value["dirtyKeys"],
+            serde_json::json!([
+                "dirtyRev",
+                "dirtyShortRev",
+                "lastModified",
+                "lastModifiedDate",
+                "narHash",
+                "outPath",
+                "submodules"
+            ])
+        );
+        assert_eq!(value["dirtyRev"], format!("{rev}-dirty"));
+        assert_eq!(value["dirtyShortRev"], "dirty-lock");
+        assert_eq!(value["dirtyHasRev"], false);
+        assert_eq!(value["fullRevCount"], 2);
+
+        let mut pure_options = options.clone();
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let pure_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; }};
+                in x.rev
+                "#
+            ),
+            pure_options,
+        );
+        assert_eq!(
+            pure_json,
+            serde_json::to_vec(&rev).expect("rev JSON serializes")
+        );
+
+        let restricted_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted fetchTree git rejects disallowed canonical URI");
+        assert!(matches!(
+            restricted_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut restricted_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        restricted_options.set_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_uri(
+                format!("git+{url_text}?rev={rev}&shallow=1&exportIgnore=1").into_bytes(),
+            )
+            .expect("git allowed URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(
+                r#"let x = builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; }}; in x.rev"#
+            ),
+            restricted_options,
+        );
+        assert_eq!(
+            restricted_json,
+            serde_json::to_vec(&rev).expect("rev JSON serializes")
+        );
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_validates_input_shape() {
+        let dir = unique_temp_dir("fetch-tree-invalid");
+        fs::write(dir.join("data.txt"), b"data").expect("source file writes");
+        let path = nix_string_literal(&path_source(&dir));
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.fetchTree {{ type = "path"; path = {path}; bogus = 1; }}"#
+        )))
+        .expect_err("unknown fetchTree attr rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.fetchTree {{ type = "path"; path = {path}; name = "bad"; }}"#
+        )))
+        .expect_err("fetchTree rejects name attr");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeAttr { attr, .. }
+                if attr.as_slice() == b"name"
+        ));
+
+        let error = eval_whnf_owned(&lower(&format!(
+            r#"builtins.fetchTree {{ path = {path}; }}"#
+        )))
+        .expect_err("fetchTree requires type attr");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#,
+        ))
+        .expect_err("unsupported fetchTree type rejects");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = true; }"#,
+        ))
+        .expect_err("unsupported fetchTree verified git fetch rejects before repo access");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
     }
 
     #[test]

@@ -639,6 +639,11 @@ eval (network access is disabled unless explicitly allowed).
         Tied to the flakes machinery; treat as **conditional scope** — implement
         only if the pinned AOS package set / flake inputs require it, else stub
         to existence (§17).
+      - Native local attrset coverage exists for `type = "path"`, `"file"`,
+        `"tarball"`, and `"git"` with `outPath`/`narHash` lock metadata,
+        pure-mode lock gates, restricted-mode access gates, and configured-store
+        materialization. String flake refs and forge fetchers (`github`,
+        `gitlab`, `sourcehut`) remain pending, so the full builtin stays open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -936,7 +941,8 @@ feature disabled:
 - [ ] `getFlake` (args) — fetch and evaluate a flake. Flakes; **stubbed/scoped**.
 - [ ] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Flakes; **stubbed/scoped**.
-- [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11).
+- [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local
+      attrset inputs are native; string refs and forge fetchers remain pending.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix
