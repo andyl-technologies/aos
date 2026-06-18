@@ -1139,6 +1139,30 @@ async fn machine_path(
                     if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
                         return *deny;
                     }
+                    // Authenticated-origin read: a private external binding has
+                    // no local bytes — mint a presigned origin URL and 302 the
+                    // client to it (the shared decision; rendered here for the
+                    // native hub). `nix-cache-info` below is hub-generated, so
+                    // it is checked after this and never presigned.
+                    if path != "nix-cache-info" {
+                        match crate::facade::write_service(&state)
+                            .presign_cache_read(&cache, &path, now_secs())
+                            .await
+                        {
+                            Ok(Some(url)) => match axum::http::HeaderValue::from_str(&url) {
+                                Ok(value) => {
+                                    return (
+                                        StatusCode::FOUND,
+                                        [(axum::http::header::LOCATION, value)],
+                                    )
+                                        .into_response();
+                                }
+                                Err(err) => return internal(anyhow::anyhow!("{err}")),
+                            },
+                            Ok(None) => {}
+                            Err(err) => return internal(err),
+                        }
+                    }
                     if path == "nix-cache-info" {
                         let body = format!(
                             "StoreDir: /nix/store\nWantMassQuery: {}\nPriority: {}\n",

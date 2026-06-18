@@ -86,7 +86,7 @@ pub use aos_registry_core::service::MAX_UPLOAD_BYTES;
 /// The lease passed is the *same* [`AppState::leases`](crate::server::AppState)
 /// the hub holds, so the facade's pointer-flip serialization is process-wide,
 /// not per-request.
-fn write_service(state: &AppState) -> RpcService {
+pub(crate) fn write_service(state: &AppState) -> RpcService {
     RpcService::new(
         Arc::clone(&state.db),
         state.auth.jwt_keys.clone(),

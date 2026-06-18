@@ -57,6 +57,32 @@ pub struct PresignParams<'a> {
     pub amz_date: &'a str,
 }
 
+/// Format a Unix timestamp (seconds) as SigV4's ISO-8601 *basic* UTC
+/// `YYYYMMDDTHHMMSSZ`.
+///
+/// Pure and `wasm`-clean (no `chrono`/`time`): converts days-since-epoch to a
+/// civil date with Howard Hinnant's algorithm. Negative timestamps (pre-1970)
+/// are clamped to the epoch — the signer only ever sees "now".
+#[must_use]
+pub fn amz_date_from_unix(secs: i64) -> String {
+    let secs = secs.max(0);
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let (hour, min, sec) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // days since 1970-01-01 -> civil (y, m, d). Shift epoch to 0000-03-01.
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}{m:02}{d:02}T{hour:02}{min:02}{sec:02}Z")
+}
+
 /// HMAC-SHA256 of `data` under `key`.
 fn hmac(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(key)
@@ -229,6 +255,19 @@ mod tests {
         assert!(!url.contains("wJalr"), "secret key leaked: {url}");
         assert!(url.contains("X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20130524%2Fus-east-1%2Fs3%2Faws4_request"));
         assert!(url.contains("X-Amz-Expires=86400"));
+    }
+
+    #[test]
+    fn amz_date_formats_unix_seconds() {
+        // 2013-05-24T00:00:00Z (the AWS example's date) = 1369353600.
+        assert_eq!(amz_date_from_unix(1369353600), "20130524T000000Z");
+        // Epoch and a time-of-day case.
+        assert_eq!(amz_date_from_unix(0), "19700101T000000Z");
+        assert_eq!(amz_date_from_unix(1369353600 + 3661), "20130524T010101Z");
+        // The output always satisfies the signer's own validator.
+        assert!(validate_amz_date(&amz_date_from_unix(1700000000)).is_ok());
+        // Negative clamps to the epoch.
+        assert_eq!(amz_date_from_unix(-5), "19700101T000000Z");
     }
 
     #[test]

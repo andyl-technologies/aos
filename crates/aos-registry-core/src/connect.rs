@@ -40,7 +40,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::service::{FacadeWrite, RpcError, RpcService};
+use crate::service::{FacadeObject, FacadeWrite, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
@@ -182,6 +182,15 @@ async fn facade(
 ) -> Response {
     let auth = auth_header(&headers);
     match svc.facade_fetch(auth.as_deref(), &slug, &path).await {
+        // A presigned private-origin read: `302` to the (short-lived) origin URL
+        // the client fetches directly, instead of serving bytes through the hub.
+        Ok(Some(FacadeObject {
+            redirect: Some(location),
+            ..
+        })) => match header::HeaderValue::from_str(&location) {
+            Ok(value) => (StatusCode::FOUND, [(header::LOCATION, value)]).into_response(),
+            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        },
         Ok(Some(object)) => (
             [
                 (header::CONTENT_TYPE, object.content_type),

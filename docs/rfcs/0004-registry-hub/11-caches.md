@@ -587,8 +587,18 @@ the current spec. Phases are orderable; A lands first, E last.
       same `hmac`/`sha2` the HS256 JWT path uses), validated bit-for-bit against
       AWS's documented worked example, with hardened input validation (rejects a
       malformed `X-Amz-Date` and CRLF/structural chars in `host`; secret never
-      enters the URL). **Remaining:** wire it into the facade — presigned GET →
-      `302` redirect, and the streamed proxied read of a private origin.
+      enters the URL). **Presigned GET → `302` is now wired end-to-end:** a cache
+      on a private external binding (`access=private` + `public_base_url` + sealed
+      `credential_ref` = `access_key:secret_key:region`) serves a `302` to a
+      short-lived presigned origin URL instead of bytes — the shared
+      `presign_cache_read` decision rendered on both shells (`FacadeObject.redirect`
+      → `connect.rs` `302` for the worker; native `machine_path` `302`). The read
+      path validates against `..`/traversal before signing (adversarial-review
+      fix), so a crafted path can't sign outside the cache prefix; the secret
+      never reaches the URL/logs. Integration-tested (happy path + traversal
+      reject + no-secret-leak). **Remaining (needs a live S3/R2 oracle):** the
+      *streamed proxied* read (hub fetches the private origin and streams it
+      through) and presigned PUT via the `mint` purpose.
 - [ ] **Visibility enforcement:** private/internal objects served proxied only;
       `require_read` enforced on the cache facade; Direct-on-private rejected.
 - [x] `aos-hub cache create/list/show/update/rm/link/unlink/links/gc-policy/

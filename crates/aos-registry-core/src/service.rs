@@ -30,6 +30,7 @@
 
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use aos_proto_types as pb;
 use aos_registry_surface::object::Oid;
 
@@ -420,12 +421,18 @@ fn changeset_message(row: crate::db::ChangesetRow) -> pb::Changeset {
 /// faithful to what `apm`, stock git, and Nix expect.
 #[derive(Debug)]
 pub struct FacadeObject {
-    /// The object's bytes, read from the registry's surface store.
+    /// The object's bytes, read from the registry's surface store. Empty when
+    /// [`redirect`](Self::redirect) is set.
     pub bytes: Vec<u8>,
     /// The `Content-Type` header value for the requested machine path.
     pub content_type: &'static str,
     /// The `Cache-Control` header value for the requested machine path.
     pub cache_control: &'static str,
+    /// When `Some`, the object is not served inline but as a temporary (`302`)
+    /// redirect to this presigned origin URL — the authenticated-origin read of
+    /// a private external binding (RFC-0004 "presigned GET → 302"). `302`
+    /// (temporary), never a cacheable permanent redirect, since the URL expires.
+    pub redirect: Option<String>,
 }
 
 /// Maximum surface-file upload size accepted by a single facade `PUT` (256 MiB).
@@ -439,6 +446,11 @@ pub const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 /// Upper bound on nodes returned by `CacheClosure`, so a pathological closure
 /// cannot produce an unbounded response.
 const MAX_CLOSURE_NODES: usize = 10_000;
+
+/// Validity window for a presigned cache-read URL. Long enough for a client to
+/// follow the `302` and complete the origin fetch, short enough that a leaked
+/// URL is useless within minutes.
+const PRESIGN_EXPIRES_SECS: u32 = 300;
 
 /// The outcome of a facade write ([`RpcService::put_machine_path`]) or write-side
 /// probe ([`RpcService::head_machine_path`]), rendered by the transport.
@@ -2981,6 +2993,7 @@ impl RpcService {
                 bytes,
                 content_type: keymap::content_type(machine_path),
                 cache_control: keymap::cache_control(machine_path),
+                redirect: None,
             }));
         }
         if let Some(cache) = self.db.cache_by_slug(slug).await.map_err(RpcError::internal)? {
@@ -3013,6 +3026,24 @@ impl RpcService {
                 bytes: body.into_bytes(),
                 content_type: keymap::content_type(path),
                 cache_control: keymap::cache_control(path),
+                redirect: None,
+            }));
+        }
+        // Authenticated-origin read: when the cache's binding is a private
+        // external origin (presign-mode), the hub holds no local bytes — it mints
+        // a short-lived presigned GET URL and the client fetches the origin
+        // directly (`302`). `nix-cache-info` above is always hub-generated, so it
+        // is never presigned.
+        if let Some(url) = self
+            .presign_cache_read(cache, path, clock::now_unix_secs())
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Ok(Some(FacadeObject {
+                bytes: Vec::new(),
+                content_type: keymap::content_type(path),
+                cache_control: keymap::cache_control(path),
+                redirect: Some(url),
             }));
         }
         let fetch = self
@@ -3037,7 +3068,84 @@ impl RpcService {
             bytes,
             content_type: keymap::content_type(path),
             cache_control: keymap::cache_control(path),
+            redirect: None,
         }))
+    }
+
+    /// Mint a presigned `GET` URL for a cache object on a private external
+    /// origin, or `Ok(None)` when the cache is not presign-configured.
+    ///
+    /// A cache is presign-configured when its storage binding is `access =
+    /// private` with both a `public_base_url` (the origin endpoint) and a sealed
+    /// `credential_ref` (the SigV4 credentials). The sealed plaintext is
+    /// `access_key:secret_key:region` (the secret may itself contain `:`; only
+    /// the first and last separators are split on). The signed object key is
+    /// `{prefix}/{path}` under the binding's origin host. Returns `Ok(None)` when
+    /// not presign-mode or when no sealer is wired (the read then falls through
+    /// to local byte serving).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure, an unsealing failure, a malformed
+    /// `credential_ref`, or when the SigV4 signer rejects the inputs.
+    pub async fn presign_cache_read(
+        &self,
+        cache: &crate::db::Cache,
+        path: &str,
+        now: i64,
+    ) -> anyhow::Result<Option<String>> {
+        let Some(sealer) = self.sealer.as_ref() else {
+            return Ok(None);
+        };
+        let Some(binding) = self.db.storage_binding(cache.storage_binding_id).await? else {
+            return Ok(None);
+        };
+        if binding.access != "private" {
+            return Ok(None);
+        }
+        let (Some(base_url), Some(credential_ref)) =
+            (binding.public_base_url.as_deref(), binding.credential_ref.as_deref())
+        else {
+            return Ok(None);
+        };
+        // The prefix is the cache's isolation boundary within a (possibly shared)
+        // bucket. Reject a traversal/structural path BEFORE signing, so a crafted
+        // `..` can never mint a valid signature for an object outside this
+        // cache's prefix on a path-normalizing origin — the same guard the write
+        // path and the local-bytes read path enforce. An invalid path is simply
+        // not presignable (`None`); the caller then 404s it.
+        if crate::url_guard::validate_http_surface_path(path).is_err() {
+            return Ok(None);
+        }
+        let creds = sealer
+            .unseal(credential_ref)
+            .context("unsealing cache origin credentials")?;
+        let (access_key, rest) = creds
+            .split_once(':')
+            .context("credential_ref must be access_key:secret_key:region")?;
+        let (secret_key, region) = rest
+            .rsplit_once(':')
+            .context("credential_ref must be access_key:secret_key:region")?;
+
+        // Origin host from the base URL (scheme stripped, no trailing slash).
+        let host = base_url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        // Signed object key: the binding prefix joined with the requested path.
+        let object_path = format!("/{}/{}", cache.prefix.trim_matches('/'), path);
+
+        let url = crate::sigv4::presign_get_url(&crate::sigv4::PresignParams {
+            access_key,
+            secret_key,
+            region,
+            service: "s3",
+            host,
+            path: &object_path,
+            expires_secs: PRESIGN_EXPIRES_SECS,
+            amz_date: &crate::sigv4::amz_date_from_unix(now),
+        })?;
+        Ok(Some(url))
     }
 
     /// Write one object (`<hash>.narinfo` or `nar/<file>`) into a managed cache's

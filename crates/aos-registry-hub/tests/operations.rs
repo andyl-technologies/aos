@@ -704,3 +704,87 @@ async fn keyed_cache_signs_uploaded_narinfo() {
         "cache home advertises the trusted public key: {home_text}"
     );
 }
+
+/// A cache on a private external binding serves a presigned 302 redirect to the
+/// origin instead of bytes (authenticated-origin read; the client fetches S3).
+#[tokio::test]
+async fn private_binding_cache_serves_presigned_302() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", "/srv")
+        .await
+        .unwrap();
+    // Seal the origin credentials with the same dev sealer the AppState wires.
+    let sealer = aos_registry_hub::auth::oidc::dev_sealer();
+    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
+    db.set_storage_binding_access(
+        binding,
+        "private",
+        Some("https://bucket.s3.example.com"),
+        Some(&sealed),
+    )
+    .await
+    .unwrap();
+    // A *public* cache (anyone may read) on that *private* binding (bytes are
+    // never served by the hub — only presigned).
+    db.create_cache(
+        Some(org),
+        "ext-cache",
+        "Ext",
+        binding,
+        "pfx",
+        None,
+        "public",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ext-cache/aaaa.narinfo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FOUND, "expected a 302 redirect");
+    let location = resp
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        location.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"),
+        "presigned origin URL: {location}"
+    );
+    assert!(location.contains("X-Amz-Signature="), "{location}");
+    assert!(location.contains("X-Amz-Credential=AKIDEXAMPLE"), "{location}");
+    // The secret never appears in the redirect.
+    assert!(!location.contains("secretkey"), "secret leaked: {location}");
+
+    // A traversal path must NOT mint a presigned URL escaping the prefix — it is
+    // rejected before signing (and 404s downstream), never a 302.
+    let escape = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ext-cache/nar/../../other/secret.nar")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        escape.status(),
+        StatusCode::FOUND,
+        "traversal path must not be presigned"
+    );
+}
