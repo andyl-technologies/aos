@@ -543,9 +543,11 @@ the current spec. Phases are orderable; A lands first, E last.
       presigned PUT via the `mint` purpose.
 - [ ] **Visibility enforcement:** private/internal objects served proxied only;
       `require_read` enforced on the cache facade; Direct-on-private rejected.
-- [ ] `aos-hub cache create/list/show/update/rm/link/unlink/frontend/push/pull/
-      info` CLI over global `--target` (incl. `frontend --mode direct|proxied`,
-      proxy-settings flags, and binding `access`).
+- [x] `aos-hub cache create/list/show/update/rm/link/unlink/links/gc-policy/
+      pin/renew/unpin/roots/search/info/gc-runs` CLI over global `--target`
+      (calls the `Database` layer directly). `frontend --mode direct|proxied` +
+      proxy-settings/binding-`access` flags land with the frontend slice (#21);
+      `push`/`pull` with the storage slice (#20).
 - [ ] RPC: `CreateCache`/`GetCache`/`ListCaches`/`UpdateCache`/`DeleteCache`,
       `LinkCache`/`UnlinkCache`, `GetCacheObject`,
       `MintCacheUploadCredentials`; `visibility` + role enforcement.
