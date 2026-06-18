@@ -530,10 +530,13 @@ impl ResolverState {
         };
         let binding_ids = self.child_ids(bindings)?;
         for binding in &binding_ids {
-            self.resolve_binding_node(*binding, BindingResolveMode::PathOnly)?;
+            self.resolve_bare_inherit_source_before_self_frame(*binding)?;
         }
         let slots = self.collect_binding_symbols(&binding_ids)?;
         self.push_frame(id, slots, true, false, node.span)?;
+        for binding in &binding_ids {
+            self.resolve_binding_node(*binding, BindingResolveMode::PathOnly)?;
+        }
         for binding in binding_ids {
             self.resolve_binding_node(binding, BindingResolveMode::ValueOnly)?;
         }
@@ -568,6 +571,31 @@ impl ResolverState {
             NodeKind::Inherit => self.resolve_inherit(id, node, mode),
             _ => Err(self.invalid_shape(node, "binding or inherit group")),
         }
+    }
+
+    fn resolve_bare_inherit_source_before_self_frame(
+        &mut self,
+        id: NodeId,
+    ) -> Result<(), ScopeError> {
+        let node = self.node(id)?;
+        let NodeKind::Binding = node.kind else {
+            return Ok(());
+        };
+        let NodeData::Binding { path, value } = node.data else {
+            return Err(self.invalid_shape(node, "binding payload"));
+        };
+        let value_node = self.node(value)?;
+        if value_node.kind != NodeKind::Inherit {
+            return Ok(());
+        }
+        let NodeData::Inherit { from, .. } = value_node.data else {
+            return Err(self.invalid_shape(value_node, "inherit payload"));
+        };
+        if from.is_some() {
+            return Ok(());
+        }
+        self.ensure_static_inherit_names(path)?;
+        self.resolve_inherit(id, value_node, BindingResolveMode::PathOnly)
     }
 
     fn resolve_let_binding_target(&mut self, id: NodeId) -> Result<(), ScopeError> {
@@ -627,6 +655,17 @@ impl ResolverState {
             return Err(self.invalid_shape(node, "inherit payload"));
         };
         self.ensure_static_inherit_names(names)?;
+
+        if matches!(mode, BindingResolveMode::PathOnly)
+            && from.is_none()
+            && self
+                .node_inherits
+                .get(id.index())
+                .and_then(|group| *group)
+                .is_some()
+        {
+            return Ok(());
+        }
 
         match (mode, from) {
             (BindingResolveMode::Full, None) => {
@@ -1432,12 +1471,47 @@ mod tests {
         let NodeData::Node(dynamic_name) = node(&ast, dynamic_segment).data else {
             panic!("dynamic attr segment expected");
         };
-        assert_eq!(node(&ast, dynamic_name).kind, NodeKind::LocalVar);
-        assert_eq!(local_slot(&ast, dynamic_name), 0);
+        assert_eq!(node(&ast, dynamic_name).kind, NodeKind::UpvalVar);
+        assert_eq!(upval(&ast, dynamic_name), (1, 0));
 
         let b_value = binding_value(&ast, binding_ids[2]);
         assert_eq!(node(&ast, b_value).kind, NodeKind::LocalVar);
         assert_eq!(local_slot(&ast, b_value), 0);
+
+        let ast = resolved(r#"let a = "outer"; in rec { ${a} = 1; a = "inner"; }"#);
+        let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let NodeData::Children(bindings) = node(&ast, body).data else {
+            panic!("rec attrset payload expected");
+        };
+        let NodeData::Binding { path, .. } = node(&ast, child_ids(&ast, bindings)[0]).data else {
+            panic!("binding payload expected");
+        };
+        let dynamic_segment = child_ids(&ast, path)[0];
+        let NodeData::Node(dynamic_name) = node(&ast, dynamic_segment).data else {
+            panic!("dynamic attr segment expected");
+        };
+        assert_eq!(node(&ast, dynamic_name).kind, NodeKind::LocalVar);
+        assert_eq!(local_slot(&ast, dynamic_name), 0);
+
+        let ast = resolved(r#"let name = "dyn"; dyn = 9; in rec { ${name} = 1; a = dyn; }"#);
+        let NodeData::LetIn { body, .. } = node(&ast, ast.root).data else {
+            panic!("let-in payload expected");
+        };
+        let NodeData::Children(bindings) = node(&ast, body).data else {
+            panic!("rec attrset payload expected");
+        };
+        let a_value = binding_value(&ast, child_ids(&ast, bindings)[1]);
+        assert_eq!(node(&ast, a_value).kind, NodeKind::UpvalVar);
+        assert_eq!(upval(&ast, a_value), (1, 1));
+
+        let error = resolve(
+            parse_str(r#"let name = "dyn"; in rec { ${name} = 1; a = dyn; }"#)
+                .expect("source parses"),
+        )
+        .expect_err("dynamic target does not enter the rec lexical scope");
+        assert!(matches!(error.kind(), ScopeErrorKind::UndefinedSymbol(_)));
     }
 
     #[test]

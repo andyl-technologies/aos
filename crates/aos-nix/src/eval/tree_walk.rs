@@ -14658,11 +14658,6 @@ impl<'ir> TreeWalk<'ir> {
                 )
             })
             .count();
-        let dynamic_key_env = if recursive {
-            Some(self.env.clone())
-        } else {
-            None
-        };
         let frame_values = if recursive {
             let Some(frame) = frame else {
                 return Err(TreeWalkError::new(
@@ -14728,33 +14723,12 @@ impl<'ir> TreeWalk<'ir> {
             let mut slot = 0u32;
             for binding_index in binding_range {
                 let binding = self.ir.bindings[binding_index];
-                let key = if matches!(binding.key, IrAttrPathSegment::Dynamic(_)) {
-                    if let Some(dynamic_key_env) = &dynamic_key_env {
-                        let saved_env = std::mem::replace(&mut self.env, dynamic_key_env.clone());
-                        let result = self.eval_attr_name(
-                            id,
-                            binding.key,
-                            DynamicAttrNullPolicy::SkipNull,
-                            node.span,
-                        );
-                        self.env = saved_env;
-                        result?
-                    } else {
-                        self.eval_attr_name(
-                            id,
-                            binding.key,
-                            DynamicAttrNullPolicy::SkipNull,
-                            node.span,
-                        )?
-                    }
-                } else {
-                    self.eval_attr_name(
-                        id,
-                        binding.key,
-                        DynamicAttrNullPolicy::SkipNull,
-                        node.span,
-                    )?
-                };
+                let key = self.eval_attr_name(
+                    id,
+                    binding.key,
+                    DynamicAttrNullPolicy::SkipNull,
+                    node.span,
+                )?;
                 let Some(key) = key else {
                     continue;
                 };
@@ -33455,8 +33429,17 @@ mod tests {
         assert_eq!(eval("(rec { a = 1; b = a + 2; }).b").as_int(), Ok(3));
         assert_eq!(eval("(rec { a = b; b = 1; }).a").as_int(), Ok(1));
         assert_eq!(eval("(rec { a = 1 / 0; }).b or 2").as_int(), Ok(2));
+        assert_eq!(eval("rec { a = b; b = a; } ? a").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let a = 10; in { a = 1; b = a + 1; }.b").as_int(),
+            Ok(11)
+        );
         assert_eq!(
             eval("let x = 1; in (rec { inherit x; y = x; }).y").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let z = 0; x = 1; in (rec { inherit x; y = x; }).y").as_int(),
             Ok(1)
         );
         assert_eq!(
@@ -33478,6 +33461,17 @@ mod tests {
 
         let ir = lower("(rec { a = a; }).a");
         let error = eval_whnf(&ir).expect_err("recursive attr self-reference blackholes");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Force {
+                source: ForceError::InfiniteRecursion,
+                ..
+            }
+        ));
+
+        let ir = lower("(rec { a = b; b = a; }).a");
+        let error = eval_whnf(&ir).expect_err("mutual attr recursion blackholes");
 
         assert!(matches!(
             error.kind(),
@@ -33622,6 +33616,31 @@ mod tests {
                 "let x = \"x\"; y = \"outer\"; in rec { ${y} = 1; a = \"bar\"; b = \"baz\"; }.outer"
             )
             .as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let a = \"outer\"; in rec { ${a} = 1; a = \"inner\"; }.inner").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval_string_bytes("let a = \"outer\"; in rec { ${a} = 1; a = \"inner\"; }.a"),
+            b"inner".to_vec()
+        );
+        assert_eq!(
+            eval("let name = \"dyn\"; dyn = 9; in rec { ${name} = 1; a = dyn; }.a").as_int(),
+            Ok(9)
+        );
+        assert_eq!(
+            eval("with { name = \"dyn\"; }; rec { ${name} = 1; }.dyn").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("with { name = \"dyn\"; dyn = 9; }; rec { ${name} = 1; a = dyn; }.a").as_int(),
+            Ok(9)
+        );
+        assert_eq!(
+            eval("with { name = \"outer\"; }; rec { name = \"inner\"; ${name} = 1; }.inner")
+                .as_int(),
             Ok(1)
         );
         assert_eq!(eval("{ ${null} = 1 / 0; a = 2; }.a").as_int(), Ok(2));

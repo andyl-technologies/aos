@@ -370,24 +370,26 @@ search paths, and store coercion.
 
 ### 5.4 `rec` and dynamic attributes
 
-- [ ] **`rec { ... }`** — attributes are added to the *lexical scope* of the
+- [x] **`rec { ... }`** — attributes are added to the *lexical scope* of the
       set's own values, enabling self-reference (`rec { a = 1; b = a + 1; }`).
-- [ ] **Non-`rec` sets do not self-scope** — in a plain set, an attr value cannot
-      refer to a sibling by bare name.
-- [ ] **Dynamic/computed attrs are NOT recursive** — in `rec { ${e} = v; a = ...; }`,
-      the dynamically-named attribute is **not** visible in the `rec` scope, and
-      `${e}` itself may not reference the rec scope as if static. Reproduce that
-      computed attribute names do not participate in `rec` binding. **Verify
-      against pinned Nix** (manual is silent; behavior is implementation-defined
-      and must be matched, not inferred).
-- [ ] **Mixing static + dynamic in `rec`** — verify the exact visibility rules
-      (static attrs visible to each other; dynamic ones excluded from the
-      recursive scope) against pinned Nix.
+      AOS matches pinned Nix for static self-reference and lazy cyclic members.
+- [x] **Non-`rec` sets do not self-scope** — in a plain set, an attr value cannot
+      refer to a sibling by bare name. AOS resolves such names to the surrounding
+      lexical scope like pinned Nix.
+- [x] **Dynamic/computed attrs are NOT recursive targets** — in
+      `rec { ${e} = v; a = ...; }`, the dynamically-named attribute is **not**
+      visible in the `rec` lexical scope. Pinned Nix does evaluate dynamic name
+      expressions and dynamic values in the rec scope for static siblings; AOS
+      matches that behavior while excluding computed targets from the frame.
+- [x] **Mixing static + dynamic in `rec`** — AOS matches pinned Nix visibility:
+      static attrs are visible to each other, dynamic name expressions, and
+      dynamic values; dynamic targets are excluded from recursive lexical lookup.
 - [x] **`rec` + `inherit`** — `rec { inherit x; y = x; }` brings `x` into the
       recursive scope. AOS matches pinned Nix for inherited source capture from
       the surrounding scope and lazy inherited values.
-- [ ] **Self-reference laziness** — `rec { a = b; b = a; }` only loops if forced
-      (§10 black-holing).
+- [x] **Self-reference laziness** — `rec { a = b; b = a; }` only loops if forced
+      (§10 black-holing). AOS matches pinned Nix for unforced cyclic members and
+      reports infinite recursion when the cycle is forced.
 
 ---
 
