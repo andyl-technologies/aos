@@ -96,6 +96,7 @@ pub use aos_registry_core::filter;
 pub mod gitwrite;
 pub mod indexer;
 pub mod mirror;
+pub mod narlist;
 pub mod probe;
 pub mod ratelimit;
 pub mod seed;

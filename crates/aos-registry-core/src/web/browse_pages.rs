@@ -1414,6 +1414,16 @@ pub fn cache_object(
         escape(slug),
         escape(&object.store_hash),
     );
+    // The NAR explorer is a native-hub feature (it decompresses + parses the
+    // archive); on a worker deployment this link downloads the NAR instead.
+    if !object.nar_url.is_empty() {
+        let _ = write!(
+            body,
+            "<p><a href=\"/{}/{}?explore=1\">explore NAR files →</a></p>\n",
+            escape(slug),
+            escape(&object.nar_url),
+        );
+    }
     page_with_session(
         &format!("{} · {slug}", object.store_name),
         &[

@@ -1132,6 +1132,20 @@ async fn machine_path(
                     else {
                         return StatusCode::NOT_FOUND.into_response();
                     };
+                    // NAR explorer: `/{cache}/nar/<file>?explore` lists the
+                    // archive's file tree (native only) instead of downloading.
+                    // `nix` substitution never sends `?explore`, so downloads
+                    // stream as normal.
+                    if path.starts_with("nar/")
+                        && uri
+                            .query()
+                            .is_some_and(|q| {
+                                q.split('&')
+                                    .any(|kv| kv == "explore" || kv.starts_with("explore="))
+                            })
+                    {
+                        return nar_explore_page(&slug, &root, &path).await;
+                    }
                     return crate::facade::cache_serve_file(&root, &path, &headers).await;
                 }
             }
@@ -1838,6 +1852,143 @@ pub(crate) async fn authorize_cache_read(
             }
         }
     }
+}
+
+/// Maximum decompressed NAR size accepted by the explorer — a decompression-bomb
+/// guard shared by every codec.
+const MAX_DECOMPRESSED_NAR: usize = 512 * 1024 * 1024;
+
+/// A `Write` sink that errors once more than `cap` bytes are written, so a
+/// decompressor (which streams into it) cannot exhaust memory on a bomb.
+struct CappedWriter {
+    buf: Vec<u8>,
+    cap: usize,
+}
+
+impl std::io::Write for CappedWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.buf.len() + data.len() > self.cap {
+            return Err(std::io::Error::other("decompressed NAR exceeds explorer size cap"));
+        }
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Decompress a stored cache NAR by its URL extension, bounding the output so a
+/// decompression bomb cannot exhaust memory.
+fn decompress_nar(raw: &[u8], rel: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let cap = MAX_DECOMPRESSED_NAR;
+    if rel.ends_with(".nar.zst") || rel.ends_with(".zst") {
+        let mut out = Vec::new();
+        zstd::stream::Decoder::new(raw)?
+            .take(cap as u64)
+            .read_to_end(&mut out)?;
+        Ok(out)
+    } else if rel.ends_with(".nar.xz") || rel.ends_with(".xz") {
+        let mut sink = CappedWriter {
+            buf: Vec::new(),
+            cap,
+        };
+        lzma_rs::xz_decompress(&mut std::io::Cursor::new(raw), &mut sink)?;
+        Ok(sink.buf)
+    } else if rel.ends_with(".nar") {
+        if raw.len() > cap {
+            anyhow::bail!("NAR exceeds explorer size cap");
+        }
+        Ok(raw.to_vec())
+    } else {
+        anyhow::bail!("unsupported NAR compression for '{rel}'")
+    }
+}
+
+/// Render a NAR's internal file tree as a no-JS page (the NAR explorer).
+///
+/// Native-only: it reads, decompresses, and parses the archive
+/// ([`crate::narlist`]). A too-large NAR or an unsupported compression shows a
+/// note with the whole-NAR download link rather than failing.
+async fn nar_explore_page(slug: &str, root: &std::path::Path, rel: &str) -> Response {
+    use aos_registry_core::web::render::escape;
+    const MAX_COMPRESSED: u64 = 128 * 1024 * 1024;
+
+    let Ok(target) = crate::fetch::safe_join(root, rel) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let download = format!("/{}/{}", slug, rel);
+    let note = |msg: String| {
+        axum::response::Html(format!(
+            "<!DOCTYPE html><html><head><meta charset=utf-8>\
+             <link rel=stylesheet href=/_assets/style.css><title>NAR</title></head>\
+             <body><h1>NAR contents</h1><p>{msg}</p>\
+             <p><a href=\"{}\">download whole NAR</a></p></body></html>",
+            escape(&download),
+        ))
+        .into_response()
+    };
+
+    // Symlink containment: the resolved file must stay under the surface root
+    // (the same guard `cache_serve_file` applies to the download path).
+    let (Ok(real_root), Ok(real_target)) =
+        (tokio::fs::canonicalize(root).await, tokio::fs::canonicalize(&target).await)
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !real_target.starts_with(&real_root) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(meta) = tokio::fs::metadata(&real_target).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if meta.len() > MAX_COMPRESSED {
+        return note(format!("NAR too large to explore ({} bytes).", meta.len()));
+    }
+    let Ok(raw) = tokio::fs::read(&real_target).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let decompressed = match decompress_nar(&raw, rel) {
+        Ok(d) => d,
+        Err(err) => return note(format!("cannot explore: {}", escape(&format!("{err:#}")))),
+    };
+    let entries = match crate::narlist::list_nar(&decompressed) {
+        Ok(e) => e,
+        Err(err) => return note(format!("not a valid NAR: {}", escape(&format!("{err:#}")))),
+    };
+
+    let mut rows = String::new();
+    for e in &entries {
+        let size = if e.kind == "directory" || e.kind == "symlink" {
+            String::new()
+        } else {
+            e.size.to_string()
+        };
+        let kind = match &e.target {
+            Some(t) => format!("{} → {}", e.kind, escape(t)),
+            None => e.kind.to_string(),
+        };
+        rows.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+            escape(&e.path),
+            kind,
+            size,
+        ));
+    }
+    axum::response::Html(format!(
+        "<!DOCTYPE html><html><head><meta charset=utf-8>\
+         <link rel=stylesheet href=/_assets/style.css><title>NAR · {slug}</title></head>\
+         <body><h1>NAR contents</h1>\
+         <p><a href=\"{dl}\">download whole NAR</a> · {n} entries</p>\
+         <table><thead><tr><th>path</th><th>kind</th><th>size</th></tr></thead>\
+         <tbody>{rows}</tbody></table></body></html>",
+        slug = escape(slug),
+        dl = escape(&download),
+        n = entries.len(),
+        rows = rows,
+    ))
+    .into_response()
 }
 
 async fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {
