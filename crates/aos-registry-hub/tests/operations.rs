@@ -544,3 +544,67 @@ fn unix_now() -> i64 {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }
+
+/// Cross-visibility safety: a public registry must not *advertise* a private
+/// cache (its consumers couldn't read it), but may link it without advertising.
+#[tokio::test]
+async fn link_cache_rejects_advertising_a_less_visible_cache() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", "/srv")
+        .await
+        .unwrap();
+    db.create_managed_registry(org, "", "pub", "public", Some(binding), "pub", &[], false)
+        .await
+        .unwrap();
+    db.create_cache(
+        Some(org),
+        "priv-cache",
+        "Priv",
+        binding,
+        "pc",
+        None,
+        "private",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
+    // An owner of the org (token grant + live membership; require_permission is
+    // two-sided).
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner")
+        .await
+        .unwrap();
+    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    // Advertising the private cache on the public registry is rejected (400).
+    let (status, _v) = rpc(
+        &app,
+        "CacheService/LinkCache",
+        serde_json::json!({
+            "cacheSlug": "priv-cache", "registrySlug": "acme/pub", "advertised": true
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{_v}");
+
+    // Linking without advertising is allowed (the cache is reachable only to
+    // those with cache-read authority; the registry does not point consumers at it).
+    let (status, _v) = rpc(
+        &app,
+        "CacheService/LinkCache",
+        serde_json::json!({
+            "cacheSlug": "priv-cache", "registrySlug": "acme/pub",
+            "advertised": false, "rootsPackages": true
+        }),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{_v}");
+}

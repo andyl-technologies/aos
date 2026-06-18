@@ -592,9 +592,12 @@ the current spec. Phases are orderable; A lands first, E last.
       optional `access_log_source` CDN-log ingestion for direct frontends;
       documented age-based fallback when neither is present (correctness via
       roots is unaffected).
-- [ ] **Cross-visibility enforcement:** reject a registry advertising a cache
-      less visible than itself; warn on a private/internal registry rooting a
-      public cache (content-exposure). (lands with #21)
+- [x] **Cross-visibility enforcement:** `link_cache` rejects advertising a cache
+      less visible than the registry (its consumers couldn't read the
+      substituter) and warns (structured log) on a less-visible registry rooting
+      its packages into a more-visible cache (content-exposure). Visibility ranks
+      public > internal > private (unknown ⇒ most restrictive). Unit + RPC
+      integration tested.
 - [x] Reclamation-on-removal: derived roots are recomputed every sweep from the
       registry's current index, so dropping a release / re-indexing reclaims its
       now-unreachable NARs on the next sweep (end-to-end VM coverage in #26).
