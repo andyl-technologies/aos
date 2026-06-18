@@ -64,9 +64,10 @@ and uphold the invariants stated here. Requirement IDs defined here (`G-*`,
   A guest that wants parallelism runs it serialized on one vCPU.
 
 - **[NG-2] In-process testing of host Rust code.** Crucible is a QEMU-guest
-  simulator. It does NOT provide a turmoil-style in-process harness for testing
-  the host's own async Rust code; "node" always means a guest VM or an I/O
-  sub-node, never an in-process task standing in for a service.
+  simulator. It does NOT provide an in-process harness for testing the host's own
+  async Rust code (where in-process tasks stand in for services); "node" always
+  means a guest VM or an I/O sub-node, never an in-process task standing in for a
+  service.
 
 - **[NG-3] A bespoke formal-methods engine.** Crucible does NOT include a model
   checker or a specification-language evaluator. Temporal properties are checked
