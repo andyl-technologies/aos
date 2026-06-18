@@ -3414,6 +3414,19 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn alloc_select_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        select_id: IrId,
+        receiver: Value,
+        path: IrAttrPathId,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_thunk(EvalThunk::select(select_id, receiver, path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
         if !value.is_thunk() {
             return Ok(value);
@@ -3485,6 +3498,17 @@ impl<'ir> TreeWalk<'ir> {
                         *second_argument_id,
                         *second_argument,
                     ),
+                    EvalThunkKind::Select {
+                        select_id,
+                        receiver,
+                        path,
+                    } => {
+                        let span = self.node(*select_id)?.span;
+                        let value = self.eval_select_from_value(
+                            *select_id, span, *receiver, *path, None, true,
+                        )?;
+                        self.force_node_result(*select_id, span, value)
+                    }
                 };
                 let value = result?;
                 let value = guard.finish(value).map_err(|source| {
@@ -14657,6 +14681,7 @@ impl<'ir> TreeWalk<'ir> {
         } else {
             None
         };
+        let mut inherit_source_thunks = BTreeMap::new();
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(binding_range.len())
@@ -14680,7 +14705,12 @@ impl<'ir> TreeWalk<'ir> {
                 for binding_index in binding_range.clone() {
                     let binding = self.ir.bindings[binding_index];
                     if matches!(binding.key, IrAttrPathSegment::Static(_)) {
-                        let value = self.eval_lazy_node(binding.value)?;
+                        let value = self.eval_attr_binding_value(
+                            id,
+                            node.span,
+                            binding.value,
+                            &mut inherit_source_thunks,
+                        )?;
                         frame_values.set(slot, value).map_err(|source| {
                             TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
                         })?;
@@ -14730,10 +14760,20 @@ impl<'ir> TreeWalk<'ir> {
                         slot += 1;
                         value
                     } else {
-                        self.eval_lazy_node(binding.value)?
+                        self.eval_attr_binding_value(
+                            id,
+                            node.span,
+                            binding.value,
+                            &mut inherit_source_thunks,
+                        )?
                     }
                 } else {
-                    self.eval_lazy_node(binding.value)?
+                    self.eval_attr_binding_value(
+                        id,
+                        node.span,
+                        binding.value,
+                        &mut inherit_source_thunks,
+                    )?
                 };
                 entries.push(AttrEntry::new(key, value));
             }
@@ -14752,6 +14792,68 @@ impl<'ir> TreeWalk<'ir> {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
 
+    fn eval_attr_binding_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: IrId,
+        inherit_source_thunks: &mut BTreeMap<u32, Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let Some((select_id, receiver, path)) = self.inherit_source_select(value)? else {
+            return self.eval_lazy_node(value);
+        };
+
+        let receiver_key = receiver.as_u32();
+        let receiver_value = if let Some(receiver_value) = inherit_source_thunks.get(&receiver_key)
+        {
+            *receiver_value
+        } else {
+            let receiver_value = self.eval_lazy_node(receiver)?;
+            inherit_source_thunks.insert(receiver_key, receiver_value);
+            receiver_value
+        };
+
+        self.alloc_select_thunk(id, span, select_id, receiver_value, path)
+    }
+
+    fn inherit_source_select(
+        &self,
+        value: IrId,
+    ) -> Result<Option<(IrId, IrId, IrAttrPathId)>, TreeWalkError> {
+        let value_node = self.node(value)?;
+        if value_node.kind != IrKind::ThunkAlloc {
+            return Ok(None);
+        }
+        let IrData::Node(select_id) = value_node.data else {
+            return Err(self.invalid_payload(value, value_node, "thunk body"));
+        };
+        let select_node = self.node(select_id)?;
+        if select_node.kind != IrKind::Select {
+            return Ok(None);
+        }
+        let IrData::Select {
+            receiver,
+            path,
+            default,
+            ..
+        } = select_node.data
+        else {
+            return Err(self.invalid_payload(select_id, select_node, "select payload"));
+        };
+        if default.is_some() || self.node(receiver)?.kind != IrKind::ThunkAlloc {
+            return Ok(None);
+        }
+        if self
+            .attr_path(select_id, path, select_node.span)?
+            .iter()
+            .any(|segment| matches!(segment, IrAttrPathSegment::Dynamic(_)))
+        {
+            return Ok(None);
+        }
+
+        Ok(Some((select_id, receiver, path)))
+    }
+
     fn eval_select(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Select {
             receiver,
@@ -14767,8 +14869,20 @@ impl<'ir> TreeWalk<'ir> {
         {
             return Ok(value);
         }
-        let segments = self.attr_path_len(id, path_id, node.span)?;
-        let mut current = self.eval_node(receiver)?;
+        let current = self.eval_node(receiver)?;
+        self.eval_select_from_value(id, node.span, current, path_id, default, false)
+    }
+
+    fn eval_select_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        mut current: Value,
+        path_id: IrAttrPathId,
+        default: Option<IrId>,
+        force_receiver: bool,
+    ) -> Result<Value, TreeWalkError> {
+        let segments = self.attr_path_len(id, path_id, span)?;
         if segments == 0 {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedAttrPath {
@@ -14777,14 +14891,17 @@ impl<'ir> TreeWalk<'ir> {
                     segments,
                     has_dynamic: false,
                 },
-                node.span,
+                span,
             ));
         }
 
+        if force_receiver {
+            current = self.force_value(id, span, current)?;
+        }
         for index in 0..segments {
-            let segment = self.attr_path_segment(id, path_id, index, node.span)?;
+            let segment = self.attr_path_segment(id, path_id, index, span)?;
             let key = self
-                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, node.span)?
+                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, span)?
                 .ok_or_else(|| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Type {
@@ -14792,7 +14909,7 @@ impl<'ir> TreeWalk<'ir> {
                             expected: "string",
                             actual: ValueTag::Null,
                         },
-                        node.span,
+                        span,
                     )
                 })?;
             if current.tag() != ValueTag::Attrs {
@@ -14804,13 +14921,13 @@ impl<'ir> TreeWalk<'ir> {
                             expected: "attrs",
                             actual: current.tag(),
                         },
-                        node.span,
+                        span,
                     )),
                 };
             }
             let selected = {
                 let attrs = self.heap.get_attrs(current).map_err(|source| {
-                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                 })?;
                 attrs.get(key)
             };
@@ -14819,14 +14936,14 @@ impl<'ir> TreeWalk<'ir> {
                     Some(default) => self.eval_node(default),
                     None => Err(TreeWalkError::new(
                         TreeWalkErrorKind::MissingAttribute { id, symbol: key },
-                        node.span,
+                        span,
                     )),
                 };
             };
             if index + 1 == segments {
                 return Ok(value);
             }
-            current = self.force_value(id, node.span, value)?;
+            current = self.force_value(id, span, value)?;
         }
 
         Err(TreeWalkError::new(
@@ -14836,7 +14953,7 @@ impl<'ir> TreeWalk<'ir> {
                 segments,
                 has_dynamic: false,
             },
-            node.span,
+            span,
         ))
     }
 
@@ -32163,6 +32280,17 @@ mod tests {
             .as_int(),
             Ok(1)
         );
+        assert!(matches!(
+            eval_whnf(&lower("(builtins.break { x = 1; }).x"))
+                .expect_err("direct selection sees the break result as an unforced thunk")
+                .kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Thunk,
+                ..
+            }
+        ));
+        assert_eq!(eval("(builtins.break { x = 1; }).x or 2").as_int(), Ok(2));
         assert_eq!(eval("(builtins.break (1 + 2)) == 3").as_bool(), Ok(true));
         assert_eq!(
             eval("(builtins.break (builtins.break (1 + 2))) == 3").as_bool(),
@@ -33211,6 +33339,54 @@ mod tests {
         assert_eq!(
             eval("let x = 1; in ({ inherit x; } == { x = x; })").as_bool(),
             Ok(true)
+        );
+    }
+
+    #[test]
+    fn inherit_from_expression_uses_shared_lazy_source() {
+        assert_eq!(
+            eval_json_bytes("let src = { x = 1; y = 2; }; in { inherit (src) x y; }"),
+            br#"{"x":1,"y":2}"#.to_vec()
+        );
+
+        let lazy_source = eval_owned(
+            r#"let copied = { inherit (builtins.trace "source" { x = 1; }) x; };
+               in copied ? x"#,
+        );
+        assert_eq!(lazy_source.value().as_bool(), Ok(true));
+        assert!(lazy_source.trace_output().is_empty());
+
+        assert_eq!(
+            eval("let copied = { inherit ({}) x; }; in copied ? x").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let copied = { inherit ({ a = { b = 1; }; }) a; }; in copied.a.b").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval_json_bytes(
+                "let f = src: { inherit (src) x y; };
+                 in [ (f { x = 1; y = 2; }).x (f { x = 10; y = 20; }).y ]"
+            ),
+            br#"[1,20]"#.to_vec()
+        );
+
+        let shared_source = eval_owned(
+            r#"let copied = {
+                 inherit (builtins.trace "source" { x = 1; y = 2; }) x y;
+               };
+               in copied.x + copied.y"#,
+        );
+        assert_eq!(shared_source.value().as_int(), Ok(3));
+        assert_eq!(shared_source.trace_output().len(), 1);
+        assert_trace_output(
+            shared_source
+                .trace_output()
+                .first()
+                .expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"source",
         );
     }
 

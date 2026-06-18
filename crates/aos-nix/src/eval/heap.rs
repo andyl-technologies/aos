@@ -15,7 +15,7 @@ use thiserror::Error;
 use super::env::{EvalEnv, EvalWithEnv};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
-use crate::compile::{FrameId, IrId};
+use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
 use crate::string::NixString;
@@ -69,6 +69,15 @@ pub(crate) enum EvalThunkKind {
         second_argument_id: IrId,
         /// The second lazy argument value.
         second_argument: Value,
+    },
+    /// Selects an attribute path from an already allocated lazy receiver.
+    Select {
+        /// The IR select node that defines the path and diagnostic span.
+        select_id: IrId,
+        /// The shared lazy receiver value.
+        receiver: Value,
+        /// The lowered attribute path to select.
+        path: IrAttrPathId,
     },
 }
 
@@ -151,6 +160,18 @@ impl EvalThunk {
         }
     }
 
+    /// Creates a suspended static attribute selection thunk record.
+    pub const fn select(select_id: IrId, receiver: Value, path: IrAttrPathId) -> Self {
+        Self {
+            kind: EvalThunkKind::Select {
+                select_id,
+                receiver,
+                path,
+            },
+            cell: ThunkCell::new(),
+        }
+    }
+
     /// Returns the deferred work this thunk performs when forced.
     pub(crate) const fn kind(&self) -> &EvalThunkKind {
         &self.kind
@@ -160,7 +181,9 @@ impl EvalThunk {
     pub const fn body(&self) -> Option<IrId> {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(*body),
-            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
         }
     }
 
@@ -168,7 +191,9 @@ impl EvalThunk {
     pub const fn env(&self) -> Option<&EvalEnv> {
         match &self.kind {
             EvalThunkKind::Node { env, .. } => Some(env),
-            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
         }
     }
 
@@ -176,7 +201,9 @@ impl EvalThunk {
     pub const fn with_scope_env(&self) -> Option<&EvalWithEnv> {
         match &self.kind {
             EvalThunkKind::Node { with_env, .. } => Some(with_env),
-            EvalThunkKind::Apply { .. } | EvalThunkKind::Apply2 { .. } => None,
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
         }
     }
 

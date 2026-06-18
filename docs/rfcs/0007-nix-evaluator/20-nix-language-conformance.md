@@ -358,8 +358,10 @@ search paths, and store coercion.
 - [x] **`inherit x y;`** — copies `x`, `y` from the surrounding lexical scope:
       `inherit x;` ≡ `x = x;`. AOS matches pinned Nix for multiple bare
       inherited names, lexical capture, and lazy inherited values.
-- [ ] **`inherit (e) x y;`** — copies from set `e`: ≡ `x = e.x; y = e.y;`. `e` is
-      evaluated once (verify sharing/laziness against pinned Nix).
+- [x] **`inherit (e) x y;`** — copies from set `e`: ≡ `x = e.x; y = e.y;`. `e` is
+      evaluated once. AOS matches pinned Nix for multiple inherited fields,
+      lazy source evaluation, and one shared source evaluation when multiple
+      inherited values are forced.
 - [ ] **`inherit` in `let`** — `let inherit (e) x; in ...` is legal; same desugar.
 
 ### 5.4 `rec` and dynamic attributes
