@@ -132,8 +132,11 @@ content addressed by cryptographic hash, so that the evaluation result is
 *completely reproducible from the command-line arguments*. Concretely, matching
 the manual's enumeration:
 
-- [ ] **`builtins.currentTime`** is unavailable / throws — it is impure by
-      definition (wall-clock).
+- [x] **`builtins.currentTime`** is unavailable / throws — it is impure by
+      definition (wall-clock). The builtin is registered as
+      `ImpureCurrentTime`: default evaluation omits it, configured impure
+      evaluation exposes the pinned timestamp, and pure mode hides even a
+      configured timestamp as a missing builtin attr.
 - [ ] **`builtins.currentSystem`** is **not available in pure evaluation mode**
       (the manual states `currentSystem` is "Not available in pure evaluation
       mode"); same for `builtins.storePath`.
