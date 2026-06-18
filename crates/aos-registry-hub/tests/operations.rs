@@ -838,3 +838,79 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
         "unauthenticated mint must be denied, got {status}"
     );
 }
+
+/// End-to-end GC closure-correctness through the RPC layer with a real
+/// surface: a rooted (pinned) object survives a sweep; an unrooted one is
+/// reclaimed (its narinfo gone). RFC-0004 "11-caches" closure-correctness.
+#[tokio::test]
+async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
+        .await
+        .unwrap();
+    db.create_cache(Some(org), "gc-cache", "GC", binding, "g", None, "public", 40, "zstd", true)
+        .await
+        .unwrap();
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner").await.unwrap();
+    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    // Upload a rooted object (aaaa) and an unrooted object (dddd); each narinfo
+    // is indexed via the upload write-through.
+    let narinfo = |hash: &str| {
+        format!(
+            "StorePath: /nix/store/{hash}-pkg\nURL: nar/{hash}.nar\nCompression: none\n\
+             NarHash: sha256:{hash}\nNarSize: 1\nFileHash: sha256:{hash}\nFileSize: 1\nReferences: \n"
+        )
+    };
+    for hash in ["aaaa", "dddd"] {
+        let (s, _) = put(&app, &format!("/gc-cache/{hash}.narinfo"), &token, narinfo(hash).into_bytes()).await;
+        assert!(s.is_success(), "upload {hash}: {s}");
+    }
+    // Pin aaaa as a manual GC root.
+    let (s, _) = rpc(&app, "CacheService/PinCachePath",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}), Some(&token)).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // ttl=0 sweeps unrooted objects immediately (now - uploaded_at >= 0 always),
+    // so reclamation is timing-independent; the rooted closure is never swept.
+    let cache_id = db.cache_by_slug("gc-cache").await.unwrap().unwrap().id;
+    db.set_cache_gc_policy(&aos_registry_hub::db::CacheGcPolicy {
+        cache_id,
+        max_bytes: None,
+        max_objects: None,
+        ttl_unreferenced_secs: Some(0),
+        keep_release_versions: None,
+        keep_channel_frontier: true,
+        schedule_secs: None,
+        updated_at: 0,
+    })
+    .await
+    .unwrap();
+
+    // Run GC: it scans both, retains the rooted closure, reclaims the unrooted.
+    let (s, body) = rpc(&app, "CacheService/RunCacheGc",
+        serde_json::json!({"cacheSlug": "gc-cache"}), Some(&token)).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["scanned"].as_i64(), Some(2), "{body}");
+    assert_eq!(body["retained"].as_i64(), Some(1), "{body}");
+    assert_eq!(body["deletedObjects"].as_i64(), Some(1), "{body}");
+
+    // The rooted object survives; the unrooted one is reclaimed (GetCacheObject
+    // returns 200 with a null `object` for a missing entry).
+    let (s, body) = rpc(&app, "CacheService/GetCacheObject",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}), Some(&token)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(body.get("object").is_some_and(|o| !o.is_null()), "rooted object must survive: {body}");
+    let (s, body) = rpc(&app, "CacheService/GetCacheObject",
+        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "dddd"}), Some(&token)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(
+        body.get("object").is_none_or(|o| o.is_null()),
+        "unrooted object must be reclaimed: {body}"
+    );
+}
