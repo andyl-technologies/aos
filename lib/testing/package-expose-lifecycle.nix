@@ -337,8 +337,11 @@
   seedPackageProfile = pkgs.writeShellScriptBin "seed-expose-lifecycle-profile" ''
     set -eu
     profile=/var/lib/profiles/system-packages
-    mkdir -p "$profile/gen-1" "$profile/meta"
+    mkdir -p "$profile/gen-1/usr" "$profile/gen-1/src" "$profile/meta"
     ln -sfn gen-1 "$profile/current"
+    cat > "$profile/state.json" <<'JSON'
+    {"current_generation":1,"next_generation":2}
+    JSON
 
     ${pkgs.python3}/bin/python3 - "$profile" \
       expose-lifecycle-private ${privatePackage} ${privatePackage.expose} \
@@ -352,12 +355,28 @@
     import sys
 
     profile = pathlib.Path(sys.argv[1])
+    usr_dir = profile / "gen-1" / "usr"
+    meta_dir = profile / "meta"
     triples = sys.argv[2:]
-    for offset in range(0, len(triples), 3):
-        name, store_path, expose_path = triples[offset : offset + 3]
+
+    def store_hash_for(store_path):
         store_hash, separator, _ = pathlib.Path(store_path).name.partition("-")
         if not separator or not store_hash:
             raise SystemExit(f"cannot derive store hash from {store_path}")
+        return store_hash
+
+    def write_rooted_meta(store_path, meta):
+        store_hash = store_hash_for(store_path)
+        root = usr_dir / store_hash
+        if root.exists() or root.is_symlink():
+            root.unlink()
+        root.symlink_to(store_path)
+        pathlib.Path(meta_dir, f"{store_hash}.json").write_text(
+            json.dumps(meta, sort_keys=True)
+        )
+
+    for offset in range(0, len(triples), 3):
+        name, store_path, expose_path = triples[offset : offset + 3]
         manifest = json.loads(pathlib.Path(expose_path, "manifest.json").read_text())
         meta = {
             "store_path": store_path,
@@ -385,9 +404,42 @@
                 "permissions": manifest["permissions"],
             },
         }
-        pathlib.Path(profile, "meta", f"{store_hash}.json").write_text(
-            json.dumps(meta, sort_keys=True)
-        )
+        write_rooted_meta(store_path, meta)
+
+    bpf_policy_package = "${pkgs.aos-ebpf-lsm-policy}"
+    write_rooted_meta(
+        bpf_policy_package,
+        {
+            "store_path": bpf_policy_package,
+            "pushed_at": 1,
+            "pushed_by": "apm",
+            "expires_at": None,
+            "is_root": True,
+            "last_accessed": 1,
+            "access_count": 0,
+            "apm": {
+                "name": "aos-ebpf-lsm-policy",
+                "version": "0",
+                "explicit": True,
+                "registry": "seed",
+                "installed_at": "1970-01-01T00:00:00Z",
+                "held": False,
+                "source_drv": "",
+                "source_nar_hash": "",
+                "permissions": {},
+                "bpf_lsm": {
+                    "policies": [
+                        {
+                            "name": "aos-lsm-task-audit",
+                            "policy": "share/aos/ebpf-lsm/aos-task-audit.json",
+                            "object": "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o",
+                            "programs": ["aos_lsm_file_mprotect"],
+                        }
+                    ]
+                },
+            },
+        },
+    )
     PY
   '';
 
@@ -410,6 +462,7 @@
           uidCheckerPackage.expose
           seedPackageProfile
           pkgs.aos
+          pkgs.aos-ebpf-lsm-policy
           pkgs.aos-ebpf-net-policy
           pkgs.curl
           pkgs.iproute2
@@ -545,6 +598,33 @@ in
       vm.succeed("rmdir /sys/fs/cgroup/aos-ebpf-probe")
 
       vm.succeed("${seedPackageProfile}/bin/seed-expose-lifecycle-profile")
+      vm.succeed(
+          textwrap.dedent(
+              """\
+              mkdir -p /etc/aos
+              cat >/etc/aos/policy.toml <<'TOML'
+              tier = "baseline"
+
+              [[ebpf-lsm.policies]]
+              name = "aos-lsm-task-audit"
+              registry = "seed"
+              package = "aos-ebpf-lsm-policy"
+              version = "0"
+              policy = "share/aos/ebpf-lsm/aos-task-audit.json"
+              object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+              programs = ["aos_lsm_file_mprotect"]
+              TOML
+              """
+          )
+      )
+      vm.succeed("grep -qw bpf /sys/kernel/security/lsm || { cat /sys/kernel/security/lsm || true; cat /proc/cmdline || true; exit 1; }")
+      vm.succeed("test ! -e /sys/fs/bpf/aos/lsm/aos-lsm-task-audit-aos_lsm_file_mprotect")
+      vm.succeed("${pkgs.aos}/bin/apm _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load.log 2>&1 || { cat /sys/kernel/security/lsm || true; cat /proc/cmdline || true; cat /tmp/aos-ebpf-lsm-load.log; exit 1; }")
+      vm.succeed("grep -q 'loaded policy aos-lsm-task-audit' /tmp/aos-ebpf-lsm-load.log")
+      vm.succeed("test -e /sys/fs/bpf/aos/lsm/aos-lsm-task-audit-aos_lsm_file_mprotect")
+      vm.succeed("${pkgs.aos}/bin/apm _load-ebpf-lsm-policies --system >/tmp/aos-ebpf-lsm-load-again.log 2>&1")
+      vm.succeed("grep -q 'already pinned' /tmp/aos-ebpf-lsm-load-again.log")
+
       vm.succeed("${pkgs.aos}/bin/apm _test-reconcile-exposed-units --system")
       vm.succeed("systemctl cat expose-lifecycle-private.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-private.service'")
       vm.succeed("systemctl cat expose-lifecycle-consumer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-consumer.service'")

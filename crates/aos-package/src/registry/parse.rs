@@ -42,8 +42,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::types::{
-    ExposeArtifactMeta, ExposeMeta, PackageMeta, PermissionsMeta, SbatEntry, SysrootImageEntry,
-    package_name_bucket, validate_package_name, validate_supported_package_meta,
+    BpfLsmPolicyMeta, ExposeArtifactMeta, ExposeMeta, PackageMeta, PermissionsMeta, SbatEntry,
+    SysrootImageEntry, package_name_bucket, validate_package_name, validate_supported_package_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -142,6 +142,9 @@ struct PlatformEntry {
     /// Signed RFC-0001 permission manifest.
     #[serde(default)]
     permissions: PermissionsMeta,
+    /// Signed fleet BPF-LSM policy metadata.
+    #[serde(default)]
+    bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -424,10 +427,15 @@ fn package_metas_for_platform(
                 expose: plat.expose.clone(),
                 expose_artifact: plat.expose_artifact.clone(),
                 permissions: plat.permissions.clone(),
+                bpf_lsm: plat.bpf_lsm.clone(),
             };
             if (meta.expose.is_some()
                 || meta.expose_artifact.is_some()
-                || !meta.permissions.is_empty())
+                || !meta.permissions.is_empty()
+                || meta
+                    .bpf_lsm
+                    .as_ref()
+                    .is_some_and(|bpf_lsm| !bpf_lsm.is_empty()))
                 && !plat.references.is_gate()
             {
                 bail!(
@@ -615,6 +623,39 @@ holes = ["network:private-outbound", "tcp-bind:8080", "tcp-connect:443", "capabi
 "#;
 
 #[cfg(test)]
+const BPF_LSM_TOML: &str = r#"
+[package]
+name = "aos-ebpf-lsm-policy"
+description = "Fleet BPF-LSM policy"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0"
+nar_hash = "sha256:abc123"
+nar_size = 1024
+closure_size = 1024
+source_drv = ""
+source_nar_hash = ""
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["bpf-lsm-policy-v1"]
+
+[versions.platforms.x86_64-linux.bpf_lsm]
+
+[[versions.platforms.x86_64-linux.bpf_lsm.policies]]
+name = "aos-lsm-task-audit"
+policy = "share/aos/ebpf-lsm/aos-task-audit.json"
+object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+programs = ["aos_lsm_file_mprotect"]
+"#;
+
+#[cfg(test)]
 pub(crate) const MULTI_VERSION_TOML: &str = r#"
 [package]
 name = "tool"
@@ -782,6 +823,50 @@ mod tests {
                 "syscalls:system-service".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn parse_bpf_lsm_policy_metadata() {
+        let meta = parse_package_toml(BPF_LSM_TOML, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(meta.min_format, Some(1));
+        assert_eq!(meta.requires_features, vec!["bpf-lsm-policy-v1"]);
+        let bpf_lsm = meta.bpf_lsm.as_ref().unwrap();
+        assert_eq!(bpf_lsm.policies.len(), 1);
+        assert_eq!(bpf_lsm.policies[0].name, "aos-lsm-task-audit");
+        assert_eq!(
+            bpf_lsm.policies[0].object,
+            "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+        );
+        assert_eq!(bpf_lsm.policies[0].programs, vec!["aos_lsm_file_mprotect"]);
+    }
+
+    #[test]
+    fn parse_bpf_lsm_metadata_requires_structural_gate() {
+        let content = BPF_LSM_TOML.replace(
+            r#"[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["bpf-lsm-policy-v1"]
+"#,
+            r#"references = []
+min-format = 1
+requires-features = ["bpf-lsm-policy-v1"]
+"#,
+        );
+
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("structural references gate"));
+    }
+
+    #[test]
+    fn parse_bpf_lsm_metadata_requires_own_feature_gate() {
+        let content = BPF_LSM_TOML.replace("bpf-lsm-policy-v1", "ebpf-net-policy-v1");
+
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("bpf-lsm-policy-v1"));
     }
 
     #[test]

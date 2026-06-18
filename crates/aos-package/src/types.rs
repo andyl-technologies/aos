@@ -62,6 +62,9 @@ pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
 /// Registry feature flag for RFC-0001 generated eBPF network policy loaders.
 pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
 
+/// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
+pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -73,6 +76,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_NETWORK_POLICY_V1,
     FEATURE_MAC_PROFILE_V1,
     FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_BPF_LSM_POLICY_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -564,6 +568,9 @@ pub struct PackageMeta {
     /// Signed RFC-0001 permission manifest.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
+    /// Signed fleet BPF-LSM policy artifact metadata.
+    #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
 /// RFC-0001 service exposure metadata carried by registry package metadata.
@@ -745,6 +752,37 @@ pub struct ExposeArtifactMeta {
     pub nar_hash: String,
     /// Uncompressed NAR size of the rendered expose artifact in bytes.
     pub nar_size: u64,
+}
+
+/// Signed metadata for fleet-managed BPF-LSM policy artifacts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BpfLsmPolicyMeta {
+    /// BPF-LSM policies carried by this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<BpfLsmPolicyArtifactMeta>,
+}
+
+impl BpfLsmPolicyMeta {
+    /// Returns whether the package declares no BPF-LSM policies.
+    pub fn is_empty(&self) -> bool {
+        self.policies.is_empty()
+    }
+}
+
+/// One BPF-LSM policy artifact carried by a signed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BpfLsmPolicyArtifactMeta {
+    /// Stable policy name used for host policy selection and bpffs pins.
+    pub name: String,
+    /// Relative JSON policy path inside the package root.
+    pub policy: String,
+    /// Relative BPF object path inside the package root.
+    pub object: String,
+    /// BPF program names expected in the object and policy JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<String>,
 }
 
 /// Signed RFC-0001 package permission manifest.
@@ -1097,6 +1135,13 @@ pub fn validate_supported_package_meta_with(
             require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
         }
     }
+    if let Some(bpf_lsm) = &meta.bpf_lsm {
+        if !bpf_lsm.is_empty() {
+            require_feature(meta, FEATURE_BPF_LSM_POLICY_V1)?;
+            validate_bpf_lsm_policy_meta(bpf_lsm)
+                .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
+        }
+    }
 
     if let Some(expose) = &meta.expose {
         validate_expose_meta(expose)?;
@@ -1345,6 +1390,79 @@ pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()
             "expose artifact '{}' must record a non-zero NAR size",
             artifact.store_path
         );
+    }
+    Ok(())
+}
+
+/// Validate signed BPF-LSM policy artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when names are malformed, artifact paths are not safe
+/// package-relative paths, or program names are not BPF C identifiers.
+pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for policy in &meta.policies {
+        validate_policy_artifact_name(&policy.name)?;
+        validate_relative_artifact_path("BPF-LSM policy", &policy.policy, ".json")?;
+        validate_relative_artifact_path("BPF-LSM object", &policy.object, ".bpf.o")?;
+        if !seen.insert(&policy.name) {
+            bail!("duplicate BPF-LSM policy '{}'", policy.name);
+        }
+        if policy.programs.is_empty() {
+            bail!(
+                "BPF-LSM policy '{}' must name at least one program",
+                policy.name
+            );
+        }
+        let mut programs = std::collections::BTreeSet::new();
+        for program in &policy.programs {
+            validate_bpf_program_name(program)?;
+            if !programs.insert(program) {
+                bail!(
+                    "BPF-LSM policy '{}' contains duplicate program '{}'",
+                    policy.name,
+                    program
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_policy_artifact_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("invalid BPF-LSM policy name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') || !path.ends_with(suffix) {
+        bail!("{kind} path '{path}' must be a relative *{suffix} path");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => bail!("{kind} path '{path}' must not contain '.', '..', or prefixes"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_bpf_program_name(program: &str) -> Result<()> {
+    let mut chars = program.chars();
+    let Some(first) = chars.next() else {
+        bail!("BPF program name must not be empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        bail!("invalid BPF program name '{program}'");
     }
     Ok(())
 }
@@ -1772,6 +1890,9 @@ pub struct ApmMeta {
     /// RFC-0001 permission manifest captured at install time.
     #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
     pub permissions: PermissionsMeta,
+    /// Fleet BPF-LSM policy metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3382,6 +3503,7 @@ last_update = "2026-02-13T10:30:00Z"
                 expose: None,
                 expose_artifact: None,
                 permissions: Default::default(),
+                bpf_lsm: None,
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -3487,6 +3609,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }),
                 ..PermissionsMeta::default()
             },
+            bpf_lsm: None,
         };
 
         validate_supported_package_meta(&meta).unwrap();
@@ -3565,6 +3688,7 @@ last_update = "2026-02-13T10:30:00Z"
                 network: Some(NetworkPermission::Host),
                 ..PermissionsMeta::default()
             },
+            bpf_lsm: None,
         };
 
         let err =
@@ -3600,6 +3724,7 @@ last_update = "2026-02-13T10:30:00Z"
                 tcp_connect: vec![443],
                 ..PermissionsMeta::default()
             },
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3643,6 +3768,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3684,6 +3810,7 @@ last_update = "2026-02-13T10:30:00Z"
                 tcp_bind: vec![0],
                 ..PermissionsMeta::default()
             },
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3727,6 +3854,7 @@ last_update = "2026-02-13T10:30:00Z"
                 }),
                 ..PermissionsMeta::default()
             },
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3788,6 +3916,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3846,6 +3975,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4003,6 +4133,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4050,6 +4181,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4058,6 +4190,61 @@ last_update = "2026-02-13T10:30:00Z"
         meta.requires_features
             .push(FEATURE_EBPF_NET_POLICY_V1.into());
         validate_supported_package_meta(&meta).unwrap();
+    }
+
+    fn bpf_lsm_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "aos-ebpf-lsm-policy".into(),
+            version: "0".into(),
+            description: "Fleet BPF-LSM policy".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: Some(BpfLsmPolicyMeta {
+                policies: vec![BpfLsmPolicyArtifactMeta {
+                    name: "aos-lsm-task-audit".into(),
+                    policy: "share/aos/ebpf-lsm/aos-task-audit.json".into(),
+                    object: "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o".into(),
+                    programs: vec!["aos_lsm_file_mprotect".into()],
+                }],
+            }),
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_bpf_lsm_policy_feature_gate() {
+        let mut meta = bpf_lsm_package_meta(vec![FEATURE_EBPF_NET_POLICY_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
+
+        meta.requires_features = vec![FEATURE_BPF_LSM_POLICY_V1.into()];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
+        let mut meta = bpf_lsm_package_meta(vec![FEATURE_BPF_LSM_POLICY_V1]);
+        meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("BPF-LSM object path"));
     }
 
     #[test]
@@ -4097,6 +4284,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4148,6 +4336,7 @@ last_update = "2026-02-13T10:30:00Z"
             }),
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();

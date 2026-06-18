@@ -47,6 +47,7 @@ pub(crate) mod credential_artifact;
 pub mod deps;
 pub mod desired;
 pub mod download;
+pub(crate) mod ebpf_lsm;
 pub(crate) mod exposed_units;
 pub(crate) mod gitcmd;
 pub mod hold;
@@ -427,6 +428,13 @@ pub enum PackageCommand {
     /// Hidden: reconcile exposed package units from the package profile.
     #[command(name = "_test-reconcile-exposed-units", hide = true)]
     TestReconcileExposedUnits {
+        /// Use the system package profile
+        #[arg(long)]
+        system: bool,
+    },
+    /// Hidden: load fleet BPF-LSM policies selected by host policy.
+    #[command(name = "_load-ebpf-lsm-policies", hide = true)]
+    LoadEbpfLsmPolicies {
         /// Use the system package profile
         #[arg(long)]
         system: bool,
@@ -1715,6 +1723,13 @@ pub async fn run(
         return test_systemd_client::run(op, printer).await;
     }
 
+    if let PackageCommand::LoadEbpfLsmPolicies { system } = command {
+        if !*system {
+            bail!("_load-ebpf-lsm-policies requires --system");
+        }
+        return ebpf_lsm::load_system_policies();
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -1969,6 +1984,9 @@ pub async fn run(
         }
         PackageCommand::ActivatePostEtcSwap { .. } => {
             unreachable!("ActivatePostEtcSwap is handled before ApmConfig::load")
+        }
+        PackageCommand::LoadEbpfLsmPolicies { .. } => {
+            unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
         }
     }
 }

@@ -401,6 +401,7 @@ pub fn rebuild_meta(
                     expose: pkg.expose.clone(),
                     expose_artifact: pkg.expose_artifact.clone(),
                     permissions: pkg.permissions.clone(),
+                    bpf_lsm: pkg.bpf_lsm.clone(),
                 }),
             }
         } else {
@@ -472,6 +473,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 permissions: Default::default(),
+                bpf_lsm: None,
             }),
         }
     }

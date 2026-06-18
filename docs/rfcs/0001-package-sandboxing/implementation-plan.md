@@ -96,7 +96,7 @@ reframes how the phases below are read:
 | **P5** | `apm install` + install-at-boot + **declarative reconciliation (install + prune)** + upgrade/rollback + **layered config** (TPM2 creds / schema'd artifact / EnvironmentFile) + **hot-reload plumbing** | P3, P4 | D8 (install half), D9, D11, D16, D24, D25 | ☑ |
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☑ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☑ |
-| **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☐ |
+| **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☑ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
 | **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☐ |
@@ -605,13 +605,26 @@ Full spec: [`enforcement.md`](enforcement.md).
       MAC workload units temporarily disable `PrivateUsers=` because the current
       base policy denies systemd user-namespace setup before the
       `aos-selinux-run` transition.
-- [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
+- [x] **eBPF-LSM channel (D20).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).
-      Current coverage enables `CONFIG_BPF_EVENTS`, `CONFIG_BPF_LSM`, `bpf`
-      in `CONFIG_LSM`, AOS-built `pahole`/dwarves, and
-      `CONFIG_DEBUG_INFO_BTF` / `CONFIG_DEBUG_INFO_BTF_MODULES`; the signed policy
-      channel and loader remain.
+      Current coverage enables `CONFIG_BPF_EVENTS`, `CONFIG_BPF_LSM`,
+      `CONFIG_FUNCTION_TRACER`, `CONFIG_DYNAMIC_FTRACE`, `bpf` in `CONFIG_LSM`,
+      AOS-built `pahole`/dwarves, and `CONFIG_DEBUG_INFO_BTF` /
+      `CONFIG_DEBUG_INFO_BTF_MODULES`; adds the `bpf-lsm-policy-v1` signed
+      package metadata gate, registry parser support, and host policy
+      `[[ebpf-lsm.policies]]` selector; ships the AOS-built
+      `aos-ebpf-lsm-policy` helper and seed BPF-LSM policy package; and loads
+      selected installed policy artifacts through
+      `apm _load-ebpf-lsm-policies --system`, resolving the JSON policy and
+      `.bpf.o` object from installed, signed package metadata rooted in the
+      current system package generation before pinning BPF links under
+      `/sys/fs/bpf/aos/lsm`. The `aos-ebpf-lsm-policies.service` prepares bpffs
+      and runs after package seed and install services, while the helper also
+      verifies or mounts bpffs for direct and live-reconcile invocations. Live
+      package target reconciliation loads the selected fleet BPF-LSM policies
+      before exposing package targets; complete existing pin sets are treated as
+      already loaded, and partial pin sets fail closed.
 - [x] **Full systemd hardening baseline** on every generated workload service (the
       `systemd-analyze security` consensus set — see [`enforcement.md`](enforcement.md));
       relaxations computed from the manifest, never hand-written. The renderer
@@ -641,9 +654,13 @@ Full spec: [`enforcement.md`](enforcement.md).
 
 **EXIT CRITERIA.** A default-manifest package's workload service scores within
 the default `systemd-analyze` threshold; its Landlock ruleset denies an
-out-of-manifest path
-in a VM test *with a host-path hole present* (proves namespace-independence); its
-MAC profile loads and denies a default-denied operation.
+out-of-manifest path in a VM test *with a host-path hole present* (proves
+namespace-independence); its MAC profile loads and denies a default-denied
+operation; a signed fleet BPF-LSM package selected by `/etc/aos/policy.toml` is
+rooted in the current package generation, loads in a VM with `bpf` active in
+`/sys/kernel/security/lsm`, emits the trusted helper's success record, survives
+an idempotent second load, and pins the expected BPF link before package targets
+are exposed.
 
 ---
 

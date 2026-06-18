@@ -110,16 +110,34 @@ with a signing registry this is a natural distinctive capability: **ship signed
 BPF-LSM policies through the existing registry trust chain.**
 
 **Mechanism.** A host policy artifact (the same `/etc/aos/policy.toml` plane,
-[permissions.md](permissions.md) tiers) may reference signed BPF-LSM programs the
+[permissions.md](permissions.md) tiers) references signed BPF-LSM programs the
 fleet loads to (a) live-patch a CVE-class behavior ahead of a kernel update, or
 (b) add fleet-wide hardening (e.g. block unprivileged `unshare`) without
 rebuilding the kernel or the major MAC. Requirements: `CONFIG_BPF_LSM=y`,
-`CONFIG_BPF_EVENTS=y`, `bpf` in the `lsm=` order, BTF
+`CONFIG_BPF_EVENTS=y`, `CONFIG_FUNCTION_TRACER=y`,
+`CONFIG_DYNAMIC_FTRACE=y`, `bpf` in the `lsm=` order, BTF
 (`CONFIG_DEBUG_INFO_BTF` plus the AOS-built `pahole`/dwarves toolchain),
-privileged load. This is **host/fleet policy, not per-package manifest** — it is
-the dynamic counterpart to the static MAC of layer 5. MVP-optional; the
-kernel-config + signed-policy channel land in Phase 9, enforcement content is
-fleet-authored.
+and privileged load. The function-tracing options are required because BPF-LSM
+links attach through BPF trampolines.
+
+The policy channel is part of signed package metadata, not an ad-hoc host file:
+registry entries carrying BPF-LSM artifacts require `bpf-lsm-policy-v1`,
+installed package metadata records the selected JSON policy, BPF object, and
+program names, and `/etc/aos/policy.toml` selects exact
+`[[ebpf-lsm.policies]]` by registry/package/version/artifact path. At boot,
+`aos-ebpf-lsm-policies.service` prepares bpffs and runs
+`apm _load-ebpf-lsm-policies --system`; during live package activation, APM loads
+the same selected fleet policies before starting package targets. The loader
+resolves artifacts only from installed, signed package metadata rooted in the
+current system package generation, validates that the policy JSON matches the
+host selector, invokes the AOS-built `aos-ebpf-lsm-policy` helper, and pins links
+under `/sys/fs/bpf/aos/lsm`. The helper also verifies or mounts bpffs for direct
+and live-reconcile invocations, treats an already complete pin set as
+idempotently loaded, and never unlinks an existing durable pin during load.
+
+This is **host/fleet policy, not per-package manifest** — it is the dynamic
+counterpart to the static MAC of layer 5. The current seed policy proves the
+channel and attach path; enforcement content remains fleet-authored.
 
 ## The systemd hardening baseline (apply to every generated workload service)
 
