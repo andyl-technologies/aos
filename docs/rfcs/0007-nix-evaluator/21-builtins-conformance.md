@@ -642,8 +642,12 @@ eval (network access is disabled unless explicitly allowed).
       - Native local attrset coverage exists for `type = "path"`, `"file"`,
         `"tarball"`, and `"git"` with `outPath`/`narHash` lock metadata,
         pure-mode lock gates, restricted-mode access gates, and configured-store
-        materialization. String flake refs and forge fetchers (`github`,
-        `gitlab`, `sourcehut`) remain pending, so the full builtin stays open.
+        materialization. URL-style string flake refs now dispatch through native
+        `parseFlakeRef` for those same supported input types. Bare absolute
+        path strings are rejected to match C++ Nix's URL-style `fetchTree`
+        string argument contract. Registry/indirect refs, forge fetchers
+        (`github`, `gitlab`, `sourcehut`), and string refs requiring `dir`
+        subdirectory metadata remain pending, so the full builtin stays open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -942,8 +946,11 @@ feature disabled:
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
-- [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local
-      attrset inputs are native; string refs and forge fetchers remain pending.
+- [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local attrset
+      inputs and URL-style string refs for native path/file/tarball/git inputs
+      are native; bare absolute path strings are rejected for parity, while
+      registry/indirect refs, forge fetchers, and `dir` string refs remain
+      pending.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix

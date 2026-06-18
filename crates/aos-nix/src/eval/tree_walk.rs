@@ -1721,6 +1721,7 @@ enum FetchTreeArguments {
         url: Vec<u8>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
+        last_modified_from_lock: bool,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     },
@@ -9423,6 +9424,7 @@ impl TreeWalk {
                 url,
                 expected_nar_hash,
                 expected_last_modified,
+                last_modified_from_lock,
                 rev,
                 rev_count,
                 ..
@@ -9432,6 +9434,7 @@ impl TreeWalk {
                 url,
                 expected_nar_hash,
                 expected_last_modified,
+                last_modified_from_lock,
                 rev,
                 rev_count,
             )?,
@@ -9464,15 +9467,16 @@ impl TreeWalk {
     ) -> Result<FetchTreeArguments, TreeWalkError> {
         if value.tag() == ValueTag::String {
             let input = self.context_free_string_bytes(id, span, value, "fetchTree")?;
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
+            if input.starts_with(b"/") {
+                return Err(Self::fetch_tree_error(
                     id,
-                    input,
-                    message: "string flake references are not implemented by the native evaluator"
-                        .to_owned(),
-                },
-                span,
-            ));
+                    span,
+                    &input,
+                    "fetchTree string argument must be a URL-style flake reference",
+                ));
+            }
+            let attrs = Self::parse_flake_ref_attrs(id, span, &input)?;
+            return self.fetch_tree_flake_ref_arguments(id, span, &input, &attrs);
         }
         if value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -9516,6 +9520,219 @@ impl TreeWalk {
         }
     }
 
+    fn fetch_tree_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        let input_type = Self::required_flake_ref_string_attr(id, span, attrs, TYPE_ATTR)?;
+        if attrs.contains_key(DIR_ATTR) {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "fetchTree string references with dir metadata are not implemented by the native evaluator",
+            ));
+        }
+        match input_type {
+            b"path" => self.fetch_tree_path_flake_ref_arguments(id, span, attrs),
+            b"file" => self.fetch_tree_file_flake_ref_arguments(id, span, attrs),
+            b"tarball" => self.fetch_tree_tarball_flake_ref_arguments(id, span, attrs),
+            b"git" => self.fetch_tree_git_flake_ref_arguments(id, span, input, attrs),
+            _ => Err(Self::fetch_tree_error(
+                id,
+                span,
+                input_type,
+                "unsupported fetchTree string flake reference type",
+            )),
+        }
+    }
+
+    fn fetch_tree_path_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                PATH_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+            ],
+        )?;
+        let path = Self::required_flake_ref_string_attr(id, span, attrs, PATH_ATTR)?.to_vec();
+        if !Path::new(OsStr::from_bytes(&path)).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute { id, path },
+                span,
+            ));
+        }
+        Ok(FetchTreeArguments::Path {
+            path,
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
+                .map(ToOwned::to_owned),
+            rev_count: Self::optional_flake_ref_usize_attr(id, span, attrs, REV_COUNT_ATTR)?,
+        })
+    }
+
+    fn fetch_tree_file_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+            ],
+        )?;
+        Ok(FetchTreeArguments::File {
+            url: Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?.to_vec(),
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
+                .map(ToOwned::to_owned),
+            rev_count: Self::optional_flake_ref_usize_attr(id, span, attrs, REV_COUNT_ATTR)?,
+        })
+    }
+
+    fn fetch_tree_tarball_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+            ],
+        )?;
+        Ok(FetchTreeArguments::Tarball {
+            url: Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?.to_vec(),
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            last_modified_from_lock: true,
+            rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
+                .map(ToOwned::to_owned),
+            rev_count: Self::optional_flake_ref_usize_attr(id, span, attrs, REV_COUNT_ATTR)?,
+        })
+    }
+
+    fn fetch_tree_git_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                SHALLOW_ATTR,
+                SUBMODULES_ATTR,
+                ALL_REFS_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_COUNT_ATTR,
+                EXPORT_IGNORE_ATTR,
+                VERIFY_COMMIT_ATTR,
+                KEYTYPE_ATTR,
+                PUBLIC_KEY_ATTR,
+                PUBLIC_KEYS_ATTR,
+            ],
+        )?;
+        self.validate_fetch_tree_git_flake_ref_verified_fetch_attrs(id, span, attrs)?;
+        let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
+        Self::reject_fetch_tree_git_flake_ref_url_lock_metadata(id, span, input, url)?;
+        let submodules =
+            Self::optional_flake_ref_bool_attr(id, span, attrs, SUBMODULES_ATTR)?.unwrap_or(false);
+        Ok(FetchTreeArguments::Git {
+            args: FetchGitArguments {
+                url: url.to_vec(),
+                name: "source".to_owned(),
+                rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
+                    .map(ToOwned::to_owned),
+                reference: Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?
+                    .map(ToOwned::to_owned),
+                submodules,
+                shallow: Self::optional_flake_ref_bool_attr(id, span, attrs, SHALLOW_ATTR)?
+                    .unwrap_or(true),
+                all_refs: Self::optional_flake_ref_bool_attr(id, span, attrs, ALL_REFS_ATTR)?
+                    .unwrap_or(false),
+                export_ignore: Self::optional_flake_ref_bool_attr(
+                    id,
+                    span,
+                    attrs,
+                    EXPORT_IGNORE_ATTR,
+                )?
+                .unwrap_or(!submodules),
+            },
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            expected_rev_count: Self::optional_flake_ref_usize_attr(
+                id,
+                span,
+                attrs,
+                REV_COUNT_ATTR,
+            )?,
+            dirty_rev: None,
+            dirty_short_rev: None,
+        })
+    }
+
     fn fetch_tree_path_arguments(
         &mut self,
         id: IrId,
@@ -9549,6 +9766,34 @@ impl TreeWalk {
             rev,
             rev_count,
         })
+    }
+
+    fn reject_fetch_tree_git_flake_ref_url_lock_metadata(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        let text = std::str::from_utf8(url)
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let parsed =
+            Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let Some(query) = parsed.query() else {
+            return Ok(());
+        };
+
+        for pair in query.as_bytes().split(|byte| *byte == b'&') {
+            let name = pair.split(|byte| *byte == b'=').next().unwrap_or(pair);
+            if matches!(name, NAR_HASH_ATTR | LAST_MODIFIED_ATTR | REV_COUNT_ATTR) {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    input,
+                    "fetchTree git string references with lock metadata in the URL query are not implemented by the native evaluator",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn fetch_tree_file_arguments(
@@ -9618,6 +9863,7 @@ impl TreeWalk {
             url,
             expected_nar_hash,
             expected_last_modified,
+            last_modified_from_lock: false,
             rev,
             rev_count,
         })
@@ -10132,6 +10378,7 @@ impl TreeWalk {
         url: Vec<u8>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
+        last_modified_from_lock: bool,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     ) -> Result<FetchTreeResult, TreeWalkError> {
@@ -10164,14 +10411,20 @@ impl TreeWalk {
         let result = (|| {
             let digest = self.source_path_nar_sha256(id, span, &unpacked_root, None)?;
             Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
-            let last_modified = Self::fetch_tree_last_modified(id, span, &url, &unpacked_root)?;
-            Self::check_fetch_tree_last_modified(
-                id,
-                span,
-                &url,
-                expected_last_modified,
-                last_modified,
-            )?;
+            let observed_last_modified =
+                Self::fetch_tree_last_modified(id, span, &url, &unpacked_root)?;
+            let last_modified = if last_modified_from_lock {
+                expected_last_modified.unwrap_or(observed_last_modified)
+            } else {
+                Self::check_fetch_tree_last_modified(
+                    id,
+                    span,
+                    &url,
+                    expected_last_modified,
+                    observed_last_modified,
+                )?;
+                observed_last_modified
+            };
             let last_modified_date = Self::format_fetch_git_date(id, span, &url, last_modified)?;
             let nar_hash = Self::encode_convert_hash_digest(
                 id,
@@ -11850,6 +12103,123 @@ impl TreeWalk {
             )),
             None => Ok(None),
         }
+    }
+
+    fn optional_flake_ref_i64_attr(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<Option<i64>, TreeWalkError> {
+        let Some(value) = Self::optional_flake_ref_u64_attr(id, span, attrs, name)? else {
+            return Ok(None);
+        };
+        i64::try_from(value).map(Some).map_err(|_| {
+            Self::flake_ref_error(
+                id,
+                span,
+                name,
+                "flake reference integer attribute does not fit in Nix int",
+            )
+        })
+    }
+
+    fn optional_flake_ref_usize_attr(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<Option<usize>, TreeWalkError> {
+        let Some(value) = Self::optional_flake_ref_u64_attr(id, span, attrs, name)? else {
+            return Ok(None);
+        };
+        usize::try_from(value).map(Some).map_err(|_| {
+            Self::flake_ref_error(
+                id,
+                span,
+                name,
+                "flake reference integer attribute does not fit in usize",
+            )
+        })
+    }
+
+    fn optional_flake_ref_u64_attr(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<Option<u64>, TreeWalkError> {
+        match attrs.get(name) {
+            Some(FlakeRefAttrValue::Int(value)) => Ok(Some(*value)),
+            Some(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FlakeRef {
+                    id,
+                    input: name.to_vec(),
+                    message: "flake reference attribute has the wrong type".to_owned(),
+                },
+                span,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn optional_flake_ref_nar_hash_attr(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+        let Some(hash) = Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
+        else {
+            return Ok(None);
+        };
+        self.decode_fetch_tree_nar_hash(id, span, hash).map(Some)
+    }
+
+    fn validate_fetch_tree_git_flake_ref_verified_fetch_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<(), TreeWalkError> {
+        let _ = Self::optional_flake_ref_string_attr(id, span, attrs, KEYTYPE_ATTR)?;
+        if Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEY_ATTR)?.is_some() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: PUBLIC_KEY_ATTR.to_vec(),
+                    message:
+                        "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                },
+                span,
+            ));
+        }
+        if Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEYS_ATTR)?.is_some() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: PUBLIC_KEYS_ATTR.to_vec(),
+                    message:
+                        "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                },
+                span,
+            ));
+        }
+        if Self::optional_flake_ref_bool_attr(id, span, attrs, VERIFY_COMMIT_ATTR)? == Some(true) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: VERIFY_COMMIT_ATTR.to_vec(),
+                    message:
+                        "fetchTree verified git fetches are not implemented by the native evaluator"
+                            .to_owned(),
+                },
+                span,
+            ));
+        }
+        Ok(())
     }
 
     fn flake_ref_attr_query_value(value: &FlakeRefAttrValue) -> Vec<u8> {
@@ -43745,6 +44115,68 @@ mod tests {
     }
 
     #[test]
+    fn fetch_tree_string_refs_dispatch_to_supported_inputs() {
+        let dir = unique_temp_dir("fetch-tree-string-refs");
+        let source_dir = dir.join("source");
+        fs::create_dir(&source_dir).expect("source directory creates");
+        fs::write(source_dir.join("file.txt"), b"path-data").expect("source file writes");
+        let (file_dir, file_path) = temp_file_with_bytes("fetch-tree-string-file", b"plain-data");
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-string-tarball");
+        let store_dir = unique_temp_dir("fetch-tree-string-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let path_ref = nix_string_literal(&format!("path:{}", path_source(&source_dir)));
+        let file_ref = nix_string_literal(&format!("file+file://{}", path_source(&file_path)));
+        let tarball_ref = nix_string_literal(&format!(
+            "file://{}?lastModified=1&narHash=da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2&rev=abcdef1234567890&revCount=7",
+            path_source(&archive_path)
+        ));
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let
+                  pathTree = builtins.fetchTree {path_ref};
+                  fileTree = builtins.fetchTree {file_ref};
+                  tarballTree = builtins.fetchTree {tarball_ref};
+                in {{
+                  pathData = builtins.readFile "${{pathTree.outPath}}/file.txt";
+                  fileData = builtins.readFile fileTree.outPath;
+                  tarballData = builtins.readFile "${{tarballTree.outPath}}/file.txt";
+                  tarballRev = tarballTree.rev;
+                  tarballShortRev = tarballTree.shortRev;
+                  tarballRevCount = tarballTree.revCount;
+                  tarballLastModified = tarballTree.lastModified;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree string ref JSON parses");
+        assert_eq!(value["pathData"], "path-data");
+        assert_eq!(value["fileData"], "plain-data");
+        assert_eq!(value["tarballData"], "data");
+        assert_eq!(value["tarballRev"], "abcdef1234567890");
+        assert_eq!(value["tarballShortRev"], "abcdef1");
+        assert_eq!(value["tarballRevCount"], 7);
+        assert_eq!(value["tarballLastModified"], 1);
+
+        let bare_path_ref = nix_string_literal(&path_source(&source_dir));
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {bare_path_ref}"#)),
+            options,
+        )
+        .expect_err("bare absolute path string fetchTree rejects");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        fs::remove_dir_all(dir).expect("source temp directory removes");
+        fs::remove_dir_all(file_dir).expect("file temp directory removes");
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
     fn fetch_tree_git_input_returns_flake_lock_metadata() {
         let (repo_dir, _) = git_repo_with_file("fetch-tree-git");
         let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
@@ -43908,6 +44340,107 @@ mod tests {
     }
 
     #[test]
+    fn fetch_tree_git_string_ref_returns_flake_lock_metadata() {
+        let (repo_dir, _) = git_repo_with_file("fetch-tree-git-string");
+        let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
+        let oid = repo
+            .head()
+            .expect("git fixture HEAD exists")
+            .target()
+            .expect("git fixture HEAD targets a commit");
+        let store_dir = unique_temp_dir("fetch-tree-git-string-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let rev = oid.to_string();
+        let git_ref =
+            nix_string_literal(&format!("git+file://{}?rev={rev}", path_source(&repo_dir)));
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {git_ref};
+                in {{
+                  data = builtins.readFile "${{x.outPath}}/data.txt";
+                  rev = x.rev;
+                  shortRev = x.shortRev;
+                  submodules = x.submodules;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree git string JSON parses");
+        assert_eq!(value["data"], "git-data");
+        assert_eq!(value["rev"], rev);
+        assert_eq!(value["shortRev"], &rev[..7]);
+        assert_eq!(value["submodules"], false);
+
+        let metadata_ref = nix_string_literal(&format!(
+            "git+file://{}?rev={rev}&revCount=1",
+            path_source(&repo_dir)
+        ));
+        let metadata_error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {metadata_ref}"#)),
+            options.clone(),
+        )
+        .expect_err("unsupported git string lock metadata rejects before repo access");
+        assert!(matches!(
+            metadata_error.kind(),
+            TreeWalkErrorKind::FetchTree { .. }
+        ));
+
+        let mut pure_options = options.clone();
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let pure_json = eval_json_bytes_with_options(
+            &format!(r#"let x = builtins.fetchTree {git_ref}; in x.rev"#),
+            pure_options,
+        );
+        assert_eq!(
+            pure_json,
+            serde_json::to_vec(&rev).expect("rev JSON serializes")
+        );
+
+        let restricted_error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {git_ref}"#)),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted fetchTree git string rejects disallowed canonical URI");
+        assert!(matches!(
+            restricted_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut restricted_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        restricted_options.set_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_uri(
+                format!(
+                    "git+file://{}?rev={rev}&shallow=1&exportIgnore=1",
+                    path_source(&repo_dir)
+                )
+                .into_bytes(),
+            )
+            .expect("git string allowed URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(r#"let x = builtins.fetchTree {git_ref}; in x.rev"#),
+            restricted_options,
+        );
+        assert_eq!(
+            restricted_json,
+            serde_json::to_vec(&rev).expect("rev JSON serializes")
+        );
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
     fn fetch_tree_validates_input_shape() {
         let dir = unique_temp_dir("fetch-tree-invalid");
         fs::write(dir.join("data.txt"), b"data").expect("source file writes");
@@ -43952,6 +44485,10 @@ mod tests {
             r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = true; }"#,
         ))
         .expect_err("unsupported fetchTree verified git fetch rejects before repo access");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs""#))
+            .expect_err("unsupported string flake ref type rejects");
         assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
 
         fs::remove_dir_all(dir).expect("temp directory removes");
