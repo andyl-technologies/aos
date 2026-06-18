@@ -664,3 +664,278 @@ message ListChangeRequestsRequest {
 message ListChangeRequestsResponse {
   repeated ChangeRequest change_requests = 1;
 }
+
+// -- Managed caches (RFC-0004 "11-caches") ---------------------------------
+
+// Hosting and managing Nix binary caches — a first-class sibling of
+// registries. Org-scoped writes require registry.configure on the owning org
+// (instance-level caches require iam.admin on root); reads honor the cache's
+// visibility, like registries.
+service CacheService {
+  rpc CreateCache(CreateCacheRequest) returns (CreateCacheResponse);
+  rpc GetCache(GetCacheRequest) returns (GetCacheResponse);
+  rpc ListCaches(ListCachesRequest) returns (ListCachesResponse);
+  rpc UpdateCache(UpdateCacheRequest) returns (UpdateCacheResponse);
+  rpc DeleteCache(DeleteCacheRequest) returns (DeleteCacheResponse);
+  rpc LinkCache(LinkCacheRequest) returns (LinkCacheResponse);
+  rpc UnlinkCache(UnlinkCacheRequest) returns (UnlinkCacheResponse);
+  rpc ListCacheLinks(ListCacheLinksRequest) returns (ListCacheLinksResponse);
+  rpc SetCacheGcPolicy(SetCacheGcPolicyRequest) returns (SetCacheGcPolicyResponse);
+  rpc GetCacheGcPolicy(GetCacheGcPolicyRequest) returns (GetCacheGcPolicyResponse);
+  rpc PinCachePath(PinCachePathRequest) returns (PinCachePathResponse);
+  rpc UnpinCachePath(UnpinCachePathRequest) returns (UnpinCachePathResponse);
+  rpc ListCacheRoots(ListCacheRootsRequest) returns (ListCacheRootsResponse);
+  rpc SearchCache(SearchCacheRequest) returns (SearchCacheResponse);
+  rpc GetCacheObject(GetCacheObjectRequest) returns (GetCacheObjectResponse);
+  rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
+}
+
+// A managed cache (distinct from `Cache` above, which is a registry's
+// advertised cache-stack endpoint).
+message ManagedCache {
+  string slug = 1;
+  string name = 2;
+  // Owning org slug; empty for an instance-level standalone cache.
+  string org_slug = 3;
+  // Storage binding name within the org.
+  string binding_name = 4;
+  string prefix = 5;
+  // public | internal | private.
+  string visibility = 6;
+  // nix-cache-info Priority (lower = preferred).
+  int64 priority = 7;
+  // zstd | xz | none.
+  string compression = 8;
+  bool want_mass_query = 9;
+  // Whether narinfo is signed by a hosted key.
+  bool signed = 10;
+  int64 created_at = 11;
+  // Running storage totals (populated by GetCache; 0 in list responses).
+  int64 used_bytes = 12;
+  int64 object_count = 13;
+  // Live link and root counts (populated by GetCache).
+  int64 link_count = 14;
+  int64 root_count = 15;
+}
+
+// One narinfo-indexed object in a cache.
+message CacheObject {
+  string store_hash = 1;
+  string store_name = 2;
+  string nar_url = 3;
+  string nar_hash = 4;
+  int64 nar_size = 5;
+  string file_hash = 6;
+  int64 file_size = 7;
+  string compression = 8;
+  string deriver = 9;
+  repeated string refs = 10;
+  string sig = 11;
+  string ca = 12;
+  int64 uploaded_at = 13;
+}
+
+// A cache⇄registry link.
+message CacheLink {
+  string registry_slug = 1;
+  bool roots_packages = 2;
+  bool advertised = 3;
+}
+
+// A garbage-collection root.
+message CacheRoot {
+  string store_hash = 1;
+  // manual | release | channel | package_version | derived.
+  string root_kind = 2;
+  string root_ref = 3;
+  // Manual-pin deadline (unix seconds); unset = unlimited.
+  optional int64 expires_at = 4;
+  int64 created_at = 5;
+}
+
+// A cache GC retention policy (unset scalar = unlimited/disabled).
+message CacheGcPolicyMsg {
+  optional int64 max_bytes = 1;
+  optional int64 max_objects = 2;
+  optional int64 ttl_unreferenced_secs = 3;
+  optional int64 keep_release_versions = 4;
+  bool keep_channel_frontier = 5;
+  optional int64 schedule_secs = 6;
+}
+
+// A past or in-flight GC run.
+message CacheGcRun {
+  int64 id = 1;
+  int64 started_at = 2;
+  optional int64 finished_at = 3;
+  // running | ok | failed.
+  string status = 4;
+  string error = 5;
+  int64 scanned = 6;
+  int64 retained = 7;
+  int64 deleted_objects = 8;
+  int64 freed_bytes = 9;
+}
+
+message CreateCacheRequest {
+  // Owning org slug; empty for an instance-level standalone cache.
+  string org_slug = 1;
+  string slug = 2;
+  string name = 3;
+  // Storage binding name within the org.
+  string binding_name = 4;
+  string prefix = 5;
+  // Visibility: public | internal | private (defaults to private).
+  string visibility = 6;
+  // nix-cache-info Priority (0 → default 40).
+  int64 priority = 7;
+  // zstd | xz | none (empty → zstd).
+  string compression = 8;
+  bool want_mass_query = 9;
+}
+
+message CreateCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message GetCacheRequest {
+  string slug = 1;
+}
+
+message GetCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message ListCachesRequest {
+  // Restrict to one org's caches; empty lists all servable caches.
+  string org_slug = 1;
+}
+
+message ListCachesResponse {
+  repeated ManagedCache caches = 1;
+}
+
+message UpdateCacheRequest {
+  string slug = 1;
+  // A partial update: each omitted field keeps its current value.
+  optional string name = 2;
+  optional string visibility = 3;
+  optional int64 priority = 4;
+  optional string compression = 5;
+  optional bool want_mass_query = 6;
+}
+
+message UpdateCacheResponse {
+  ManagedCache cache = 1;
+}
+
+message DeleteCacheRequest {
+  string slug = 1;
+  // Hard-delete the row (cascade); otherwise soft-delete.
+  bool hard = 2;
+  // Soft-delete grace before purge eligibility (seconds; 0 → 30 days).
+  int64 grace_secs = 3;
+}
+
+message DeleteCacheResponse {
+  bool deleted = 1;
+}
+
+message LinkCacheRequest {
+  string cache_slug = 1;
+  string registry_slug = 2;
+  bool roots_packages = 3;
+  bool advertised = 4;
+}
+
+message LinkCacheResponse {}
+
+message UnlinkCacheRequest {
+  string cache_slug = 1;
+  string registry_slug = 2;
+}
+
+message UnlinkCacheResponse {
+  bool removed = 1;
+}
+
+message ListCacheLinksRequest {
+  string cache_slug = 1;
+}
+
+message ListCacheLinksResponse {
+  repeated CacheLink links = 1;
+}
+
+message SetCacheGcPolicyRequest {
+  string cache_slug = 1;
+  CacheGcPolicyMsg policy = 2;
+}
+
+message SetCacheGcPolicyResponse {}
+
+message GetCacheGcPolicyRequest {
+  string cache_slug = 1;
+}
+
+message GetCacheGcPolicyResponse {
+  // Unset when the cache has no explicit policy.
+  optional CacheGcPolicyMsg policy = 1;
+}
+
+message PinCachePathRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+  // Deadline (unix seconds); unset = unlimited. Renews in place.
+  optional int64 expires_at = 3;
+}
+
+message PinCachePathResponse {}
+
+message UnpinCachePathRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+message UnpinCachePathResponse {
+  bool removed = 1;
+}
+
+message ListCacheRootsRequest {
+  string cache_slug = 1;
+}
+
+message ListCacheRootsResponse {
+  repeated CacheRoot roots = 1;
+}
+
+message SearchCacheRequest {
+  string cache_slug = 1;
+  string query = 2;
+  // Maximum results (0 → 50).
+  int64 limit = 3;
+}
+
+message SearchCacheResponse {
+  repeated CacheObject objects = 1;
+}
+
+message GetCacheObjectRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+message GetCacheObjectResponse {
+  // Unset when the cache has no such object.
+  optional CacheObject object = 1;
+}
+
+message ListCacheGcRunsRequest {
+  string cache_slug = 1;
+  // Maximum runs (0 → 10).
+  int64 limit = 2;
+}
+
+message ListCacheGcRunsResponse {
+  repeated CacheGcRun runs = 1;
+}

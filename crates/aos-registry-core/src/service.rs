@@ -222,6 +222,25 @@ fn channel_message(channel: crate::db::ChannelSummary) -> pb::Channel {
     }
 }
 
+/// Project a [`CacheObject`](crate::db::CacheObject) onto the wire [`pb::CacheObject`].
+fn cache_object_message(o: crate::db::CacheObject) -> pb::CacheObject {
+    pb::CacheObject {
+        store_hash: o.store_hash,
+        store_name: o.store_name,
+        nar_url: o.nar_url,
+        nar_hash: o.nar_hash,
+        nar_size: o.nar_size,
+        file_hash: o.file_hash,
+        file_size: o.file_size,
+        compression: o.compression,
+        deriver: o.deriver.unwrap_or_default(),
+        refs: o.refs,
+        sig: o.sig.unwrap_or_default(),
+        ca: o.ca.unwrap_or_default(),
+        uploaded_at: o.uploaded_at,
+    }
+}
+
 /// Project an [`OrgRecord`](crate::db::OrgRecord) onto the wire [`pb::Org`].
 fn org_message(org: &crate::db::OrgRecord) -> pb::Org {
     pb::Org {
@@ -1460,6 +1479,650 @@ impl RpcService {
         Ok(pb::CreateRegistryResponse {
             registry: Some(self.registry_message(&record, status).await?),
         })
+    }
+
+    // -- CacheService (RFC-0004 "11-caches") ---------------------------------
+
+    /// Resolve a managed cache by slug or map a miss to `NotFound`.
+    async fn cache_or_not_found(&self, slug: &str) -> Result<crate::db::Cache, RpcError> {
+        self.db
+            .cache_by_slug(slug)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache"))
+    }
+
+    /// Authorize a cache write: `registry.configure` on the owning org, or
+    /// `iam.admin` on root for an instance-level cache.
+    async fn require_cache_admin(
+        &self,
+        auth: Option<&str>,
+        org_id: Option<i64>,
+    ) -> Result<(), RpcError> {
+        let claims = self.require_claims(auth)?;
+        match org_id {
+            Some(id) => {
+                let org = self
+                    .db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("org"))?;
+                self.require_permission(&claims, Permission::RegistryConfigure, &Scope::parse(&org.slug))
+                    .await
+            }
+            None => {
+                self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+                    .await
+            }
+        }
+    }
+
+    /// Authorize a cache read: public caches are open; otherwise `read` on the
+    /// owning org (or `iam.admin` on root for a private instance-level cache).
+    async fn require_cache_read(
+        &self,
+        auth: Option<&str>,
+        cache: &crate::db::Cache,
+    ) -> Result<(), RpcError> {
+        if let Some(org_id) = cache.org_id {
+            if !self
+                .db
+                .org_is_active(org_id)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::not_found("cache"));
+            }
+        }
+        if cache.visibility == "public" {
+            return Ok(());
+        }
+        let claims = self.require_claims(auth)?;
+        match cache.org_id {
+            Some(id) => {
+                let org = self
+                    .db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("cache"))?;
+                self.require_permission(&claims, Permission::Read, &Scope::parse(&org.slug))
+                    .await
+            }
+            None => {
+                self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+                    .await
+            }
+        }
+    }
+
+    /// Build the wire [`pb::ManagedCache`] for a cache record, resolving its org
+    /// slug and binding name; `stats` folds in usage/link/root counts.
+    async fn managed_cache_message(
+        &self,
+        c: &crate::db::Cache,
+        stats: bool,
+    ) -> Result<pb::ManagedCache, RpcError> {
+        let org_slug = match c.org_id {
+            Some(id) => self
+                .db
+                .org_by_id(id)
+                .await
+                .map_err(RpcError::internal)?
+                .map(|o| o.slug)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let binding_name = self
+            .db
+            .storage_binding(c.storage_binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .map(|b| b.name)
+            .unwrap_or_default();
+        let (used_bytes, object_count, link_count, root_count) = if stats {
+            let u = self.db.cache_usage(c.id).await.map_err(RpcError::internal)?;
+            let links = self
+                .db
+                .list_cache_links(c.id)
+                .await
+                .map_err(RpcError::internal)?
+                .len() as i64;
+            let roots = self
+                .db
+                .list_cache_roots(c.id)
+                .await
+                .map_err(RpcError::internal)?
+                .len() as i64;
+            (u.used_bytes, u.object_count, links, roots)
+        } else {
+            (0, 0, 0, 0)
+        };
+        Ok(pb::ManagedCache {
+            slug: c.slug.clone(),
+            name: c.name.clone(),
+            org_slug,
+            binding_name,
+            prefix: c.prefix.clone(),
+            visibility: c.visibility.clone(),
+            priority: c.priority,
+            compression: c.compression.clone(),
+            want_mass_query: c.want_mass_query,
+            signed: c.hosted_key_id.is_some(),
+            created_at: c.created_at,
+            used_bytes,
+            object_count,
+            link_count,
+            root_count,
+        })
+    }
+
+    /// `CacheService.CreateCache` — create an org-owned managed cache.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::InvalidArgument`] for a missing slug/org/binding or bad
+    /// visibility, [`RpcError::NotFound`] for an unknown org/binding,
+    /// [`RpcError::PermissionDenied`] without `registry.configure`,
+    /// [`RpcError::AlreadyExists`] for a duplicate slug, [`RpcError::Internal`]
+    /// on database failure.
+    pub async fn create_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreateCacheRequest,
+    ) -> Result<pb::CreateCacheResponse, RpcError> {
+        if req.slug.is_empty() {
+            return Err(RpcError::invalid("cache slug is required"));
+        }
+        if req.org_slug.is_empty() {
+            return Err(RpcError::invalid("org_slug is required to create a cache"));
+        }
+        if req.binding_name.is_empty() {
+            return Err(RpcError::invalid("binding_name is required"));
+        }
+        let visibility = match req.visibility.as_str() {
+            "" => "private",
+            v @ ("public" | "internal" | "private") => v,
+            other => return Err(RpcError::invalid(format!("invalid visibility '{other}'"))),
+        };
+        // Validate the prefix here so a malformed one is a 400 (the DB's bail!
+        // would otherwise be folded into the duplicate-slug AlreadyExists below).
+        if !req.prefix.is_empty() {
+            let rel = std::path::Path::new(&req.prefix);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|comp| !matches!(comp, std::path::Component::Normal(_)))
+            {
+                return Err(RpcError::invalid(format!(
+                    "cache prefix '{}' must be a relative path with no '..' components",
+                    req.prefix
+                )));
+            }
+        }
+        let org = self.org_or_not_found(&req.org_slug).await?;
+        self.require_cache_admin(auth, Some(org.id)).await?;
+        let binding_id = self
+            .db
+            .storage_binding_by_name(org.id, &req.binding_name)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("storage binding"))?
+            .id;
+        let name = if req.name.is_empty() {
+            &req.slug
+        } else {
+            &req.name
+        };
+        let priority = if req.priority == 0 { 40 } else { req.priority };
+        let compression = if req.compression.is_empty() {
+            "zstd"
+        } else {
+            &req.compression
+        };
+        let id = self
+            .db
+            .create_cache(
+                Some(org.id),
+                &req.slug,
+                name,
+                binding_id,
+                &req.prefix,
+                None,
+                visibility,
+                priority,
+                compression,
+                req.want_mass_query,
+            )
+            .await
+            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
+        let c = self
+            .db
+            .cache_by_id(id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("cache {id} vanished after creation")))?;
+        Ok(pb::CreateCacheResponse {
+            cache: Some(self.managed_cache_message(&c, true).await?),
+        })
+    }
+
+    /// `CacheService.GetCache` — a cache's configuration + usage.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors for a non-public
+    /// cache read without authority, [`RpcError::Internal`] on database failure.
+    pub async fn get_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetCacheRequest,
+    ) -> Result<pb::GetCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        Ok(pb::GetCacheResponse {
+            cache: Some(self.managed_cache_message(&c, true).await?),
+        })
+    }
+
+    /// `CacheService.ListCaches` — servable caches, visibility-filtered.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown `org_slug` filter,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_caches(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListCachesRequest,
+    ) -> Result<pb::ListCachesResponse, RpcError> {
+        let all = if req.org_slug.is_empty() {
+            self.db.list_caches().await.map_err(RpcError::internal)?
+        } else {
+            let org = self.org_or_not_found(&req.org_slug).await?;
+            self.db
+                .list_caches_for_org(org.id)
+                .await
+                .map_err(RpcError::internal)?
+        };
+        // `list_caches_for_org` is the unfiltered admin/export view; exclude
+        // soft-deleted caches here so the API matches the global listing.
+        let all: Vec<_> = all.into_iter().filter(|c| c.deleted_at.is_none()).collect();
+        let mut out = Vec::new();
+        for c in &all {
+            // Surface public caches to everyone; gate the rest on read authority.
+            if c.visibility == "public" || self.require_cache_read(auth, c).await.is_ok() {
+                out.push(self.managed_cache_message(c, false).await?);
+            }
+        }
+        Ok(pb::ListCachesResponse { caches: out })
+    }
+
+    /// `CacheService.UpdateCache` — update a cache's mutable fields.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, [`RpcError::InvalidArgument`]
+    /// for a bad visibility, auth errors, [`RpcError::Internal`] on failure.
+    pub async fn update_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::UpdateCacheRequest,
+    ) -> Result<pb::UpdateCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        // Partial update: an omitted field keeps the current value.
+        let visibility = match req.visibility {
+            Some(v) => match v.as_str() {
+                "public" | "internal" | "private" => v,
+                other => {
+                    return Err(RpcError::invalid(format!("invalid visibility '{other}'")));
+                }
+            },
+            None => c.visibility.clone(),
+        };
+        let name = req.name.unwrap_or_else(|| c.name.clone());
+        let priority = req.priority.unwrap_or(c.priority);
+        let compression = req.compression.unwrap_or_else(|| c.compression.clone());
+        let want_mass_query = req.want_mass_query.unwrap_or(c.want_mass_query);
+        self.db
+            .update_cache(
+                c.id,
+                &name,
+                &visibility,
+                priority,
+                &compression,
+                want_mass_query,
+                c.hosted_key_id,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        let c = self.cache_or_not_found(&req.slug).await?;
+        Ok(pb::UpdateCacheResponse {
+            cache: Some(self.managed_cache_message(&c, true).await?),
+        })
+    }
+
+    /// `CacheService.DeleteCache` — soft- or hard-delete a cache.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn delete_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::DeleteCacheRequest,
+    ) -> Result<pb::DeleteCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        let deleted = if req.hard {
+            self.db.delete_cache(c.id).await.map_err(RpcError::internal)?
+        } else {
+            let grace = if req.grace_secs == 0 {
+                30 * 86_400
+            } else {
+                req.grace_secs
+            };
+            let now = crate::clock::now_unix_secs();
+            self.db
+                .soft_delete_cache(c.id, now + grace)
+                .await
+                .map_err(RpcError::internal)?
+        };
+        Ok(pb::DeleteCacheResponse { deleted })
+    }
+
+    /// `CacheService.LinkCache` — link (or update) a cache⇄registry association.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache or registry, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn link_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::LinkCacheRequest,
+    ) -> Result<pb::LinkCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        let r = self.registry_or_not_found(&req.registry_slug).await?;
+        self.db
+            .link_cache(c.id, r.id, req.roots_packages, req.advertised)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::LinkCacheResponse {})
+    }
+
+    /// `CacheService.UnlinkCache` — remove a cache⇄registry association.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache or registry, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn unlink_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::UnlinkCacheRequest,
+    ) -> Result<pb::UnlinkCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        let r = self.registry_or_not_found(&req.registry_slug).await?;
+        let removed = self
+            .db
+            .unlink_cache(c.id, r.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::UnlinkCacheResponse { removed })
+    }
+
+    /// `CacheService.ListCacheLinks` — a cache's registry links.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_cache_links(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListCacheLinksRequest,
+    ) -> Result<pb::ListCacheLinksResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let mut links = Vec::new();
+        for l in self
+            .db
+            .list_cache_links(c.id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let registry_slug = self
+                .db
+                .registry_by_id(l.registry_id)
+                .await
+                .map_err(RpcError::internal)?
+                .map(|r| r.slug)
+                .unwrap_or_default();
+            links.push(pb::CacheLink {
+                registry_slug,
+                roots_packages: l.roots_packages,
+                advertised: l.advertised,
+            });
+        }
+        Ok(pb::ListCacheLinksResponse { links })
+    }
+
+    /// `CacheService.SetCacheGcPolicy` — replace a cache's GC policy.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn set_cache_gc_policy(
+        &self,
+        auth: Option<&str>,
+        req: pb::SetCacheGcPolicyRequest,
+    ) -> Result<pb::SetCacheGcPolicyResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        let p = req.policy.unwrap_or_default();
+        self.db
+            .set_cache_gc_policy(&crate::db::CacheGcPolicy {
+                cache_id: c.id,
+                max_bytes: p.max_bytes,
+                max_objects: p.max_objects,
+                ttl_unreferenced_secs: p.ttl_unreferenced_secs,
+                keep_release_versions: p.keep_release_versions,
+                keep_channel_frontier: p.keep_channel_frontier,
+                schedule_secs: p.schedule_secs,
+                updated_at: 0,
+            })
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::SetCacheGcPolicyResponse {})
+    }
+
+    /// `CacheService.GetCacheGcPolicy` — a cache's GC policy, if set.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn get_cache_gc_policy(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetCacheGcPolicyRequest,
+    ) -> Result<pb::GetCacheGcPolicyResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let policy = self
+            .db
+            .cache_gc_policy(c.id)
+            .await
+            .map_err(RpcError::internal)?
+            .map(|p| pb::CacheGcPolicyMsg {
+                max_bytes: p.max_bytes,
+                max_objects: p.max_objects,
+                ttl_unreferenced_secs: p.ttl_unreferenced_secs,
+                keep_release_versions: p.keep_release_versions,
+                keep_channel_frontier: p.keep_channel_frontier,
+                schedule_secs: p.schedule_secs,
+            });
+        Ok(pb::GetCacheGcPolicyResponse { policy })
+    }
+
+    /// `CacheService.PinCachePath` — pin a store path (or renew its deadline).
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn pin_cache_path(
+        &self,
+        auth: Option<&str>,
+        req: pb::PinCachePathRequest,
+    ) -> Result<pb::PinCachePathResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        self.db
+            .pin_cache_path(c.id, &req.store_hash, req.expires_at)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::PinCachePathResponse {})
+    }
+
+    /// `CacheService.UnpinCachePath` — remove a manual GC pin.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn unpin_cache_path(
+        &self,
+        auth: Option<&str>,
+        req: pb::UnpinCachePathRequest,
+    ) -> Result<pb::UnpinCachePathResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, c.org_id).await?;
+        let removed = self
+            .db
+            .unpin_cache_path(c.id, &req.store_hash)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::UnpinCachePathResponse { removed })
+    }
+
+    /// `CacheService.ListCacheRoots` — a cache's GC roots.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_cache_roots(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListCacheRootsRequest,
+    ) -> Result<pb::ListCacheRootsResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let roots = self
+            .db
+            .list_cache_roots(c.id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|r| pb::CacheRoot {
+                store_hash: r.store_hash,
+                root_kind: r.root_kind,
+                root_ref: r.root_ref,
+                expires_at: r.expires_at,
+                created_at: r.created_at,
+            })
+            .collect();
+        Ok(pb::ListCacheRootsResponse { roots })
+    }
+
+    /// `CacheService.SearchCache` — search a cache's objects.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn search_cache(
+        &self,
+        auth: Option<&str>,
+        req: pb::SearchCacheRequest,
+    ) -> Result<pb::SearchCacheResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let limit = if req.limit == 0 { 50 } else { req.limit };
+        let objects = self
+            .db
+            .search_cache_objects(c.id, &req.query, limit)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(cache_object_message)
+            .collect();
+        Ok(pb::SearchCacheResponse { objects })
+    }
+
+    /// `CacheService.GetCacheObject` — one object's narinfo metadata.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn get_cache_object(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetCacheObjectRequest,
+    ) -> Result<pb::GetCacheObjectResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let object = self
+            .db
+            .cache_object(c.id, &req.store_hash)
+            .await
+            .map_err(RpcError::internal)?
+            .map(cache_object_message);
+        Ok(pb::GetCacheObjectResponse { object })
+    }
+
+    /// `CacheService.ListCacheGcRuns` — a cache's recent GC runs.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors,
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_cache_gc_runs(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListCacheGcRunsRequest,
+    ) -> Result<pb::ListCacheGcRunsResponse, RpcError> {
+        let c = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &c).await?;
+        let limit = if req.limit == 0 { 10 } else { req.limit };
+        let runs = self
+            .db
+            .list_cache_gc_runs(c.id, limit)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|r| pb::CacheGcRun {
+                id: r.id,
+                started_at: r.started_at,
+                finished_at: r.finished_at,
+                status: r.status,
+                error: r.error.unwrap_or_default(),
+                scanned: r.scanned,
+                retained: r.retained,
+                deleted_objects: r.deleted_objects,
+                freed_bytes: r.freed_bytes,
+            })
+            .collect();
+        Ok(pb::ListCacheGcRunsResponse { runs })
     }
 
     /// `ProjectService.CreateProject` — create a project at a materialized path

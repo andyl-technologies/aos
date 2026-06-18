@@ -548,9 +548,13 @@ the current spec. Phases are orderable; A lands first, E last.
       (calls the `Database` layer directly). `frontend --mode direct|proxied` +
       proxy-settings/binding-`access` flags land with the frontend slice (#21);
       `push`/`pull` with the storage slice (#20).
-- [ ] RPC: `CreateCache`/`GetCache`/`ListCaches`/`UpdateCache`/`DeleteCache`,
-      `LinkCache`/`UnlinkCache`, `GetCacheObject`,
-      `MintCacheUploadCredentials`; `visibility` + role enforcement.
+- [x] RPC (`CacheService`, shared router → native + worker): `CreateCache`/
+      `GetCache`/`ListCaches`/`UpdateCache` (partial)/`DeleteCache`, `LinkCache`/
+      `UnlinkCache`/`ListCacheLinks`, `SetCacheGcPolicy`/`GetCacheGcPolicy`,
+      `PinCachePath`/`UnpinCachePath`/`ListCacheRoots`, `SearchCache`/
+      `GetCacheObject`, `ListCacheGcRuns` — with `visibility` + role enforcement
+      (`registry.configure`/`read`/`iam.admin`). `MintCacheUploadCredentials`
+      lands with the storage slice (#20).
 
 ### Phase C — garbage collection & retention
 
