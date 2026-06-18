@@ -1208,7 +1208,7 @@ in
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$unit"
           grep -q 'After=network.target aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
           grep -q 'Requires=aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' "$unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2eexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$unit"
           grep -q "RootDirectory=$payload" "$unit"
           grep -q 'MountAPIVFS=true' "$unit"
           grep -q 'ProtectSystem=strict' "$unit"
@@ -1315,6 +1315,10 @@ in
             echo "host-side MAC policy service must not run through aos-landlock" >&2
             exit 1
           fi
+          if grep -q 'aos-selinux-run' "$mac"; then
+            echo "host-side MAC policy service must not run through aos-selinux-run" >&2
+            exit 1
+          fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$mac"
           grep -q 'WantedBy=aos-pkg-expose-smoke.target' "$mac"
           grep -q 'Before=expose-smoke.service var-lib-exposesmoke.mount' "$mac"
@@ -1342,6 +1346,10 @@ in
           fi
           if grep -q 'aos-landlock' "$ebpf"; then
             echo "host-side eBPF policy service must not run through aos-landlock" >&2
+            exit 1
+          fi
+          if grep -q 'aos-selinux-run' "$ebpf"; then
+            echo "host-side eBPF policy service must not run through aos-selinux-run" >&2
             exit 1
           fi
           grep -q 'PartOf=aos-pkg-expose-smoke.target' "$ebpf"
@@ -1396,7 +1404,16 @@ in
           grep -Fq '"securityLabel":"aos.expose-smoke"' "$mac_profile"
           grep -Fq 'module aos_x2eexpose_x2dsmoke 1.0;' "$selinux_source"
           grep -Fq 'type aos_x2eexpose_x2dsmoke_t;' "$selinux_source"
+          grep -Fq 'typeattribute aos_x2eexpose_x2dsmoke_t domain;' "$selinux_source"
           grep -Fq 'role system_r types aos_x2eexpose_x2dsmoke_t;' "$selinux_source"
+          grep -Fq 'class fd use;' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t init_t:fd use;' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t kernel_t:fd use;' "$selinux_source"
+          grep -Fq 'allow kernel_t aos_x2eexpose_x2dsmoke_t:process dyntransition;' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t self:process { execmem execstack execheap };' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t self:process2 { nnp_transition nosuid_transition };' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t file_type:file execmod;' "$selinux_source"
+          grep -Fq 'allow aos_x2eexpose_x2dsmoke_t unlabeled_t:file { execute execute_no_trans execmod getattr map open read };' "$selinux_source"
 
           minimal_unit="$minimalExposePath/units/expose-minimal.service"
           minimal_target="$minimalExposePath/units/aos-pkg-expose-minimal.target"
@@ -1428,7 +1445,7 @@ in
           grep -q 'Description=RFC-0001 expose minimal service' "$minimal_unit"
           grep -q "RootDirectory=$minimalPayload" "$minimal_unit"
           grep -q 'Slice=aos-pkg-expose-minimal.slice' "$minimal_unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dminimal_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-minimal -- ${pkgs.bash}/bin/bash -c true' \
             "$minimal_unit"
           grep -q 'PrivateNetwork=true' "$minimal_unit"
           grep -q 'PrivateDevices=true' "$minimal_unit"
@@ -1452,6 +1469,8 @@ in
           grep -Fq '"securityLabel":"aos-pkg-expose-minimal"' "$minimal_mac_profile"
           grep -Fq '"profilePath":"mac/selinux/aos_x2dpkg_x2dexpose_x2dminimal.pp"' "$minimal_mac_profile"
           grep -Fq 'module aos_x2dpkg_x2dexpose_x2dminimal 1.0;' "$minimal_selinux_source"
+          grep -Fq 'typeattribute aos_x2dpkg_x2dexpose_x2dminimal_t domain;' "$minimal_selinux_source"
+          grep -Fq 'allow kernel_t aos_x2dpkg_x2dexpose_x2dminimal_t:process dyntransition;' "$minimal_selinux_source"
           if grep -q '"kernel-modules"\|"capabilities"\|"devices"\|"host-paths"\|"cgroup-delegate"\|"privileged-users"\|"network"' \
             "$minimal_manifest"; then
             echo "minimal expose manifest must not request explicit permission grants" >&2
@@ -1611,6 +1630,10 @@ in
             echo "unconfined host path package must not run through aos-landlock" >&2
             exit 1
           fi
+          if grep -q 'aos-selinux-run' "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
+            echo "unconfined host path package must not run through aos-selinux-run" >&2
+            exit 1
+          fi
           for directive in RootDirectory MountAPIVFS ProtectSystem NoNewPrivileges BindPaths BindReadOnlyPaths CapabilityBoundingSet AmbientCapabilities DeviceAllow DevicePolicy PrivateDevices RestrictAddressFamilies SystemCallFilter SystemCallErrorNumber; do
             if grep -q "^$directive=" "$unconfinedExposePath/units/expose-smoke-unconfined.service"; then
               echo "unconfined package must not render host-unit sandbox directive $directive" >&2
@@ -1649,9 +1672,9 @@ in
           grep -q 'Slice=aos-pkg-expose-smoke.slice' "$private_outbound_unit"
           grep -q 'PrivateNetwork=false' "$private_outbound_unit"
           grep -q 'NetworkNamespacePath=/run/netns/aos-pkg-expose-smoke' "$private_outbound_unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
-          grep -q 'ExecReload=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecReload=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --tcp-bind 8000 --tcp-connect 443 -- ${pkgs.bash}/bin/bash -c true' \
             "$private_outbound_unit"
           grep -q 'aos-landlock' "$private_outbound_unit"
           grep -q 'Wants=aos-pkg-expose-smoke.slice expose-smoke-private-outbound.service aos-pkg-expose-smoke-modules.service aos-pkg-expose-smoke-sysctl.service aos-pkg-expose-smoke-firewall.service aos-pkg-expose-smoke-netns.service aos-pkg-expose-smoke-mac.service aos-pkg-expose-smoke-ebpf.service' \
@@ -1746,7 +1769,7 @@ in
           test -f "$host_path_without_prepare_unit"
           test -f "$host_path_without_prepare_policy"
           grep -q 'BindPaths=/srv/expose-smoke-rw' "$host_path_without_prepare_unit"
-          grep -q 'ExecStart=.*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke --fs-rw /srv/expose-smoke-rw -- ${pkgs.bash}/bin/bash -c true' \
             "$host_path_without_prepare_unit"
           grep -q '"fs":{"readOnly":\[\],"readWrite":\["/srv/expose-smoke-rw"\]}' \
             "$host_path_without_prepare_policy"

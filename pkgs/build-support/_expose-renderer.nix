@@ -944,7 +944,7 @@
   in
     throwIfNot
     (!hasAnyExecPrefix text)
-    "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} prefix that cannot be preserved by aos-landlock: ${text}"
+    "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} prefix that cannot be preserved by generated sandbox wrappers: ${text}"
     command;
 in rec {
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
@@ -1208,11 +1208,13 @@ in rec {
     macProfileEnabled = confinementClass != "unconfined";
     macModuleName = selinuxIdentifierForLabel manifestPermissions.security-label;
     macTypeName = "${macModuleName}_t";
+    macContext = "system_u:system_r:${macTypeName}";
     macProfilePath = "mac/selinux/${macModuleName}.pp";
     macModulePath = "mac/selinux/${macModuleName}.mod";
     macSourcePath = "mac/selinux/${macModuleName}.te";
     macProfilePathPlaceholder = "@AOS_EXPOSE_ARTIFACT@/${macProfilePath}";
     macLoadCommand = "${pkgs.policycoreutils}/sbin/semodule -i ${macProfilePathPlaceholder}";
+    macRunPrefix = "${pkgs.aos-selinux-run}/bin/aos-selinux-run --context ${macContext} --";
     netnsHostIf = "aos${netnsHash}h";
     netnsPeerIf = "aos${netnsHash}p";
     netnsSubnetIndex =
@@ -1340,12 +1342,17 @@ in rec {
         )
       );
 
-    wrapLandlockExecCommand = unitName: key: value:
+    execWrapperPrefix = builtins.concatStringsSep " " (
+      lib.optional macProfileEnabled macRunPrefix
+      ++ lib.optional landlockEnabled landlockPrefix
+    );
+
+    wrapSandboxExecCommand = unitName: key: value:
       if builtins.isList value
-      then builtins.map (command: wrapLandlockExecCommand unitName key command) value
+      then builtins.map (command: wrapSandboxExecCommand unitName key command) value
       else let
         checkedCommand = validateNoLandlockExecPrefixes packageName unitName key value;
-      in "${landlockPrefix} ${builtins.toString checkedCommand}";
+      in "${execWrapperPrefix} ${builtins.toString checkedCommand}";
 
     landlockServiceConfigFor = unitName: unit: authoredServiceConfig: let
       scriptDerivedExecs =
@@ -1356,7 +1363,7 @@ in rec {
       wrappedExecConfig = builtins.listToAttrs (
         builtins.map (key: {
           name = key;
-          value = wrapLandlockExecCommand unitName key authoredServiceConfig.${key};
+          value = wrapSandboxExecCommand unitName key authoredServiceConfig.${key};
         })
         presentExecKeys
       );
@@ -2074,11 +2081,36 @@ in rec {
       module ${macModuleName} 1.0;
 
       require {
+        type init_t;
+        type kernel_t;
+        type unlabeled_t;
+        attribute domain;
+        attribute file_type;
         role system_r;
+        class dir { getattr open read search };
+        class fd use;
+        class file { execute execute_no_trans execmod getattr map open read };
+        class lnk_file { getattr read };
+        class process { dyntransition execmem execstack execheap };
+        class process2 { nnp_transition nosuid_transition };
       }
 
       type ${macTypeName};
+      typeattribute ${macTypeName} domain;
       role system_r types ${macTypeName};
+
+      allow ${macTypeName} init_t:fd use;
+      allow init_t ${macTypeName}:process dyntransition;
+      allow init_t ${macTypeName}:process2 { nnp_transition nosuid_transition };
+      allow ${macTypeName} kernel_t:fd use;
+      allow kernel_t ${macTypeName}:process dyntransition;
+      allow kernel_t ${macTypeName}:process2 { nnp_transition nosuid_transition };
+      allow ${macTypeName} self:process { execmem execstack execheap };
+      allow ${macTypeName} self:process2 { nnp_transition nosuid_transition };
+      allow ${macTypeName} file_type:file execmod;
+      allow ${macTypeName} unlabeled_t:dir { getattr open read search };
+      allow ${macTypeName} unlabeled_t:file { execute execute_no_trans execmod getattr map open read };
+      allow ${macTypeName} unlabeled_t:lnk_file { getattr read };
     '';
     macProfileCommands =
       if macProfileEnabled
