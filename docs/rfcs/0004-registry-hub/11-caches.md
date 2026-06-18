@@ -548,9 +548,11 @@ the current spec. Phases are orderable; A lands first, E last.
       generated from the cache config, `<hash>.narinfo`/`nar/<file>` as
       passthrough bytes from a cache-scoped fetcher (`cache_fetcher`), on native
       **and** the wasm worker via the one shared router; visibility +
-      soft-delete (tombstone) enforced before any byte. **Remaining:** client
-      `Range:` → `206` streaming (with #19), and the `trusted-public-keys`
-      line + public-key endpoint (with signing, #20-step2).
+      soft-delete (tombstone) enforced before any byte. The cache home page now
+      advertises the `extra-trusted-public-keys` line for a keyed cache (derived
+      from the hosted key's stored SSH line via `nix_sign::nix_public_key_from_ssh_line`
+      — public material, no sealer). **Remaining:** client `Range:` → `206`
+      streaming on the *worker* (with #19; native already streams).
 - [x] **Backend access mode:** v23 adds `storage_bindings.access`
       (public|private), `public_base_url`, and `credential_ref` (additive, safe
       default `public`); `set_storage_binding_access` setter + `aos-hub binding
