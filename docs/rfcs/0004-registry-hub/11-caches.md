@@ -631,7 +631,10 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase E — parity, ops, tests, docs
 
-- [ ] `Database` contract tests cover the cache tables on every driver.
+- [x] `Database` contract tests cover the cache tables on every driver. The
+      shared `dialect.rs` `exercise()` (run against sqlite always, postgres/mysql
+      when their env URLs are set) now covers managed-cache CRUD, registry links,
+      object index + search, the GC-run lifecycle, and `cache_metrics`.
 - [ ] Hermetic end-to-end: push → link → advance channel → GC → assert closure
       survives and reclaimed NARs are gone (the closure-correctness test).
 - [~] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
