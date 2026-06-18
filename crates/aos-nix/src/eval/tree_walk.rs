@@ -22221,6 +22221,75 @@ mod tests {
         assert_cpp_nix_let_with_scoping_semantics_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_control_flow_and_error_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "if true then 1 else 2",
+            "if false then 1 else 2",
+            "if true then 7 else (builtins.throw \"else\")",
+            "if false then (builtins.throw \"then\") else 9",
+            "assert true; 5",
+            "assert (builtins.isInt 1); 6",
+            "let x = builtins.throw \"latent\"; in 1",
+            "let x = builtins.abort \"latent\"; in 1",
+            "{ a = builtins.throw \"latent\"; b = 2; }.b",
+            "builtins.length [ (builtins.throw \"latent\") ]",
+            "(builtins.tryEval (builtins.throw \"boom\")).success",
+            "(builtins.tryEval (assert false; 1)).success",
+            "(builtins.tryEval 7).success",
+            "(builtins.tryEval 7).value",
+            "(builtins.tryEval { x = builtins.throw \"boom\"; }).success",
+            "builtins.isAttrs (builtins.tryEval { x = builtins.throw \"boom\"; }).value",
+            "(builtins.tryEval [ (builtins.throw \"boom\") ]).success",
+            "builtins.length (builtins.tryEval [ (builtins.throw \"boom\") ]).value",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            "if 1 then 2 else 3",
+            "assert 1; 2",
+            "assert false; 2",
+            "builtins.tryEval (builtins.abort \"boom\")",
+            "builtins.tryEval (1 + true)",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        for (source, expected_message) in [
+            ("builtins.throw \"boom\"", "boom"),
+            ("let f = builtins.throw; in f \"boom\"", "boom"),
+        ] {
+            assert_cpp_nix_and_tree_walk_throw_message(oracle, source, expected_message);
+        }
+
+        assert_cpp_nix_and_tree_walk_reject_with_final_error(
+            oracle,
+            "assert false; builtins.abort \"body\"",
+            "assertion 'false' failed",
+            |kind| matches!(kind, TreeWalkErrorKind::AssertionFailed { .. }),
+        );
+
+        assert_cpp_nix_parse_and_aos_frontend_reject_expression(oracle, "if true then 1");
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_control_flow_and_error_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_control_flow_and_error_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_control_flow_and_error_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix control/error check");
+            return;
+        };
+        assert_cpp_nix_control_flow_and_error_semantics_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_string_context_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [

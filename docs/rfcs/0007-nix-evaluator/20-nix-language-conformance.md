@@ -762,12 +762,15 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ## 12. Control flow and errors
 
-- [ ] **`if c then a else b`** — `c` forced to a bool (**must-error** if not a
+- [x] **`if c then a else b`** — `c` forced to a bool (**must-error** if not a
       bool); only the taken branch is forced (§10). Both `then` and `else` are
-      mandatory (no `if` without `else`).
-- [ ] **`assert c; body`** — if `c` is `false`, **must-error** (assertion
+      mandatory (no `if` without `else`). Verified branch choice, bool condition
+      errors, untaken-branch laziness, and missing-`else` parse rejection against
+      pinned Nix.
+- [x] **`assert c; body`** — if `c` is `false`, **must-error** (assertion
       failed); else evaluates `body`. `c` forced to bool. Catchable by `tryEval`
-      (§10).
+      (§10). Verified success, false assertion failure, condition type errors,
+      body laziness, and `tryEval` catchability against pinned Nix.
 - [x] **`builtins.throw msg`** — raises a catchable error with `msg`
       (builtin in doc 21; language behavior: catchable by `tryEval`, forced only
       when demanded).
@@ -778,11 +781,15 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       this matrix exactly (it gates the `EvalError`-vs-fatal distinction the
       integration relies on; see
       [integration with AOS](14-integration-with-aos.md)).
-- [ ] **Error *class* parity** — type errors stay type errors, throws stay
+- [x] **Error *class* parity** — type errors stay type errors, throws stay
       throws, assertion failures stay assertion failures (doc 15 §3.3). Error
-      *text* parity is best-effort (doc 15 §3.3, doc 02 §8 Q4).
-- [ ] **Errors are values-in-flight, not exceptions to user code** — except where
-      `tryEval` converts them; an un-demanded error stays latent (§10).
+      *text* parity is best-effort (doc 15 §3.3, doc 02 §8 Q4). Verified local
+      `TreeWalkErrorKind` classes for type, throw, abort, and assertion failures,
+      plus pinned Nix catch/reject behavior for the same cases.
+- [x] **Errors are values-in-flight, not exceptions to user code** — except where
+      `tryEval` converts them; an un-demanded error stays latent (§10). Verified
+      latent errors in unused bindings, attrs, lists, and untaken branches, plus
+      shallow `tryEval` values, against pinned Nix.
 
 ---
 
