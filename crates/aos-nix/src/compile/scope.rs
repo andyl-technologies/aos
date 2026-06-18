@@ -629,8 +629,11 @@ impl ResolverState {
         self.ensure_static_inherit_names(names)?;
 
         match (mode, from) {
-            (BindingResolveMode::Full | BindingResolveMode::PathOnly, None) => {
-                self.add_bare_inherit_resolution(id, node.span, names)
+            (BindingResolveMode::Full, None) => {
+                self.add_bare_inherit_resolution(id, node.span, names, false)
+            }
+            (BindingResolveMode::PathOnly, None) => {
+                self.add_bare_inherit_resolution(id, node.span, names, true)
             }
             (BindingResolveMode::Full | BindingResolveMode::ValueOnly, Some(from)) => {
                 self.resolve_node(from)?;
@@ -798,6 +801,7 @@ impl ResolverState {
         node: NodeId,
         span: Span,
         names: ChildSlice,
+        shift_sources: bool,
     ) -> Result<(), ScopeError> {
         let mut sources = Vec::new();
         for name in self.child_ids(names)? {
@@ -814,6 +818,9 @@ impl ResolverState {
                 NodeData::Symbol(target),
             )?;
             self.resolve_node(source)?;
+            if shift_sources {
+                self.shift_resolved_reference_past_pending_frame(source)?;
+            }
             sources.push(InheritSource { target, source });
         }
         self.push_inherit_resolution(
@@ -825,6 +832,32 @@ impl ResolverState {
             span,
         )?;
         Ok(())
+    }
+
+    fn shift_resolved_reference_past_pending_frame(
+        &mut self,
+        id: NodeId,
+    ) -> Result<(), ScopeError> {
+        let node = self.node(id)?;
+        match node.kind {
+            NodeKind::LocalVar => {
+                let NodeData::Local { slot } = node.data else {
+                    return Err(self.invalid_shape(node, "local payload"));
+                };
+                self.replace_node(id, NodeKind::UpvalVar, NodeData::Upval { depth: 1, slot })
+            }
+            NodeKind::UpvalVar => {
+                let NodeData::Upval { depth, slot } = node.data else {
+                    return Err(self.invalid_shape(node, "upvalue payload"));
+                };
+                let depth = depth
+                    .checked_add(1)
+                    .ok_or_else(|| ScopeError::new(ScopeErrorKind::TooManyUpvalues, node.span))?;
+                self.replace_node(id, NodeKind::UpvalVar, NodeData::Upval { depth, slot })
+            }
+            NodeKind::WithVar | NodeKind::GlobalVar => Ok(()),
+            _ => Err(self.invalid_shape(node, "resolved inherit source")),
+        }
     }
 
     fn add_from_inherit_resolution(
@@ -1618,8 +1651,8 @@ mod tests {
         let resolution = inherit_resolution(&ast, inherit);
         assert_eq!(resolution.sources.len(), 1);
         let source = resolution.sources[0].source;
-        assert_eq!(node(&ast, source).kind, NodeKind::LocalVar);
-        assert_eq!(local_slot(&ast, source), 1);
+        assert_eq!(node(&ast, source).kind, NodeKind::UpvalVar);
+        assert_eq!(upval(&ast, source), (1, 1));
         assert_eq!(node(&ast, inner_body).kind, NodeKind::LocalVar);
         assert_eq!(local_slot(&ast, inner_body), 0);
     }
@@ -1690,8 +1723,8 @@ mod tests {
         let inherit = child_ids(&ast, bindings)[0];
         let resolution = inherit_resolution(&ast, inherit);
         let source = resolution.sources[0].source;
-        assert_eq!(node(&ast, source).kind, NodeKind::LocalVar);
-        assert_eq!(local_slot(&ast, source), 0);
+        assert_eq!(node(&ast, source).kind, NodeKind::UpvalVar);
+        assert_eq!(upval(&ast, source), (1, 0));
 
         let y_value = binding_value(&ast, child_ids(&ast, bindings)[1]);
         assert_eq!(node(&ast, y_value).kind, NodeKind::LocalVar);

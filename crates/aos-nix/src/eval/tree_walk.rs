@@ -3552,6 +3552,7 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         self.env.push(Rc::clone(&frame_values));
         let result = (|| {
+            let mut inherit_source_thunks = BTreeMap::new();
             for (slot, binding_index) in binding_range.enumerate() {
                 let binding = self.ir.bindings[binding_index];
                 if !matches!(binding.key, IrAttrPathSegment::Static(_)) {
@@ -3560,7 +3561,12 @@ impl<'ir> TreeWalk<'ir> {
                         node.span,
                     ));
                 }
-                let value = self.eval_lazy_node(binding.value)?;
+                let value = self.eval_attr_binding_value(
+                    id,
+                    node.span,
+                    binding.value,
+                    &mut inherit_source_thunks,
+                )?;
                 frame_values.set(slot as u32, value).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
                 })?;
@@ -14820,6 +14826,10 @@ impl<'ir> TreeWalk<'ir> {
         &self,
         value: IrId,
     ) -> Result<Option<(IrId, IrId, IrAttrPathId)>, TreeWalkError> {
+        // `inherit (e) name...` lowers each target to a lazy select whose receiver
+        // is the same thunked source expression. Sharing that receiver at runtime
+        // preserves Nix's one-evaluation source behavior without caching all
+        // `ThunkAlloc` nodes globally across lexical environments.
         let value_node = self.node(value)?;
         if value_node.kind != IrKind::ThunkAlloc {
             return Ok(None);
@@ -33391,10 +33401,80 @@ mod tests {
     }
 
     #[test]
+    fn let_inherit_bindings_use_normal_let_scope_and_sharing() {
+        assert_eq!(
+            eval("let x = 1; inherited = let inherit x; in x; in let x = 2; in inherited").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let x = 1 / 0; in let inherit x; in 42").as_int(),
+            Ok(42)
+        );
+        assert_eq!(eval("with { x = 1; }; let inherit x; in x").as_int(), Ok(1));
+        assert_eq!(
+            eval("with { x = 1 / 0; }; let inherit x; in 42").as_int(),
+            Ok(42)
+        );
+        assert_eq!(
+            eval("let x = 1; f = let inherit x; in y: x + y; in let x = 10; in f 2").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let src = { x = 1; y = 2; }; inherit (src) x y; in x + y").as_int(),
+            Ok(3)
+        );
+        assert_eq!(
+            eval("let inherit (src) x; src = { x = 5; }; in x").as_int(),
+            Ok(5)
+        );
+        assert_eq!(eval("let inherit ({}) x; in 42").as_int(), Ok(42));
+
+        let unused_source =
+            eval_owned(r#"let inherit (builtins.trace "source" { x = 1; }) x; in 42"#);
+        assert_eq!(unused_source.value().as_int(), Ok(42));
+        assert!(unused_source.trace_output().is_empty());
+
+        let shared_source = eval_owned(
+            r#"let inherit (builtins.trace "source" { x = 1; y = 2; }) x y;
+               in x + y"#,
+        );
+        assert_eq!(shared_source.value().as_int(), Ok(3));
+        assert_eq!(shared_source.trace_output().len(), 1);
+        assert_trace_output(
+            shared_source
+                .trace_output()
+                .first()
+                .expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"source",
+        );
+    }
+
+    #[test]
     fn evaluates_static_recursive_attrsets_with_lazy_self_scope() {
         assert_eq!(eval("(rec { a = 1; b = a + 2; }).b").as_int(), Ok(3));
         assert_eq!(eval("(rec { a = b; b = 1; }).a").as_int(), Ok(1));
         assert_eq!(eval("(rec { a = 1 / 0; }).b or 2").as_int(), Ok(2));
+        assert_eq!(
+            eval("let x = 1; in (rec { inherit x; y = x; }).y").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let x = 1 / 0; in (rec { inherit x; } ? x)").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("with { x = 1; }; (rec { inherit x; y = x; }).y").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("with { x = 1 / 0; }; (rec { inherit x; } ? x)").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let x = 1; in (rec { inherit x; f = y: x + y; }).f 2").as_int(),
+            Ok(3)
+        );
 
         let ir = lower("(rec { a = a; }).a");
         let error = eval_whnf(&ir).expect_err("recursive attr self-reference blackholes");

@@ -2376,6 +2376,8 @@ mod tests {
             "let x = 1; in { inherit x; x = 2; }",
             "let x = 1; in { inherit x; inherit x; }",
             "let x = 1; in { a = { inherit x; }; a.x = 2; }",
+            "let inherit x; x = 1; in x",
+            "let inherit (src) x; x = 1; in x",
         ] {
             let error = parse_str(source).expect_err("duplicate attr path errors");
             assert_eq!(error.kind(), &ParseErrorKind::DuplicateAttribute);

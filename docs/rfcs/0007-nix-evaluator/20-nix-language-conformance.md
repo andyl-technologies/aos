@@ -362,7 +362,11 @@ search paths, and store coercion.
       evaluated once. AOS matches pinned Nix for multiple inherited fields,
       lazy source evaluation, and one shared source evaluation when multiple
       inherited values are forced.
-- [ ] **`inherit` in `let`** — `let inherit (e) x; in ...` is legal; same desugar.
+- [x] **`inherit` in `let`** — `let inherit (e) x; in ...` is legal; same desugar.
+      AOS matches pinned Nix for bare let inherit lexical capture, source-based
+      let inherit, let self-frame lookup from `inherit (e)`, unused inherited
+      bindings staying lazy, duplicate binding rejection, and shared source
+      evaluation when multiple inherited let bindings are forced.
 
 ### 5.4 `rec` and dynamic attributes
 
@@ -379,8 +383,9 @@ search paths, and store coercion.
 - [ ] **Mixing static + dynamic in `rec`** — verify the exact visibility rules
       (static attrs visible to each other; dynamic ones excluded from the
       recursive scope) against pinned Nix.
-- [ ] **`rec` + `inherit`** — `rec { inherit x; y = x; }` brings `x` into the
-      recursive scope; verify.
+- [x] **`rec` + `inherit`** — `rec { inherit x; y = x; }` brings `x` into the
+      recursive scope. AOS matches pinned Nix for inherited source capture from
+      the surrounding scope and lazy inherited values.
 - [ ] **Self-reference laziness** — `rec { a = b; b = a; }` only loops if forced
       (§10 black-holing).
 
