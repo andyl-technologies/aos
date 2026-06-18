@@ -1,0 +1,894 @@
+# 12 — The in-VM QEMU plugin
+
+This file specifies the **in-VM QEMU plugin** (`crucible-qemu-plugin`): the
+`cdylib` loaded into each guest's QEMU process via the `-plugin` flag. The plugin
+is the in-process half of the time-control loop — it owns the guest's virtual
+clock, observes the guest going idle and resuming, intercepts the guest's device
+I/O, and injects cross-node inputs at their exact delivery instruction count. It
+is the component that physically *enforces* Contract A's clock clause
+([`04-determinism-contract.md`](04-determinism-contract.md) §4.3, [DET-8]–[DET-10])
+and the consumer side of Contract B's injection contract (§4.4, [DET-11]–[DET-14])
+inside the QEMU address space, using the shared-memory ABI of
+[`13-shmem-abi.md`](13-shmem-abi.md) as its sole hot-path channel and the control
+protocol of [`14-protocol.md`](14-protocol.md) for one-time setup.
+
+Requirement IDs in this file use the prefix `PLUG`. Gate names referenced here
+are defined in [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md);
+the canonical gates this file is bound by are `gate:single-vm-fingerprint`,
+`gate:layer1-injection`, `gate:qemu-inert`, `gate:abi-conformance`, and
+`gate:layer0-determinism`. The plugin's counterparts are the QEMU patch series
+that exposes the capabilities it calls ([`11-qemu-patches.md`](11-qemu-patches.md)),
+the host executor that launches it and runs the scheduler
+([`08-scheduling.md`](08-scheduling.md), [`10-qemu-integration.md`](10-qemu-integration.md)),
+the shared-memory ABI it reads and writes ([`13-shmem-abi.md`](13-shmem-abi.md)),
+the control protocol it speaks at setup ([`14-protocol.md`](14-protocol.md)), the
+I/O sub-node model whose requests it submits ([`15-io-subnodes.md`](15-io-subnodes.md)),
+the guest↔host channel it optionally traps ([`16-guest-host-channel.md`](16-guest-host-channel.md)),
+and the coverage feed it optionally emits ([`22-advanced-features.md`](22-advanced-features.md)).
+The virtual-time units it operates in are fixed by
+[`09-virtual-time-icount.md`](09-virtual-time-icount.md).
+
+The code blocks in this file are illustrative sketches per
+[`00-conventions.md`](00-conventions.md): they show the intended types,
+signatures, and call order so the spec is concrete, but the authoritative
+statement is always the prose requirement. A sketch that disagrees with a
+requirement is a defect in the sketch.
+
+## 12.1 Role and the single-threaded execution context
+
+The plugin is the *only* piece of Crucible code that runs inside the QEMU
+process. It owns three responsibilities that cannot be performed from outside the
+process: holding QEMU's virtual-clock control, observing translation-block and
+vCPU lifecycle callbacks, and intercepting the device data paths (network TX/RX,
+block, 9p). Everything else — the scheduler, the temporal graph, assertions —
+lives in the host executor and reaches the plugin only through the shared-memory
+region and, once at setup, the control socket.
+
+### 12.1.1 What the plugin owns
+
+- **[PLUG-1]** The plugin MUST own virtual-time control for the lifetime of a
+  sim run: it acquires QEMU's time-control capability at registration
+  ([`11-qemu-patches.md`](11-qemu-patches.md)), and from that point QEMU MUST NOT
+  advance the virtual clock by wall-clock warp ([`09-virtual-time-icount.md`](09-virtual-time-icount.md)
+  [TIME-21], [DET-10], source E2). All virtual-time advancement during idle is an
+  explicit, scheduler-authorized jump performed by the plugin (§12.3). *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §12.1, §12.3;
+  routes [DET-10], [INV-8].
+
+- **[PLUG-2]** The plugin MUST own the device and channel callbacks for its node:
+  the network TX interception and RX injection (§12.5), the block and 9p
+  submit/poll callbacks (§12.6), and — when white-box mode is enabled — the
+  guest↔host doorbell trap (§12.7). No host component may inject a frame, complete
+  an I/O, or stamp a marker into the guest's address space except through these
+  plugin-owned paths. *Gate:* `gate:layer1-injection`. *Spec:* §12.1, §12.5,
+  §12.6, §12.7; routes [INV-3], [INV-8].
+
+### 12.1.2 Single vCPU ⇒ uncontended state
+
+Every VM runs `-smp 1` ([NG-1], [DET-23]), so QEMU serializes all vCPU callbacks
+— registration, translation-block hooks, idle, resume, and the device callbacks
+that fire on the vCPU thread — onto exactly one thread. This is the structural
+fact that makes the plugin's state cheap and correct.
+
+- **[PLUG-3]** The plugin MUST be designed for the `-smp 1` single-vCPU
+  execution model: all vCPU-thread callbacks are serialized by QEMU onto one
+  thread, so the plugin's own state is *uncontended*. The plugin MUST NOT assume
+  or require multi-vCPU concurrency, and MUST reject (fail loudly at registration)
+  a configuration that reports more than one vCPU. Any synchronization primitive
+  the plugin holds for its own state exists only to satisfy the language's
+  thread-safety rules for process-global state, never to arbitrate genuine
+  contention. *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
+  *Spec:* §12.1.2; routes [NG-1], [DET-23].
+
+- **[PLUG-4]** Where two callback families can re-enter each other on the single
+  vCPU thread (e.g. the idle handler advances virtual time, which fires a guest
+  timer, which causes the guest to transmit a frame, which invokes the TX
+  callback), the plugin MUST structure its state so the re-entrant callback does
+  not require a lock the outer callback already holds. The plugin MUST NOT
+  deadlock against itself on the single thread; re-entrant device callbacks MUST
+  read their required pointers from registration-time-initialized, never-mutated
+  state rather than from a lock shared with the idle handler. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §12.1.2, §12.5; routes [INV-8].
+
+The re-entrancy in [PLUG-4] is real and load-bearing: advancing the clock to a
+timer deadline fires that timer synchronously, and a guest whose timer handler
+sends a packet will invoke the TX path *inside* the idle handler. The plugin
+therefore partitions its state into (a) a handshake/clock core touched only by
+the lifecycle callbacks and (b) device-callback pointers fixed once at
+registration and read without locking by the re-entrant paths.
+
+## 12.2 Plugin arguments and registration
+
+The plugin receives all of its wiring through the QEMU `-plugin` argument string
+and the inherited control socket; it derives everything else from the
+shared-memory region it maps during setup. The launch side that constructs the
+argument string is [`10-qemu-integration.md`](10-qemu-integration.md); the
+descriptor handover is [`14-protocol.md`](14-protocol.md) §3.4.
+
+### 12.2.1 The argument set
+
+- **[PLUG-5]** The plugin MUST accept the following arguments on its `-plugin`
+  argument string, in `key=value` form, and MUST fail registration loudly if any
+  required one is missing or unparseable:
+  - **`simfd=N`** — the file descriptor of the host↔plugin control socket
+    ([`14-protocol.md`](14-protocol.md) §2), inherited from the host executor.
+    *Required.*
+  - **`slot=N`** — the plugin's zero-based node slot index into the shared-memory
+    per-node array ([`13-shmem-abi.md`](13-shmem-abi.md) §13.3.2). *Required;*
+    cross-checked against the `slot_index` the host sends in `HelloAck`
+    ([PLUG-19]).
+  - **`shmemfd=N`** — *(optional)* a pre-inherited shared-memory descriptor; when
+    absent, the plugin obtains the shmem fd and the wake fd from the `Setup`
+    frame's `SCM_RIGHTS` ancillary data ([`14-protocol.md`](14-protocol.md) §3.4),
+    which is the canonical path.
+  - **`wakefd=N`** — *(optional)* a pre-inherited wake `eventfd`; canonically
+    delivered with the shmem fd in the `Setup` frame's ancillary data.
+  - **`whitebox=on|off`** — *(optional, default `off`)* enables the guest↔host
+    doorbell trap (§12.7).
+  - **`coverage=on|off`** — *(optional, default `off`)* enables the basic-block
+    coverage hook (§12.8).
+
+  The slot index is the *sole* key the plugin uses to locate its own cells in the
+  region; it MUST NOT infer its identity from any other source. *Gate:*
+  `gate:abi-conformance`. *Spec:* §12.2.1, forward-ref
+  [`14-protocol.md`](14-protocol.md) §3, [`13-shmem-abi.md`](13-shmem-abi.md)
+  §13.3.2; routes [G-8].
+
+- **[PLUG-6]** Argument parsing MUST be total and fail-closed: an unrecognized
+  key, a malformed value, a missing required key, or a `slot` outside
+  `0..node_count` MUST cause registration to fail with a clear diagnostic, and
+  the host MUST observe the failure (a non-zero `SetupAck` or a closed socket)
+  and refuse to schedule the node ([`14-protocol.md`](14-protocol.md) §5.4,
+  [PROTO-21]). The plugin MUST NOT proceed with a partially-configured state.
+  *Gate:* `gate:abi-conformance`, `gate:control-responsive`. *Spec:* §12.2.1,
+  forward-ref [`14-protocol.md`](14-protocol.md) §5.4; routes [INV-10].
+
+### 12.2.2 Registration order
+
+The order of operations at registration is normative because it is what
+guarantees no warp or realtime advance can occur before the plugin is in charge
+([`09-virtual-time-icount.md`](09-virtual-time-icount.md) [TIME-23]).
+
+- **[PLUG-7]** Registration MUST proceed in this fixed order, and a failure at
+  any step MUST abort registration (no later step runs): (1) parse arguments
+  ([PLUG-5]); (2) wrap the control fd and perform the handshake
+  (`Hello`/`HelloAck`, §12.9, [`14-protocol.md`](14-protocol.md) §3.5–§3.6);
+  (3) **acquire virtual-time control immediately** so the no-warp patch is active
+  from the first instruction ([PLUG-1], [TIME-23]); (4) receive `Setup`, map the
+  shared-memory region and validate its ABI marker, arm the wake fd, register the
+  device callbacks (§12.5, §12.6) and (if enabled) the white-box and coverage
+  hooks; (5) reply `SetupAck(status)`; (6) wait on the initial-ceiling / boot
+  barrier (§12.9.3) before the guest retires its first architecturally-visible
+  instruction. *Gate:* `gate:abi-conformance`, `gate:layer0-determinism`. *Spec:*
+  §12.2.2, §12.9; routes [INV-7], [INV-8], [DET-10].
+
+- **[PLUG-8]** Time control MUST be acquired (step 3 of [PLUG-7]) *before* the
+  guest retires its first architecturally-visible instruction. If QEMU reports
+  that another plugin already holds time control, registration MUST fail loudly;
+  Crucible runs exactly one time-controlling plugin per VM. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §12.2.2;
+  routes [DET-10], [INV-8], [TIME-23].
+
+```rust
+// Illustrative sketch (CONV-1): registration order. The authoritative
+// statement is [PLUG-7]; this only shows the call sequence.
+fn register(args: &PluginArgs) -> Result<PluginState, RegisterError> {
+    let cfg = PluginArgs::parse(&args.raw)?;            // [PLUG-5], [PLUG-6]
+    let mut control = ControlSocket::from_fd(cfg.sim_fd)?;
+    let ack = control.handshake(ABI_VERSION, PROTO_VERSION)?; // §12.9.1
+    let time_ctl = TimeControl::request()?;             // [PLUG-8] — before any insn
+    let setup = control.recv_setup()?;                  // shmem fd + wake fd (SCM_RIGHTS)
+    let region = ShmemRegion::map(setup.shmem_fd, setup.region_len)?; // validate ABI
+    region.validate_header(ABI_VERSION, ack.slot_index, ack.node_count)?; // [PLUG-19]
+    let wake = WakeFd::arm(setup.wake_fd)?;
+    register_net_callbacks(cfg.slot, &region);          // §12.5  (never-mutated ptrs)
+    register_blk_callbacks(cfg.slot, &region);          // §12.6
+    register_9p_callbacks(cfg.slot, &region);           // §12.6
+    if cfg.whitebox { register_doorbell_trap(cfg.slot, &region); } // §12.7
+    if cfg.coverage { register_coverage_hook(&region); }           // §12.8
+    control.send_setup_ack(0)?;                         // [PLUG-7] step 5
+    region.wait_boot_barrier(cfg.slot, &wake)?;         // §12.9.3 — before first insn
+    Ok(PluginState { time_ctl, region, slot: cfg.slot, wake })
+}
+```
+
+## 12.3 Time control: the hot loop without wall-clock
+
+The plugin's central duty is to advance the guest's virtual clock *only* as the
+scheduler authorizes, and never by host real time. This section specifies the
+idle/advance hot loop — the place where [DET-10], [TIME-21]–[TIME-25], and the
+exact-deadline discipline of [`09-virtual-time-icount.md`](09-virtual-time-icount.md)
+§9.8 are physically realized.
+
+### 12.3.1 Acquiring and holding the clock
+
+- **[PLUG-9]** Once time control is acquired ([PLUG-8]), the plugin MUST be the
+  single authority that advances virtual time for its node, and that advancement
+  MUST be a pure function of (a) the guest retiring instructions up to the
+  scheduler-published ceiling and (b) explicit idle jumps the plugin performs to a
+  scheduler-authorized virtual time. The plugin MUST NOT read host wall-clock or
+  host monotonic time on any path that influences virtual time, frame delivery, or
+  I/O completion. *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
+  *Spec:* §12.3.1; routes [DET-10], [INV-4], [TIME-32].
+
+### 12.3.2 The idle (HLT/WFI) callback
+
+When the guest executes `HLT` (x86) or `WFI` (aarch64) with no runnable work,
+QEMU fires the vCPU-idle callback. This is the synchronization point: the plugin
+computes how far it is allowed to jump, performs that jump, and injects any inputs
+that come due in the jumped-over window.
+
+- **[PLUG-10]** On the vCPU-idle callback the plugin MUST:
+  1. read its current icount and publish it (with the derived `current_ns`) into
+     its node slot ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-10], [SHM-24]),
+     bumping the publish-generation counter;
+  2. query the **exact** next armed guest timer deadline via the clock-deadline
+     introspection capability (§12.3.4, [TIME-24]); a node with no armed timer
+     reports "no deadline";
+  3. compute its desired wake icount as the earliest of: the next timer deadline,
+     the `delivery_icount` of the head entry of any inbound frame ring (peeked,
+     not consumed, §12.4.2), and the scheduler-published `max_advance_icount`
+     ceiling;
+  4. publish `idle_wake_icount` and set its status to idle
+     ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7);
+  5. block on the wake fd / futex until the scheduler raises the ceiling to or
+     past the wake icount (§12.3.3) — *not* a busy spin;
+  6. once released, advance virtual time to the authorized wake icount
+     (firing due timers and draining bottom-halves as a side effect, §12.3.5);
+  7. inject every inbound frame whose `delivery_icount <= current_icount` in the
+     deterministic total order (§12.4.2);
+  8. republish `current_icount`/`current_ns`, set status running, and return.
+
+  *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
+  `gate:layer1-injection`. *Spec:* §12.3.2; routes [DET-10], [DET-11], [INV-4],
+  [SCHED-28].
+
+- **[PLUG-11]** The plugin MUST NOT advance the guest's virtual clock past the
+  scheduler-published `max_advance_icount` ceiling without a fresh authorization,
+  and MUST NOT self-extend the ceiling from any locally-computed value
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-24], [TIME-29]). The wake icount of
+  [PLUG-10] is *clamped at* the ceiling: if the desired wake is beyond the
+  ceiling, the plugin blocks (step 5) rather than overshooting. *Gate:*
+  `gate:layer0-determinism`, `gate:layer1-injection`. *Spec:* §12.3.2; routes
+  [DET-12], [INV-8], [TIME-27].
+
+The idle handler is the entire reason warp must be suppressed: under stock QEMU
+the idle path would advance the clock by *host* elapsed time. With the plugin
+holding time control and the no-warp patch active, the clock advances by exactly
+the jump the plugin computes from the scheduler's ceiling and the guest's own
+armed deadlines — both pure virtual-time quantities.
+
+### 12.3.3 Blocking on the scheduler, not the wall clock
+
+- **[PLUG-12]** When the plugin's desired wake icount exceeds the published
+  ceiling, the plugin MUST park by waiting on QEMU's main-loop / AIO event source
+  driven by the node's wake fd ([`14-protocol.md`](14-protocol.md) §3.4), or
+  equivalently on the cross-process futex on the slot's `wake_signal`
+  ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7) — using the race-free
+  publish-precondition / read-counter / wait idiom so there is no lost-wake
+  window. The plugin MUST NOT busy-spin re-reading the ceiling and MUST NOT sleep
+  for a wall-clock interval as a substitute for the wake. *Gate:*
+  `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §12.3.3,
+  forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.7; routes [INV-8],
+  [G-9].
+
+- **[PLUG-13]** The wake wait MUST have no hard-coded wall-clock timeout on the
+  determinism path: the plugin parks until the scheduler raises the ceiling or
+  sets the global shutdown flag. (A liveness watchdog, if any, belongs to the
+  host executor and the scheduler-liveness gate, not to a per-node timeout that
+  would make wake behavior wall-clock-dependent.) On observing the global
+  `shutdown_requested` flag the parked plugin MUST wake, set its status to done,
+  and proceed to teardown (§12.9.4). *Gate:* `gate:scheduler-liveness`,
+  `gate:control-responsive`. *Spec:* §12.3.3; routes [INV-8], [INV-10].
+
+Blocking the single vCPU thread is correct and intended: with `-smp 1` the vCPU
+thread has no guest work to do at HLT, and QEMU's main loop continues on its own
+thread. Parking on QEMU's AIO/main-loop wait is the mechanism that lets the host
+scheduler's wake (a write to the eventfd, or a futex bump) unblock the plugin
+without any polling — the host raises the ceiling, then wakes, in release order,
+so the woken plugin observes a consistent `(ceiling, pending-inputs)` snapshot
+([SHM-36]).
+
+### 12.3.4 Exact next-deadline introspection
+
+- **[PLUG-14]** On going idle the plugin MUST obtain the *exact* virtual time of
+  the guest's next armed timer deadline from `QEMU_CLOCK_VIRTUAL` via the
+  clock-deadline introspection capability of the patch series
+  ([`11-qemu-patches.md`](11-qemu-patches.md),
+  [`09-virtual-time-icount.md`](09-virtual-time-icount.md) §9.8), convert it to an
+  icount via the fixed shift's `ceil` map ([TIME-4]), and report it to the
+  scheduler as the node's exact local event. The deadline MUST be derived from the
+  icount-driven virtual clock, never from `QEMU_CLOCK_REALTIME` or
+  `QEMU_CLOCK_HOST`. *Gate:* `gate:layer0-determinism`,
+  `gate:scheduler-liveness`. *Spec:* §12.3.4, forward-ref
+  [`11-qemu-patches.md`](11-qemu-patches.md); routes [TIME-24], [TIME-26],
+  [INV-4].
+
+- **[PLUG-15]** The plugin MUST NOT use an overshoot-and-correct fallback for
+  idle advancement (advance by a guess, observe whether a timer fired, back off).
+  Such a fallback cannot be made bit-deterministic ([TIME-25]). If the
+  exact-deadline capability is unavailable in the running QEMU build, the plugin
+  MUST fail loudly at registration rather than degrade to guessing. *Gate:*
+  `gate:layer0-determinism`, `gate:divergence-bisect`. *Spec:* §12.3.4; routes
+  [TIME-25], [INV-10].
+
+### 12.3.5 Advancing and draining
+
+- **[PLUG-16]** When the plugin performs an idle jump it MUST advance virtual
+  time *synchronously* to the authorized wake icount, firing all timers due at or
+  before that point inline and draining any scheduled bottom-halves the advance
+  produces, so that the guest's architectural state at the wake point is the same
+  bit-for-bit regardless of host timing. The advance MUST be performed from the
+  idle callback context (where QEMU's big lock is held) and MUST NOT defer timer
+  firing to an asynchronous host-scheduled point that could reorder relative to
+  the next quantum. *Gate:* `gate:single-vm-fingerprint`,
+  `gate:layer0-determinism`. *Spec:* §12.3.5; routes [DET-1], [INV-4],
+  [SCHED-28].
+
+The synchronous-drain requirement is what makes idle fast-forward exact: a
+60-second idle gap collapses to one virtual-time jump ([G-9],
+[`25-performance-targets.md`](25-performance-targets.md)) and every timer that was
+due in that gap fires at its exact icount, in the same order, on every run.
+
+## 12.4 Idle/resume handling and freezing time during device I/O
+
+### 12.4.1 Idle/resume lifecycle
+
+- **[PLUG-17]** The plugin MUST treat the vCPU-idle and vCPU-resume callbacks as
+  the boundary of a quantum's worth of guest progress for its node: idle is where
+  the plugin publishes its clock, parks, jumps, and injects (§12.3.2); resume is
+  where the plugin records that the guest has re-entered execution (republishing
+  `current_icount`/`current_ns` and setting status running). Resume MUST NOT block
+  and MUST NOT advance virtual time — the guest is about to execute real
+  instructions. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.4.1; routes
+  [INV-4], [INV-8].
+
+### 12.4.2 Polling and injecting inbound frames
+
+- **[PLUG-18]** When deciding the idle wake icount and again after an idle jump,
+  the plugin MUST consult its inbound frame rings via the non-consuming
+  `peek_delivery_icount` ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-21]) to learn
+  when its next inbound input becomes visible, and MUST make a frame
+  architecturally visible to the guest *iff*
+  `frame.delivery_icount <= current_icount` ([SHM-33], [DET-11], [DET-13]). The
+  moment a frame's bytes became present in the ring is irrelevant; only the
+  comparison of the in-band delivery icount against the guest's current icount
+  governs visibility. *Gate:* `gate:layer1-injection`. *Spec:* §12.4.2,
+  forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.9; routes [DET-11],
+  [DET-13], [INV-3].
+
+- **[PLUG-19]** When multiple inbound frames are simultaneously deliverable
+  (each with `delivery_icount <= current_icount`), the plugin MUST inject them in
+  the deterministic total order `(delivery_icount, src_node, seq)` of [INV-3] /
+  [SHM-34], identical across runs and independent of which producer's store landed
+  first or which ring the plugin polled first. The plugin MUST NOT deliver frames
+  in ring-arrival order. *Gate:* `gate:layer1-injection`. *Spec:* §12.4.2; routes
+  [INV-3], [DET-14].
+
+- **[PLUG-20]** If the plugin ever observes an inbound frame whose
+  `delivery_icount` the guest's `current_icount` has *already passed* (a frame
+  that should have been visible earlier), this is a Contract-B violation
+  ([DET-12], [SHM-35]): the plugin MUST fail loudly and localize the violation
+  (report the frame's `(delivery_icount, src_node, seq)` and the guest's current
+  icount) rather than delivering the frame late. The conservative lookahead and
+  the ceiling handshake make this state unreachable in a correct run; observing it
+  is a defect, never a tolerated condition. *Gate:* `gate:layer1-injection`,
+  `gate:divergence-bisect`. *Spec:* §12.4.2; routes [DET-12], [INV-10].
+
+### 12.4.3 Freezing virtual time during in-flight device I/O
+
+A device-I/O round trip (a block read, a 9p request) is submitted at one icount
+and answered later. If the guest's HZ timer ticks were allowed to advance virtual
+time freely between submit and completion, the icount at which the completion
+became visible would depend on how many idle jumps happened to occur in that
+window — a host-timing artifact. The plugin freezes virtual time across an I/O
+burst so the completion lands at a deterministic icount.
+
+- **[PLUG-21]** While any device-I/O request the plugin has submitted for its node
+  is in flight, the plugin MUST hold virtual time frozen at the submit icount: the
+  idle handler MUST clamp its wake icount to the current icount (no jump) for as
+  long as the per-node `device_io_active` flag is set or the plugin's pending-I/O
+  counter is non-zero ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-9]
+  `device_io_active`). This pins the virtual-time moment at which an I/O completion
+  becomes visible to the submit-time moment, independent of wall-clock variation
+  in how long the executor takes to serve the request. *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.4.3,
+  forward-ref [`15-io-subnodes.md`](15-io-subnodes.md); routes [DET-19],
+  [INV-4].
+
+- **[PLUG-22]** The plugin MUST set `device_io_active` (and/or increment its
+  pending-I/O counter) on the I/O *submit* path and clear it (decrement) on the
+  matching *completion* path, pairing submit and completion one-to-one regardless
+  of completion status, so the freeze is released exactly when the last in-flight
+  request for the burst has been answered. A burst-done signal from the device
+  (for multi-request bursts, §12.6) MUST clear the flag for the whole burst.
+  *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.4.3, §12.6; routes [DET-19],
+  [INV-4].
+
+The freeze is not a stall: the completion still arrives (the executor serves the
+request and writes the response into the inbound ring), and the device's
+completion mechanism un-halts the guest, after which the next idle callback
+advances normally. What the freeze removes is the *wall-clock-dependent number of
+HZ ticks* that would otherwise slip between submit and completion.
+
+## 12.5 Network frame emit and inject
+
+The plugin is the bridge between the guest's emulated NIC and the shared-memory
+transport. Outbound: it intercepts every frame the guest transmits and writes it
+to its outbound ring with an emit-icount stamp. Inbound: it injects frames from
+its inbound ring at their delivery icount (§12.4.2). The host network router
+([`13-shmem-abi.md`](13-shmem-abi.md) §13.5, [SHM-17]) sits between the two and
+applies the link model.
+
+### 12.5.1 TX interception (guest → outbound ring)
+
+- **[PLUG-23]** The plugin MUST register a network-TX interception callback
+  ([`11-qemu-patches.md`](11-qemu-patches.md)) that captures every frame the guest
+  emits and writes it into the node's outbound ring toward the reserved network
+  router slot — the ring `(slot -> SLOT_NET_ROUTER)`
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-17]). Each enqueued `FrameEntry` MUST
+  carry the **emit icount** (the guest's current icount at the moment of
+  transmission) in `delivery_icount`, the node's own slot as `src_node`, a
+  per-`(producer, consumer)` monotonic `seq`, and the payload; the host router
+  re-stamps the effective `delivery_icount` by adding the modeled link latency and
+  applying the fault table ([`08-scheduling.md`](08-scheduling.md) [SCHED-29],
+  [`17-fault-injection.md`](17-fault-injection.md)). *Gate:*
+  `gate:layer1-injection`. *Spec:* §12.5.1, forward-ref
+  [`13-shmem-abi.md`](13-shmem-abi.md), [`08-scheduling.md`](08-scheduling.md);
+  routes [INV-3], [DET-11].
+
+- **[PLUG-24]** The TX callback MUST be safe to invoke re-entrantly from inside
+  the idle handler (a frame emitted by a timer handler fired during an idle jump,
+  [PLUG-4]): it MUST locate its outbound ring and slot from
+  registration-time-fixed, never-mutated state, MUST NOT acquire a lock the idle
+  handler holds, and MUST be deterministic in what it enqueues (the same guest
+  frame at the same icount yields the same entry on every run). *Gate:*
+  `gate:single-vm-fingerprint`, `gate:layer1-injection`. *Spec:* §12.5.1; routes
+  [INV-8], [DET-1].
+
+- **[PLUG-25]** A frame whose length exceeds `MAX_FRAME_DATA`
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-13]) MUST be rejected at enqueue and
+  surfaced as a loud error, never silently truncated. An outbound ring that is
+  full MUST be a loud error (a full ring under the conservative scheduling
+  discipline indicates a scheduling defect, not a normal backpressure condition),
+  never a silent drop. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`.
+  *Spec:* §12.5.1; routes [INV-10].
+
+### 12.5.2 RX injection (inbound ring → guest)
+
+- **[PLUG-26]** The plugin MUST inject inbound frames into the guest's NIC via the
+  RX-injection capability of the patch series
+  ([`11-qemu-patches.md`](11-qemu-patches.md)), using a lossless queueing path so
+  a frame is never silently dropped when the guest's RX queue is momentarily not
+  ready (the frame is queued in QEMU and flushed when the device can accept it).
+  Injection MUST occur from the idle callback context (where QEMU's big lock is
+  held) and MUST be gated by the delivery-icount rule of [PLUG-18]. *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.5.2; routes
+  [DET-11], [DET-13], [INV-4].
+
+- **[PLUG-27]** Inbound injection MUST be performed *after* the plugin has
+  advanced virtual time to the wake icount (§12.3.2 step 6), so that a frame whose
+  `delivery_icount` falls in the jumped-over window becomes visible at the
+  deterministic wake icount rather than at whatever HLT moment the guest happened
+  to reach. The plugin MUST NOT inject a frame at a virtual time earlier than its
+  `delivery_icount`. *Gate:* `gate:layer1-injection`. *Spec:* §12.5.2; routes
+  [DET-11], [INV-3].
+
+```rust
+// Illustrative sketch (CONV-1): the inbound-injection loop after an idle jump.
+// Authoritative statements are [PLUG-18..20], [PLUG-26..27].
+fn inject_due_frames(state: &PluginState, now: Icount) -> Result<(), Divergence> {
+    // Frames across all inbound rings, merged into (delivery_icount, src, seq) order.
+    for frame in state.region.due_inbound_frames(state.slot, now) { // [PLUG-19] order
+        if frame.delivery_icount < now_floor_of_passed(state) {
+            return Err(Divergence::passed_delivery(frame));         // [PLUG-20] fail loud
+        }
+        state.region.consume(frame.handle);
+        net_inject_queued(&frame.data[..frame.len as usize])?;      // [PLUG-26] lossless
+    }
+    net_flush()?; // deliver everything the guest RX queue can now accept
+    Ok(())
+}
+```
+
+## 12.6 Block and 9p device callbacks
+
+Block and 9p I/O are modeled as first-class I/O sub-nodes with deterministic
+completion icounts ([`15-io-subnodes.md`](15-io-subnodes.md)). The plugin is the
+in-VM endpoint: it turns the guest's device requests into ring submissions and
+turns ring responses back into device completions, freezing virtual time across
+the round trip (§12.4.3).
+
+- **[PLUG-28]** The plugin MUST register block-device submit/poll callbacks
+  ([`11-qemu-patches.md`](11-qemu-patches.md)) that: on **submit**, encode the
+  request (operation, offset, length, write payload) into a `FrameEntry`, enqueue
+  it into the node's outbound block ring `(slot -> SLOT_BLK_IO)`
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-17]) stamped with the submit icount,
+  mark device I/O active ([PLUG-21]), and return immediately; on **poll**, check
+  the inbound block ring `(SLOT_BLK_IO -> slot)`, validate the response's
+  `delivery_icount <= current_icount` before exposing it, deliver the response to
+  the guest, and clear/decrement the device-I/O state ([PLUG-22]). *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.6,
+  forward-ref [`15-io-subnodes.md`](15-io-subnodes.md); routes [DET-19],
+  [INV-4].
+
+- **[PLUG-29]** The plugin MUST register 9p submit/poll callbacks with the same
+  shape against the reserved 9p slots `(slot -> SLOT_9P_IO)` and
+  `(SLOT_9P_IO -> slot)`, plus a **burst-done** callback that clears the
+  device-I/O-active flag once every request from a single device invocation has
+  completed (a 9p operation may fan out to several requests; the freeze must hold
+  for the whole burst, not just one round trip, [PLUG-22]). *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.6,
+  forward-ref [`15-io-subnodes.md`](15-io-subnodes.md); routes [DET-19],
+  [INV-4].
+
+- **[PLUG-30]** A response delivered to the guest MUST be gated by its
+  `delivery_icount`: the plugin MUST NOT expose an I/O completion before its
+  delivery icount has been reached in virtual time (the poll callback returns
+  "not ready" until the gate passes). Because the submit freezes virtual time
+  ([PLUG-21]) and the executor stamps the completion's delivery icount at or after
+  the submit icount, the gate is anchored to a deterministic instruction-derived
+  virtual time, never to wall-clock. *Gate:* `gate:layer1-injection`. *Spec:*
+  §12.6; routes [DET-19], [DET-13].
+
+- **[PLUG-31]** The block and 9p callbacks MUST use the same re-entrancy-safe
+  state discipline as the TX callback ([PLUG-4], [PLUG-24]): they read their ring
+  and slot pointers from registration-time-fixed state, never from a lock the idle
+  handler holds, and pair every submit with exactly one completion so the pending
+  counter cannot drift. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.6;
+  routes [INV-8], [INV-4].
+
+## 12.7 Guest↔host doorbell (white-box, optional)
+
+Black-box operation is the default and is sufficient for the whole determinism
+contract ([G-3], [DET-17]). The white-box doorbell is an *optional* enhancement
+that lets a cooperating guest stamp fine-grained markers with the exact icount at
+which they occur. It is specified in full in
+[`16-guest-host-channel.md`](16-guest-host-channel.md); this section states only
+the plugin's part.
+
+- **[PLUG-32]** When and only when white-box mode is enabled ([PLUG-5]
+  `whitebox=on`), the plugin MUST trap the reserved doorbell instruction or
+  port-I/O write that the guest agent uses to signal the host
+  ([`16-guest-host-channel.md`](16-guest-host-channel.md)), read the guest's
+  payload through the plugin memory-read API (the plugin MUST read guest memory
+  through the QEMU plugin API, never assume a host mapping of guest RAM), and
+  record the resulting marker stamped with the exact current icount. The marker is
+  delivered to the host (via a dedicated ring or the event-log path,
+  [`16-guest-host-channel.md`](16-guest-host-channel.md),
+  [`19-observability-event-log.md`](19-observability-event-log.md)). *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.7,
+  forward-ref [`16-guest-host-channel.md`](16-guest-host-channel.md); routes
+  [G-3], [DET-17].
+
+- **[PLUG-33]** When white-box mode is **off** (the default), the plugin MUST NOT
+  install the doorbell trap and the reserved instruction/port MUST behave exactly
+  as it would under unmodified QEMU, so a guest that happens to touch it is
+  unaffected. Black-box operation MUST be fully functional with the doorbell
+  absent: every determinism guarantee and the execution fingerprint MUST be
+  computable with zero guest cooperation. *Gate:* `gate:any-guest`,
+  `gate:single-vm-fingerprint`. *Spec:* §12.7; routes [G-2], [G-3], [DET-17].
+
+- **[PLUG-34]** Any *input* the white-box channel delivers to the guest (a marker
+  acknowledgment, a control write) MUST itself obey the injection contract of
+  §4.4 — carry a delivery icount and become visible at exactly that icount
+  ([DET-17]) — so that enabling white-box cannot perturb determinism. A white-box
+  marker is an observation stamped with an icount, not a side channel that can
+  reorder the instruction stream. *Gate:* `gate:single-vm-fingerprint`,
+  `gate:layer1-injection`. *Spec:* §12.7; routes [DET-17], [INV-3].
+
+## 12.8 Coverage hook (optional, negligible when off)
+
+For coverage-guided fuzzing ([`22-advanced-features.md`](22-advanced-features.md))
+the plugin can emit guest basic-block coverage harvested from the TCG-exec path,
+with no guest instrumentation. It is off by default and MUST cost nothing when
+off.
+
+- **[PLUG-35]** When coverage is enabled ([PLUG-5] `coverage=on`), the plugin MUST
+  register a TCG translation/execution callback that records, per executed basic
+  block, a coverage signal (e.g. the block's guest program counter folded into a
+  fixed-size coverage map) suitable for feeding the fuzzer
+  ([`22-advanced-features.md`](22-advanced-features.md)). Coverage harvesting MUST
+  be black-box (no guest cooperation) and MUST NOT alter the instruction stream
+  `S` or the architectural trajectory `T`: enabling coverage MUST NOT change a
+  fingerprint. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.8, forward-ref
+  [`22-advanced-features.md`](22-advanced-features.md); routes [DET-1], [G-6].
+
+- **[PLUG-36]** When coverage is **disabled** (the default), the plugin MUST NOT
+  register the TCG-exec coverage callback at all, so the hot translation/execution
+  path carries no per-block overhead. Coverage MUST be a registration-time opt-in,
+  never a runtime branch evaluated on every block. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §12.8; routes [G-9].
+
+- **[PLUG-37]** Coverage data is an **observational** output
+  ([`19-observability-event-log.md`](19-observability-event-log.md)): it MUST be
+  excluded from the determinism comparison (two equivalent runs may legitimately
+  produce identical coverage, but coverage is consumed by the fuzzer, not by the
+  fingerprint), and recording it MUST NOT influence scheduling, virtual time, or
+  injection. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.8; routes
+  [DET-1].
+
+## 12.9 Handshake, setup, boot barrier, and teardown
+
+The control protocol ([`14-protocol.md`](14-protocol.md)) is the plugin's
+one-time setup channel; after `SetupAck` it is silent until shutdown. This
+section states the plugin's obligations on that channel and at the boot barrier.
+
+### 12.9.1 Handshake
+
+- **[PLUG-38]** The plugin MUST perform the version handshake before mapping or
+  reading any byte of the shared-memory region: it sends `Hello(proto_version,
+  abi_version)` carrying the shmem ABI version it was compiled against, blocks for
+  `HelloAck`, and verifies the negotiated `proto_version`, the exact `abi_version`
+  match, and `slot_index < node_count`
+  ([`14-protocol.md`](14-protocol.md) [PROTO-10], [PROTO-11], [PROTO-16]). A
+  mismatch MUST abort setup loudly. *Gate:* `gate:abi-conformance`. *Spec:*
+  §12.9.1, forward-ref [`14-protocol.md`](14-protocol.md) §3.5, §3.6, §4; routes
+  [G-8].
+
+- **[PLUG-39]** The plugin MUST cross-check the `slot_index` it received as a
+  launch argument ([PLUG-5] `slot=N`) against the `slot_index` the host sends in
+  `HelloAck`; a disagreement is a configuration error and MUST abort setup. The
+  authoritative slot is the handshake's, and it MUST equal the launch argument.
+  *Gate:* `gate:abi-conformance`. *Spec:* §12.9.1; routes [G-8], [INV-10].
+
+### 12.9.2 Setup and ABI validation
+
+- **[PLUG-40]** On `Setup` the plugin MUST receive exactly two descriptors via
+  `SCM_RIGHTS` in fixed order — the shmem fd then the wake fd
+  ([`14-protocol.md`](14-protocol.md) [PROTO-8]) — `mmap` the shmem fd for exactly
+  the `region_len` the host sent, validate the region header's magic, ABI version,
+  and that its `node_count` and the plugin's `slot_index` are consistent
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-30]), and only then arm the wake fd
+  and register callbacks. Receiving any other fd count, a short region, or a
+  failed header validation MUST be a setup failure ([PROTO-21]). *Gate:*
+  `gate:abi-conformance`. *Spec:* §12.9.2, forward-ref
+  [`14-protocol.md`](14-protocol.md) §3.7, [`13-shmem-abi.md`](13-shmem-abi.md)
+  §13.8; routes [G-8], [INV-10].
+
+- **[PLUG-41]** The plugin MUST reply `SetupAck(status)` with `status == 0` only
+  after the region is mapped, the ABI validated, the wake fd armed, and all
+  callbacks registered; a non-zero status MUST carry a failure code and the plugin
+  MUST NOT begin participating in scheduling (reading its clock cell, polling its
+  rings, advancing time) ([`14-protocol.md`](14-protocol.md) [PROTO-13],
+  [PROTO-19]). *Gate:* `gate:abi-conformance`, `gate:control-responsive`. *Spec:*
+  §12.9.2; routes [G-8].
+
+### 12.9.3 The boot barrier (initial ceiling)
+
+- **[PLUG-42]** After `SetupAck` and before the guest retires its first
+  architecturally-visible instruction, the plugin MUST wait for the scheduler to
+  publish the initial `max_advance_icount` ceiling (the boot rendezvous target)
+  for its slot ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-11]). The slot's
+  ceiling initializes to 0 so the plugin cannot advance before this barrier
+  releases; the plugin MUST block on the boot barrier (waiting on the wake fd /
+  futex, never a fixed wall-clock sleep used as the gate) until the scheduler
+  raises the ceiling. *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`.
+  *Spec:* §12.9.3, forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.6; routes
+  [DET-12], [INV-8].
+
+The boot barrier is what prevents the most insidious early divergence: without
+it, the guest would begin executing at QEMU's default icount budget and blow past
+the boot rendezvous by a host-timing-dependent number of instructions before the
+first idle. The barrier makes "the first run" already deterministic from
+instruction zero ([DET-3], no golden first run).
+
+### 12.9.4 Teardown
+
+- **[PLUG-43]** The plugin MUST observe the global `shutdown_requested` flag and
+  the control-channel `Quit` message as the two shutdown triggers
+  ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-29],
+  [`14-protocol.md`](14-protocol.md) [PROTO-14]): on either, a parked plugin MUST
+  wake, set its node status to done, stop touching shmem, and initiate orderly
+  QEMU shutdown so the host's shutdown escalation
+  ([`14-protocol.md`](14-protocol.md) §5.3) completes without leaking the QEMU
+  child. The plugin MUST NOT continue advancing time or injecting after observing
+  a shutdown trigger. *Gate:* `gate:control-responsive`. *Spec:* §12.9.4; routes
+  [INV-8].
+
+## 12.10 Determinism, the FFI safety boundary, and fail-loud
+
+The plugin is the one crate in Crucible that is *intrinsically* unsafe: it is a
+`cdylib` calling into QEMU's C ABI, mapping raw shared memory, and registering C
+function pointers. The determinism guarantees and the engineering standards of
+[`28-engineering-standards.md`](28-engineering-standards.md) bind it especially
+tightly here.
+
+### 12.10.1 Determinism
+
+- **[PLUG-44]** No plugin code path may read host wall-clock, host monotonic
+  time, host thread-scheduling order, or any host entropy source on a path that
+  influences virtual time, frame/I-O delivery, the instruction stream, or the
+  architectural trajectory. The only nondeterminism the plugin participates in is
+  the scheduler's authorized ceilings and the in-band delivery icounts it reads
+  from shmem; both are pure virtual-time quantities. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §12.10.1;
+  routes [INV-4], [INV-9], [TIME-32].
+
+- **[PLUG-45]** Because the plugin runs single-threaded on the vCPU thread
+  ([PLUG-3]), every atomic it performs on the shared-memory region is uncontended
+  from its side; the atomic *ordering* (acquire/release) it uses MUST still match
+  the ABI's ordering rules ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-20],
+  [SHM-24]) because the *other* side (the host scheduler/router) is a separate
+  process. The plugin MUST use acquire loads where the ABI requires them
+  (reading the ceiling, reading a ring's `write_idx`) and release stores where the
+  ABI requires them (publishing `current_icount`, freeing a consumed slot). *Gate:*
+  `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §12.10.1; routes
+  [SHM-20], [INV-3].
+
+### 12.10.2 The FFI safety boundary
+
+- **[PLUG-46]** Every `unsafe` block in the plugin MUST be minimal and carry a
+  `// SAFETY:` comment justifying the invariant that makes it sound
+  ([`28-engineering-standards.md`](28-engineering-standards.md)), specifically:
+  the single-vCPU-thread serialization that makes process-global state
+  uncontended; the lifetime of the mmap'd region (mapped at setup, valid for the
+  process lifetime); the validity of the control/shmem/wake descriptors handed in
+  at setup; and the contract that C callbacks registered with QEMU are invoked
+  only on the vCPU thread. The plugin MUST NOT use `unsafe` to paper over a
+  genuine data race; the soundness argument MUST be the single-threaded model plus
+  the cross-process atomic ordering of [PLUG-45]. *Gate:* `gate:harness-lint`.
+  *Spec:* §12.10.2, forward-ref [`28-engineering-standards.md`](28-engineering-standards.md);
+  routes [INV-9].
+
+- **[PLUG-47]** Guest memory MUST be read only through the QEMU plugin memory API
+  (§12.7), never by dereferencing a presumed host pointer into guest RAM; the
+  plugin MUST treat guest physical addresses as opaque handles into the API. Frame
+  and request payloads copied between the guest and the shmem rings MUST be
+  bounds-checked against `MAX_FRAME_DATA` and the request's declared length, never
+  trusting a guest- or ring-supplied length without validation. *Gate:*
+  `gate:abi-conformance`, `gate:single-vm-fingerprint`. *Spec:* §12.10.2; routes
+  [INV-10].
+
+### 12.10.3 Fail-loud on IPC and capability failure
+
+- **[PLUG-48]** Any failure of the determinism-critical machinery MUST fail loud,
+  never silent: a broken control socket, a failed handshake, an absent required
+  capability (time control, exact-deadline introspection, RX injection), an ABI
+  mismatch, a full outbound ring, or an already-passed delivery icount ([PLUG-20])
+  MUST stop the run for that node with a distinct, diagnosable failure rather than
+  degrading to a best-effort or wall-clock-dependent fallback. A determinism
+  violation the plugin can detect locally MUST be reported so the divergence
+  bisector can localize it ([INV-10], [DET-39]); the plugin MUST NOT smooth it
+  over. *Gate:* `gate:divergence-bisect`, `gate:control-responsive`. *Spec:*
+  §12.10.3; routes [INV-10], [DET-39].
+
+### 12.10.4 Inertness when sim mode is off
+
+- **[PLUG-49]** When sim mode is off the plugin is not loaded at all: no `-plugin`
+  argument is passed, no control socket is created, no shared-memory region is
+  mapped, and none of the patch-series capabilities the plugin calls take effect
+  ([`14-protocol.md`](14-protocol.md) [PROTO-24], [INV-7]). The plugin's existence
+  MUST have zero effect on a QEMU process launched without it; AOS's production
+  QEMU built from the same source MUST be behaviorally identical to upstream when
+  the plugin is absent. *Gate:* `gate:qemu-inert`. *Spec:* §12.10.4, forward-ref
+  [`11-qemu-patches.md`](11-qemu-patches.md); routes [INV-7], [DET-36].
+
+## 12.11 Summary
+
+```text
+plugin = the in-VM cdylib (-plugin), single vCPU thread ⇒ state uncontended (PLUG-1..4)
+  args: simfd, slot, shmemfd/wakefd (SCM_RIGHTS), whitebox?, coverage?       (PLUG-5..6)
+  register order: parse → handshake → TAKE TIME CONTROL → map shmem/validate
+                  → register callbacks → SetupAck → wait boot barrier        (PLUG-7..8)
+  time control: own the clock; no warp, no realtime, no wall-clock           (PLUG-9)
+    idle (HLT/WFI): publish icount → exact next deadline → wake = min(timer,
+                    inbound delivery, ceiling) → PARK on wake-fd/futex (no spin)
+                    → jump (drain timers/BHs) → inject due frames in order    (PLUG-10..16)
+    freeze virtual time across in-flight device I/O (device_io_active)        (PLUG-21..22)
+  net: TX → outbound ring (emit icount); RX inject iff delivery<=now, in
+       (delivery_icount, src, seq) order; passed-delivery ⇒ fail loud         (PLUG-23..27)
+  block/9p: submit→ring(freeze time); poll→validate delivery_icount→deliver   (PLUG-28..31)
+  doorbell (white-box, opt): trap reserved insn/port, read guest mem via API,
+       stamp marker @ exact icount; black-box works without it                (PLUG-32..34)
+  coverage (opt): TCG-exec basic-block map; zero cost when off; observational  (PLUG-35..37)
+  handshake/setup/boot-barrier/teardown over the control socket               (PLUG-38..43)
+  determinism + FFI: no host time; cross-process atomic ordering; minimal
+       unsafe with // SAFETY:; guest mem via API only; fail loud; inert off   (PLUG-44..49)
+```
+
+If the plugin holds the clock, advances only by scheduler-authorized jumps to
+exact deadlines, injects every input at its in-band delivery icount in the fixed
+total order, and freezes virtual time across device I/O, then — given Contract A's
+entropy elimination ([`04-determinism-contract.md`](04-determinism-contract.md)
+§4.6) and Contract B's scheduler ([`08-scheduling.md`](08-scheduling.md)) — the
+guest's instruction stream `S` and architectural trajectory `T` are a pure
+function of `(image, cmdline, seed, injected inputs)`. The plugin is the
+component that makes that purity true *inside* the QEMU process.
+
+## Implementation checklist
+
+> The authoritative, ordered tasks live in
+> [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
+> whose primary area is the QEMU plugin, copied verbatim per [PLAN-3]. They
+> populate Phase 1 (the determinism / harness / transport foundation), sequenced
+> after the shmem ABI ([`13-shmem-abi.md`](13-shmem-abi.md)) and control protocol
+> ([`14-protocol.md`](14-protocol.md)) primitives the plugin depends on.
+
+- [ ] **T-PLUG-1** Scaffold the `crucible-qemu-plugin` `cdylib`: the QEMU
+  `Register`/callback entry points, the `-smp 1` single-vCPU assumption, and the
+  partition of state into a lifecycle core and never-mutated device-callback
+  pointers (re-entrancy-safe). — satisfies [PLUG-3], [PLUG-4]; spec §12.1.
+- [ ] **T-PLUG-2** Implement plugin-argument parsing (`simfd`, `slot`,
+  `shmemfd`/`wakefd`, `whitebox`, `coverage`) as a total, fail-closed parser that
+  aborts registration on any malformed or missing required key. — satisfies
+  [PLUG-5], [PLUG-6]; spec §12.2.1.
+- [ ] **T-PLUG-3** Implement the fixed registration order — parse → handshake →
+  acquire time control before the first instruction → map+validate shmem → arm
+  wake fd → register callbacks → `SetupAck` → wait boot barrier — failing
+  loudly at each step. — satisfies [PLUG-7], [PLUG-8]; spec §12.2.2.
+- [ ] **T-PLUG-4** Implement clock ownership and the no-host-time invariant: the
+  plugin advances virtual time only by guest instructions up to the ceiling and by
+  authorized idle jumps; ban host wall-clock/monotonic reads on the time path. —
+  satisfies [PLUG-1], [PLUG-9], [PLUG-44]; spec §12.3.1, §12.10.1.
+- [ ] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
+  icount, compute wake = min(next timer, inbound delivery, ceiling), park on the
+  wake fd/futex (no busy spin, no wall-clock timeout), jump on release, inject due
+  frames, republish status. — satisfies [PLUG-10], [PLUG-11], [PLUG-12],
+  [PLUG-13], [PLUG-17]; spec §12.3.2, §12.3.3, §12.4.1.
+- [ ] **T-PLUG-6** Implement exact next-deadline introspection (read the next
+  `QEMU_CLOCK_VIRTUAL` deadline, `ceil`-convert to icount) and ban the
+  overshoot-and-correct fallback; fail loudly if the capability is missing. —
+  satisfies [PLUG-14], [PLUG-15]; spec §12.3.4.
+- [ ] **T-PLUG-7** Implement synchronous idle-jump advancement that fires due
+  timers inline and drains bottom-halves from the idle context, so the wake-point
+  architectural state is bit-identical regardless of host timing. — satisfies
+  [PLUG-16]; spec §12.3.5.
+- [ ] **T-PLUG-8** Implement inbound-frame polling/injection: peek delivery
+  icount, deliver iff `delivery_icount <= current_icount`, order injections by
+  `(delivery_icount, src_node, seq)`, and fail loudly on an already-passed
+  delivery icount. — satisfies [PLUG-18], [PLUG-19], [PLUG-20]; spec §12.4.2.
+- [ ] **T-PLUG-9** Implement virtual-time freeze across in-flight device I/O via
+  `device_io_active`/pending-counter, paired one-to-one with submit/completion and
+  cleared on burst-done. — satisfies [PLUG-21], [PLUG-22]; spec §12.4.3.
+- [ ] **T-PLUG-10** Implement the network TX interception callback: enqueue guest
+  frames into the outbound router ring with an emit-icount stamp, re-entrancy-safe,
+  rejecting oversize frames and full rings loudly. — satisfies [PLUG-23],
+  [PLUG-24], [PLUG-25]; spec §12.5.1.
+- [ ] **T-PLUG-11** Implement RX injection via the lossless queueing path from
+  the idle context, after the idle jump, gated by the delivery-icount rule. —
+  satisfies [PLUG-26], [PLUG-27]; spec §12.5.2.
+- [ ] **T-PLUG-12** Implement the block submit/poll callbacks against the
+  reserved block slots, freezing time on submit and validating the response's
+  delivery icount before delivery. — satisfies [PLUG-28], [PLUG-30], [PLUG-31];
+  spec §12.6.
+- [ ] **T-PLUG-13** Implement the 9p submit/poll/burst-done callbacks against the
+  reserved 9p slots, holding the freeze for the whole burst. — satisfies
+  [PLUG-29], [PLUG-30], [PLUG-31]; spec §12.6.
+- [ ] **T-PLUG-14** Implement the optional white-box doorbell trap: trap the
+  reserved instruction/port, read guest memory via the plugin API, stamp the
+  marker with the exact icount; ensure off-mode installs nothing and black-box is
+  fully functional; route white-box inputs through the injection contract. —
+  satisfies [PLUG-32], [PLUG-33], [PLUG-34]; spec §12.7.
+- [ ] **T-PLUG-15** Implement the optional coverage hook: a registration-time
+  opt-in TCG-exec basic-block map with zero cost when off and no effect on `S`/`T`
+  or fingerprints; emit coverage as observational output. — satisfies [PLUG-35],
+  [PLUG-36], [PLUG-37]; spec §12.8.
+- [ ] **T-PLUG-16** Implement the handshake and slot cross-check
+  (`Hello`/`HelloAck`, exact ABI match, `slot_index < node_count`, launch-arg
+  agreement). — satisfies [PLUG-38], [PLUG-39]; spec §12.9.1.
+- [ ] **T-PLUG-17** Implement setup completion: receive the two `SCM_RIGHTS` fds,
+  `mmap` and validate the region header/ABI, arm the wake fd, and reply
+  `SetupAck`; refuse to participate on non-zero status. — satisfies [PLUG-40],
+  [PLUG-41]; spec §12.9.2.
+- [ ] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
+  publish before the first instruction, using the wake fd/futex (never a
+  wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
+- [ ] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
+  mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
+  leaks. — satisfies [PLUG-43]; spec §12.9.4.
+- [ ] **T-PLUG-20** Enforce the cross-process atomic-ordering rules on every shmem
+  access (acquire loads / release stores matching the ABI) despite the
+  single-threaded plugin side. — satisfies [PLUG-45]; spec §12.10.1.
+- [ ] **T-PLUG-21** Audit and minimize every `unsafe` block with a `// SAFETY:`
+  comment (single-vCPU serialization, mmap lifetime, descriptor validity,
+  vCPU-thread callback contract); read guest memory only via the plugin API; bounds-
+  check all payload copies. — satisfies [PLUG-46], [PLUG-47]; spec §12.10.2.
+- [ ] **T-PLUG-22** Implement fail-loud handling for every determinism-critical
+  failure (broken IPC, missing capability, ABI mismatch, full ring, passed
+  delivery icount) with a distinct diagnosable error that the divergence bisector
+  can localize; never a wall-clock-dependent fallback. — satisfies [PLUG-48];
+  spec §12.10.3.
+- [ ] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
+  mode off the plugin is not loaded and has zero effect on QEMU behavior. —
+  satisfies [PLUG-49]; spec §12.10.4.
