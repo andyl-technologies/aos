@@ -285,7 +285,13 @@ define_builtins! {
     pub(crate) struct FetchGitBuiltin;
     impl BuiltinDefinition for FetchGitBuiltin {
         const NAME: &'static [u8] = b"fetchGit";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FetchGit;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Effectful,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
+        const DOCS: &'static BuiltinDocs = &FETCH_GIT_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
@@ -981,6 +987,8 @@ pub(crate) enum BuiltinExecution {
     FilterSource,
     /// The builtin evaluates `fetchurl`.
     Fetchurl,
+    /// The builtin evaluates `fetchGit`.
+    FetchGit,
     /// The builtin evaluates `fetchTarball`.
     FetchTarball,
     /// The builtin evaluates `readDir`.
@@ -1103,6 +1111,7 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::Unsupported { .. }
+            | Self::FetchGit
             | Self::FetchTarball
             | Self::Fetchurl
             | Self::TrueValue
@@ -1148,6 +1157,7 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported { arity } => Some(arity),
             Self::BuiltinsValue
+            | Self::FetchGit
             | Self::FetchTarball
             | Self::Fetchurl
             | Self::TrueValue
@@ -1363,6 +1373,10 @@ static GENERIC_CLOSURE_DOCS: BuiltinDocs = BuiltinDocs {
 
 static FETCHURL_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Fetches a URL as a fixed-output store path.",
+};
+
+static FETCH_GIT_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Fetches a pinned Git repository as a recursive fixed-output store path.",
 };
 
 static FETCH_TARBALL_DOCS: BuiltinDocs = BuiltinDocs {
@@ -2180,7 +2194,7 @@ mod tests {
     #[test]
     fn default_builtin_metadata_stays_derived_from_execution_strategy() {
         for metadata in BUILTINS.iter() {
-            if matches!(metadata.name(), b"fetchurl" | b"fetchTarball") {
+            if matches!(metadata.name(), b"fetchurl" | b"fetchGit" | b"fetchTarball") {
                 continue;
             }
             let execution = metadata.execution();
@@ -2221,6 +2235,24 @@ mod tests {
         assert_eq!(
             fetchurl.docs().summary(),
             "Fetches a URL as a fixed-output store path."
+        );
+
+        let fetch_git = BUILTINS
+            .lookup(b"fetchGit")
+            .expect("fetchGit builtin is registered");
+
+        assert_eq!(fetch_git.execution(), BuiltinExecution::FetchGit);
+        assert_eq!(
+            fetch_git.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(fetch_git.first_class_arity(), Some(1));
+        assert!(fetch_git.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_git.docs().summary(),
+            "Fetches a pinned Git repository as a recursive fixed-output store path."
         );
 
         let fetch_tarball = BUILTINS

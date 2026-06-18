@@ -618,10 +618,20 @@ eval (network access is disabled unless explicitly allowed).
         tree, opaque path context, atomic configured-store materialization,
         validated reuse of existing store paths, pure-mode hash pinning, and
         restricted-mode path or URI prefix gating.
-- [ ] `fetchGit` (args) — fetch a git repo; `{ url; rev ? …; ref ? …;
+- [x] `fetchGit` (args) — fetch a git repo; `{ url; rev ? …; ref ? …;
       submodules ? …; shallow ? …; allRefs ? …; }`. Returns
       `{ outPath; rev; shortRev; revCount; lastModified; … }`. The exact returned
       attrset shape and the dirty-tree handling must match.
+      - Implemented with in-process libgit2 fetching (no host `git`), string and
+        attrset arguments, `url`/`rev`/`ref`/`name`/`submodules`/`shallow`/`allRefs`
+        validation, pinned pure-mode enforcement, restricted-mode `git+…`
+        `allowed-uris` gating, recursive NAR hashing of an exported worktree,
+        opaque `outPath` context, atomic configured-store materialization,
+        validated reuse of existing store paths, `rev`/`shortRev`/`revCount`/
+        `lastModified`/`lastModifiedDate`/`narHash`/`submodules` metadata, explicit
+        ref fetches for tag refs, recursive submodule checkout, and dirty local
+        worktree export with `dirtyRev`/`dirtyShortRev` metadata while ignoring
+        untracked files.
 - [ ] `fetchTree` (input) — the generic flake-style fetcher dispatching on a
       `type` (`"github"`, `"git"`, `"tarball"`, `"path"`, …). Returns a tree
       attrset with `outPath` and lock metadata.
@@ -863,7 +873,7 @@ omitted (they are keyed by their argument value hashes like any expression).
 | `currentTime` | wall clock | **not soundly cacheable**: taint the memo; do not persist a result that observed it | n/a |
 | `fetchurl` | network (FOD) | the declared `sha256` (fixed-output: stable) | pure: requires `sha256`; restrict-eval: must allow URL |
 | `fetchTarball` | network (FOD) | the declared `sha256` of the unpacked tree | pure: requires `sha256`; restrict-eval: must allow URL or path |
-| `fetchGit` | network/git | `(url, rev)`; dirty-tree → tainted | restrict-eval gating |
+| `fetchGit` | network/git | `(url, rev)`; exported tree narHash in result metadata | pure: requires `rev`; restrict-eval: must allow canonical `git+…` URI |
 | `fetchTree` | network | the locked-input narHash | pure-eval requires locked input |
 | `fetchClosure` | binary cache | `fromPath` content address | experimental |
 | `findFile` | NIX_PATH lookup | resolved store path (+ negative cache) | `<...>` disabled in pure-eval |

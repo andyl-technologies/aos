@@ -80,6 +80,18 @@ const URL_ATTR: &[u8] = b"url";
 const FILTER_ATTR: &[u8] = b"filter";
 const RECURSIVE_ATTR: &[u8] = b"recursive";
 const SHA256_ATTR: &[u8] = b"sha256";
+const REV_ATTR: &[u8] = b"rev";
+const REF_ATTR: &[u8] = b"ref";
+const SUBMODULES_ATTR: &[u8] = b"submodules";
+const SHALLOW_ATTR: &[u8] = b"shallow";
+const ALL_REFS_ATTR: &[u8] = b"allRefs";
+const SHORT_REV_ATTR: &[u8] = b"shortRev";
+const DIRTY_REV_ATTR: &[u8] = b"dirtyRev";
+const DIRTY_SHORT_REV_ATTR: &[u8] = b"dirtyShortRev";
+const REV_COUNT_ATTR: &[u8] = b"revCount";
+const LAST_MODIFIED_ATTR: &[u8] = b"lastModified";
+const LAST_MODIFIED_DATE_ATTR: &[u8] = b"lastModifiedDate";
+const NAR_HASH_ATTR: &[u8] = b"narHash";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
 const KEY_ATTR: &[u8] = b"key";
@@ -106,6 +118,7 @@ const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 const DERIVATION_INTERNAL_PATH: &[u8] = b"<nix/derivation-internal.nix>";
 static FETCH_TARBALL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static FETCH_GIT_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DERIVATION_INTERNAL_SOURCE: &str = r#"
 # This is the implementation of the ‘derivation’ builtin function.
 # It's actually a wrapper around the ‘derivationStrict’ primop.
@@ -1640,6 +1653,30 @@ struct FetchTarballArguments {
     url: Vec<u8>,
     name: String,
     expected_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug)]
+struct FetchGitArguments {
+    url: Vec<u8>,
+    name: String,
+    rev: Option<Vec<u8>>,
+    reference: Option<Vec<u8>>,
+    submodules: bool,
+    shallow: bool,
+    all_refs: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FetchGitResult {
+    out_path: Vec<u8>,
+    rev: String,
+    dirty_rev: Option<String>,
+    dirty_short_rev: Option<String>,
+    rev_count: usize,
+    last_modified: i64,
+    last_modified_date: Vec<u8>,
+    nar_hash: Vec<u8>,
+    submodules: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -8146,6 +8183,1113 @@ impl TreeWalk {
             },
         );
         self.alloc_fetchurl_path_value(id, span, path)
+    }
+
+    fn eval_fetch_git_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let args = self.fetch_git_arguments(argument, argument_span, value)?;
+        if self.options.eval_mode() == EvalMode::Pure && args.rev.is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchGitRevRequired {
+                    id: argument,
+                    url: args.url,
+                    mode: EvalMode::Pure,
+                },
+                argument_span,
+            ));
+        }
+
+        let canonical_uri = Self::fetch_git_canonical_uri(&args);
+        self.check_fetch_git_access(argument, argument_span, &canonical_uri)?;
+
+        let temp_dir = Self::fetch_git_temp_dir(argument, argument_span, &args.url)?;
+        let checkout_dir = temp_dir.join("checkout");
+        let exported_dir = temp_dir.join("exported");
+        let result = self.eval_fetch_git_into_store(
+            argument,
+            argument_span,
+            args,
+            &checkout_dir,
+            &exported_dir,
+        );
+        let _ = fs::remove_dir_all(&temp_dir);
+        let result = result?;
+        self.alloc_fetch_git_result(id, span, result)
+    }
+
+    fn eval_fetch_git_into_store(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        args: FetchGitArguments,
+        checkout_dir: &Path,
+        exported_dir: &Path,
+    ) -> Result<FetchGitResult, TreeWalkError> {
+        if let Some(result) =
+            self.eval_dirty_fetch_git_local_worktree(argument, argument_span, &args, exported_dir)?
+        {
+            return Ok(result);
+        }
+
+        let repo = Self::fetch_git_clone(argument, argument_span, &args, checkout_dir)?;
+        if args.reference.is_some() {
+            Self::fetch_git_reference(argument, argument_span, &args, &repo)?;
+        }
+        if args.all_refs {
+            Self::fetch_git_all_refs(argument, argument_span, &args, &repo)?;
+        }
+        let (rev, rev_count, last_modified, last_modified_date) =
+            Self::fetch_git_checkout_commit(argument, argument_span, &args, &repo)?;
+        if args.submodules {
+            Self::update_fetch_git_submodules(argument, argument_span, &args, &repo)?;
+        }
+
+        Self::copy_fetch_git_worktree(
+            argument,
+            argument_span,
+            &args.url,
+            &repo,
+            checkout_dir,
+            exported_dir,
+            Path::new(""),
+            true,
+        )?;
+
+        let digest = self.source_path_nar_sha256(argument, argument_span, exported_dir, None)?;
+        let nar_hash = Self::encode_convert_hash_digest(
+            argument,
+            argument_span,
+            HashStringAlgorithm::Sha256,
+            ConvertHashFormat::Sri,
+            &digest,
+        )?;
+        let out_path = self.fetch_git_store_path_from_digest(
+            argument,
+            argument_span,
+            &args.url,
+            &args.name,
+            &digest,
+        )?;
+        self.materialize_fetch_git_store_path(
+            argument,
+            argument_span,
+            &args.url,
+            exported_dir,
+            &out_path,
+            &digest,
+        )?;
+
+        Ok(FetchGitResult {
+            out_path,
+            rev,
+            dirty_rev: None,
+            dirty_short_rev: None,
+            rev_count,
+            last_modified,
+            last_modified_date,
+            nar_hash,
+            submodules: args.submodules,
+        })
+    }
+
+    fn eval_dirty_fetch_git_local_worktree(
+        &mut self,
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        exported_dir: &Path,
+    ) -> Result<Option<FetchGitResult>, TreeWalkError> {
+        if args.rev.is_some() {
+            return Ok(None);
+        }
+        let Some(local_path) = Self::fetch_git_local_worktree_path(&args.url) else {
+            return Ok(None);
+        };
+        let Ok(repo) = git2::Repository::open(&local_path) else {
+            return Ok(None);
+        };
+        let (dirty, excluded_paths) = Self::fetch_git_dirty_status(id, span, args, &repo)?;
+        if !dirty {
+            return Ok(None);
+        }
+
+        let head_commit = repo
+            .head()
+            .and_then(|head| head.peel_to_commit())
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let head_rev = head_commit.id().to_string();
+        let dirty_rev = format!("{head_rev}-dirty");
+        let dirty_short_rev = format!("{}-dirty", &head_rev[..7]);
+        let time = head_commit.time();
+        let last_modified = time.seconds();
+        let last_modified_date = Self::format_fetch_git_date(id, span, &args.url, last_modified)?;
+        drop(head_commit);
+
+        Self::copy_fetch_git_dirty_worktree(
+            id,
+            span,
+            &args.url,
+            &repo,
+            &local_path,
+            exported_dir,
+            Path::new(""),
+            &excluded_paths,
+            true,
+        )?;
+
+        let digest = self.source_path_nar_sha256(id, span, exported_dir, None)?;
+        let nar_hash = Self::encode_convert_hash_digest(
+            id,
+            span,
+            HashStringAlgorithm::Sha256,
+            ConvertHashFormat::Sri,
+            &digest,
+        )?;
+        let out_path =
+            self.fetch_git_store_path_from_digest(id, span, &args.url, &args.name, &digest)?;
+        self.materialize_fetch_git_store_path(
+            id,
+            span,
+            &args.url,
+            exported_dir,
+            &out_path,
+            &digest,
+        )?;
+
+        Ok(Some(FetchGitResult {
+            out_path,
+            rev: "0000000000000000000000000000000000000000".to_owned(),
+            dirty_rev: Some(dirty_rev),
+            dirty_short_rev: Some(dirty_short_rev),
+            rev_count: 0,
+            last_modified,
+            last_modified_date,
+            nar_hash,
+            submodules: args.submodules,
+        }))
+    }
+
+    fn fetch_git_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchGitArguments, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            let url = self.context_free_string_bytes(id, span, value, "fetchGit")?;
+            let name = Self::fetch_git_store_name(id, span, &url, b"source")?.to_owned();
+            return Ok(FetchGitArguments {
+                url,
+                name,
+                rev: None,
+                reference: None,
+                submodules: false,
+                shallow: false,
+                all_refs: false,
+            });
+        }
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "set or string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        self.validate_fetch_git_attrs(id, span, value)?;
+
+        let url_value = self.required_attr_value_by_name(id, value, URL_ATTR, span)?;
+        let url_value = self.force_value(id, span, url_value)?;
+        let url = self.context_free_string_bytes(id, span, url_value, "fetchGit")?;
+
+        let name = if let Some(name_value) = self.attr_value_by_name(id, value, NAME_ATTR, span)? {
+            let name_value = self.force_value(id, span, name_value)?;
+            self.context_free_string_bytes(id, span, name_value, "fetchGit")?
+        } else {
+            b"source".to_vec()
+        };
+        let name = Self::fetch_git_store_name(id, span, &url, &name)?.to_owned();
+
+        let rev = if let Some(rev_value) = self.attr_value_by_name(id, value, REV_ATTR, span)? {
+            let rev_value = self.force_value(id, span, rev_value)?;
+            Some(self.context_free_string_bytes(id, span, rev_value, "fetchGit")?)
+        } else {
+            None
+        };
+        let reference =
+            if let Some(ref_value) = self.attr_value_by_name(id, value, REF_ATTR, span)? {
+                let ref_value = self.force_value(id, span, ref_value)?;
+                Some(self.context_free_string_bytes(id, span, ref_value, "fetchGit")?)
+            } else {
+                None
+            };
+        let submodules =
+            self.optional_fetch_git_bool_attr(id, span, value, SUBMODULES_ATTR, false)?;
+        let shallow = self.optional_fetch_git_bool_attr(id, span, value, SHALLOW_ATTR, false)?;
+        let all_refs = self.optional_fetch_git_bool_attr(id, span, value, ALL_REFS_ATTR, false)?;
+
+        Ok(FetchGitArguments {
+            url,
+            name,
+            rev,
+            reference,
+            submodules,
+            shallow,
+            all_refs,
+        })
+    }
+
+    fn optional_fetch_git_bool_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        attr: &[u8],
+        default: bool,
+    ) -> Result<bool, TreeWalkError> {
+        let Some(attr_value) = self.attr_value_by_name(id, value, attr, span)? else {
+            return Ok(default);
+        };
+        let attr_value = self.force_value(id, span, attr_value)?;
+        self.expect_bool(id, attr_value, span)
+    }
+
+    fn validate_fetch_git_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !matches!(
+                key,
+                URL_ATTR
+                    | NAME_ATTR
+                    | REV_ATTR
+                    | REF_ATTR
+                    | SUBMODULES_ATTR
+                    | SHALLOW_ATTR
+                    | ALL_REFS_ATTR
+            ) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFetchGitAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_git_store_name<'a>(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        nix_compat::store_path::validate_name(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchGitStoreName {
+                    id,
+                    url: url.to_vec(),
+                    name: name.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetch_git_store_path_from_digest(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &str,
+        digest: &[u8; 32],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        self.store_path_bytes_from_fingerprint_parts(id, span, url, b"source", name, digest)
+    }
+
+    fn fetch_git_canonical_uri(args: &FetchGitArguments) -> Vec<u8> {
+        let mut uri = Vec::new();
+        uri.extend_from_slice(b"git+");
+        uri.extend_from_slice(&args.url);
+        let mut separator = b'?';
+        let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
+            uri.push(separator);
+            separator = b'&';
+            uri.extend_from_slice(key);
+            if let Some(value) = value {
+                uri.push(b'=');
+                uri.extend_from_slice(value);
+            }
+        };
+        if let Some(reference) = &args.reference {
+            push_param(&mut uri, b"ref", Some(reference));
+        } else {
+            push_param(&mut uri, b"exportIgnore", Some(b"1"));
+        }
+        if let Some(rev) = &args.rev {
+            push_param(&mut uri, b"rev", Some(rev));
+        }
+        if args.shallow {
+            push_param(&mut uri, b"shallow", Some(b"1"));
+        }
+        if args.submodules {
+            push_param(&mut uri, b"submodules", Some(b"1"));
+        }
+        uri
+    }
+
+    fn check_fetch_git_access(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Restricted
+            && !self.options.uri_is_allowed(canonical_uri)
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchGitAccessDenied {
+                    id,
+                    url: canonical_uri.to_vec(),
+                    mode: EvalMode::Restricted,
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn fetch_git_temp_dir(id: IrId, span: Span, url: &[u8]) -> Result<PathBuf, TreeWalkError> {
+        let base = std::env::temp_dir();
+        let pid = std::process::id();
+        for _ in 0..128 {
+            let index = FETCH_GIT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = base.join(format!("aos-nix-fetch-git-{pid}-{index}"));
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => return Err(Self::fetch_git_error(id, span, url, source)),
+            }
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchGit {
+                id,
+                url: url.to_vec(),
+                message: "could not allocate a unique temporary checkout directory".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn fetch_git_local_worktree_path(url: &[u8]) -> Option<PathBuf> {
+        let text = std::str::from_utf8(url).ok()?;
+        if let Ok(parsed) = Url::parse(text) {
+            if parsed.scheme() == "file" {
+                return parsed.to_file_path().ok();
+            }
+        }
+        let path = Path::new(text);
+        path.is_absolute().then(|| path.to_path_buf())
+    }
+
+    fn fetch_git_dirty_status(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        repo: &git2::Repository,
+    ) -> Result<(bool, BTreeSet<Vec<u8>>), TreeWalkError> {
+        let mut options = git2::StatusOptions::new();
+        options
+            .show(git2::StatusShow::IndexAndWorkdir)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(true)
+            .recurse_ignored_dirs(true)
+            .update_index(true);
+        let statuses = repo
+            .statuses(Some(&mut options))
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let mut dirty = false;
+        let mut excluded_paths = BTreeSet::new();
+        for entry in statuses.iter() {
+            let status = entry.status();
+            let path = entry.path_bytes().to_vec();
+            let excluded = status.is_ignored() || (status.is_wt_new() && !status.is_index_new());
+            if excluded {
+                excluded_paths.insert(path);
+                continue;
+            }
+            if status != git2::Status::CURRENT {
+                dirty = true;
+            }
+        }
+        Ok((dirty, excluded_paths))
+    }
+
+    fn fetch_git_clone(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        checkout_dir: &Path,
+    ) -> Result<git2::Repository, TreeWalkError> {
+        let url = Self::fetch_git_utf8(id, span, &args.url, &args.url)?;
+        let mut builder = git2::build::RepoBuilder::new();
+        builder.fetch_options(Self::fetch_git_fetch_options(args.shallow));
+        builder.with_checkout(Self::fetch_git_checkout_builder());
+        if let Some(reference) = &args.reference {
+            let reference = Self::fetch_git_utf8(id, span, &args.url, reference)?;
+            if let Some(branch) = Self::fetch_git_clone_branch(id, span, &args.url, reference)? {
+                builder.branch(&branch);
+            }
+        }
+        builder
+            .clone(url, checkout_dir)
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))
+    }
+
+    fn fetch_git_reference(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        repo: &git2::Repository,
+    ) -> Result<(), TreeWalkError> {
+        let Some(reference) = &args.reference else {
+            return Ok(());
+        };
+        let reference = Self::fetch_git_utf8(id, span, &args.url, reference)?;
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let mut fetch_options = Self::fetch_git_fetch_options(args.shallow);
+        remote
+            .fetch(&[reference], Some(&mut fetch_options), Some("fetchGit ref"))
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))
+    }
+
+    fn fetch_git_all_refs(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        repo: &git2::Repository,
+    ) -> Result<(), TreeWalkError> {
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let mut fetch_options = Self::fetch_git_fetch_options(args.shallow);
+        remote
+            .fetch(
+                &["+refs/*:refs/remotes/origin/*"],
+                Some(&mut fetch_options),
+                Some("fetchGit allRefs"),
+            )
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))
+    }
+
+    fn fetch_git_checkout_commit(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        repo: &git2::Repository,
+    ) -> Result<(String, usize, i64, Vec<u8>), TreeWalkError> {
+        let oid = if let Some(rev) = &args.rev {
+            let rev = Self::fetch_git_utf8(id, span, &args.url, rev)?;
+            git2::Oid::from_str(rev)
+                .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?
+        } else if let Some(reference) = &args.reference {
+            let reference = Self::fetch_git_utf8(id, span, &args.url, reference)?;
+            Self::fetch_git_oid_for_reference(id, span, &args.url, repo, reference)?
+        } else {
+            repo.head()
+                .and_then(|head| head.peel_to_commit())
+                .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?
+                .id()
+        };
+
+        let object = repo
+            .find_object(oid, Some(git2::ObjectType::Commit))
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let mut checkout = Self::fetch_git_checkout_builder();
+        repo.checkout_tree(&object, Some(&mut checkout))
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        repo.set_head_detached(oid)
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        drop(object);
+
+        let commit = repo
+            .find_commit(oid)
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let time = commit.time();
+        let last_modified = time.seconds();
+        let last_modified_date = Self::format_fetch_git_date(id, span, &args.url, last_modified)?;
+        drop(commit);
+
+        let mut revwalk = repo
+            .revwalk()
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        revwalk
+            .push(oid)
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+        let mut rev_count = 0usize;
+        for walked in revwalk {
+            walked.map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+            rev_count = rev_count.checked_add(1).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FetchGit {
+                        id,
+                        url: args.url.clone(),
+                        message: "revision count overflowed usize".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+        }
+
+        Ok((
+            oid.to_string(),
+            rev_count,
+            last_modified,
+            last_modified_date,
+        ))
+    }
+
+    fn update_fetch_git_submodules(
+        id: IrId,
+        span: Span,
+        args: &FetchGitArguments,
+        repo: &git2::Repository,
+    ) -> Result<(), TreeWalkError> {
+        for mut submodule in repo
+            .submodules()
+            .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?
+        {
+            let mut options = git2::SubmoduleUpdateOptions::new();
+            options.checkout(Self::fetch_git_checkout_builder());
+            options.fetch(Self::fetch_git_fetch_options(args.shallow));
+            submodule
+                .update(true, Some(&mut options))
+                .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+            let sub_repo = submodule
+                .open()
+                .map_err(|source| Self::fetch_git_error(id, span, &args.url, source))?;
+            Self::update_fetch_git_submodules(id, span, args, &sub_repo)?;
+        }
+        Ok(())
+    }
+
+    fn fetch_git_fetch_options(shallow: bool) -> git2::FetchOptions<'static> {
+        let mut options = git2::FetchOptions::new();
+        options.download_tags(git2::AutotagOption::All);
+        if shallow {
+            options.depth(1);
+        }
+        options
+    }
+
+    fn fetch_git_checkout_builder() -> git2::build::CheckoutBuilder<'static> {
+        let mut checkout = git2::build::CheckoutBuilder::new();
+        checkout.force().remove_untracked(true).update_index(true);
+        checkout
+    }
+
+    fn fetch_git_utf8<'a>(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        bytes: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        std::str::from_utf8(bytes).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchGit {
+                    id,
+                    url: url.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetch_git_clone_branch(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        reference: &str,
+    ) -> Result<Option<String>, TreeWalkError> {
+        if reference.as_bytes().contains(&0) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchGit {
+                    id,
+                    url: url.to_vec(),
+                    message: "git ref contains NUL byte".to_owned(),
+                },
+                span,
+            ));
+        }
+        Ok(reference.strip_prefix("refs/heads/").map(ToOwned::to_owned))
+    }
+
+    fn fetch_git_oid_for_reference(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        repo: &git2::Repository,
+        reference: &str,
+    ) -> Result<git2::Oid, TreeWalkError> {
+        match repo
+            .revparse_single(reference)
+            .and_then(|object| object.peel_to_commit())
+        {
+            Ok(commit) => Ok(commit.id()),
+            Err(reference_error) => match repo
+                .revparse_single("FETCH_HEAD")
+                .and_then(|object| object.peel_to_commit())
+            {
+                Ok(commit) => Ok(commit.id()),
+                Err(fetch_head_error) => Err(Self::fetch_git_error(
+                    id,
+                    span,
+                    url,
+                    format!(
+                        "could not resolve git ref {reference:?}: {reference_error}; FETCH_HEAD fallback failed: {fetch_head_error}"
+                    ),
+                )),
+            },
+        }
+    }
+
+    fn format_fetch_git_date(
+        id: IrId,
+        span: Span,
+        _url: &[u8],
+        seconds: i64,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let days = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let (year, month, day) = Self::civil_date_from_unix_days(days);
+        let hour = seconds_of_day / 3_600;
+        let minute = (seconds_of_day % 3_600) / 60;
+        let second = seconds_of_day % 60;
+        let formatted = format!("{year:04}{month:02}{day:02}{hour:02}{minute:02}{second:02}");
+        Self::copy_bytes_for_node(id, span, formatted.as_bytes())
+    }
+
+    fn civil_date_from_unix_days(days: i64) -> (i64, i64, i64) {
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let mut year = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = mp + if mp < 10 { 3 } else { -9 };
+        if month <= 2 {
+            year += 1;
+        }
+        (year, month, day)
+    }
+
+    fn alloc_fetch_git_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        result: FetchGitResult,
+    ) -> Result<Value, TreeWalkError> {
+        let out_path_symbol = self.intern_builtin_attr_symbol(id, OUT_PATH_ATTR, span)?;
+        let rev_symbol = self.intern_builtin_attr_symbol(id, REV_ATTR, span)?;
+        let short_rev_symbol = self.intern_builtin_attr_symbol(id, SHORT_REV_ATTR, span)?;
+        let dirty_rev_symbol = self.intern_builtin_attr_symbol(id, DIRTY_REV_ATTR, span)?;
+        let dirty_short_rev_symbol =
+            self.intern_builtin_attr_symbol(id, DIRTY_SHORT_REV_ATTR, span)?;
+        let rev_count_symbol = self.intern_builtin_attr_symbol(id, REV_COUNT_ATTR, span)?;
+        let last_modified_symbol = self.intern_builtin_attr_symbol(id, LAST_MODIFIED_ATTR, span)?;
+        let last_modified_date_symbol =
+            self.intern_builtin_attr_symbol(id, LAST_MODIFIED_DATE_ATTR, span)?;
+        let nar_hash_symbol = self.intern_builtin_attr_symbol(id, NAR_HASH_ATTR, span)?;
+        let submodules_symbol = self.intern_builtin_attr_symbol(id, SUBMODULES_ATTR, span)?;
+
+        let out_path = self.alloc_fetchurl_path_value(id, span, result.out_path)?;
+        let rev = self.alloc_static_string(id, span, result.rev.as_bytes())?;
+        let short_rev_len = result.rev.len().min(7);
+        let short_rev =
+            self.alloc_static_string(id, span, &result.rev.as_bytes()[..short_rev_len])?;
+        let rev_count = i64::try_from(result.rev_count).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchGit {
+                    id,
+                    url: Vec::new(),
+                    message: "revision count does not fit in Nix int".to_owned(),
+                },
+                span,
+            )
+        })?;
+        let last_modified_date = self.alloc_static_string(id, span, &result.last_modified_date)?;
+        let nar_hash = self.alloc_static_string(id, span, &result.nar_hash)?;
+
+        let mut entries = vec![
+            AttrEntry::new(last_modified_symbol, Value::int(result.last_modified)),
+            AttrEntry::new(last_modified_date_symbol, last_modified_date),
+            AttrEntry::new(nar_hash_symbol, nar_hash),
+            AttrEntry::new(out_path_symbol, out_path),
+            AttrEntry::new(rev_symbol, rev),
+            AttrEntry::new(rev_count_symbol, Value::int(rev_count)),
+            AttrEntry::new(short_rev_symbol, short_rev),
+            AttrEntry::new(submodules_symbol, Value::bool(result.submodules)),
+        ];
+        if let Some(dirty_rev) = result.dirty_rev {
+            let dirty_rev = self.alloc_static_string(id, span, dirty_rev.as_bytes())?;
+            entries.push(AttrEntry::new(dirty_rev_symbol, dirty_rev));
+        }
+        if let Some(dirty_short_rev) = result.dirty_short_rev {
+            let dirty_short_rev = self.alloc_static_string(id, span, dirty_short_rev.as_bytes())?;
+            entries.push(AttrEntry::new(dirty_short_rev_symbol, dirty_short_rev));
+        }
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn materialize_fetch_git_store_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        source: &Path,
+        store_path: &[u8],
+        digest: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let target = Path::new(OsStr::from_bytes(store_path));
+        if target.exists() {
+            return self.validate_fetch_git_store_path_digest(id, span, url, store_path, digest);
+        }
+        let Some(parent) = target.parent() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchGit {
+                    id,
+                    url: url.to_vec(),
+                    message: format!("store path has no parent: {}", target.display()),
+                },
+                span,
+            ));
+        };
+        fs::create_dir_all(parent)
+            .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+
+        let temp_target = Self::fetch_git_temp_store_path(id, span, url, parent, target)?;
+        if let Err(source) = Self::copy_fetch_tarball_tree(source, &temp_target) {
+            Self::remove_fetch_tarball_temp_path(&temp_target);
+            return Err(Self::fetch_git_error(id, span, url, source));
+        }
+        match fs::rename(&temp_target, target) {
+            Ok(()) => Ok(()),
+            Err(source) => {
+                Self::remove_fetch_tarball_temp_path(&temp_target);
+                if target.exists() {
+                    self.validate_fetch_git_store_path_digest(id, span, url, store_path, digest)?;
+                    return Ok(());
+                }
+                Err(Self::fetch_git_error(id, span, url, source))
+            }
+        }
+    }
+
+    fn validate_fetch_git_store_path_digest(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        store_path: &[u8],
+        expected: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let actual =
+            self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
+        if actual.as_slice() == expected {
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchGitHashMismatch {
+                id,
+                url: url.to_vec(),
+                expected: expected.to_vec(),
+                actual: actual.to_vec(),
+            },
+            span,
+        ))
+    }
+
+    fn fetch_git_temp_store_path(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parent: &Path,
+        target: &Path,
+    ) -> Result<PathBuf, TreeWalkError> {
+        let name = target.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchGit {
+                    id,
+                    url: url.to_vec(),
+                    message: format!("store path has no file name: {}", target.display()),
+                },
+                span,
+            )
+        })?;
+        let pid = std::process::id();
+        for _ in 0..128 {
+            let index = FETCH_GIT_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let temp = parent.join(format!(".{name}.tmp-{pid}-{index}"));
+            if !temp.exists() {
+                return Ok(temp);
+            }
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchGit {
+                id,
+                url: url.to_vec(),
+                message: "could not allocate a unique temporary store path".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn copy_fetch_git_worktree(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        repo: &git2::Repository,
+        source: &Path,
+        target: &Path,
+        relative: &Path,
+        is_root: bool,
+    ) -> Result<bool, TreeWalkError> {
+        if !is_root && Self::fetch_git_export_ignored(id, span, url, repo, relative)? {
+            return Ok(false);
+        }
+
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            fs::create_dir(target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            let mut copied_child = false;
+            for entry in fs::read_dir(source)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?
+            {
+                let entry = entry.map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+                if entry.file_name().as_bytes() == b".git" {
+                    continue;
+                }
+                let child_relative = if relative.as_os_str().is_empty() {
+                    PathBuf::from(entry.file_name())
+                } else {
+                    relative.join(entry.file_name())
+                };
+                if Self::copy_fetch_git_worktree(
+                    id,
+                    span,
+                    url,
+                    repo,
+                    &entry.path(),
+                    &target.join(entry.file_name()),
+                    &child_relative,
+                    false,
+                )? {
+                    copied_child = true;
+                }
+            }
+            if copied_child || is_root {
+                fs::set_permissions(target, metadata.permissions())
+                    .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+                return Ok(true);
+            }
+            fs::remove_dir(target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(false);
+        }
+        if file_type.is_file() {
+            fs::copy(source, target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            fs::set_permissions(target, metadata.permissions())
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(true);
+        }
+        if file_type.is_symlink() {
+            let link = fs::read_link(source)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            std::os::unix::fs::symlink(link, target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(true);
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchGit {
+                id,
+                url: url.to_vec(),
+                message: "unsupported git worktree entry type".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn copy_fetch_git_dirty_worktree(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        repo: &git2::Repository,
+        source: &Path,
+        target: &Path,
+        relative: &Path,
+        excluded_paths: &BTreeSet<Vec<u8>>,
+        is_root: bool,
+    ) -> Result<bool, TreeWalkError> {
+        if !is_root && Self::fetch_git_path_is_excluded(relative, excluded_paths) {
+            return Ok(false);
+        }
+        if !is_root && Self::fetch_git_export_ignored(id, span, url, repo, relative)? {
+            return Ok(false);
+        }
+
+        let metadata = fs::symlink_metadata(source)
+            .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            fs::create_dir(target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            let mut copied_child = false;
+            for entry in fs::read_dir(source)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?
+            {
+                let entry = entry.map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+                if entry.file_name().as_bytes() == b".git" {
+                    continue;
+                }
+                let child_relative = if relative.as_os_str().is_empty() {
+                    PathBuf::from(entry.file_name())
+                } else {
+                    relative.join(entry.file_name())
+                };
+                if Self::copy_fetch_git_dirty_worktree(
+                    id,
+                    span,
+                    url,
+                    repo,
+                    &entry.path(),
+                    &target.join(entry.file_name()),
+                    &child_relative,
+                    excluded_paths,
+                    false,
+                )? {
+                    copied_child = true;
+                }
+            }
+            if copied_child || is_root {
+                fs::set_permissions(target, metadata.permissions())
+                    .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+                return Ok(true);
+            }
+            fs::remove_dir(target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(false);
+        }
+        if file_type.is_file() {
+            fs::copy(source, target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            fs::set_permissions(target, metadata.permissions())
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(true);
+        }
+        if file_type.is_symlink() {
+            let link = fs::read_link(source)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            std::os::unix::fs::symlink(link, target)
+                .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+            return Ok(true);
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchGit {
+                id,
+                url: url.to_vec(),
+                message: "unsupported git worktree entry type".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn fetch_git_export_ignored(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        repo: &git2::Repository,
+        relative: &Path,
+    ) -> Result<bool, TreeWalkError> {
+        let flags = git2::AttrCheckFlags::FILE_THEN_INDEX | git2::AttrCheckFlags::NO_SYSTEM;
+        let value = repo
+            .get_attr_bytes(relative, "export-ignore", flags)
+            .map_err(|source| Self::fetch_git_error(id, span, url, source))?;
+        Ok(matches!(
+            git2::AttrValue::from_bytes(value),
+            git2::AttrValue::True
+        ))
+    }
+
+    fn fetch_git_path_is_excluded(path: &Path, excluded_paths: &BTreeSet<Vec<u8>>) -> bool {
+        let bytes = path.as_os_str().as_bytes();
+        excluded_paths.iter().any(|excluded| {
+            bytes == excluded.as_slice()
+                || excluded
+                    .strip_suffix(b"/")
+                    .is_some_and(|stripped| bytes == stripped)
+                || excluded.ends_with(b"/") && bytes.starts_with(excluded.as_slice())
+                || bytes
+                    .strip_prefix(excluded.as_slice())
+                    .is_some_and(|suffix| suffix.starts_with(b"/"))
+        })
+    }
+
+    fn fetch_git_error(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        source: impl std::fmt::Display,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::FetchGit {
+                id,
+                url: url.to_vec(),
+                message: source.to_string(),
+            },
+            span,
+        )
     }
 
     fn eval_fetch_tarball_primop(
@@ -21645,6 +22789,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetchurl_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::FetchGit => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_fetch_git_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::FetchTarball => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -21897,6 +23048,17 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
                 eval.eval_fetchurl_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
+            BuiltinExecution::FetchGit => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_fetch_git_primop(
                     call.id,
                     call.span,
                     argument.id(),
@@ -22870,6 +24032,72 @@ pub enum TreeWalkErrorKind {
         /// The actual SHA-256 digest bytes.
         actual: Vec<u8>,
     },
+    /// `builtins.fetchGit` used an unsupported argument attribute.
+    #[error("unsupported fetchGit argument at node {id:?}: {attr:?}")]
+    UnsupportedFetchGitAttr {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// `builtins.fetchGit` could not derive or validate the output store name.
+    #[error(
+        "failed to derive fetchGit store name at node {id:?} url {url:?} name {name:?}: {message}"
+    )]
+    FetchGitStoreName {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The rejected store name bytes.
+        name: Vec<u8>,
+        /// The store-name diagnostic.
+        message: String,
+    },
+    /// `builtins.fetchGit` could not fetch, check out, or materialize its repository.
+    #[error("failed to fetch git repository at node {id:?} url {url:?}: {message}")]
+    FetchGit {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The fetch diagnostic.
+        message: String,
+    },
+    /// An evaluation mode rejected `builtins.fetchGit` repository access.
+    #[error("{mode:?} evaluation forbids fetchGit repository access at node {id:?} url {url:?}")]
+    FetchGitAccessDenied {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The canonical git URI bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that denied access.
+        mode: EvalMode,
+    },
+    /// Pure evaluation rejected an unpinned `builtins.fetchGit` request.
+    #[error("{mode:?} evaluation requires a rev for fetchGit at node {id:?} url {url:?}")]
+    FetchGitRevRequired {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that required a revision.
+        mode: EvalMode,
+    },
+    /// `builtins.fetchGit` materialized a tree with a different recursive SHA-256 digest.
+    #[error(
+        "fetchGit hash mismatch at node {id:?} url {url:?}: expected {expected:?}, got {actual:?}"
+    )]
+    FetchGitHashMismatch {
+        /// The fetchGit argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The expected SHA-256 digest bytes.
+        expected: Vec<u8>,
+        /// The actual SHA-256 digest bytes.
+        actual: Vec<u8>,
+    },
     /// `builtins.fetchTarball` used an unsupported argument attribute.
     #[error("unsupported fetchTarball argument at node {id:?}: {attr:?}")]
     UnsupportedFetchTarballAttr {
@@ -23667,7 +24895,6 @@ mod tests {
     ];
 
     const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &[
-        "fetchGit",
         "fetchMercurial",
         "fetchTree",
         "flakeRefToString",
@@ -24382,6 +25609,119 @@ mod tests {
         let path = dir.join("data.txt");
         fs::write(&path, bytes).expect("temp file writes");
         (dir, path)
+    }
+
+    fn git_signature_with_offset(seconds: i64, offset_minutes: i32) -> git2::Signature<'static> {
+        let time = git2::Time::new(seconds, offset_minutes);
+        git2::Signature::new("AOS Test", "aos@example.invalid", &time)
+            .expect("git signature creates")
+    }
+
+    fn git_commit_index(repo: &git2::Repository, message: &str, seconds: i64) -> git2::Oid {
+        git_commit_index_with_offset(repo, message, seconds, 0)
+    }
+
+    fn git_commit_index_with_offset(
+        repo: &git2::Repository,
+        message: &str,
+        seconds: i64,
+        offset_minutes: i32,
+    ) -> git2::Oid {
+        let mut index = repo.index().expect("git index opens");
+        index.write().expect("git index writes");
+        let tree_id = index.write_tree().expect("git tree writes");
+        let tree = repo.find_tree(tree_id).expect("git tree exists");
+        let signature = git_signature_with_offset(seconds, offset_minutes);
+        let parent_commits = repo
+            .head()
+            .ok()
+            .and_then(|head| head.peel_to_commit().ok())
+            .into_iter()
+            .collect::<Vec<_>>();
+        let parents = parent_commits.iter().collect::<Vec<_>>();
+        repo.commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            message,
+            &tree,
+            &parents,
+        )
+        .expect("git commit creates")
+    }
+
+    fn git_commit_file(
+        repo: &git2::Repository,
+        relative_path: &str,
+        contents: &[u8],
+        seconds: i64,
+    ) -> git2::Oid {
+        git_commit_file_with_offset(repo, relative_path, contents, seconds, 0)
+    }
+
+    fn git_commit_file_with_offset(
+        repo: &git2::Repository,
+        relative_path: &str,
+        contents: &[u8],
+        seconds: i64,
+        offset_minutes: i32,
+    ) -> git2::Oid {
+        let workdir = repo.workdir().expect("test repo has workdir");
+        let path = workdir.join(relative_path);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("git fixture parent creates");
+        }
+        fs::write(&path, contents).expect("git fixture file writes");
+        let mut index = repo.index().expect("git index opens");
+        index
+            .add_path(Path::new(relative_path))
+            .expect("git fixture path stages");
+        index.write().expect("git index writes");
+        git_commit_index_with_offset(repo, "fixture commit", seconds, offset_minutes)
+    }
+
+    fn git_repo_with_file(prefix: &str) -> (PathBuf, git2::Oid) {
+        let dir = unique_temp_dir(prefix);
+        let repo = git2::Repository::init(&dir).expect("git fixture repo initializes");
+        let oid = git_commit_file(&repo, "data.txt", b"git-data", 1_700_000_000);
+        (dir, oid)
+    }
+
+    fn git_repo_with_tag(prefix: &str) -> (PathBuf, git2::Oid) {
+        let (dir, oid) = git_repo_with_file(prefix);
+        let repo = git2::Repository::open(&dir).expect("git fixture repo opens");
+        let object = repo
+            .find_object(oid, Some(git2::ObjectType::Commit))
+            .expect("git fixture commit object exists");
+        repo.tag_lightweight("v1", &object, false)
+            .expect("git fixture tag creates");
+        (dir, oid)
+    }
+
+    fn git_repo_with_submodule(prefix: &str) -> (PathBuf, PathBuf, git2::Oid) {
+        let sub_dir = unique_temp_dir(&format!("{prefix}-sub"));
+        let sub_repo = git2::Repository::init(&sub_dir).expect("git submodule repo initializes");
+        git_commit_file(&sub_repo, "sub.txt", b"submodule-data", 1_700_000_000);
+
+        let parent_dir = unique_temp_dir(prefix);
+        let parent_repo = git2::Repository::init(&parent_dir).expect("git parent repo initializes");
+        fs::write(parent_dir.join("root.txt"), b"root-data").expect("git parent file writes");
+        let sub_url = path_source(&sub_dir);
+        let mut submodule = parent_repo
+            .submodule(&sub_url, Path::new("deps/sub"), true)
+            .expect("git submodule adds");
+        submodule.clone(None).expect("git submodule clones");
+        submodule
+            .add_finalize()
+            .expect("git submodule add finalizes");
+        let mut index = parent_repo.index().expect("git parent index opens");
+        index
+            .add_path(Path::new("root.txt"))
+            .expect("git parent root file stages");
+        index.write().expect("git parent index writes");
+        drop(index);
+        let oid = git_commit_index(&parent_repo, "parent fixture commit", 1_700_000_060);
+        (parent_dir, sub_dir, oid)
     }
 
     fn append_tar_bytes<W: std::io::Write>(
@@ -38305,6 +39645,580 @@ mod tests {
         );
 
         fs::remove_dir_all(source_dir).expect("source temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_fetches_local_repo_and_returns_metadata() {
+        let (repo_dir, oid) = git_repo_with_file("fetch-git");
+        let store_dir = unique_temp_dir("fetch-git-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url_text = format!("file://{}", path_source(&repo_dir));
+        let url = nix_string_literal(&url_text);
+        let rev = oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; rev = "{rev}"; }};
+                in {{
+                  names = builtins.attrNames x;
+                  pathValue = x.outPath;
+                  rev = x.rev;
+                  shortRev = x.shortRev;
+                  revCount = x.revCount;
+                  lastModified = x.lastModified;
+                  lastModifiedDate = x.lastModifiedDate;
+                  narPrefix = builtins.substring 0 7 x.narHash;
+                  submodules = x.submodules;
+                  dir = builtins.readDir x;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchGit metadata JSON parses");
+        assert_eq!(
+            value["names"],
+            serde_json::json!([
+                "lastModified",
+                "lastModifiedDate",
+                "narHash",
+                "outPath",
+                "rev",
+                "revCount",
+                "shortRev",
+                "submodules"
+            ])
+        );
+        assert_eq!(value["rev"], rev);
+        assert_eq!(value["shortRev"], &rev[..7]);
+        assert_eq!(value["revCount"], 1);
+        assert_eq!(value["lastModified"], 1_700_000_000);
+        assert_eq!(value["lastModifiedDate"], "20231114221320");
+        assert_eq!(value["narPrefix"], "sha256-");
+        assert_eq!(value["submodules"], false);
+        assert_eq!(value["dir"], serde_json::json!({ "data.txt": "regular" }));
+        let out_path = value["pathValue"].as_str().expect("outPath is a string");
+        assert!(out_path.starts_with(&path_source(&store_dir)));
+        assert!(out_path.ends_with("-source"));
+        assert_eq!(
+            fs::read(Path::new(out_path).join("data.txt")).expect("fetchGit materializes file"),
+            b"git-data"
+        );
+        assert!(!Path::new(out_path).join(".git").exists());
+
+        let context = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; rev = "{rev}"; }};
+                in builtins.getContext (toString x)
+                "#
+            ),
+            options,
+        );
+        let context: serde_json::Value =
+            serde_json::from_slice(&context).expect("fetchGit context JSON parses");
+        assert_eq!(context[out_path]["path"], true);
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_exports_dirty_local_worktrees() {
+        let (repo_dir, oid) = git_repo_with_file("fetch-git-dirty");
+        fs::write(repo_dir.join("data.txt"), b"dirty-data").expect("tracked file dirties");
+        fs::write(repo_dir.join("extra.txt"), b"untracked").expect("untracked file writes");
+        let store_dir = unique_temp_dir("fetch-git-dirty-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let head_rev = oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; }};
+                in {{
+                  names = builtins.attrNames x;
+                  rev = x.rev;
+                  shortRev = x.shortRev;
+                  dirtyRev = x.dirtyRev;
+                  dirtyShortRev = x.dirtyShortRev;
+                  revCount = x.revCount;
+                  data = builtins.readFile "${{x}}/data.txt";
+                  extra = builtins.pathExists "${{x}}/extra.txt";
+                }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("dirty fetchGit JSON parses");
+        assert_eq!(
+            value["names"],
+            serde_json::json!([
+                "dirtyRev",
+                "dirtyShortRev",
+                "lastModified",
+                "lastModifiedDate",
+                "narHash",
+                "outPath",
+                "rev",
+                "revCount",
+                "shortRev",
+                "submodules"
+            ])
+        );
+        assert_eq!(value["rev"], "0000000000000000000000000000000000000000");
+        assert_eq!(value["shortRev"], "0000000");
+        assert_eq!(value["dirtyRev"], format!("{head_rev}-dirty"));
+        assert_eq!(value["dirtyShortRev"], format!("{}-dirty", &head_rev[..7]));
+        assert_eq!(value["revCount"], 0);
+        assert_eq!(value["data"], "dirty-data");
+        assert_eq!(value["extra"], false);
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_honors_export_ignore_attributes() {
+        let repo_dir = unique_temp_dir("fetch-git-export-ignore");
+        let repo = git2::Repository::init(&repo_dir).expect("git fixture repo initializes");
+        fs::write(
+            repo_dir.join(".gitattributes"),
+            b"ignored.txt export-ignore\nsub/ignored.txt export-ignore\nignored-dir/** export-ignore\n",
+        )
+        .expect("git attributes file writes");
+        fs::write(repo_dir.join("included.txt"), b"included").expect("included file writes");
+        fs::write(repo_dir.join("ignored.txt"), b"ignored").expect("ignored file writes");
+        fs::create_dir(repo_dir.join("sub")).expect("subdirectory creates");
+        fs::write(repo_dir.join("sub").join("included.txt"), b"sub-included")
+            .expect("sub included file writes");
+        fs::write(repo_dir.join("sub").join("ignored.txt"), b"sub-ignored")
+            .expect("sub ignored file writes");
+        fs::create_dir(repo_dir.join("ignored-dir")).expect("ignored directory creates");
+        fs::write(
+            repo_dir.join("ignored-dir").join("leaf.txt"),
+            b"ignored-leaf",
+        )
+        .expect("ignored directory leaf writes");
+        let mut index = repo.index().expect("git index opens");
+        for path in [
+            ".gitattributes",
+            "included.txt",
+            "ignored.txt",
+            "sub/included.txt",
+            "sub/ignored.txt",
+            "ignored-dir/leaf.txt",
+        ] {
+            index
+                .add_path(Path::new(path))
+                .expect("git fixture path stages");
+        }
+        index.write().expect("git index writes");
+        drop(index);
+        let oid = git_commit_index(&repo, "fixture commit", 1_700_000_000);
+        let store_dir = unique_temp_dir("fetch-git-export-ignore-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let rev = oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; rev = "{rev}"; }};
+                in {{
+                  included = builtins.readFile "${{x}}/included.txt";
+                  ignored = builtins.pathExists "${{x}}/ignored.txt";
+                  subIncluded = builtins.readFile "${{x}}/sub/included.txt";
+                  subIgnored = builtins.pathExists "${{x}}/sub/ignored.txt";
+                  ignoredDir = builtins.pathExists "${{x}}/ignored-dir";
+                }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("export-ignore fetchGit JSON parses");
+        assert_eq!(value["included"], "included");
+        assert_eq!(value["ignored"], false);
+        assert_eq!(value["subIncluded"], "sub-included");
+        assert_eq!(value["subIgnored"], false);
+        assert_eq!(value["ignoredDir"], false);
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_resolves_ref_without_rev() {
+        let (repo_dir, tagged_oid) = git_repo_with_tag("fetch-git-ref-without-rev");
+        let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
+        let head_oid = git_commit_file(&repo, "data.txt", b"head-data", 1_700_000_060);
+        assert_ne!(tagged_oid, head_oid);
+        let store_dir = unique_temp_dir("fetch-git-ref-without-rev-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let tagged_rev = tagged_oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; ref = "refs/tags/v1"; }};
+                in {{ rev = x.rev; data = builtins.readFile "${{x}}/data.txt"; }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("ref fetchGit JSON parses");
+        assert_eq!(value["rev"], tagged_rev);
+        assert_eq!(value["data"], "git-data");
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_resolves_fetched_ref_without_local_name() {
+        let repo_dir = unique_temp_dir("fetch-git-fetch-head-ref");
+        let repo = git2::Repository::init(&repo_dir).expect("git fixture repo initializes");
+        let custom_oid = git_commit_file(&repo, "data.txt", b"custom-data", 1_700_000_000);
+        repo.reference("refs/custom/v1", custom_oid, false, "fixture custom ref")
+            .expect("git fixture custom ref creates");
+        let head_oid = git_commit_file(&repo, "data.txt", b"head-data", 1_700_000_060);
+        assert_ne!(custom_oid, head_oid);
+        let store_dir = unique_temp_dir("fetch-git-fetch-head-ref-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let custom_rev = custom_oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; ref = "refs/custom/v1"; }};
+                in {{ rev = x.rev; data = builtins.readFile "${{x}}/data.txt"; }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("custom-ref fetchGit JSON parses");
+        assert_eq!(value["rev"], custom_rev);
+        assert_eq!(value["data"], "custom-data");
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_formats_last_modified_date_as_utc() {
+        let repo_dir = unique_temp_dir("fetch-git-utc-date");
+        let repo = git2::Repository::init(&repo_dir).expect("git fixture repo initializes");
+        let oid = git_commit_file_with_offset(&repo, "data.txt", b"git-data", 1_699_967_600, 540);
+        let store_dir = unique_temp_dir("fetch-git-utc-date-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let rev = oid.to_string();
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{ url = {url}; rev = "{rev}"; }};
+                in {{ lastModified = x.lastModified; lastModifiedDate = x.lastModifiedDate; }}
+                "#
+            ),
+            options,
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("UTC-date fetchGit JSON parses");
+        assert_eq!(value["lastModified"], 1_699_967_600);
+        assert_eq!(value["lastModifiedDate"], "20231114131320");
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_honors_ref_and_submodules() {
+        let (tagged_repo_dir, tagged_oid) = git_repo_with_tag("fetch-git-tagged");
+        let tag_store_dir = unique_temp_dir("fetch-git-tagged-store");
+        let tag_options =
+            TreeWalkOptions::with_store_dir(tag_store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let tag_url = nix_string_literal(&format!("file://{}", path_source(&tagged_repo_dir)));
+        let tagged_rev = tagged_oid.to_string();
+        let tagged_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{
+                  url = {tag_url};
+                  ref = "refs/tags/v1";
+                  rev = "{tagged_rev}";
+                  name = "tagged";
+                }};
+                in {{ rev = x.rev; pathValue = x.outPath; data = builtins.readFile "${{x}}/data.txt"; }}
+                "#
+            ),
+            tag_options,
+        );
+        let tagged_value: serde_json::Value =
+            serde_json::from_slice(&tagged_json).expect("tagged fetchGit JSON parses");
+        assert_eq!(tagged_value["rev"], tagged_rev);
+        assert!(
+            tagged_value["pathValue"]
+                .as_str()
+                .expect("tagged outPath is a string")
+                .ends_with("-tagged")
+        );
+        assert_eq!(tagged_value["data"], "git-data");
+
+        let (parent_dir, sub_dir, parent_oid) = git_repo_with_submodule("fetch-git-submodule");
+        let sub_store_dir = unique_temp_dir("fetch-git-submodule-store");
+        let sub_options =
+            TreeWalkOptions::with_store_dir(sub_store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let parent_url = nix_string_literal(&format!("file://{}", path_source(&parent_dir)));
+        let parent_rev = parent_oid.to_string();
+        let sub_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{
+                  url = {parent_url};
+                  rev = "{parent_rev}";
+                  submodules = true;
+                }};
+                in {{
+                  submodules = x.submodules;
+                  root = builtins.readFile "${{x}}/root.txt";
+                  sub = builtins.readFile "${{x}}/deps/sub/sub.txt";
+                  subGit = builtins.pathExists "${{x}}/deps/sub/.git";
+                }}
+                "#
+            ),
+            sub_options,
+        );
+        let sub_value: serde_json::Value =
+            serde_json::from_slice(&sub_json).expect("submodule fetchGit JSON parses");
+        assert_eq!(sub_value["submodules"], true);
+        assert_eq!(sub_value["root"], "root-data");
+        assert_eq!(sub_value["sub"], "submodule-data");
+        assert_eq!(sub_value["subGit"], false);
+
+        fs::remove_dir_all(tagged_repo_dir).expect("tagged repo temp directory removes");
+        fs::remove_dir_all(tag_store_dir).expect("tag store temp directory removes");
+        fs::remove_dir_all(parent_dir).expect("parent repo temp directory removes");
+        fs::remove_dir_all(sub_dir).expect("sub repo temp directory removes");
+        fs::remove_dir_all(sub_store_dir).expect("sub store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_validates_arguments_and_store_reuse() {
+        let (repo_dir, oid) = git_repo_with_file("fetch-git-invalid");
+        let store_dir = unique_temp_dir("fetch-git-invalid-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
+        let rev = oid.to_string();
+
+        let ir = lower(&format!(
+            r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; bogus = 1; }}"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("unknown fetchGit attr rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchGitAttr { attr, .. } if attr.as_slice() == b"bogus"
+        ));
+
+        let ir = lower(&format!(
+            r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; name = "bad/name"; }}"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("invalid fetchGit store name rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchGitStoreName { .. }
+        ));
+
+        let ir = lower(&format!(r#"builtins.fetchGit {{ rev = "{rev}"; }}"#));
+        let error = eval_whnf_owned(&ir).expect_err("missing fetchGit url rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MissingAttribute { .. }
+        ));
+
+        let ir = lower(&format!(
+            r#"builtins.fetchGit {{ url = {url}; rev = "not-a-rev"; }}"#
+        ));
+        let error = eval_whnf_owned_with_options(&ir, options.clone())
+            .expect_err("invalid fetchGit rev rejects");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchGit { .. }));
+
+        let source = format!(r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; }}"#);
+        let path_json = eval_json_bytes_with_options(&source, options.clone());
+        let path = serde_json::from_slice::<serde_json::Value>(&path_json)
+            .expect("fetchGit path JSON parses");
+        let out_path = path.as_str().expect("fetchGit coerces to outPath");
+        fs::remove_file(Path::new(out_path).join("data.txt"))
+            .expect("materialized fetchGit path corrupts");
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("corrupt existing fetchGit store path rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchGitHashMismatch { .. }
+        ));
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_git_primop_obeys_eval_mode_gates() {
+        let (repo_dir, oid) = git_repo_with_file("fetch-git-mode");
+        let store_dir = unique_temp_dir("fetch-git-mode-store");
+        let url_text = format!("file://{}", path_source(&repo_dir));
+        let url = nix_string_literal(&url_text);
+        let rev = oid.to_string();
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!("builtins.fetchGit {url}")),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure eval rejects unpinned fetchGit before repo access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchGitRevRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        let mut pure_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let pure_json = eval_json_bytes_with_options(
+            &format!(r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; }}"#),
+            pure_options,
+        );
+        let pure_path = serde_json::from_slice::<serde_json::Value>(&pure_json)
+            .expect("pure fetchGit path JSON parses");
+        assert!(
+            pure_path
+                .as_str()
+                .expect("pure fetchGit coerces to outPath")
+                .ends_with("-source")
+        );
+
+        let restricted_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted eval rejects disallowed fetchGit before repo access");
+        assert!(matches!(
+            restricted_error.kind(),
+            TreeWalkErrorKind::FetchGitAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut restricted_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        restricted_options.set_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_uri(format!("git+{url_text}?exportIgnore=1&rev={rev}").into_bytes())
+            .expect("git allowed URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(r#"builtins.fetchGit {{ url = {url}; rev = "{rev}"; }}"#),
+            restricted_options,
+        );
+        let restricted_path = serde_json::from_slice::<serde_json::Value>(&restricted_json)
+            .expect("restricted fetchGit path JSON parses");
+        assert!(
+            restricted_path
+                .as_str()
+                .expect("restricted fetchGit coerces to outPath")
+                .ends_with("-source")
+        );
+        let all_refs_canonical_uri = TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
+            url: url_text.as_bytes().to_vec(),
+            name: "source".to_owned(),
+            rev: Some(rev.as_bytes().to_vec()),
+            reference: None,
+            submodules: false,
+            shallow: false,
+            all_refs: true,
+        });
+        assert_eq!(
+            all_refs_canonical_uri,
+            format!("git+{url_text}?exportIgnore=1&rev={rev}").into_bytes()
+        );
+
+        let (tagged_repo_dir, tagged_oid) = git_repo_with_tag("fetch-git-mode-tagged");
+        let tagged_url_text = format!("file://{}", path_source(&tagged_repo_dir));
+        let tagged_url = nix_string_literal(&tagged_url_text);
+        let tagged_rev = tagged_oid.to_string();
+        let tagged_rev_bytes = tagged_rev.as_bytes().to_vec();
+        let canonical_uri = TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
+            url: tagged_url_text.as_bytes().to_vec(),
+            name: "source".to_owned(),
+            rev: Some(tagged_rev_bytes),
+            reference: Some(b"refs/tags/v1".to_vec()),
+            submodules: true,
+            shallow: true,
+            all_refs: false,
+        });
+        assert_eq!(
+            canonical_uri,
+            format!(
+                "git+{tagged_url_text}?ref=refs/tags/v1&rev={tagged_rev}&shallow=1&submodules=1"
+            )
+            .into_bytes()
+        );
+        let mut tagged_restricted_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        tagged_restricted_options.set_eval_mode(EvalMode::Restricted);
+        tagged_restricted_options
+            .add_allowed_uri(
+                format!("git+{tagged_url_text}?ref=refs/tags/v1&rev={tagged_rev}&submodules=1")
+                    .into_bytes(),
+            )
+            .expect("ref-qualified git allowed URI configures");
+        let tagged_restricted_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchGit {{
+                  url = {tagged_url};
+                  ref = "refs/tags/v1";
+                  rev = "{tagged_rev}";
+                  submodules = true;
+                }};
+                in {{ rev = x.rev; submodules = x.submodules; }}
+                "#
+            ),
+            tagged_restricted_options,
+        );
+        let tagged_restricted_value: serde_json::Value =
+            serde_json::from_slice(&tagged_restricted_json)
+                .expect("restricted ref fetchGit JSON parses");
+        assert_eq!(tagged_restricted_value["rev"], tagged_rev);
+        assert_eq!(tagged_restricted_value["submodules"], true);
+
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
+        fs::remove_dir_all(tagged_repo_dir).expect("tagged repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 
