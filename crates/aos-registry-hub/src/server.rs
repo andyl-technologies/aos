@@ -321,6 +321,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // route.
         Arc::clone(&state.leases) as Arc<dyn aos_registry_core::lease::PublishLease>,
         Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        Some(Arc::clone(&state.sealer)),
     ));
     // The shared router owns `/aos.registry.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
@@ -1231,6 +1232,13 @@ async fn put_machine_path(
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
+        }
+        // A managed cache: the shared `put_machine_path` has a cache branch
+        // (content-addressed write + hosted-key narinfo signing), so
+        // `nix copy --to <hub>/<cache>` works against caches too — mirroring the
+        // HEAD handler's cache fallthrough.
+        Ok(None) if matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_))) => {
+            crate::facade::put_machine_path(&state, &slug, &path, &headers, body).await
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),

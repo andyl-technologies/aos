@@ -505,10 +505,18 @@ the current spec. Phases are orderable; A lands first, E last.
       pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,
       `nar_refcount`, usage, GC-run lifecycle — all on the async `Backend`
       (sqlite + D1 clean), with contract tests.
-- [ ] Cache storage layout writer/reader: `nix-cache-info`, `<hash>.narinfo`
+- [x] Cache storage layout writer/reader: `nix-cache-info`, `<hash>.narinfo`
       (Ed25519-signed via `hosted_keys` sealer when keyed), content-addressed
       `nar/<file-hash>.nar.<ext>` with cross-cache refcount on the
-      binding+prefix.
+      binding+prefix. Signing lives in the wasm-clean `nix_sign` module (Nix
+      fingerprint `1;path;narHash;narSize;refs` + raw Ed25519 `Sig:` line, idempotent
+      per key, preserves other keys' sigs); `put_cache_path` signs every uploaded
+      root `<hash>.narinfo` with the cache's hosted key when an (optional) sealer
+      is wired into the shared `RpcService` (both shells pass their `HUB_SEAL_KEY`
+      sealer). Unit-tested (fingerprint/verify/idempotency) + an e2e upload→serve
+      signature assertion. **Fixed en route:** the native PUT facade never reached
+      caches (only HEAD did) — `nix copy --to <hub>/<cache>` 404'd on the native
+      hub; the PUT route now mirrors HEAD's cache fallthrough.
 - [x] **Streaming reads (native):** the native hub streams cache NAR/narinfo
       from disk (`facade::cache_serve_file`: `tokio::fs` + `ReaderStream` +
       `Body::from_stream`, symlink-contained) instead of buffering, and honors
