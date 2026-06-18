@@ -695,6 +695,7 @@ priority = 500
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
 
@@ -855,6 +856,7 @@ references = []
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
 
@@ -887,6 +889,7 @@ references = []
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
 
@@ -924,6 +927,7 @@ references = []
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 

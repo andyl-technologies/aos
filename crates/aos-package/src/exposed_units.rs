@@ -3000,6 +3000,7 @@ mod tests {
                 }),
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
         write_network_policy_file(&installed, &[], &[]);
