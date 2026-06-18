@@ -33984,11 +33984,21 @@ mod tests {
         assert_eq!(eval("({ a = 1; } ? z)").as_bool(), Ok(false));
         assert_eq!(eval("({ a = 1 / 0; } ? a)").as_bool(), Ok(true));
         assert_eq!(eval("({ a = 1 / 0; } ? z)").as_bool(), Ok(false));
+
+        let receiver_error = lower("((1 / 0) ? a)");
+        let error =
+            eval_whnf_owned(&receiver_error).expect_err("has-attr forces the receiver first");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
     }
 
     #[test]
     fn has_attr_returns_false_for_non_attr_path_values() {
         assert_eq!(eval("(1 ? a)").as_bool(), Ok(false));
+        assert_eq!(eval("({} ? a.b.c)").as_bool(), Ok(false));
         assert_eq!(eval("({ a = 1; } ? a.b)").as_bool(), Ok(false));
     }
 
@@ -33996,7 +34006,9 @@ mod tests {
     fn has_attr_evaluates_nested_static_and_dynamic_paths() {
         assert_eq!(eval("({ a = { b = 1 / 0; }; } ? a.b)").as_bool(), Ok(true));
         assert_eq!(eval("({ a = {}; } ? a.b)").as_bool(), Ok(false));
+        assert_eq!(eval("({ a = {}; } ? a.b.c)").as_bool(), Ok(false));
         assert_eq!(eval("({ a = 1; } ? ${\"a\"})").as_bool(), Ok(true));
+        assert_eq!(eval("({ ab = 1; } ? ${\"a\" + \"b\"})").as_bool(), Ok(true));
         assert_eq!(eval("({} ? ${\"a\"}.${1 / 0})").as_bool(), Ok(false));
         assert_eq!(eval("(1 ? ${\"a\"})").as_bool(), Ok(false));
 

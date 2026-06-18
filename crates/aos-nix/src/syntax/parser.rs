@@ -2133,6 +2133,25 @@ mod tests {
     }
 
     #[test]
+    fn has_attr_binds_tighter_than_boolean_and() {
+        let ast = parse("{ a = 1; } ? a && b");
+        let root = node(&ast, ast.root);
+        let NodeData::Binary { op, lhs, .. } = root.data else {
+            panic!("root should be binary");
+        };
+        assert_eq!(op, BinOpKind::And);
+        assert_eq!(node(&ast, lhs).kind, NodeKind::HasAttr);
+
+        let ast = parse("false && { a = 1; } ? a");
+        let root = node(&ast, ast.root);
+        let NodeData::Binary { op, rhs, .. } = root.data else {
+            panic!("root should be binary");
+        };
+        assert_eq!(op, BinOpKind::And);
+        assert_eq!(node(&ast, rhs).kind, NodeKind::HasAttr);
+    }
+
+    #[test]
     fn parses_formal_lambda_with_bounded_lookahead() {
         let ast = parse("{ a, b ? 1, ... }@args: a");
         let root = node(&ast, ast.root);

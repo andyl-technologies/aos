@@ -328,13 +328,20 @@ search paths, and store coercion.
 
 ### 5.2 Has-attribute `?`
 
-- [ ] **`s ? a`** — true iff `s` has attribute `a` (does not force the value).
-- [ ] **Attr-path `s ? a.b.c`** — true iff the full path exists; short-circuits on
-      the first missing component (does not force leaf values). Verify the
-      non-forcing / short-circuit behavior against pinned Nix.
-- [ ] **Dynamic `s ? ${e}`** — computed-name has-attr; verify acceptance.
-- [ ] **Precedence** — `?` is precedence 4 (§6); `s ? a && b` parses as
-      `(s ? a) && b`. Verify.
+- [x] **`s ? a`** — true iff `s` has attribute `a`. AOS matches pinned Nix:
+      the receiver is forced, non-attr receivers return `false`, and present
+      or absent leaf values are not forced.
+- [x] **Attr-path `s ? a.b.c`** — true iff the full path exists. AOS
+      short-circuits to `false` on missing components and, after evaluating the
+      reached segment name, non-attr prefixes. It does not force leaf values,
+      and only forces existing intermediate values that must be descended
+      through.
+- [x] **Dynamic `s ? ${e}`** — computed-name has-attr. AOS supports computed
+      string names, skips later dynamic keys after an earlier missing prefix,
+      and rejects invalid dynamic names (`null`, paths, attrsets, and
+      context-bearing strings) like pinned Nix.
+- [x] **Precedence** — `?` is precedence 4 (§6); `s ? a && b` parses as
+      `(s ? a) && b`.
 
 ### 5.3 Nested definitions, merging, duplicate keys
 
