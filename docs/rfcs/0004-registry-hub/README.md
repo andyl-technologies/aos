@@ -47,6 +47,15 @@
   test-worker-e2e`), booting the real wasm artifact under workerd + miniflare —
   the gap `cargo test` (native-only) can't cover.
 
+  The unification extends to **deployment + maintenance**: the native
+  `aos-registry-hub` binary doubles as the Cloudflare installer
+  (`aos-registry-hub cloudflare install/deploy/provision/reset-root`, packaged
+  with `wrangler` + the Worker wasm as `pkgs.aos-registry-hub-cloudflare`). A
+  `WranglerD1Backend` runs the *same* `core::Database` maintenance code over live
+  D1 via `wrangler d1 execute` (e.g. `reset-root`), so the management CLI is one
+  codebase across the native and Cloudflare backends — see
+  `crates/aos-registry-worker/deploy/DEPLOY.md`.
+
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
   (full/derived/pull-through); validation deep depth and HTTP-cache repair;

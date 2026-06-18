@@ -62,25 +62,19 @@ on `visibility = 'public'`.
 Human pages live under the reserved `/-/` segment (the GitLab convention) so
 they cannot shadow the machine surface that owns the registry root.
 
+> **Phase 5 update (shipped):** the lists below predate the Phase 5 runtime
+> unification. The write/publish path, the producer console, authentication
+> (sessions, tokens, device-code, magic links, OIDC SSO), and the
+> `aos.registry.v1` surface are **no longer native-only** — they now live in the
+> shared `aos-registry-core` router and the Worker serves them over its D1/R2/KV
+> bindings (the transport is Connect-JSON over `axum`, since the `connectrpc`
+> *server* runtime can't target wasm). The only path that stays Worker-local is
+> `GET /_init`. The genuinely still-deferred items are below.
+
 ## What is NOT ported (native-only for now)
 
-These stay in `aos-registry-hub` (native) and are explicitly deferred on the
-Workers target:
-
-- **The entire write/publish path** — staging, `MintUploadCredentials`,
-  pointer-flip leases, the upload facade.
-- **The producer console** — org/project dashboards, publish pipeline view,
-  channel rollout console, key-roster management, config change-sets.
-- **All authentication** — cookie sessions, provisioning tokens / JWTs, the
-  device-code flow, magic links, OIDC SSO, WebAuthn. (The `SESSIONS` KV
-  namespace is bound for the future private-registry auth path but is unused by
-  the read path.)
-- **Private/internal registry access control** — only `public` registries
-  resolve here.
-- **Full `aos.registry.v1` Connect framing.** The native hub serves Connect
-  (JSON + binary) via the `connectrpc` crate and the shared service impls, which
-  are not on the Workers target. The Worker exposes a simpler plain-JSON shape
-  of the same read data instead.
+- **Private/internal registry access control** — anonymous reads still resolve
+  only `public` registries (the authed private-read path is RFC-future).
 - **Package-table population from the committed tree.** The Cron indexer
   verifies and populates `releases`, `channels`, and `channel_partitions` (the
   cryptographically verified, surface-derivable core), but parsing
@@ -111,26 +105,31 @@ broken by this crate.
 
 ## Deploy (requires a Cloudflare account)
 
+The native `aos-registry-hub` binary is also the Cloudflare **installer** — see
+[`deploy/DEPLOY.md`](deploy/DEPLOY.md) for the full walkthrough. The short
+version, using the `aos-registry-hub-cloudflare` Nix package (which bundles
+`wrangler` + `node` + the prebuilt Worker wasm):
+
 ```sh
-cargo install worker-build wrangler          # one-time tooling
-wrangler d1 create aos-registry-hub          # provision D1, copy the id into wrangler.toml
-wrangler r2 bucket create aos-registry-surfaces
-wrangler kv namespace create SESSIONS        # copy the id into wrangler.toml
-wrangler deploy                              # builds the wasm (via worker-build) and deploys
-curl -fsS https://<your-worker>/_init        # apply the schema (core MIGRATIONS over D1), once
+HUB=$(nix-build -A pkgs.aos-registry-hub-cloudflare --no-out-link)/bin/aos-registry-hub
+export CLOUDFLARE_API_TOKEN=…                # or `wrangler login`
+"$HUB" cloudflare install \
+  --external-url https://reg.example.com \
+  --root-email ops@example.com --root-password-stdin <<<"$ROOT_PASSWORD"
 ```
 
-The schema is applied by requesting `GET /_init` after the first deploy, which
-runs the shared `aos_registry_core` `MIGRATIONS` over D1 (tracked in
-`schema_version`) — the same schema the native hub uses and the worker's reads +
-indexer run against. There is no separate `wrangler d1 migrations` step: a
-hand-maintained migration file would diverge from core's `MIGRATIONS`.
+One idempotent command provisions D1/R2/KV, deploys the bundled wasm, applies
+the runtime secrets (`HUB_JWT_SECRET`/`HUB_SEAL_KEY` minted if omitted), and
+`GET /_init`s to migrate the schema and bootstrap root. Update the running
+deployment with `cloudflare deploy`; reset the root password with `cloudflare
+reset-root`. `deploy/cf-seed.sh` seeds a registry row + its signed R2 surface,
+which the `*/15` Cron then indexes into `releases`/`channels`.
 
-`worker-build --release` (run by `[build]` in `wrangler.toml`) wraps the
-`cargo build --target wasm32-unknown-unknown` + `wasm-bindgen` pipeline and emits
-the JS shim wrangler loads. Then upload registry surfaces into the R2 bucket
-under each registry's prefix and insert the registry rows into D1 (the indexer
-populates `releases`/`channels` on its next Cron tick).
+The schema is always applied by `GET /_init` (it runs `aos_registry_core`'s
+`MIGRATIONS` over D1, tracked in `schema_version`) — the same schema the native
+hub uses. There is no separate `wrangler d1 migrations` step: a hand-maintained
+migration file would diverge from core's `MIGRATIONS`. A manual `wrangler
+deploy` path (without the installer) is in `deploy/DEPLOY.md`.
 
 ## Validation gap (be explicit)
 

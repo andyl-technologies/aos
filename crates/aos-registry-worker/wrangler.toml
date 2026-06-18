@@ -1,10 +1,23 @@
-# Cloudflare Workers config for the AOS registry hub read-path Worker
-# (RFC-0004). Build the wasm with the cargo target, then `wrangler deploy`.
+# Cloudflare Workers config for the AOS registry hub Worker (RFC-0004).
 #
-# Live validation requires a Cloudflare account: this file references a D1
-# database id, an R2 bucket, and a KV namespace id that must be provisioned in
-# your account (the placeholder ids below are not real). None of this can be
-# validated in a sandbox — see README.md.
+# PREFER THE INSTALLER. `aos-registry-hub cloudflare install` (the
+# `aos-registry-hub-cloudflare` package) generates this config over the prebuilt
+# wasm dist, provisions the resources, sets the secrets, and runs /_init — see
+# deploy/DEPLOY.md. This checked-in file is for the manual `wrangler deploy`
+# path; its placeholder ids are not real and must be replaced.
+#
+# Runtime configuration the Worker reads (the installer sets these for you):
+#   HUB_JWT_SECRET      (secret, required) HS256 JWT signing key
+#   HUB_SEAL_KEY        (secret, required) at-rest AES-GCM sealing key
+#   HUB_EXTERNAL_URL    ([vars], required) externally-reachable base URL
+#   HUB_ROOT_EMAIL      ([vars], optional) bootstrap root admin email
+#   HUB_ROOT_PASSWORD   (secret, optional) bootstrap root admin password
+#   HUB_EMAIL_API_URL   ([vars], optional) magic-link email relay endpoint
+#   HUB_EMAIL_API_TOKEN (secret, optional) bearer token for the relay
+# Set secrets with `wrangler secret put <NAME>`; put [vars] in this file.
+#
+# Live validation requires a Cloudflare account; none of this can be validated
+# in a sandbox — see README.md and deploy/DEPLOY.md.
 
 name = "aos-registry-hub"
 main = "build/worker/shim.mjs"
