@@ -228,6 +228,7 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
     write_attached_units(&root, &packages)?;
     let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
     write_exact_preset(&root, &current_targets)?;
+    load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
     apply_systemd_changes(
         &root,
         &current_targets,
@@ -245,6 +246,17 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         ));
     }
 
+    Ok(())
+}
+
+fn load_ebpf_lsm_before_package_targets(
+    root: &Path,
+    current_targets: &BTreeSet<String>,
+) -> Result<()> {
+    if root == Path::new("/") && !current_targets.is_empty() {
+        crate::ebpf_lsm::load_system_policies()
+            .context("loading BPF-LSM policies before exposed package targets")?;
+    }
     Ok(())
 }
 
@@ -2987,6 +2999,7 @@ mod tests {
                     nar_size: 1,
                 }),
                 permissions: Default::default(),
+                bpf_lsm: None,
             }),
         };
         write_network_policy_file(&installed, &[], &[]);

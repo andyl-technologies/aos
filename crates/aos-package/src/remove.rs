@@ -705,6 +705,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 permissions: Default::default(),
+                bpf_lsm: None,
             }),
         }
     }

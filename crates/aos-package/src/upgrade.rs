@@ -396,6 +396,7 @@ pub async fn run(
                     expose: meta.expose.clone(),
                     expose_artifact: meta.expose_artifact.clone(),
                     permissions: meta.permissions.clone(),
+                    bpf_lsm: meta.bpf_lsm.clone(),
                 }),
             };
 
@@ -1111,6 +1112,7 @@ mod tests {
                 expose: None,
                 expose_artifact: None,
                 permissions: Default::default(),
+                bpf_lsm: None,
             }),
         }
     }
@@ -1139,6 +1141,7 @@ mod tests {
             expose: None,
             expose_artifact: None,
             permissions: Default::default(),
+            bpf_lsm: None,
         }
     }
 
@@ -1712,6 +1715,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },
@@ -1743,6 +1747,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },
@@ -1792,6 +1797,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },
@@ -1823,6 +1829,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },
@@ -1873,6 +1880,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },
@@ -1904,6 +1912,7 @@ nar_size = 42
                     expose: None,
                     expose_artifact: None,
                     permissions: Default::default(),
+                    bpf_lsm: None,
                 },
                 registry: "aos-core".into(),
             },

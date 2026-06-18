@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use crate::types::{
     HostPathPermission, NetworkPermission, PackageMeta, PermissionsMeta, PolicyTier,
     SyscallProfile, validate_absolute_path, validate_capability_name, validate_kernel_module_name,
-    validate_permissions_meta, validate_security_label,
+    validate_package_name, validate_permissions_meta, validate_registry_name,
+    validate_security_label,
 };
 
 /// Default host policy path on an AOS system.
@@ -59,7 +60,7 @@ pub fn admit_package_roots<'a>(metas: impl IntoIterator<Item = &'a PackageMeta>)
     Ok(())
 }
 
-fn policy_root() -> PathBuf {
+pub(crate) fn policy_root() -> PathBuf {
     std::env::var("AOS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/"))
@@ -81,6 +82,9 @@ pub struct HostPolicy {
     /// Maximum allowed `systemd-analyze security` exposure score for this tier.
     #[serde(default, rename = "systemd-security-threshold")]
     pub systemd_security_threshold: Option<f64>,
+    /// Fleet-managed BPF-LSM policy packages selected for this host.
+    #[serde(default, rename = "ebpf-lsm")]
+    pub ebpf_lsm: EbpfLsmPolicySet,
 }
 
 impl HostPolicy {
@@ -240,6 +244,7 @@ impl HostPolicy {
         for label in &self.allow.security_labels {
             validate_security_label(label)?;
         }
+        self.ebpf_lsm.validate()?;
         validate_policy_ports("allow.tcp-bind", &self.allow.tcp_bind)?;
         validate_policy_ports("allow.tcp-connect", &self.allow.tcp_connect)?;
         Ok(())
@@ -373,6 +378,126 @@ pub struct PolicyAllow {
     pub security_labels: Vec<String>,
 }
 
+/// Fleet-managed BPF-LSM policy references selected by host policy.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EbpfLsmPolicySet {
+    /// Signed policy packages to load on this host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<EbpfLsmPolicyRef>,
+}
+
+impl EbpfLsmPolicySet {
+    fn validate(&self) -> Result<()> {
+        let mut seen = std::collections::BTreeSet::new();
+        for policy in &self.policies {
+            policy.validate()?;
+            if !seen.insert(&policy.name) {
+                bail!("duplicate ebpf-lsm policy '{}'", policy.name);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A signed registry package and artifact paths for one fleet BPF-LSM policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EbpfLsmPolicyRef {
+    /// Stable policy name used for bpffs link pins.
+    pub name: String,
+    /// Registry that supplied the installed policy package.
+    pub registry: String,
+    /// Installed package carrying the BPF-LSM policy artifact.
+    pub package: String,
+    /// Exact package version selected by fleet policy.
+    pub version: String,
+    /// Relative JSON policy path inside the installed package root.
+    pub policy: String,
+    /// Relative BPF object path inside the installed package root.
+    pub object: String,
+    /// BPF program names expected in the object and policy JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<String>,
+}
+
+impl EbpfLsmPolicyRef {
+    fn validate(&self) -> Result<()> {
+        validate_safe_label("ebpf-lsm policy name", &self.name)?;
+        validate_registry_name(&self.registry)?;
+        validate_package_name(&self.package)?;
+        validate_version(&self.version)?;
+        validate_relative_artifact_path("ebpf-lsm policy", &self.policy, ".json")?;
+        validate_relative_artifact_path("ebpf-lsm object", &self.object, ".bpf.o")?;
+        if self.programs.is_empty() {
+            bail!(
+                "ebpf-lsm policy '{}' must name at least one program",
+                self.name
+            );
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for program in &self.programs {
+            validate_bpf_program_name(program)?;
+            if !seen.insert(program) {
+                bail!(
+                    "ebpf-lsm policy '{}' contains duplicate program '{}'",
+                    self.name,
+                    program
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+fn validate_version(version: &str) -> Result<()> {
+    if version.is_empty()
+        || version
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '/' | '\\'))
+    {
+        bail!("invalid ebpf-lsm package version '{version}'");
+    }
+    Ok(())
+}
+
+fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') || !path.ends_with(suffix) {
+        bail!("{kind} path '{path}' must be a relative *{suffix} path");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => bail!("{kind} path '{path}' must not contain '.', '..', or prefixes"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_safe_label(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("invalid {kind} '{value}'");
+    }
+    Ok(())
+}
+
+fn validate_bpf_program_name(program: &str) -> Result<()> {
+    let mut chars = program.chars();
+    let Some(first) = chars.next() else {
+        bail!("BPF program name must not be empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        bail!("invalid BPF program name '{program}'");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,6 +519,15 @@ capabilities = ["CAP_NET_BIND_SERVICE"]
 devices = ["/dev/net/tun"]
 host-paths = [{ path = "/var/lib/rancher", mode = "rw" }]
 syscall-profiles = ["system-service"]
+
+[[ebpf-lsm.policies]]
+name = "aos-lsm-task-audit"
+registry = "aos"
+package = "aos-ebpf-lsm-policy"
+version = "0"
+policy = "share/aos/ebpf-lsm/aos-task-audit.json"
+object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+programs = ["aos_lsm_file_mprotect"]
 "#,
         )
         .unwrap();
@@ -409,6 +543,11 @@ syscall-profiles = ["system-service"]
         );
         assert_eq!(policy.allow.tcp_bind, vec![8080]);
         assert_eq!(policy.allow.tcp_connect, vec![443]);
+        assert_eq!(policy.ebpf_lsm.policies.len(), 1);
+        assert_eq!(
+            policy.ebpf_lsm.policies[0].object,
+            "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+        );
     }
 
     #[test]
@@ -540,5 +679,38 @@ kernel-modules = ["br_netfilter"]
 
         let err = policy.admit(&permissions).unwrap_err();
         assert!(err.to_string().contains("kernel module 'zfs'"));
+    }
+
+    #[test]
+    fn rejects_unsafe_ebpf_lsm_policy_references() {
+        let err = HostPolicy::parse_str(
+            r#"
+[[ebpf-lsm.policies]]
+name = "bad"
+registry = "aos"
+package = "aos-ebpf-lsm-policy"
+version = "0"
+policy = "../policy.json"
+object = "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o"
+programs = ["aos_lsm_file_mprotect"]
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("must not contain"));
+
+        let err = HostPolicy::parse_str(
+            r#"
+[[ebpf-lsm.policies]]
+name = "bad"
+registry = "aos"
+package = "aos-ebpf-lsm-policy"
+version = "0"
+policy = "share/aos/ebpf-lsm/aos-task-audit.json"
+object = "/nix/store/object.bpf.o"
+programs = ["aos_lsm_file_mprotect"]
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("relative *.bpf.o"));
     }
 }
