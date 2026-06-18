@@ -68,14 +68,17 @@ invariants/requirements it enforces.
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
+| `gate:perf-bench` | Cross-layer (Phase ≥ L2), regression | G-9; PERF-1..PERF-26 | Cost-model metrics meet their baselines and no metric regresses beyond threshold. Unlike every other gate this is a *regression* gate (per-metric baselines), not a byte-identity check; it MUST never trade determinism for speed (defined in [`25-performance-targets.md`](25-performance-targets.md) §25.11). |
 
 The first twelve names — `gate:layer0-determinism`, `gate:single-vm-fingerprint`,
 `gate:layer1-injection`, `gate:replay-oracle`, `gate:divergence-bisect`,
 `gate:any-guest`, `gate:content-address`, `gate:qemu-inert`,
 `gate:scheduler-liveness`, `gate:control-responsive`, `gate:harness-lint`, and
 `gate:e2e-determinism` — are the names the spine and other topic files already
-reference. `gate:abi-conformance`, `gate:patch-microtests`, and
-`gate:adversarial-determinism` are added here and are equally canonical.
+reference. `gate:abi-conformance`, `gate:patch-microtests`,
+`gate:adversarial-determinism`, and `gate:perf-bench` (the last owned by
+[`25-performance-targets.md`](25-performance-targets.md)) are added here and are
+equally canonical.
 
 - **[HARN-2]** A gate MUST be a *pure* check: given the same source tree and the
   same seed corpus it MUST produce the same pass/fail verdict on any machine.

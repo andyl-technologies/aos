@@ -68,7 +68,11 @@ test that enforces it, and a back-pointer to the defining section.
 | `HARN` | Determinism harness & testing | 24 |
 | `PERF` | Performance targets | 25 |
 | `PKG` | Packaging / AOS integration | 26 |
-| `CRATE` | Crate structure / engineering | 27, 28 |
+| `CRATE` | Crate structure | 27 |
+| `STD` | Engineering standards | 28 |
+| `PAT` | Implementation patterns & sketches | 29 |
+| `RISK` | Risks & validation spikes | 30 |
+| `D` | Design decisions (decision register) | 31 |
 
 Within a file, requirements are numbered in document order starting at 1. A file
 MAY group them under sub-headings but the numbers are flat within the file.
