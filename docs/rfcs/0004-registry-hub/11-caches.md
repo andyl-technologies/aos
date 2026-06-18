@@ -596,11 +596,22 @@ the current spec. Phases are orderable; A lands first, E last.
       path validates against `..`/traversal before signing (adversarial-review
       fix), so a crafted path can't sign outside the cache prefix; the secret
       never reaches the URL/logs. Integration-tested (happy path + traversal
-      reject + no-secret-leak). **Remaining (needs a live S3/R2 oracle):** the
-      *streamed proxied* read (hub fetches the private origin and streams it
-      through) and presigned PUT via the `mint` purpose.
-- [ ] **Visibility enforcement:** private/internal objects served proxied only;
-      `require_read` enforced on the cache facade; Direct-on-private rejected.
+      reject + no-secret-leak). **Presigned PUT via the `mint` purpose is now
+      done:** `sigv4::presign_put_url` + `presign_cache_write` + the
+      `MintCacheUploadCredentials` RPC (cache-write-gated, machine-path-guarded,
+      returns a short-lived presigned PUT URL; empty when the binding isn't a
+      private external origin). Integration-tested (presigned PUT URL + auth
+      denial). **Remaining (needs a live S3/R2 oracle):** the *streamed proxied*
+      read — the hub fetching the private origin and streaming it through (vs the
+      `302` redirect, which is complete) — which requires an external-S3 GET
+      client validated against a real endpoint.
+- [x] **Visibility enforcement:** `require_cache_read` is enforced on every cache
+      facade read (shared `cache_facade_fetch` + native `authorize_cache_read`)
+      before any byte or presign — a non-public cache discloses nothing to an
+      unauthorized caller; a Direct frontend over a private binding is rejected at
+      creation (both `create_frontend` and `create_cache_frontend`); a private
+      binding never serves bytes directly — it serves a presigned `302` (proxied
+      form). All paths unit/integration-tested.
 - [x] `aos-hub cache create/list/show/update/rm/link/unlink/links/gc-policy/
       pin/renew/unpin/roots/search/info/gc-runs` CLI over global `--target`
       (calls the `Database` layer directly). `frontend --mode direct|proxied` +

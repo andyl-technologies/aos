@@ -690,6 +690,11 @@ service CacheService {
   rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
   rpc RunCacheGc(RunCacheGcRequest) returns (RunCacheGcResponse);
   rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
+  // Mint a short-lived presigned PUT URL for uploading one object directly to a
+  // cache's private external origin (the `mint` purpose). Requires cache-write
+  // authority; only valid for a presign-configured (private external) binding.
+  rpc MintCacheUploadCredentials(MintCacheUploadCredentialsRequest)
+      returns (MintCacheUploadCredentialsResponse);
 }
 
 // A managed cache (distinct from `Cache` above, which is a registry's
@@ -978,4 +983,21 @@ message CacheClosureResponse {
   repeated CacheClosureNode nodes = 1;
   // Total on-disk size of the present closure (sum of file_size).
   int64 total_size = 2;
+}
+
+message MintCacheUploadCredentialsRequest {
+  // The cache slug to mint an upload URL for.
+  string cache_slug = 1;
+  // The object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
+  string path = 2;
+}
+
+message MintCacheUploadCredentialsResponse {
+  // A short-lived presigned PUT URL the client uploads the object's bytes to
+  // directly (the origin, not the hub). Empty when the cache's binding is not a
+  // presign-configured private external origin (upload through the facade
+  // instead). The URL carries no long-lived secret.
+  string upload_url = 1;
+  // Unix seconds the presigned URL expires.
+  int64 expires_at = 2;
 }
