@@ -746,7 +746,7 @@ places C++ Nix would.
       `s` to the error's context trace. Affects error *messages*, not values;
       parity matters only for error-message-shaped tests, but the primop must
       exist (nixpkgs `lib` wraps it for `addErrorContext`-style annotations).
-- [ ] `import` (path) — parse and evaluate the file at `path` (or
+- [x] `import` (path) — parse and evaluate the file at `path` (or
       `path/default.nix` for a directory) in a **fresh** global scope and return
       its value. A real primop in `builtins` and mirrored into global scope. The
       *language-level* scope-isolation, `default.nix` resolution, per-path
@@ -756,6 +756,12 @@ places C++ Nix would.
       path — single evaluation shared across all `import`s of the same path) and
       the IFD trigger (importing a derivation output forces a build, §12). Caches
       results, *unlike* `scopedImport`.
+      - Implemented for filesystem imports, directory `default.nix`, text-store
+        imports, first-class/global `import`, fresh imported global scope,
+        canonicalized memoization including symlink and directory/default.nix
+        equivalence, recursion detection, and IFD realizer/no-realizer behavior.
+        C++ Nix oracle coverage exists but remains opt-in through
+        `AOS_NIX_ORACLE`.
 - [x] `scopedImport` (attrs path) — like `import` but injects `attrs` into the
       imported file's *global* scope (overriding/shadowing `builtins`, `derivation`,
       etc.); it backs nixpkgs' `import` shadowing. **In scope.** Distinct parity
@@ -956,7 +962,7 @@ and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 - [x] `div` truncate-toward-zero; int/float promotion and float rendering.
 - [x] `listToAttrs` first-wins; `intersectAttrs` values-from-second.
 - [x] `tryEval` catchability (throw/assert yes, abort no) and shallowness.
-- [ ] `findFile` / `<nixpkgs>` resolution to the identical store path.
+- [x] `findFile` / `<nixpkgs>` resolution to the identical store path.
 - [x] `placeholder` byte-identical placeholder scheme.
 - [x] `nixVersion`/`langVersion` spoofing for feature-gate parity.
 - [x] `builtins` set membership and order.

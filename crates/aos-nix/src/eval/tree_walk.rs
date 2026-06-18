@@ -26271,6 +26271,13 @@ mod tests {
         fs::write(root.join("traced.nix"), br#"builtins.trace "once" 9"#).expect("traced writes");
         std::os::unix::fs::symlink(root.join("traced.nix"), root.join("traced-link.nix"))
             .expect("trace symlink creates");
+        let traced_dir = root.join("traced-dir");
+        fs::create_dir(&traced_dir).expect("traced dir creates");
+        fs::write(
+            traced_dir.join("default.nix"),
+            br#"builtins.trace "dir-once" 8"#,
+        )
+        .expect("traced default writes");
         fs::write(root.join("self.nix"), b"import ./self.nix").expect("self writes");
 
         let mut options = TreeWalkOptions::new();
@@ -26324,6 +26331,27 @@ mod tests {
                 .expect("trace output exists"),
             EvalTraceKind::Trace,
             b"once",
+        );
+
+        let default_nix = eval_whnf_owned_with_options(
+            &lower(
+                "builtins.deepSeq [ (import ./traced-dir) (import ./traced-dir/default.nix) ] 0",
+            ),
+            options.clone(),
+        )
+        .expect("directory and default.nix imports share cache");
+        assert_eq!(
+            default_nix.value().as_int().expect("trace result is int"),
+            0
+        );
+        assert_eq!(default_nix.trace_output().len(), 1);
+        assert_trace_output(
+            default_nix
+                .trace_output()
+                .first()
+                .expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"dir-once",
         );
 
         let cycle = eval_whnf_owned_with_options(&lower("import ./self.nix"), options)
