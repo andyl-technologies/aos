@@ -9825,14 +9825,13 @@ impl TreeWalk {
         )?;
         self.validate_fetch_tree_git_flake_ref_verified_fetch_attrs(id, span, attrs)?;
         let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
-        Self::reject_fetch_tree_git_flake_ref_url_lock_metadata(id, span, input, url)?;
-        let transport_url = if attrs.contains_key(DIR_ATTR) {
-            Some(Self::fetch_tree_transport_url_from_flake_ref_url(
-                id, span, url,
-            )?)
-        } else {
-            None
-        };
+        let transport_url = Self::fetch_tree_git_flake_ref_transport_url(
+            id,
+            span,
+            input,
+            url,
+            attrs.contains_key(DIR_ATTR),
+        )?;
         let submodules =
             Self::optional_flake_ref_bool_attr(id, span, attrs, SUBMODULES_ATTR)?.unwrap_or(false);
         Ok(FetchTreeArguments::Git {
@@ -9873,30 +9872,6 @@ impl TreeWalk {
             dirty_rev: None,
             dirty_short_rev: None,
         })
-    }
-
-    fn fetch_tree_transport_url_from_flake_ref_url(
-        id: IrId,
-        span: Span,
-        url: &[u8],
-    ) -> Result<Vec<u8>, TreeWalkError> {
-        let text = std::str::from_utf8(url)
-            .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
-        let parsed =
-            Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
-        let mut query = Self::decode_flake_ref_query(id, span, url, parsed.query())?;
-        if query.remove(DIR_ATTR).is_none() {
-            return Ok(url.to_vec());
-        }
-        Self::flake_ref_url_with_scheme_and_query(
-            id,
-            span,
-            url,
-            &parsed,
-            None,
-            query,
-            BTreeMap::new(),
-        )
     }
 
     fn fetch_tree_forge_archive_url(
@@ -10023,32 +9998,47 @@ impl TreeWalk {
         })
     }
 
-    fn reject_fetch_tree_git_flake_ref_url_lock_metadata(
+    fn fetch_tree_git_flake_ref_transport_url(
         id: IrId,
         span: Span,
         input: &[u8],
         url: &[u8],
-    ) -> Result<(), TreeWalkError> {
+        strip_dir: bool,
+    ) -> Result<Option<Vec<u8>>, TreeWalkError> {
         let text = std::str::from_utf8(url)
             .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
         let parsed =
             Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
-        let Some(query) = parsed.query() else {
-            return Ok(());
-        };
+        let mut query = Self::decode_flake_ref_query(id, span, input, parsed.query())?;
+        let mut stripped = false;
 
-        for pair in query.as_bytes().split(|byte| *byte == b'&') {
-            let name = pair.split(|byte| *byte == b'=').next().unwrap_or(pair);
-            if matches!(name, NAR_HASH_ATTR | LAST_MODIFIED_ATTR | REV_COUNT_ATTR) {
-                return Err(Self::fetch_tree_error(
-                    id,
-                    span,
-                    input,
-                    "fetchTree git string references with lock metadata in the URL query are not implemented by the native evaluator",
-                ));
-            }
+        if query.remove(NAR_HASH_ATTR).is_some() {
+            stripped = true;
         }
-        Ok(())
+        if query.remove(LAST_MODIFIED_ATTR).is_some() {
+            stripped = true;
+        }
+        if query.remove(REV_COUNT_ATTR).is_some() {
+            stripped = true;
+        }
+        if strip_dir && query.remove(DIR_ATTR).is_some() {
+            stripped = true;
+        }
+
+        if !stripped {
+            return Ok(None);
+        }
+
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            input,
+            &parsed,
+            None,
+            query,
+            BTreeMap::new(),
+        )
+        .map(Some)
     }
 
     fn fetch_tree_file_arguments(
@@ -44926,6 +44916,8 @@ mod tests {
                   rev = x.rev;
                   shortRev = x.shortRev;
                   submodules = x.submodules;
+                  narHash = x.narHash;
+                  lastModified = x.lastModified;
                 }}
                 "#
             ),
@@ -44937,20 +44929,62 @@ mod tests {
         assert_eq!(value["rev"], rev);
         assert_eq!(value["shortRev"], &rev[..7]);
         assert_eq!(value["submodules"], false);
+        assert_eq!(value["lastModified"], 1_700_000_000);
+        let nar_hash = value["narHash"]
+            .as_str()
+            .expect("fetchTree git result exposes narHash");
+        let nar_hash_query =
+            url::form_urlencoded::byte_serialize(nar_hash.as_bytes()).collect::<String>();
 
-        let metadata_ref = nix_string_literal(&format!(
-            "git+file://{}?rev={rev}&revCount=1",
+        let locked_metadata_ref = nix_string_literal(&format!(
+            "git+file://{}?rev={rev}&narHash={nar_hash_query}&lastModified=1700000000&revCount=1&shallow=0",
             path_source(&repo_dir)
         ));
-        let metadata_error = eval_whnf_owned_with_options(
-            &lower(&format!(r#"builtins.fetchTree {metadata_ref}"#)),
+        let locked_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {locked_metadata_ref};
+                in {{
+                  data = builtins.readFile "${{x.outPath}}/data.txt";
+                  rev = x.rev;
+                  revCount = x.revCount;
+                  lastModified = x.lastModified;
+                  narHash = x.narHash;
+                }}
+                "#
+            ),
             options.clone(),
-        )
-        .expect_err("unsupported git string lock metadata rejects before repo access");
-        assert!(matches!(
-            metadata_error.kind(),
-            TreeWalkErrorKind::FetchTree { .. }
+        );
+        let locked_value: serde_json::Value =
+            serde_json::from_slice(&locked_json).expect("locked fetchTree git string JSON parses");
+        assert_eq!(locked_value["data"], "git-data");
+        assert_eq!(locked_value["rev"], rev);
+        assert_eq!(locked_value["revCount"], 1);
+        assert_eq!(locked_value["lastModified"], 1_700_000_000);
+        assert_eq!(locked_value["narHash"], nar_hash);
+
+        let mismatched_metadata_ref = nix_string_literal(&format!(
+            "git+file://{}?rev={rev}&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D&lastModified=1700000001&revCount=2&shallow=0",
+            path_source(&repo_dir)
         ));
+        let mismatched_json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let x = builtins.fetchTree {mismatched_metadata_ref};
+                in {{
+                  revCount = x.revCount;
+                  lastModified = x.lastModified;
+                  narHash = x.narHash;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let mismatched_value: serde_json::Value = serde_json::from_slice(&mismatched_json)
+            .expect("mismatched metadata fetchTree git string JSON parses");
+        assert_eq!(mismatched_value["revCount"], 1);
+        assert_eq!(mismatched_value["lastModified"], 1_700_000_000);
+        assert_eq!(mismatched_value["narHash"], nar_hash);
 
         let mut pure_options = options.clone();
         pure_options.set_eval_mode(EvalMode::Pure);
