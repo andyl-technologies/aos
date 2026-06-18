@@ -1,0 +1,836 @@
+# 23 — The `crucible` CLI
+
+This file specifies the **`crucible` command-line interface**: the operator's
+front door to a Crucible run. Where the session (20) is the control-plane actor
+and the API (21) is the programmatic surface over it, the CLI is the thin,
+human-facing wrapper that turns a shell invocation into a sequence of session
+commands (20 §4) — locally in-process, or remotely against a daemon (21).
+
+The CLI exists so that the most common operator workflows — run a scenario,
+prove it is deterministic, save a point, resume or fork from it, replay a
+failure bit-identically, and drive exploration — are one command each, with
+copy-pasteable reproduction built in. It is **not** a second control plane: it
+holds no run state of its own, implements no scheduling, no fork logic, and no
+determinism mechanism. Every subcommand maps to operations the session (20) and
+API (21) already define; the CLI's only added value is ergonomics, discovery,
+and the determinism-first defaults that make reproduction free
+([G-6]). Requirement IDs here use the prefix `CLI`.
+
+Forward and cross references: the session control plane is
+[`20-session-control-plane.md`](20-session-control-plane.md); the programmatic
+API the CLI wraps is `21-api.md`; advanced features (state-space search,
+coverage-guided fuzzing) the `search`/`fuzz` subcommands drive are
+`22-advanced-features.md`; the `ScenarioDef`, `ScenarioFamily`, and the
+reproduction artifact are [`06-spatial-graph.md`](06-spatial-graph.md); the
+temporal graph (checkpoints/savepoints) is
+[`07-temporal-graph.md`](07-temporal-graph.md); the event log and its formats
+are [`19-observability-event-log.md`](19-observability-event-log.md); the
+divergence-bisection and fingerprint machinery `verify` leans on is
+[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md); the
+patched QEMU and plugin discovery is `26-packaging-aos-integration.md`,
+[`11-qemu-patches.md`](11-qemu-patches.md), and
+[`12-qemu-plugin.md`](12-qemu-plugin.md); the gates this file's requirements
+reference are catalogued in
+[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §1.
+
+The canonical gates this file's requirements reference are `gate:e2e-determinism`
+(reproduce-from-artifact, bit-identical across machine profiles),
+`gate:replay-oracle` (replay/fork/resume reduce to the same state by hash), and
+`gate:control-responsive` (remote/local control operations acknowledged within
+a bounded number of quanta) — all defined in
+[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §1.1.
+
+---
+
+## 1. What the CLI is, and what it is not
+
+The CLI is a **thin wrapper over the session (20) and the API (21)**. It does
+exactly three things and nothing more:
+
+1. **Parse** an operator's intent (a subcommand + flags) into a session command
+   set (20 §4) or an API call sequence (21).
+2. **Route** that intent to a backend: an *in-process* session (the
+   `SimulationBackend` of 20 §10 — real QEMU for fidelity, or the `SimDouble`
+   of 24 §3 for fast local checks), or a *remote* daemon over the API (21).
+3. **Render** the result — the event-log stream (19), the run outcome (20 §2),
+   the fingerprint/verdict, and, on any failure, a copy-pasteable reproduction
+   command and a self-contained reproduction artifact (06 §7.1, 24 §12).
+
+What the CLI is **not**: it is not a place where scheduling, forking, checkpoint
+materialization, or any determinism mechanism lives. Those belong to the session
+(20), the temporal graph (07), and the scheduler (08). If a behavior the CLI
+exposes is not already an operation of the session command set (20 §4) or the
+API (21), it is a layering defect, not a CLI feature.
+
+- **[CLI-1]** The `crucible` CLI MUST be a thin wrapper over the session control
+  plane (20 §4) and the API (21): every subcommand MUST decompose into session
+  commands or API calls, and the CLI MUST NOT implement scheduling, fork/resume
+  logic, checkpoint materialization, or any determinism mechanism of its own. A
+  CLI behavior with no corresponding session/API operation is a layering defect.
+  *Gate:* `gate:control-responsive`. *Spec:* §1; cross-ref 20 §4, 21.
+
+- **[CLI-2]** The CLI MUST hold no canonical run state. Any state it needs
+  between invocations (the last run's artifact, a savepoint handle, a daemon
+  address) MUST be either a content-addressed reference into the store
+  ([INV-6], 06, 07) or a connection handle to a daemon (21); the CLI MUST NOT be
+  a second source of truth for a run. *Gate:* `gate:replay-oracle`. *Spec:* §1.
+
+---
+
+## 2. Top-level shape and global flags
+
+The binary is `crucible`. Its top-level shape is a small set of subcommands plus
+a global flag block. The global flags configure determinism inputs, backend
+selection, plugin/QEMU discovery, and output rendering, and apply to every
+subcommand that runs or talks to a session.
+
+```text
+  crucible [GLOBAL FLAGS] <SUBCOMMAND> [SUBCOMMAND FLAGS] [ARGS]
+
+  SUBCOMMANDS
+    run        Run a scenario to completion (local or via a daemon).
+    verify     Prove determinism: run N times, diff fingerprints + causal logs.
+    selftest   Run the determinism gates against a built-in scenario corpus.
+    save       Run to a savepoint and export it as a resumable checkpoint.
+    resume     Resume a run from a checkpoint or savepoint.
+    fork       Fork a run from a savepoint with a new seed or decision override.
+    replay     Replay a reproduction artifact, bit-identically.
+    search     Drive state-space search over the schedule space (22).
+    fuzz       Coverage-guided fuzzing over a scenario family (22).
+    serve      Run the daemon hosting the API (21).
+    completions  Generate shell completions.
+
+  GLOBAL FLAGS (apply to run/verify/save/resume/fork/replay/search/fuzz/serve)
+    --seed <u64|hex>        Root entropy (06 §5.3). Overrides CRUCIBLE_SEED.
+    --backend <auto|qemu|double>   Local backend (20 §10). Default: auto.
+    --daemon <addr>         Talk to a daemon (21) instead of running in-process.
+    --qemu <path>           Patched QEMU system binary (26). Else discovered.
+    --plugin <path>         crucible-qemu-plugin cdylib (12, 26). Else discovered.
+    --store <path>          Content-addressed store root (06, 07). Else default.
+    --format <jsonl|json|table>    Trace/event-log render format. Default: jsonl.
+    --trace <path>          Write the event-log stream here. Default: stdout.
+    --artifact-dir <path>   Where failure artifacts are written. Default: ./.crucible.
+    -v, --verbose           Increase log verbosity (repeatable: -vv).
+    -q, --quiet             Suppress non-essential output.
+```
+
+The global flags are deliberately small and orthogonal: determinism inputs
+(`--seed`), backend/transport selection (`--backend`, `--daemon`), hermetic
+discovery (`--qemu`, `--plugin`, `--store`), and rendering (`--format`,
+`--trace`, `--artifact-dir`, `-v`/`-q`). Everything else is per-subcommand.
+
+- **[CLI-3]** The CLI MUST expose exactly the subcommand set `run`, `verify`,
+  `selftest`, `save`, `resume`, `fork`, `replay`, `search`, `fuzz`, `serve`, and
+  `completions`. Each subcommand MUST map to a defined session/API operation
+  (§3–§13) and MUST NOT introduce a control-plane capability absent from 20/21.
+  *Gate:* `gate:control-responsive`. *Spec:* §2; cross-ref 20 §4, 21, 22.
+
+- **[CLI-4]** The global flags `--seed`, `--backend`, `--daemon`, `--qemu`,
+  `--plugin`, `--store`, `--format`, `--trace`, `--artifact-dir`, and
+  `-v`/`-q` MUST apply uniformly across the run-capable subcommands, with the
+  same meaning everywhere. A subcommand MUST NOT redefine a global flag's
+  meaning. *Spec:* §2.
+
+- **[CLI-5]** When `--daemon <addr>` is given, the subcommand MUST execute
+  against the remote daemon over the API (21) and MUST behave identically — same
+  outputs, same exit codes, same artifacts — to a local run, except that node
+  fidelity is whatever the daemon's backend provides. When `--daemon` is absent,
+  the subcommand MUST run in-process against the local `SimulationBackend`
+  selected by `--backend` (20 §10). *Gate:* `gate:control-responsive`. *Spec:*
+  §2, §3; cross-ref 20 §10, 21.
+
+### 2.1 Clap-derive doc discipline (this is user-facing surface)
+
+The CLI is implemented with a derive-based argument parser, where the doc
+comment on each subcommand container and each flag field becomes the `--help`
+text. Per the repository's documentation standard, those comments are treated as
+**user-facing CLI surface**, not internal rustdoc: the surrounding module is
+documented with `//!`, the derive *containers* carry no `///` (that text would
+leak into `--help`), and every flag/field doc is short, imperative, accurate,
+and edited as a deliberate UI change. The `--help` text below for each
+subcommand is the normative help copy.
+
+- **[CLI-6]** Flag and subcommand help text MUST be authored as user-facing CLI
+  copy: short, imperative, and accurate. Derive-container doc comments MUST NOT
+  carry overview prose (it would surface in `--help`); the module overview lives
+  in the module `//!` header instead. A change to a flag's help text MUST be
+  treated as a user-facing CLI change (it is the rendered `--help`), and the
+  help text MUST stay in sync with the flag's actual behavior. *Spec:* §2.1.
+
+---
+
+## 3. Backend selection and the local/remote split
+
+Every run-capable subcommand resolves to *one session* (20) over *one backend*.
+The resolution rule is uniform:
+
+```text
+  --daemon <addr> set?  ──yes──►  remote: open API client (21), submit to daemon,
+       │                          stream the event log + state back; exit on outcome.
+       no
+       ▼
+  --backend resolves a local SimulationBackend (20 §10):
+    qemu    real patched QEMU (10, 26)   — full fidelity; needs QEMU + plugin (§5)
+    double  in-process SimDouble (24 §3) — fast, no guest boot; host-orchestration fidelity
+    auto    qemu if QEMU + plugin discover (§5), else double, with a one-line note
+```
+
+The `auto` default is a determinism-ergonomics choice: a developer iterating on
+host orchestration gets the fast `double` automatically when QEMU is absent, and
+gets full fidelity when it is present — but the choice is always *announced* so a
+run's fidelity is never silently degraded.
+
+- **[CLI-7]** `--backend auto` (the default) MUST select the real QEMU backend
+  when a patched QEMU and the plugin are discoverable (§5), and the in-process
+  `SimDouble` (24 §3) otherwise, and MUST print a single line stating which
+  backend was chosen and why (unless `-q`). `--backend qemu` MUST fail clearly
+  (§5, exit 4) if QEMU/plugin are absent rather than silently falling back.
+  `--backend double` MUST never launch QEMU. *Gate:* `gate:control-responsive`.
+  *Spec:* §3, §5; cross-ref 20 §10, 24 §3.
+
+- **[CLI-8]** A local run and a `--daemon` run of the same subcommand with the
+  same flags MUST produce the same canonical event log (19) and the same outcome
+  for a given backend fidelity, and MUST emit byte-identical reproduction
+  artifacts (06 §7.1, 24 §12). The CLI MUST NOT make the remote path observably
+  different from the local path beyond connection errors and backend fidelity.
+  *Gate:* `gate:e2e-determinism`. *Spec:* §3; cross-ref 21.
+
+---
+
+## 4. Determinism ergonomics: the seed, the artifact, the repro command
+
+This is the load-bearing section: the CLI's defaults are what make
+"reproduce-then-explore" ([G-6]) the path of least resistance instead of an
+afterthought. Three rules govern every run-capable subcommand.
+
+**Rule 1 — the seed is always known and always printed.** The root entropy
+(06 §5.3) comes from `--seed`, else the `CRUCIBLE_SEED` environment variable,
+else a freshly *generated* seed. In all three cases the resolved seed is printed
+at the start of the run, so a developer who ran without a seed can still
+reproduce the exact run. A generated seed is drawn once, from a host entropy
+source, *before* the run begins and then frozen into the `ScenarioDef`'s
+identity (06 §5.3) — host entropy seeds the run's *identity*, never its
+*execution* ([INV-1]).
+
+```text
+  $ crucible run cluster.scn
+  crucible: seed not set; generated seed = 0x9f86d081884c7d65 (set CRUCIBLE_SEED to pin)
+  crucible: backend = qemu (patched QEMU + plugin discovered)
+  ... event log ...
+  crucible: PASSED in 42.000s virtual time (1.2s wall), 3 nodes, 0 violations
+```
+
+**Rule 2 — a failure prints a copy-pasteable reproduction command and writes a
+self-contained artifact.** When a run ends `Failed`, `Crashed`, or `Timeout`
+(20 §2), the CLI writes the reproduction artifact `(seed, ScenarioDef,
+Schedule)` (06 §7.1, 24 §12) to `--artifact-dir` and prints the exact `crucible
+replay` command that re-runs it bit-identically. The developer copies one line
+and reproduces the failure on any machine ([HARN-28]).
+
+```text
+  crucible: FAILED — property "no_split_brain" violated at virtual_time=12.4s, node=db-1
+  crucible: wrote reproduction artifact ./.crucible/repro-2c26b4.crucible (4.1 KiB)
+  crucible: reproduce with:
+      crucible replay ./.crucible/repro-2c26b4.crucible
+  crucible: bisect against a passing run with:
+      crucible verify cluster.scn --seed 0x9f86d081884c7d65 --runs 2
+```
+
+**Rule 3 — trace/event-log output has three formats.** The `--format` flag
+selects `jsonl` (one canonical event-log entry per line, the default and the
+stream format), `json` (a single array, for tooling that wants one document),
+or `table` (a human-readable column view: virtual time, node, kind, summary).
+All three render the *same* canonical event log (19); the observational/canonical
+distinction is by schema (19), so `--format` never changes which entries appear,
+only how they are printed.
+
+- **[CLI-9]** The root seed MUST be resolved as `--seed`, else `CRUCIBLE_SEED`,
+  else a freshly generated seed; and the resolved seed MUST be printed at run
+  start (unless `-q`) so any run is reproducible. A generated seed MUST be drawn
+  once before the run from a host entropy source and frozen into the
+  `ScenarioDef` identity (06 §5.3); host entropy MUST seed only the run's
+  identity, never its execution ([INV-1]). *Gate:* `gate:e2e-determinism`.
+  *Spec:* §4; cross-ref 06 §5.3.
+
+- **[CLI-10]** On any non-passing outcome (`Failed`, `Crashed`, `Timeout`;
+  20 §2), the CLI MUST write a self-contained reproduction artifact `(seed,
+  ScenarioDef, Schedule)` (06 §7.1, 24 §12) to `--artifact-dir` and MUST print a
+  copy-pasteable `crucible replay <artifact>` command that reproduces the run
+  bit-identically. The printed command and the artifact together MUST be
+  sufficient to reproduce with no other input ([HARN-27]). *Gate:*
+  `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §4; cross-ref 06 §7.1,
+  24 §12.
+
+- **[CLI-11]** `--format` MUST support `jsonl` (one canonical event-log entry
+  per line; the default and the streaming format), `json` (a single array), and
+  `table` (a human-readable virtual-time / node / kind / summary view), all
+  rendering the *same* canonical event log (19). `--format` MUST NOT change which
+  entries are emitted — the canonical/observational split is by schema (19), not
+  by format — only how they are rendered. The `jsonl` form MUST be a stream:
+  entries are emitted as they are produced (via the session's event bus, 20 §9),
+  not buffered to the end. *Spec:* §4; cross-ref 19, 20 §9.
+
+- **[CLI-12]** The CLI MUST NOT read host wall-clock on any path that feeds a
+  run's canonical `State` ([INV-9]). Wall-clock MAY appear only in
+  observational, render-only output (e.g. the "1.2s wall" summary line), behind
+  output that cannot influence the canonical event log or the artifact. *Gate:*
+  `gate:harness-lint`. *Spec:* §4; routes [INV-9].
+
+---
+
+## 5. Plugin and QEMU discovery (hermetic, fail-clear)
+
+A QEMU-backed run needs two artifacts: the **patched QEMU system binary** (10,
+11, 26) and the **`crucible-qemu-plugin` cdylib** (12, 26). The CLI discovers
+both **hermetically** — from the AOS-built package set, not by groping `$PATH`
+for whatever QEMU the host happens to have — and fails with a clear, actionable
+message if either is absent. A run that silently used a wrong (unpatched, or
+host) QEMU would violate patch-dependent determinism and the inertness contract
+([INV-7]); discovery therefore prefers the pinned AOS build and records its
+build identity into the artifact ([HARN-28]).
+
+Discovery order for each of QEMU and plugin:
+
+```text
+  1. explicit flag        --qemu <path> / --plugin <path>
+  2. environment          CRUCIBLE_QEMU / CRUCIBLE_PLUGIN
+  3. AOS package set      the hermetic, content-addressed AOS QEMU package (26),
+                          which co-locates the patched binary and the matching plugin
+  4. (no host $PATH fallback for QEMU; the host's QEMU is never used)
+```
+
+The AOS-package step is the hermetic default and the one CI uses: the patched
+QEMU and the plugin are built from source together (26), so their versions
+match by construction and the build identity is content-addressed. The CLI MUST
+verify the discovered QEMU is the patched build (it carries a sim-capability
+marker per 11/26) and that the plugin's ABI version matches the host's
+([HARN-32]); a mismatch fails rather than runs.
+
+- **[CLI-13]** A QEMU-backed run MUST locate both the patched QEMU system binary
+  (10, 11, 26) and the matching `crucible-qemu-plugin` cdylib (12, 26)
+  hermetically, in the order: explicit `--qemu`/`--plugin`, then
+  `CRUCIBLE_QEMU`/`CRUCIBLE_PLUGIN`, then the AOS-built package set (26). The
+  host's `$PATH` QEMU MUST NOT be used as a fallback; an unpinned host QEMU is
+  never a valid backend. *Gate:* `gate:e2e-determinism`. *Spec:* §5; cross-ref
+  26, 11.
+
+- **[CLI-14]** If a QEMU-backed run cannot discover a patched QEMU or the plugin,
+  or if the discovered QEMU is not the patched build or the plugin's ABI version
+  does not match the host ([HARN-32]), the CLI MUST fail with a clear, actionable
+  message (which artifact is missing or mismatched, the discovery order tried,
+  and how to supply it) and exit code 4 — never silently fall back to an
+  unpatched or host QEMU, and never run with a mismatched plugin. *Gate:*
+  `gate:e2e-determinism`. *Spec:* §5; cross-ref 26, [HARN-32], [INV-7].
+
+- **[CLI-15]** The CLI MUST record the discovered AOS QEMU build identity and the
+  plugin ABI version into every run's reproduction artifact (24 §12), so a later
+  `replay` that would silently use a different binary fails loudly rather than
+  reproducing something else ([HARN-28]). *Gate:* `gate:e2e-determinism`,
+  `gate:replay-oracle`. *Spec:* §5; cross-ref 24 §12, [HARN-28].
+
+---
+
+## 6. `run` — run a scenario to completion
+
+**Purpose.** Run one pinned `ScenarioDef` (06) to a terminal outcome (20 §2) and
+report. The workhorse subcommand.
+
+```text
+  crucible run <SCENARIO> [FLAGS]
+
+  ARGS
+    <SCENARIO>   Scenario file (the canonical TOML form, 06 §6.1) or its content hash.
+
+  FLAGS (subcommand-local; global flags from §2 also apply)
+    --until <quiescence|virtual-time|property|stopped>   Terminal condition. Default: quiescence.
+    --max-virtual-time <dur>   Stop with Timeout past this virtual time (20 §2).
+    --max-quanta <n>           Stop with Timeout past this many scheduler quanta.
+    --interactive              Pause at genesis and drive the session interactively.
+    --save-on <fail|always|never>   Materialize a savepoint at the outcome. Default: never.
+    --watch                    Stream the live status line (20 §9) alongside the trace.
+```
+
+`run` constructs a local or remote session (§3), issues `start` then `continue`
+(20 §4), streams the event log in `--format` (§4), and exits on the terminal
+outcome. `--interactive` instead leaves the session `Paused(Instantiated)` and
+reads control commands (continue/pause/step/inject/heal/fork/save/query, 20 §4)
+from stdin — the CLI face of the session command set, with each command
+acknowledged within a bounded quantum count ([SESS-3], `gate:control-responsive`).
+
+**Exit codes.** `0` = `Passed`; `1` = `Failed` (property violation); `2` =
+`Timeout`; `3` = `Crashed` / backend error; `4` = discovery/configuration error
+(§5); `5` = invalid scenario (06 §9 build/validation error); `64` = usage error.
+
+- **[CLI-16]** `crucible run <scenario>` MUST construct a session (local or
+  remote, §3), issue `start` then `continue` (20 §4), stream the canonical event
+  log in `--format` (§4), and exit on the terminal outcome (20 §2) with the exit
+  code mapping `0=Passed`, `1=Failed`, `2=Timeout`, `3=Crashed/backend`,
+  `4=discovery/config`, `5=invalid-scenario`, `64=usage`. `--interactive` MUST
+  leave the session paused at genesis and accept the session command set
+  (20 §4) from stdin, each acknowledged within a bounded number of quanta
+  ([SESS-3]). On a non-passing outcome it MUST honor §4's artifact + repro-command
+  rule ([CLI-10]). *Gate:* `gate:control-responsive`, `gate:e2e-determinism`.
+  *Spec:* §6; cross-ref 20 §2, §4.
+
+---
+
+## 7. `verify` — prove determinism by repetition + diff
+
+**Purpose.** The determinism workhorse: run the same `(ScenarioDef, seed)` `N`
+times and assert every run produces byte-identical fingerprint streams (24 §4)
+and byte-identical *canonical* causal logs (19); on any difference, localize the
+first divergence with bisection (24 §5). This is the CLI face of
+`gate:adversarial-determinism` / `gate:single-vm-fingerprint` for a developer's
+own scenario.
+
+```text
+  crucible verify <SCENARIO> [FLAGS]
+
+  FLAGS
+    --runs <n>            Number of runs to compare. Default: 2.
+    --adversarial         Run under the hostile host-condition matrix (24 §7).
+    --bisect              On divergence, run divergence-bisection (24 §5) and print the report.
+    --compare <a> <b>     Diff two existing reproduction artifacts instead of running.
+```
+
+`verify` runs `N` independent reductions (each its own session, §3), compares
+their canonical logs and fingerprint streams pairwise, and — if any pair differs
+— invokes the divergence-bisection tool (24 §5) to report the *first* differing
+decision/instruction and node, with a both-sides state dump. `--adversarial`
+runs them under randomized host scheduling, wall-clock jitter, and varied core
+counts (24 §7) so the comparison actively *tries* to break determinism.
+
+**Exit codes.** `0` = all runs byte-identical (deterministic); `1` = divergence
+detected (the bisection report is printed and an artifact for each side is
+written, §4); `4` = discovery/config error; `64` = usage error.
+
+- **[CLI-17]** `crucible verify <scenario> --runs N` MUST execute `N` independent
+  reductions of the same `(ScenarioDef, seed)`, compare their canonical event
+  logs (19) and execution-fingerprint streams (24 §4) for byte-identity, and
+  exit `0` iff all are identical and `1` on any divergence. On divergence it MUST
+  run divergence-bisection (24 §5) to report the first differing
+  decision/instruction and node and write a reproduction artifact for each side
+  (§4). `--adversarial` MUST apply the hostile-condition matrix (24 §7). *Gate:*
+  `gate:e2e-determinism`, `gate:divergence-bisect`. *Spec:* §7; cross-ref 24 §4,
+  §5, §7.
+
+---
+
+## 8. `selftest` — run the gates against a built-in corpus
+
+**Purpose.** Run Crucible's own determinism gates (24 §1) against a built-in
+scenario corpus, so an operator can confirm a Crucible build (and its discovered
+QEMU/plugin) is healthy without authoring a scenario. This is the operator's
+"is my install correct?" check.
+
+```text
+  crucible selftest [FLAGS]
+
+  FLAGS
+    --gates <list>   Gate subset to run (default: the double-backed gates).
+    --with-qemu      Also run the real-QEMU gates (single-vm-fingerprint, any-guest, qemu-inert).
+    --corpus <path>  Override the built-in scenario corpus.
+```
+
+`selftest` runs the named gates from the canonical catalog (24 §1.1) against the
+built-in corpus. By default it runs the fast, double-backed gates
+(`gate:layer0-determinism`, `gate:content-address`, `gate:layer1-injection`,
+`gate:replay-oracle`, `gate:scheduler-liveness`, `gate:control-responsive`); with
+`--with-qemu` it additionally exercises the real-QEMU gates that require a booted
+guest (24 §3.3). It reports a per-gate pass/fail table and exits non-zero on any
+failure.
+
+**Exit codes.** `0` = all selected gates green; `1` = one or more gates failed
+(the table names which); `4` = discovery/config error (e.g. `--with-qemu` with no
+QEMU); `64` = usage error.
+
+- **[CLI-18]** `crucible selftest` MUST run a selected subset of the canonical
+  gate catalog (24 §1.1) against a built-in scenario corpus and report a per-gate
+  pass/fail table, defaulting to the fast double-backed gates and adding the
+  real-QEMU gates only under `--with-qemu`. It MUST exit `0` iff every selected
+  gate is green and `1` otherwise, naming each failing gate. *Gate:*
+  `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §8; cross-ref 24 §1.1,
+  §3.3.
+
+---
+
+## 9. `save` — run to a savepoint and export it
+
+**Purpose.** Run to a chosen point and materialize a **savepoint**: a fat
+checkpoint (07 §3) keyed by `config.id()` (05), validated by the replay oracle
+(07 §6, [INV-2]), and exported as a resumable, content-addressed handle. Save is
+just `create_savepoint` (20 §4) at a chosen stop point.
+
+```text
+  crucible save <SCENARIO> [FLAGS]
+
+  FLAGS
+    --at <virtual-time|quiescence|property|marker>   Where to stop and save. Required.
+    --label <name>     Human label for the savepoint (07).
+    --out <path>       Write the exported savepoint handle here. Default: --artifact-dir.
+```
+
+`save` runs the session to the `--at` stop point (using the §10 step modes /
+breakpoints of 20 §4.3/§6 internally), issues `create_savepoint` (20 §4), and
+exports the resulting handle. Because a savepoint is a checkpoint in the temporal
+graph (07), it is CoW-shared with its ancestors and validated `fat == thin` by
+the oracle (07 §6) on export — a save that fails the oracle fails the command.
+
+**Exit codes.** `0` = savepoint materialized, oracle-validated, and exported;
+`1` = the run hit a non-savepoint terminal outcome before `--at` (the outcome is
+reported); `3` = oracle violation on materialization (07 §6) or backend error;
+`4` = discovery/config; `64` = usage.
+
+- **[CLI-19]** `crucible save <scenario> --at <point>` MUST run the session to the
+  stop point (via 20 §4.3 step modes / §6 breakpoints), issue `create_savepoint`
+  (20 §4) to materialize a fat checkpoint keyed by `config.id()` (07 §3/§4),
+  validate it `fat == thin` with the replay oracle (07 §6, [INV-2]), and export a
+  content-addressed, resumable savepoint handle. An oracle violation MUST fail
+  the command (exit 3), never export an unvalidated savepoint. *Gate:*
+  `gate:replay-oracle`, `gate:content-address`. *Spec:* §9; cross-ref 20 §4, 07
+  §3/§4/§6.
+
+---
+
+## 10. `resume` — resume from a checkpoint or savepoint
+
+**Purpose.** Continue a run from a savepoint or any checkpoint (07). Resume is
+`instantiate` of the recorded configuration (05 §5) — *not* a special "restored"
+mode; a resumed session is an ordinary session whose configuration happens to be
+non-genesis ([SESS-18]).
+
+```text
+  crucible resume <SAVEPOINT> [FLAGS]
+
+  ARGS
+    <SAVEPOINT>   A savepoint handle / checkpoint content hash (07).
+
+  FLAGS
+    --until <...>   Terminal condition, as in `run` (§6).
+    --interactive   Drive the resumed session interactively (as in `run`).
+    --watch         Stream the live status line (20 §9).
+```
+
+`resume` opens (or connects to) a session, `instantiate`s the savepoint's
+configuration (05 §5 — `loadvm` of its fat snapshot, or replay-from-nearest-fat-
+ancestor if thin, 07 §4), then `continue`s. The resumed configuration MUST
+reduce to the same state the savepoint records, verified by the replay oracle
+([INV-2]); a resume whose materialization disagrees with the thin derivation
+fails rather than running a wrong state.
+
+**Exit codes.** Same outcome→code mapping as `run` (§6); additionally `5` if the
+savepoint is malformed or its referenced components cannot be resolved from the
+store, and `3` on an oracle disagreement at materialization (07 §6).
+
+- **[CLI-20]** `crucible resume <savepoint>` MUST `instantiate` the savepoint's
+  recorded configuration (05 §5) — `loadvm` of its fat snapshot, or
+  replay-from-nearest-fat-ancestor if thin (07 §4) — then `continue` (20 §4),
+  with the same outcome→exit-code mapping as `run` (§6). A resumed session MUST
+  be an ordinary session distinguished only by a non-genesis configuration, with
+  no bespoke "restored" code path ([SESS-18]); the materialized state MUST reduce
+  to the savepoint's recorded state, verified by the replay oracle ([INV-2]), or
+  the resume MUST fail (exit 3) rather than run a wrong state. *Gate:*
+  `gate:replay-oracle`. *Spec:* §10; cross-ref 05 §5, 07 §4, [SESS-18].
+
+---
+
+## 11. `fork` — fork from a savepoint with a new seed or decision override
+
+**Purpose.** Branch the temporal graph: take a savepoint (or any checkpoint) and
+run a *different* future from it — a new seed, or an explicit override of one or
+more decisions (05 §3) at or after the fork point. Fork is `instantiate` of a
+*prefix* configuration that then appends different decisions (05 §6, [SESS-19]),
+sharing the parent's checkpoints CoW (07 §5).
+
+```text
+  crucible fork <SAVEPOINT> [FLAGS]
+
+  ARGS
+    <SAVEPOINT>   The fork point: a savepoint handle / checkpoint hash (07).
+
+  FLAGS
+    --seed <u64|hex>          New root seed for the forked future (06 §5.3).
+    --override <decision=value>  Override a decision at/after the fork point (05 §3). Repeatable.
+    --until <...>             Terminal condition, as in `run` (§6).
+    --label <name>           Label the forked branch.
+    --interactive            Drive the forked session interactively.
+```
+
+`fork` opens a session, `instantiate`s the *prefix* configuration up to the fork
+point (05 §6), and produces an **independent child session** with its own
+mailbox and lifecycle ([SESS-19]); mutating the child does not affect the parent
+(CoW sharing is copy-on-*write*, 07 §5). With `--seed` the child draws all
+post-fork decisions from a new seed; with `--override` it pins specific decisions
+and draws the rest as before. Either way the child is a fully concrete run whose
+artifact (06 §7.1) reproduces it without reference to the parent ([SPAT-27]).
+
+**Exit codes.** Same outcome→code mapping as `run` (§6); `5` if the fork point is
+malformed/unresolvable; `64` on conflicting `--seed`/`--override` usage.
+
+- **[CLI-21]** `crucible fork <savepoint>` MUST `instantiate` the prefix
+  configuration up to the fork point (05 §6) and produce an independent child
+  session (its own mailbox/lifecycle, CoW-sharing the parent's checkpoints,
+  [SESS-19]) that appends different decisions — `--seed` re-seeds all post-fork
+  decisions (06 §5.3), `--override <decision=value>` pins specific decisions
+  (05 §3) and draws the rest as before. The child MUST be a fully concrete run
+  whose reproduction artifact (06 §7.1) reproduces it with no reference to the
+  parent ([SPAT-27]); mutating the child MUST NOT affect the parent. *Gate:*
+  `gate:replay-oracle`, `gate:content-address`. *Spec:* §11; cross-ref 05 §6, 07
+  §5, [SESS-19].
+
+---
+
+## 12. `replay` — replay a reproduction artifact, bit-identically
+
+**Purpose.** Re-run a reproduction artifact `(seed, ScenarioDef, Schedule)`
+(06 §7.1, 24 §12) and produce a **bit-identical** canonical event log and
+fingerprint stream — the concrete form of [G-6], and the command the CLI prints
+on every failure (§4). This is the `gate:replay-oracle` / [HARN-28] contract made
+operator-facing.
+
+```text
+  crucible replay <ARTIFACT> [FLAGS]
+
+  ARGS
+    <ARTIFACT>   A reproduction artifact (06 §7.1) or its content hash.
+
+  FLAGS
+    --check <original-log>   Assert the replayed canonical log is byte-identical to this one.
+    --to <virtual-time|icount>   Replay only up to this point, then pause (for inspection).
+    --bisect <other-artifact>    Bisect this artifact against another (24 §5).
+```
+
+`replay` reads the artifact, resolves its content-addressed components from the
+store (06 §7.1), verifies the pinned engine/ABI/QEMU identities match the host
+([HARN-28]) — failing loudly on any mismatch rather than reproducing something
+else — then `reduce`s `(ScenarioDef, Schedule)` to the recorded state ([INV-1]).
+With `--check`, it asserts the replayed canonical log equals the supplied
+original byte-for-byte and exits non-zero on any difference, feeding the diff to
+bisection (24 §5).
+
+**Exit codes.** `0` = replayed successfully (and, with `--check`, byte-identical);
+`1` = `--check` mismatch (the divergence is bisected and reported, §4); `3` =
+pinned-identity mismatch (engine/ABI/QEMU; [HARN-28]) or backend error; `5` =
+malformed/unresolvable artifact; `4` = discovery/config; `64` = usage.
+
+- **[CLI-22]** `crucible replay <artifact>` MUST resolve the artifact's
+  content-addressed components (06 §7.1), verify the pinned engine/ABI/QEMU
+  identities match the host and **fail loudly** (exit 3) on any mismatch rather
+  than reproduce a different binary ([HARN-28]), then `reduce(ScenarioDef,
+  Schedule)` (05, [INV-1]) to a **bit-identical** canonical event log and
+  fingerprint stream. `--check <original-log>` MUST assert byte-identity to the
+  supplied log and exit `1` on any difference, reporting the bisected first
+  divergence (24 §5). Replay MUST be machine-independent: the same artifact on a
+  different host profile MUST reproduce byte-identically ([HARN-28]). *Gate:*
+  `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §12; cross-ref 06 §7.1,
+  24 §5, §12, [HARN-28].
+
+---
+
+## 13. `search` / `fuzz` — drive exploration (22)
+
+**Purpose.** Drive systematic exploration of the schedule/scenario space: `search`
+expands the temporal graph by enumerating decisions at frontier checkpoints
+(22, state-space search); `fuzz` samples a `ScenarioFamily` (06 §7) under
+coverage guidance (22). Both are *drivers* over the same fork/replay/oracle
+primitives the other subcommands use; the exploration policy lives in 22, not in
+the CLI.
+
+```text
+  crucible search <SCENARIO> [FLAGS]
+    --strategy <bfs|dfs|guided>   Frontier expansion strategy (22).
+    --max-depth <n>               Decision-depth bound.
+    --max-states <n>              Budget on materialized states.
+    --on-violation <stop|collect> Stop at the first counterexample, or collect all.
+
+  crucible fuzz <FAMILY> [FLAGS]
+    --family <path|hash>          A ScenarioFamily (06 §7) to sample.
+    --runs <n>                    Number of family instances to run.
+    --coverage <basic-block>      Coverage signal guiding sampling (22).
+    --corpus <path>               Seed/regression corpus directory.
+```
+
+`search` and `fuzz` walk the space, run each pinned `ScenarioDef` (06 §7,
+[SPAT-27]) as `run` would, and — on every materialized fat checkpoint —
+opportunistically run the replay oracle (24 §6, [HARN-13]) so the invariant is
+exercised on real explored states. Each discovered counterexample reduces to a
+self-contained reproduction artifact (06 §7.1) and is reported with the §4 repro
+command, so a fuzz-found failure is reproduced exactly like a hand-run one.
+
+**Exit codes.** `0` = exploration completed within budget with no violation; `1` =
+at least one counterexample found (artifacts written, §4); `2` = budget exhausted
+before completion (with `--on-violation collect`, this is still `0`/`1` by
+findings); `3` = oracle violation during search (a data-model defect; 24 §6);
+`4` = discovery/config; `64` = usage.
+
+- **[CLI-23]** `crucible search` and `crucible fuzz` MUST drive the exploration
+  policies of `22-advanced-features.md` over the same fork/replay/oracle
+  primitives the other subcommands use, pinning exactly one concrete
+  `ScenarioDef` per run ([SPAT-27]) and opportunistically exercising the replay
+  oracle on materialized checkpoints (24 §6, [HARN-13]). The CLI MUST NOT
+  implement exploration policy itself; it MUST delegate to 22. Each discovered
+  counterexample MUST reduce to a self-contained reproduction artifact (06 §7.1)
+  and be reported with the §4 repro command. An in-search oracle violation MUST
+  exit `3`. *Gate:* `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §13;
+  cross-ref 22, 06 §7, 24 §6.
+
+---
+
+## 14. `serve` — host the daemon and the API (21)
+
+**Purpose.** Run the long-lived **daemon** that hosts the API (21): it owns one
+or more sessions (20), accepts API clients (including remote `crucible --daemon`
+invocations, §3), and streams event logs and state transitions over the API's
+broadcast surface (20 §9, 21). `serve` is the server half of the local/remote
+split (§3).
+
+```text
+  crucible serve [FLAGS]
+
+  FLAGS
+    --listen <addr>      Address to bind the API (21) on. Required.
+    --store <path>       Content-addressed store root (06, 07). Global flag (§2).
+    --max-sessions <n>   Concurrency cap on live sessions.
+    --read-only          Accept only read-only API calls (query/watch); no mutate.
+```
+
+`serve` binds the API transport (21) and runs an accept loop, constructing a
+session actor (20 §1) per submitted scenario and routing API calls to its command
+set (20 §4). Because the session is an actor with lock-free observation (20 §9),
+many clients can `watch` a run's event log and status without entering the
+stepping path or blocking each other; control commands are acknowledged within a
+bounded quantum count ([SESS-3], `gate:control-responsive`). The daemon holds no
+determinism mechanism the in-process path lacks — it is the *same* sessions,
+reached over the API instead of in-process ([CLI-8]).
+
+**Exit codes.** `0` = clean shutdown (signal); `3` = bind/backend error; `4` =
+discovery/config; `64` = usage. While running, the process stays up until a
+shutdown signal.
+
+- **[CLI-24]** `crucible serve --listen <addr>` MUST run the daemon that hosts the
+  API (21): bind the API transport, construct a session actor (20 §1) per
+  submitted scenario, route API calls to the session command set (20 §4), and
+  stream event logs / state transitions over the API broadcast surface (20 §9).
+  Many clients MUST be able to `watch`/`query` a run lock-free without blocking
+  the stepping path (20 §9), and control commands MUST be acknowledged within a
+  bounded number of quanta ([SESS-3]). The daemon MUST host the *same* sessions
+  the in-process path runs — no determinism mechanism unique to the daemon
+  ([CLI-8]). `--read-only` MUST reject all state-mutating API calls. *Gate:*
+  `gate:control-responsive`. *Spec:* §14; cross-ref 21, 20 §1, §4, §9.
+
+---
+
+## 15. Exit codes and machine-readable output (summary)
+
+The exit-code mapping is uniform across run-capable subcommands, so a script can
+branch on the verdict without parsing output:
+
+```text
+  code   meaning
+  ────   ───────────────────────────────────────────────────────────────────
+   0     success / Passed / deterministic / all gates green / clean shutdown
+   1     Failed (property violation) / verify divergence / replay --check mismatch /
+         counterexample found
+   2     Timeout (virtual-time or quantum budget reached, 20 §2)
+   3     Crashed / backend error / replay-oracle violation / pinned-identity mismatch
+   4     discovery or configuration error (QEMU/plugin/store/daemon; §5)
+   5     invalid scenario or malformed/unresolvable artifact (06 §9)
+   64    usage error (bad flags / args; conventional EX_USAGE)
+```
+
+- **[CLI-25]** The exit-code mapping in §15 MUST be uniform across the
+  run-capable subcommands: `0` success, `1` failure/divergence/counterexample,
+  `2` timeout, `3` crash/backend/oracle/identity-mismatch, `4`
+  discovery/config, `5` invalid scenario/artifact, `64` usage. A script MUST be
+  able to branch on a run's verdict by exit code without parsing stdout, and
+  `--format json`/`jsonl` MUST be sufficient for fully machine-readable output of
+  the event log and the final outcome. *Spec:* §15; cross-ref 20 §2, §4.
+
+---
+
+## Cross-file assumptions this file relies on
+
+- The session command set `start/continue/pause/step/stop/inject_fault/
+  heal_fault/set+remove breakpoint/create_savepoint/fork/query` (20 §4) is the
+  CLI's only control vocabulary; the CLI adds no command outside it ([CLI-1]).
+- The reproduction artifact is the self-contained `(seed, ScenarioDef, Schedule)`
+  bundle (06 §7.1, 24 §12); this file owns the `replay` flow and the
+  failure-time repro-command ergonomics (§4, §12).
+- `start ≡ resume ≡ fork` is one `instantiate` (05 §5/§6, [SESS-11], [SESS-18]):
+  `run`/`resume`/`fork` are CLI faces of that one operation, not three code paths
+  (§6, §10, §11).
+- Backend selection (real QEMU / `SimDouble`) is the `SimulationBackend` of
+  20 §10; the CLI selects but does not define it (§3).
+- Plugin/QEMU discovery is hermetic against the AOS package set (26), never the
+  host `$PATH` (§5); the AOS QEMU build identity and plugin ABI version are
+  pinned into the artifact ([HARN-28]).
+- Exploration policy lives in `22-advanced-features.md`; `search`/`fuzz` are
+  drivers, not policy (§13).
+
+## Implementation checklist
+
+> The authoritative, ordered tasks live in
+> [`32-implementation-plan.md`](32-implementation-plan.md). The copies below are
+> the tasks whose primary area is this file ([PLAN-3]); they are kept verbatim in
+> sync with the master plan by the doc lint
+> ([`28-engineering-standards.md`](28-engineering-standards.md)).
+
+- [ ] **T-CLI-1** Implement the `crucible` binary skeleton: the closed subcommand
+  set (run/verify/selftest/save/resume/fork/replay/search/fuzz/serve/completions)
+  and the global flag block (§2), with derive-based parsing whose help text is
+  authored as user-facing CLI copy (no container overview docs). — satisfies
+  [CLI-3], [CLI-4], [CLI-6]; spec §2, §2.1.
+- [ ] **T-CLI-2** Implement the thin-wrapper layering: every subcommand decomposes
+  into session commands (20 §4) / API calls (21); add a lint/test that the CLI
+  holds no canonical run state and adds no control capability absent from 20/21. —
+  satisfies [CLI-1], [CLI-2]; spec §1.
+- [ ] **T-CLI-3** Implement backend selection and the local/remote split
+  (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
+  local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
+  [CLI-8]; spec §3.
+- [ ] **T-CLI-4** Implement determinism ergonomics: seed resolution
+  (`--seed`/`CRUCIBLE_SEED`/generated) with always-printed seed, failure-time
+  artifact + copy-pasteable repro command, and the three trace formats
+  (jsonl/json/table) over the canonical log; assert no wall-clock feeds canonical
+  State. — satisfies [CLI-9], [CLI-10], [CLI-11], [CLI-12]; spec §4.
+- [ ] **T-CLI-5** Implement hermetic QEMU/plugin discovery
+  (flag → env → AOS package set, no host `$PATH`), clear fail-with-exit-4 on
+  absence/mismatch, and pinning the AOS QEMU build identity + plugin ABI version
+  into the artifact. — satisfies [CLI-13], [CLI-14], [CLI-15]; spec §5.
+- [ ] **T-CLI-6** Implement `run` (start→continue, stream, outcome→exit-code,
+  `--interactive` over the session command set, `--until`/budgets). — satisfies
+  [CLI-16]; spec §6.
+- [ ] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +
+  fingerprint byte-identity compare, `--adversarial`, on-divergence bisection). —
+  satisfies [CLI-17]; spec §7.
+- [ ] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
+  catalog against a built-in corpus, double-backed by default, real-QEMU under
+  `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
+- [ ] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
+  fat==thin, export a content-addressed handle; fail on oracle violation). —
+  satisfies [CLI-19]; spec §9.
+- [ ] **T-CLI-10** Implement `resume` (instantiate the savepoint's configuration,
+  continue; ordinary-session-with-non-genesis-config, no restored path;
+  oracle-verified materialization). — satisfies [CLI-20]; spec §10.
+- [ ] **T-CLI-11** Implement `fork` (instantiate a prefix into an independent child
+  session; `--seed` re-seed and `--override decision=value`; child artifact
+  reproduces without the parent). — satisfies [CLI-21]; spec §11.
+- [ ] **T-CLI-12** Implement `replay` (resolve components, verify pinned
+  engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
+  log, `--check` byte-identity with on-mismatch bisection, machine-independent). —
+  satisfies [CLI-22]; spec §12.
+- [ ] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
+  policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
+  to self-contained artifacts with repro commands; no policy in the CLI). —
+  satisfies [CLI-23]; spec §13.
+- [ ] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
+  lock-free watch/query for many clients, bounded-quantum control ack, same
+  sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.
+- [ ] **T-CLI-15** Implement and test the uniform exit-code mapping (§15) across
+  run-capable subcommands and full machine-readable `--format json`/`jsonl`
+  output of the event log + final outcome. — satisfies [CLI-25]; spec §15.
+- [ ] **T-CLI-16** Implement `completions` (generate shell completions) and the
+  `--help`/`--version` surface, verifying help text matches the normative copy in
+  §6–§14 and stays in sync with flag behavior. — satisfies [CLI-6]; spec §2.1.
+</content>
+</invoke>
