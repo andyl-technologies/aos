@@ -1173,6 +1173,15 @@ async fn machine_path(
                     {
                         return nar_explore_page(&slug, &root, &path).await;
                     }
+                    // Tap the LRU access signal on a narinfo read (best-effort,
+                    // debounced in the DB) — the native hub serves bytes via its
+                    // own streaming path, so it taps here rather than through the
+                    // shared `cache_facade_fetch`.
+                    if let Some(hash) =
+                        path.strip_suffix(".narinfo").filter(|h| !h.contains('/'))
+                    {
+                        let _ = state.db.touch_cache_object(cache.id, hash, now_secs()).await;
+                    }
                     return crate::facade::cache_serve_file(&root, &path, &headers).await;
                 }
             }

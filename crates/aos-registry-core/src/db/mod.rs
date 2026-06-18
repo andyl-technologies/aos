@@ -386,6 +386,12 @@ const ROTATION_GRACE_SECS: i64 = 3600;
 /// enough that a paged console/RPC view always sees recent activity.
 const MAX_AUDIT_SCAN: i64 = 10_000;
 
+/// Debounce window for [`Database::touch_cache_object`]: an object's
+/// `last_accessed_at` is rewritten at most once per hour, so a substituter that
+/// re-probes the same narinfo thousands of times an hour costs one write, not
+/// thousands. The LRU signal only needs hour-granularity recency.
+const LRU_TOUCH_DEBOUNCE_SECS: i64 = 3600;
+
 /// Ordered schema migrations; index = version - 1.
 pub const MIGRATIONS: &[&str] = &[
     // v1: initial schema.
@@ -5442,6 +5448,32 @@ impl Database {
             )
             .await?;
         rows.iter().map(row_to_cache_object).collect()
+    }
+
+    /// Record that a cache object was read, feeding the GC's LRU eviction order.
+    ///
+    /// Updates `last_accessed_at`, but **debounced**: at most one write per
+    /// object per [`LRU_TOUCH_DEBOUNCE_SECS`] window, so a high-QPS substituter
+    /// probing the same narinfo does not turn every read into a write. The signal
+    /// is advisory — GC *correctness* comes from roots, not recency (RFC-0004
+    /// "11-caches" LRU access signal), so a missed touch only affects eviction
+    /// order, never whether a rooted path survives. A no-op when the object is
+    /// absent or was touched recently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn touch_cache_object(&self, cache_id: i64, store_hash: &str, now: i64) -> Result<()> {
+        let stale_before = now - LRU_TOUCH_DEBOUNCE_SECS;
+        self.backend
+            .execute(
+                "UPDATE cache_objects SET last_accessed_at = ?3
+                 WHERE cache_id = ?1 AND store_hash = ?2
+                   AND (last_accessed_at IS NULL OR last_accessed_at < ?4)",
+                &vals![cache_id, store_hash, now, stale_before],
+            )
+            .await?;
+        Ok(())
     }
 
     /// Delete a cache object's narinfo row. Returns `false` if it did not exist.
@@ -11771,6 +11803,28 @@ mod tests {
         assert_eq!(usage.used_bytes, 1024);
         assert_eq!(usage.object_count, 1);
         assert_eq!(db.cache_usage(cache).await.unwrap().used_bytes, 1024);
+
+        // LRU access signal: first touch lands; a touch within the debounce
+        // window is a no-op; a touch past it updates.
+        db.touch_cache_object(cache, "aaaa", 1_000).await.unwrap();
+        assert_eq!(
+            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            Some(1_000)
+        );
+        db.touch_cache_object(cache, "aaaa", 1_500).await.unwrap(); // within 3600s
+        assert_eq!(
+            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            Some(1_000),
+            "debounced touch is a no-op"
+        );
+        db.touch_cache_object(cache, "aaaa", 1_000 + 3_601).await.unwrap();
+        assert_eq!(
+            db.cache_object(cache, "aaaa").await.unwrap().unwrap().last_accessed_at,
+            Some(4_601),
+            "touch past the debounce window updates"
+        );
+        // Touching an absent object is a harmless no-op.
+        db.touch_cache_object(cache, "nope", 9_999).await.unwrap();
 
         // Content-addressed NAR refcount across the binding+prefix.
         assert_eq!(db.nar_refcount(binding, "p", "ff").await.unwrap(), 1);
