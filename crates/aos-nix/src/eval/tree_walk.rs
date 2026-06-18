@@ -82,6 +82,7 @@ const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
+const UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-upstream-output:";
 const TRACE_PREFIX: &[u8] = b"trace: ";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
 const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
@@ -1509,6 +1510,42 @@ pub struct TreeWalk {
 struct KnownDerivation {
     hash_derivation_modulo: [u8; 32],
     output_names: BTreeSet<String>,
+    output_resolution: DerivationOutputResolution,
+}
+
+#[derive(Clone, Debug)]
+struct KnownDerivationInputHashes {
+    hashes: BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    has_deferred: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DerivationOutputResolution {
+    StaticPaths,
+    DeferredPlaceholders,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FloatingCaOutput {
+    method: FloatingCaMethod,
+    hash_algo: nix_compat::nixhash::HashAlgo,
+}
+
+impl FloatingCaOutput {
+    fn aterm_hash_algo(self) -> String {
+        let mut algo = String::new();
+        if matches!(self.method, FloatingCaMethod::Recursive) {
+            algo.push_str("r:");
+        }
+        algo.push_str(&self.hash_algo.to_string());
+        algo
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FloatingCaMethod {
+    Flat,
+    Recursive,
 }
 
 #[derive(Debug)]
@@ -2526,6 +2563,7 @@ impl TreeWalk {
         let mut output_hash = None;
         let mut output_hash_algo = None;
         let mut output_hash_mode = None;
+        let mut content_addressed = false;
 
         for entry in entries {
             let key = {
@@ -2558,13 +2596,8 @@ impl TreeWalk {
             }
             if key == CONTENT_ADDRESSED_ATTR {
                 if self.expect_bool(id, value, span)? {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                            id,
-                            feature: "content-addressed derivations",
-                        },
-                        span,
-                    ));
+                    content_addressed = true;
+                    continue;
                 }
             }
             if key == IMPURE_ATTR {
@@ -2779,10 +2812,25 @@ impl TreeWalk {
             output_hash_algo.as_deref(),
             output_hash_mode.as_deref(),
         )?;
+        let floating_ca_output = if content_addressed && output_hash.is_none() {
+            Some(Self::configure_derivation_floating_ca_output(
+                id,
+                span,
+                output_hash_algo.as_deref(),
+                output_hash_mode.as_deref(),
+            )?)
+        } else {
+            None
+        };
         for output_name in derivation.outputs.keys() {
+            let env_value = if floating_ca_output.is_some() {
+                Self::derivation_output_placeholder(id, span, output_name.as_bytes())?
+            } else {
+                Vec::new()
+            };
             derivation
                 .environment
-                .insert(output_name.clone(), "".into());
+                .insert(output_name.clone(), env_value.into());
         }
         if let Some(json) = structured_json {
             derivation
@@ -2793,32 +2841,79 @@ impl TreeWalk {
 
         self.validate_derivation_strict_before_paths(id, span, &derivation)?;
         let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
-        let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
-        derivation
-            .calculate_output_paths(&name, &hash)
-            .map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::DerivationStrict {
-                        id,
-                        message: source.to_string(),
-                    },
-                    span,
-                )
-            })?;
-        let known_hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
-        let drv_path = derivation
-            .calculate_derivation_path(&name)
-            .map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::DerivationStrict {
-                        id,
-                        message: source.to_string(),
-                    },
-                    span,
-                )
-            })?;
-        self.remember_derivation(drv_path.clone(), &derivation, known_hash);
-        self.alloc_derivation_strict_result(id, span, &derivation, &drv_path)
+        let (known_hash, drv_path, output_resolution) = if let Some(floating_ca_output) =
+            floating_ca_output
+        {
+            let known_hash = Self::hash_floating_ca_derivation_modulo_with_inputs(
+                &derivation,
+                floating_ca_output,
+                &input_hashes.hashes,
+            );
+            let drv_path = Self::calculate_floating_ca_derivation_path(
+                id,
+                span,
+                &name,
+                &derivation,
+                floating_ca_output,
+            )?;
+            (
+                known_hash,
+                drv_path,
+                DerivationOutputResolution::DeferredPlaceholders,
+            )
+        } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
+            let known_hash =
+                Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
+            let drv_path = derivation
+                .calculate_derivation_path(&name)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?;
+            (
+                known_hash,
+                drv_path,
+                DerivationOutputResolution::DeferredPlaceholders,
+            )
+        } else {
+            let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
+            derivation
+                .calculate_output_paths(&name, &hash)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?;
+            let known_hash =
+                Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
+            let drv_path = derivation
+                .calculate_derivation_path(&name)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                })?;
+            (
+                known_hash,
+                drv_path,
+                DerivationOutputResolution::StaticPaths,
+            )
+        };
+        self.remember_derivation(drv_path.clone(), &derivation, known_hash, output_resolution);
+        self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
     }
 
     fn derivation_name_value(
@@ -3326,7 +3421,7 @@ impl TreeWalk {
 
         let ca_hash = match output_hash_mode {
             None | Some("flat") => nix_compat::derivation::CAHash::Flat(nix_hash),
-            Some("recursive") => nix_compat::derivation::CAHash::Nar(nix_hash),
+            Some("recursive" | "nar") => nix_compat::derivation::CAHash::Nar(nix_hash),
             Some(mode) => {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::DerivationStrict {
@@ -3344,6 +3439,258 @@ impl TreeWalk {
             .or_default()
             .ca_hash = Some(ca_hash);
         Ok(())
+    }
+
+    fn configure_derivation_floating_ca_output(
+        id: IrId,
+        span: Span,
+        output_hash_algo: Option<&str>,
+        output_hash_mode: Option<&str>,
+    ) -> Result<FloatingCaOutput, TreeWalkError> {
+        let hash_algo = output_hash_algo
+            .and_then(|algo| nix_compat::nixhash::HashAlgo::try_from(algo).ok())
+            .unwrap_or(nix_compat::nixhash::HashAlgo::Sha256);
+        let method = match output_hash_mode {
+            None | Some("recursive" | "nar") => FloatingCaMethod::Recursive,
+            Some("flat") => FloatingCaMethod::Flat,
+            Some(mode) => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("invalid outputHashMode {mode:?}"),
+                    },
+                    span,
+                ));
+            }
+        };
+
+        Ok(FloatingCaOutput { method, hash_algo })
+    }
+
+    fn derivation_has_fixed_output(derivation: &nix_compat::derivation::Derivation) -> bool {
+        derivation.outputs.values().any(|output| output.is_fixed())
+    }
+
+    fn hash_floating_ca_derivation_modulo_with_inputs(
+        derivation: &nix_compat::derivation::Derivation,
+        floating_ca_output: FloatingCaOutput,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    ) -> [u8; 32] {
+        let aterm = Self::floating_ca_derivation_aterm_bytes(
+            derivation,
+            floating_ca_output,
+            Some(input_hashes),
+        );
+        Self::sha256_array(&aterm)
+    }
+
+    fn calculate_floating_ca_derivation_path(
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+        floating_ca_output: FloatingCaOutput,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let aterm = Self::floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None);
+        let references: BTreeSet<String> = derivation
+            .input_sources
+            .iter()
+            .chain(derivation.input_derivations.keys())
+            .map(nix_compat::store_path::StorePath::to_absolute_path)
+            .collect();
+        let drv_name = format!("{name}.drv");
+        nix_compat::store_path::build_text_path(&drv_name, &aterm, references).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!(
+                        "invalid floating content-addressed derivation path: {source}"
+                    ),
+                },
+                span,
+            )
+        })
+    }
+
+    fn floating_ca_derivation_aterm_bytes(
+        derivation: &nix_compat::derivation::Derivation,
+        floating_ca_output: FloatingCaOutput,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Derive(");
+        Self::write_floating_ca_outputs(&mut out, derivation, floating_ca_output);
+        out.push(b',');
+        Self::write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
+        out.push(b',');
+        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.builder.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_string_array(&mut out, derivation.arguments.iter().map(String::as_bytes));
+        out.push(b',');
+        Self::write_aterm_environment(&mut out, &derivation.environment);
+        out.push(b')');
+        out
+    }
+
+    fn write_floating_ca_outputs(
+        out: &mut Vec<u8>,
+        derivation: &nix_compat::derivation::Derivation,
+        floating_ca_output: FloatingCaOutput,
+    ) {
+        let hash_algo = floating_ca_output.aterm_hash_algo();
+        out.push(b'[');
+        for (index, output_name) in derivation.outputs.keys().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            Self::write_aterm_field(out, output_name.as_bytes(), true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"", true);
+            out.push(b',');
+            Self::write_aterm_field(out, hash_algo.as_bytes(), true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"", true);
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_floating_ca_input_derivations(
+        out: &mut Vec<u8>,
+        derivation: &nix_compat::derivation::Derivation,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+    ) {
+        match input_hashes {
+            Some(input_hashes) => {
+                let replacements: BTreeMap<[u8; 32], BTreeSet<String>> = derivation
+                    .input_derivations
+                    .iter()
+                    .filter_map(|(drv_path, outputs)| {
+                        input_hashes
+                            .get(drv_path)
+                            .map(|hash| (*hash, outputs.clone()))
+                    })
+                    .collect();
+                out.push(b'[');
+                for (index, (hash, output_names)) in replacements.iter().enumerate() {
+                    if index > 0 {
+                        out.push(b',');
+                    }
+                    out.push(b'(');
+                    out.push(b'"');
+                    Self::write_lower_hex(out, hash);
+                    out.push(b'"');
+                    out.push(b',');
+                    Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
+                    out.push(b')');
+                }
+                out.push(b']');
+            }
+            None => {
+                out.push(b'[');
+                for (index, (drv_path, output_names)) in
+                    derivation.input_derivations.iter().enumerate()
+                {
+                    if index > 0 {
+                        out.push(b',');
+                    }
+                    out.push(b'(');
+                    let path = drv_path.to_absolute_path();
+                    Self::write_aterm_field(out, path.as_bytes(), false);
+                    out.push(b',');
+                    Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
+                    out.push(b')');
+                }
+                out.push(b']');
+            }
+        }
+    }
+
+    fn write_aterm_input_sources(
+        out: &mut Vec<u8>,
+        input_sources: &BTreeSet<nix_compat::store_path::StorePath<String>>,
+    ) {
+        out.push(b'[');
+        for (index, source) in input_sources.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            let path = source.to_absolute_path();
+            Self::write_aterm_field(out, path.as_bytes(), true);
+        }
+        out.push(b']');
+    }
+
+    fn write_aterm_string_array<'a>(out: &mut Vec<u8>, values: impl Iterator<Item = &'a [u8]>) {
+        out.push(b'[');
+        for (index, value) in values.enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            Self::write_aterm_field(out, value, true);
+        }
+        out.push(b']');
+    }
+
+    fn write_aterm_environment<V>(out: &mut Vec<u8>, environment: &BTreeMap<String, V>)
+    where
+        V: AsRef<[u8]>,
+    {
+        out.push(b'[');
+        for (index, (key, value)) in environment.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            Self::write_aterm_field(out, key.as_bytes(), false);
+            out.push(b',');
+            Self::write_aterm_field(out, value.as_ref(), true);
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_aterm_field(out: &mut Vec<u8>, bytes: &[u8], escape: bool) {
+        out.push(b'"');
+        if escape {
+            Self::write_aterm_escaped_bytes(out, bytes);
+        } else {
+            out.extend_from_slice(bytes);
+        }
+        out.push(b'"');
+    }
+
+    fn write_aterm_escaped_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+        for byte in bytes {
+            match *byte {
+                b'\\' => out.extend_from_slice(b"\\\\"),
+                b'\n' => out.extend_from_slice(b"\\n"),
+                b'\r' => out.extend_from_slice(b"\\r"),
+                b'\t' => out.extend_from_slice(b"\\t"),
+                b'"' => out.extend_from_slice(b"\\\""),
+                byte => out.push(byte),
+            }
+        }
+    }
+
+    fn write_lower_hex(out: &mut Vec<u8>, bytes: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in bytes {
+            out.push(HEX[usize::from(byte >> 4)]);
+            out.push(HEX[usize::from(byte & 0x0f)]);
+        }
+    }
+
+    fn sha256_array(bytes: &[u8]) -> [u8; 32] {
+        let digest = Sha256::digest(bytes);
+        let mut out = [0; 32];
+        out.copy_from_slice(&digest);
+        out
     }
 
     fn validate_derivation_strict_before_paths(
@@ -3623,8 +3970,9 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         derivation: &nix_compat::derivation::Derivation,
-    ) -> Result<BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>, TreeWalkError> {
+    ) -> Result<KnownDerivationInputHashes, TreeWalkError> {
         let mut hashes = BTreeMap::new();
+        let mut has_deferred = false;
         for input in derivation.input_derivations.keys() {
             let known = self.known_derivations.get(input).ok_or_else(|| {
                 TreeWalkError::new(
@@ -3639,8 +3987,13 @@ impl TreeWalk {
                 )
             })?;
             hashes.insert(input.clone(), known.hash_derivation_modulo);
+            has_deferred |=
+                known.output_resolution == DerivationOutputResolution::DeferredPlaceholders;
         }
-        Ok(hashes)
+        Ok(KnownDerivationInputHashes {
+            hashes,
+            has_deferred,
+        })
     }
 
     fn hash_derivation_modulo_with_inputs(
@@ -3665,6 +4018,7 @@ impl TreeWalk {
         drv_path: nix_compat::store_path::StorePath<String>,
         derivation: &nix_compat::derivation::Derivation,
         hash_derivation_modulo: [u8; 32],
+        output_resolution: DerivationOutputResolution,
     ) {
         let output_names = derivation.outputs.keys().cloned().collect();
         self.known_derivations.insert(
@@ -3672,6 +4026,7 @@ impl TreeWalk {
             KnownDerivation {
                 hash_derivation_modulo,
                 output_names,
+                output_resolution,
             },
         );
     }
@@ -3682,6 +4037,7 @@ impl TreeWalk {
         span: Span,
         derivation: &nix_compat::derivation::Derivation,
         drv_path: &nix_compat::store_path::StorePath<String>,
+        output_resolution: DerivationOutputResolution,
     ) -> Result<Value, TreeWalkError> {
         let drv_path_bytes = drv_path.to_absolute_path().into_bytes();
         let mut entries = Vec::new();
@@ -3707,15 +4063,21 @@ impl TreeWalk {
         })?;
 
         for (output_name, output) in &derivation.outputs {
-            let output_path = output.path.as_ref().ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::DerivationStrict {
-                        id,
-                        message: format!("output {output_name:?} has no calculated path"),
-                    },
-                    span,
-                )
-            })?;
+            let output_path = match output.path.as_ref() {
+                Some(path) => path.to_absolute_path().into_bytes(),
+                None if output_resolution == DerivationOutputResolution::DeferredPlaceholders => {
+                    Self::downstream_output_placeholder(id, span, drv_path, output_name)?
+                }
+                None => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: format!("output {output_name:?} has no calculated path"),
+                        },
+                        span,
+                    ));
+                }
+            };
             let context = StringContext::singleton(
                 ContextElement::single_output(
                     drv_path_bytes.clone(),
@@ -3728,10 +4090,7 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
             let value = self
                 .heap
-                .alloc_string(NixString::new(
-                    output_path.to_absolute_path().into_bytes(),
-                    context,
-                ))
+                .alloc_string(NixString::new(output_path, context))
                 .map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
                 })?;
@@ -3757,6 +4116,110 @@ impl TreeWalk {
         self.heap
             .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn derivation_output_placeholder(
+        id: IrId,
+        span: Span,
+        output_name: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let input_len = PLACEHOLDER_HASH_PREFIX
+            .len()
+            .checked_add(output_name.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut input = Vec::new();
+        input.try_reserve_exact(input_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len: input_len },
+                span,
+            )
+        })?;
+        input.extend_from_slice(PLACEHOLDER_HASH_PREFIX);
+        input.extend_from_slice(output_name);
+        Self::slash_prefixed_nix_base32_sha256(id, span, &input)
+    }
+
+    fn downstream_output_placeholder(
+        id: IrId,
+        span: Span,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        output_name: &str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let drv_name: &str = drv_path.name().as_ref();
+        let base_name = drv_name.strip_suffix(".drv").ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("derivation path name {drv_name:?} does not end in .drv"),
+                },
+                span,
+            )
+        })?;
+        let output_path_name = if output_name == "out" {
+            base_name.to_owned()
+        } else {
+            format!("{base_name}-{output_name}")
+        };
+        let drv_hash = Self::encode_nix_base32(id, span, drv_path.digest())?;
+        let input_len = UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX
+            .len()
+            .checked_add(drv_hash.len())
+            .and_then(|len| len.checked_add(1))
+            .and_then(|len| len.checked_add(output_path_name.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut input = Vec::new();
+        input.try_reserve_exact(input_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len: input_len },
+                span,
+            )
+        })?;
+        input.extend_from_slice(UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX);
+        input.extend_from_slice(&drv_hash);
+        input.push(b':');
+        input.extend_from_slice(output_path_name.as_bytes());
+        Self::slash_prefixed_nix_base32_sha256(id, span, &input)
+    }
+
+    fn slash_prefixed_nix_base32_sha256(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let digest = Sha256::digest(input);
+        let encoded = Self::encode_nix_base32(id, span, &digest)?;
+        let len = encoded.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        bytes.push(b'/');
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
     }
 
     fn eval_if(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -39754,27 +40217,203 @@ mod tests {
     }
 
     #[test]
-    fn derivation_strict_rejects_unsupported_content_addressed_derivations() {
-        let error = eval_whnf_owned(&lower(
-            r#"derivationStrict {
-                 name = "foo";
-                 system = "x86_64-linux";
-                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                 __contentAddressed = true;
-                 outputHashAlgo = "sha256";
-                 outputHashMode = "recursive";
-               }"#,
-        ))
-        .expect_err("content-addressed derivations are still feature-gated");
+    fn derivation_strict_supports_floating_content_addressed_derivations() {
+        let source = r#"let
+             recursive = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+             flat = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "flat";
+             };
+             defaulted = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+             };
+             multi = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               outputs = [ "out" "dev" ];
+             };
+           in {
+             defaultDrv = defaulted.drvPath;
+             defaultOut = defaulted.out;
+             flatDrv = flat.drvPath;
+             flatOut = flat.out;
+             multiDev = multi.dev;
+             multiDrv = multi.drvPath;
+             multiNames = builtins.attrNames multi;
+             multiOut = multi.out;
+             recursiveCtx = builtins.getContext recursive.out;
+             recursiveDrv = recursive.drvPath;
+             recursiveDrvCtx = builtins.getContext recursive.drvPath;
+             recursiveNames = builtins.attrNames recursive;
+             recursiveOut = recursive.out;
+           }"#;
 
-        assert!(matches!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                feature: "content-addressed derivations",
-                ..
-            }
-        ));
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"defaultDrv":"/nix/store/asqvh5kd8syak2nap6qfby2kzhad93ln-foo.drv","defaultOut":"/0va4qp2ahx6mzdj5jv1rmd902hpfaiqqqiacifnckwnv2ab0356k","flatDrv":"/nix/store/h45pc0783njkplw61p57klqwk4rq88wd-foo.drv","flatOut":"/0dy829a8ha7khjxzv6pc5fv0xfsgby2mdgqavyj8cnr610fgi1sm","multiDev":"/1zcx5za1flqh9fnmak474592n4lr9b55ign6qry5ycc0n0j9rzgv","multiDrv":"/nix/store/mj5lbvmrbi0wak4g3scs801dbh5rvd5k-foo.drv","multiNames":["dev","drvPath","out"],"multiOut":"/0qwqpv6x549qb5amk1slwbswzjh03n435ddw392rs6n5h2wbglr4","recursiveCtx":{"/nix/store/5d4gn8jbm861c1pcharmm24yzacv5x4h-foo.drv":{"outputs":["out"]}},"recursiveDrv":"/nix/store/5d4gn8jbm861c1pcharmm24yzacv5x4h-foo.drv","recursiveDrvCtx":{"/nix/store/5d4gn8jbm861c1pcharmm24yzacv5x4h-foo.drv":{"allOutputs":true}},"recursiveNames":["drvPath","out"],"recursiveOut":"/1h9lmzdzqh6czk0m08hbfk343704ykhfwfwz3160xnamfgggfjws"}"#.to_vec()
+        );
+    }
 
+    #[test]
+    fn derivation_strict_floating_ca_matches_cpp_nix_hash_algo_and_mode_parsing() {
+        let source = r#"let
+             bogus = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "bogus";
+               outputHashMode = "recursive";
+             };
+             empty = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "";
+               outputHashMode = "recursive";
+             };
+             nar = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "nar";
+             };
+             upper = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "SHA256";
+               outputHashMode = "recursive";
+             };
+           in {
+             bogusDrv = bogus.drvPath;
+             bogusOut = bogus.out;
+             emptyDrv = empty.drvPath;
+             emptyOut = empty.out;
+             narDrv = nar.drvPath;
+             narOut = nar.out;
+             upperDrv = upper.drvPath;
+             upperOut = upper.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"bogusDrv":"/nix/store/sfvbsz4716wchmgqccrbgyx82bwwp0bl-foo.drv","bogusOut":"/1qxz9i2h42krf58nihzbybdd0i4nfskc85ywjvg1z3k7slnl1a4p","emptyDrv":"/nix/store/9g7if9vq9c7zfigby235xgcla16n3s5h-foo.drv","emptyOut":"/0khcai9n321warx3azdv4c16573x8pnc05pndwikd8rbzkrwbqh6","narDrv":"/nix/store/6w7snr1mlr3kq48cq8lj22vqc7fjw19h-foo.drv","narOut":"/137j0hqh4klrf447lfyfzjv4x37fbzwz5kv1drk36jg225dc539k","upperDrv":"/nix/store/05p9rdwygprb3xw84ybssjh06m1yziry-foo.drv","upperOut":"/0ky0f7m9zhjvl1s8fc60mvaayb9rf1f7l73acq5293n9r3lz3780"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_content_addressed_marker_preserves_fixed_output_derivation() {
+        let source = r#"let
+             recursive = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+             };
+             nar = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "nar";
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+             };
+           in {
+             narDrv = nar.drvPath;
+             narOut = nar.out;
+             recursiveDrv = recursive.drvPath;
+             recursiveOut = recursive.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"narDrv":"/nix/store/g72ixp5q1kzsm4nk85fazw8x5zdw92dx-foo.drv","narOut":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","recursiveDrv":"/nix/store/3yx7944f4sjjnh56pynw9i73mbmavwb9-foo.drv","recursiveOut":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_content_addressed_derivations_defer_downstream_outputs() {
+        let source = r#"let
+             base = derivationStrict {
+               name = "base";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+             d = derivationStrict {
+               name = "user";
+               system = ":";
+               builder = ":";
+               input = base.out;
+             };
+           in {
+             baseDrv = base.drvPath;
+             baseOut = base.out;
+             ctx = builtins.getContext d.out;
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"baseDrv":"/nix/store/sycp28psd9pmlky6a4jpcb5lijdfjw6g-base.drv","baseOut":"/12b6k9m59nmk4z3mpbpi60a9626jbcihnxmydd980k8jvgwsb8ry","ctx":{"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv":{"outputs":["out"]}},"drvPath":"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv","out":"/0dgqgrnsrgzgjvxqfag1i449qjkl8fixagz9dlj6arf2py6m7mz5"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_supports_structured_floating_content_addressed_derivations() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/f0gabys2ih4l8v9npyar6bj5xsa8rj2k-foo.drv","out":"/1w3qgj09cidhvf61hmb2bzyxy64mkcbxzjm6n631m62yjpjhzzvg"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_invalid_content_addressed_marker() {
         let error = eval_whnf_owned(&lower(
             r#"derivationStrict {
                  name = "foo";
