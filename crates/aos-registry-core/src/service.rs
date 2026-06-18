@@ -316,6 +316,17 @@ fn render_nix_cache_info(want_mass_query: bool, priority: i64) -> String {
     )
 }
 
+/// Rank a visibility string for ordering comparisons: `public` (2) is the most
+/// visible, then `internal` (1), then `private` (0). An unknown value ranks as
+/// the most restrictive (`0`) so a typo never widens exposure.
+fn visibility_rank(visibility: &str) -> u8 {
+    match visibility {
+        "public" => 2,
+        "internal" => 1,
+        _ => 0,
+    }
+}
+
 /// Project a [`CacheObject`](crate::db::CacheObject) onto the wire [`pb::CacheObject`].
 fn cache_object_message(o: crate::db::CacheObject) -> pb::CacheObject {
     pb::CacheObject {
@@ -1961,6 +1972,31 @@ impl RpcService {
         let c = self.cache_or_not_found(&req.cache_slug).await?;
         self.require_cache_admin(auth, c.org_id).await?;
         let r = self.registry_or_not_found(&req.registry_slug).await?;
+        // Cross-visibility safety (RFC-0004 "11-caches"). Visibility ranks
+        // public > internal > private.
+        let reg_rank = visibility_rank(&r.visibility);
+        let cache_rank = visibility_rank(&c.visibility);
+        // Advertising a cache *less* visible than the registry points the
+        // registry's consumers at a substituter they cannot read — reject it.
+        if req.advertised && cache_rank < reg_rank {
+            return Err(RpcError::invalid(format!(
+                "cannot advertise cache '{}' ({}) on the more-visible registry '{}' ({}): \
+                 its consumers could not read the cache",
+                c.slug, c.visibility, r.slug, r.visibility,
+            )));
+        }
+        // Rooting a less-private registry's packages into a *more* visible cache
+        // exposes that registry's closures publicly — allowed (the operator may
+        // intend a public mirror) but warned, since it is a content-exposure foot-gun.
+        if req.roots_packages && reg_rank < cache_rank {
+            tracing::warn!(
+                registry = %r.slug,
+                registry_visibility = %r.visibility,
+                cache = %c.slug,
+                cache_visibility = %c.visibility,
+                "rooting a less-visible registry's packages into a more-visible cache exposes its closures"
+            );
+        }
         self.db
             .link_cache(c.id, r.id, req.roots_packages, req.advertised)
             .await
@@ -3470,7 +3506,15 @@ async fn apply_revert_revision(
 
 #[cfg(test)]
 mod cache_facade_tests {
-    use super::{narinfo_store_hash, parse_cache_narinfo, render_nix_cache_info};
+    use super::{narinfo_store_hash, parse_cache_narinfo, render_nix_cache_info, visibility_rank};
+
+    #[test]
+    fn visibility_rank_orders_public_over_internal_over_private() {
+        assert!(visibility_rank("public") > visibility_rank("internal"));
+        assert!(visibility_rank("internal") > visibility_rank("private"));
+        // An unknown value is treated as the most restrictive, never widening.
+        assert_eq!(visibility_rank("bogus"), visibility_rank("private"));
+    }
 
     #[test]
     fn narinfo_store_hash_strips_path_and_name() {
