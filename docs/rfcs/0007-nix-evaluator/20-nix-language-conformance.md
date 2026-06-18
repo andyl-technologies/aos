@@ -844,7 +844,7 @@ derivation-level (consumed by `derivationStrict`).
 - [x] **`outPath` (language-level coercion)** — string-coercion fallback when
       `__toString` is absent (§2.4); this is how derivations and flake inputs
       interpolate.
-- [ ] **`__structuredAttrs` (derivation-level)** — changes how `derivationStrict`
+- [x] **`__structuredAttrs` (derivation-level)** — changes how `derivationStrict`
       serializes env/args (doc 11/21); **not** a language-coercion attribute.
       Listed here only to mark it as *not* language-level — the language passes it
       through to the derivation layer unchanged.

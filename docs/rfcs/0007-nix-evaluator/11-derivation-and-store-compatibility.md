@@ -799,7 +799,7 @@ harness, never cut for scope.
 
 - [ ] Six-step algorithm: force-to-WHNF, extract special attrs, deterministic-order string coercion with context accumulation, resolve `outputs`, partition contexts into inputs, build+serialize+hash+write ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1, `S-13`; gate: differential `.drv` harness.
 - [ ] Exact coercion rules (bool → `"1"`/`""`, int decimal, list space-join, path → store copy + `input_sources`, attrset-with-`outPath`) ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1; gate: conformance 20-21.
-- [ ] `__ignoreNulls` (omit null attrs) and `__structuredAttrs` (`__json` blob, nested JSON ordering/escaping) ([§3.2](#32-__structuredattrs-and-__ignorenulls)) — P1, `M-20`; gate: harness on structured-attrs packages (torture: stdenv).
+- [x] `__ignoreNulls` (omit null attrs) and `__structuredAttrs` (`__json` blob, nested JSON ordering/escaping) ([§3.2](#32-__structuredattrs-and-__ignorenulls)) — P1, `M-20`; gate: harness on structured-attrs packages (torture: stdenv).
 
 ### ATerm serialization
 

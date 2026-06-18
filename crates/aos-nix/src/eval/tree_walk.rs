@@ -1515,6 +1515,26 @@ struct KnownDerivation {
     output_names: BTreeSet<String>,
 }
 
+#[derive(Debug)]
+struct StructuredAttrsJson {
+    bytes: Vec<u8>,
+    has_fields: bool,
+}
+
+impl StructuredAttrsJson {
+    fn new() -> Self {
+        Self {
+            bytes: b"{".to_vec(),
+            has_fields: false,
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.bytes.push(b'}');
+        self.bytes
+    }
+}
+
 impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir`.
     pub fn new(ir: &Ir) -> Self {
@@ -2493,25 +2513,23 @@ impl TreeWalk {
         let mut derivation = nix_compat::derivation::Derivation::default();
         let mut context = StringContext::empty();
         let name = self.derivation_name_value(id, span, argument, argument_span, &entries)?;
-        derivation
-            .environment
-            .insert("name".to_owned(), name.clone().into());
         let mut builder = None;
         let mut system = None;
         let mut outputs_seen = false;
         let structured_attrs =
             self.derivation_structured_attrs_value(id, span, argument, argument_span, &entries)?;
-        if structured_attrs == Some(true) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                    id,
-                    feature: "structured attrs",
-                },
-                span,
-            ));
+        let structured_attrs_enabled = structured_attrs == Some(true);
+        let mut structured_json = structured_attrs_enabled.then(StructuredAttrsJson::new);
+        if !structured_attrs_enabled {
+            derivation
+                .environment
+                .insert("name".to_owned(), name.clone().into());
         }
         let ignore_nulls =
             self.derivation_ignore_nulls_value(id, span, argument, argument_span, &entries)?;
+        let mut output_hash = None;
+        let mut output_hash_algo = None;
+        let mut output_hash_mode = None;
 
         for entry in entries {
             let key = {
@@ -2528,7 +2546,15 @@ impl TreeWalk {
             };
 
             let value = self.force_value(argument, argument_span, entry.value)?;
-            if key == NAME_ATTR || key == IGNORE_NULLS_ATTR {
+            if key == NAME_ATTR {
+                if let Some(json) = structured_json.as_mut() {
+                    Self::write_structured_json_string_field(id, span, json, &key, &name)?;
+                }
+                continue;
+            }
+            if key == IGNORE_NULLS_ATTR
+                || (structured_attrs_enabled && key == STRUCTURED_ATTRS_ATTR)
+            {
                 continue;
             }
             if ignore_nulls && value.tag() == ValueTag::Null {
@@ -2546,8 +2572,6 @@ impl TreeWalk {
                 }
             }
 
-            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
-
             if key == ARGS_ATTR {
                 let (arguments, value_context) =
                     self.derivation_args_value(id, span, argument, argument_span, value)?;
@@ -2557,6 +2581,127 @@ impl TreeWalk {
                 derivation.arguments = arguments;
                 continue;
             }
+            if structured_attrs_enabled && key == OUTPUTS_ATTR {
+                let (outputs, output_names, value_context) =
+                    self.derivation_outputs_list_value(id, span, argument, argument_span, value)?;
+                context = context.union(&value_context).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
+                let json = structured_json.as_mut().ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                            id,
+                            feature: "structured attrs",
+                        },
+                        span,
+                    )
+                })?;
+                Self::write_structured_json_string_list_field(id, span, json, &key, &output_names)?;
+                outputs_seen = true;
+                derivation.outputs = outputs;
+                continue;
+            }
+            if structured_attrs_enabled {
+                match key.as_slice() {
+                    BUILDER_ATTR => {
+                        let (bytes, value_context) =
+                            self.derivation_string_value(id, span, argument, argument_span, value)?;
+                        context = context.union(&value_context).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                        })?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        let json = structured_json.as_mut().ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                    id,
+                                    feature: "structured attrs",
+                                },
+                                span,
+                            )
+                        })?;
+                        Self::write_structured_json_string_field(id, span, json, &key, &env_value)?;
+                        builder = Some(env_value);
+                    }
+                    SYSTEM_ATTR => {
+                        let bytes = self.derivation_context_free_string_value(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            value,
+                        )?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        let json = structured_json.as_mut().ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                    id,
+                                    feature: "structured attrs",
+                                },
+                                span,
+                            )
+                        })?;
+                        Self::write_structured_json_string_field(id, span, json, &key, &env_value)?;
+                        system = Some(env_value);
+                    }
+                    OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
+                        let bytes = self.derivation_context_free_string_value(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            value,
+                        )?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            structured_json.as_mut().ok_or_else(|| {
+                                TreeWalkError::new(
+                                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                        id,
+                                        feature: "structured attrs",
+                                    },
+                                    span,
+                                )
+                            })?,
+                            &key,
+                            &env_value,
+                        )?;
+                        match key.as_slice() {
+                            OUTPUT_HASH_ATTR => output_hash = Some(env_value),
+                            OUTPUT_HASH_ALGO_ATTR => output_hash_algo = Some(env_value),
+                            OUTPUT_HASH_MODE_ATTR => output_hash_mode = Some(env_value),
+                            _ => {}
+                        }
+                    }
+                    _ => {
+                        self.write_structured_json_value_field(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            structured_json.as_mut().ok_or_else(|| {
+                                TreeWalkError::new(
+                                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                        id,
+                                        feature: "structured attrs",
+                                    },
+                                    span,
+                                )
+                            })?,
+                            &key,
+                            value,
+                            &mut context,
+                        )?;
+                    }
+                }
+                continue;
+            }
+
+            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
 
             let rendered =
                 self.derivation_to_string_value(id, span, argument, argument_span, value)?;
@@ -2567,19 +2712,39 @@ impl TreeWalk {
 
             let env_key = Self::derivation_utf8_string(id, span, "environment name", &key)?;
             let env_value = Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
-            derivation
-                .environment
-                .insert(env_key.clone(), env_value.clone().into());
+            match key.as_slice() {
+                OUTPUT_HASH_ATTR => output_hash = Some(env_value.clone()),
+                OUTPUT_HASH_ALGO_ATTR => output_hash_algo = Some(env_value.clone()),
+                OUTPUT_HASH_MODE_ATTR => output_hash_mode = Some(env_value.clone()),
+                _ => {}
+            }
 
             match key.as_slice() {
-                BUILDER_ATTR => builder = Some(env_value),
-                SYSTEM_ATTR => system = Some(env_value),
+                BUILDER_ATTR => {
+                    derivation
+                        .environment
+                        .insert(env_key.clone(), env_value.clone().into());
+                    builder = Some(env_value);
+                }
+                SYSTEM_ATTR => {
+                    derivation
+                        .environment
+                        .insert(env_key.clone(), env_value.clone().into());
+                    system = Some(env_value);
+                }
                 OUTPUTS_ATTR => {
+                    derivation
+                        .environment
+                        .insert(env_key.clone(), env_value.clone().into());
                     outputs_seen = true;
                     derivation.outputs =
                         Self::derivation_outputs_value(id, span, &bytes, &env_value)?;
                 }
-                _ => {}
+                _ => {
+                    derivation
+                        .environment
+                        .insert(env_key.clone(), env_value.clone().into());
+                }
             }
         }
 
@@ -2601,11 +2766,23 @@ impl TreeWalk {
                 .outputs
                 .insert("out".to_owned(), nix_compat::derivation::Output::default());
         }
-        Self::configure_derivation_fixed_output(id, span, &mut derivation)?;
+        Self::configure_derivation_fixed_output(
+            id,
+            span,
+            &mut derivation,
+            output_hash.as_deref(),
+            output_hash_algo.as_deref(),
+            output_hash_mode.as_deref(),
+        )?;
         for output_name in derivation.outputs.keys() {
             derivation
                 .environment
                 .insert(output_name.clone(), "".into());
+        }
+        if let Some(json) = structured_json {
+            derivation
+                .environment
+                .insert("__json".to_owned(), json.finish().into());
         }
         self.add_derivation_context_inputs(id, span, &mut derivation, &context)?;
 
@@ -2812,6 +2989,81 @@ impl TreeWalk {
         Ok((arguments, context))
     }
 
+    fn derivation_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<(Vec<u8>, StringContext), TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
+        let context = StringContext::empty()
+            .union(string.context())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok((bytes, context))
+    }
+
+    fn derivation_context_free_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        if string.has_context() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::StringContextNotAllowed {
+                    id: value_id,
+                    op: "derivationStrict",
+                },
+                value_span,
+            ));
+        }
+        Self::copy_bytes_for_node(id, span, string.bytes())
+    }
+
     fn derivation_outputs_value(
         id: IrId,
         span: Span,
@@ -2857,8 +3109,165 @@ impl TreeWalk {
         Ok(outputs)
     }
 
+    fn derivation_outputs_list_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<
+        (
+            BTreeMap<String, nix_compat::derivation::Output>,
+            Vec<String>,
+            StringContext,
+        ),
+        TreeWalkError,
+    > {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: value_id,
+                        source,
+                    },
+                    value_span,
+                )
+            })?;
+            Self::clone_list_elements(value_id, value_span, list)?
+        };
+        let mut outputs = BTreeMap::new();
+        let mut output_names = Vec::new();
+        output_names
+            .try_reserve_exact(elements.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: value_id,
+                        len: elements.len(),
+                    },
+                    value_span,
+                )
+            })?;
+        let context = StringContext::empty();
+        for element in elements {
+            let value = self.force_value(value_id, value_span, element)?;
+            let bytes =
+                self.derivation_context_free_string_value(id, span, value_id, value_span, value)?;
+            let output_name = Self::derivation_utf8_string(id, span, "output name", &bytes)?;
+            Self::validate_derivation_strict_output_name(id, span, &output_name)?;
+            if outputs
+                .insert(
+                    output_name.clone(),
+                    nix_compat::derivation::Output::default(),
+                )
+                .is_some()
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("duplicate derivation output {output_name:?}"),
+                    },
+                    span,
+                ));
+            }
+            output_names.push(output_name);
+        }
+
+        if outputs.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "derivation cannot have an empty set of outputs".to_owned(),
+                },
+                span,
+            ));
+        }
+
+        Ok((outputs, output_names, context))
+    }
+
     fn is_derivation_outputs_separator(byte: u8) -> bool {
         matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+    }
+
+    fn write_structured_json_field_name(
+        id: IrId,
+        span: Span,
+        json: &mut StructuredAttrsJson,
+        key: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if json.has_fields {
+            json.bytes.push(b',');
+        }
+        json.has_fields = true;
+        Self::write_json_string_bytes(id, span, key, &mut json.bytes)?;
+        json.bytes.push(b':');
+        Ok(())
+    }
+
+    fn write_structured_json_string_field(
+        id: IrId,
+        span: Span,
+        json: &mut StructuredAttrsJson,
+        key: &[u8],
+        value: &str,
+    ) -> Result<(), TreeWalkError> {
+        Self::write_structured_json_field_name(id, span, json, key)?;
+        Self::write_json_string_bytes(id, span, value.as_bytes(), &mut json.bytes)
+    }
+
+    fn write_structured_json_string_list_field(
+        id: IrId,
+        span: Span,
+        json: &mut StructuredAttrsJson,
+        key: &[u8],
+        values: &[String],
+    ) -> Result<(), TreeWalkError> {
+        Self::write_structured_json_field_name(id, span, json, key)?;
+        json.bytes.push(b'[');
+        for (index, value) in values.iter().enumerate() {
+            if index > 0 {
+                json.bytes.push(b',');
+            }
+            Self::write_json_string_bytes(id, span, value.as_bytes(), &mut json.bytes)?;
+        }
+        json.bytes.push(b']');
+        Ok(())
+    }
+
+    fn write_structured_json_value_field(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        json: &mut StructuredAttrsJson,
+        key: &[u8],
+        value: Value,
+        context: &mut StringContext,
+    ) -> Result<(), TreeWalkError> {
+        Self::write_structured_json_field_name(id, span, json, key)?;
+        self.write_json_value(
+            id,
+            span,
+            value_id,
+            value_span,
+            value,
+            &mut json.bytes,
+            context,
+        )
     }
 
     fn reject_unsupported_derivation_strict_attr(
@@ -2888,21 +3297,16 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         derivation: &mut nix_compat::derivation::Derivation,
+        output_hash: Option<&str>,
+        output_hash_algo: Option<&str>,
+        output_hash_mode: Option<&str>,
     ) -> Result<(), TreeWalkError> {
-        let Some(hash) =
-            Self::derivation_env_attr_utf8(id, span, "outputHash", derivation, OUTPUT_HASH_ATTR)?
-        else {
+        let Some(hash) = output_hash else {
             return Ok(());
         };
 
-        let hash_algo = Self::derivation_env_attr_utf8(
-            id,
-            span,
-            "outputHashAlgo",
-            derivation,
-            OUTPUT_HASH_ALGO_ATTR,
-        )?
-        .and_then(|algo| nix_compat::nixhash::HashAlgo::try_from(algo).ok());
+        let hash_algo =
+            output_hash_algo.and_then(|algo| nix_compat::nixhash::HashAlgo::try_from(algo).ok());
 
         let nix_hash = if hash.is_empty() {
             let hash_algo = hash_algo.ok_or_else(|| {
@@ -2938,13 +3342,7 @@ impl TreeWalk {
             })?
         };
 
-        let ca_hash = match Self::derivation_env_attr_utf8(
-            id,
-            span,
-            "outputHashMode",
-            derivation,
-            OUTPUT_HASH_MODE_ATTR,
-        )? {
+        let ca_hash = match output_hash_mode {
             None | Some("flat") => nix_compat::derivation::CAHash::Flat(nix_hash),
             Some("recursive") => nix_compat::derivation::CAHash::Nar(nix_hash),
             Some(mode) => {
@@ -2964,33 +3362,6 @@ impl TreeWalk {
             .or_default()
             .ca_hash = Some(ca_hash);
         Ok(())
-    }
-
-    fn derivation_env_attr_utf8<'a>(
-        id: IrId,
-        span: Span,
-        field: &'static str,
-        derivation: &'a nix_compat::derivation::Derivation,
-        key: &[u8],
-    ) -> Result<Option<&'a str>, TreeWalkError> {
-        let key = Self::derivation_utf8_string(id, span, "environment name", key)?;
-        derivation
-            .environment
-            .get(&key)
-            .map(|value| {
-                std::str::from_utf8(value.as_ref()).map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::DerivationStringUtf8 {
-                            id,
-                            field,
-                            bytes: value.to_vec(),
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                })
-            })
-            .transpose()
     }
 
     fn validate_derivation_strict_before_paths(
@@ -38813,6 +39184,192 @@ mod tests {
             eval_json_bytes(source),
             br#"{"dev":"/nix/store/n28wnzwh3wqjmhyz754raw70fhyg436p-x-dev","drvPath":"/nix/store/pgbcwn3hlyzz8y1bzijsdm0faai1bxvz-x.drv","out":"/nix/store/8slxvn562rwfh09l7bjcg4mdpg4lv8vp-x"}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_strict_supports_structured_attrs() {
+        let source = r#"let
+             simple = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               foo = "bar";
+             };
+             explicitOut = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               outputs = [ "out" ];
+             };
+             nullValue = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __ignoreNulls = false;
+               foo = null;
+             };
+             jsonKey = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __json = "foo";
+               foo = "bar";
+             };
+           in {
+             explicitOutDrv = explicitOut.drvPath;
+             explicitOutOut = explicitOut.out;
+             jsonKeyDrv = jsonKey.drvPath;
+             jsonKeyOut = jsonKey.out;
+             nullDrv = nullValue.drvPath;
+             nullOut = nullValue.out;
+             simpleDrv = simple.drvPath;
+             simpleNames = builtins.attrNames simple;
+             simpleOut = simple.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"explicitOutDrv":"/nix/store/ni8ck1jwld3qz4fkyb1xfh7kd0qmj5fk-foo.drv","explicitOutOut":"/nix/store/g6x8m6kvfidz7673x8xzkxcjabx4n6dp-foo","jsonKeyDrv":"/nix/store/98yvz8z0i6kzdcsv6zq8cv60dd784yxf-foo.drv","jsonKeyOut":"/nix/store/gw2i989kkschki96vpiz6y779ah7sblw-foo","nullDrv":"/nix/store/rldskjdcwa3p7x5bqy3r217va1jsbjsc-foo.drv","nullOut":"/nix/store/0xghxv8giy66afhkpwbsa2bjhq9j4w8s-foo","simpleDrv":"/nix/store/k6rlb4k10cb9iay283037ml1nv3xma2f-foo.drv","simpleNames":["drvPath","out"],"simpleOut":"/nix/store/6lmv3hyha1g4cb426iwjyifd7nrdv1xn-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_structured_attrs_accepts_reference_constraints() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               allowedReferences = [ "out" ];
+             };
+           in {
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/y83ql5w0pnjb1b5xwaxccgfxigkq51hz-foo.drv","names":["drvPath","out"],"out":"/nix/store/5434vg976sf8rj9ifi8nyil96mcnsgph-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_structured_attrs_observes_builder_context() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = builtins.appendContext ":" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+               };
+               __structuredAttrs = true;
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/1ixzgybyjnapzwa82nb0pm9v2klbzkbw-foo.drv","out":"/nix/store/zxyyy7j9s7c6472nf9klhkhaw43npjlm-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_structured_attrs_requires_string_special_attrs() {
+        for source in [
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = 1;
+                 __structuredAttrs = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = 1;
+                 builder = ":";
+                 __structuredAttrs = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 outputHash = "";
+                 outputHashAlgo = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 outputs = [ 1 ];
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("structured special attr must be a string");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::Type {
+                        expected: "string",
+                        ..
+                    }
+                ),
+                "{source}: {error:?}"
+            );
+        }
+
+        for source in [
+            r#"derivationStrict {
+                 name = "foo";
+                 system = builtins.appendContext ":" {
+                   "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                 };
+                 builder = ":";
+                 __structuredAttrs = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 outputHash = "";
+                 outputHashAlgo = builtins.appendContext "sha256" {
+                   "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                 };
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 outputs = [
+                   (builtins.appendContext "out" {
+                     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                   })
+                 ];
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("structured special attr must not carry context");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::StringContextNotAllowed {
+                        op: "derivationStrict",
+                        ..
+                    }
+                ),
+                "{source}: {error:?}"
+            );
+        }
     }
 
     #[test]
