@@ -1408,12 +1408,72 @@ pub fn cache_object(
             .collect();
         body.push_str(&table(&["store hash"], &rows));
     }
+    let _ = write!(
+        body,
+        "<p><a href=\"/{}/-/closure/{}\">full transitive closure →</a></p>\n",
+        escape(slug),
+        escape(&object.store_hash),
+    );
     page_with_session(
         &format!("{} · {slug}", object.store_name),
         &[
             (format!("/{slug}/"), slug.clone()),
             (format!("/{slug}/-/objects"), "objects".into()),
             (String::new(), object.store_hash.clone()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        session,
+    )
+}
+
+/// A cache object's full transitive closure as a no-JS table (the dependency
+/// "graph" in flat form); each present node links to its own object page.
+pub fn cache_closure(
+    cache: &crate::db::Cache,
+    root_hash: &str,
+    nodes: &[aos_proto_types::CacheClosureNode],
+    total_size: i64,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &cache.slug;
+    let mut body = String::new();
+    let _ = write!(body, "<h1>Closure of <code>{}</code></h1>\n", escape(root_hash));
+    let _ = write!(
+        body,
+        "<p>{} paths · {} total</p>\n",
+        nodes.len(),
+        human_size(total_size.max(0) as u64),
+    );
+    let rows: Vec<Vec<String>> = nodes
+        .iter()
+        .map(|n| {
+            let hash_cell = if n.present {
+                format!(
+                    "<a href=\"/{}/-/objects/{}\"><code>{}</code></a>",
+                    escape(slug),
+                    escape(&n.store_hash),
+                    escape(&n.store_hash),
+                )
+            } else {
+                format!("<code>{}</code>", escape(&n.store_hash))
+            };
+            let size_cell = if n.present {
+                human_size(n.file_size.max(0) as u64)
+            } else {
+                "missing".to_string()
+            };
+            vec![hash_cell, escape(&n.store_name), size_cell]
+        })
+        .collect();
+    body.push_str(&table(&["store hash", "name", "size"], &rows));
+    page_with_session(
+        &format!("closure · {slug}"),
+        &[
+            (format!("/{slug}/"), slug.clone()),
+            (format!("/{slug}/-/objects"), "objects".into()),
+            (String::new(), "closure".into()),
         ],
         &body,
         &StateLine::timed(started),

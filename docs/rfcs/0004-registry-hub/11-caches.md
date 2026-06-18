@@ -605,9 +605,11 @@ the current spec. Phases are orderable; A lands first, E last.
 - [x] `SearchCache` (indexed `LIKE`) + `aos-hub cache search` CLI + the cache
       object-list page's `?q=` search box. (FTS5 ranking and a cache scope on the
       instance-home search box are later refinements.)
-- [ ] `CacheClosure(store_hash)` RPC (nodes+edges) + SPA interactive closure
-      graph sharing the RFC-0005 graph model. (The no-JS object page already
-      shows the immediate-reference edge table.)
+- [x] `CacheClosure(store_hash)` RPC (BFS over `refs`, capped) + no-JS
+      transitive-closure page (`/<cache>/-/closure/<hash>`, linked from each
+      object) + `aos-hub cache closure` CLI — the dependency graph in flat form
+      on both shells. (An interactive SPA closure graph sharing the RFC-0005
+      model is a later refinement.)
 - [ ] `ListNarContents(store_hash)` RPC over the `aos-core/src/nar` reader,
       reading interior members via the ranged port (no whole-NAR buffering);
       NAR file-tree browse page with per-file + whole-NAR download streamed

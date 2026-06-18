@@ -855,6 +855,13 @@ enum CacheCommand {
         /// Store-path hash component.
         store_hash: String,
     },
+    /// Print a store path's full transitive closure (the dependency graph).
+    Closure {
+        /// Cache slug.
+        cache: String,
+        /// Store-path hash component (the closure root).
+        store_hash: String,
+    },
     /// Garbage-collect a cache: sweep objects unreachable from its GC roots,
     /// subject to its GC policy (local `--target` only).
     Gc {
@@ -1759,6 +1766,40 @@ async fn main() -> Result<()> {
                         }
                         None => println!("no object {store_hash} in cache '{cache}'"),
                     }
+                }
+                CacheCommand::Closure { cache, store_hash } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let mut seen = std::collections::HashSet::new();
+                    let mut queue = std::collections::VecDeque::new();
+                    queue.push_back(store_hash);
+                    let mut total = 0i64;
+                    let mut count = 0u64;
+                    while let Some(h) = queue.pop_front() {
+                        if count >= 10_000 {
+                            println!("-- (truncated at 10000 paths)");
+                            break;
+                        }
+                        if !seen.insert(h.clone()) {
+                            continue;
+                        }
+                        match db.cache_object(c.id, &h).await? {
+                            Some(o) => {
+                                total += o.file_size;
+                                count += 1;
+                                for r in &o.refs {
+                                    if !seen.contains(r) {
+                                        queue.push_back(r.clone());
+                                    }
+                                }
+                                println!("{}\t{}\t{} bytes", o.store_hash, o.store_name, o.file_size);
+                            }
+                            None => println!("{h}\t(missing)"),
+                        }
+                    }
+                    println!("-- {count} paths, {total} bytes total");
                 }
                 CacheCommand::Gc { cache, dry_run } => {
                     // GC deletes surface files, so it needs the local writable

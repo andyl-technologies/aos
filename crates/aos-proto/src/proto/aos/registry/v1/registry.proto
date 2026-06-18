@@ -689,6 +689,7 @@ service CacheService {
   rpc GetCacheObject(GetCacheObjectRequest) returns (GetCacheObjectResponse);
   rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
   rpc RunCacheGc(RunCacheGcRequest) returns (RunCacheGcResponse);
+  rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
 }
 
 // A managed cache (distinct from `Cache` above, which is a registry's
@@ -953,4 +954,28 @@ message RunCacheGcResponse {
   int64 deleted_objects = 3;
   int64 freed_bytes = 4;
   bool dry_run = 5;
+}
+
+message CacheClosureRequest {
+  string cache_slug = 1;
+  string store_hash = 2;
+}
+
+// One node in a closure: the object plus its direct reference edges.
+message CacheClosureNode {
+  string store_hash = 1;
+  string store_name = 2;
+  int64 file_size = 3;
+  // Direct references (store hashes) — the out-edges.
+  repeated string refs = 4;
+  // Whether this referenced object is actually present in the cache.
+  bool present = 5;
+}
+
+message CacheClosureResponse {
+  // The transitive closure of the requested path (the root first), present
+  // objects only carry size/refs; a missing reference appears with present=false.
+  repeated CacheClosureNode nodes = 1;
+  // Total on-disk size of the present closure (sum of file_size).
+  int64 total_size = 2;
 }

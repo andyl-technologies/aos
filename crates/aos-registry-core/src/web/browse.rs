@@ -891,6 +891,43 @@ pub async fn cache_object(
     Rendered::Html(pages::cache_object(&cache, &object, started, &session))
 }
 
+/// `GET /{slug}/-/closure/{hash}` for a cache: a store path's transitive
+/// closure as a no-JS table (the dependency graph in flat form).
+pub async fn cache_closure(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    hash: &str,
+) -> Rendered {
+    let started = Instant::now();
+    let Some(cache) = load_visible_cache(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    // Reuse the shared closure walk (it re-checks read auth harmlessly).
+    let auth = auth_header(headers);
+    let Ok(resp) = svc
+        .cache_closure(
+            auth.as_deref(),
+            pb::CacheClosureRequest {
+                cache_slug: slug.to_string(),
+                store_hash: hash.to_string(),
+            },
+        )
+        .await
+    else {
+        return Rendered::NotFound;
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::cache_closure(
+        &cache,
+        hash,
+        &resp.nodes,
+        resp.total_size,
+        started,
+        &session,
+    ))
+}
+
 /// `GET /{slug}/-/api/objects` for a public cache: the object list (JSON).
 pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery) -> Rendered {
     // Public-only, like the registry `/-/api/…` reads.

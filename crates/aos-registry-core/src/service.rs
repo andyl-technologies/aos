@@ -425,6 +425,10 @@ pub struct FacadeObject {
 /// caps the request body at this size at the transport layer.
 pub const MAX_UPLOAD_BYTES: usize = 256 * 1024 * 1024;
 
+/// Upper bound on nodes returned by `CacheClosure`, so a pathological closure
+/// cannot produce an unbounded response.
+const MAX_CLOSURE_NODES: usize = 10_000;
+
 /// The outcome of a facade write ([`RpcService::put_machine_path`]) or write-side
 /// probe ([`RpcService::head_machine_path`]), rendered by the transport.
 ///
@@ -2302,6 +2306,68 @@ impl RpcService {
                 Err(RpcError::internal(err))
             }
         }
+    }
+
+    /// `CacheService.CacheClosure` — the transitive closure of a store path.
+    ///
+    /// Breadth-first over `cache_objects.refs` from `store_hash` (root first); a
+    /// reference absent from the cache appears with `present = false`. Bounded at
+    /// [`MAX_CLOSURE_NODES`] to keep the response finite.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn cache_closure(
+        &self,
+        auth: Option<&str>,
+        req: pb::CacheClosureRequest,
+    ) -> Result<pb::CacheClosureResponse, RpcError> {
+        let cache = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_read(auth, &cache).await?;
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+        queue.push_back(req.store_hash.clone());
+        let mut nodes = Vec::new();
+        let mut total_size = 0i64;
+        while let Some(hash) = queue.pop_front() {
+            if nodes.len() >= MAX_CLOSURE_NODES {
+                break;
+            }
+            if !seen.insert(hash.clone()) {
+                continue;
+            }
+            match self
+                .db
+                .cache_object(cache.id, &hash)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                Some(object) => {
+                    total_size += object.file_size;
+                    for r in &object.refs {
+                        if !seen.contains(r) {
+                            queue.push_back(r.clone());
+                        }
+                    }
+                    nodes.push(pb::CacheClosureNode {
+                        store_hash: object.store_hash,
+                        store_name: object.store_name,
+                        file_size: object.file_size,
+                        refs: object.refs,
+                        present: true,
+                    });
+                }
+                None => nodes.push(pb::CacheClosureNode {
+                    store_hash: hash,
+                    store_name: String::new(),
+                    file_size: 0,
+                    refs: Vec::new(),
+                    present: false,
+                }),
+            }
+        }
+        Ok(pb::CacheClosureResponse { nodes, total_size })
     }
 
     /// `ProjectService.CreateProject` — create a project at a materialized path
