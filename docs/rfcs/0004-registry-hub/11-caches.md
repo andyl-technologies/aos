@@ -702,8 +702,14 @@ the current spec. Phases are orderable; A lands first, E last.
       shared `dialect.rs` `exercise()` (run against sqlite always, postgres/mysql
       when their env URLs are set) now covers managed-cache CRUD, registry links,
       object index + search, the GC-run lifecycle, and `cache_metrics`.
-- [ ] Hermetic end-to-end: push → link → advance channel → GC → assert closure
-      survives and reclaimed NARs are gone (the closure-correctness test).
+- [x] Hermetic end-to-end: push → link → advance channel → GC → assert closure
+      survives and reclaimed NARs are gone (the closure-correctness test). The
+      `gc.rs` unit suite covers the sweep logic (rooted-closure survival, expired
+      pin, size-cap LRU, dry-run); `operations.rs::cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end`
+      drives it **end-to-end through the RPC layer with a real surface**: upload
+      two objects via the facade `PUT`, pin one as a root, `RunCacheGc` RPC, then
+      assert the rooted object survives and the unrooted one is reclaimed
+      (`scanned=2, retained=1, deletedObjects=1`).
 - [~] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
       pass over D1+R2 under workerd+miniflare, including a **large-NAR
       streaming** case (ranged GET → `206`, and a streamed upload) that asserts
