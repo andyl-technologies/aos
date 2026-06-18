@@ -1191,6 +1191,45 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE storage_bindings ADD COLUMN public_base_url TEXT;
     ALTER TABLE storage_bindings ADD COLUMN credential_ref TEXT;
     ",
+    // v24: cache frontends (RFC-0004 "11-caches", frontend slice). A frontend
+    // may front a managed *cache* instead of a registry. `registry_id` was
+    // `NOT NULL`; SQLite cannot relax a column constraint in place, so this is
+    // the documented table rebuild: a new `frontends` with `registry_id` and a
+    // new `cache_id` both nullable and a CHECK enforcing **exactly one** target,
+    // copy the rows (all existing rows are registry frontends → `cache_id` NULL),
+    // drop, rename, re-create the indexes. Row ids are preserved so any external
+    // reference stays valid. NOTE: dropping the old `frontends` cascades through
+    // `frontend_probes`' `ON DELETE CASCADE`, clearing probe rows — these are
+    // *rebuildable* observations the probe job re-populates on its next tick, so
+    // no system-of-record data is lost.
+    "
+    CREATE TABLE frontends_new (
+        id               INTEGER PRIMARY KEY,
+        registry_id      INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id         INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        domain           TEXT NOT NULL,
+        base_path        TEXT NOT NULL DEFAULT '',
+        mode             TEXT NOT NULL,
+        serves_git       INTEGER NOT NULL DEFAULT 1,
+        serves_cache     INTEGER NOT NULL DEFAULT 1,
+        serves_web       INTEGER NOT NULL DEFAULT 1,
+        consumer_priority INTEGER NOT NULL DEFAULT 100,
+        advertised       INTEGER NOT NULL DEFAULT 1,
+        created_at       INTEGER NOT NULL,
+        CHECK ((registry_id IS NULL) <> (cache_id IS NULL)),
+        UNIQUE (domain, base_path)
+    );
+    INSERT INTO frontends_new
+        (id, registry_id, cache_id, domain, base_path, mode, serves_git,
+         serves_cache, serves_web, consumer_priority, advertised, created_at)
+        SELECT id, registry_id, NULL, domain, base_path, mode, serves_git,
+               serves_cache, serves_web, consumer_priority, advertised, created_at
+        FROM frontends;
+    DROP TABLE frontends;
+    ALTER TABLE frontends_new RENAME TO frontends;
+    CREATE INDEX frontends_registry_idx ON frontends (registry_id);
+    CREATE INDEX frontends_cache_idx ON frontends (cache_id);
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1914,8 +1953,12 @@ pub struct MirrorSource {
 pub struct FrontendRecord {
     /// Database id.
     pub id: i64,
-    /// The registry this frontend serves.
-    pub registry_id: i64,
+    /// The registry this frontend serves, or `None` for a cache frontend.
+    /// Exactly one of `registry_id`/`cache_id` is set.
+    pub registry_id: Option<i64>,
+    /// The managed cache this frontend serves, or `None` for a registry
+    /// frontend. Exactly one of `registry_id`/`cache_id` is set.
+    pub cache_id: Option<i64>,
     /// The domain the frontend is reachable at (e.g. `cdn.acme.com`).
     pub domain: String,
     /// A path prefix under the domain the registry surface lives at (`""` for
@@ -3356,11 +3399,93 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, registry_id, domain, base_path, mode, serves_git, serves_cache,
-                    serves_web, consumer_priority, advertised, created_at
+                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                    serves_cache, serves_web, consumer_priority, advertised, created_at
              FROM frontends WHERE registry_id = ?1
              ORDER BY consumer_priority DESC, domain",
                 &vals![registry_id],
+            )
+            .await?;
+        rows.iter().map(row_to_frontend).collect()
+    }
+
+    /// Create a frontend that fronts a managed *cache* (rather than a registry).
+    ///
+    /// The cache-serving sibling of [`Database::create_frontend`]: the new row
+    /// carries `cache_id` and a `NULL` `registry_id` (the table's `CHECK`
+    /// enforces exactly one). A **Direct** frontend over a cache whose storage
+    /// binding is `private` is rejected — a private binding must be proxied or
+    /// presigned, never handed out as a direct origin URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unrecognized `mode`, a Direct frontend over a
+    /// private binding, a `(domain, base_path)` collision, an unsafe `domain`,
+    /// or on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_cache_frontend(
+        &self,
+        cache_id: i64,
+        domain: &str,
+        base_path: &str,
+        mode: &str,
+        serves_cache: bool,
+        consumer_priority: i64,
+        advertised: bool,
+    ) -> Result<i64> {
+        if !matches!(mode, "direct" | "proxied") {
+            bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
+        }
+        if mode == "direct" {
+            if let Some(cache) = self.cache_by_id(cache_id).await? {
+                if let Some(binding) = self.storage_binding(cache.storage_binding_id).await? {
+                    if binding.access == "private" {
+                        bail!(
+                            "cannot create a Direct frontend over private storage binding \
+                             '{}': private bindings must be served proxied or presigned",
+                            binding.name
+                        );
+                    }
+                }
+            }
+        }
+        crate::url_guard::is_safe_remote_url(&frontend_probe_url(domain))
+            .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
+        self.backend
+            .execute_insert(
+                "INSERT INTO frontends
+                 (cache_id, domain, base_path, mode, serves_git, serves_cache,
+                  serves_web, consumer_priority, advertised, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, ?5, 0, ?6, ?7, ?8)",
+                &vals![
+                    cache_id,
+                    domain,
+                    base_path,
+                    mode,
+                    serves_cache,
+                    consumer_priority,
+                    advertised,
+                    unix_now()
+                ],
+            )
+            .await
+    }
+
+    /// List a managed cache's frontends, ordered by descending consumer
+    /// priority then domain.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_frontends(&self, cache_id: i64) -> Result<Vec<FrontendRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                    serves_cache, serves_web, consumer_priority, advertised, created_at
+             FROM frontends WHERE cache_id = ?1
+             ORDER BY consumer_priority DESC, domain",
+                &vals![cache_id],
             )
             .await?;
         rows.iter().map(row_to_frontend).collect()
@@ -9691,15 +9816,16 @@ fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
     Ok(FrontendRecord {
         id: row.get(0)?,
         registry_id: row.get(1)?,
-        domain: row.get(2)?,
-        base_path: row.get(3)?,
-        mode: row.get(4)?,
-        serves_git: row.get(5)?,
-        serves_cache: row.get(6)?,
-        serves_web: row.get(7)?,
-        consumer_priority: row.get(8)?,
-        advertised: row.get(9)?,
-        created_at: row.get(10)?,
+        cache_id: row.get(2)?,
+        domain: row.get(3)?,
+        base_path: row.get(4)?,
+        mode: row.get(5)?,
+        serves_git: row.get(6)?,
+        serves_cache: row.get(7)?,
+        serves_web: row.get(8)?,
+        consumer_priority: row.get(9)?,
+        advertised: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -11625,6 +11751,47 @@ mod tests {
             .create_frontend(reg, "proxied.example", "", "proxied", true, true, true, 100, true)
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn cache_frontends_coexist_with_registry_frontends() {
+        let (db, org, binding) = cache_fixture().await;
+        // A registry and a cache, each with its own frontend, share the table.
+        let reg = db
+            .create_managed_registry(org, "", "cdn", "public", Some(binding), "cdn", &[], false)
+            .await
+            .unwrap();
+        let cache = db
+            .create_cache(Some(org), "acme-cache", "Cache", binding, "c", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        db.create_frontend(reg, "reg.example", "", "proxied", true, true, true, 100, true)
+            .await
+            .unwrap();
+        db.create_cache_frontend(cache, "cache.example", "", "proxied", true, 40, true)
+            .await
+            .unwrap();
+
+        // Each lists only its own frontends (the rebuilt table keys both targets).
+        let reg_fes = db.list_frontends(reg).await.unwrap();
+        assert_eq!(reg_fes.len(), 1);
+        assert_eq!(reg_fes[0].registry_id, Some(reg));
+        assert_eq!(reg_fes[0].cache_id, None);
+        let cache_fes = db.list_cache_frontends(cache).await.unwrap();
+        assert_eq!(cache_fes.len(), 1);
+        assert_eq!(cache_fes[0].cache_id, Some(cache));
+        assert_eq!(cache_fes[0].registry_id, None);
+        // The registry-scoped list never leaks the cache frontend, and vice versa.
+        assert!(db.list_cache_frontends(cache).await.unwrap().iter().all(|f| f.registry_id.is_none()));
+
+        // A Direct cache frontend over a private binding is rejected.
+        db.set_storage_binding_access(binding, "private", None, Some("c"))
+            .await
+            .unwrap();
+        assert!(db
+            .create_cache_frontend(cache, "direct.example", "", "direct", true, 40, true)
+            .await
+            .is_err());
     }
 
     /// Set up an org + binding and return `(db, org_id, binding_id)`.
