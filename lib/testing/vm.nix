@@ -86,6 +86,10 @@
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
     varSizeMiB ? 256,
+    # Most VM tests run without an SELinux policy and need the test
+    # /var/etc lower to keep SELinux disabled. SELinux-specific tests
+    # opt out so the system-generated /etc/selinux/config is visible.
+    seedSELinuxDisabledConfig ? true,
   }: let
     systemPackages = system.config.environment.systemPackages;
 
@@ -240,16 +244,18 @@
       mkdir -p var/etc/systemd/system/multi-user.target.wants
       mkdir -p var/etc/systemd/system/aos-test.target.wants
       mkdir -p var/etc/ssh
-      mkdir -p var/etc/selinux
+      ${lib.optionalString seedSELinuxDisabledConfig ''
+        mkdir -p var/etc/selinux
 
-      # SELinux off — the test rootfs has no policy files; enforcing
-      # mode would freeze systemd. The toplevel may write
-      # /etc/selinux/config from modules/security/selinux.nix; the
-      # var entry shadows it via the /var/etc overlay lower.
-      cat > var/etc/selinux/config << 'SELINUXCFG'
-      SELINUX=disabled
-      SELINUXTYPE=targeted
-      SELINUXCFG
+        # SELinux off — most test rootfs images have no policy files;
+        # enforcing mode would freeze systemd. The toplevel may write
+        # /etc/selinux/config from modules/security/selinux.nix; this
+        # var entry shadows it via the /var/etc overlay lower.
+        cat > var/etc/selinux/config << 'SELINUXCFG'
+        SELINUX=disabled
+        SELINUXTYPE=targeted
+        SELINUXCFG
+      ''}
 
       # Empty fstab — systemd-fstab-generator synthesises
       # sysroot.mount from `root=` on the cmdline; mount-var.service
@@ -596,6 +602,7 @@
     testScript ? null,
     timeout ? 120,
     memory ? null,
+    seedSELinuxDisabledConfig ? true,
   }:
     assert (instanceMetadata != null -> system != null)
     || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
@@ -614,7 +621,7 @@
         }
       else if system != null
       then let
-        systemDisk = mkTestDisk {inherit system;};
+        systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
         systemKernel = system.config.system.build.kernel;
         systemInitrd = system.config.system.build.initrd;
 

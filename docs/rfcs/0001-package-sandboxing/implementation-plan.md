@@ -589,8 +589,17 @@ Full spec: [`enforcement.md`](enforcement.md).
       `semodule` helper, target membership, workload `After=`/`Requires=`
       ordering, and absence of extra loader exec hooks before attaching units;
       and builds the loader unit under `ConditionSecurity=selinux`. The
-      enforcing VM coverage remains open until the base SELinux policy is
-      enabled in booted systems.
+      base SELinux policy is now enabled in booted systems:
+      `modules/security/selinux.nix` installs the AOS-built refpolicy store,
+      seeds the matching `/etc/selinux/refpolicy` contexts and libsemanage
+      config, includes the `.pp` HLL loader helper, boots permissive until
+      policy load, rebuilds the linked policy if volatile `/etc` policy files
+      are missing, and then applies the requested mode. `checks.selinux-base`
+      opts out of the generic disabled-SELinux VM seed, boots an enforcing
+      SELinux system, verifies the base policy is loaded, reboots through the
+      marker/cache path, and installs a smoke SELinux module. Remaining gap:
+      package workloads still need to enter the generated package domain and
+      prove a default-denied operation is denied.
 - [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).

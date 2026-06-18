@@ -165,6 +165,9 @@
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs mkSystem testing;
   };
+  selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
+    inherit pkgs mkSystem testing;
+  };
 
   # Stdenv cross-cutting integration check
   stdenvChecks = {
@@ -299,6 +302,7 @@ in {
     package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
     package-test-http-server = packageTestHttpServerCheck;
+    selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
@@ -309,6 +313,7 @@ in {
         package-expose-lifecycle = packageExposeLifecycleCheck;
         package-preset = packagePresetCheck;
         package-test-http-server = packageTestHttpServerCheck;
+        selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests;
