@@ -33195,6 +33195,26 @@ mod tests {
     }
 
     #[test]
+    fn bare_inherit_copies_surrounding_lexical_values() {
+        assert_eq!(
+            eval_json_bytes(r#"let x = 1; y = "two"; in { inherit x y; }"#),
+            br#"{"x":1,"y":"two"}"#.to_vec()
+        );
+        assert_eq!(
+            eval("let x = 1; copied = { inherit x; }; in let x = 2; in copied.x").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval("let x = 1 / 0; in ({ inherit x; } ? x)").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let x = 1; in ({ inherit x; } == { x = x; })").as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
     fn evaluates_static_recursive_attrsets_with_lazy_self_scope() {
         assert_eq!(eval("(rec { a = 1; b = a + 2; }).b").as_int(), Ok(3));
         assert_eq!(eval("(rec { a = b; b = 1; }).a").as_int(), Ok(1));
