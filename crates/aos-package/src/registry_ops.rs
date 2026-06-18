@@ -93,6 +93,11 @@ use crate::{
     SbCertsCommand, StoreCommand, TrustCommand, UploadConfigField,
 };
 
+#[cfg(not(test))]
+const CHECKMODULE_ENV: &str = "AOS_CHECKMODULE";
+#[cfg(not(test))]
+const SEMODULE_PACKAGE_ENV: &str = "AOS_SEMODULE_PACKAGE";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -124,6 +129,12 @@ struct PublishMacProfileManifest {
     default_deny: bool,
     #[serde(rename = "profilePath")]
     profile_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct CompiledSelinuxProfile {
+    module: Vec<u8>,
+    profile: Vec<u8>,
 }
 
 /// Resolve the registry storage directory for a given registry name.
@@ -1864,7 +1875,7 @@ fn validate_publish_mac_profile_manifest(
             permissions.computed_confinement().class != ConfinementClass::Unconfined
         });
     let expected_profile_path =
-        expected_default_deny.then(|| format!("mac/apparmor/{expected_label}.profile"));
+        expected_default_deny.then(|| expected_publish_selinux_profile_path(&expected_label));
 
     if mac.version != 1 {
         bail!(
@@ -1880,7 +1891,7 @@ fn validate_publish_mac_profile_manifest(
             mac.package
         );
     }
-    if mac.backend != "apparmor" {
+    if mac.backend != "selinux" {
         bail!(
             "MAC profile manifest backend mismatch for package '{}'",
             package_name
@@ -1933,14 +1944,134 @@ fn validate_publish_mac_profile_artifacts(
     let Some(profile_path) = &mac.profile_path else {
         return Ok(());
     };
-    let profile_text =
-        read_artifact_regular_file_no_symlink(artifact_root, Path::new(profile_path))
+    let profile_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_root, Path::new(profile_path))
             .with_context(|| format!("reading MAC profile file {}", profile_path))?;
-    let expected_profile = expected_publish_apparmor_profile(&mac.security_label);
-    if profile_text.trim_end() != expected_profile.trim_end() {
+    if profile_bytes.is_empty() {
         bail!(
-            "MAC profile file for package '{}' does not match the expected default-deny scaffold",
+            "MAC profile file for package '{}' is empty: {}",
+            package_name,
+            profile_path
+        );
+    }
+    let module_name = publish_selinux_identifier_for_label(&mac.security_label);
+    let module_path = format!("mac/selinux/{module_name}.mod");
+    let module_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_root, Path::new(&module_path))
+            .with_context(|| format!("reading MAC module file {}", module_path))?;
+    if module_bytes.is_empty() {
+        bail!(
+            "MAC module file for package '{}' is empty: {}",
+            package_name,
+            module_path
+        );
+    }
+    let source_path = format!("mac/selinux/{module_name}.te");
+    let source_text = read_artifact_regular_file_no_symlink(artifact_root, Path::new(&source_path))
+        .with_context(|| format!("reading MAC source file {}", source_path))?;
+    let expected_profile = expected_publish_selinux_profile(&mac.security_label);
+    if source_text.trim_end() != expected_profile.trim_end() {
+        bail!(
+            "MAC source file for package '{}' does not match the expected default-deny scaffold",
             package_name
+        );
+    }
+    validate_publish_compiled_selinux_profile(
+        package_name,
+        &source_text,
+        &module_path,
+        &module_bytes,
+        profile_path,
+        &profile_bytes,
+    )?;
+    Ok(())
+}
+
+fn validate_publish_compiled_selinux_profile(
+    package_name: &str,
+    source_text: &str,
+    module_path: &str,
+    module_bytes: &[u8],
+    profile_path: &str,
+    profile_bytes: &[u8],
+) -> Result<()> {
+    let expected = compile_publish_selinux_profile(source_text)
+        .with_context(|| format!("rebuilding SELinux profile for package '{package_name}'"))?;
+    if module_bytes != expected.module {
+        bail!(
+            "MAC module file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            module_path
+        );
+    }
+    if profile_bytes != expected.profile {
+        bail!(
+            "MAC profile file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            profile_path
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn compile_publish_selinux_profile(source_text: &str) -> Result<CompiledSelinuxProfile> {
+    Ok(CompiledSelinuxProfile {
+        module: format!("compiled-module\n{source_text}").into_bytes(),
+        profile: format!("compiled-policy\n{source_text}").into_bytes(),
+    })
+}
+
+#[cfg(not(test))]
+fn compile_publish_selinux_profile(source_text: &str) -> Result<CompiledSelinuxProfile> {
+    let checkmodule = trusted_publish_checkmodule_path()?;
+    let semodule_package = trusted_publish_semodule_package_path()?;
+    let tmp = tempfile::TempDir::new().context("creating SELinux policy validation tempdir")?;
+    let source_path = tmp.path().join("profile.te");
+    let module_path = tmp.path().join("profile.mod");
+    let profile_path = tmp.path().join("profile.pp");
+    fs::write(&source_path, source_text)
+        .with_context(|| format!("writing {}", source_path.display()))?;
+    run_selinux_policy_tool(
+        &checkmodule,
+        &[
+            std::ffi::OsStr::new("-M"),
+            std::ffi::OsStr::new("-m"),
+            std::ffi::OsStr::new("-o"),
+            module_path.as_os_str(),
+            source_path.as_os_str(),
+        ],
+    )?;
+    run_selinux_policy_tool(
+        &semodule_package,
+        &[
+            std::ffi::OsStr::new("-o"),
+            profile_path.as_os_str(),
+            std::ffi::OsStr::new("-m"),
+            module_path.as_os_str(),
+        ],
+    )?;
+    Ok(CompiledSelinuxProfile {
+        module: fs::read(&module_path)
+            .with_context(|| format!("reading {}", module_path.display()))?,
+        profile: fs::read(&profile_path)
+            .with_context(|| format!("reading {}", profile_path.display()))?,
+    })
+}
+
+#[cfg(not(test))]
+fn run_selinux_policy_tool(program: &str, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed with status {}: {}{}",
+            program,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())
@@ -1952,6 +2083,16 @@ fn read_publish_mac_profile_file(path: &Path) -> Result<PublishMacProfileManifes
 }
 
 fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<String> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn read_artifact_regular_bytes_no_symlink(root: &Path, relative_path: &Path) -> Result<Vec<u8>> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<PathBuf> {
     let mut components = relative_path.components().peekable();
     if components.peek().is_none() {
         bail!("artifact-relative path is empty");
@@ -1983,7 +2124,7 @@ fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> R
         }
     }
 
-    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+    Ok(current)
 }
 
 fn read_regular_file_no_symlink(path: &Path) -> Result<String> {
@@ -1995,9 +2136,72 @@ fn read_regular_file_no_symlink(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
 }
 
-fn expected_publish_apparmor_profile(label: &str) -> String {
+#[cfg(not(test))]
+fn trusted_publish_checkmodule_path() -> Result<String> {
+    if let Ok(path) = std::env::var(CHECKMODULE_ENV) {
+        if path.is_empty() {
+            bail!("{CHECKMODULE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/checkmodule") {
+            bail!("{CHECKMODULE_ENV} must point to an absolute checkmodule binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{CHECKMODULE_ENV} is not configured for MAC policy validation");
+}
+
+#[cfg(not(test))]
+fn trusted_publish_semodule_package_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SEMODULE_PACKAGE_ENV) {
+        if path.is_empty() {
+            bail!("{SEMODULE_PACKAGE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/semodule_package") {
+            bail!("{SEMODULE_PACKAGE_ENV} must point to an absolute semodule_package binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{SEMODULE_PACKAGE_ENV} is not configured for MAC policy validation");
+}
+
+fn expected_publish_selinux_profile_path(label: &str) -> String {
     format!(
-        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package MAC profile scaffold.\n#include <tunables/global>\n\nprofile {label} flags=(attach_disconnected,mediate_deleted) {{\n  # Default deny until the backend-specific allow-rule renderer lands.\n  deny /** rwklx,\n  deny network,\n  deny capability,\n}}\n"
+        "mac/selinux/{}.pp",
+        publish_selinux_identifier_for_label(label)
+    )
+}
+
+fn publish_selinux_identifier_for_label(label: &str) -> String {
+    let mut normalized = String::with_capacity(label.len());
+    for byte in label.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            normalized.push(byte as char);
+        } else {
+            normalized.push_str(&format!("_x{byte:02x}"));
+        }
+    }
+    if normalized
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        normalized
+    } else {
+        format!("aos_pkg_{normalized}")
+    }
+}
+
+fn publish_selinux_type_for_label(label: &str) -> String {
+    format!("{}_t", publish_selinux_identifier_for_label(label))
+}
+
+fn expected_publish_selinux_profile(label: &str) -> String {
+    let module_name = publish_selinux_identifier_for_label(label);
+    let type_name = publish_selinux_type_for_label(label);
+    format!(
+        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package SELinux default-deny module.\nmodule {module_name} 1.0;\n\nrequire {{\n  role system_r;\n}}\n\ntype {type_name};\nrole system_r types {type_name};\n"
     )
 }
 
@@ -8058,6 +8262,7 @@ async fn publish_release_store_path(
         publish_opts.source_drv.as_deref(),
         &publish_opts.image_paths,
         &publish_opts.image_formats,
+        None,
         publish_opts.bless,
         false,
         false,
@@ -9145,6 +9350,25 @@ mod tests {
             store_publish: None,
             cache_max_age_days: 30,
         }
+    }
+
+    fn write_publish_selinux_artifacts(root: &Path, label: &str) {
+        let module_name = publish_selinux_identifier_for_label(label);
+        let source_text = expected_publish_selinux_profile(label);
+        let compiled = compile_publish_selinux_profile(&source_text).unwrap();
+        let profile_path = root.join(format!("mac/selinux/{module_name}.pp"));
+        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        fs::write(&profile_path, compiled.profile).unwrap();
+        fs::write(
+            root.join(format!("mac/selinux/{module_name}.mod")),
+            compiled.module,
+        )
+        .unwrap();
+        fs::write(
+            root.join(format!("mac/selinux/{module_name}.te")),
+            source_text,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -10326,10 +10550,10 @@ mod tests {
         let mac = serde_json::json!({
             "version": 1,
             "package": "webapp",
-            "backend": "apparmor",
+            "backend": "selinux",
             "securityLabel": "aos-pkg-webapp",
             "defaultDeny": true,
-            "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
         });
         let manifest = serde_json::json!({
             "expose": {
@@ -10363,22 +10587,83 @@ mod tests {
             serde_json::to_string(&manifest["mac"]).unwrap(),
         )
         .unwrap();
-        let profile_path = tmp.path().join("mac/apparmor/aos-pkg-webapp.profile");
-        fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
-        fs::write(
-            &profile_path,
-            expected_publish_apparmor_profile("aos-pkg-webapp"),
-        )
-        .unwrap();
+        write_publish_selinux_artifacts(tmp.path(), "aos-pkg-webapp");
 
         let parsed = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap();
         let mac = parsed.mac.as_ref().unwrap();
 
-        assert_eq!(mac.backend, "apparmor");
+        assert_eq!(mac.backend, "selinux");
         assert_eq!(mac.security_label, "aos-pkg-webapp");
         assert_eq!(
             mac.profile_path.as_deref(),
-            Some("mac/apparmor/aos-pkg-webapp.profile")
+            Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp")
+        );
+    }
+
+    #[test]
+    fn publish_selinux_identifiers_escape_label_punctuation_without_collisions() {
+        let labels = ["a.b", "a-b", "a_b", "a+b", "a=b"];
+        let identifiers = labels
+            .iter()
+            .map(|label| publish_selinux_identifier_for_label(label))
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(identifiers.len(), labels.len());
+        assert_eq!(
+            publish_selinux_identifier_for_label("aos-pkg-webapp"),
+            "aos_x2dpkg_x2dwebapp"
+        );
+        assert_eq!(
+            publish_selinux_identifier_for_label("1webapp"),
+            "aos_pkg_1webapp"
+        );
+    }
+
+    #[test]
+    fn read_publish_expose_manifest_rejects_mac_profile_payload_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let mac = serde_json::json!({
+            "version": 1,
+            "package": "webapp",
+            "backend": "selinux",
+            "securityLabel": "aos-pkg-webapp",
+            "defaultDeny": true,
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
+        });
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-webapp.target",
+                "units": ["webapp.service"],
+            },
+            "mac": mac,
+            "permissions": {
+                "security-label": "aos-pkg-webapp",
+                "confinement": {
+                    "class": "sandboxed",
+                    "label": "sandboxed",
+                    "holes": [],
+                },
+            },
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+        fs::write(
+            tmp.path().join("mac-profile.json"),
+            serde_json::to_string(&manifest["mac"]).unwrap(),
+        )
+        .unwrap();
+        write_publish_selinux_artifacts(tmp.path(), "aos-pkg-webapp");
+        fs::write(
+            tmp.path().join("mac/selinux/aos_x2dpkg_x2dwebapp.pp"),
+            b"permissive compiled policy",
+        )
+        .unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("does not match the validated SELinux source"),
+            "{err:?}"
         );
     }
 
@@ -10394,10 +10679,10 @@ mod tests {
             "mac": {
                 "version": 1,
                 "package": "webapp",
-                "backend": "apparmor",
+                "backend": "selinux",
                 "securityLabel": "aos-pkg-webapp",
                 "defaultDeny": true,
-                "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+                "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
             },
             "permissions": {
                 "security-label": "aos-pkg-webapp",
@@ -10425,10 +10710,10 @@ mod tests {
         let mac = serde_json::json!({
             "version": 1,
             "package": "webapp",
-            "backend": "apparmor",
+            "backend": "selinux",
             "securityLabel": "aos-pkg-webapp",
             "defaultDeny": true,
-            "profilePath": "mac/apparmor/aos-pkg-webapp.profile",
+            "profilePath": "mac/selinux/aos_x2dpkg_x2dwebapp.pp",
         });
         let manifest = serde_json::json!({
             "expose": {
@@ -10452,13 +10737,9 @@ mod tests {
         )
         .unwrap();
         let external_mac = tmp.path().join("external-mac");
-        let external_profile = external_mac.join("apparmor/aos-pkg-webapp.profile");
+        let external_profile = external_mac.join("selinux/aos_x2dpkg_x2dwebapp.pp");
         fs::create_dir_all(external_profile.parent().unwrap()).unwrap();
-        fs::write(
-            &external_profile,
-            expected_publish_apparmor_profile("aos-pkg-webapp"),
-        )
-        .unwrap();
+        fs::write(&external_profile, b"compiled-policy").unwrap();
         std::os::unix::fs::symlink(&external_mac, tmp.path().join("mac")).unwrap();
 
         let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
@@ -10499,6 +10780,7 @@ mod tests {
                 units: vec![
                     "webapp.service".into(),
                     "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-mac.service".into(),
                     "aos-pkg-webapp-ebpf.service".into(),
                 ],
                 images: Vec::new(),
@@ -10532,10 +10814,10 @@ mod tests {
             mac: Some(PublishMacProfileManifest {
                 version: 1,
                 package: "webapp".into(),
-                backend: "apparmor".into(),
+                backend: "selinux".into(),
                 security_label: "aos-pkg-webapp".into(),
                 default_deny: true,
-                profile_path: Some("mac/apparmor/aos-pkg-webapp.profile".into()),
+                profile_path: Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp".into()),
             }),
             _kernel: None,
             _firewall: None,

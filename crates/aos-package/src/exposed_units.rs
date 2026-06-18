@@ -34,6 +34,11 @@ const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
 const EBPF_NET_POLICY_ENV: &str = "AOS_EBPF_NET_POLICY";
 const EBPF_NET_POLICY_OBJECT_ENV: &str = "AOS_EBPF_NET_POLICY_OBJECT";
+const SEMODULE_ENV: &str = "AOS_SEMODULE";
+#[cfg(not(test))]
+const CHECKMODULE_ENV: &str = "AOS_CHECKMODULE";
+#[cfg(not(test))]
+const SEMODULE_PACKAGE_ENV: &str = "AOS_SEMODULE_PACKAGE";
 const LANDLOCK_EXEC_KEYS: &[&str] = &[
     "ExecStart",
     "ExecStartPre",
@@ -42,6 +47,14 @@ const LANDLOCK_EXEC_KEYS: &[&str] = &[
     "ExecStop",
     "ExecStopPost",
     "ExecCondition",
+];
+const MAC_LOADER_FORBIDDEN_EXEC_KEYS: &[&str] = &[
+    "ExecCondition",
+    "ExecStartPre",
+    "ExecStartPost",
+    "ExecReload",
+    "ExecStop",
+    "ExecStopPost",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +287,7 @@ fn exposed_packages_from_expose_dir(
             &units,
             &apm.permissions,
         )?;
-        validate_mac_profile_artifact(
+        let mac_profile = validate_mac_profile_artifact(
             &apm.name,
             Path::new(&artifact.store_path),
             &apm.permissions,
@@ -308,6 +321,15 @@ fn exposed_packages_from_expose_dir(
             Path::new(&artifact.store_path),
             &artifact_root,
             &units,
+            &apm.permissions,
+        )?;
+        validate_mac_policy_service(
+            &apm.name,
+            &expose.target,
+            Path::new(&artifact.store_path),
+            &artifact_root,
+            &units,
+            mac_profile.as_ref(),
             &apm.permissions,
         )?;
 
@@ -390,7 +412,7 @@ struct NetworkPolicyEbpf {
     tcp: NetworkPolicyTcp,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MacProfileArtifact {
     version: u32,
@@ -402,6 +424,12 @@ struct MacProfileArtifact {
     default_deny: bool,
     #[serde(rename = "profilePath")]
     profile_path: Option<String>,
+}
+
+#[derive(Debug)]
+struct CompiledSelinuxProfile {
+    module: Vec<u8>,
+    profile: Vec<u8>,
 }
 
 fn validate_network_policy_artifact(
@@ -533,7 +561,7 @@ fn validate_mac_profile_artifact(
     package_name: &str,
     artifact_store_path: &Path,
     permissions: &PermissionsMeta,
-) -> Result<()> {
+) -> Result<Option<MacProfileArtifact>> {
     let path = artifact_store_path.join("mac-profile.json");
     match std::fs::symlink_metadata(&path) {
         Ok(metadata) => {
@@ -546,7 +574,7 @@ fn validate_mac_profile_artifact(
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(());
+            return Ok(None);
         }
         Err(err) => return Err(err).with_context(|| format!("checking {}", path.display())),
     }
@@ -567,7 +595,7 @@ fn validate_mac_profile_artifact(
         .class
         != ConfinementClass::Unconfined;
     let expected_profile_path =
-        expected_default_deny.then(|| format!("mac/apparmor/{expected_label}.profile"));
+        expected_default_deny.then(|| expected_selinux_profile_path(expected_label));
 
     if profile.version != 1 {
         bail!(
@@ -583,7 +611,7 @@ fn validate_mac_profile_artifact(
             profile.package
         );
     }
-    if profile.backend != "apparmor" {
+    if profile.backend != "selinux" {
         bail!(
             "MAC profile artifact backend mismatch for package '{}'",
             package_name
@@ -605,27 +633,168 @@ fn validate_mac_profile_artifact(
     }
 
     let Some(profile_path) = expected_profile_path else {
-        return Ok(());
+        return Ok(Some(profile));
     };
-    let profile_text =
-        read_artifact_regular_file_no_symlink(artifact_store_path, Path::new(&profile_path))
+    let module_name = selinux_identifier_for_label(expected_label);
+    let source_path = format!("mac/selinux/{module_name}.te");
+    let module_path = format!("mac/selinux/{module_name}.mod");
+    let profile_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_store_path, Path::new(&profile_path))
             .with_context(|| {
                 format!(
                     "MAC profile file for package '{}' is missing required {}",
                     package_name, profile_path
                 )
             })?;
-    let expected_profile = expected_apparmor_profile(expected_label);
-    if profile_text.trim_end() != expected_profile.trim_end() {
+    if profile_bytes.is_empty() {
         bail!(
-            "MAC profile file for package '{}' does not match the expected default-deny scaffold",
+            "MAC profile file for package '{}' is empty: {}",
+            package_name,
+            profile_path
+        );
+    }
+    let module_bytes =
+        read_artifact_regular_bytes_no_symlink(artifact_store_path, Path::new(&module_path))
+            .with_context(|| {
+                format!(
+                    "MAC module file for package '{}' is missing required {}",
+                    package_name, module_path
+                )
+            })?;
+    if module_bytes.is_empty() {
+        bail!(
+            "MAC module file for package '{}' is empty: {}",
+            package_name,
+            module_path
+        );
+    }
+    let source_text =
+        read_artifact_regular_file_no_symlink(artifact_store_path, Path::new(&source_path))
+            .with_context(|| {
+                format!(
+                    "MAC source file for package '{}' is missing required {}",
+                    package_name, source_path
+                )
+            })?;
+    let expected_profile = expected_selinux_profile(expected_label);
+    if source_text.trim_end() != expected_profile.trim_end() {
+        bail!(
+            "MAC source file for package '{}' does not match the expected default-deny scaffold",
             package_name
+        );
+    }
+    validate_compiled_selinux_profile(
+        package_name,
+        &source_text,
+        &module_path,
+        &module_bytes,
+        &profile_path,
+        &profile_bytes,
+    )?;
+    Ok(Some(profile))
+}
+
+fn validate_compiled_selinux_profile(
+    package_name: &str,
+    source_text: &str,
+    module_path: &str,
+    module_bytes: &[u8],
+    profile_path: &str,
+    profile_bytes: &[u8],
+) -> Result<()> {
+    let expected = compile_selinux_profile(source_text)
+        .with_context(|| format!("rebuilding SELinux profile for package '{package_name}'"))?;
+    if module_bytes != expected.module {
+        bail!(
+            "MAC module file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            module_path
+        );
+    }
+    if profile_bytes != expected.profile {
+        bail!(
+            "MAC profile file for package '{}' does not match the validated SELinux source: {}",
+            package_name,
+            profile_path
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn compile_selinux_profile(source_text: &str) -> Result<CompiledSelinuxProfile> {
+    Ok(CompiledSelinuxProfile {
+        module: format!("compiled-module\n{source_text}").into_bytes(),
+        profile: format!("compiled-policy\n{source_text}").into_bytes(),
+    })
+}
+
+#[cfg(not(test))]
+fn compile_selinux_profile(source_text: &str) -> Result<CompiledSelinuxProfile> {
+    let checkmodule = trusted_checkmodule_path()?;
+    let semodule_package = trusted_semodule_package_path()?;
+    let tmp = TempDir::new().context("creating SELinux policy validation tempdir")?;
+    let source_path = tmp.path().join("profile.te");
+    let module_path = tmp.path().join("profile.mod");
+    let profile_path = tmp.path().join("profile.pp");
+    std::fs::write(&source_path, source_text)
+        .with_context(|| format!("writing {}", source_path.display()))?;
+    run_selinux_policy_tool(
+        &checkmodule,
+        &[
+            OsStr::new("-M"),
+            OsStr::new("-m"),
+            OsStr::new("-o"),
+            module_path.as_os_str(),
+            source_path.as_os_str(),
+        ],
+    )?;
+    run_selinux_policy_tool(
+        &semodule_package,
+        &[
+            OsStr::new("-o"),
+            profile_path.as_os_str(),
+            OsStr::new("-m"),
+            module_path.as_os_str(),
+        ],
+    )?;
+    Ok(CompiledSelinuxProfile {
+        module: std::fs::read(&module_path)
+            .with_context(|| format!("reading {}", module_path.display()))?,
+        profile: std::fs::read(&profile_path)
+            .with_context(|| format!("reading {}", profile_path.display()))?,
+    })
+}
+
+#[cfg(not(test))]
+fn run_selinux_policy_tool(program: &str, args: &[&OsStr]) -> Result<()> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed with status {}: {}{}",
+            program,
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     Ok(())
 }
 
 fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<String> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn read_artifact_regular_bytes_no_symlink(root: &Path, relative_path: &Path) -> Result<Vec<u8>> {
+    let current = artifact_regular_file_no_symlink(root, relative_path)?;
+    std::fs::read(&current).with_context(|| format!("reading {}", current.display()))
+}
+
+fn artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> Result<PathBuf> {
     let mut components = relative_path.components().peekable();
     if components.peek().is_none() {
         bail!("artifact-relative path is empty");
@@ -657,12 +826,42 @@ fn read_artifact_regular_file_no_symlink(root: &Path, relative_path: &Path) -> R
         }
     }
 
-    std::fs::read_to_string(&current).with_context(|| format!("reading {}", current.display()))
+    Ok(current)
 }
 
-fn expected_apparmor_profile(label: &str) -> String {
+fn expected_selinux_profile_path(label: &str) -> String {
+    format!("mac/selinux/{}.pp", selinux_identifier_for_label(label))
+}
+
+fn selinux_identifier_for_label(label: &str) -> String {
+    let mut normalized = String::with_capacity(label.len());
+    for byte in label.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            normalized.push(byte as char);
+        } else {
+            normalized.push_str(&format!("_x{byte:02x}"));
+        }
+    }
+    if normalized
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+    {
+        normalized
+    } else {
+        format!("aos_pkg_{normalized}")
+    }
+}
+
+fn selinux_type_for_label(label: &str) -> String {
+    format!("{}_t", selinux_identifier_for_label(label))
+}
+
+fn expected_selinux_profile(label: &str) -> String {
+    let module_name = selinux_identifier_for_label(label);
+    let type_name = selinux_type_for_label(label);
     format!(
-        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package MAC profile scaffold.\n#include <tunables/global>\n\nprofile {label} flags=(attach_disconnected,mediate_deleted) {{\n  # Default deny until the backend-specific allow-rule renderer lands.\n  deny /** rwklx,\n  deny network,\n  deny capability,\n}}\n"
+        "# Generated by AOS package expose renderer.\n# RFC-0001 per-package SELinux default-deny module.\nmodule {module_name} 1.0;\n\nrequire {{\n  role system_r;\n}}\n\ntype {type_name};\nrole system_r types {type_name};\n"
     )
 }
 
@@ -857,8 +1056,8 @@ fn validate_ebpf_policy_service(
             ebpf_unit
         );
     }
-    validate_ebpf_target_membership(package_name, target, artifact_root, &ebpf_unit)?;
-    validate_workload_ebpf_ordering(package_name, artifact_root, units, &ebpf_unit)?;
+    validate_target_membership(package_name, target, artifact_root, &ebpf_unit)?;
+    validate_workload_side_effect_ordering(package_name, artifact_root, units, &ebpf_unit)?;
 
     let path = artifact_root.join(&ebpf_unit);
     let text = std::fs::read_to_string(&path)
@@ -947,17 +1146,24 @@ fn validate_ebpf_policy_service(
     Ok(())
 }
 
-fn validate_ebpf_target_membership(
+fn validate_target_membership(
     package_name: &str,
     target: &str,
     artifact_root: &Path,
-    ebpf_unit: &str,
+    side_effect_unit: &str,
 ) -> Result<()> {
     let path = artifact_root.join(target);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("reading exposed target unit {}", path.display()))?;
     let parsed = Parsed::parse(&text);
-    require_section_word(package_name, target, &parsed, "Unit", "Wants", ebpf_unit)?;
+    require_section_word(
+        package_name,
+        target,
+        &parsed,
+        "Unit",
+        "Wants",
+        side_effect_unit,
+    )?;
     Ok(())
 }
 
@@ -986,11 +1192,11 @@ fn validate_package_slice_membership(
     Ok(())
 }
 
-fn validate_workload_ebpf_ordering(
+fn validate_workload_side_effect_ordering(
     package_name: &str,
     artifact_root: &Path,
     units: &BTreeSet<String>,
-    ebpf_unit: &str,
+    side_effect_unit: &str,
 ) -> Result<()> {
     for unit in units {
         if !unit.ends_with(".service")
@@ -1002,8 +1208,22 @@ fn validate_workload_ebpf_ordering(
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading exposed unit {}", path.display()))?;
         let parsed = Parsed::parse(&text);
-        require_section_word(package_name, unit, &parsed, "Unit", "After", ebpf_unit)?;
-        require_section_word(package_name, unit, &parsed, "Unit", "Requires", ebpf_unit)?;
+        require_section_word(
+            package_name,
+            unit,
+            &parsed,
+            "Unit",
+            "After",
+            side_effect_unit,
+        )?;
+        require_section_word(
+            package_name,
+            unit,
+            &parsed,
+            "Unit",
+            "Requires",
+            side_effect_unit,
+        )?;
     }
     Ok(())
 }
@@ -1012,8 +1232,30 @@ fn expected_package_slice(package_name: &str) -> String {
     format!("aos-pkg-{package_name}.slice")
 }
 
+fn expected_mac_unit(package_name: &str) -> String {
+    format!("aos-pkg-{package_name}-mac.service")
+}
+
 fn expected_ebpf_unit(package_name: &str) -> String {
     format!("aos-pkg-{package_name}-ebpf.service")
+}
+
+fn expected_mac_exec_command(
+    artifact_store_path: &Path,
+    permissions: &PermissionsMeta,
+) -> Result<Vec<String>> {
+    let expected_label = permissions
+        .security_label
+        .as_deref()
+        .context("normalized permissions have no security label")?;
+    Ok(vec![
+        trusted_semodule_path()?,
+        "-i".to_string(),
+        artifact_store_path
+            .join(expected_selinux_profile_path(expected_label))
+            .display()
+            .to_string(),
+    ])
 }
 
 fn expected_ebpf_exec_command(
@@ -1104,6 +1346,58 @@ fn trusted_ebpf_net_policy_object_path() -> Result<String> {
     {
         bail!("{EBPF_NET_POLICY_OBJECT_ENV} is not configured for network policy validation");
     }
+}
+
+#[cfg(not(test))]
+fn trusted_checkmodule_path() -> Result<String> {
+    if let Ok(path) = std::env::var(CHECKMODULE_ENV) {
+        if path.is_empty() {
+            bail!("{CHECKMODULE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/checkmodule") {
+            bail!("{CHECKMODULE_ENV} must point to an absolute checkmodule binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{CHECKMODULE_ENV} is not configured for MAC policy validation");
+}
+
+fn trusted_semodule_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SEMODULE_ENV) {
+        if path.is_empty() {
+            bail!("{SEMODULE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/sbin/semodule") {
+            bail!("{SEMODULE_ENV} must point to an absolute semodule binary");
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-policycoreutils-0/sbin/semodule".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{SEMODULE_ENV} is not configured for MAC policy validation");
+    }
+}
+
+#[cfg(not(test))]
+fn trusted_semodule_package_path() -> Result<String> {
+    if let Ok(path) = std::env::var(SEMODULE_PACKAGE_ENV) {
+        if path.is_empty() {
+            bail!("{SEMODULE_PACKAGE_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/semodule_package") {
+            bail!("{SEMODULE_PACKAGE_ENV} must point to an absolute semodule_package binary");
+        }
+        return Ok(path);
+    }
+
+    bail!("{SEMODULE_PACKAGE_ENV} is not configured for MAC policy validation");
 }
 
 fn single_service_value<'a>(
@@ -1358,6 +1652,7 @@ fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bo
         "sysctl",
         "firewall",
         "netns",
+        "mac",
         "ebpf",
     ]
     .into_iter()
@@ -1402,6 +1697,142 @@ fn validate_landlock_exec_command(
             package_name
         );
     }
+    Ok(())
+}
+
+fn validate_mac_policy_service(
+    package_name: &str,
+    target: &str,
+    artifact_store_path: &Path,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    profile: Option<&MacProfileArtifact>,
+    permissions: &PermissionsMeta,
+) -> Result<()> {
+    let permissions = normalized_permissions(package_name, permissions);
+    let package_slice = expected_package_slice(package_name);
+    let mac_unit = expected_mac_unit(package_name);
+    let unconfined = permissions
+        .confinement
+        .as_ref()
+        .context("normalized permissions have no confinement summary")?
+        .class
+        == ConfinementClass::Unconfined;
+    if unconfined || !profile.is_some_and(|profile| profile.default_deny) {
+        if units.contains(&mac_unit) {
+            bail!(
+                "unconfined package '{}' must not declare MAC policy service {}",
+                package_name,
+                mac_unit
+            );
+        }
+        return Ok(());
+    }
+    if !units.contains(&mac_unit) {
+        bail!(
+            "MAC policy for package '{}' is missing required service {}",
+            package_name,
+            mac_unit
+        );
+    }
+    validate_target_membership(package_name, target, artifact_root, &mac_unit)?;
+    validate_workload_side_effect_ordering(package_name, artifact_root, units, &mac_unit)?;
+
+    let path = artifact_root.join(&mac_unit);
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading MAC policy unit {}", path.display()))?;
+    let parsed = Parsed::parse(&text);
+    let service = parsed
+        .sections
+        .get("Service")
+        .with_context(|| format!("MAC policy unit '{}' is missing [Service]", mac_unit))?;
+
+    require_section_word(package_name, &mac_unit, &parsed, "Unit", "PartOf", target)?;
+    require_section_word(
+        package_name,
+        &mac_unit,
+        &parsed,
+        "Unit",
+        "ConditionSecurity",
+        "selinux",
+    )?;
+    require_section_word(
+        package_name,
+        &mac_unit,
+        &parsed,
+        "Install",
+        "WantedBy",
+        target,
+    )?;
+    require_service_value(package_name, &mac_unit, service, "Type", "oneshot")?;
+    require_service_value(package_name, &mac_unit, service, "RemainAfterExit", "true")?;
+    require_service_value(package_name, &mac_unit, service, "Slice", &package_slice)?;
+    require_service_value(package_name, &mac_unit, service, "NoNewPrivileges", "true")?;
+    require_service_value(
+        package_name,
+        &mac_unit,
+        service,
+        "CapabilityBoundingSet",
+        "CAP_MAC_ADMIN",
+    )?;
+    require_service_value(package_name, &mac_unit, service, "PrivateDevices", "true")?;
+    require_service_value(package_name, &mac_unit, service, "DevicePolicy", "closed")?;
+    require_service_value(package_name, &mac_unit, service, "PrivateNetwork", "true")?;
+    require_service_value(package_name, &mac_unit, service, "ProtectSystem", "full")?;
+    require_service_value(package_name, &mac_unit, service, "ProtectHome", "true")?;
+    require_service_value(
+        package_name,
+        &mac_unit,
+        service,
+        "RestrictAddressFamilies",
+        "AF_UNIX",
+    )?;
+    require_service_value(
+        package_name,
+        &mac_unit,
+        service,
+        "RestrictNamespaces",
+        "true",
+    )?;
+    require_service_value(
+        package_name,
+        &mac_unit,
+        service,
+        "MemoryDenyWriteExecute",
+        "true",
+    )?;
+    if service.contains_key("RootDirectory") {
+        bail!(
+            "MAC policy service '{}' for package '{}' must run host-side",
+            mac_unit,
+            package_name
+        );
+    }
+    for key in MAC_LOADER_FORBIDDEN_EXEC_KEYS {
+        if service.contains_key(*key) {
+            bail!(
+                "MAC policy service '{}' for package '{}' must not declare {}",
+                mac_unit,
+                package_name,
+                key
+            );
+        }
+    }
+
+    let exec_start = single_service_value(package_name, &mac_unit, service, "ExecStart")?;
+    let expected = expected_mac_exec_command(artifact_store_path, &permissions)?;
+    let actual = exec_start
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if actual != expected {
+        bail!(
+            "MAC policy service '{}' for package '{}' has invalid semodule command",
+            mac_unit,
+            package_name
+        );
+    }
+
     Ok(())
 }
 
@@ -2359,6 +2790,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn selinux_identifiers_escape_label_punctuation_without_collisions() {
+        let labels = ["a.b", "a-b", "a_b", "a+b", "a=b"];
+        let identifiers = labels
+            .iter()
+            .map(|label| selinux_identifier_for_label(label))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(identifiers.len(), labels.len());
+        assert_eq!(
+            selinux_identifier_for_label("aos-pkg-web"),
+            "aos_x2dpkg_x2dweb"
+        );
+        assert_eq!(selinux_identifier_for_label("1web"), "aos_pkg_1web");
+    }
+
     fn installed_with_expose(
         tmp: &TempDir,
         name: &str,
@@ -2372,7 +2819,7 @@ mod tests {
                 .join("units")
                 .join(format!("aos-pkg-{name}.target")),
             format!(
-                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-ebpf.service\n"
+                "[Unit]\nWants=aos-pkg-{name}.slice {name}.service aos-pkg-{name}-mac.service aos-pkg-{name}-ebpf.service\n"
             ),
         )
         .unwrap();
@@ -2388,9 +2835,22 @@ mod tests {
             "{ebpf} run --policy {}/network-policy.json --cgroup {ebpf_cgroup} --object {ebpf_object}",
             artifact.display()
         );
+        let semodule = trusted_semodule_for_test();
+        let mac_module = selinux_identifier_for_label(&format!("aos-pkg-{name}"));
+        let mac_exec_start = format!(
+            "{semodule} -i {}/mac/selinux/{mac_module}.pp",
+            artifact.display()
+        );
         std::fs::write(
             artifact.join("units").join(format!("{name}.service")),
             workload_service_text(name, &format!("[Service]\nSlice=aos-pkg-{name}.slice\n")),
+        )
+        .unwrap();
+        std::fs::write(
+            artifact
+                .join("units")
+                .join(format!("aos-pkg-{name}-mac.service")),
+            mac_policy_service_text(name, &mac_exec_start),
         )
         .unwrap();
         std::fs::write(
@@ -2423,6 +2883,7 @@ mod tests {
                     units: vec![
                         format!("{name}.service"),
                         format!("aos-pkg-{name}.slice"),
+                        format!("aos-pkg-{name}-mac.service"),
                         format!("aos-pkg-{name}-ebpf.service"),
                     ],
                     images: Vec::new(),
@@ -2662,11 +3123,11 @@ mod tests {
         let label = permissions.security_label.clone().unwrap();
         let default_deny =
             permissions.confinement.as_ref().unwrap().class != ConfinementClass::Unconfined;
-        let profile_path = default_deny.then(|| format!("mac/apparmor/{label}.profile"));
+        let profile_path = default_deny.then(|| expected_selinux_profile_path(&label));
         let policy = serde_json::json!({
             "version": 1,
             "package": apm.name,
-            "backend": "apparmor",
+            "backend": "selinux",
             "securityLabel": label,
             "defaultDeny": default_deny,
             "profilePath": profile_path.clone(),
@@ -2677,9 +3138,16 @@ mod tests {
         )
         .unwrap();
         if let Some(profile_path) = profile_path {
+            let module_name = selinux_identifier_for_label(&label);
+            let source_text = expected_selinux_profile(&label);
+            let compiled = compile_selinux_profile(&source_text).unwrap();
             let profile_file = Path::new(&artifact).join(&profile_path);
+            let source_file = Path::new(&artifact).join(format!("mac/selinux/{module_name}.te"));
+            let module_file = Path::new(&artifact).join(format!("mac/selinux/{module_name}.mod"));
             std::fs::create_dir_all(profile_file.parent().unwrap()).unwrap();
-            std::fs::write(profile_file, expected_apparmor_profile(&label)).unwrap();
+            std::fs::write(profile_file, compiled.profile).unwrap();
+            std::fs::write(module_file, compiled.module).unwrap();
+            std::fs::write(source_file, source_text).unwrap();
         }
     }
 
@@ -2693,6 +3161,18 @@ mod tests {
         let apm = installed.apm.as_mut().unwrap();
         let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
         let unit = format!("aos-pkg-{}-ebpf.service", apm.name);
+        apm.expose
+            .as_mut()
+            .unwrap()
+            .units
+            .retain(|candidate| candidate != &unit);
+        let _ = std::fs::remove_file(Path::new(&artifact).join("units").join(unit));
+    }
+
+    fn remove_mac_policy_service(installed: &mut InstalledMeta) {
+        let apm = installed.apm.as_mut().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let unit = format!("aos-pkg-{}-mac.service", apm.name);
         apm.expose
             .as_mut()
             .unwrap()
@@ -2729,7 +3209,7 @@ mod tests {
             text.to_string()
         } else {
             format!(
-                "[Unit]\nAfter=aos-pkg-{package_name}-ebpf.service\nRequires=aos-pkg-{package_name}-ebpf.service\n{text}"
+                "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service\n{text}"
             )
         }
     }
@@ -2742,8 +3222,51 @@ mod tests {
         trusted_ebpf_net_policy_path().unwrap()
     }
 
+    fn trusted_semodule_for_test() -> String {
+        trusted_semodule_path().unwrap()
+    }
+
     fn trusted_ebpf_net_policy_object_for_test() -> String {
         trusted_ebpf_net_policy_object_path().unwrap()
+    }
+
+    fn mac_policy_service_text(name: &str, exec_start: &str) -> String {
+        format!(
+            "[Unit]\n\
+             PartOf=aos-pkg-{name}.target\n\
+             ConditionSecurity=selinux\n\
+             Before={name}.service\n\
+             [Service]\n\
+             Type=oneshot\n\
+             RemainAfterExit=true\n\
+             Slice=aos-pkg-{name}.slice\n\
+             ExecStart={exec_start}\n\
+             NoNewPrivileges=true\n\
+             CapabilityBoundingSet=CAP_MAC_ADMIN\n\
+             AmbientCapabilities=\n\
+             PrivateDevices=true\n\
+             DevicePolicy=closed\n\
+             PrivateNetwork=true\n\
+             PrivateTmp=true\n\
+             ProtectSystem=full\n\
+             ProtectHome=true\n\
+             ProtectClock=true\n\
+             ProtectHostname=true\n\
+             ProtectKernelLogs=true\n\
+             ProtectKernelModules=true\n\
+             ProtectProc=invisible\n\
+             ProcSubset=pid\n\
+             SystemCallArchitectures=native\n\
+             RestrictAddressFamilies=AF_UNIX\n\
+             RestrictNamespaces=true\n\
+             RestrictRealtime=true\n\
+             RestrictSUIDSGID=true\n\
+             LockPersonality=true\n\
+             MemoryDenyWriteExecute=true\n\
+             UMask=0077\n\
+             [Install]\n\
+             WantedBy=aos-pkg-{name}.target\n"
+        )
     }
 
     fn ebpf_policy_service_text(name: &str, exec_start: &str) -> String {
@@ -2887,7 +3410,7 @@ mod tests {
             scope: ProfileScope::System,
         };
         std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
-        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
         let artifact = installed
             .apm
             .as_ref()
@@ -2898,6 +3421,7 @@ mod tests {
             .store_path
             .clone();
         std::fs::remove_file(Path::new(&artifact).join("mac-profile.json")).unwrap();
+        remove_mac_policy_service(&mut installed);
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();
@@ -2954,14 +3478,48 @@ mod tests {
             .unwrap()
             .store_path
             .clone();
-        std::fs::remove_file(Path::new(&artifact).join("mac/apparmor/aos-pkg-web.profile"))
+        std::fs::remove_file(Path::new(&artifact).join("mac/selinux/aos_x2dpkg_x2dweb.pp"))
             .unwrap();
         link_expose_artifact(&profile, &installed);
 
         let err = exposed_packages(&profile, &[installed]).unwrap_err();
         assert!(
             err.to_string()
-                .contains("missing required mac/apparmor/aos-pkg-web.profile"),
+                .contains("missing required mac/selinux/aos_x2dpkg_x2dweb.pp"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_mac_profile_payload_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let artifact = installed
+            .apm
+            .as_ref()
+            .unwrap()
+            .expose_artifact
+            .as_ref()
+            .unwrap()
+            .store_path
+            .clone();
+        std::fs::write(
+            Path::new(&artifact).join("mac/selinux/aos_x2dpkg_x2dweb.pp"),
+            b"permissive compiled policy",
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("does not match the validated SELinux source"),
             "{err:?}"
         );
     }
@@ -2986,9 +3544,9 @@ mod tests {
             .store_path
             .clone();
         let external_mac = tmp.path().join("external-mac");
-        let external_profile = external_mac.join("apparmor/aos-pkg-web.profile");
+        let external_profile = external_mac.join("selinux/aos_x2dpkg_x2dweb.te");
         std::fs::create_dir_all(external_profile.parent().unwrap()).unwrap();
-        std::fs::write(&external_profile, expected_apparmor_profile("aos-pkg-web")).unwrap();
+        std::fs::write(&external_profile, expected_selinux_profile("aos-pkg-web")).unwrap();
         std::fs::remove_dir_all(Path::new(&artifact).join("mac")).unwrap();
         std::os::unix::fs::symlink(&external_mac, Path::new(&artifact).join("mac")).unwrap();
         link_expose_artifact(&profile, &installed);
@@ -3273,6 +3831,107 @@ mod tests {
         let packages = exposed_packages(&profile, &[installed]).unwrap();
 
         assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_missing_mac_policy_service() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        remove_mac_policy_service(&mut installed);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("missing required service aos-pkg-web-mac.service"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_untrusted_mac_policy_helper() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let exec_start = format!(
+            "/nix/store/fake-policycoreutils-0/sbin/semodule -i {artifact}/mac/selinux/aos_x2dpkg_x2dweb.pp"
+        );
+        std::fs::write(
+            Path::new(&artifact).join("units/aos-pkg-web-mac.service"),
+            mac_policy_service_text("web", &exec_start),
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string().contains("invalid semodule command"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_mac_policy_extra_exec_hook() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        let path = Path::new(&artifact).join("units/aos-pkg-web-mac.service");
+        let mut unit = std::fs::read_to_string(&path).unwrap();
+        unit = unit.replace(
+            "ExecStart=",
+            "ExecStartPre=/nix/store/fake-coreutils-0/bin/true\nExecStart=",
+        );
+        std::fs::write(&path, unit).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string().contains("must not declare ExecStartPre"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_workload_missing_mac_after() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        let apm = installed.apm.as_ref().unwrap();
+        let artifact = apm.expose_artifact.as_ref().unwrap().store_path.clone();
+        std::fs::write(
+            Path::new(&artifact).join("units/web.service"),
+            "[Unit]\nAfter=aos-pkg-web-ebpf.service\nRequires=aos-pkg-web-mac.service aos-pkg-web-ebpf.service\n[Service]\nSlice=aos-pkg-web.slice\n",
+        )
+        .unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(err.to_string().contains("Unit.After"), "{err:?}");
     }
 
     #[test]
@@ -3644,8 +4303,12 @@ mod tests {
         }];
         write_network_policy_file(&installed, &[], &[]);
         write_mac_profile_file(&installed);
+        remove_mac_policy_service(&mut installed);
         remove_ebpf_policy_service(&mut installed);
-        write_service_unit(&installed, "[Service]\nExecStart=/bin/true\n");
+        write_service_unit(
+            &installed,
+            "[Unit]\n[Service]\nSlice=aos-pkg-web.slice\nExecStart=/bin/true\n",
+        );
         link_expose_artifact(&profile, &installed);
 
         let packages = exposed_packages(&profile, &[installed]).unwrap();

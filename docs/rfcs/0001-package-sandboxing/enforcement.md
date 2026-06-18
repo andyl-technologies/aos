@@ -97,7 +97,9 @@ The package's confinement label ([permissions.md](permissions.md)) and the MAC
 profile are derived from the *same* manifest, so they cannot drift. Pick
 AppArmor for MVP unless the kernel already ships an SELinux base policy; record
 the choice in the Phase-9 spike. The profile name is `aos-pkg-<name>`; it is part
-of the measured manifest digest ([attestation.md](attestation.md)).
+of the measured manifest digest ([attestation.md](attestation.md)). AOS currently
+selects SELinux for generated package profiles because the kernel, systemd, dbus,
+and SELinux policy toolchain already target that backend.
 
 ## Layer 6 — eBPF-LSM (fleet-managed dynamic policy)
 
