@@ -445,9 +445,10 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [x] **`->` implication — precedence 14, RIGHT-associative** — `a -> b` ≡
       `!a || b`; short-circuits (RHS not forced if LHS is `false`). `a -> b -> c`
       ≡ `a -> (b -> c)`.
-- [x] **Pipe `|>` / `<|` — precedence 15 (experimental)** — pinned Nix reports
-      `pipe-operators` disabled by default; AOS rejects `|>`/`<|` without a
-      feature gate.
+- [x] **Pipe `|>` / `<|` — precedence 15 (experimental)** — local C++ Nix
+      2.24.5 reports `pipe-operators` disabled by default; aos-nix rejects
+      `|>`/`<|` by default and does not implement a pipe feature gate because
+      AOS does not use the experimental syntax.
 
 ### 6.1 `+` operator overloads (precedence 7)
 
@@ -885,9 +886,13 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       §11.2; included only if AOS uses it (verify), otherwise skipped with a
       recorded reason. Verified unused in AOS `.nix` sources and intentionally
       left to native CLI fallback.
-- [ ] **Experimental pipe operators `|>` / `<|`** — covered conditionally in §6;
-      out of scope unless the pinned Nix has the experimental feature enabled and
-      AOS uses it (verify the feature flag).
+- [x] **Experimental pipe operators `|>` / `<|`** — covered conditionally in §6;
+      local C++ Nix 2.24.5 reports `pipe-operators` disabled by default, and
+      aos-nix rejects both operators by default
+      (`syntax::parser::tests::rejects_pipe_operators_without_feature_gate`).
+      Verified AOS `.nix` sources do not use pipe operators in expression
+      position; the only source hit is a `sed` delimiter inside the glibc
+      bootstrap shell script.
 - [ ] **CA derivations at the language layer — IN SCOPE (not out of scope).**
       Content-addressed derivations are a **required surface from the start** (a
       deliberate design choice for aos-nix; see
