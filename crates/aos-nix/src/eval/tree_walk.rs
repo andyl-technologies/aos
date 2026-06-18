@@ -17,15 +17,18 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
     fmt, fs,
-    io::{self, Write as _},
+    io::{self, Cursor, Read, Write as _},
     os::unix::ffi::OsStrExt,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
     sync::Arc,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use base64::Engine as _;
+use bzip2::read::BzDecoder;
+use flate2::read::GzDecoder;
 use md5::{Digest as _, Md5};
 use regex::bytes::{Regex, RegexBuilder};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
@@ -34,6 +37,7 @@ use sha2::{Sha256, Sha512};
 use thiserror::Error;
 use toml::Value as TomlValue;
 use url::Url;
+use xz2::read::XzDecoder;
 
 use super::env::{
     EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
@@ -101,6 +105,7 @@ const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 const DERIVATION_INTERNAL_PATH: &[u8] = b"<nix/derivation-internal.nix>";
+static FETCH_TARBALL_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const DERIVATION_INTERNAL_SOURCE: &str = r#"
 # This is the implementation of the ‘derivation’ builtin function.
 # It's actually a wrapper around the ‘derivationStrict’ primop.
@@ -1628,6 +1633,22 @@ struct FetchUrlArguments {
     url: Vec<u8>,
     name: String,
     expected_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Debug)]
+struct FetchTarballArguments {
+    url: Vec<u8>,
+    name: String,
+    expected_sha256: Option<[u8; 32]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FetchTarballCompression {
+    Tar,
+    Gzip,
+    Bzip2,
+    Xz,
+    Zstd,
 }
 
 /// A safe recursive evaluator for lowered IR.
@@ -5182,7 +5203,7 @@ impl TreeWalk {
         op: &'static str,
     ) -> Result<Vec<u8>, TreeWalkError> {
         let path = self.coerce_to_path_string(id, span, value)?;
-        self.validate_ifd_path_context(id, span, &path, op)?;
+        self.validate_filesystem_path_context(id, span, &path, op)?;
         let bytes = Self::copy_bytes_for_node(id, span, path.bytes())?;
         self.check_filesystem_path_access(id, span, &bytes)?;
         self.realize_import_from_derivation(id, span, &path, op)?;
@@ -5202,7 +5223,7 @@ impl TreeWalk {
         if self.text_store_path_has_allowed_context(&path) {
             return Ok((bytes, true));
         }
-        self.validate_ifd_path_context(id, span, &path, op)?;
+        self.validate_filesystem_path_context(id, span, &path, op)?;
         self.check_filesystem_path_access(id, span, &bytes)?;
         self.realize_import_from_derivation(id, span, &path, op)?;
         self.check_filesystem_path_access(id, span, &bytes)?;
@@ -5240,6 +5261,35 @@ impl TreeWalk {
             ));
         }
         Ok(path)
+    }
+
+    fn validate_filesystem_path_context(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        op: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        let normalized_path = normalize_absolute_path_bytes(path.bytes());
+        for element in path.context().iter() {
+            if element.kind() != ContextKind::OpaquePath {
+                continue;
+            }
+            if !element.path().starts_with(b"/") {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed { id, op },
+                    span,
+                ));
+            }
+            let normalized_context_path = normalize_absolute_path_bytes(element.path());
+            if !path_is_under_root(&normalized_path, &normalized_context_path) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed { id, op },
+                    span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn validate_ifd_path_context(
@@ -8098,6 +8148,637 @@ impl TreeWalk {
         self.alloc_fetchurl_path_value(id, span, path)
     }
 
+    fn eval_fetch_tarball_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let args = self.fetch_tarball_arguments(argument, argument_span, value)?;
+        if self.options.eval_mode() == EvalMode::Pure && args.expected_sha256.is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTarballHashRequired {
+                    id: argument,
+                    url: args.url,
+                    mode: EvalMode::Pure,
+                },
+                argument_span,
+            ));
+        }
+
+        let parsed = Self::parse_fetchurl_url(argument, argument_span, &args.url)?;
+        self.check_fetch_tarball_access(argument, argument_span, &args.url, &parsed)?;
+
+        let expected_path = if let Some(expected) = args.expected_sha256 {
+            let path = self.fetch_tarball_store_path_from_digest(
+                argument,
+                argument_span,
+                &args.url,
+                &args.name,
+                &expected,
+            )?;
+            if self.fetch_tarball_can_reuse_store_path(
+                argument,
+                argument_span,
+                &args.url,
+                &parsed,
+                &path,
+                &expected,
+            )? {
+                return self.alloc_fetchurl_path_value(id, span, path);
+            }
+            Some(path)
+        } else {
+            None
+        };
+
+        let contents = self.fetchurl_bytes(argument, argument_span, &args.url, &parsed)?;
+        let temp_dir = Self::fetch_tarball_temp_dir(argument, argument_span, &args.url)?;
+        let unpack_dir = temp_dir.join("unpacked");
+        fs::create_dir(&unpack_dir).map_err(|source| {
+            Self::fetch_tarball_error(argument, argument_span, &args.url, source)
+        })?;
+        let unpack_result = Self::unpack_fetch_tarball_archive(
+            argument,
+            argument_span,
+            &args.url,
+            &parsed,
+            &contents,
+            &unpack_dir,
+        )
+        .and_then(|()| {
+            Self::fetch_tarball_unpacked_root(argument, argument_span, &args.url, &unpack_dir)
+        });
+        let unpacked_root = match unpack_result {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(error);
+            }
+        };
+
+        let digest =
+            match self.source_path_nar_sha256(argument, argument_span, &unpacked_root, None) {
+                Ok(digest) => digest,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&temp_dir);
+                    return Err(error);
+                }
+            };
+        if let Some(expected) = args.expected_sha256 {
+            if expected != digest {
+                let _ = fs::remove_dir_all(&temp_dir);
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTarballHashMismatch {
+                        id: argument,
+                        url: args.url,
+                        expected: expected.to_vec(),
+                        actual: digest.to_vec(),
+                    },
+                    argument_span,
+                ));
+            }
+        }
+
+        let path = match expected_path {
+            Some(path) => path,
+            None => self.fetch_tarball_store_path_from_digest(
+                argument,
+                argument_span,
+                &args.url,
+                &args.name,
+                &digest,
+            )?,
+        };
+        let materialize_result = self.materialize_fetch_tarball_store_path(
+            argument,
+            argument_span,
+            &args.url,
+            &unpacked_root,
+            &path,
+            &digest,
+        );
+        let _ = fs::remove_dir_all(&temp_dir);
+        materialize_result?;
+        self.alloc_fetchurl_path_value(id, span, path)
+    }
+
+    fn fetch_tarball_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTarballArguments, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            let url = self.context_free_string_bytes(id, span, value, "fetchTarball")?;
+            let name = Self::fetch_tarball_store_name(id, span, &url, b"source")?.to_owned();
+            return Ok(FetchTarballArguments {
+                url,
+                name,
+                expected_sha256: None,
+            });
+        }
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "set or string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        self.validate_fetch_tarball_attrs(id, span, value)?;
+
+        let url_value = self.required_attr_value_by_name(id, value, URL_ATTR, span)?;
+        let url_value = self.force_value(id, span, url_value)?;
+        let url = self.context_free_string_bytes(id, span, url_value, "fetchTarball")?;
+
+        let name = if let Some(name_value) = self.attr_value_by_name(id, value, NAME_ATTR, span)? {
+            let name_value = self.force_value(id, span, name_value)?;
+            self.context_free_string_bytes(id, span, name_value, "fetchTarball")?
+        } else {
+            b"source".to_vec()
+        };
+        let name = Self::fetch_tarball_store_name(id, span, &url, &name)?.to_owned();
+
+        let expected_sha256 = if let Some(hash_value) =
+            self.attr_value_by_name(id, value, SHA256_ATTR, span)?
+        {
+            let hash_value = self.force_value(id, span, hash_value)?;
+            let hash = self.context_free_string_bytes(id, span, hash_value, "fetchTarball")?;
+            if hash.is_empty() {
+                self.emit_warning_output(id, span, EMPTY_FETCHURL_SHA256_WARNING.to_vec())?;
+                Some([0_u8; 32])
+            } else {
+                let (algorithm, digest) =
+                    self.decode_convert_hash(id, span, &hash, Some(HashStringAlgorithm::Sha256))?;
+                if algorithm != HashStringAlgorithm::Sha256 || digest.len() != 32 {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::HashAlgorithmMismatch {
+                            id,
+                            hash,
+                            expected: b"sha256".to_vec(),
+                        },
+                        span,
+                    ));
+                }
+                let mut fixed = [0_u8; 32];
+                fixed.copy_from_slice(&digest);
+                Some(fixed)
+            }
+        } else {
+            None
+        };
+
+        Ok(FetchTarballArguments {
+            url,
+            name,
+            expected_sha256,
+        })
+    }
+
+    fn validate_fetch_tarball_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !matches!(key, URL_ATTR | NAME_ATTR | SHA256_ATTR) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFetchTarballAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_tarball_store_name<'a>(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        nix_compat::store_path::validate_name(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchTarballStoreName {
+                    id,
+                    url: url.to_vec(),
+                    name: name.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })
+    }
+
+    fn fetch_tarball_store_path_from_digest(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        name: &str,
+        digest: &[u8; 32],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        self.store_path_bytes_from_fingerprint_parts(id, span, url, b"source", name, digest)
+    }
+
+    fn check_fetch_tarball_access(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<(), TreeWalkError> {
+        match parsed.scheme() {
+            "file" if self.options.eval_mode() == EvalMode::Restricted => {
+                let path = Self::fetchurl_file_path(id, span, url, parsed)?;
+                if !self.options.uri_is_allowed(url) {
+                    self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+                }
+            }
+            "http" | "https"
+                if self.options.eval_mode() == EvalMode::Restricted
+                    && !self.options.uri_is_allowed(url) =>
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTarballAccessDenied {
+                        id,
+                        url: url.to_vec(),
+                        mode: EvalMode::Restricted,
+                    },
+                    span,
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn fetch_tarball_can_reuse_store_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+        store_path: &[u8],
+        expected_digest: &[u8; 32],
+    ) -> Result<bool, TreeWalkError> {
+        if !Path::new(OsStr::from_bytes(store_path)).exists() {
+            return Ok(false);
+        }
+        if parsed.scheme() == "file" {
+            let source_path = Self::fetchurl_file_path(id, span, url, parsed)?;
+            if source_path.exists() {
+                return Ok(false);
+            }
+        }
+
+        self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
+    }
+
+    fn fetch_tarball_temp_dir(id: IrId, span: Span, url: &[u8]) -> Result<PathBuf, TreeWalkError> {
+        let base = std::env::temp_dir();
+        let pid = std::process::id();
+        for _ in 0..128 {
+            let index = FETCH_TARBALL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = base.join(format!("aos-nix-fetch-tarball-{pid}-{index}"));
+            match fs::create_dir(&dir) {
+                Ok(()) => return Ok(dir),
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(source) => return Err(Self::fetch_tarball_error(id, span, url, source)),
+            }
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTarball {
+                id,
+                url: url.to_vec(),
+                message: "could not allocate a unique temporary unpack directory".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn unpack_fetch_tarball_archive(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+        contents: &[u8],
+        destination: &Path,
+    ) -> Result<(), TreeWalkError> {
+        match Self::fetch_tarball_compression(parsed, contents) {
+            FetchTarballCompression::Tar => {
+                Self::unpack_fetch_tarball_reader(id, span, url, Cursor::new(contents), destination)
+            }
+            FetchTarballCompression::Gzip => {
+                let reader = GzDecoder::new(Cursor::new(contents));
+                Self::unpack_fetch_tarball_reader(id, span, url, reader, destination)
+            }
+            FetchTarballCompression::Bzip2 => {
+                let reader = BzDecoder::new(Cursor::new(contents));
+                Self::unpack_fetch_tarball_reader(id, span, url, reader, destination)
+            }
+            FetchTarballCompression::Xz => {
+                let reader = XzDecoder::new(Cursor::new(contents));
+                Self::unpack_fetch_tarball_reader(id, span, url, reader, destination)
+            }
+            FetchTarballCompression::Zstd => {
+                let reader = zstd::stream::read::Decoder::new(Cursor::new(contents))
+                    .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+                Self::unpack_fetch_tarball_reader(id, span, url, reader, destination)
+            }
+        }
+    }
+
+    fn unpack_fetch_tarball_reader<R: Read>(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        reader: R,
+        destination: &Path,
+    ) -> Result<(), TreeWalkError> {
+        let mut archive = tar::Archive::new(reader);
+        let entries = archive
+            .entries()
+            .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+        for entry in entries {
+            let mut entry =
+                entry.map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+            let unpacked = entry
+                .unpack_in(destination)
+                .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+            if !unpacked {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTarball {
+                        id,
+                        url: url.to_vec(),
+                        message: "tarball entry would unpack outside destination".to_owned(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn fetch_tarball_compression(parsed: &Url, contents: &[u8]) -> FetchTarballCompression {
+        if contents.starts_with(&[0x1f, 0x8b]) {
+            return FetchTarballCompression::Gzip;
+        }
+        if contents.starts_with(b"BZh") {
+            return FetchTarballCompression::Bzip2;
+        }
+        if contents.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+            return FetchTarballCompression::Xz;
+        }
+        if contents.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+            return FetchTarballCompression::Zstd;
+        }
+
+        let path = parsed.path().to_ascii_lowercase();
+        if path.ends_with(".tar.gz") || path.ends_with(".tgz") {
+            return FetchTarballCompression::Gzip;
+        }
+        if path.ends_with(".tar.bz2") || path.ends_with(".tbz") || path.ends_with(".tbz2") {
+            return FetchTarballCompression::Bzip2;
+        }
+        if path.ends_with(".tar.xz") || path.ends_with(".txz") {
+            return FetchTarballCompression::Xz;
+        }
+        if path.ends_with(".tar.zst") || path.ends_with(".tar.zstd") {
+            return FetchTarballCompression::Zstd;
+        }
+        FetchTarballCompression::Tar
+    }
+
+    fn fetch_tarball_unpacked_root(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        unpack_dir: &Path,
+    ) -> Result<PathBuf, TreeWalkError> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(unpack_dir)
+            .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?
+        {
+            let entry = entry.map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+            entries.push(entry.path());
+        }
+        if entries.len() == 1 {
+            let root = entries.pop().ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTarball {
+                        id,
+                        url: url.to_vec(),
+                        message: "tarball unexpectedly had no unpacked entries".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+            let metadata = fs::symlink_metadata(&root)
+                .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+            if metadata.is_dir() {
+                return Ok(root);
+            }
+        }
+        Ok(unpack_dir.to_path_buf())
+    }
+
+    fn materialize_fetch_tarball_store_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        source: &Path,
+        store_path: &[u8],
+        digest: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let target = Path::new(OsStr::from_bytes(store_path));
+        if target.exists() {
+            return self
+                .validate_fetch_tarball_store_path_digest(id, span, url, store_path, digest);
+        }
+        let Some(parent) = target.parent() else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTarball {
+                    id,
+                    url: url.to_vec(),
+                    message: format!("store path has no parent: {}", target.display()),
+                },
+                span,
+            ));
+        };
+        fs::create_dir_all(parent)
+            .map_err(|source| Self::fetch_tarball_error(id, span, url, source))?;
+
+        let temp_target = Self::fetch_tarball_temp_store_path(id, span, url, parent, target)?;
+        if let Err(source) = Self::copy_fetch_tarball_tree(source, &temp_target) {
+            Self::remove_fetch_tarball_temp_path(&temp_target);
+            return Err(Self::fetch_tarball_error(id, span, url, source));
+        }
+        match fs::rename(&temp_target, target) {
+            Ok(()) => Ok(()),
+            Err(source) => {
+                Self::remove_fetch_tarball_temp_path(&temp_target);
+                if target.exists() {
+                    self.validate_fetch_tarball_store_path_digest(
+                        id, span, url, store_path, digest,
+                    )?;
+                    return Ok(());
+                }
+                Err(Self::fetch_tarball_error(id, span, url, source))
+            }
+        }
+    }
+
+    fn fetch_tarball_store_path_matches_digest(
+        &mut self,
+        id: IrId,
+        span: Span,
+        store_path: &[u8],
+        expected: &[u8; 32],
+    ) -> Result<bool, TreeWalkError> {
+        let actual =
+            self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
+        Ok(actual.as_slice() == expected)
+    }
+
+    fn validate_fetch_tarball_store_path_digest(
+        &mut self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        store_path: &[u8],
+        expected: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        let actual =
+            self.source_path_nar_sha256(id, span, Path::new(OsStr::from_bytes(store_path)), None)?;
+        if actual.as_slice() == expected {
+            return Ok(());
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTarballHashMismatch {
+                id,
+                url: url.to_vec(),
+                expected: expected.to_vec(),
+                actual: actual.to_vec(),
+            },
+            span,
+        ))
+    }
+
+    fn fetch_tarball_temp_store_path(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parent: &Path,
+        target: &Path,
+    ) -> Result<PathBuf, TreeWalkError> {
+        let name = target.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FetchTarball {
+                    id,
+                    url: url.to_vec(),
+                    message: format!("store path has no file name: {}", target.display()),
+                },
+                span,
+            )
+        })?;
+        let pid = std::process::id();
+        for _ in 0..128 {
+            let index = FETCH_TARBALL_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let temp = parent.join(format!(".{name}.tmp-{pid}-{index}"));
+            if !temp.exists() {
+                return Ok(temp);
+            }
+        }
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::FetchTarball {
+                id,
+                url: url.to_vec(),
+                message: "could not allocate a unique temporary store path".to_owned(),
+            },
+            span,
+        ))
+    }
+
+    fn remove_fetch_tarball_temp_path(path: &Path) {
+        let Ok(metadata) = fs::symlink_metadata(path) else {
+            return;
+        };
+        if metadata.is_dir() {
+            let _ = fs::remove_dir_all(path);
+        } else {
+            let _ = fs::remove_file(path);
+        }
+    }
+
+    fn copy_fetch_tarball_tree(source: &Path, target: &Path) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(source)?;
+        let file_type = metadata.file_type();
+        if file_type.is_dir() {
+            fs::create_dir(target)?;
+            for entry in fs::read_dir(source)? {
+                let entry = entry?;
+                Self::copy_fetch_tarball_tree(&entry.path(), &target.join(entry.file_name()))?;
+            }
+            fs::set_permissions(target, metadata.permissions())?;
+            return Ok(());
+        }
+        if file_type.is_file() {
+            fs::copy(source, target)?;
+            fs::set_permissions(target, metadata.permissions())?;
+            return Ok(());
+        }
+        if file_type.is_symlink() {
+            let link = fs::read_link(source)?;
+            std::os::unix::fs::symlink(link, target)?;
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported tarball entry type",
+        ))
+    }
+
+    fn fetch_tarball_error(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        source: impl std::fmt::Display,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::FetchTarball {
+                id,
+                url: url.to_vec(),
+                message: source.to_string(),
+            },
+            span,
+        )
+    }
+
     fn fetchurl_arguments(
         &mut self,
         id: IrId,
@@ -8365,7 +9046,9 @@ impl TreeWalk {
         match parsed.scheme() {
             "file" if self.options.eval_mode() == EvalMode::Restricted => {
                 let path = Self::fetchurl_file_path(id, span, url, parsed)?;
-                self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+                if !self.options.uri_is_allowed(url) {
+                    self.check_filesystem_path_access(id, span, path.as_os_str().as_bytes())?;
+                }
             }
             "http" | "https"
                 if self.options.eval_mode() == EvalMode::Restricted
@@ -8397,7 +9080,9 @@ impl TreeWalk {
             "file" => {
                 let path = Self::fetchurl_file_path(id, span, url, parsed)?;
                 let bytes = path.as_os_str().as_bytes();
-                if self.options.eval_mode() == EvalMode::Restricted {
+                if self.options.eval_mode() == EvalMode::Restricted
+                    && !self.options.uri_is_allowed(url)
+                {
                     self.check_filesystem_path_access(id, span, bytes)?;
                 }
                 fs::read(&path).map_err(|source| {
@@ -20960,6 +21645,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetchurl_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::FetchTarball => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_fetch_tarball_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -21205,6 +21897,17 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
                 eval.eval_fetchurl_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
+            BuiltinExecution::FetchTarball => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_fetch_tarball_primop(
                     call.id,
                     call.span,
                     argument.id(),
@@ -22167,6 +22870,72 @@ pub enum TreeWalkErrorKind {
         /// The actual SHA-256 digest bytes.
         actual: Vec<u8>,
     },
+    /// `builtins.fetchTarball` used an unsupported argument attribute.
+    #[error("unsupported fetchTarball argument at node {id:?}: {attr:?}")]
+    UnsupportedFetchTarballAttr {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// `builtins.fetchTarball` could not derive or validate the output store name.
+    #[error(
+        "failed to derive fetchTarball store name at node {id:?} url {url:?} name {name:?}: {message}"
+    )]
+    FetchTarballStoreName {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The rejected store name bytes.
+        name: Vec<u8>,
+        /// The store-name diagnostic.
+        message: String,
+    },
+    /// `builtins.fetchTarball` could not fetch, unpack, or materialize its URL.
+    #[error("failed to fetch tarball at node {id:?} url {url:?}: {message}")]
+    FetchTarball {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The fetch or unpack diagnostic.
+        message: String,
+    },
+    /// An evaluation mode rejected `builtins.fetchTarball` network access.
+    #[error("{mode:?} evaluation forbids fetchTarball network access at node {id:?} url {url:?}")]
+    FetchTarballAccessDenied {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that denied access.
+        mode: EvalMode,
+    },
+    /// Pure evaluation rejected an unpinned `builtins.fetchTarball` request.
+    #[error("{mode:?} evaluation requires a sha256 for fetchTarball at node {id:?} url {url:?}")]
+    FetchTarballHashRequired {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that required a hash.
+        mode: EvalMode,
+    },
+    /// `builtins.fetchTarball` unpacked bytes with a different recursive SHA-256 digest.
+    #[error(
+        "fetchTarball hash mismatch at node {id:?} url {url:?}: expected {expected:?}, got {actual:?}"
+    )]
+    FetchTarballHashMismatch {
+        /// The fetchTarball argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The expected SHA-256 digest bytes.
+        expected: Vec<u8>,
+        /// The actual SHA-256 digest bytes.
+        actual: Vec<u8>,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -22900,7 +23669,6 @@ mod tests {
     const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &[
         "fetchGit",
         "fetchMercurial",
-        "fetchTarball",
         "fetchTree",
         "flakeRefToString",
         "getFlake",
@@ -23614,6 +24382,35 @@ mod tests {
         let path = dir.join("data.txt");
         fs::write(&path, bytes).expect("temp file writes");
         (dir, path)
+    }
+
+    fn append_tar_bytes<W: std::io::Write>(
+        builder: &mut tar::Builder<W>,
+        path: &str,
+        mode: u32,
+        bytes: &[u8],
+    ) {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).expect("tar path is valid");
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        builder
+            .append(&header, bytes)
+            .expect("tar fixture entry appends");
+    }
+
+    fn fetch_tarball_fixture(prefix: &str) -> (PathBuf, PathBuf) {
+        let dir = unique_temp_dir(prefix);
+        let archive_path = dir.join("root.tar.gz");
+        let file = fs::File::create(&archive_path).expect("tarball fixture creates");
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        append_tar_bytes(&mut builder, "root/file.txt", 0o644, b"data");
+        append_tar_bytes(&mut builder, "root/sub/nested.txt", 0o644, b"inner");
+        let encoder = builder.into_inner().expect("tar fixture finalizes");
+        encoder.finish().expect("gzip fixture finalizes");
+        (dir, archive_path)
     }
 
     fn path_source(path: &Path) -> String {
@@ -37508,6 +38305,298 @@ mod tests {
         );
 
         fs::remove_dir_all(source_dir).expect("source temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_unpacks_root_and_hashes_recursive_tree() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball");
+        let store_dir = unique_temp_dir("fetch-tarball-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+        let path = eval_string_bytes_with_options(
+            &format!(r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#),
+            options.clone(),
+        );
+        let path_text = std::str::from_utf8(&path)
+            .expect("store path is UTF-8")
+            .to_owned();
+        assert!(path_text.starts_with(path_source(&store_dir).as_str()));
+        assert!(path_text.ends_with("-source"));
+        assert_eq!(
+            fs::read(PathBuf::from(&path_text).join("file.txt"))
+                .expect("fetchTarball materializes root-stripped file"),
+            b"data"
+        );
+        assert_eq!(
+            fs::read(PathBuf::from(&path_text).join("sub").join("nested.txt"))
+                .expect("fetchTarball materializes nested file"),
+            b"inner"
+        );
+
+        assert_eq!(
+            eval_json_bytes_with_options(
+                &format!(
+                    r#"builtins.readDir (builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }})"#
+                ),
+                options,
+            ),
+            br#"{"file.txt":"regular","sub":"directory"}"#.to_vec()
+        );
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_sniffs_extensionless_archives() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball-extensionless");
+        let extensionless_path = archive_dir.join("archive");
+        fs::copy(&archive_path, &extensionless_path).expect("extensionless tarball copies");
+        let store_dir = unique_temp_dir("fetch-tarball-extensionless-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&extensionless_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+        let path = eval_string_bytes_with_options(
+            &format!(r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#),
+            options,
+        );
+        let path_text = std::str::from_utf8(&path).expect("store path is UTF-8");
+        assert_eq!(
+            fs::read(PathBuf::from(path_text).join("file.txt"))
+                .expect("extensionless fetchTarball materializes file"),
+            b"data"
+        );
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_rejects_unwritable_store_materialization() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball-unwritable-store");
+        let store_dir = unique_temp_dir("fetch-tarball-unwritable-store-root");
+        let url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        fs::set_permissions(&store_dir, fs::Permissions::from_mode(0o555))
+            .expect("store directory permissions tighten");
+
+        let result = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#
+            )),
+            options,
+        );
+
+        fs::set_permissions(&store_dir, fs::Permissions::from_mode(0o755))
+            .expect("store directory permissions restore");
+        let error = result.expect_err("unwritable store rejects fetchTarball materialization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarball { .. }
+        ));
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_rejects_corrupt_existing_store_path() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball-corrupt-store");
+        let store_dir = unique_temp_dir("fetch-tarball-corrupt-store-root");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+        let source =
+            format!(r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#);
+        let path = eval_string_bytes_with_options(&source, options.clone());
+        let path_text = std::str::from_utf8(&path)
+            .expect("store path is UTF-8")
+            .to_owned();
+        fs::remove_file(PathBuf::from(&path_text).join("sub").join("nested.txt"))
+            .expect("materialized store path corrupts");
+
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("corrupt existing fetchTarball store path rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballHashMismatch { .. }
+        ));
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_validates_arguments_and_hashes() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball-invalid");
+        let url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+        let ir = lower(&format!(
+            r#"builtins.fetchTarball {{ url = {url}; sha256 = "0000000000000000000000000000000000000000000000000000000000000000"; }}"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("hash mismatch rejects fetchTarball");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballHashMismatch { .. }
+        ));
+
+        let ir = lower(&format!(
+            "builtins.fetchTarball {{ url = {url}; sha256 = \"\"; }}"
+        ));
+        let mut evaluator = TreeWalk::new(&ir);
+        let error = evaluator
+            .eval_root()
+            .expect_err("empty fetchTarball hash warns and mismatches real content");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballHashMismatch { expected, .. }
+                if expected.as_slice() == [0_u8; 32]
+        ));
+        assert_eq!(evaluator.warning_output().len(), 1);
+        assert_warning_output(
+            evaluator
+                .warning_output()
+                .first()
+                .expect("warning output exists"),
+            EMPTY_FETCHURL_SHA256_WARNING,
+        );
+
+        let ir = lower(&format!(
+            r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; bogus = 1; }}"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("unknown fetchTarball attr rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTarballAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let ir = lower(&format!(
+            r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; name = "bad/name"; }}"#
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("invalid store name rejects fetchTarball");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballStoreName { .. }
+        ));
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_primop_obeys_eval_mode_gates() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tarball-mode");
+        let store_dir = unique_temp_dir("fetch-tarball-mode-store");
+        let path = path_source(&archive_path);
+        let url = nix_string_literal(&format!("file://{path}"));
+        let recursive_digest = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2";
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!("builtins.fetchTarball {url}")),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure eval rejects unpinned fetchTarball before URL access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballHashRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        let mut pure_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        pure_options.set_eval_mode(EvalMode::Pure);
+        assert!(
+            String::from_utf8(eval_string_bytes_with_options(
+                &format!(
+                    r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#
+                ),
+                pure_options,
+            ))
+            .expect("store path is UTF-8")
+            .ends_with("-source")
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted eval rejects disallowed file fetchTarball");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                path: denied,
+                mode: EvalMode::Restricted,
+                ..
+            } if denied.as_slice() == path.as_bytes()
+        ));
+
+        let mut options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        options.set_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_path(path.as_bytes().to_vec())
+            .expect("allowed path accepts absolute path");
+        assert!(
+            String::from_utf8(eval_string_bytes_with_options(
+                &format!(
+                    r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#
+                ),
+                options,
+            ))
+            .expect("store path is UTF-8")
+            .ends_with("-source")
+        );
+
+        let mut options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        options.set_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri(format!("file://{path}").into_bytes())
+            .expect("file URL prefix configures as allowed URI");
+        assert!(
+            String::from_utf8(eval_string_bytes_with_options(
+                &format!(
+                    r#"builtins.fetchTarball {{ url = {url}; sha256 = "{recursive_digest}"; }}"#
+                ),
+                options,
+            ))
+            .expect("store path is UTF-8")
+            .ends_with("-source")
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(
+                r#"builtins.fetchTarball { url = "https://cache.example/src.tar.gz"; sha256 = "da1b902a95e82957778f23ddd9648dbe96983d13155a63a4f9e84265536adca2"; }"#,
+            ),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted eval rejects disallowed network fetchTarball before network access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTarballAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 

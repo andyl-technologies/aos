@@ -606,10 +606,18 @@ eval (network access is disabled unless explicitly allowed).
         `pathExists`, and `hashFile`, raw URL basename handling, empty-hash
         placeholder warnings, fixed-output early return for already materialized
         paths, pure-mode hash pinning, and restricted-mode URI prefix gating.
-- [ ] `fetchTarball` (args) — fetch and **unpack** a tarball; `args` is a URL or
+- [x] `fetchTarball` (args) — fetch and **unpack** a tarball; `args` is a URL or
       `{ url; sha256 ? …; name ? …; }`. Returns the unpacked store path. Note the
       `sha256` here is the hash of the *unpacked* tree (`r:sha256`), unlike
       `fetchurl`'s flat hash — a frequent confusion to pin.
+      - Implemented for `file`, `http`, and `https` URLs with uncompressed, gzip,
+        bzip2, xz, and zstd tar streams detected by magic bytes or URL suffix,
+        string and attrset arguments, optional `sha256` in supported hash
+        encodings, default output name `source`, optional explicit `name`,
+        single-top-level-directory stripping, recursive NAR hashing of the unpacked
+        tree, opaque path context, atomic configured-store materialization,
+        validated reuse of existing store paths, pure-mode hash pinning, and
+        restricted-mode path or URI prefix gating.
 - [ ] `fetchGit` (args) — fetch a git repo; `{ url; rev ? …; ref ? …;
       submodules ? …; shallow ? …; allRefs ? …; }`. Returns
       `{ outPath; rev; shortRev; revCount; lastModified; … }`. The exact returned
@@ -854,7 +862,7 @@ omitted (they are keyed by their argument value hashes like any expression).
 | `currentSystem` | evaluator config | the configured system string | disabled under pure-eval |
 | `currentTime` | wall clock | **not soundly cacheable**: taint the memo; do not persist a result that observed it | n/a |
 | `fetchurl` | network (FOD) | the declared `sha256` (fixed-output: stable) | pure: requires `sha256`; restrict-eval: must allow URL |
-| `fetchTarball` | network (FOD) | the declared `sha256` of the unpacked tree | restrict-eval gating |
+| `fetchTarball` | network (FOD) | the declared `sha256` of the unpacked tree | pure: requires `sha256`; restrict-eval: must allow URL or path |
 | `fetchGit` | network/git | `(url, rev)`; dirty-tree → tainted | restrict-eval gating |
 | `fetchTree` | network | the locked-input narHash | pure-eval requires locked input |
 | `fetchClosure` | binary cache | `fromPath` content address | experimental |

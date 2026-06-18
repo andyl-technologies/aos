@@ -299,7 +299,13 @@ define_builtins! {
     pub(crate) struct FetchTarballBuiltin;
     impl BuiltinDefinition for FetchTarballBuiltin {
         const NAME: &'static [u8] = b"fetchTarball";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FetchTarball;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Effectful,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
+        const DOCS: &'static BuiltinDocs = &FETCH_TARBALL_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
@@ -975,6 +981,8 @@ pub(crate) enum BuiltinExecution {
     FilterSource,
     /// The builtin evaluates `fetchurl`.
     Fetchurl,
+    /// The builtin evaluates `fetchTarball`.
+    FetchTarball,
     /// The builtin evaluates `readDir`.
     ReadDir,
     /// The builtin evaluates `readFile`.
@@ -1095,6 +1103,7 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::Unsupported { .. }
+            | Self::FetchTarball
             | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
@@ -1139,6 +1148,7 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported { arity } => Some(arity),
             Self::BuiltinsValue
+            | Self::FetchTarball
             | Self::Fetchurl
             | Self::TrueValue
             | Self::FalseValue
@@ -1353,6 +1363,10 @@ static GENERIC_CLOSURE_DOCS: BuiltinDocs = BuiltinDocs {
 
 static FETCHURL_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Fetches a URL as a fixed-output store path.",
+};
+
+static FETCH_TARBALL_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Fetches and unpacks a tarball as a recursive fixed-output store path.",
 };
 
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1906,7 +1920,6 @@ mod tests {
         for name in [
             b"fetchGit".as_slice(),
             b"fetchMercurial".as_slice(),
-            b"fetchTarball".as_slice(),
             b"fetchTree".as_slice(),
             b"flakeRefToString".as_slice(),
             b"getFlake".as_slice(),
@@ -2167,7 +2180,7 @@ mod tests {
     #[test]
     fn default_builtin_metadata_stays_derived_from_execution_strategy() {
         for metadata in BUILTINS.iter() {
-            if metadata.name() == b"fetchurl" {
+            if matches!(metadata.name(), b"fetchurl" | b"fetchTarball") {
                 continue;
             }
             let execution = metadata.execution();
@@ -2209,6 +2222,24 @@ mod tests {
             fetchurl.docs().summary(),
             "Fetches a URL as a fixed-output store path."
         );
+
+        let fetch_tarball = BUILTINS
+            .lookup(b"fetchTarball")
+            .expect("fetchTarball builtin is registered");
+
+        assert_eq!(fetch_tarball.execution(), BuiltinExecution::FetchTarball);
+        assert_eq!(
+            fetch_tarball.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(fetch_tarball.first_class_arity(), Some(1));
+        assert!(fetch_tarball.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_tarball.docs().summary(),
+            "Fetches and unpacks a tarball as a recursive fixed-output store path."
+        );
     }
 
     #[test]
@@ -2244,6 +2275,10 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"fetchurl").unwrap().docs().summary(),
             "Fetches a URL as a fixed-output store path."
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"fetchTarball").unwrap().docs().summary(),
+            "Fetches and unpacks a tarball as a recursive fixed-output store path."
         );
         assert_eq!(
             BUILTINS.lookup(b"langVersion").unwrap().docs().summary(),
