@@ -343,6 +343,7 @@
           "root_image"
           "root_verity"
           "root_hash"
+          "root_hash_file"
           "root_hash_sig"
         ];
         extraImageKeys = builtins.filter (
@@ -369,11 +370,20 @@
               "expose image '${builtins.toString image.store_path}' has invalid NAR hash"
               (
                 let
-                  normalized = image // {store_path = validateAbsolutePath "image store path" image.store_path;};
+                  rootHashFile =
+                    if image ? root_hash_file
+                    then validateAbsolutePath "expose image root_hash_file" (builtins.toString image.root_hash_file)
+                    else null;
+                  rootHashPlaceholder = builtins.substring 0 64 (builtins.hashString "sha256" "aos-expose-root-hash:${builtins.toString image.store_path}:${builtins.toString (image.root_hash_file or "")}");
+                  normalized =
+                    builtins.removeAttrs image ["root_hash_file"]
+                    // {
+                      store_path = validateAbsolutePath "image store path" image.store_path;
+                    };
                   verityFields = [
                     (image ? root_image)
                     (image ? root_verity)
-                    (image ? root_hash)
+                    (image ? root_hash || rootHashFile != null)
                     (image ? root_hash_sig)
                   ];
                   verityFieldCount = builtins.length (builtins.filter (present: present) verityFields);
@@ -390,13 +400,22 @@
                       (verityFieldCount == 4)
                       "expose image '${builtins.toString image.store_path}' must declare root_image, root_verity, root_hash, and root_hash_sig together"
                       (
-                        normalized
-                        // {
-                          root_image = validateRelativeArtifactPath "expose image root_image" image.root_image;
-                          root_verity = validateRelativeArtifactPathWithSuffix "expose image root_verity" ".verity" image.root_verity;
-                          root_hash = validateRootHash "expose image root_hash" image.root_hash;
-                          root_hash_sig = validateRelativeArtifactPathWithSuffix "expose image root_hash_sig" ".p7s" image.root_hash_sig;
-                        }
+                        throwIfNot
+                        (!(image ? root_hash && rootHashFile != null))
+                        "expose image '${builtins.toString image.store_path}' must not declare both root_hash and root_hash_file"
+                        (
+                          normalized
+                          // {
+                            root_image = validateRelativeArtifactPath "expose image root_image" image.root_image;
+                            root_verity = validateRelativeArtifactPathWithSuffix "expose image root_verity" ".verity" image.root_verity;
+                            root_hash =
+                              if rootHashFile != null
+                              then "sha256:${rootHashPlaceholder}"
+                              else validateRootHash "expose image root_hash" image.root_hash;
+                            root_hash_sig = validateRelativeArtifactPathWithSuffix "expose image root_hash_sig" ".p7s" image.root_hash_sig;
+                          }
+                          // lib.optionalAttrs (rootHashFile != null) {inherit rootHashFile;}
+                        )
                       )
                     )
               )
@@ -1092,6 +1111,22 @@ in rec {
       builtins.map
       validateImage
       (validateList "expose.images" (checkedExpose.images or []));
+    manifestImages = builtins.map (image: builtins.removeAttrs image ["rootHashFile"]) images;
+    dynamicRootHashImages = builtins.filter (image: image ? rootHashFile) images;
+    passthruManifestImages =
+      builtins.map (
+        image: let
+          manifestImage = builtins.removeAttrs image ["rootHashFile"];
+        in
+          if image ? rootHashFile
+          then
+            builtins.removeAttrs manifestImage ["root_hash"]
+            // {
+              root_hash_file = image.rootHashFile;
+            }
+          else manifestImage
+      )
+      images;
     verityImages = builtins.filter (image: builtins.elem image.format ["ext4-verity" "erofs-verity"]) images;
     verityImage =
       throwIfNot
@@ -1110,6 +1145,7 @@ in rec {
         RootVerity = "${verityImage.store_path}/${verityImage.root_verity}";
         RootHash = rootHashHex verityImage.root_hash;
         RootHashSignature = "${verityImage.store_path}/${verityImage.root_hash_sig}";
+        RootImagePolicy = "root=signed";
       };
     checkedConfig = validateConfig packageName (checkedExpose.config or {});
     config = {
@@ -2169,7 +2205,8 @@ in rec {
 
     manifest = {
       expose = {
-        inherit target requires images config provides uses;
+        inherit target requires config provides uses;
+        images = manifestImages;
         units = manifestUnitNames;
       };
       kernel = manifestKernel;
@@ -2178,6 +2215,15 @@ in rec {
       inherit confinement;
       permissions = manifestPermissions;
     };
+    passthruManifest =
+      manifest
+      // {
+        expose =
+          manifest.expose
+          // {
+            images = passthruManifestImages;
+          };
+      };
     networkPolicy = {
       version = 1;
       package = packageName;
@@ -2298,6 +2344,32 @@ in rec {
         done
       ''
       else "";
+    rootHashFilePatchCommands = builtins.concatStringsSep "\n" (
+      builtins.map (
+        image: let
+          placeholder = rootHashHex image.root_hash;
+        in ''
+          actual_root_hash=$(cat ${lib.escapeShellArg image.rootHashFile})
+          if ! printf '%s' "$actual_root_hash" | ${pkgs.grep}/bin/grep -Eq '^[0-9a-f]{64}$'; then
+            echo "invalid root hash in ${image.rootHashFile}: $actual_root_hash" >&2
+            exit 1
+          fi
+          for path in \
+            "$out/manifest.json" \
+            "$out/network-policy.json" \
+            "$out/mac-profile.json" \
+            "$out"/units/* \
+            "$out"/mac/selinux/*; do
+            [ -f "$path" ] || continue
+            tmp="$path.root-hash"
+            ${pkgs.sed}/bin/sed "s|${placeholder}|$actual_root_hash|g" "$path" > "$tmp"
+            rm -f "$path"
+            mv "$tmp" "$path"
+          done
+        ''
+      )
+      dynamicRootHashImages
+    );
     runCommandAttrs =
       {
         unitsDrv = rendered.unitsDrv;
@@ -2305,14 +2377,21 @@ in rec {
         networkPolicy = builtins.toJSON networkPolicy;
         macProfile = builtins.toJSON macProfile;
         passthru = {
-          inherit manifest confinement networkPolicy macProfile;
+          inherit confinement networkPolicy macProfile;
+          manifest = passthruManifest;
+          manifestRequiresBuild = dynamicRootHashImages != [];
           permissions = manifestPermissions;
         };
         passAsFile = ["manifest" "networkPolicy" "macProfile"] ++ lib.optional macProfileEnabled "selinuxProfile";
-        buildDeps = lib.optionals macProfileEnabled [
-          pkgs.checkpolicy
-          pkgs.semodule-utils
-        ];
+        buildDeps =
+          lib.optionals (dynamicRootHashImages != []) [
+            pkgs.grep
+            pkgs.sed
+          ]
+          ++ lib.optionals macProfileEnabled [
+            pkgs.checkpolicy
+            pkgs.semodule-utils
+          ];
         preferLocalBuild = true;
         allowSubstitutes = false;
       }
@@ -2334,6 +2413,7 @@ in rec {
           cp "$macProfilePath" "$out/mac-profile.json"
           ${macProfileCommands}
           ${exposeArtifactPathCommands}
+          ${rootHashFilePatchCommands}
           ${credentialBlobCommands}
         ''
       )

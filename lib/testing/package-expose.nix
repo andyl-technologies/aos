@@ -1591,6 +1591,7 @@ in
           grep -q "RootVerity=$verityImageArtifact/root.verity" "$verity_unit"
           grep -q 'RootHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$verity_unit"
           grep -q "RootHashSignature=$verityImageArtifact/root.roothash.p7s" "$verity_unit"
+          grep -q 'RootImagePolicy=root=signed' "$verity_unit"
           grep -q 'ExecStartPre=.*/bin/aos-verity-root-guard --signature-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa .*/root.roothash.p7s' "$verity_unit"
           if grep -q 'ExecStartPre=.*-- .*bin/aos-selinux-run' "$verity_unit"; then
             echo "verity RootImage precheck must not run workload sandbox wrappers" >&2

@@ -74,7 +74,6 @@
   storePathHash = path:
     builtins.elemAt (lib.splitString "-" (baseNameOf (builtins.toString path))) 0;
   mkPackageRootImage = import ../../lib/build/package-root-image.nix {inherit pkgs lib;};
-  fakeRootHash = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
   untrustedRootHashKey = pkgs.writeTextFile {
     name = "package-root-image-untrusted-key";
@@ -203,7 +202,7 @@
             nar_size = 1;
             root_image = "root.img";
             root_verity = "root.verity";
-            root_hash = "sha256:${fakeRootHash}";
+            root_hash_file = "${image}/root.roothash";
             root_hash_sig = "root.roothash.p7s";
           }
         ];
@@ -218,40 +217,9 @@
         requires = [];
       };
     };
-    expose =
-      pkgs.runCommand "expose-${name}-root-hash" {
-        buildDeps = [
-          pkgs.coreutils
-          pkgs.grep
-          pkgs.sed
-        ];
-        passthru = rendered.expose.passthru;
-      } ''
-        set -eu
-        cp -a ${rendered.expose}/. "$out/"
-        chmod -R u+w "$out"
-
-        root_hash=$(cat ${image}/root.roothash)
-        for path in \
-          "$out/manifest.json" \
-          "$out/network-policy.json" \
-          "$out/mac-profile.json" \
-          "$out"/units/*.service \
-          "$out"/mac/selinux/*.te; do
-          [ -e "$path" ] || continue
-          sed -i \
-            -e "s|${rendered.expose}|$out|g" \
-            -e "s|${fakeRootHash}|$root_hash|g" \
-            "$path"
-        done
-
-        grep -Eq "\"root_hash\"[[:space:]]*:[[:space:]]*\"sha256:$root_hash\"" "$out/manifest.json"
-        grep -q "^RootHash=$root_hash$" "$out/units/${name}.service"
-      '';
   in
     rendered
     // {
-      expose = expose;
       passthru = (rendered.passthru or {}) // {inherit image root;};
     };
 
@@ -326,6 +294,15 @@ in {
           print(f"--- journalctl -u {unit} ---")
           print(target.succeed(f"journalctl -u {unit} -b --no-pager -n 200 2>&1 || true"))
 
+      def expect_failed_start(unit):
+          target.succeed(f"systemctl reset-failed {unit} 2>/dev/null || true")
+          try:
+              target.succeed(f"systemctl start {unit} >/dev/null 2>&1 || true", timeout=120)
+              target.wait_until_succeeds(f"systemctl is-failed --quiet {unit}", timeout=60)
+          except Exception:
+              dump_unit(unit)
+              raise
+
       def assert_file_line(path, expected):
           target.succeed(
               f"needle='{expected}'; found=0; "
@@ -346,7 +323,32 @@ in {
           assert_file_line(unit, f"RootImage={image}/root.img")
           assert_file_line(unit, f"RootVerity={image}/root.verity")
           assert_file_line(unit, f"RootHashSignature={image}/root.roothash.p7s")
+          assert_file_line(unit, "RootImagePolicy=root=signed")
           assert_file_line(unit, f"RootHash={root_hash}")
+
+      def write_direct_rootimage_unit(unit, image, root_image, command, state_dir):
+          root_hash = target.succeed(f"cat {image}/root.roothash").strip()
+          target.succeed(
+              f"cat > /run/systemd/system/{unit} <<'UNIT'\n"
+              "[Unit]\n"
+              f"Description=Direct no-guard RootImage proof for {unit}\n"
+              "After=systemd-udevd.service\n"
+              "Requires=systemd-udevd.service\n"
+              "\n"
+              "[Service]\n"
+              "Type=simple\n"
+              f"RootImage={root_image}\n"
+              f"RootVerity={image}/root.verity\n"
+              f"RootHash={root_hash}\n"
+              f"RootHashSignature={image}/root.roothash.p7s\n"
+              "RootImagePolicy=root=signed\n"
+              "PrivateDevices=false\n"
+              f"StateDirectory={state_dir}\n"
+              f"ExecStart={command}\n"
+              "UNIT\n"
+              f"if grep -q '^ExecStartPre=' /run/systemd/system/{unit}; then exit 1; fi\n"
+              "systemctl daemon-reload\n"
+          )
 
       target.succeed("systemctl is-active multi-user.target")
       target.succeed("test -d /sys/firmware/efi/efivars")
@@ -399,12 +401,59 @@ in {
       finally:
           target.succeed("systemctl stop package-root-image-good.service 2>/dev/null || true")
 
-      target.succeed("rm -rf /var/lib/aos-pkg-package-root-image-bad")
+      write_direct_rootimage_unit(
+          "direct-rootimage-good.service",
+          "${goodImage}",
+          "${goodImage}/root.img",
+          "/bin/package-root-image-good-command",
+          "aos-pkg-package-root-image-good",
+      )
+      target.succeed("rm -f /var/lib/aos-pkg-package-root-image-good/result")
       try:
-          target.fail("systemctl start package-root-image-bad.service", timeout=120)
+          target.succeed("systemctl start direct-rootimage-good.service", timeout=120)
+          target.wait_until_succeeds(
+              "test \"$(cat /var/lib/aos-pkg-package-root-image-good/result)\" = good-rootimage-ok",
+              timeout=60,
+          )
       except Exception:
-          dump_unit("package-root-image-bad.service")
+          dump_unit("direct-rootimage-good.service")
           raise
+      finally:
+          target.succeed("systemctl stop direct-rootimage-good.service 2>/dev/null || true")
+
+      write_direct_rootimage_unit(
+          "direct-rootimage-bad-signature.service",
+          "${badImage}",
+          "${badImage}/root.img",
+          "/bin/package-root-image-bad-command",
+          "aos-pkg-package-root-image-bad",
+      )
+      target.succeed("rm -rf /var/lib/aos-pkg-package-root-image-bad")
+      expect_failed_start("direct-rootimage-bad-signature.service")
+      target.succeed("test ! -e /var/lib/aos-pkg-package-root-image-bad/result")
+      target.succeed("systemctl is-failed --quiet direct-rootimage-bad-signature.service")
+      dump_unit("direct-rootimage-bad-signature.service")
+
+      target.succeed(
+          "cp ${goodImage}/root.img /run/aos-tampered-root.img && "
+          "chmod u+w /run/aos-tampered-root.img && "
+          "printf AOS-TAMPERED-BLOCK | dd of=/run/aos-tampered-root.img bs=1 seek=4096 conv=notrunc"
+      )
+      write_direct_rootimage_unit(
+          "direct-rootimage-tampered.service",
+          "${goodImage}",
+          "/run/aos-tampered-root.img",
+          "/bin/package-root-image-good-command",
+          "aos-pkg-package-root-image-good",
+      )
+      target.succeed("rm -f /var/lib/aos-pkg-package-root-image-good/result")
+      expect_failed_start("direct-rootimage-tampered.service")
+      target.succeed("test ! -e /var/lib/aos-pkg-package-root-image-good/result")
+      target.succeed("systemctl is-failed --quiet direct-rootimage-tampered.service")
+      dump_unit("direct-rootimage-tampered.service")
+
+      target.succeed("rm -rf /var/lib/aos-pkg-package-root-image-bad")
+      expect_failed_start("package-root-image-bad.service")
       target.succeed("test ! -e /var/lib/aos-pkg-package-root-image-bad/result")
       target.succeed("systemctl is-failed --quiet package-root-image-bad.service")
       dump_unit("package-root-image-bad.service")

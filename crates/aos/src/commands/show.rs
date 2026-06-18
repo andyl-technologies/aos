@@ -1,10 +1,10 @@
 //! `aos show` — display a package's metadata.
 //!
-//! Evaluates `pkgs.<package>.meta` and, when present, the package expose
-//! manifest passthru data (no build). It pretty-prints common package fields
-//! plus the RFC-0001 expose target, confinement label, and permission summary.
-//! With `--json`, expose packages include an `exposeManifest` field next to
-//! the raw meta attrset.
+//! Evaluates `pkgs.<package>.meta` and, when the expose manifest is complete at
+//! evaluation time, the package expose manifest passthru data. It pretty-prints
+//! common package fields plus the RFC-0001 expose target, confinement label,
+//! and permission summary. With `--json`, expose packages include an
+//! `exposeManifest` field next to the raw meta attrset.
 
 use anyhow::{Context, Result};
 

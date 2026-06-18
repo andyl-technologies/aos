@@ -72,11 +72,14 @@ in
     #          sandbox; created at system activation time instead).
     #   0004 — Skip creating /run/systemd for test-run managers so offline
     #          analysis tools can run inside the Nix sandbox.
+    #   0005 — Fail closed when RootHashSignature= is present but the kernel
+    #          rejects the dm-verity signed-key activation.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0003-remove-install-emptydir-systemdstatedir.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
+      ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
     ];
 
     buildDeps = [
