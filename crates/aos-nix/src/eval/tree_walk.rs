@@ -2491,13 +2491,11 @@ impl TreeWalk {
         };
 
         let mut derivation = nix_compat::derivation::Derivation::default();
-        derivation
-            .outputs
-            .insert("out".to_owned(), nix_compat::derivation::Output::default());
         let mut context = StringContext::empty();
         let mut name = None;
         let mut builder = None;
         let mut system = None;
+        let mut outputs_seen = false;
 
         for entry in entries {
             let key = {
@@ -2515,6 +2513,16 @@ impl TreeWalk {
             self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
 
             let value = self.force_value(argument, argument_span, entry.value)?;
+            if key == ARGS_ATTR {
+                let (arguments, value_context) =
+                    self.derivation_args_value(id, span, argument, argument_span, value)?;
+                context = context.union(&value_context).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
+                derivation.arguments = arguments;
+                continue;
+            }
+
             let rendered =
                 self.derivation_to_string_value(id, span, argument, argument_span, value)?;
             let (bytes, value_context) = rendered.into_parts();
@@ -2532,6 +2540,11 @@ impl TreeWalk {
                 NAME_ATTR => name = Some(env_value),
                 BUILDER_ATTR => builder = Some(env_value),
                 SYSTEM_ATTR => system = Some(env_value),
+                OUTPUTS_ATTR => {
+                    outputs_seen = true;
+                    derivation.outputs =
+                        Self::derivation_outputs_value(id, span, &bytes, &env_value)?;
+                }
                 _ => {}
             }
         }
@@ -2550,18 +2563,19 @@ impl TreeWalk {
             builder.ok_or_else(|| self.missing_derivation_strict_attr(id, span, BUILDER_ATTR))?;
         derivation.system =
             system.ok_or_else(|| self.missing_derivation_strict_attr(id, span, SYSTEM_ATTR))?;
-        derivation.environment.insert("out".to_owned(), "".into());
+        if !outputs_seen {
+            derivation
+                .outputs
+                .insert("out".to_owned(), nix_compat::derivation::Output::default());
+        }
+        for output_name in derivation.outputs.keys() {
+            derivation
+                .environment
+                .insert(output_name.clone(), "".into());
+        }
         self.add_derivation_context_inputs(id, span, &mut derivation, &context)?;
 
-        derivation.validate(false).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::DerivationStrict {
-                    id,
-                    message: source.to_string(),
-                },
-                span,
-            )
-        })?;
+        self.validate_derivation_strict_before_paths(id, span, &derivation)?;
         let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
         let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
         derivation
@@ -2591,6 +2605,111 @@ impl TreeWalk {
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path)
     }
 
+    fn derivation_args_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<(Vec<String>, StringContext), TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: value_id,
+                        source,
+                    },
+                    value_span,
+                )
+            })?;
+            Self::clone_list_elements(value_id, value_span, list)?
+        };
+        let mut arguments = Vec::new();
+        arguments.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: value_id,
+                    len: elements.len(),
+                },
+                value_span,
+            )
+        })?;
+        let mut context = StringContext::empty();
+        for element in elements {
+            let value = self.force_value(value_id, value_span, element)?;
+            let rendered =
+                self.derivation_to_string_value(id, span, value_id, value_span, value)?;
+            let (bytes, value_context) = rendered.into_parts();
+            context = context.union(&value_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+            arguments.push(Self::derivation_utf8_string(id, span, "argument", &bytes)?);
+        }
+
+        Ok((arguments, context))
+    }
+
+    fn derivation_outputs_value(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        env_value: &str,
+    ) -> Result<BTreeMap<String, nix_compat::derivation::Output>, TreeWalkError> {
+        let mut outputs = BTreeMap::new();
+        for output in bytes
+            .split(|byte| Self::is_derivation_outputs_separator(*byte))
+            .filter(|output| !output.is_empty())
+        {
+            let output_name = Self::derivation_utf8_string(id, span, "output name", output)?;
+            Self::validate_derivation_strict_output_name(id, span, &output_name)?;
+            if outputs
+                .insert(
+                    output_name.clone(),
+                    nix_compat::derivation::Output::default(),
+                )
+                .is_some()
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("duplicate derivation output {output_name:?}"),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        if outputs.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!(
+                        "derivation cannot have an empty set of outputs from {env_value:?}"
+                    ),
+                },
+                span,
+            ));
+        }
+
+        Ok(outputs)
+    }
+
+    fn is_derivation_outputs_separator(byte: u8) -> bool {
+        matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+    }
+
     fn reject_unsupported_derivation_strict_attr(
         &self,
         id: IrId,
@@ -2598,8 +2717,6 @@ impl TreeWalk {
         key: &[u8],
     ) -> Result<(), TreeWalkError> {
         let feature = match key {
-            ARGS_ATTR => Some("arguments"),
-            OUTPUTS_ATTR => Some("custom outputs"),
             STRUCTURED_ATTRS_ATTR => Some("structured attrs"),
             IGNORE_NULLS_ATTR => Some("ignore-nulls mode"),
             OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
@@ -2616,6 +2733,125 @@ impl TreeWalk {
         if let Some(feature) = feature {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedDerivationStrictFeature { id, feature },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_derivation_strict_before_paths(
+        &self,
+        id: IrId,
+        span: Span,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<(), TreeWalkError> {
+        if derivation.outputs.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "derivation cannot have an empty set of outputs".to_owned(),
+                },
+                span,
+            ));
+        }
+
+        for output_name in derivation.outputs.keys() {
+            Self::validate_derivation_strict_output_name(id, span, output_name)?;
+        }
+
+        for (input_derivation_path, output_names) in &derivation.input_derivations {
+            if !input_derivation_path.name().ends_with(".drv") {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!(
+                            "input derivation {} is not a .drv path",
+                            input_derivation_path.to_absolute_path()
+                        ),
+                    },
+                    span,
+                ));
+            }
+            if output_names.is_empty() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!(
+                            "input derivation {} has no output names",
+                            input_derivation_path.to_absolute_path()
+                        ),
+                    },
+                    span,
+                ));
+            }
+            for output_name in output_names {
+                Self::validate_derivation_strict_input_output_name(id, span, output_name)?;
+            }
+        }
+
+        if derivation.system.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "derivation system must not be empty".to_owned(),
+                },
+                span,
+            ));
+        }
+        if derivation.builder.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "derivation builder must not be empty".to_owned(),
+                },
+                span,
+            ));
+        }
+        for key in derivation.environment.keys() {
+            if key.is_empty() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: "derivation environment key must not be empty".to_owned(),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_derivation_strict_input_output_name(
+        id: IrId,
+        span: Span,
+        output_name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if nix_compat::store_path::validate_name(output_name.as_bytes()).is_err() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("invalid input derivation output name {output_name:?}"),
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_derivation_strict_output_name(
+        id: IrId,
+        span: Span,
+        output_name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if output_name == "drvPath"
+            || nix_compat::store_path::validate_name(output_name.as_bytes()).is_err()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("invalid derivation output name {output_name:?}"),
+                },
                 span,
             ));
         }
@@ -2683,6 +2919,20 @@ impl TreeWalk {
                     })?;
                     let output =
                         Self::derivation_utf8_string(id, span, "input derivation output", output)?;
+                    if let Some(known) = self.known_derivations.get(&store_path) {
+                        if !known.output_names.contains(&output) {
+                            return Err(TreeWalkError::new(
+                                TreeWalkErrorKind::DerivationStrict {
+                                    id,
+                                    message: format!(
+                                        "input derivation {} has no output {output:?}",
+                                        store_path.to_absolute_path()
+                                    ),
+                                },
+                                span,
+                            ));
+                        }
+                    }
                     derivation
                         .input_derivations
                         .entry(store_path)
@@ -38234,6 +38484,274 @@ mod tests {
         assert_eq!(
             eval_json_bytes(source),
             br#"{"drvContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"allOutputs":true}},"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","names":["drvPath","out"],"out":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","outContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_supports_custom_outputs() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputs = [ "out" "dev" ];
+             };
+           in {
+             dev = d.dev;
+             devContext = builtins.getContext d.dev;
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+             out = d.out;
+             outContext = builtins.getContext d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"dev":"/nix/store/phkb0v7mn27i2c5y0qg9d18wvgch5x2w-x-dev","devContext":{"/nix/store/w02nl2gwz0jsij58hzmg7m5f7m8d1404-x.drv":{"outputs":["dev"]}},"drvPath":"/nix/store/w02nl2gwz0jsij58hzmg7m5f7m8d1404-x.drv","names":["dev","drvPath","out"],"out":"/nix/store/kpxa7fq9k2f03c5mn9ipsqjs09lnj1gj-x","outContext":{"/nix/store/w02nl2gwz0jsij58hzmg7m5f7m8d1404-x.drv":{"outputs":["out"]}}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_preserves_raw_outputs_env_string() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputs = "out  dev";
+             };
+           in {
+             dev = d.dev;
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"dev":"/nix/store/n28wnzwh3wqjmhyz754raw70fhyg436p-x-dev","drvPath":"/nix/store/pgbcwn3hlyzz8y1bzijsdm0faai1bxvz-x.drv","out":"/nix/store/8slxvn562rwfh09l7bjcg4mdpg4lv8vp-x"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_outputs_use_cpp_nix_whitespace_set() {
+        for source in [
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = builtins.fromJSON "\"out\\fdev\"";
+               }"#,
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = builtins.fromJSON "\"out\\u000bdev\"";
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("form feed and vertical tab are not outputs separators");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::DerivationStrict { .. }),
+                "{source}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_strict_allows_drv_output_name_but_not_drv_path() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputs = [ "drv" ];
+             };
+           in {
+             drv = d.drv;
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drv":"/nix/store/bns120nfy7bm27fpsdf7jfkq1laf809f-x-drv","drvPath":"/nix/store/ki88ybnps5knx7lxvicz21x8n9spzhs7-x.drv","names":["drv","drvPath"]}"#.to_vec()
+        );
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = [ "drvPath" ];
+               }"#,
+        ))
+        .expect_err("drvPath is reserved for the derivation path attribute");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DerivationStrict { message, .. }
+                if message.contains("invalid derivation output name")
+        ));
+    }
+
+    #[test]
+    fn derivation_strict_rejects_empty_and_duplicate_outputs() {
+        for source in [
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = [ ];
+               }"#,
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = [ "out" "out" ];
+               }"#,
+        ] {
+            let error =
+                eval_whnf_owned(&lower(source)).expect_err("invalid outputs must be rejected");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::DerivationStrict { .. }),
+                "{source}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_strict_allows_drv_path_as_input_output_name() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               input = builtins.appendContext "payload" {
+                 "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input.drv" = {
+                   outputs = [ "drvPath" ];
+                 };
+               };
+             };
+           in d.drvPath"#;
+
+        let error = eval_whnf_owned(&lower(source))
+            .expect_err("unknown input drv should be reported after output-name validation");
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::DerivationStrict { message, .. }
+                    if message.contains("is not known")
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_missing_known_input_output_name() {
+        let source = r#"let
+             base = derivationStrict {
+               name = "base";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+               input = builtins.appendContext "payload" {
+                 "/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv" = {
+                   outputs = [ "drvPath" ];
+                 };
+               };
+             };
+           in builtins.seq base.drvPath d.drvPath"#;
+
+        assert_eq!(
+            eval_string_bytes(
+                "let base = derivationStrict { name = \"base\"; system = \"x86_64-linux\"; builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder\"; }; in base.drvPath"
+            ),
+            b"/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv".to_vec()
+        );
+
+        let error = eval_whnf_owned(&lower(source))
+            .expect_err("known input derivation does not provide drvPath output");
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::DerivationStrict { message, .. }
+                    if message.contains("has no output")
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn derivation_strict_supports_arguments() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ "a" "b c" 7 true false null ];
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/jd4xrrbkljw5cjzl1cl5aid034ax3r3r-x.drv","out":"/nix/store/wbpvl18k2swqk8m05048r544h4kxb3hc-x"}"#.to_vec()
+        );
+
+        let nested = r#"let
+             simple = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ "a b" "c" ];
+             };
+             nested = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ [ "a" "b" ] "c" ];
+             };
+           in {
+             nested = nested.drvPath;
+             same = simple.drvPath == nested.drvPath;
+             simple = simple.drvPath;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(nested),
+            br#"{"nested":"/nix/store/5wq01zb7i3yxn0aj6l1snyflpzvc704g-x.drv","same":true,"simple":"/nix/store/5wq01zb7i3yxn0aj6l1snyflpzvc704g-x.drv"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_observes_argument_contexts_as_inputs() {
+        let source = r#"let
+             base = derivationStrict {
+               name = "base";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+               args = [ "${base.out}" ];
+             };
+           in {
+             baseDrv = base.drvPath;
+             baseOut = base.out;
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"baseDrv":"/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv","baseOut":"/nix/store/c9hhy38jds9ffzzqwkb50vrv2pi8x614-base","drvPath":"/nix/store/jpaibv0aq71nimqkaa2zgzhyjx3jsdqm-x.drv","out":"/nix/store/v9psivi4r812mfl72k0y62b61r1f6gvb-x"}"#.to_vec()
         );
     }
 
