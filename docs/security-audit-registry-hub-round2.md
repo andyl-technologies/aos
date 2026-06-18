@@ -1,4 +1,4 @@
-# Second-Round Security Audit — aos-registry-hub
+# Second-Round Security Audit — aos-hub
 
 > Round 2 (deep surfaces + regression-review of the round-1 fixes): 8 finders →
 > 2 skeptics per finding → synthesis. 27 findings; 23 confirmed, 2 contested,

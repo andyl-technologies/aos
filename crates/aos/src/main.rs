@@ -137,7 +137,7 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command).await;
     }
 
-    // Hub commands talk to an aos-registry-hub over its public API — no NixRunner.
+    // Hub commands talk to an aos-hub over its public API — no NixRunner.
     if let Commands::Hub { command } = &cli.command {
         return commands::hub::run(&printer, command).await;
     }

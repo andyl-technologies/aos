@@ -9,7 +9,7 @@
 //! that surface, generated from the `.proto` (owned by `aos-proto`) with
 //! `prost-build` + `serde` derives and **nothing else**: no `connectrpc`, no
 //! `buffa`, no `hyper`/`tokio`. That keeps it wasm-clean, so the worker, the
-//! native hub (`aos-registry-core`'s shared handlers), and the `aos-remote`
+//! native hub (`aos-hub-core`'s shared handlers), and the `aos-remote`
 //! Connect-JSON client all share one set of types.
 //!
 //! # Wire format

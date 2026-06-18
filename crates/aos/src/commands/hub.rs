@@ -1,7 +1,7 @@
 //! `aos hub` — the registry-hub control-plane client (RFC-0004).
 //!
 //! Drives [`aos_remote::RegistryHubClient`] so the CLI interacts with a running
-//! `aos-registry-hub` purely through its public ConnectRPC API, never by
+//! `aos-hub` purely through its public ConnectRPC API, never by
 //! touching the hub's database. `login` exchanges a provisioning secret for a
 //! hub access JWT via the REST `POST /oauth2/token` endpoint
 //! ([`aos_remote::exchange_token`]); read operations run anonymously by default

@@ -80,7 +80,7 @@ in
     # `http://127.0.0.1` mirror/frontend/webhook URLs, which only resolve past
     # the SSRF guard when the `AOS_HUB_ALLOW_LOCAL_REMOTES` escape hatch is
     # honored — and that hatch is compiled out of release entirely by design
-    # (`aos-registry-core::url_guard::allow_local_remotes` is gated on
+    # (`aos-hub-core::url_guard::allow_local_remotes` is gated on
     # `debug_assertions`, so a production binary never relaxes the guard). The
     # tests are therefore inherently debug-only; running the check phase in debug
     # exercises them exactly as the dev `cargo test` / `aos test` path does,

@@ -475,19 +475,22 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase A — the `aos-hub` rename (mechanical, standalone PR)
 
-- [ ] Rename crate `aos-registry-hub` → `aos-hub` (dir, `Cargo.toml` `name`,
+- [x] Rename crate `aos-registry-hub` → `aos-hub` (dir, `Cargo.toml` `name`,
       bin name, workspace members) and update all path/dep references.
-- [ ] Rename `aos-registry-core` → `aos-hub-core`; update every `use`/dep.
-- [ ] Rename `aos-registry-worker` → `aos-hub-worker`; update wasm build refs.
-- [ ] Rename Nix packages `aos-registry-hub-cloudflare` → `aos-hub-cloudflare`
+- [x] Rename `aos-registry-core` → `aos-hub-core`; update every `use`/dep.
+- [x] Rename `aos-registry-worker` → `aos-hub-worker`; update wasm build refs.
+- [x] Rename Nix packages `aos-registry-hub-cloudflare` → `aos-hub-cloudflare`
       and `aos-registry-worker-e2e` → `aos-hub-worker-e2e`
-      (`pkgs/tools/**`, `discoverPackages` filenames).
-- [ ] Update `justfile` recipes, `crates/*/deploy/DEPLOY.md`, READMEs,
-      `flake.nix`/`pkgs` outputs, NixOS module names, and AGENTS.md/CLAUDE.md
-      mentions; confirm `HUB_*` env vars and `aos hub …` subcommand are
-      unchanged (no deployed-Worker churn).
-- [ ] Confirm `aos-registry-surface` / `aos-registry-spa` are intentionally
-      *not* renamed; build green on host + `pkgs.aos` workspace tests.
+      (`pkgs/tools/**`, `discoverPackages` filenames). The package set
+      auto-discovers attrs from filenames, so the `git mv` of each
+      `pkgs/tools/aos-hub*` file rewires the attr automatically.
+- [x] Update `justfile` recipes, `crates/*/deploy/DEPLOY.md`, READMEs,
+      `flake.nix`/`pkgs` outputs, NixOS module names, and code references;
+      `HUB_*` env vars and the `aos hub …` subcommand are unchanged (no
+      deployed-Worker churn — only the build-time crate/package identifiers moved).
+- [x] `aos-registry-surface` / `aos-registry-spa` are intentionally *not*
+      renamed (their `aos_registry_surface`/`aos_registry_spa` identifiers are
+      preserved); Rust workspace builds green on host (core + hub + wasm worker).
 
 ### Phase B — cache core: object, storage, publish, serve
 

@@ -16,7 +16,7 @@
 //! - `aos::registry::v1` — the registry hub's read-path API (RFC-0004):
 //!   registries with verified index status, packages, channels with
 //!   partition maps, and signed releases. Implemented by
-//!   `aos-registry-hub`.
+//!   `aos-hub`.
 //!
 //! Message types are plain `prost` structs; each service additionally
 //! gets a typed ConnectRPC client (e.g. `CacheServiceClient`) and a
