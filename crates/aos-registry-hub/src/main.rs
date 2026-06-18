@@ -263,6 +263,10 @@ struct WorkerArgs {
     /// The deployed Worker's externally-reachable base URL.
     #[arg(long)]
     external_url: String,
+    /// Bind the Worker to a custom domain (e.g. aos.andyl.org); its zone must be
+    /// on the same Cloudflare account. Omit to serve on *.workers.dev only.
+    #[arg(long)]
+    custom_domain: Option<String>,
     /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
@@ -1429,6 +1433,7 @@ async fn provision_worker(
         &args.kv_title,
         &args.external_url,
         args.email_relay_url.as_deref(),
+        args.custom_domain.as_deref(),
     )
     .await
 }

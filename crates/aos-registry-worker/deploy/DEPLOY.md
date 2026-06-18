@@ -40,7 +40,8 @@ export CLOUDFLARE_API_TOKEN=…            # an API token with Workers/D1/R2/KV 
 "$HUB" worker deploy \
   --provider cloudflare \
   --name aos-registry-hub \
-  --external-url https://reg.example.com
+  --external-url https://reg.example.com \
+  --custom-domain reg.example.com        # optional; binds a custom domain
 
 # 2. Database: migrate the schema and bootstrap the root admin, over D1.
 "$HUB" init --target d1:aos-registry-hub \
@@ -62,6 +63,13 @@ export CLOUDFLARE_API_TOKEN=…            # an API token with Workers/D1/R2/KV 
 `init --target d1:<name>` then applies the shared `aos_registry_core` migrations
 over D1 (via the bundled `wrangler d1 execute`) and, when `--root-email` is set,
 creates the root admin — the same `Database` code the native hub runs locally.
+
+**Custom domains.** `--custom-domain aos.example.org` emits a `custom_domain`
+route, and `wrangler deploy` provisions the domain (DNS record + TLS cert) on
+first deploy — **provided the domain's zone (`example.org`) is already a zone on
+the same Cloudflare account**. Set `--external-url` to the same `https://…` URL so
+`HUB_EXTERNAL_URL` matches. Without `--custom-domain` the Worker serves only on
+`https://<name>.<subdomain>.workers.dev`.
 
 **One-shot convenience:** `"$HUB" worker install --provider cloudflare
 --external-url … --root-email … --root-password-stdin` composes `worker deploy`
