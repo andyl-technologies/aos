@@ -104,6 +104,11 @@ enum Command {
         #[command(subcommand)]
         command: BindingCommand,
     },
+    /// Manage hosted Nix binary caches (create, link, GC, pin, search).
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
     /// Re-index one registry (or all) now.
     Index {
         /// Registry slug; omit to index everything.
@@ -682,6 +687,210 @@ enum BindingCommand {
     },
 }
 
+/// Manage hosted Nix binary caches — the substituter sibling of registries.
+#[derive(Subcommand)]
+enum CacheCommand {
+    /// Create an org-owned cache backed by a storage binding.
+    Create {
+        /// Globally-unique URL slug to serve the cache under.
+        slug: String,
+        /// Owning org slug (its binding is used).
+        #[arg(long)]
+        org: String,
+        /// Storage binding name within the org.
+        #[arg(long)]
+        binding: String,
+        /// Display name (defaults to the slug).
+        #[arg(long)]
+        name: Option<String>,
+        /// Sub-prefix under the binding root (defaults to the slug).
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Visibility: public | internal | private.
+        #[arg(long, default_value = "private")]
+        visibility: String,
+        /// nix-cache-info Priority (lower = preferred).
+        #[arg(long, default_value_t = 40)]
+        priority: i64,
+        /// NAR compression: zstd | xz | none.
+        #[arg(long, default_value = "zstd")]
+        compression: String,
+        /// Clear the nix-cache-info WantMassQuery flag.
+        #[arg(long)]
+        no_mass_query: bool,
+    },
+    /// List caches (optionally filtered to one org).
+    List {
+        /// Restrict to one org's caches.
+        #[arg(long)]
+        org: Option<String>,
+    },
+    /// Show a cache's configuration, usage, links, and GC state.
+    Show {
+        /// Cache slug.
+        slug: String,
+    },
+    /// Update a cache's mutable fields (only the flags you pass change).
+    Update {
+        /// Cache slug.
+        slug: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        visibility: Option<String>,
+        #[arg(long)]
+        priority: Option<i64>,
+        #[arg(long)]
+        compression: Option<String>,
+        /// Set WantMassQuery (true|false).
+        #[arg(long)]
+        mass_query: Option<bool>,
+    },
+    /// Remove a cache (soft-delete by default; --hard drops the row).
+    Rm {
+        /// Cache slug.
+        slug: String,
+        /// Hard-delete the row and cascade its links/policy/objects.
+        #[arg(long)]
+        hard: bool,
+        /// Soft-delete grace before purge eligibility (e.g. 30d).
+        #[arg(long, default_value = "30d")]
+        grace: String,
+    },
+    /// Link a cache to a registry (advertise its URL and/or pin its packages).
+    Link {
+        /// Cache slug.
+        cache: String,
+        /// Registry slug.
+        registry: String,
+        /// The registry's live store paths pin GC roots in this cache.
+        #[arg(long)]
+        roots_packages: bool,
+        /// Advertise this cache's URL in the registry's cache stack.
+        #[arg(long)]
+        advertise: bool,
+    },
+    /// Remove a cache⇄registry link.
+    Unlink {
+        /// Cache slug.
+        cache: String,
+        /// Registry slug.
+        registry: String,
+    },
+    /// List a cache's registry links.
+    Links {
+        /// Cache slug.
+        cache: String,
+    },
+    /// Set (replace) a cache's GC retention policy — omitted limits become
+    /// unlimited (this is a full replace, not a merge).
+    GcPolicy {
+        /// Cache slug.
+        cache: String,
+        /// Soft byte cap (LRU-evict unrooted objects above it).
+        #[arg(long)]
+        max_bytes: Option<i64>,
+        /// Soft object-count cap.
+        #[arg(long)]
+        max_objects: Option<i64>,
+        /// Grace before an unreachable object is swept (e.g. 7d).
+        #[arg(long)]
+        ttl: Option<String>,
+        /// Per linked registry, keep the N most-recent releases' closures.
+        #[arg(long)]
+        keep_versions: Option<i64>,
+        /// Do not always retain live channel-frontier closures.
+        #[arg(long)]
+        no_keep_frontier: bool,
+        /// Scheduled GC cadence (e.g. 1h).
+        #[arg(long)]
+        schedule: Option<String>,
+    },
+    /// Pin a store path as a manual GC root (optionally with a deadline).
+    Pin {
+        /// Cache slug.
+        cache: String,
+        /// Store-path hash component.
+        store_hash: String,
+        /// Expire the pin after this long (e.g. 14d); omit for unlimited.
+        #[arg(long)]
+        ttl: Option<String>,
+    },
+    /// Renew a manual pin's deadline in place (no re-upload).
+    Renew {
+        /// Cache slug.
+        cache: String,
+        /// Store-path hash component.
+        store_hash: String,
+        /// New deadline from now (e.g. 14d).
+        #[arg(long)]
+        ttl: String,
+    },
+    /// Remove a manual GC pin.
+    Unpin {
+        /// Cache slug.
+        cache: String,
+        /// Store-path hash component.
+        store_hash: String,
+    },
+    /// List a cache's GC roots (manual + derived).
+    Roots {
+        /// Cache slug.
+        cache: String,
+    },
+    /// Search a cache's objects by name, hash, or deriver.
+    Search {
+        /// Cache slug.
+        cache: String,
+        /// Substring to match.
+        query: String,
+        /// Maximum results.
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+    },
+    /// Show one object's narinfo metadata.
+    Info {
+        /// Cache slug.
+        cache: String,
+        /// Store-path hash component.
+        store_hash: String,
+    },
+    /// List a cache's recent GC runs.
+    GcRuns {
+        /// Cache slug.
+        cache: String,
+        /// Maximum runs.
+        #[arg(long, default_value_t = 10)]
+        limit: i64,
+    },
+}
+
+/// Parse a duration like `30d`, `12h`, `15m`, `3600s` into seconds.
+///
+/// # Errors
+///
+/// Returns an error for an empty value, an unknown unit suffix, or a
+/// non-numeric magnitude.
+fn parse_duration_secs(s: &str) -> anyhow::Result<i64> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('s') => (&s[..s.len() - 1], 1),
+        Some('m') => (&s[..s.len() - 1], 60),
+        Some('h') => (&s[..s.len() - 1], 3600),
+        Some('d') => (&s[..s.len() - 1], 86_400),
+        Some(c) if c.is_ascii_digit() => (s, 1),
+        _ => anyhow::bail!("invalid duration '{s}' (use Ns, Nm, Nh, or Nd)"),
+    };
+    let n: i64 = num
+        .parse()
+        .with_context(|| format!("invalid duration magnitude in '{s}'"))?;
+    if n < 0 {
+        anyhow::bail!("duration '{s}' must not be negative");
+    }
+    n.checked_mul(mult)
+        .with_context(|| format!("duration '{s}' is too large"))
+}
+
 #[derive(Subcommand)]
 enum RegistryCommand {
     /// Register a registry surface for indexing and serving.
@@ -1221,6 +1430,335 @@ async fn main() -> Result<()> {
                         .with_context(|| format!("no org '{org}'"))?;
                     for binding in db.list_storage_bindings(org_record.id).await? {
                         println!("{}\t{}\t{}", binding.name, binding.kind, binding.root);
+                    }
+                }
+            }
+        }
+        Command::Cache { command } => {
+            let db = open_db(&cli.root, &cli.target).await?;
+            match command {
+                CacheCommand::Create {
+                    slug,
+                    org,
+                    binding,
+                    name,
+                    prefix,
+                    visibility,
+                    priority,
+                    compression,
+                    no_mass_query,
+                } => {
+                    let org_record = db
+                        .org_by_slug(&org)
+                        .await?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let binding_id = db
+                        .storage_binding_by_name(org_record.id, &binding)
+                        .await?
+                        .with_context(|| format!("no binding '{org}/{binding}'"))?
+                        .id;
+                    let display = name.unwrap_or_else(|| slug.clone());
+                    let prefix = prefix.unwrap_or_else(|| slug.clone());
+                    let id = db
+                        .create_cache(
+                            Some(org_record.id),
+                            &slug,
+                            &display,
+                            binding_id,
+                            &prefix,
+                            None,
+                            &visibility,
+                            priority,
+                            &compression,
+                            !no_mass_query,
+                        )
+                        .await?;
+                    println!("created cache '{slug}' (id {id}) under org '{org}' binding '{binding}'");
+                }
+                CacheCommand::List { org } => {
+                    let caches = match org {
+                        Some(o) => {
+                            let r = db
+                                .org_by_slug(&o)
+                                .await?
+                                .with_context(|| format!("no org '{o}'"))?;
+                            db.list_caches_for_org(r.id).await?
+                        }
+                        None => db.list_caches().await?,
+                    };
+                    for c in caches {
+                        println!(
+                            "{}\t{}\t{}\tprio={}\t{}",
+                            c.slug, c.visibility, c.compression, c.priority, c.name
+                        );
+                    }
+                }
+                CacheCommand::Show { slug } => {
+                    let c = db
+                        .cache_by_slug(&slug)
+                        .await?
+                        .with_context(|| format!("no cache '{slug}'"))?;
+                    let usage = db.cache_usage(c.id).await?;
+                    let links = db.list_cache_links(c.id).await?;
+                    let roots = db.list_cache_roots(c.id).await?;
+                    let policy = db.cache_gc_policy(c.id).await?;
+                    println!("slug:        {}", c.slug);
+                    println!("name:        {}", c.name);
+                    println!(
+                        "org_id:      {}",
+                        c.org_id
+                            .map(|i| i.to_string())
+                            .unwrap_or_else(|| "(instance)".into())
+                    );
+                    println!("binding_id:  {}", c.storage_binding_id);
+                    println!("prefix:      {}", c.prefix);
+                    println!("visibility:  {}", c.visibility);
+                    println!("priority:    {}", c.priority);
+                    println!("compression: {}", c.compression);
+                    println!("mass_query:  {}", c.want_mass_query);
+                    println!("signed:      {}", c.hosted_key_id.is_some());
+                    println!(
+                        "usage:       {} bytes, {} objects",
+                        usage.used_bytes, usage.object_count
+                    );
+                    println!("links:       {}", links.len());
+                    println!("roots:       {}", roots.len());
+                    println!(
+                        "gc_policy:   {}",
+                        if policy.is_some() { "set" } else { "default" }
+                    );
+                }
+                CacheCommand::Update {
+                    slug,
+                    name,
+                    visibility,
+                    priority,
+                    compression,
+                    mass_query,
+                } => {
+                    let c = db
+                        .cache_by_slug(&slug)
+                        .await?
+                        .with_context(|| format!("no cache '{slug}'"))?;
+                    db.update_cache(
+                        c.id,
+                        &name.unwrap_or_else(|| c.name.clone()),
+                        &visibility.unwrap_or_else(|| c.visibility.clone()),
+                        priority.unwrap_or(c.priority),
+                        &compression.unwrap_or_else(|| c.compression.clone()),
+                        mass_query.unwrap_or(c.want_mass_query),
+                        c.hosted_key_id,
+                    )
+                    .await?;
+                    println!("updated cache '{slug}'");
+                }
+                CacheCommand::Rm { slug, hard, grace } => {
+                    let c = db
+                        .cache_by_slug(&slug)
+                        .await?
+                        .with_context(|| format!("no cache '{slug}'"))?;
+                    if hard {
+                        let removed = db.delete_cache(c.id).await?;
+                        println!(
+                            "{}",
+                            if removed {
+                                format!("hard-deleted cache '{slug}'")
+                            } else {
+                                format!("no cache '{slug}'")
+                            }
+                        );
+                    } else {
+                        let secs = parse_duration_secs(&grace)?;
+                        let done = db.soft_delete_cache(c.id, now_secs() + secs).await?;
+                        println!(
+                            "{}",
+                            if done {
+                                format!("soft-deleted cache '{slug}' (purge after {grace})")
+                            } else {
+                                format!("cache '{slug}' was already soft-deleted")
+                            }
+                        );
+                    }
+                }
+                CacheCommand::Link {
+                    cache,
+                    registry,
+                    roots_packages,
+                    advertise,
+                } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let r = db
+                        .registry_by_slug(&registry)
+                        .await?
+                        .with_context(|| format!("no registry '{registry}'"))?;
+                    db.link_cache(c.id, r.id, roots_packages, advertise).await?;
+                    println!(
+                        "linked cache '{cache}' <-> registry '{registry}' (roots_packages={roots_packages}, advertise={advertise})"
+                    );
+                }
+                CacheCommand::Unlink { cache, registry } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let r = db
+                        .registry_by_slug(&registry)
+                        .await?
+                        .with_context(|| format!("no registry '{registry}'"))?;
+                    let removed = db.unlink_cache(c.id, r.id).await?;
+                    println!("{}", if removed { "unlinked" } else { "no such link" });
+                }
+                CacheCommand::Links { cache } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    for l in db.list_cache_links(c.id).await? {
+                        let rslug = db
+                            .registry_by_id(l.registry_id)
+                            .await?
+                            .map(|x| x.slug)
+                            .unwrap_or_else(|| format!("#{}", l.registry_id));
+                        println!(
+                            "{rslug}\troots_packages={}\tadvertised={}",
+                            l.roots_packages, l.advertised
+                        );
+                    }
+                }
+                CacheCommand::GcPolicy {
+                    cache,
+                    max_bytes,
+                    max_objects,
+                    ttl,
+                    keep_versions,
+                    no_keep_frontier,
+                    schedule,
+                } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let ttl_unreferenced_secs = ttl.map(|s| parse_duration_secs(&s)).transpose()?;
+                    let schedule_secs = schedule.map(|s| parse_duration_secs(&s)).transpose()?;
+                    db.set_cache_gc_policy(&aos_registry_hub::db::CacheGcPolicy {
+                        cache_id: c.id,
+                        max_bytes,
+                        max_objects,
+                        ttl_unreferenced_secs,
+                        keep_release_versions: keep_versions,
+                        keep_channel_frontier: !no_keep_frontier,
+                        schedule_secs,
+                        updated_at: 0,
+                    })
+                    .await?;
+                    println!("set GC policy for cache '{cache}'");
+                }
+                CacheCommand::Pin {
+                    cache,
+                    store_hash,
+                    ttl,
+                } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let expires_at = ttl
+                        .map(|s| parse_duration_secs(&s).map(|secs| now_secs() + secs))
+                        .transpose()?;
+                    db.pin_cache_path(c.id, &store_hash, expires_at).await?;
+                    match expires_at {
+                        Some(e) => println!("pinned {store_hash} in cache '{cache}' until {e}"),
+                        None => println!("pinned {store_hash} in cache '{cache}' (unlimited)"),
+                    }
+                }
+                CacheCommand::Renew {
+                    cache,
+                    store_hash,
+                    ttl,
+                } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let expires_at = now_secs() + parse_duration_secs(&ttl)?;
+                    db.pin_cache_path(c.id, &store_hash, Some(expires_at)).await?;
+                    println!("renewed pin {store_hash} in cache '{cache}' until {expires_at}");
+                }
+                CacheCommand::Unpin { cache, store_hash } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let removed = db.unpin_cache_path(c.id, &store_hash).await?;
+                    println!("{}", if removed { "unpinned" } else { "no such manual pin" });
+                }
+                CacheCommand::Roots { cache } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    for r in db.list_cache_roots(c.id).await? {
+                        let exp = r
+                            .expires_at
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "-".into());
+                        println!(
+                            "{}\t{}\t{}\texpires={}",
+                            r.store_hash, r.root_kind, r.root_ref, exp
+                        );
+                    }
+                }
+                CacheCommand::Search {
+                    cache,
+                    query,
+                    limit,
+                } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    for o in db.search_cache_objects(c.id, &query, limit).await? {
+                        println!("{}\t{}\t{} bytes", o.store_hash, o.store_name, o.file_size);
+                    }
+                }
+                CacheCommand::Info { cache, store_hash } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    match db.cache_object(c.id, &store_hash).await? {
+                        Some(o) => {
+                            println!("StorePath:   {}", o.store_name);
+                            println!("URL:         {}", o.nar_url);
+                            println!("Compression: {}", o.compression);
+                            println!("NarHash:     {}", o.nar_hash);
+                            println!("NarSize:     {}", o.nar_size);
+                            println!("FileHash:    {}", o.file_hash);
+                            println!("FileSize:    {}", o.file_size);
+                            if let Some(d) = &o.deriver {
+                                println!("Deriver:     {d}");
+                            }
+                            println!("References:  {}", o.refs.join(" "));
+                            if let Some(s) = &o.sig {
+                                println!("Sig:         {s}");
+                            }
+                        }
+                        None => println!("no object {store_hash} in cache '{cache}'"),
+                    }
+                }
+                CacheCommand::GcRuns { cache, limit } => {
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    for r in db.list_cache_gc_runs(c.id, limit).await? {
+                        println!(
+                            "#{}\t{}\tscanned={} retained={} deleted={} freed={}B",
+                            r.id, r.status, r.scanned, r.retained, r.deleted_objects, r.freed_bytes
+                        );
                     }
                 }
             }
