@@ -79,6 +79,7 @@ const HASH_ATTR: &[u8] = b"hash";
 const HASH_ALGO_ATTR: &[u8] = b"hashAlgo";
 const TO_HASH_FORMAT_ATTR: &[u8] = b"toHashFormat";
 const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
+const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
 const TRACE_PREFIX: &[u8] = b"trace: ";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
@@ -357,6 +358,7 @@ pub struct TreeWalkOptions {
     current_time: Option<i64>,
     trace_verbose: bool,
     abort_on_warn: bool,
+    max_call_depth: usize,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
 }
@@ -374,6 +376,7 @@ impl Default for TreeWalkOptions {
             current_time: None,
             trace_verbose: false,
             abort_on_warn: false,
+            max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
         }
@@ -574,6 +577,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with a configured maximum nested call depth.
+    pub fn with_max_call_depth(max_call_depth: usize) -> Self {
+        let mut options = Self::default();
+        options.set_max_call_depth(max_call_depth);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -755,6 +765,11 @@ impl TreeWalkOptions {
         self.abort_on_warn = abort_on_warn;
     }
 
+    /// Replaces the configured maximum nested call depth.
+    pub fn set_max_call_depth(&mut self, max_call_depth: usize) {
+        self.max_call_depth = max_call_depth;
+    }
+
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -859,6 +874,11 @@ impl TreeWalkOptions {
     /// Returns whether `builtins.warn` aborts after emitting a warning.
     pub const fn abort_on_warn(&self) -> bool {
         self.abort_on_warn
+    }
+
+    /// Returns the configured maximum nested call depth.
+    pub const fn max_call_depth(&self) -> usize {
+        self.max_call_depth
     }
 
     /// Returns the configured value for an environment variable.
@@ -1277,6 +1297,7 @@ pub struct TreeWalk<'ir> {
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
+    call_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
 }
@@ -1307,6 +1328,7 @@ impl<'ir> TreeWalk<'ir> {
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
+            call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
         }
     }
@@ -1334,6 +1356,31 @@ impl<'ir> TreeWalk<'ir> {
     #[cfg(test)]
     fn captured_stderr(&self) -> &[u8] {
         self.stderr.captured()
+    }
+
+    fn check_call_depth(&self, id: IrId, span: Span) -> Result<(), TreeWalkError> {
+        let max = self.options.max_call_depth();
+        if self.call_depth > max {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::MaxCallDepthExceeded {
+                    id,
+                    depth: self.call_depth,
+                    max,
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn enter_call(&mut self, id: IrId, span: Span) -> Result<(), TreeWalkError> {
+        self.check_call_depth(id, span)?;
+        self.call_depth = self.call_depth.saturating_add(1);
+        Ok(())
+    }
+
+    fn leave_call(&mut self) {
+        self.call_depth = self.call_depth.saturating_sub(1);
     }
 
     fn visible_nix_path(&self) -> &[NixSearchPathEntry] {
@@ -13364,6 +13411,7 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         call_env.push(call_frame);
+        self.enter_call(id, span)?;
         let saved_env = std::mem::replace(&mut self.env, call_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, call_with_env);
         let result = (|| {
@@ -13383,6 +13431,7 @@ impl<'ir> TreeWalk<'ir> {
         })();
         self.env = saved_env;
         self.with_scopes = saved_with_scopes;
+        self.leave_call();
         result
     }
 
@@ -13480,6 +13529,7 @@ impl<'ir> TreeWalk<'ir> {
         args.push(argument);
 
         if len < arity {
+            self.check_call_depth(id, span)?;
             return self
                 .heap
                 .alloc_primop(EvalPrimOp::with_args(primop.symbol(), args))
@@ -13488,6 +13538,7 @@ impl<'ir> TreeWalk<'ir> {
                 });
         }
         if len > arity {
+            self.check_call_depth(id, span)?;
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidPrimOpArity {
                     id,
@@ -13498,7 +13549,10 @@ impl<'ir> TreeWalk<'ir> {
                 span,
             ));
         }
-        builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args)
+        self.enter_call(id, span)?;
+        let result = (|| builtin.apply(self, BuiltinCall::new(id, span, primop.symbol()), &args))();
+        self.leave_call();
+        result
     }
 
     fn eval_strict_ternary_primop_direct(
@@ -17121,7 +17175,8 @@ impl BuiltinRuntime for BuiltinMetadata {
         node: &IrNode,
         args: &[IrId],
     ) -> Result<Value, TreeWalkError> {
-        match self.execution() {
+        eval.enter_call(call.id, call.span)?;
+        let result = (|| match self.execution() {
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -17231,20 +17286,19 @@ impl BuiltinRuntime for BuiltinMetadata {
             }
             BuiltinExecution::Trace { mode } => {
                 check_builtin_arity(call, 2, args.len())?;
-                if matches!(mode, TraceMode::Verbose) && !eval.options.trace_verbose() {
-                    return eval.eval_lazy_node(args[1]);
+                if !matches!(mode, TraceMode::Verbose) || eval.options.trace_verbose() {
+                    let first = args[0];
+                    let first_span = eval.node(first)?.span;
+                    let first_value = eval.eval_node(first)?;
+                    eval.eval_trace_primop_value(
+                        call.id,
+                        call.span,
+                        mode,
+                        first,
+                        first_span,
+                        first_value,
+                    )?;
                 }
-                let first = args[0];
-                let first_span = eval.node(first)?.span;
-                let first_value = eval.eval_node(first)?;
-                eval.eval_trace_primop_value(
-                    call.id,
-                    call.span,
-                    mode,
-                    first,
-                    first_span,
-                    first_value,
-                )?;
                 eval.eval_lazy_node(args[1])
             }
             BuiltinExecution::Warn => {
@@ -17267,7 +17321,9 @@ impl BuiltinRuntime for BuiltinMetadata {
                 unsupported_primop(call)
             }
             _ => unsupported_primop(call),
-        }
+        })();
+        eval.leave_call();
+        result
     }
 
     fn apply(
@@ -18163,6 +18219,16 @@ pub enum TreeWalkErrorKind {
         /// The underlying force failure.
         source: ForceError,
     },
+    /// A nested function call exceeded the configured evaluator call-depth limit.
+    #[error("stack overflow; max-call-depth exceeded")]
+    MaxCallDepthExceeded {
+        /// The application node id being entered.
+        id: IrId,
+        /// The active call depth when the limit rejected the call.
+        depth: usize,
+        /// The configured `max-call-depth` value.
+        max: usize,
+    },
     /// A Nix string operation failed.
     #[error("string operation failed at node {id:?}: {source}")]
     String {
@@ -18826,6 +18892,28 @@ mod tests {
         eval_string_bytes_with_options(&format!("builtins.toJSON ({source})"), options)
     }
 
+    fn eval_cpp_json_bytes_with_options(source: &str, options: TreeWalkOptions) -> Vec<u8> {
+        let ir = lower(source);
+        let root = ir.root;
+        let root_span = ir.arena.node(root).expect("root node exists").span;
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator.eval_root().expect("source evaluates");
+        let mut bytes = Vec::new();
+        let mut context = StringContext::empty();
+        evaluator
+            .write_json_value(
+                root,
+                root_span,
+                root,
+                root_span,
+                value,
+                &mut bytes,
+                &mut context,
+            )
+            .expect("value serializes as JSON");
+        bytes
+    }
+
     fn pinned_builtin_name_bytes() -> Vec<Vec<u8>> {
         PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES
             .iter()
@@ -19036,6 +19124,17 @@ mod tests {
         assert_eq!(candidate, reference, "expression diverged: {source}");
     }
 
+    fn assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+        oracle: &str,
+        source: &str,
+        nix_options: &[(&str, &str)],
+        options: TreeWalkOptions,
+    ) {
+        let reference = cpp_nix_eval_json_with_nix_options(oracle, source, nix_options);
+        let candidate = eval_cpp_json_bytes_with_options(source, options);
+        assert_eq!(candidate, reference, "expression diverged: {source}");
+    }
+
     fn assert_pinned_cpp_nix_builtin_surface_matches_registry(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
 
@@ -19204,6 +19303,42 @@ mod tests {
 
         let ir = lower(source);
         let error = eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+        let kind = error.kind();
+        assert!(
+            matches_kind(&kind),
+            "tree-walk error for {source:?} did not match {expected_message:?}: {error:?}"
+        );
+    }
+
+    fn assert_cpp_nix_and_tree_walk_reject_with_final_error_and_nix_options(
+        oracle: &str,
+        source: &str,
+        nix_options: &[(&str, &str)],
+        options: TreeWalkOptions,
+        expected_message: &str,
+        matches_kind: impl FnOnce(&TreeWalkErrorKind) -> bool,
+    ) {
+        let output = cpp_nix_eval_stderr_output_with_nix_options(oracle, source, nix_options);
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let actual_message = stderr.lines().rev().find_map(|line| {
+            line.trim_start()
+                .strip_prefix("error: ")
+                .filter(|message| !message.is_empty())
+        });
+        assert_eq!(
+            actual_message,
+            Some(expected_message),
+            "C++ Nix oracle error for {source:?} did not end with {expected_message:?}: {stderr}"
+        );
+
+        let ir = lower(source);
+        let error =
+            eval_whnf_owned_with_options(&ir, options).expect_err("tree-walk rejects expression");
         let kind = error.kind();
         assert!(
             matches_kind(&kind),
@@ -20046,6 +20181,19 @@ mod tests {
         assert!(options.abort_on_warn());
         options.set_abort_on_warn(false);
         assert!(!options.abort_on_warn());
+    }
+
+    #[test]
+    fn tree_walk_options_configure_max_call_depth() {
+        let defaulted = TreeWalkOptions::new();
+        assert_eq!(defaulted.max_call_depth(), DEFAULT_MAX_CALL_DEPTH);
+
+        let configured = TreeWalkOptions::with_max_call_depth(10);
+        assert_eq!(configured.max_call_depth(), 10);
+
+        let mut options = TreeWalkOptions::new();
+        options.set_max_call_depth(0);
+        assert_eq!(options.max_call_depth(), 0);
     }
 
     #[test]
@@ -21352,6 +21500,136 @@ mod tests {
             return;
         };
         assert_cpp_nix_function_semantics_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "(rec { a = 1; b = a + 1; }).b",
+            "(rec { a = b; b = 1; }).a",
+            "(rec { a = builtins.throw \"a\"; }).b or 2",
+            "rec { a = b; b = a; } ? a",
+            "let a = b; b = 1; in a",
+            "let a = b; b = c; c = 3; in a",
+            "let fix = f: let x = f x; in x; in (fix (self: { a = 1; b = self.a + 1; })).b",
+            "let fix = f: let x = f x; in x; in (fix (self: { a = 1; nested = { b = self.a + 1; }; })).nested.b",
+            "let even = n: if n == 0 then true else odd (n - 1); odd = n: if n == 0 then false else even (n - 1); in even 10",
+            "let even = n: if n == 0 then true else odd (n - 1); odd = n: if n == 0 then false else even (n - 1); in odd 9",
+            "let x = { a = 1; b = x; }; in x.b.a",
+            "let xs = [ 1 xs ]; in builtins.elemAt (builtins.elemAt xs 1) 0",
+            "let fix = f: let x = f x; in x; in (fix (self: { package = { name = \"a\"; dep = self.package.name; }; })).package.dep",
+            "let f = n: if n == 0 then 0 else f (n - 1); in f 100",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+            oracle,
+            "(x: x) 1",
+            &[("max-call-depth", "0")],
+            TreeWalkOptions::with_max_call_depth(0),
+        );
+        assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+            oracle,
+            "(x: (y: y) 2) 1",
+            &[("max-call-depth", "1")],
+            TreeWalkOptions::with_max_call_depth(1),
+        );
+        assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+            oracle,
+            "builtins.add 1 2",
+            &[("max-call-depth", "0")],
+            TreeWalkOptions::with_max_call_depth(0),
+        );
+        assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+            oracle,
+            "builtins.map (x: x) [ 1 ]",
+            &[("max-call-depth", "0")],
+            TreeWalkOptions::with_max_call_depth(0),
+        );
+        assert_cpp_nix_json_matches_tree_walk_with_nix_options(
+            oracle,
+            "builtins.genList (x: x) 1",
+            &[("max-call-depth", "0")],
+            TreeWalkOptions::with_max_call_depth(0),
+        );
+
+        for source in [
+            "let x = x; in x",
+            "let a = b; b = a; in a",
+            "(rec { a = a; }).a",
+            "(rec { a = b; b = a; }).a",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_with_final_error(
+                oracle,
+                source,
+                "infinite recursion encountered",
+                |kind| {
+                    matches!(
+                        kind,
+                        TreeWalkErrorKind::Force {
+                            source: ForceError::InfiniteRecursion,
+                            ..
+                        }
+                    )
+                },
+            );
+        }
+
+        for source in [
+            "(x: builtins.add 1 2) 0",
+            "(x: (y: (z: z) 3) 2) 1",
+            "builtins.all (x: true) [ 1 ]",
+            "builtins.add ((x: x) 1) 2",
+            "let add = builtins.add; in add ((x: x) 1) 2",
+            "builtins.seq ((x: x) 1) 2",
+            "builtins.map ((x: x) (y: y)) [ 1 ]",
+            "builtins.trace ((x: x) \"m\") 1",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_with_final_error_and_nix_options(
+                oracle,
+                source,
+                &[("max-call-depth", "0")],
+                TreeWalkOptions::with_max_call_depth(0),
+                "stack overflow; max-call-depth exceeded",
+                |kind| matches!(kind, TreeWalkErrorKind::MaxCallDepthExceeded { .. }),
+            );
+        }
+
+        assert_cpp_nix_and_tree_walk_reject_with_final_error_and_nix_options(
+            oracle,
+            "(x: (y: (z: z) 3) 2) 1",
+            &[("max-call-depth", "1")],
+            TreeWalkOptions::with_max_call_depth(1),
+            "stack overflow; max-call-depth exceeded",
+            |kind| matches!(kind, TreeWalkErrorKind::MaxCallDepthExceeded { .. }),
+        );
+
+        assert_cpp_nix_and_tree_walk_reject_with_final_error_and_nix_options(
+            oracle,
+            "let f = n: if n == 0 then 0 else f (n - 1); in f 20",
+            &[("max-call-depth", "10")],
+            TreeWalkOptions::with_max_call_depth(10),
+            "stack overflow; max-call-depth exceeded",
+            |kind| matches!(kind, TreeWalkErrorKind::MaxCallDepthExceeded { .. }),
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix recursion check");
+            return;
+        };
+        assert_cpp_nix_recursion_and_fixed_point_semantics_match_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(oracle: &str) {
@@ -34692,6 +34970,109 @@ mod tests {
         );
         assert_eq!(eval("let f = x: x; or = 2; in f or").as_int(), Ok(2));
         assert_eq!(eval("((x: y: x) (1 + 2)) 0").as_int(), Ok(3));
+    }
+
+    #[test]
+    fn lambda_application_respects_max_call_depth() {
+        assert_eq!(
+            eval_with_options("(x: x) 1", TreeWalkOptions::with_max_call_depth(0)).as_int(),
+            Ok(1)
+        );
+
+        let nested = lower("(x: (y: y) 2) 1");
+        let mut evaluator =
+            TreeWalk::with_options(&nested, TreeWalkOptions::with_max_call_depth(0));
+        let error = evaluator
+            .eval_root()
+            .expect_err("nested call exceeds max-call-depth 0");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MaxCallDepthExceeded {
+                depth: 1,
+                max: 0,
+                ..
+            }
+        ));
+        assert_eq!(evaluator.call_depth, 0);
+
+        assert_eq!(
+            eval_with_options("(x: (y: y) 2) 1", TreeWalkOptions::with_max_call_depth(1),).as_int(),
+            Ok(2)
+        );
+
+        let nested = lower("(x: (y: (z: z) 3) 2) 1");
+        let mut evaluator =
+            TreeWalk::with_options(&nested, TreeWalkOptions::with_max_call_depth(1));
+        let error = evaluator
+            .eval_root()
+            .expect_err("third nested call exceeds max-call-depth 1");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MaxCallDepthExceeded {
+                depth: 2,
+                max: 1,
+                ..
+            }
+        ));
+        assert_eq!(evaluator.call_depth, 0);
+
+        assert_eq!(
+            eval_with_options("builtins.add 1 2", TreeWalkOptions::with_max_call_depth(0),)
+                .as_int(),
+            Ok(3)
+        );
+
+        let primop = lower("(x: builtins.add 1 2) 0");
+        let mut evaluator =
+            TreeWalk::with_options(&primop, TreeWalkOptions::with_max_call_depth(0));
+        let error = evaluator
+            .eval_root()
+            .expect_err("nested primop call exceeds max-call-depth 0");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::MaxCallDepthExceeded {
+                depth: 1,
+                max: 0,
+                ..
+            }
+        ));
+        assert_eq!(evaluator.call_depth, 0);
+
+        assert_eq!(
+            eval_cpp_json_bytes_with_options(
+                "builtins.map (x: x) [ 1 ]",
+                TreeWalkOptions::with_max_call_depth(0),
+            ),
+            b"[1]"
+        );
+
+        for source in [
+            "builtins.all (x: true) [ 1 ]",
+            "builtins.add ((x: x) 1) 2",
+            "let add = builtins.add; in add ((x: x) 1) 2",
+            "builtins.seq ((x: x) 1) 2",
+            "builtins.map ((x: x) (y: y)) [ 1 ]",
+            "builtins.trace ((x: x) \"m\") 1",
+        ] {
+            let ir = lower(source);
+            let mut evaluator =
+                TreeWalk::with_options(&ir, TreeWalkOptions::with_max_call_depth(0));
+            let error = evaluator
+                .eval_root()
+                .expect_err("builtin call frame rejects nested call");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::MaxCallDepthExceeded {
+                        depth: 1,
+                        max: 0,
+                        ..
+                    }
+                ),
+                "{source} produced {error:?}",
+            );
+            assert_eq!(evaluator.call_depth, 0);
+        }
     }
 
     #[test]

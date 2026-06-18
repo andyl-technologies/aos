@@ -620,30 +620,36 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ## 9. Recursion and fixed points
 
-- [ ] **`rec` self-reference** — `rec { a = 1; b = a + 1; }` (§5.4).
-- [ ] **`let` self/forward reference** — `let a = b; b = 1; in a` (order-independent
-      within a `let`).
-- [ ] **`fix` / Y-combinator idiom** — `let fix = f: let x = f x; in x;` (the
+- [x] **`rec` self-reference** — `rec { a = 1; b = a + 1; }` (§5.4).
+      Verified against pinned Nix for direct and forward self-scope.
+- [x] **`let` self/forward reference** — `let a = b; b = 1; in a` (order-independent
+      within a `let`). Verified chained forward references.
+- [x] **`fix` / Y-combinator idiom** — `let fix = f: let x = f x; in x;` (the
       nixpkgs `lib.fix`) must evaluate correctly under laziness; `fix (self: { … })`
       is the nixpkgs overlay/fixpoint pattern. This is a *consequence* of laziness,
       not a builtin — it must "just work" once thunks + `let` recursion are right.
-- [ ] **Mutual recursion** — `rec { a = b; b = a; }` (cyclic, only diverges if
+- [x] **Mutual recursion** — `rec { a = b; b = a; }` (cyclic, only diverges if
       forced) and `let even = n: …odd…; odd = n: …even…; in …` must work.
-- [ ] **Cyclic data via laziness** — a thunk may reference a binding that
+      Verified lazy cyclic attrs plus mutually recursive functions.
+- [x] **Cyclic data via laziness** — a thunk may reference a binding that
       references it back; as long as forcing terminates, it is valid (e.g. infinite
       lists consumed by `take`). Verify lazy cyclic structures evaluate.
-- [ ] **Fixpoint over attrsets** — `genericClosure`-style and `fix`-style
+      Verified self-referential attrs and lists consumed through finite selects.
+- [x] **Fixpoint over attrsets** — `genericClosure`-style and `fix`-style
       fixpoints (the *builtin* `genericClosure` is doc 21; the *language*
       requirement is that recursive `let`/`rec` + laziness make fixpoints
-      expressible).
-- [ ] **Infinite recursion detection (black-holing)** — forcing a thunk that is
+      expressible). Verified `fix (self: { package = ... self.package ...; })`.
+- [x] **Infinite recursion detection (black-holing)** — forcing a thunk that is
       already under evaluation must raise "infinite recursion encountered"
       (**must-error**), not hang or stack-overflow silently. Reproduce the
       black-hole/blackhole mechanism and its error class. Verify the exact
       trigger conditions against pinned Nix.
-- [ ] **Stack-depth / recursion limit** — verify whether the pinned Nix imposes a
+      Verified `let` and `rec` self/mutual cycles against pinned Nix's final error.
+- [x] **Stack-depth / recursion limit** — verify whether the pinned Nix imposes a
       max-call-depth and whether AOS expressions hit it; match the error class if
-      so. Mark **verify against pinned Nix**.
+      so. Pinned Nix config/source defaults `max-call-depth = 10000`; AOS exposes
+      the same default and matches configured `--option max-call-depth` boundary
+      successes and failures in the oracle suite.
 
 ---
 
