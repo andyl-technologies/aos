@@ -581,12 +581,17 @@ eval (network access is disabled unless explicitly allowed).
 - [ ] `filterSource` (e1 e2) — `path { path = e2; filter = e1; }` essentially:
       copy `e2` into the store keeping only entries for which
       `e1 path type` is true. Older API; still used. Same store-path hashing.
-- [ ] `toFile` (name s) — write string `s` to a store file named `name`,
+- [x] `toFile` (name s) — write string `s` to a store file named `name`,
       returning its store path string with constant context.
       - `s` must **not** carry context that references a derivation output
         (you cannot `toFile` something depending on a build) — the error
         condition must match. Store-path computed by the `text` method
         ([derivation and store compatibility](11-derivation-and-store-compatibility.md) §5.1).
+      - Implemented with `nix_compat::store_path::build_text_path`, opaque path
+        context on the result, validation for store names and argument types,
+        rejection of derivation-output contents context, support for downgraded
+        opaque contexts, and text-store visibility through `readFile`,
+        `readFileType`, `pathExists`, `hashFile`, `import`, and `scopedImport`.
 - [ ] `fetchurl` (arg) — fetch a URL to the store; `arg` is a URL string or
       `{ url; sha256 ? …; name ? …; }`. **Fixed-output** when a hash is given, so
       its output store path is known at eval time (the foundational
