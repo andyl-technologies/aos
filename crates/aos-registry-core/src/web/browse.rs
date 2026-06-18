@@ -834,6 +834,19 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
         .map(|v| v.len())
         .unwrap_or(0);
     let external = svc.external_url.clone();
+    // A signed cache advertises its Nix public key (derived from the hosted
+    // key's stored SSH line — public material, no sealer needed) so consumers
+    // can pin it as a trusted key.
+    let pubkey = match cache.hosted_key_id {
+        Some(id) => svc
+            .db
+            .hosted_key(id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|k| crate::nix_sign::nix_public_key_from_ssh_line(&k.public_key)),
+        None => None,
+    };
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::cache_home(
         &cache,
@@ -842,6 +855,7 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
         link_count,
         root_count,
         &external,
+        pubkey.as_deref(),
         started,
         &session,
     ))
