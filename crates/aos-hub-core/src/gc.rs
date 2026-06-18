@@ -94,8 +94,10 @@ pub async fn sweep_cache(
         }
     }
 
-    // Load every object once; index by store hash for the closure walk.
-    let objects = db.list_cache_objects(cache.id, i64::MAX).await?;
+    // Load every object once; index by store hash for the closure walk. `-1`
+    // means "no LIMIT" — the sweep must see every object, and a huge sentinel
+    // like `i64::MAX` is not a valid `LIMIT` bind on the D1 backend (`f64`).
+    let objects = db.list_cache_objects(cache.id, -1).await?;
     let by_hash: HashMap<&str, usize> = objects
         .iter()
         .enumerate()

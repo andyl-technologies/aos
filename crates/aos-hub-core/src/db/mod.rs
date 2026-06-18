@@ -5626,16 +5626,32 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn list_cache_objects(&self, cache_id: i64, limit: i64) -> Result<Vec<CacheObject>> {
-        let rows = self
-            .backend
-            .query(
-                &format!(
-                    "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
-                     WHERE cache_id = ?1 ORDER BY store_name LIMIT ?2"
-                ),
-                &vals![cache_id, limit],
-            )
-            .await?;
+        // A negative `limit` means "all objects" (the GC sweep). The clause is
+        // omitted rather than passing a huge sentinel like `i64::MAX`: the D1
+        // backend binds integers as `f64`, and `i64::MAX` as `f64` is not a valid
+        // `LIMIT` integer there (`SQLITE_MISMATCH`). Native sqlite tolerates the
+        // sentinel, but omitting the clause is correct on every backend.
+        let rows = if limit < 0 {
+            self.backend
+                .query(
+                    &format!(
+                        "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
+                         WHERE cache_id = ?1 ORDER BY store_name"
+                    ),
+                    &vals![cache_id],
+                )
+                .await?
+        } else {
+            self.backend
+                .query(
+                    &format!(
+                        "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
+                         WHERE cache_id = ?1 ORDER BY store_name LIMIT ?2"
+                    ),
+                    &vals![cache_id, limit],
+                )
+                .await?
+        };
         rows.iter().map(row_to_cache_object).collect()
     }
 
