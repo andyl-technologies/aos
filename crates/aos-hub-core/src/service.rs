@@ -592,6 +592,18 @@ pub struct RpcService {
     /// uploader's own `Sig:` lines (BYO signing). Both shells wire their sealer
     /// (the native `HUB_SEAL_KEY` sealer; the Worker's `HUB_SEAL_KEY` binding).
     pub sealer: Option<Arc<dyn crate::auth::seal::SecretSealer>>,
+    /// The authenticated-origin proxy-read fetcher
+    /// ([`OriginFetch`](crate::fetch::OriginFetch)), used to stream a private
+    /// external origin's bytes through the hub instead of `302`-redirecting the
+    /// client to a presigned URL.
+    ///
+    /// `None` (the default) disables hub-side proxying: a private-origin cache
+    /// then always serves a presigned `302`. Wired per shell via
+    /// [`with_origin_fetch`](Self::with_origin_fetch) — the native hub a
+    /// `reqwest` streamer, the Worker a Fetch-API streamer. Streamed proxying is
+    /// only engaged when the cache's primary frontend's
+    /// [`ProxyConfig::stream`](crate::db::ProxyConfig::stream) is set.
+    pub origin_fetch: Option<Arc<dyn crate::fetch::OriginFetch>>,
 }
 
 impl RpcService {
@@ -619,7 +631,20 @@ impl RpcService {
             lease,
             reindexer,
             sealer,
+            origin_fetch: None,
         }
+    }
+
+    /// Attach an [`OriginFetch`](crate::fetch::OriginFetch) for streamed proxying
+    /// of private-origin cache reads, returning the modified service.
+    ///
+    /// Without it, a private-origin cache serves a presigned `302`; with it, a
+    /// cache whose primary frontend sets `proxy_config.stream` has its origin
+    /// bytes streamed through the hub instead.
+    #[must_use]
+    pub fn with_origin_fetch(mut self, origin_fetch: Arc<dyn crate::fetch::OriginFetch>) -> Self {
+        self.origin_fetch = Some(origin_fetch);
+        self
     }
 
     /// Verify the bearer JWT carried in a raw `Authorization` header value.
@@ -3215,7 +3240,15 @@ impl RpcService {
             .rsplit_once(':')
             .context("credential_ref must be access_key:secret_key:region")?;
 
-        // Origin host from the base URL (scheme stripped, no trailing slash).
+        // Origin scheme + host from the base URL. The scheme follows the operator's
+        // configured `public_base_url` (real S3/R2 is `https`; a plaintext origin
+        // — e.g. a local dev/test endpoint — stays `http`); it is not signed, so
+        // it never affects the signature.
+        let scheme = if base_url.starts_with("http://") {
+            "http"
+        } else {
+            "https"
+        };
         let host = base_url
             .trim_start_matches("https://")
             .trim_start_matches("http://")
@@ -3228,6 +3261,7 @@ impl RpcService {
             secret_key,
             region,
             service: "s3",
+            scheme,
             host,
             path: &object_path,
             expires_secs: PRESIGN_EXPIRES_SECS,
@@ -3281,12 +3315,42 @@ impl RpcService {
             return Ok(Some(resp));
         }
 
-        // A private external origin: 302 to a presigned URL (client fetches it).
+        // A private external origin: the hub holds no local bytes. Either stream
+        // the origin through the hub (proxy mode) or `302` the client to the
+        // presigned URL — the same signed URL, differing only in who fetches it.
         if let Some(url) = self
             .presign_cache_read(cache, path, clock::now_unix_secs())
             .await
             .map_err(RpcError::internal)?
         {
+            let requested = parse_byte_range(range_header);
+            // Streamed proxy: only when an OriginFetch is wired AND the cache's
+            // primary frontend opts into it (`proxy_config.stream`). The hub
+            // fetches the presigned URL and streams the body, so the origin
+            // endpoint never reaches the client.
+            if let Some(origin) = &self.origin_fetch {
+                if let Some(proxy) = self.cache_streamed_proxy_config(cache).await {
+                    let Some(read) = origin
+                        .get_stream(&url, requested)
+                        .await
+                        .map_err(RpcError::internal)?
+                    else {
+                        return Ok(None);
+                    };
+                    // Enforce the frontend's `max_body_bytes` guard against an
+                    // oversized origin object (the origin declares its full size
+                    // via Content-Length / Content-Range `total`).
+                    if read.total > proxy.max_body_bytes {
+                        return Err(RpcError::internal(anyhow::anyhow!(
+                            "origin object {} bytes exceeds proxy max_body_bytes {}",
+                            read.total,
+                            proxy.max_body_bytes
+                        )));
+                    }
+                    return Ok(Some(Self::streamed_cache_response(path, read)?));
+                }
+            }
+            // Otherwise redirect the client to the presigned origin URL.
             let location = axum::http::HeaderValue::from_str(&url)
                 .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
             return Ok(Some(axum::response::IntoResponse::into_response((
@@ -3318,6 +3382,49 @@ impl RpcService {
                 .await;
         }
 
+        Ok(Some(Self::streamed_cache_response(path, read)?))
+    }
+
+    /// The proxy tuning to use for streamed proxying of a cache's private origin,
+    /// or `None` to fall back to the default `302` presigned redirect.
+    ///
+    /// Consults the cache's *primary* serving frontend (or, if none is flagged
+    /// primary, the highest-`consumer_priority` one — `list_cache_frontends`
+    /// orders by `consumer_priority DESC, domain`, a deterministic order). Returns
+    /// the frontend's [`ProxyConfig`](crate::db::ProxyConfig) only when its
+    /// [`stream`](crate::db::ProxyConfig::stream) flag is set; otherwise (no
+    /// frontend, no proxy config, `stream = false`, or a DB error) returns `None`
+    /// so the safe default (`302`) always applies.
+    async fn cache_streamed_proxy_config(
+        &self,
+        cache: &crate::db::Cache,
+    ) -> Option<crate::db::ProxyConfig> {
+        let frontends = self.db.list_cache_frontends(cache.id).await.ok()?;
+        let chosen = frontends
+            .iter()
+            .find(|f| f.is_primary)
+            .or_else(|| frontends.first());
+        chosen
+            .and_then(|f| f.proxy_config.as_ref())
+            .filter(|p| p.stream)
+            .cloned()
+    }
+
+    /// Build the `200`/`206` streaming HTTP response for a served cache object.
+    ///
+    /// Shared by the local-surface read and the streamed-origin proxy: a
+    /// `StreamedRead` with a `Some` range becomes a `206 Partial Content` with
+    /// `Content-Range`/`Content-Length`, and a `None` range a `200 OK` with
+    /// `Content-Length`; both advertise `Accept-Ranges: bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] if the response builder rejects a header.
+    fn streamed_cache_response(
+        path: &str,
+        read: crate::fetch::StreamedRead,
+    ) -> Result<axum::response::Response, RpcError> {
+        use axum::http::{header, StatusCode};
         let ct = keymap::content_type(path);
         let cc = keymap::cache_control(path);
         let resp = match read.range {
@@ -3338,7 +3445,7 @@ impl RpcService {
                 .body(read.body),
         }
         .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
-        Ok(Some(resp))
+        Ok(resp)
     }
 
     /// Write one object (`<hash>.narinfo` or `nar/<file>`) into a managed cache's

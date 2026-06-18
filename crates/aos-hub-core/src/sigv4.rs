@@ -44,6 +44,11 @@ pub struct PresignParams<'a> {
     pub region: &'a str,
     /// The service (`s3` for object storage).
     pub service: &'a str,
+    /// The URL scheme (`https` for real S3/R2; `http` only for a plaintext
+    /// origin, e.g. a local test/dev endpoint). SigV4 signs the host and path
+    /// but **not** the scheme, so this affects only the emitted URL, never the
+    /// signature.
+    pub scheme: &'a str,
     /// The request host (the value of the `Host` header / URL authority).
     pub host: &'a str,
     /// The object path, leading-slash absolute (e.g. `/test.txt`). Each segment
@@ -211,8 +216,8 @@ fn presign_url(method: &str, p: &PresignParams<'_>) -> Result<String> {
     // Emit the *encoded* path (the one that was signed), so the client requests
     // exactly the URI the signature covers.
     Ok(format!(
-        "https://{}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}",
-        p.host
+        "{}://{}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}",
+        p.scheme, p.host
     ))
 }
 
@@ -260,6 +265,7 @@ mod tests {
             secret_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             region: "us-east-1",
             service: "s3",
+            scheme: "https",
             host: "examplebucket.s3.amazonaws.com",
             path: "/test.txt",
             expires_secs: 86400,
@@ -297,6 +303,7 @@ mod tests {
             secret_key: "secret",
             region: "us-east-1",
             service: "s3",
+            scheme: "https",
             host: "bucket.s3.amazonaws.com",
             path: "/upload.nar",
             expires_secs: 300,
@@ -326,6 +333,7 @@ mod tests {
             secret_key: "secret",
             region: "auto",
             service: "s3",
+            scheme: "https",
             host: "bucket.example.com",
             path: "/cache-prefix/nar/ab cd.nar.zst",
             expires_secs: 300,
@@ -343,6 +351,7 @@ mod tests {
             secret_key: "secret",
             region: "auto",
             service: "s3",
+            scheme: "https",
             host,
             path: "/x",
             expires_secs: 300,

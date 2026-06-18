@@ -789,6 +789,176 @@ async fn private_binding_cache_serves_presigned_302() {
     );
 }
 
+/// A cache on a private external binding whose primary frontend opts into
+/// streamed proxying serves the origin's bytes *through the hub* (a `200`/`206`),
+/// not a `302` — proving the shared `cache_serve` streamed-proxy branch and the
+/// native `ReqwestOriginFetch` origin fetcher, range-forwarded end to end.
+#[tokio::test]
+async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
+    // A mock S3-style origin: serves a fixed object, honoring a `bytes=a-b`
+    // Range with a `206` + `Content-Range` so the proxied ranged read is real.
+    let object = b"NARINFO-FROM-PRIVATE-ORIGIN-streamed-through-the-hub\n".to_vec();
+    let total = object.len();
+    let serve_body = object.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_addr = listener.local_addr().unwrap();
+    let mock = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+        let body = serve_body.clone();
+        async move {
+            // Honor a single `bytes=start-end` range; otherwise serve the whole
+            // object. (The fallback ignores the request path — every signed key
+            // resolves to the one fixture object.)
+            if let Some((start, end)) = headers
+                .get(header::RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("bytes="))
+                .and_then(|v| v.split_once('-'))
+                .and_then(|(s, e)| Some((s.parse::<usize>().ok()?, e.parse::<usize>().ok()?)))
+            {
+                let end = end.min(total - 1);
+                let slice = body[start..=end].to_vec();
+                axum::response::Response::builder()
+                    .status(StatusCode::PARTIAL_CONTENT)
+                    .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
+                    .header(header::CONTENT_LENGTH, slice.len())
+                    .body(Body::from(slice))
+                    .unwrap()
+            } else {
+                axum::response::Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_LENGTH, body.len())
+                    .body(Body::from(body))
+                    .unwrap()
+            }
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, mock).await.unwrap();
+    });
+
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", "/srv")
+        .await
+        .unwrap();
+    let sealer = aos_hub::auth::oidc::dev_sealer();
+    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
+    db.set_storage_binding_access(
+        binding,
+        "private",
+        Some(&format!("http://{origin_addr}")),
+        Some(&sealed),
+    )
+    .await
+    .unwrap();
+    let cache = db
+        .create_cache(
+            Some(org),
+            "ext-cache",
+            "Ext",
+            binding,
+            "pfx",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    // A primary, proxied frontend that opts into streaming engages the proxy path.
+    let fe = db
+        .create_cache_frontend(cache, "ext-cache.example.com", "/", "proxied", true, 100, true)
+        .await
+        .unwrap();
+    db.set_frontend_proxy(
+        fe,
+        Some(&aos_hub::db::ProxyConfig {
+            stream: true,
+            ..Default::default()
+        }),
+        true,
+    )
+    .await
+    .unwrap();
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    // Whole read: streamed through the hub as a 200 carrying the origin's bytes
+    // (NOT a 302 — the client never sees the origin).
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ext-cache/aaaa.narinfo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "streamed proxy serves bytes, not a redirect"
+    );
+    let got = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(got.as_ref(), object.as_slice(), "proxied body matches origin");
+
+    // Ranged read: the hub forwards the Range to the origin and relays its 206.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ext-cache/aaaa.narinfo")
+                .header(header::RANGE, "bytes=0-3")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::PARTIAL_CONTENT, "ranged proxy -> 206");
+    let cr = resp
+        .headers()
+        .get(header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(cr, format!("bytes 0-3/{total}"), "relayed Content-Range");
+    let got = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    assert_eq!(got.as_ref(), &object[0..=3], "proxied ranged body");
+
+    // The `max_body_bytes` guard rejects an origin object larger than the cap:
+    // shrink it below the object size and the proxied read must fail closed
+    // (not stream an over-cap body through the hub).
+    db.set_frontend_proxy(
+        fe,
+        Some(&aos_hub::db::ProxyConfig {
+            stream: true,
+            max_body_bytes: (total as u64) - 1,
+            ..Default::default()
+        }),
+        true,
+    )
+    .await
+    .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ext-cache/aaaa.narinfo")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "an over-cap origin object must not be proxied through the hub"
+    );
+}
+
 /// MintCacheUploadCredentials returns a presigned PUT URL for a presign-mode
 /// cache's object, gated on cache-write authority.
 #[tokio::test]

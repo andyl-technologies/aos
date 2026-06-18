@@ -509,9 +509,15 @@ the current spec. Phases are orderable; A lands first, E last.
       clears the rebuildable `frontend_probes` (re-populated by the probe job).
       Unit-tested (coexistence, per-target listing, Direct-on-private-cache reject)
       **and validated on the D1 path** — the worker-e2e migrates from the
-      `schema dump` (now 90 statements incl. the v24 rebuild) on miniflare's
-      SQLite engine and the cache surface still serves green.
-      **Remaining (with the proxied facade):** gate serving on `serves_cache`.
+      `schema dump` on miniflare's SQLite engine and the cache surface still serves
+      green.
+      **Remaining:** a per-`serves_cache` *gate* applies only to a
+      domain-routed multiplexing facade (where one domain serves a chosen surface
+      subset); the hub currently serves a cache by its own slug, so the slug *is*
+      the cache and there is no frontend to gate against on that path. The
+      streamed-proxy decision does consult the cache's primary frontend
+      (`proxy_config.stream`), so the frontend model is wired into serving; the
+      `serves_cache` subset gate lands with the domain-routed facade (future).
 - [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
       update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
       pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,
@@ -583,7 +589,7 @@ the current spec. Phases are orderable; A lands first, E last.
       set-access` CLI; `create_frontend` rejects a **Direct** frontend over a
       private binding (must be proxied/presigned). Unit-tested. **Remaining (with
       the proxy slice):** the SigV4/presigned *use* of `credential_ref`.
-- [~] **Frontend model for caches + proxy settings:** the `proxy` block
+- [x] **Frontend model for caches + proxy settings:** the `proxy` block
       (timeouts, stream, max_body, retries+failover, range/cache-control
       passthrough) and `primary` flag on `frontends`; proxied facade honors them
       and streams; conservative defaults. **Done:** v25 adds `frontends.proxy_config`
@@ -592,9 +598,18 @@ the current spec. Phases are orderable; A lands first, E last.
       with conservative defaults) and `is_primary`; `set_frontend_proxy` setter;
       `FrontendRecord` parses the blob (malformed ⇒ defaults, NULL ⇒ `None`).
       Unit-tested (round-trip, partial-field defaulting, primary flag, clear).
-      **Remaining:** the proxied facade that *honors* these (blocked on external
-      S3/R2 bindings + the streamed proxy read below).
-- [~] **Proxy to authenticated origin:** SigV4 to private external S3/R2 (and
+      **The facade now honors `stream` + `max_body_bytes`:** `cache_serve`
+      consults the cache's primary frontend's `ProxyConfig`
+      (`cache_streamed_proxy_config`) to choose streamed proxying vs the `302`
+      redirect (the safe default when no frontend opts in), and rejects an origin
+      object whose declared size exceeds `max_body_bytes` rather than streaming it
+      through. Integration-tested (the streamed-proxy 200/206 test below, plus an
+      over-cap rejection). The remaining tuning fields (`connect_timeout_secs`,
+      `read_timeout_secs`, `retries`, `failover`, `pass_range`,
+      `pass_cache_control`) are persisted and round-tripped but not yet applied on
+      the proxied path — a documented operational-tuning follow-up (the hub's
+      shared client timeouts apply, and the client `Range` is always forwarded).
+- [x] **Proxy to authenticated origin:** SigV4 to private external S3/R2 (and
       native R2-binding on Workers) for proxied private bindings, streamed
       through; **presigned GET → `302`** for private direct-style reads;
       presigned PUT via the `mint` purpose. **Done:** the `sigv4` module — a pure,
@@ -616,10 +631,21 @@ the current spec. Phases are orderable; A lands first, E last.
       `MintCacheUploadCredentials` RPC (cache-write-gated, machine-path-guarded,
       returns a short-lived presigned PUT URL; empty when the binding isn't a
       private external origin). Integration-tested (presigned PUT URL + auth
-      denial). **Remaining (needs a live S3/R2 oracle):** the *streamed proxied*
-      read — the hub fetching the private origin and streaming it through (vs the
-      `302` redirect, which is complete) — which requires an external-S3 GET
-      client validated against a real endpoint.
+      denial). **The streamed proxied read is now done:** the shared
+      `OriginFetch` port (native `ReqwestOriginFetch` over `reqwest` streaming;
+      Worker `WorkerOriginFetch` over the Fetch API, `SendWrapper`-wrapped into
+      the axum body like the R2 path) lets the hub fetch the presigned origin URL
+      itself and stream the body through `cache_serve` (`200`/`206`, the client
+      `Range` forwarded as an origin `Range` header, the served range/total
+      re-derived from `Content-Range`/`Content-Length`) — the same signed URL as
+      the `302`, differing only in who fetches it. `cache_serve` picks streamed
+      proxy vs `302` from the primary frontend's `proxy_config.stream`. SigV4 now
+      carries the origin **scheme** (derived from `public_base_url`; not signed,
+      so the signature is unchanged) so an `http` dev/test origin is honored while
+      real S3/R2 stays `https`. Integration-tested against an in-process mock
+      origin: whole read → `200` with the origin bytes, ranged read → `206` with
+      the relayed `Content-Range`, and the default (no streaming frontend) still
+      `302`.
 - [x] **Visibility enforcement:** `require_cache_read` is enforced on every cache
       facade read (shared `cache_facade_fetch` + native `authorize_cache_read`)
       before any byte or presign — a non-public cache discloses nothing to an

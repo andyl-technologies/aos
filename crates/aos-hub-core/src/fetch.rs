@@ -125,6 +125,41 @@ pub trait SurfaceFetch: BackendBounds {
     fn describe(&self) -> String;
 }
 
+/// Fetches an absolute origin URL's body as a stream (the authenticated-origin
+/// proxy-read port).
+///
+/// When a cache is backed by a *private external* origin and its serving
+/// frontend is configured to **proxy** reads (rather than `302`-redirect them),
+/// the hub fetches the (presigned) origin URL itself and streams the body
+/// through the shared cache serve path, so the origin endpoint is never exposed
+/// to the client. This is the read sibling of the presign path: same signed URL,
+/// but the hub is the fetcher.
+///
+/// Like the other core ports it carries [`BackendBounds`]: the native hub uses a
+/// streaming `reqwest` GET (`Send + Sync`); the Worker uses the global Fetch API
+/// (`?Send`). The `range`, when given, is forwarded to the origin as a
+/// `Range: bytes=start-end` request header so the origin serves only those bytes.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait OriginFetch: BackendBounds {
+    /// `GET` `url`, optionally just the inclusive byte `range`, and stream the body.
+    ///
+    /// Returns `Ok(None)` when the origin responds `404`. The returned
+    /// [`StreamedRead::range`] reflects what the origin actually served (`Some`
+    /// when it answered `206 Partial Content`, `None` for a whole-object `200`),
+    /// and [`StreamedRead::total`] is the object's full length (parsed from
+    /// `Content-Range` on a `206`, else `Content-Length`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport failures or a non-404 error status.
+    async fn get_stream(
+        &self,
+        url: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>>;
+}
+
 /// Resolves the [`SurfaceFetch`] for a registry (the per-registry store seam).
 ///
 /// The native hub inspects the registry's storage binding to choose a

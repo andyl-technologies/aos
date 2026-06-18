@@ -102,6 +102,9 @@ pub(crate) fn write_service(state: &AppState) -> RpcService {
         Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
         Some(Arc::clone(&state.sealer)),
     )
+    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+        state.http.clone(),
+    )))
 }
 
 /// Pull the raw `Authorization` header value, if present and ASCII.

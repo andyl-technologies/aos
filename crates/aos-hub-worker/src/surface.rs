@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use worker::Bucket;
 
 use aos_hub_core::db::RegistryRecord;
-use aos_hub_core::fetch::{SurfaceFetch, SurfaceProvider};
+use aos_hub_core::fetch::{OriginFetch, StreamedRead, SurfaceFetch, SurfaceProvider};
 use aos_hub_core::surface_write::{SurfaceWrite, SurfaceWriteProvider};
 
 use crate::keymap;
@@ -216,6 +216,110 @@ impl SurfaceFetch for R2SurfaceFetch {
     fn describe(&self) -> String {
         format!("r2://{}", self.prefix)
     }
+}
+
+/// A [`OriginFetch`] over the Workers global Fetch API.
+///
+/// The Worker counterpart of the native `ReqwestOriginFetch`: it streams a
+/// private external origin's bytes through the isolate (the proxy-read
+/// alternative to a `302` presigned redirect), forwarding a byte range as a
+/// `Range` request header and re-deriving the served range/total from the
+/// origin's `Content-Range`/`Content-Length` response headers. The body is the
+/// `worker::Response` `ByteStream`, `SendWrapper`-wrapped into the axum body
+/// exactly like the R2 read path, so a large NAR never buffers in the isolate.
+pub struct WorkerOriginFetch;
+
+#[async_trait(?Send)]
+impl OriginFetch for WorkerOriginFetch {
+    async fn get_stream(
+        &self,
+        url: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        use futures_util::TryStreamExt as _;
+        use worker::{Fetch, Headers, Method, Request, RequestInit};
+
+        let mut headers = Headers::new();
+        if let Some((start, end)) = range {
+            let spec = if end == u64::MAX {
+                format!("bytes={start}-")
+            } else {
+                format!("bytes={start}-{end}")
+            };
+            headers
+                .set("Range", &spec)
+                .map_err(|err| anyhow::anyhow!("origin set Range: {err}"))?;
+        }
+        let mut init = RequestInit::new();
+        init.with_method(Method::Get).with_headers(headers);
+        let request = Request::new_with_init(url, &init)
+            .map_err(|err| anyhow::anyhow!("origin build request {url}: {err}"))?;
+        let mut response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("origin GET {url}: {err}"))?;
+        let status = response.status_code();
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            anyhow::bail!("origin GET {url}: status {status}");
+        }
+        // A `206` carries the served range + total in `Content-Range`; a `200`
+        // carries the size in `Content-Length` and serves the whole object.
+        let served;
+        let total;
+        if status == 206 {
+            let cr = response
+                .headers()
+                .get("content-range")
+                .ok()
+                .flatten()
+                .and_then(|v| parse_content_range(&v))
+                .ok_or_else(|| anyhow::anyhow!("origin 206 without a parseable Content-Range"))?;
+            // Trust nothing from the origin: a malformed range (`end < start` or
+            // `end >= total`) would underflow/overflow the downstream
+            // `Content-Length` arithmetic. Enforce `fetch_stream`'s invariant.
+            if cr.0 > cr.1 || cr.1 >= cr.2 {
+                anyhow::bail!("origin malformed Content-Range bytes {}-{}/{}", cr.0, cr.1, cr.2);
+            }
+            served = Some((cr.0, cr.1));
+            total = cr.2;
+        } else {
+            served = None;
+            total = response
+                .headers()
+                .get("content-length")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| anyhow::anyhow!("origin 200 without a Content-Length"))?;
+        }
+        let stream = response
+            .stream()
+            .map_err(|err| anyhow::anyhow!("origin stream {url}: {err}"))?
+            .map_err(|err| std::io::Error::other(err.to_string()));
+        let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(stream));
+        Ok(Some(StreamedRead {
+            body,
+            total,
+            range: served,
+        }))
+    }
+}
+
+/// Parse a `Content-Range: bytes START-END/TOTAL` value into `(start, end, total)`.
+///
+/// Returns `None` for an unsatisfiable (`bytes */TOTAL`) or malformed value.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((
+        start.trim().parse().ok()?,
+        end.trim().parse().ok()?,
+        total.trim().parse().ok()?,
+    ))
 }
 
 /// A [`SurfaceWriteProvider`] that writes every registry into one R2 bucket.
