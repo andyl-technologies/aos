@@ -751,6 +751,24 @@ the current spec. Phases are orderable; A lands first, E last.
       full reclamation is covered by the native end-to-end GC test + gc.rs.)
       (Streamed *upload* — a ranged/multipart PUT — remains a documented
       follow-up; uploads are `MAX_UPLOAD_BYTES`-capped, so they stay buffered.)
+- [x] **Native hub integration test against a real Nix client** (`aos-hub-e2e`,
+      the native counterpart to `aos-hub-worker-e2e`): a launcher (run outside the
+      sandbox, like the fleet VM tests — it needs a nix daemon + a bindable port)
+      that drives the `aos-hub` binary CLI-first (`init` → `org add` → `binding
+      add` → `cache create`), seeds a cache surface with **real `nix copy --to
+      file://`**, boots `aos-hub serve`, and then asserts the cache read path with
+      the **actual `nix` client**: generated `nix-cache-info`, passthrough
+      `<hash>.narinfo`, a native ranged `nar/<file>` read → `206`/`Content-Range`,
+      and — the keystone — `nix copy --from http://<hub>/<cache>`, which re-hashes
+      the streamed NAR against the narinfo `NarHash` (so a serve-path corruption or
+      bad range framing fails the copy). Proves the unified `cache_serve`/
+      `fetch_stream` path the in-process router tests drive is the same one a real
+      substituter round-trips. **Caught a real CLI bug en route:** `aos-hub binding
+      add --root <path>` panicked at runtime (`clap` arg-id downcast mismatch)
+      because the subcommand's `--root` (`String`) collided with the global
+      `--root` hub-state-dir flag (`Option<PathBuf>`, `global = true`); the
+      subcommand flag is now `--path`, and an audit confirmed no other
+      differing-type global/subcommand arg-id collision remains.
 - [x] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
       graph in a Leptos render test. `web.rs::cache_browse_and_nar_explorer_over_plain_http`
       drives the real router for the cache home, object list, object page,
