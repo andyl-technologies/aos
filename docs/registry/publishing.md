@@ -95,9 +95,10 @@ The commands relevant to a release, in workflow order:
 | `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
-| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr cache generate [--output <dir>] [--key <key>] [--cache-url <url>] [--upload-url <backend>]... [--no-skip]` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path into the internal per-registry staging dir unless `--output` is supplied; fails closed when a path is absent locally; skips remotely present narinfos unless `--no-skip`; optionally uploads the generated files to repeatable `--upload-url` destinations via `aos-cache`, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr cache gc [--registry <name>] [--max-age <days>] [--dry-run]` | `run_cache` (`registry_ops.rs`) | Removes old internal static-cache staging narinfo/NAR pairs, defaulting to `[registry.cache].max_age_days` or 30 days. |
 | `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
-| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-output <dir>] [--cache-url <url>] [--upload-url <backend>]... [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, commits a cache pointer before signing when `--cache-url` is supplied, creates/reuses a signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, optionally generates static Nix-cache files, initializes/advances channel partitions, and uploads the static origin in immutable-first / mutable-last order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
+| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-url <url>] [--cache-key <key>] [--cache-priority N] [--upload-url <backend>]... [--no-skip] [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, generates static Nix-cache files into internal staging when publishing store roots, commits the cache pointer, creates/reuses the signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, initializes/advances channel partitions, and uploads cache bytes plus the static origin in producer-safe order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 ### 2.1 CURRENT: transport/index refresh
@@ -513,7 +514,6 @@ apr release 2026.06.0 \
     --description "URL transfer tool" --license MIT --maintainer acme \
     --key-id initial \
     --channel stable --init-channel \
-    --cache-output ./cache-static \
     --cache-key ./nix_cache_signing_key \
     --cache-url https://registry.example/cache \
     --s3-region us-east-1 \
@@ -599,11 +599,11 @@ upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
 
 `apr release` is the production wrapper for this pipeline. It supports a
 committed-tree mode and an optional `--store-path` mode; the latter delegates to
-`apr publish` first and therefore requires a real local Nix store path. Static
-cache generation is opt-in with `--cache-output` for the same reason. Uploads
-accept repeatable backend URLs (`file://`, `http(s)://`, `s3://`, and
-`sftp://`/`ssh://`) and publish immutable payloads before low-TTL mutable
-pointers.
+`apr publish` first and therefore requires a real local Nix store path. When a
+publishing release has store roots, `apr` stages the static cache internally,
+commits the advertised `[[caches]]` pointer before signing the release tag, and
+uploads cache payloads before mutable pointers. Uploads accept repeatable backend
+URLs (`file://`, `http(s)://`, `s3://`, and `sftp://`/`ssh://`).
 The mixed cache upload path is validated by
 `checks.vm.apm.registry-validation-stock-nix-backend-array`; the static-origin
 upload ordering and CDN metadata contract are validated by

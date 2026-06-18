@@ -19,11 +19,16 @@
 //! narinfos describe the paths consumers will actually install.
 
 use std::collections::BTreeSet;
+#[cfg(unix)]
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions};
@@ -41,6 +46,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use toml::Value as TomlValue;
 
+use super::membership::CacheMembership;
 use super::store::StoreMap;
 
 /// zstd compression level used for published NARs.
@@ -54,17 +60,35 @@ const UPLOAD_CONCURRENCY: usize = 16;
 /// Summary of a generated static cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticCacheReport {
-    /// Number of store paths covered (registry roots plus their closures).
+    /// Number of store paths covered by this run.
     pub paths: usize,
     /// Number of `.narinfo` files written.
     pub narinfos: usize,
     /// Number of compressed NAR files freshly written this run.
     pub nars: usize,
-    /// Number of NARs already present in the output and reused without
-    /// re-dumping or re-compressing.
-    pub nars_skipped: usize,
+    /// Number of staged NARs reused without re-dumping or re-compressing.
+    pub local_reused: usize,
+    /// Number of paths skipped because every destination already had their
+    /// narinfo.
+    pub remote_skipped: usize,
+    /// Store hashes for registry root paths. These narinfos are uploaded
+    /// after all member narinfos so a visible root implies a complete closure.
+    pub root_hashes: Vec<String>,
     /// The directory the cache was generated into.
     pub output_dir: PathBuf,
+}
+
+/// Summary of a static-cache staging garbage-collection pass.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StaticCacheGcReport {
+    /// Number of narinfo/NAR pairs selected by the age policy.
+    pub candidates: usize,
+    /// Number of files deleted (two per pair when both files exist).
+    pub deleted_files: usize,
+    /// Bytes deleted from the staging directory.
+    pub deleted_bytes: u64,
+    /// Candidate narinfo hashes, useful for dry-run output.
+    pub hashes: Vec<String>,
 }
 
 /// One closure path scheduled for cache emission.
@@ -112,13 +136,19 @@ pub async fn generate_static_cache(
     key_path: Option<&Path>,
     priority: u32,
     jobs: Option<usize>,
+    membership: Option<&dyn CacheMembership>,
+    no_skip: bool,
     printer: &Printer,
 ) -> Result<StaticCacheReport> {
-    let paths = collect_store_paths(registry_dir)?;
-    if paths.is_empty() {
+    let roots = collect_static_cache_roots(registry_dir)?;
+    if roots.is_empty() {
         bail!("registry contains no store paths to cache");
     }
-    let store_dir = common_store_dir(&paths)?;
+    let store_dir = common_store_dir(&roots)?;
+    let root_hashes = roots
+        .iter()
+        .map(|path| store_hash(path).to_string())
+        .collect::<Vec<_>>();
 
     // The store/ realisation graph is the authority for blessed output bytes
     // (RFC-0005). Generation reads the local store, so guard against emitting
@@ -145,17 +175,46 @@ pub async fn generate_static_cache(
     let output_dir = Arc::new(output_dir.to_path_buf());
     let nar_dir = output_dir.join("nar");
 
+    // `--no-skip` forces full regeneration by ignoring remote membership.
+    let membership = if no_skip { None } else { membership };
+
+    // Root-level early-out: a root narinfo present on every destination implies
+    // its whole closure was published by a prior release (the upload always
+    // writes member narinfos before the root, so a visible root is complete),
+    // so the entire subtree is skipped without any store access.
+    let (roots_to_expand, skipped_roots) =
+        partition_remote_absent(roots, |root| store_hash(root), membership, workers).await?;
+    let mut remote_skipped = skipped_roots.len();
+    for root in &skipped_roots {
+        printer.info(&format!("Skipping remotely-present cache root {root}"));
+    }
+
+    let paths = collect_store_path_closures(&roots_to_expand)?;
+
     // Phase A: gather metadata (validity + path-info + blessing) for every
     // path concurrently. Fails fast before any compression happens.
     let infos = gather_all_path_info(&paths, &store_graph, workers).await?;
 
-    // Classify each path as already-cached (skip) or pending compression,
-    // and total the pending uncompressed bytes for the thread budget.
+    // Per-member skip: drop paths whose narinfo is already on every
+    // destination before any dump or compression. Shared dependencies a prior
+    // release pushed cost one concurrent HEAD each, not a re-compression.
+    let (infos, skipped_members) =
+        partition_remote_absent(infos, |info| store_hash(&info.path), membership, workers).await?;
+    remote_skipped += skipped_members.len();
+    for info in &skipped_members {
+        printer.info(&format!(
+            "Skipping remotely-present cache member {}",
+            info.path
+        ));
+    }
+
+    // Classify each remaining path as already-cached (skip) or pending
+    // compression, and total the pending uncompressed bytes for the budget.
     let mut entries = Vec::with_capacity(infos.len());
     let mut pending_bytes = 0u64;
     for info in infos {
         let nar_name = nar_basename(&info)?;
-        let skip = nar_dir.join(&nar_name).exists();
+        let skip = !no_skip && nar_dir.join(&nar_name).exists();
         if !skip {
             pending_bytes += info.nar_size;
         }
@@ -187,6 +246,7 @@ pub async fn generate_static_cache(
     // dispatched (once a permit is free), so progress streams live rather
     // than arriving in a burst after the slowest NAR finishes.
     let total = entries.len();
+    let path_count = total + remote_skipped;
     let sem = Arc::new(Semaphore::new(workers));
     let mut handles = Vec::with_capacity(total);
     for (index, entry) in entries.into_iter().enumerate() {
@@ -227,15 +287,14 @@ pub async fn generate_static_cache(
         }));
     }
 
-    let path_count = paths.len();
     let mut narinfos = 0usize;
     let mut nars = 0usize;
-    let mut nars_skipped = 0usize;
+    let mut local_reused = 0usize;
     for handle in handles {
         let skipped = handle.await.context("static cache entry task panicked")??;
         narinfos += 1;
         if skipped {
-            nars_skipped += 1;
+            local_reused += 1;
         } else {
             nars += 1;
         }
@@ -245,9 +304,46 @@ pub async fn generate_static_cache(
         paths: path_count,
         narinfos,
         nars,
-        nars_skipped,
+        local_reused,
+        remote_skipped,
+        root_hashes,
         output_dir: (*output_dir).clone(),
     })
+}
+
+/// Partition `items` into those whose narinfo is absent from the remote
+/// (returned first, for generation) and those already present everywhere.
+///
+/// Membership for each item is probed concurrently, up to `workers` in
+/// flight. When `membership` is `None` — no destinations, or `--no-skip` —
+/// every item is treated as absent and returned unchanged.
+async fn partition_remote_absent<T, F>(
+    items: Vec<T>,
+    hash_of: F,
+    membership: Option<&dyn CacheMembership>,
+    workers: usize,
+) -> Result<(Vec<T>, Vec<T>)>
+where
+    F: Fn(&T) -> &str,
+{
+    let Some(membership) = membership else {
+        return Ok((items, Vec::new()));
+    };
+    let present =
+        futures_util::stream::iter(items.iter().map(|item| membership.narinfo(hash_of(item))))
+            .buffered(workers.max(1))
+            .try_collect::<Vec<bool>>()
+            .await?;
+    let mut absent = Vec::new();
+    let mut found = Vec::new();
+    for (item, is_present) in items.into_iter().zip(present) {
+        if is_present {
+            found.push(item);
+        } else {
+            absent.push(item);
+        }
+    }
+    Ok((absent, found))
 }
 
 /// Resolve the compression worker count: an explicit `--jobs` value wins,
@@ -368,6 +464,8 @@ fn write_cache_entry(
     let narinfo_path = output_dir.join(format!("{hash}.narinfo"));
     std::fs::write(&narinfo_path, body)
         .with_context(|| format!("writing {}", narinfo_path.display()))?;
+    touch_path(&nar_path)?;
+    touch_path(&narinfo_path)?;
     Ok(())
 }
 
@@ -416,6 +514,8 @@ pub async fn upload_static_cache(
     output_dir: &Path,
     upload_url: &str,
     auth: &AuthOptions,
+    root_hashes: &[String],
+    no_skip: bool,
     printer: &Printer,
 ) -> Result<()> {
     let cache = backend::from_url(upload_url, auth).await?;
@@ -428,6 +528,10 @@ pub async fn upload_static_cache(
     if nar_dir.exists() {
         let nars = list_dir_files(&nar_dir)?;
         upload_concurrently(nars.into_iter().map(|(name, path)| async move {
+            let relative_path = format!("nar/{name}");
+            if !no_skip && cache.exists(&relative_path).await? {
+                return Ok(());
+            }
             let data =
                 std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             cache.put_nar(&name, &data).await
@@ -436,7 +540,29 @@ pub async fn upload_static_cache(
     }
 
     let narinfos = list_narinfo_files(output_dir)?;
-    upload_concurrently(narinfos.into_iter().map(|(stem, path)| async move {
+    let root_hashes = root_hashes
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let (root_narinfos, member_narinfos): (Vec<_>, Vec<_>) = narinfos
+        .into_iter()
+        .partition(|(stem, _)| root_hashes.contains(stem.as_str()));
+    upload_concurrently(member_narinfos.into_iter().map(|(stem, path)| async move {
+        let relative_path = format!("{stem}.narinfo");
+        if !no_skip && cache.exists(&relative_path).await? {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        cache.put_narinfo(&stem, &content).await
+    }))
+    .await?;
+
+    upload_concurrently(root_narinfos.into_iter().map(|(stem, path)| async move {
+        let relative_path = format!("{stem}.narinfo");
+        if !no_skip && cache.exists(&relative_path).await? {
+            return Ok(());
+        }
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         cache.put_narinfo(&stem, &content).await
@@ -500,6 +626,97 @@ fn list_narinfo_files(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(files)
 }
 
+/// Garbage-collect old staged static-cache narinfo/NAR pairs.
+///
+/// A pair is eligible when both the top-level `<hash>.narinfo` and the NAR
+/// referenced by its `URL:` field are older than `max_age_days`. `dry_run`
+/// reports candidates without removing files.
+///
+/// # Errors
+///
+/// Returns an error when the staging directory cannot be scanned, metadata
+/// cannot be read, or an eligible file cannot be deleted.
+pub fn gc_static_cache(
+    output_dir: &Path,
+    max_age_days: u64,
+    dry_run: bool,
+) -> Result<StaticCacheGcReport> {
+    if !output_dir.exists() {
+        return Ok(StaticCacheGcReport::default());
+    }
+
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(
+            max_age_days.saturating_mul(24 * 60 * 60),
+        ))
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    let mut report = StaticCacheGcReport::default();
+
+    for (hash, narinfo_path) in list_narinfo_files(output_dir)? {
+        let text = std::fs::read_to_string(&narinfo_path)
+            .with_context(|| format!("reading {}", narinfo_path.display()))?;
+        let parsed = match aos_core::nar::info::parse(&text) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        let nar_path = output_dir.join(parsed.url.trim_start_matches('/'));
+        if !nar_path.is_file() {
+            continue;
+        }
+        if !older_than(&narinfo_path, cutoff)? || !older_than(&nar_path, cutoff)? {
+            continue;
+        }
+
+        report.candidates += 1;
+        report.hashes.push(hash);
+        let narinfo_bytes = std::fs::metadata(&narinfo_path)
+            .with_context(|| format!("stat {}", narinfo_path.display()))?
+            .len();
+        let nar_bytes = std::fs::metadata(&nar_path)
+            .with_context(|| format!("stat {}", nar_path.display()))?
+            .len();
+        if !dry_run {
+            std::fs::remove_file(&narinfo_path)
+                .with_context(|| format!("removing {}", narinfo_path.display()))?;
+            std::fs::remove_file(&nar_path)
+                .with_context(|| format!("removing {}", nar_path.display()))?;
+            report.deleted_files += 2;
+            report.deleted_bytes += narinfo_bytes + nar_bytes;
+        }
+    }
+
+    Ok(report)
+}
+
+fn older_than(path: &Path, cutoff: SystemTime) -> Result<bool> {
+    let modified = std::fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .modified()
+        .with_context(|| format!("reading mtime for {}", path.display()))?;
+    Ok(modified < cutoff)
+}
+
+fn touch_path(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let c_path = CString::new(path.as_os_str().as_bytes())
+            .with_context(|| format!("path contains NUL byte: {}", path.display()))?;
+        // SAFETY: `c_path` is a valid, NUL-terminated pathname and a null
+        // times pointer asks the OS to set atime/mtime to the current time.
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), std::ptr::null(), 0) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("touching {}", path.display()));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
+        Ok(())
+    }
+}
+
 /// Upload a generated static cache to every destination URL.
 ///
 /// Destinations are attempted independently; a failure on one does not stop
@@ -513,10 +730,12 @@ pub async fn upload_static_cache_to_all(
     output_dir: &Path,
     upload_urls: &[String],
     auth: &AuthOptions,
+    root_hashes: &[String],
+    no_skip: bool,
     printer: &Printer,
 ) -> Result<()> {
     let results = join_all(upload_urls.iter().map(|upload_url| async move {
-        upload_static_cache(output_dir, upload_url, auth, printer)
+        upload_static_cache(output_dir, upload_url, auth, root_hashes, no_skip, printer)
             .await
             .map_err(|err| format!("{upload_url}: {err:#}"))
     }))
@@ -592,8 +811,25 @@ pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32
     Ok(changed)
 }
 
-/// Collect the sorted closure of every store path the registry references.
-fn collect_store_paths(registry_dir: &Path) -> Result<Vec<String>> {
+/// Returns whether the registry references at least one cacheable store path.
+///
+/// # Errors
+///
+/// Returns an error when package metadata cannot be read or parsed.
+pub fn registry_has_store_roots(registry_dir: &Path) -> Result<bool> {
+    Ok(!collect_static_cache_roots(registry_dir)?.is_empty())
+}
+
+/// Collect the sorted root store paths the registry references.
+///
+/// Roots are the paths directly recorded in package TOML metadata: output
+/// paths, source derivations, and image store paths. Closure expansion happens
+/// later so remote root membership can skip entire closures.
+///
+/// # Errors
+///
+/// Returns an error when package metadata cannot be read or parsed.
+pub fn collect_static_cache_roots(registry_dir: &Path) -> Result<Vec<String>> {
     let packages = registry_dir.join("packages");
     if !packages.exists() {
         return Ok(Vec::new());
@@ -601,9 +837,14 @@ fn collect_store_paths(registry_dir: &Path) -> Result<Vec<String>> {
     let mut roots = BTreeSet::new();
     collect_store_paths_from_dir(&packages, &mut roots)?;
 
+    Ok(roots.into_iter().collect())
+}
+
+/// Collect the sorted closure of the selected root store paths.
+fn collect_store_path_closures(roots: &[String]) -> Result<Vec<String>> {
     let mut paths = BTreeSet::new();
     for root in roots {
-        collect_store_path_closure(&root, &mut paths)?;
+        collect_store_path_closure(root, &mut paths)?;
     }
     Ok(paths.into_iter().collect())
 }
@@ -1125,6 +1366,8 @@ name = "test"
             source.path(),
             &upload_urls,
             &AuthOptions::default(),
+            &[],
+            false,
             &printer,
         )
         .await
@@ -1187,6 +1430,8 @@ name = "test"
             source.path(),
             &format!("file://{}", dest.path().display()),
             &AuthOptions::default(),
+            &[],
+            false,
             &printer,
         )
         .await
@@ -1230,6 +1475,8 @@ name = "test"
             source.path(),
             &upload_urls,
             &AuthOptions::default(),
+            &[],
+            false,
             &printer,
         )
         .await
@@ -1243,4 +1490,111 @@ name = "test"
             assert!(dest.join("abc123.narinfo").exists());
         }
     }
+
+    #[test]
+    fn gc_static_cache_reports_and_deletes_old_pairs() {
+        let source = TempDir::new().unwrap();
+        let store_path = "/nix/store/abc123-package";
+        let nar_hash = "sha256:def456";
+        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("abc123.narinfo"),
+            render_static_narinfo(
+                &StaticNarInfoInput {
+                    store_path,
+                    nar_hash,
+                    nar_size: 5,
+                    references: &[],
+                    deriver: None,
+                    signatures: &[],
+                    file_hash: "sha256:0123456789abcdef",
+                    file_size: 9,
+                    compression: NarCompression::Zstd,
+                },
+                "/nix/store",
+                None,
+            ),
+        )
+        .unwrap();
+        std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
+        set_mtime_days_ago(&source.path().join("abc123.narinfo"), 2);
+        set_mtime_days_ago(&source.path().join(&nar_url), 2);
+
+        let dry_run = gc_static_cache(source.path(), 1, true).unwrap();
+        assert_eq!(dry_run.candidates, 1);
+        assert_eq!(dry_run.deleted_files, 0);
+        assert!(source.path().join("abc123.narinfo").exists());
+        assert!(source.path().join(&nar_url).exists());
+
+        let deleted = gc_static_cache(source.path(), 1, false).unwrap();
+        assert_eq!(deleted.candidates, 1);
+        assert_eq!(deleted.deleted_files, 2);
+        assert!(!source.path().join("abc123.narinfo").exists());
+        assert!(!source.path().join(&nar_url).exists());
+    }
+
+    #[test]
+    fn gc_static_cache_keeps_recent_pairs() {
+        let source = TempDir::new().unwrap();
+        let store_path = "/nix/store/abc123-package";
+        let nar_hash = "sha256:def456";
+        let nar_url = nar_url(store_path, nar_hash, NarCompression::Zstd);
+        std::fs::create_dir_all(source.path().join("nar")).unwrap();
+        std::fs::write(
+            source.path().join("abc123.narinfo"),
+            render_static_narinfo(
+                &StaticNarInfoInput {
+                    store_path,
+                    nar_hash,
+                    nar_size: 5,
+                    references: &[],
+                    deriver: None,
+                    signatures: &[],
+                    file_hash: "sha256:0123456789abcdef",
+                    file_size: 9,
+                    compression: NarCompression::Zstd,
+                },
+                "/nix/store",
+                None,
+            ),
+        )
+        .unwrap();
+        std::fs::write(source.path().join(&nar_url), b"nar-bytes").unwrap();
+
+        let report = gc_static_cache(source.path(), 30, false).unwrap();
+        assert_eq!(report.candidates, 0);
+        assert!(source.path().join("abc123.narinfo").exists());
+        assert!(source.path().join(&nar_url).exists());
+    }
+
+    #[cfg(unix)]
+    fn set_mtime_days_ago(path: &Path, days: u64) {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(days * 24 * 60 * 60) as libc::time_t;
+        let times = [
+            libc::timespec {
+                tv_sec: timestamp,
+                tv_nsec: 0,
+            },
+            libc::timespec {
+                tv_sec: timestamp,
+                tv_nsec: 0,
+            },
+        ];
+        let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `c_path` is NUL-terminated and `times` points to two valid
+        // timespec values for atime and mtime.
+        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
+        assert_eq!(rc, 0, "utimensat failed for {}", path.display());
+    }
+
+    #[cfg(not(unix))]
+    fn set_mtime_days_ago(_path: &Path, _days: u64) {}
 }

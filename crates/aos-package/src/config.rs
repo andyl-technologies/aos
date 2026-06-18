@@ -42,7 +42,7 @@ use super::types::{
 };
 
 /// Loaded APM configuration for the current session.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ApmConfig {
     /// Global settings from `apm.conf` (or defaults when absent).
     pub settings: ApmSettings,
@@ -303,6 +303,7 @@ impl ApmConfig {
             pin: inner.pin,
             max_staleness_seconds: inner.max_staleness_seconds,
             caches,
+            cache: inner.cache,
             upload_auth,
             signing_keys: inner.signing_keys,
             signing: inner.signing,
@@ -324,6 +325,11 @@ impl ApmConfig {
     /// Return the NAR download cache path.
     pub fn nar_cache_path(&self) -> PathBuf {
         self.scope.nar_cache_path()
+    }
+
+    /// Return the internal static-cache staging path for `registry`.
+    pub fn registry_cache_path(&self, registry: &str) -> PathBuf {
+        self.scope.registry_cache_path(registry)
     }
 
     /// Return registries sorted by priority (highest first), only enabled
@@ -945,6 +951,7 @@ v = 2
                         pin: None,
                         max_staleness_seconds: None,
                         caches: Vec::new(),
+                        cache: Default::default(),
                         upload_auth: None,
                         signing_keys: Default::default(),
                         signing: None,
@@ -965,6 +972,7 @@ v = 2
                         pin: None,
                         max_staleness_seconds: None,
                         caches: Vec::new(),
+                        cache: Default::default(),
                         upload_auth: None,
                         signing_keys: Default::default(),
                         signing: None,
