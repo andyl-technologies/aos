@@ -1,0 +1,704 @@
+# 18 — Assertions and properties
+
+This file specifies how Crucible *checks* a run: the vocabulary of temporal
+properties an author declares over a scenario, where those properties draw their
+truth from, when and in what order they are evaluated, what a violation carries,
+and — the property that distinguishes Crucible from ordinary test harnesses — how
+the same properties are checkable **offline** against an already-recorded run.
+
+The assertion machinery is small and deliberately so. It is *not* a model checker
+and *not* a specification-language evaluator ([NG-3]); it is a fixed vocabulary of
+temporal predicates evaluated over a totally-ordered, icount-stamped, complete
+event log. The event log ([`19-observability-event-log.md`](19-observability-event-log.md))
+does almost all of the work: because the log is the deterministic record of
+everything that happened, "checking a property" is a pure fold over that log, and
+the difference between checking *during* a run and checking it *a year later* is
+only whether the log is being appended to or read back.
+
+Requirement IDs in this file use the prefix `ASRT` (see
+[`00-conventions.md`](00-conventions.md)). Gate names referenced here —
+`gate:e2e-determinism`, `gate:replay-oracle`, `gate:divergence-bisect`,
+`gate:single-vm-fingerprint`, `gate:any-guest`, `gate:harness-lint`,
+`gate:scheduler-liveness` — are defined in
+[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md). The
+assertion vocabulary is shared at the wire level with the white-box marker kinds
+of [`16-guest-host-channel.md`](16-guest-host-channel.md) §16.5.1; the event-log
+schema that assertions read is [`19-observability-event-log.md`](19-observability-event-log.md);
+the determinism contract that makes offline checking sound is
+[`04-determinism-contract.md`](04-determinism-contract.md); the reproduction
+artifact a violation links to is defined in [`06-spatial-graph.md`](06-spatial-graph.md)
+and [`23-cli.md`](23-cli.md), and replayed bit-identically per
+[`07-temporal-graph.md`](07-temporal-graph.md).
+
+The code blocks in this file are **illustrative sketches** per
+[`00-conventions.md`](00-conventions.md) §"Code sketches", not the
+implementation; the authoritative statement is always the prose requirement. A
+sketch that disagrees with a requirement is a defect in the sketch.
+
+## 18.1 What an assertion is, and what it is not
+
+An **assertion** (also a **property**) is a named, declarative statement about a
+run that Crucible evaluates and reports as pass or fail. Authors declare
+assertions as part of the `ScenarioDef`'s `Properties` ([`02-glossary.md`](02-glossary.md),
+[`06-spatial-graph.md`](06-spatial-graph.md)) — they are part of the immutable,
+content-addressed definition of the scenario, so the *set of properties checked*
+is itself reproducible and hashed into the scenario identity.
+
+An assertion is a **predicate over observable run state** plus a **temporal
+quantifier** that says *when* the predicate must hold. That is the entire model.
+There is no spec language, no LTL/CTL formula compiler, no state-exploration
+engine inside the assertion layer.
+
+- **[ASRT-1]** The assertion layer MUST be a fixed, closed vocabulary of temporal
+  property quantifiers (§18.2) evaluated as predicates over the run's recorded
+  observable state (§18.3). It MUST NOT include a model checker, a
+  specification-language evaluator, or any in-runtime engine that explores or
+  proves properties beyond evaluating the declared predicates over the recorded
+  trace. Conformance against an external formal specification, if ever wanted, is
+  an OPTIONAL **offline** step performed by separate tooling fed Crucible's
+  exported trace (§18.10), never part of the runtime. *Gate:*
+  `gate:harness-lint`. *Spec:* §18.1, §18.10, satisfies [NG-3].
+
+- **[ASRT-2]** Properties MUST be part of the `ScenarioDef` and therefore part of
+  the scenario's content hash ([INV-6]): two scenarios that differ only in their
+  declared properties are different scenarios. The *evaluation* of a property MUST
+  NOT influence the run — declaring or removing a property MUST NOT change the
+  instruction stream, the schedule, or the fingerprint of any node (§18.9). The
+  property set is read *from* the run, never written *into* it. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §18.1, §18.9.
+
+The reason this is enough — the reason Crucible can refuse a model checker and
+still check rich temporal properties — is the event log. Liveness, ordering,
+convergence-after-fault, and "this state was reached" are all questions about a
+*single recorded sequence of events in virtual time*, and a single sequence is
+foldable. Crucible does not need to enumerate all executions to check a property
+of *one* execution; it needs only the complete, ordered record of that one, which
+[`19-observability-event-log.md`](19-observability-event-log.md) guarantees it
+has. Exploring *other* executions is the job of the schedule-space search and
+fuzzing layer ([`22-advanced-features.md`](22-advanced-features.md)), which runs
+*many* deterministic runs and checks each one's log with this same vocabulary; it
+is not the job of the assertion layer.
+
+## 18.2 The assertion vocabulary and its temporal semantics
+
+Crucible defines exactly five temporal quantifiers. They are the same five whose
+wire-level marker forms are carried by the white-box channel
+([`16-guest-host-channel.md`](16-guest-host-channel.md) §16.5.1); this section
+defines what each *means* for property evaluation, regardless of whether the
+predicate is sourced host-side (§18.4) or guest-side (§18.5).
+
+Throughout, an **evaluation point** is a virtual-time instant at which the
+relevant assertions are evaluated against the run state as of that instant
+(§18.7); the run reaches **quiescence** when all nodes are idle with no pending
+deliveries, timers, or due faults ([`02-glossary.md`](02-glossary.md),
+[`08-scheduling.md`](08-scheduling.md)).
+
+- **[ASRT-3]** Crucible MUST support exactly the following property quantifiers,
+  with the stated temporal semantics, and MUST NOT silently extend this set
+  (adding one is a versioned change to the property schema and the marker ABI,
+  [GHC-23]):
+
+  - **Always** — an **invariant**. The predicate MUST hold at *every* evaluation
+    point from the start of the run (or from a declared activation point) through
+    the end. The assertion **fails** the instant the predicate is ever observed
+    false; the failing evaluation point's icount/virtual-time is the violation
+    site. An Always assertion that is never evaluated (e.g. its scope is never
+    entered) is reported per the never-evaluated policy of [ASRT-15], not silently
+    passed.
+
+  - **Sometimes** — a **liveness witness** (existential). The predicate MUST hold
+    at *at least one* evaluation point during the run. It is satisfied the first
+    time the predicate is observed true; if it is never true by the end of the
+    run, the assertion **fails**. Its purpose is to prove the run actually
+    exercised an interesting state and is not a trivial no-op (e.g. "backpressure
+    was triggered at least once", "a leader was elected").
+
+  - **Eventually** — a **bounded liveness** property with an explicit deadline. It
+    is a two-part statement: a **trigger** predicate and a **property** predicate,
+    plus a **deadline** expressed in virtual time. While the trigger has not
+    fired, the assertion is dormant. When the trigger first fires at virtual time
+    `t0`, the property MUST become true at some evaluation point in the window
+    `[t0, t0 + deadline]`. The assertion **fails** if the deadline passes with the
+    property still false (the violation site is the deadline instant), and also
+    fails if the run ends while triggered-but-unsatisfied. If the property already
+    holds at `t0`, the obligation is discharged immediately. A trigger that never
+    fires is *not* a failure (it is a vacuously-discharged obligation), but is
+    reported as such so an author can tell a never-triggered Eventually from a
+    satisfied one.
+
+  - **AfterQuiescence** — an **end-state** property, checked **once**, at
+    quiescence (or at the run's virtual-time limit if quiescence is never
+    reached). The predicate MUST hold at that single terminal evaluation point;
+    the assertion **fails** if it is false there. It is the natural home for
+    "settle then check" properties (all records delivered, all replicas agree, no
+    orphaned resources) that are only meaningful once the system stops moving.
+
+  - **Reachable** — a **coverage marker**. It records whether a named state or
+    code path was ever reached during the run (predicate observed true at least
+    once, or a guest-side `reachable` marker observed at least once). Its
+    *never-reached* outcome is, by default, a **warning** rather than a failure;
+    whether never-reached is escalated to a failure MUST be configurable per
+    marker (§18.2.1, [ASRT-5]). Reachable also has a **dual** form — a
+    *never-reached* expectation (the white-box `unreachable` flavor, [GHC-22]) —
+    that **fails** if the marked point is *ever* reached. Coverage markers feed the
+    fuzzing/search coverage signal ([`22-advanced-features.md`](22-advanced-features.md))
+    in addition to being reported.
+
+  *Gate:* `gate:e2e-determinism`. *Spec:* §18.2.
+
+- **[ASRT-4]** Each quantifier's pass/fail/satisfied/violated outcome MUST be a
+  **pure function of the recorded run** (the event log plus the declared
+  predicates), with no dependence on host wall-clock, host-scheduling order, or
+  any value outside the log. The same log and the same property set MUST yield the
+  identical set of outcomes on every evaluation, online or offline (§18.6),
+  including the identical violation sites and the identical ordering of reported
+  outcomes (§18.7). *Gate:* `gate:replay-oracle`, `gate:divergence-bisect`.
+  *Spec:* §18.2, §18.6, §18.7.
+
+### 18.2.1 Per-quantifier configuration
+
+- **[ASRT-5]** Each declared property MUST carry, as part of its `ScenarioDef`
+  entry and therefore part of the scenario hash ([ASRT-2]): a stable **id**
+  (length-prefixed UTF-8, matching the white-box marker id space, [GHC-20]); a
+  human-readable **message**; and quantifier-specific parameters — for Eventually,
+  the **deadline** in virtual time and the trigger/property pair; for Reachable,
+  the **never-reached disposition** (`warn` (default) or `fail`) and whether it is
+  the ordinary or `unreachable`-dual form. A property whose parameters cannot be
+  reduced to a deterministic, virtual-time-relative form (for example, an
+  Eventually deadline expressed in host wall-clock seconds) MUST be rejected at
+  scenario validation, mirroring the readiness-heuristic rule of [GHC-6]. *Gate:*
+  `gate:harness-lint`. *Spec:* §18.2.1.
+
+### 18.2.2 Illustrative sketch
+
+The following sketch shows the intended shape of the vocabulary and its
+evaluation state; it is illustrative, and the prose requirements govern.
+
+```rust
+/// A virtual-time instant, derived from per-node icount (see file 09).
+/// Crucible's canonical clock; never a host wall-clock value.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VirtualTime(pub u64);
+
+/// A snapshot of the run's *observable* state as of one evaluation point,
+/// materialized from the event log up to and including `at` (see §18.3).
+/// It carries no host-timing data, only icount-stamped run facts.
+pub struct ObservedState<'log> {
+    /// The evaluation point this snapshot is "as of".
+    pub at: VirtualTime,
+    /// The node whose retired icount defines `at`, when point-sourced.
+    pub node: Option<NodeId>,
+    /// Read-only view of the event log prefix [start, at].
+    pub log: LogView<'log>,
+}
+
+/// The five temporal quantifiers. A closed, versioned set ([ASRT-3]).
+pub enum Property {
+    /// Invariant: predicate holds at every evaluation point.
+    Always(Predicate),
+    /// Liveness witness: predicate holds at least once.
+    Sometimes(Predicate),
+    /// Bounded liveness: after `trigger`, `property` holds within `deadline`.
+    Eventually {
+        trigger: Predicate,
+        property: Predicate,
+        deadline: VirtualTime,
+    },
+    /// End-state: predicate holds at the single quiescence/limit point.
+    AfterQuiescence(Predicate),
+    /// Coverage: state reached at least once (or, dual, never reached).
+    Reachable {
+        predicate: Predicate,
+        /// `false` = ordinary (warn/fail if never reached);
+        /// `true`  = dual (fail if ever reached).
+        never_expected: bool,
+        /// Disposition when an ordinary marker is never reached.
+        on_unreached: Disposition, // Warn | Fail
+    },
+}
+
+/// A predicate over observed state. Host-side properties evaluate a function;
+/// guest-side properties read a recorded white-box marker (§18.5).
+pub enum Predicate {
+    /// Host-side: a pure, deterministic function of observed state.
+    Host(Box<dyn Fn(&ObservedState<'_>) -> bool + Send + Sync>),
+    /// Guest-side: the truth of the named white-box assertion marker.
+    GuestMarker { id: MarkerId },
+}
+
+/// Lifecycle of one declared property over the course of evaluation (§18.8).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PropertyState {
+    /// Declared, not yet evaluated.
+    Declared,
+    /// Evaluated at least once, no obligation broken so far.
+    Passing,
+    /// Existential/liveness obligation discharged (Sometimes/Reachable seen,
+    /// Eventually property held within deadline).
+    Satisfied,
+    /// Currently failing-in-progress (e.g. Eventually triggered, deadline open).
+    Failing,
+    /// Terminally violated; carries the violation site.
+    Violated,
+}
+```
+
+## 18.3 What assertions are evaluated over: observable run state
+
+Every predicate is evaluated against the run's **observable state** as of an
+evaluation point, and observable state is *exactly* the icount-stamped record in
+the event log up to that point. There is no privileged side channel and no
+host-only knowledge in a predicate's input.
+
+- **[ASRT-6]** A property predicate MUST be evaluated only over **observable run
+  state** materialized from the event log
+  ([`19-observability-event-log.md`](19-observability-event-log.md)): the
+  black-box observation surface of [GHC-7] (network frames, disk/9p I/O,
+  console/serial output, QMP-readable registers/memory at scheduler-defined
+  points, exit codes, crash/hang, basic-block coverage), the cross-node ordering
+  facts ([INV-3]), the fault activation/heal record
+  ([`17-fault-injection.md`](17-fault-injection.md)), and — when white-box mode is
+  enabled — the recorded guest markers ([GHC-22], §18.5). A predicate MUST NOT
+  read host wall-clock, host-scheduling state, an unordered map iteration, or any
+  source outside the log. *Gate:* `gate:harness-lint`, `gate:single-vm-fingerprint`.
+  *Spec:* §18.3.
+
+- **[ASRT-7]** The observed state passed to a predicate at evaluation point `t`
+  MUST be the log prefix `[start, t]` — a predicate MUST NOT see events stamped
+  later than its evaluation point. This makes a property's truth at `t` a function
+  of history-up-to-`t` only, which is what makes online and offline evaluation
+  agree (§18.6) and what lets a violation be attributed to a definite earliest
+  icount. *Gate:* `gate:replay-oracle`. *Spec:* §18.3, §18.7.
+
+## 18.4 Source of truth #1 — host-side assertions over observable state (default)
+
+The default and always-available source of assertion truth is **host-side**:
+predicates the engine evaluates against the black-box observation surface and the
+harness/topology facts in the log. Host-side assertions require **zero guest
+cooperation** and therefore work on any unmodified guest ([G-2], [G-3],
+[GHC-1]).
+
+- **[ASRT-8]** Crucible MUST support **host-side assertions**: predicates
+  evaluated by the engine over the black-box observable state of [ASRT-6], with no
+  guest instrumentation. Host-side assertions MUST be sufficient on their own for
+  all five quantifiers (§18.2) and MUST be the default property source. They are
+  what makes property checking work in black-box mode and on a guest that has
+  never heard of Crucible. *Gate:* `gate:any-guest`. *Spec:* §18.4.
+
+- **[ASRT-9]** Host-side assertions are the correct home for **harness and
+  topology invariants** and **black-box properties** — statements about the
+  *machine and the network*, not about in-guest variables. Examples (illustrative,
+  not normative): "no node ever observes a frame from a partitioned peer"
+  (Always); "every committed write on the disk sub-node is eventually acknowledged
+  on the wire within `D` virtual-ns of its completion icount" (Eventually); "at
+  quiescence, the two replicas' on-disk block hashes are equal" (AfterQuiescence);
+  "a network partition was actually active at some point" (Sometimes); "the crash
+  fault path was exercised" (Reachable). These need nothing inside the guest.
+  *Gate:* `gate:any-guest`. *Spec:* §18.4.
+
+- **[ASRT-10]** A host-side predicate MUST be a **pure, deterministic function**
+  of the observed state it is given: same observed state ⇒ same boolean, with no
+  internal nondeterminism (no wall-clock, no thread RNG, no unordered iteration),
+  consistent with [INV-9]. The engine MUST evaluate it side-effect-free with
+  respect to the run ([ASRT-2], §18.9). A predicate that violates this is a
+  harness defect caught by `gate:harness-lint`. *Gate:* `gate:harness-lint`.
+  *Spec:* §18.4, §18.9.
+
+## 18.5 Source of truth #2 — guest-side markers over the white-box channel
+
+The second source of truth is **guest-side**: fine-grained, in-guest assertions
+emitted as markers over the white-box doorbell channel
+([`16-guest-host-channel.md`](16-guest-host-channel.md)). This is the most
+*meaningful* source for many properties, because the most interesting invariants
+are about in-guest state the black box cannot see — an internal data-structure
+invariant, a per-request lifecycle, an in-process consistency check — and the
+guest can assert them at the exact instruction where they matter. Guest-side
+assertions are an **opt-in white-box enhancement**, never required ([GHC-2],
+[GHC-28]).
+
+- **[ASRT-11]** When white-box mode is enabled, Crucible MUST evaluate
+  **guest-side assertion markers** ([GHC-22]) using the *same* five-quantifier
+  semantics as host-side assertions (§18.2): an `always` marker fails the run if
+  its condition is ever observed false; a `sometimes` marker fails if it is never
+  observed true; a `reachable` marker fails (or warns, per [ASRT-5]) if it is
+  never observed; its `unreachable` dual fails if it is ever observed. The host
+  MUST fold guest-originated markers into the *same* property-evaluation pass as
+  the host-side observations (§18.7), so a run's outcome set is a single,
+  uniformly-evaluated whole. *Gate:* `gate:any-guest`. *Spec:* §18.5, mirrors
+  [GHC-25].
+
+- **[ASRT-12]** A guest-side marker MUST be treated as an **observational**
+  event-log entry stamped with the exact icount at which its doorbell instruction
+  retired ([GHC-13], [GHC-24]): its truth value (`condition`) and its identity
+  (`id`) come from the recorded marker, and its evaluation point is the marker's
+  icount. Because the marker stream is itself deterministic under the contract
+  ([GHC-30]), the guest-side assertion outcomes are deterministic and offline-
+  checkable on the same terms as host-side ones (§18.6). Markers are descriptive
+  output and MUST be **excluded from the determinism fingerprint comparison**
+  ([GHC-24], [DET-29]); declaring or evaluating guest-side assertions MUST NOT
+  move a fingerprint (§18.9). *Gate:* `gate:single-vm-fingerprint`. *Spec:* §18.5.
+
+- **[ASRT-13]** The relationship between the two sources MUST be: **host-side is
+  the floor; guest-side is the additive enhancement.** Most meaningful, fine-
+  grained assertions come from inside the guest when white-box is enabled;
+  host-side assertions cover harness/topology invariants and black-box properties
+  and are the only source available on an unmodified guest. The *absence* of any
+  guest-side markers MUST NOT degrade host-side property checking ([GHC-28]); a
+  scenario MUST be able to mix both sources, and both MUST report through one
+  unified outcome set (§18.8). *Gate:* `gate:any-guest`. *Spec:* §18.5, §18.4.
+
+## 18.6 Offline checking — the keystone capability
+
+This is the property that makes the assertion layer worth its small size. Because
+the event log is **complete** and **icount-stamped** and a property's truth is a
+**pure fold over that log** ([ASRT-4], [ASRT-7],
+[`19-observability-event-log.md`](19-observability-event-log.md)), a property does
+not have to exist *when the run executes*. An author can write a *new* assertion
+after the fact and check it against a *recorded* run — without re-executing the
+VMs — and get exactly the result that an online evaluation would have produced.
+
+- **[ASRT-14]** Crucible MUST provide an **offline assertion checker** that takes
+  (a) a recorded run's event log and (b) a set of properties (the run's original
+  `Properties`, or a *new or amended* set supplied at check time) and produces the
+  identical outcome set that an online evaluation of those properties over that
+  run would produce. The offline checker MUST NOT re-execute the guests: it reads
+  the recorded log only. For host-side predicates the checker re-evaluates the
+  predicate function over the recorded observed state; for guest-side markers it
+  reads the recorded marker entries. *Gate:* `gate:replay-oracle`. *Spec:* §18.6.
+
+- **[ASRT-15]** Online and offline evaluation MUST be **the same code path over
+  the same input**: the engine MUST evaluate properties by folding the event log,
+  and the only difference between online and offline MUST be whether the log is
+  being appended to live or read from storage. Consequently, the **never-evaluated
+  / never-triggered** policies (an Always whose scope was never entered, an
+  Eventually whose trigger never fired, a Reachable never reached) MUST be applied
+  identically in both modes and MUST be reported as a distinct outcome (not folded
+  into pass or fail) so the two modes cannot diverge on edge cases. *Gate:*
+  `gate:replay-oracle`, `gate:divergence-bisect`. *Spec:* §18.6, §18.8.
+
+- **[ASRT-16]** A property newly checked offline against a recorded run MUST be
+  checkable against *any* run whose log is retained, and re-checking the same
+  (log, properties) pair MUST be **idempotent** — byte-identical outcome set every
+  time — so a fixed corpus of recorded runs can be re-graded as the property suite
+  grows. This is what lets a regression in property *coverage* be found without
+  re-running the (expensive) simulations: write the assertion once, fold it over
+  the whole recorded corpus. *Gate:* `gate:replay-oracle`. *Spec:* §18.6.
+
+- **[ASRT-17]** Offline checking against an external **formal** specification, if
+  ever desired, MUST be done by **exporting the trace** (§18.10,
+  [`19-observability-event-log.md`](19-observability-event-log.md)) to existing
+  external tooling and checking it *there*; Crucible MUST NOT grow an in-runtime or
+  in-process formal-spec evaluator to satisfy such a use ([NG-3], [ASRT-1]). The
+  offline assertion checker of [ASRT-14] is for Crucible's own five-quantifier
+  vocabulary; formal-spec conformance is strictly an external, optional consumer
+  of the exported trace. *Gate:* `gate:harness-lint`. *Spec:* §18.6, §18.10.
+
+The offline checker is what turns the event log from a debugging convenience into
+the primary correctness substrate: the run is recorded once, deterministically,
+and graded as many times as there are properties, forever.
+
+```text
+Online and offline are one fold over the same log:
+
+   run executes  ──>  event log (icount-stamped, complete, content-addressed)
+                          │
+        ┌─────────────────┴───────────────────────────┐
+        ▼                                               ▼
+  online evaluation                            offline evaluation
+  (fold as the log                             (fold the stored log,
+   is appended)                                 possibly with NEW or
+        │                                        AMENDED properties)
+        ▼                                               ▼
+        └────────────  identical outcome set  ──────────┘
+                       for identical (log, properties)
+```
+
+## 18.7 The assertion engine — evaluation timing and ordering
+
+The engine that evaluates properties is a small, deterministic fold driven by the
+event log. Its two jobs are to decide *when* each quantifier is evaluated and to
+guarantee that evaluation is **deterministically ordered** and **non-perturbing**.
+
+- **[ASRT-18]** The engine MUST evaluate properties at well-defined **evaluation
+  points** driven by the event log, not by host time:
+  - **Always**, **Sometimes**, **Eventually**, and **Reachable** are evaluated at
+    every **relevant event** — an event-log entry of a kind the property's
+    predicate (or trigger/property) depends on — and additionally Eventually is
+    evaluated at its **deadline instants** so a deadline that falls between events
+    is still caught. The engine MAY narrow "relevant event" to the event kinds a
+    predicate references for performance, but the *result* MUST be identical to
+    evaluating at every event ([ASRT-4]).
+  - **AfterQuiescence** is evaluated **once**, at the quiescence point (or the
+    virtual-time limit if quiescence is never reached, [ASRT-3]).
+  The set of evaluation points for a fixed run MUST be a deterministic function of
+  the event log. *Gate:* `gate:scheduler-liveness`. *Spec:* §18.7.
+
+- **[ASRT-19]** At each evaluation point, the engine MUST evaluate the relevant
+  properties in a **deterministic order**: properties are ordered by their stable
+  id ([ASRT-5]); within one property the predicate is evaluated once against the
+  observed state of that point. The engine MUST NOT iterate properties in an
+  unordered-map order or any order influenced by host scheduling ([INV-9]). The
+  ordered, recorded sequence of evaluation outcomes MUST be identical across runs
+  of a fixed `(scenario, seed, schedule)` and identical online vs offline
+  ([ASRT-4], [ASRT-15]). *Gate:* `gate:harness-lint`, `gate:replay-oracle`.
+  *Spec:* §18.7.
+
+- **[ASRT-20]** Evaluation MUST **terminate** at each point: a predicate is a pure
+  total function over a bounded observed-state view, and the engine MUST bound the
+  work per evaluation point so that property checking cannot livelock the
+  scheduler ([INV-8], `gate:scheduler-liveness`). A predicate that does not return
+  is a harness defect, not a run outcome. *Gate:* `gate:scheduler-liveness`.
+  *Spec:* §18.7.
+
+```text
+Per-quantifier evaluation timing (deterministic, log-driven):
+
+  quantifier        evaluated at                         finalized at
+  ----------------  -----------------------------------  ------------------
+  Always            every relevant event                 — (fail is immediate)
+  Sometimes         every relevant event                 quiescence/limit
+  Eventually        every relevant event + deadline pts  quiescence/limit
+  AfterQuiescence   — (not during the run)               quiescence/limit (only)
+  Reachable         every relevant event                 quiescence/limit
+```
+
+## 18.8 Assertion lifecycle and the outcome set
+
+Each declared property moves through a small, deterministic lifecycle, and a run
+produces one **outcome set** that records each property's terminal disposition.
+
+- **[ASRT-21]** Each property MUST have a deterministic lifecycle over the run:
+  **declared** (registered, not yet evaluated) → **passing** (evaluated at least
+  once, no obligation broken) and, depending on quantifier, → **satisfied** (an
+  existential/liveness obligation discharged: a Sometimes/Reachable seen, an
+  Eventually property met within deadline) or → **failing** (an open obligation in
+  progress, e.g. an Eventually triggered with its deadline still open) →
+  **violated** (terminal failure, carrying the violation site, §18.9). An Always
+  goes directly to **violated** on the first false evaluation; an AfterQuiescence
+  is **declared** until the single terminal check, then **passing** or
+  **violated**. The lifecycle transitions MUST be a pure function of the event log
+  ([ASRT-4]). *Gate:* `gate:replay-oracle`. *Spec:* §18.8.
+
+- **[ASRT-22]** A run MUST produce a single **outcome set**: for every declared
+  property, its terminal lifecycle state, and for Reachable markers, the
+  coverage report. Each property's outcome MUST distinguish at least: **passed**,
+  **violated**, **satisfied**, **never-evaluated/never-triggered** (the
+  [ASRT-15] distinct outcome), and for Reachable **never-reached (warn)** vs
+  **never-reached (fail)** per its disposition. Host-side and guest-side
+  assertions MUST report into this one outcome set uniformly ([ASRT-13]). *Gate:*
+  `gate:e2e-determinism`. *Spec:* §18.8.
+
+- **[ASRT-23]** The **run verdict** MUST be a deterministic function of the
+  outcome set: a run **fails** if any property is **violated** (any Always false,
+  any unsatisfied Sometimes, any Eventually past deadline or triggered-but-
+  unsatisfied at end, any AfterQuiescence false at quiescence, any `fail`-
+  disposition Reachable never reached, any `unreachable`-dual ever reached);
+  otherwise it **passes**, possibly with coverage **warnings** (warn-disposition
+  Reachable never reached). The verdict MUST be identical online and offline for
+  the same (log, properties) ([ASRT-15], [ASRT-16]). *Gate:* `gate:e2e-determinism`.
+  *Spec:* §18.8.
+
+## 18.9 Determinism and non-perturbation of evaluation
+
+The assertion engine must be invisible to the run it grades. This is the safety
+contract for assertions, the analogue of [GHC-30] for the white-box channel.
+
+- **[ASRT-24]** Assertion evaluation MUST be **deterministic**: for a fixed run
+  (event log) and a fixed property set, the outcome set, the violation sites, and
+  the ordering of reported outcomes MUST be bit-identical on every evaluation,
+  across hosts and across online/offline modes. The engine MUST contain no host
+  wall-clock read, no thread RNG, no unordered-map iteration on an
+  outcome-significant path, and a deterministic merge of host-side and guest-side
+  evaluation ([INV-9]). *Gate:* `gate:harness-lint`, `gate:divergence-bisect`.
+  *Spec:* §18.9.
+
+- **[ASRT-25]** Assertion evaluation MUST NOT **perturb** the run: it MUST be
+  side-effect-free with respect to every node's instruction stream, the schedule,
+  the decision RNG, and the execution fingerprint ([DET-29]). The fingerprints of
+  a run with a given property set and the *same* run with properties added,
+  removed, or amended MUST be identical for the determinism-relevant state ([G-1],
+  [ASRT-2]) — properties are read *from* the run, never written *into* it. Because
+  host-side predicates read only the already-recorded log and guest-side markers
+  are observational ([ASRT-12]), this holds by construction; the engine MUST NOT
+  acquire any path (e.g. reading live guest memory outside the recorded
+  observation points) that could break it. *Gate:* `gate:single-vm-fingerprint`.
+  *Spec:* §18.9.
+
+- **[ASRT-26]** A host-side predicate supplied by an author is **untrusted with
+  respect to determinism**: the engine MUST evaluate it in a way that cannot let a
+  badly-written predicate perturb the run (it is given a read-only observed-state
+  view, never a mutable handle to run state), and a predicate that attempts a
+  banned nondeterministic operation MUST be caught by `gate:harness-lint` rather
+  than silently corrupting the outcome set. *Gate:* `gate:harness-lint`. *Spec:*
+  §18.9.
+
+## 18.10 Violations and reproduction
+
+A violation is only useful if it leads straight back to a *bit-identical*
+re-execution of the failure. Crucible's determinism makes that link exact: a
+violation names the run point and the reproduction artifact, and replaying that
+artifact reproduces the violation to the instruction.
+
+- **[ASRT-27]** Every **violation** MUST carry: the property **id** and message;
+  the **icount and virtual-time** of the violation site (the failing evaluation
+  point — for Always the first false evaluation, for Eventually the deadline
+  instant, for AfterQuiescence the quiescence point, etc.); the **node** the site
+  belongs to where the site is node-local; the **detail** (expected vs observed,
+  drawn from the recorded observed state); and a link to the **reproduction
+  artifact** (§18.10.1). All of these MUST be values read from the deterministic
+  event log, so the violation record is itself deterministic and offline-
+  reproducible ([ASRT-4], [ASRT-16]). *Gate:* `gate:e2e-determinism`. *Spec:*
+  §18.10.
+
+- **[ASRT-28]** A violation MUST link to a self-contained **reproduction
+  artifact** — the `(seed, scenario, schedule)` bundle of [G-6],
+  [`06-spatial-graph.md`](06-spatial-graph.md), and [`23-cli.md`](23-cli.md) —
+  such that replaying that artifact ([`07-temporal-graph.md`](07-temporal-graph.md),
+  [TEMP-23]) re-executes the run **bit-identically** and re-produces the *same*
+  violation at the *same* icount. The artifact reference MUST be content-addressed
+  ([INV-6]) so the link cannot rot. A violation that cannot be reproduced from its
+  artifact is a determinism defect, surfaced by `gate:divergence-bisect`, not an
+  acceptable outcome. *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:*
+  §18.10.
+
+- **[ASRT-29]** When a re-run of a violation's artifact does *not* reproduce the
+  violation at the recorded icount, Crucible MUST treat this as a **divergence**
+  and localize it via `gate:divergence-bisect` ([INV-10]) to the first differing
+  decision/instruction, rather than reporting a flaky or smoothed-over result. A
+  reproducible violation and a non-reproducible one are categorically different
+  and MUST be reported as such. *Gate:* `gate:divergence-bisect`. *Spec:* §18.10.
+
+### 18.10.1 Violation record sketch
+
+```rust
+/// A terminal property failure, with everything needed to reproduce it.
+pub struct Violation {
+    /// Stable property id (matches the white-box marker id space).
+    pub id: MarkerId,
+    /// Author-supplied human-readable message.
+    pub message: String,
+    /// Which quantifier failed, for outcome classification (§18.8).
+    pub quantifier: QuantifierKind,
+    /// The violation site: the exact run point the failure is attributed to.
+    pub at_icount: u64,
+    pub at_virtual_time: VirtualTime,
+    /// The node the site belongs to, when node-local.
+    pub node: Option<NodeId>,
+    /// Expected-vs-observed detail, drawn from the recorded observed state.
+    pub detail: String,
+    /// Content-addressed link to the (seed, scenario, schedule) artifact
+    /// that reproduces this run — and thus this violation — bit-identically.
+    pub repro: ReproArtifactRef,
+}
+```
+
+### 18.10.2 Failure report sketch
+
+```text
+CRUCIBLE VIOLATION: AfterQuiescence "replicas-agree" failed
+  property id : replicas-agree
+  quantifier  : AfterQuiescence
+  site        : icount=842_117_903  vtime=45.003ms  node=storage-b
+  expected    : sha256(disk[storage-a]) == sha256(disk[storage-b])
+  observed    : a=3f9c… b=7b21…  (diverged at block 4096)
+  source      : host-side (black-box disk sub-node observation)
+  reproduce   : crucible replay --artifact cas:9d4e…  (bit-identical)
+  trace       : crucible trace export cas:9d4e…  (for offline / external tooling)
+```
+
+## 18.11 Relationship to the other layers (summary)
+
+```text
+Sources of truth:
+  host-side  (default, any guest)  : predicates over the black-box observation
+                                     surface + harness/topology/fault facts
+                                     => harness invariants, black-box properties
+  guest-side (opt-in, white-box)   : recorded doorbell markers (file 16 §16.5.1)
+                                     => fine-grained in-guest assertions
+  both fold into one outcome set, evaluated by one deterministic engine.
+
+Vocabulary (closed, versioned): Always · Sometimes · Eventually(deadline) ·
+  AfterQuiescence · Reachable(+unreachable dual).
+
+Substrate: the icount-stamped, complete, content-addressed event log (file 19).
+  => evaluation is a pure deterministic fold over the log.
+  => ONLINE and OFFLINE checking are the same fold; new assertions re-grade
+     recorded runs without re-execution.
+
+NOT a formal-methods engine (NG-3): no model checker, no spec-language evaluator.
+  External formal-spec conformance is an optional offline consumer of the
+  exported trace, never in-runtime.
+
+Determinism: evaluation is deterministic and side-effect-free; declaring,
+  amending, or removing properties never moves a fingerprint.
+
+Reproduction: a violation carries (id, icount/vtime, node, detail) and a
+  content-addressed (seed, scenario, schedule) artifact that replays the failure
+  bit-identically; non-reproduction is a divergence, localized by bisection.
+```
+
+## Implementation checklist
+
+> The authoritative, ordered tasks live in
+> [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
+> whose primary area is assertions & properties, copied verbatim per [PLAN-3].
+
+- [ ] **T-ASRT-1** Define the closed, versioned five-quantifier property
+  vocabulary (Always, Sometimes, Eventually-with-deadline, AfterQuiescence,
+  Reachable + unreachable dual) with precise temporal semantics, and forbid a
+  model checker / spec-language evaluator in the assertion layer. — satisfies
+  [ASRT-1], [ASRT-3], [NG-3]; spec §18.1, §18.2.
+- [ ] **T-ASRT-2** Make `Properties` part of the `ScenarioDef` content hash and
+  prove property declaration/removal/amendment never changes the run (fingerprint
+  unchanged). — satisfies [ASRT-2], [ASRT-25]; spec §18.1, §18.9.
+- [ ] **T-ASRT-3** Implement per-quantifier configuration (stable id, message,
+  Eventually deadline in virtual time, Reachable never-reached disposition) and
+  reject non-deterministic / wall-clock-relative parameters at scenario
+  validation. — satisfies [ASRT-5]; spec §18.2.1.
+- [ ] **T-ASRT-4** Implement observed-state materialization from the event-log
+  prefix `[start, t]`, exposing only the black-box surface + ordering/fault facts;
+  forbid host-clock/scheduling/unordered-iteration inputs. — satisfies [ASRT-6],
+  [ASRT-7]; spec §18.3.
+- [ ] **T-ASRT-5** Implement host-side assertions over observable state as the
+  default, zero-guest-cooperation source; verify all five quantifiers work in
+  black-box mode on an unmodified guest. — satisfies [ASRT-8], [ASRT-9],
+  [ASRT-10]; spec §18.4.
+- [ ] **T-ASRT-6** Implement guest-side marker assertions over the white-box
+  channel with the same five-quantifier semantics; fold them into the same
+  evaluation pass; keep them observational and fingerprint-neutral. — satisfies
+  [ASRT-11], [ASRT-12], [ASRT-13]; spec §18.5.
+- [ ] **T-ASRT-7** Implement the offline assertion checker: grade a recorded run's
+  log against the original or a new/amended property set with no guest
+  re-execution, producing the identical online outcome set. — satisfies [ASRT-14],
+  [ASRT-16]; spec §18.6.
+- [ ] **T-ASRT-8** Unify online and offline evaluation onto one log-fold code path
+  and apply never-evaluated/never-triggered policies identically as a distinct
+  outcome. — satisfies [ASRT-15]; spec §18.6, §18.8.
+- [ ] **T-ASRT-9** Keep external formal-spec conformance strictly offline via
+  trace export to existing tooling; ensure no in-runtime formal-spec evaluator is
+  added. — satisfies [ASRT-17], [NG-3]; spec §18.6, §18.10.
+- [ ] **T-ASRT-10** Implement the assertion engine's evaluation timing
+  (per-relevant-event + Eventually deadline points; AfterQuiescence once at
+  quiescence/limit) as a deterministic function of the log. — satisfies [ASRT-18],
+  [ASRT-20]; spec §18.7.
+- [ ] **T-ASRT-11** Enforce deterministic evaluation order (by stable id,
+  single predicate evaluation per point) identical across runs and online/offline.
+  — satisfies [ASRT-19]; spec §18.7.
+- [ ] **T-ASRT-12** Implement the property lifecycle
+  (declared/passing/satisfied/failing/violated) and the single unified outcome
+  set with the full disposition taxonomy and run verdict. — satisfies [ASRT-21],
+  [ASRT-22], [ASRT-23]; spec §18.8.
+- [ ] **T-ASRT-13** Enforce determinism and non-perturbation of evaluation:
+  deterministic merge, no banned nondeterminism, read-only observed-state view,
+  side-effect-free, fingerprint-neutral. — satisfies [ASRT-24], [ASRT-25],
+  [ASRT-26]; spec §18.9.
+- [ ] **T-ASRT-14** Implement the violation record (id, icount/virtual-time, node,
+  detail, content-addressed reproduction-artifact link) read entirely from the
+  deterministic log. — satisfies [ASRT-27], [ASRT-28]; spec §18.10.
+- [ ] **T-ASRT-15** Wire violation reproduction to bit-identical replay and treat
+  non-reproduction as a divergence localized by bisection. — satisfies [ASRT-28],
+  [ASRT-29]; spec §18.10.
+- [ ] **T-ASRT-16** Wire `gate:e2e-determinism` and `gate:replay-oracle` to cover
+  assertions: identical outcome sets online vs offline, idempotent re-grading of a
+  recorded corpus, and bit-identical violation reproduction. — satisfies [ASRT-4],
+  [ASRT-16], [ASRT-23]; spec §18.6, §18.10.
