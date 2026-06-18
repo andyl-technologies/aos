@@ -146,7 +146,11 @@ the manual's enumeration:
       environment values after normal argument validation, returning the Nix
       empty-string result.
 - [ ] **`exec`** and other impure escape hatches are disabled.
-- [ ] **`$NIX_PATH` and `-I` are ignored**; impure path resolution is off.
+- [x] **`$NIX_PATH` and `-I` are ignored**; impure path resolution is off. The
+      evaluator never reads ambient `NIX_PATH`, and pure mode makes configured
+      search-path entries invisible to `builtins.nixPath` and `<...>` lookup;
+      explicit `builtins.findFile [ ... ]` lists remain expression data, with
+      subsequent filesystem reads still checked by pure-mode path policy.
 - [ ] **Fetchers require pinning** — `fetchGit`/`fetchMercurial` require a
       revision, `fetchurl`/`fetchTarball` require a `sha256`; and no file-system
       access is permitted outside the paths returned by the fetchers.
