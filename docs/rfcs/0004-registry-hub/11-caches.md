@@ -491,16 +491,20 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase B — cache core: object, storage, publish, serve
 
-- [ ] Migration: rename derived `caches` → `advertised_caches`; repoint the
-      indexer/validation/`cache_probes` readers and any RPC field to it.
-- [ ] Migration: `caches`, `cache_registry_links`, `cache_gc_policy`,
-      `cache_gc_roots` SoR tables; `cache_objects`, `cache_usage`,
-      `cache_gc_runs` derived tables; per-dialect FTS over `cache_objects`.
+- [x] Migration (v22): rename derived `caches` → `advertised_caches`; repoint the
+      indexer/validation readers (`cache_probes` keys on a `cache_url` string, so
+      it is unaffected) and the `list_advertised_caches` method.
+- [x] Migration (v22): `caches`, `cache_registry_links`, `cache_gc_policy`,
+      `cache_gc_roots` (with `expires_at`) SoR tables; `cache_objects`,
+      `cache_usage`, `cache_gc_runs` derived tables; indexed `LIKE` search over
+      `cache_objects(store_name)` (FTS5 ranking deferred to D-web for D1 safety).
 - [ ] Migration: add nullable `frontends.cache_id`; enforce exactly one of
       `registry_id`/`cache_id`; gate the cache facade on `serves_cache`.
-- [ ] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
-      update/soft-delete cache, link/unlink, set/get GC policy, pin/unpin/list
-      roots — all on the async `Backend` (sqlite + D1 clean).
+- [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
+      update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
+      pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,
+      `nar_refcount`, usage, GC-run lifecycle — all on the async `Backend`
+      (sqlite + D1 clean), with contract tests.
 - [ ] Cache storage layout writer/reader: `nix-cache-info`, `<hash>.narinfo`
       (Ed25519-signed via `hosted_keys` sealer when keyed), content-addressed
       `nar/<file-hash>.nar.<ext>` with cross-cache refcount on the

@@ -1634,7 +1634,7 @@ async fn render_home(
 ) -> Result<String, anyhow::Error> {
     let channels = state.db.list_channels(registry.id).await?;
     let packages = state.db.list_packages(registry.id).await?;
-    let caches = state.db.list_caches(registry.id).await?;
+    let caches = state.db.list_advertised_caches(registry.id).await?;
     let roster = state.db.list_roster(registry.id).await?;
     let validations = state.db.latest_validation_runs(registry.id).await?;
     let external = format!(

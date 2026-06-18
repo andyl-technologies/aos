@@ -37,9 +37,18 @@
 //!   from the surface.
 //! - **Rebuildable index** — `registry_index`, `packages`,
 //!   `package_versions`, `version_platforms`, `channels`,
-//!   `channel_partitions`, `releases`, `key_rosters`, `caches`: derived
-//!   from the verified surface by the indexer and safely droppable; a
-//!   re-index reconstructs it.
+//!   `channel_partitions`, `releases`, `key_rosters`, `advertised_caches`
+//!   (a registry's flattened advertised cache stack — renamed from `caches`
+//!   in v22 when the managed-cache table took that name): derived from the
+//!   verified surface by the indexer and safely droppable; a re-index
+//!   reconstructs it.
+//!
+//! Phase-future managed **caches** (v22, RFC-0004 "11-caches") are a
+//! first-class sibling of registries — hub-hosted Nix binary caches. Their
+//! system-of-record tables (`caches`, `cache_registry_links`,
+//! `cache_gc_policy`, manual `cache_gc_roots`) sit alongside `registries`,
+//! while `cache_objects` (the narinfo index), `cache_usage`, `cache_gc_runs`,
+//! and derived `cache_gc_roots` are rebuildable from a bucket re-scan.
 //! - **Operational history** — `validation_runs`, `validation_findings`, and
 //!   `repair_jobs` (v14): records of past consistency-validation runs (each
 //!   finding flagged `missing` or, at deep depth, `corrupt`) and the repair
@@ -1052,6 +1061,114 @@ pub const MIGRATIONS: &[&str] = &[
         registry_id     INTEGER PRIMARY KEY REFERENCES registries(id) ON DELETE CASCADE,
         holder_token_id TEXT    NOT NULL,
         deadline        INTEGER NOT NULL
+    );
+    ",
+    // v22: managed caches (RFC-0004 "11-caches"). A cache is a first-class
+    // sibling of a registry — a hub-hosted Nix binary cache (nix-cache-info +
+    // content-addressed NARs + Ed25519-signed narinfo) backed by a storage
+    // binding, optionally signed by a hosted key, exposed through frontends.
+    //
+    // The pre-existing rebuildable `caches` table (the flattened advertised
+    // cache stack) is renamed `advertised_caches` to free the `caches` name for
+    // the managed object; it is rebuilt from each registry's committed
+    // `[cache_stack]` on every index, so the rename loses no system-of-record
+    // data. `cache_probes`/validation reference a `cache_url` *string*, not a
+    // foreign key, so they are unaffected.
+    //
+    // SoR: `caches`, `cache_registry_links`, `cache_gc_policy`, and the manual
+    // rows of `cache_gc_roots`. Rebuildable from a bucket re-scan: `cache_objects`
+    // (the narinfo index), `cache_usage`, `cache_gc_runs`, and the `derived` rows
+    // of `cache_gc_roots`.
+    "
+    ALTER TABLE caches RENAME TO advertised_caches;
+
+    CREATE TABLE caches (
+        id                 INTEGER PRIMARY KEY,
+        org_id             INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        slug               TEXT    NOT NULL UNIQUE,
+        name               TEXT    NOT NULL,
+        storage_binding_id INTEGER NOT NULL REFERENCES storage_bindings(id),
+        prefix             TEXT    NOT NULL,
+        hosted_key_id      INTEGER REFERENCES hosted_keys(id),
+        visibility         TEXT    NOT NULL,
+        priority           INTEGER NOT NULL DEFAULT 40,
+        compression        TEXT    NOT NULL DEFAULT 'zstd',
+        want_mass_query    INTEGER NOT NULL DEFAULT 1,
+        created_at         INTEGER NOT NULL,
+        deleted_at         INTEGER,
+        purge_after        INTEGER
+    );
+
+    CREATE TABLE cache_registry_links (
+        cache_id       INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        registry_id    INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        roots_packages INTEGER NOT NULL DEFAULT 0,
+        advertised     INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL,
+        PRIMARY KEY (cache_id, registry_id)
+    );
+
+    CREATE TABLE cache_gc_policy (
+        cache_id              INTEGER PRIMARY KEY REFERENCES caches(id) ON DELETE CASCADE,
+        max_bytes             INTEGER,
+        max_objects           INTEGER,
+        ttl_unreferenced_secs INTEGER,
+        keep_release_versions INTEGER,
+        keep_channel_frontier INTEGER NOT NULL DEFAULT 1,
+        schedule_secs         INTEGER,
+        updated_at            INTEGER NOT NULL
+    );
+
+    CREATE TABLE cache_gc_roots (
+        id         INTEGER PRIMARY KEY,
+        cache_id   INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        store_hash TEXT    NOT NULL,
+        root_kind  TEXT    NOT NULL,
+        root_ref   TEXT    NOT NULL,
+        expires_at INTEGER,
+        created_at INTEGER NOT NULL,
+        UNIQUE (cache_id, store_hash, root_kind, root_ref)
+    );
+
+    CREATE TABLE cache_objects (
+        cache_id         INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        store_hash       TEXT    NOT NULL,
+        store_name       TEXT    NOT NULL,
+        nar_url          TEXT    NOT NULL,
+        nar_hash         TEXT    NOT NULL,
+        nar_size         INTEGER NOT NULL,
+        file_hash        TEXT    NOT NULL,
+        file_size        INTEGER NOT NULL,
+        compression      TEXT    NOT NULL,
+        deriver          TEXT,
+        refs             TEXT    NOT NULL,
+        sig              TEXT,
+        ca               TEXT,
+        uploaded_at      INTEGER NOT NULL,
+        last_accessed_at INTEGER,
+        PRIMARY KEY (cache_id, store_hash)
+    );
+    CREATE INDEX idx_cache_objects_file_hash ON cache_objects (cache_id, file_hash);
+    CREATE INDEX idx_cache_objects_name      ON cache_objects (cache_id, store_name);
+
+    CREATE TABLE cache_usage (
+        cache_id     INTEGER PRIMARY KEY REFERENCES caches(id) ON DELETE CASCADE,
+        used_bytes   INTEGER NOT NULL DEFAULT 0,
+        object_count INTEGER NOT NULL DEFAULT 0,
+        updated_at   INTEGER NOT NULL
+    );
+
+    CREATE TABLE cache_gc_runs (
+        id              INTEGER PRIMARY KEY,
+        cache_id        INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        started_at      INTEGER NOT NULL,
+        finished_at     INTEGER,
+        status          TEXT    NOT NULL,
+        error           TEXT,
+        scanned         INTEGER NOT NULL DEFAULT 0,
+        retained        INTEGER NOT NULL DEFAULT 0,
+        deleted_objects INTEGER NOT NULL DEFAULT 0,
+        freed_bytes     INTEGER NOT NULL DEFAULT 0
     );
     ",
 ];
@@ -2310,7 +2427,7 @@ impl Database {
         let mut next_channel = self.max_id("channels").await?;
 
         let mut stmts: Vec<Statement> = Vec::new();
-        for table in ["packages", "channels", "releases", "key_rosters", "caches"] {
+        for table in ["packages", "channels", "releases", "key_rosters", "advertised_caches"] {
             stmts.push(Statement::new(
                 format!("DELETE FROM {table} WHERE registry_id = ?1"),
                 vals![registry_id].to_vec(),
@@ -2424,7 +2541,7 @@ impl Database {
         }
         for (url, priority) in &snapshot.caches {
             stmts.push(Statement::new(
-                "INSERT INTO caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
+                "INSERT INTO advertised_caches (registry_id, url, priority) VALUES (?1, ?2, ?3)",
                 vals![registry_id, url, *priority].to_vec(),
             ));
         }
@@ -3881,14 +3998,20 @@ impl Database {
 
     /// Committed `[[caches]]` entries as `(url, priority)`, highest first.
     ///
+    /// These are the cache *endpoints a registry advertises* to consumers (the
+    /// flattened cache stack), not the hub's managed [`Cache`] objects — see
+    /// [`Database::list_caches`] for the latter. Stored in `advertised_caches`
+    /// (renamed from `caches` in v22 when the managed-cache table took that name)
+    /// and rebuilt from the committed `registry.toml` on every index.
+    ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn list_caches(&self, registry_id: i64) -> Result<Vec<(String, u32)>> {
+    pub async fn list_advertised_caches(&self, registry_id: i64) -> Result<Vec<(String, u32)>> {
         let rows = self
             .backend
             .query(
-                "SELECT url, priority FROM caches WHERE registry_id = ?1 ORDER BY priority DESC",
+                "SELECT url, priority FROM advertised_caches WHERE registry_id = ?1 ORDER BY priority DESC",
                 &vals![registry_id],
             )
             .await?;
@@ -4739,6 +4862,704 @@ impl Database {
             .execute("DELETE FROM registries WHERE id = ?1", &vals![registry_id])
             .await?;
         Ok(n > 0)
+    }
+
+    // -- managed caches ------------------------------------------------------
+
+    /// Create a managed cache; returns its new id.
+    ///
+    /// `org_id` is `None` for an instance-level standalone cache. The `prefix`
+    /// is validated like a registry prefix (relative, no `..`). Fails if a cache
+    /// already exists at `slug`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe prefix, a duplicate slug, or database
+    /// failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_cache(
+        &self,
+        org_id: Option<i64>,
+        slug: &str,
+        name: &str,
+        storage_binding_id: i64,
+        prefix: &str,
+        hosted_key_id: Option<i64>,
+        visibility: &str,
+        priority: i64,
+        compression: &str,
+        want_mass_query: bool,
+    ) -> Result<i64> {
+        if !prefix.is_empty() {
+            let rel = std::path::Path::new(prefix);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+            {
+                bail!("cache prefix '{prefix}' must be a relative path with no '..' components");
+            }
+        }
+        if self.cache_by_slug(slug).await?.is_some() {
+            bail!("a cache already exists at '{slug}'");
+        }
+        self.backend
+            .execute_insert(
+                "INSERT INTO caches
+                 (org_id, slug, name, storage_binding_id, prefix, hosted_key_id,
+                  visibility, priority, compression, want_mass_query, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                &vals![
+                    org_id,
+                    slug,
+                    name,
+                    storage_binding_id,
+                    prefix,
+                    hosted_key_id,
+                    visibility,
+                    priority,
+                    compression,
+                    want_mass_query,
+                    unix_now()
+                ],
+            )
+            .await
+    }
+
+    /// Look up a cache by its URL slug.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_by_slug(&self, slug: &str) -> Result<Option<Cache>> {
+        self.backend
+            .query_opt(
+                &format!("SELECT {CACHE_COLUMNS} FROM caches WHERE slug = ?1"),
+                &vals![slug],
+            )
+            .await
+            .context("loading cache by slug")?
+            .map(|row| row_to_cache(&row))
+            .transpose()
+    }
+
+    /// Look up a cache by its database id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_by_id(&self, id: i64) -> Result<Option<Cache>> {
+        self.backend
+            .query_opt(
+                &format!("SELECT {CACHE_COLUMNS} FROM caches WHERE id = ?1"),
+                &vals![id],
+            )
+            .await
+            .context("loading cache by id")?
+            .map(|row| row_to_cache(&row))
+            .transpose()
+    }
+
+    /// List all servable caches.
+    ///
+    /// Excludes soft-deleted caches and caches owned by a soft-deleted org (the
+    /// registry-parallel of [`Database::list_registries`]); instance-level
+    /// caches (`org_id IS NULL`) always pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_caches(&self) -> Result<Vec<Cache>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {CACHE_COLUMNS} FROM caches c
+                     WHERE c.deleted_at IS NULL
+                       AND (c.org_id IS NULL
+                            OR NOT EXISTS (
+                                SELECT 1 FROM orgs o
+                                WHERE o.id = c.org_id AND o.deleted_at IS NOT NULL))
+                     ORDER BY c.slug"
+                ),
+                &[],
+            )
+            .await?;
+        rows.iter().map(row_to_cache).collect()
+    }
+
+    /// List the caches owned by one org, ordered by slug (admin/export view; does
+    /// not filter by the org's soft-delete state).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_caches_for_org(&self, org_id: i64) -> Result<Vec<Cache>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {CACHE_COLUMNS} FROM caches WHERE org_id = ?1 ORDER BY slug"),
+                &vals![org_id],
+            )
+            .await?;
+        rows.iter().map(row_to_cache).collect()
+    }
+
+    /// Update a cache's mutable fields. Returns `false` if no cache has `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_cache(
+        &self,
+        id: i64,
+        name: &str,
+        visibility: &str,
+        priority: i64,
+        compression: &str,
+        want_mass_query: bool,
+        hosted_key_id: Option<i64>,
+    ) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "UPDATE caches SET name = ?2, visibility = ?3, priority = ?4,
+                 compression = ?5, want_mass_query = ?6, hosted_key_id = ?7
+                 WHERE id = ?1",
+                &vals![
+                    id,
+                    name,
+                    visibility,
+                    priority,
+                    compression,
+                    want_mass_query,
+                    hosted_key_id
+                ],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Soft-delete a cache (tombstone with a purge deadline). Returns `false` if
+    /// no live cache has `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn soft_delete_cache(&self, id: i64, purge_after: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "UPDATE caches SET deleted_at = ?2, purge_after = ?3
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                &vals![id, unix_now(), purge_after],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Hard-delete a cache row, cascading its links/policy/roots/objects/usage/runs.
+    ///
+    /// Does not remove the cache's surface content on the storage backend (that
+    /// lives outside SQL), mirroring [`Database::delete_registry`]. Returns
+    /// `false` if no cache has `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_cache(&self, id: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute("DELETE FROM caches WHERE id = ?1", &vals![id])
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Link (or update the link between) a cache and a registry.
+    ///
+    /// Upserts on `(cache_id, registry_id)`, so calling it again updates the
+    /// `roots_packages` / `advertised` flags in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn link_cache(
+        &self,
+        cache_id: i64,
+        registry_id: i64,
+        roots_packages: bool,
+        advertised: bool,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO cache_registry_links
+                 (cache_id, registry_id, roots_packages, advertised, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(cache_id, registry_id) DO UPDATE SET
+                   roots_packages = excluded.roots_packages,
+                   advertised = excluded.advertised",
+                &vals![cache_id, registry_id, roots_packages, advertised, unix_now()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a cache⇄registry link. Returns `false` if no such link existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn unlink_cache(&self, cache_id: i64, registry_id: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "DELETE FROM cache_registry_links WHERE cache_id = ?1 AND registry_id = ?2",
+                &vals![cache_id, registry_id],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// List a cache's registry links.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_links(&self, cache_id: i64) -> Result<Vec<CacheRegistryLink>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT cache_id, registry_id, roots_packages, advertised, created_at
+                 FROM cache_registry_links WHERE cache_id = ?1 ORDER BY registry_id",
+                &vals![cache_id],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_link).collect()
+    }
+
+    /// List the cache links that name a given registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_links_for_registry(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<CacheRegistryLink>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT cache_id, registry_id, roots_packages, advertised, created_at
+                 FROM cache_registry_links WHERE registry_id = ?1 ORDER BY cache_id",
+                &vals![registry_id],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_link).collect()
+    }
+
+    /// Set (upsert) a cache's GC policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_cache_gc_policy(&self, p: &CacheGcPolicy) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO cache_gc_policy
+                 (cache_id, max_bytes, max_objects, ttl_unreferenced_secs,
+                  keep_release_versions, keep_channel_frontier, schedule_secs, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(cache_id) DO UPDATE SET
+                   max_bytes = excluded.max_bytes,
+                   max_objects = excluded.max_objects,
+                   ttl_unreferenced_secs = excluded.ttl_unreferenced_secs,
+                   keep_release_versions = excluded.keep_release_versions,
+                   keep_channel_frontier = excluded.keep_channel_frontier,
+                   schedule_secs = excluded.schedule_secs,
+                   updated_at = excluded.updated_at",
+                &vals![
+                    p.cache_id,
+                    p.max_bytes,
+                    p.max_objects,
+                    p.ttl_unreferenced_secs,
+                    p.keep_release_versions,
+                    p.keep_channel_frontier,
+                    p.schedule_secs,
+                    unix_now()
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Fetch a cache's GC policy, if one has been set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_gc_policy(&self, cache_id: i64) -> Result<Option<CacheGcPolicy>> {
+        self.backend
+            .query_opt(
+                "SELECT cache_id, max_bytes, max_objects, ttl_unreferenced_secs,
+                 keep_release_versions, keep_channel_frontier, schedule_secs, updated_at
+                 FROM cache_gc_policy WHERE cache_id = ?1",
+                &vals![cache_id],
+            )
+            .await?
+            .map(|row| row_to_cache_gc_policy(&row))
+            .transpose()
+    }
+
+    /// Pin a store path as a manual GC root (or renew its deadline in place).
+    ///
+    /// Upserts the `manual` root for `store_hash`, so passing a new `expires_at`
+    /// renews the pin **without re-uploading** the NAR. `expires_at = None`
+    /// pins indefinitely.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn pin_cache_path(
+        &self,
+        cache_id: i64,
+        store_hash: &str,
+        expires_at: Option<i64>,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO cache_gc_roots
+                 (cache_id, store_hash, root_kind, root_ref, expires_at, created_at)
+                 VALUES (?1, ?2, 'manual', '', ?3, ?4)
+                 ON CONFLICT(cache_id, store_hash, root_kind, root_ref)
+                 DO UPDATE SET expires_at = excluded.expires_at",
+                &vals![cache_id, store_hash, expires_at, unix_now()],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Remove a manual GC pin. Returns `false` if no manual pin existed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn unpin_cache_path(&self, cache_id: i64, store_hash: &str) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "DELETE FROM cache_gc_roots
+                 WHERE cache_id = ?1 AND store_hash = ?2 AND root_kind = 'manual'",
+                &vals![cache_id, store_hash],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// List a cache's GC roots (manual + derived), oldest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_roots(&self, cache_id: i64) -> Result<Vec<CacheGcRoot>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, cache_id, store_hash, root_kind, root_ref, expires_at, created_at
+                 FROM cache_gc_roots WHERE cache_id = ?1 ORDER BY id",
+                &vals![cache_id],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_gc_root).collect()
+    }
+
+    /// Insert or update a cache's narinfo-index row for one store path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `refs` cannot be serialized, or on database failure.
+    pub async fn upsert_cache_object(&self, o: &CacheObject) -> Result<()> {
+        let refs_json = serde_json::to_string(&o.refs)?;
+        self.backend
+            .execute(
+                "INSERT INTO cache_objects
+                 (cache_id, store_hash, store_name, nar_url, nar_hash, nar_size,
+                  file_hash, file_size, compression, deriver, refs, sig, ca,
+                  uploaded_at, last_accessed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 ON CONFLICT(cache_id, store_hash) DO UPDATE SET
+                   store_name = excluded.store_name, nar_url = excluded.nar_url,
+                   nar_hash = excluded.nar_hash, nar_size = excluded.nar_size,
+                   file_hash = excluded.file_hash, file_size = excluded.file_size,
+                   compression = excluded.compression, deriver = excluded.deriver,
+                   refs = excluded.refs, sig = excluded.sig, ca = excluded.ca,
+                   uploaded_at = excluded.uploaded_at",
+                &vals![
+                    o.cache_id,
+                    o.store_hash,
+                    o.store_name,
+                    o.nar_url,
+                    o.nar_hash,
+                    o.nar_size,
+                    o.file_hash,
+                    o.file_size,
+                    o.compression,
+                    o.deriver,
+                    refs_json,
+                    o.sig,
+                    o.ca,
+                    o.uploaded_at,
+                    o.last_accessed_at
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Fetch one cache object by store hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_object(
+        &self,
+        cache_id: i64,
+        store_hash: &str,
+    ) -> Result<Option<CacheObject>> {
+        self.backend
+            .query_opt(
+                &format!(
+                    "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
+                     WHERE cache_id = ?1 AND store_hash = ?2"
+                ),
+                &vals![cache_id, store_hash],
+            )
+            .await?
+            .map(|row| row_to_cache_object(&row))
+            .transpose()
+    }
+
+    /// List a cache's objects (by name), up to `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_objects(&self, cache_id: i64, limit: i64) -> Result<Vec<CacheObject>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
+                     WHERE cache_id = ?1 ORDER BY store_name LIMIT ?2"
+                ),
+                &vals![cache_id, limit],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_object).collect()
+    }
+
+    /// Search a cache's objects by store name, hash, or deriver substring.
+    ///
+    /// A substring (`LIKE`) match over the indexed `store_name`/`store_hash`/
+    /// `deriver` columns; full-text ranking is a later enhancement (D-web).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn search_cache_objects(
+        &self,
+        cache_id: i64,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<CacheObject>> {
+        let like = format!("%{query}%");
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {CACHE_OBJECT_COLUMNS} FROM cache_objects
+                     WHERE cache_id = ?1
+                       AND (store_name LIKE ?2 OR store_hash LIKE ?2 OR deriver LIKE ?2)
+                     ORDER BY store_name LIMIT ?3"
+                ),
+                &vals![cache_id, like, limit],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_object).collect()
+    }
+
+    /// Delete a cache object's narinfo row. Returns `false` if it did not exist.
+    ///
+    /// The NAR blob is reference-counted by [`Database::nar_refcount`]; callers
+    /// (the GC sweep) delete the blob only once that count reaches zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_cache_object(&self, cache_id: i64, store_hash: &str) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "DELETE FROM cache_objects WHERE cache_id = ?1 AND store_hash = ?2",
+                &vals![cache_id, store_hash],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    /// Count narinfo rows referencing a NAR `file_hash` across every cache that
+    /// shares a storage binding + prefix (the content-addressed NAR refcount).
+    ///
+    /// A NAR blob is safe to delete only when this returns zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn nar_refcount(
+        &self,
+        storage_binding_id: i64,
+        prefix: &str,
+        file_hash: &str,
+    ) -> Result<i64> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM cache_objects o
+                 JOIN caches c ON c.id = o.cache_id
+                 WHERE c.storage_binding_id = ?1 AND c.prefix = ?2 AND o.file_hash = ?3",
+                &vals![storage_binding_id, prefix, file_hash],
+            )
+            .await?;
+        Ok(row.map(|r| r.get::<i64>(0)).transpose()?.unwrap_or(0))
+    }
+
+    /// A cache's stored usage totals (zeroed default when never computed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_usage(&self, cache_id: i64) -> Result<CacheUsage> {
+        match self
+            .backend
+            .query_opt(
+                "SELECT used_bytes, object_count, updated_at FROM cache_usage WHERE cache_id = ?1",
+                &vals![cache_id],
+            )
+            .await?
+        {
+            Some(r) => Ok(CacheUsage {
+                used_bytes: r.get(0)?,
+                object_count: r.get(1)?,
+                updated_at: r.get(2)?,
+            }),
+            None => Ok(CacheUsage::default()),
+        }
+    }
+
+    /// Recompute and persist a cache's usage from its objects; returns the totals.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn refresh_cache_usage(&self, cache_id: i64) -> Result<CacheUsage> {
+        let (used_bytes, object_count) = match self
+            .backend
+            .query_opt(
+                "SELECT COALESCE(SUM(file_size), 0), COUNT(*) FROM cache_objects WHERE cache_id = ?1",
+                &vals![cache_id],
+            )
+            .await?
+        {
+            Some(r) => (r.get::<i64>(0)?, r.get::<i64>(1)?),
+            None => (0, 0),
+        };
+        let now = unix_now();
+        self.backend
+            .execute(
+                "INSERT INTO cache_usage (cache_id, used_bytes, object_count, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(cache_id) DO UPDATE SET
+                   used_bytes = excluded.used_bytes,
+                   object_count = excluded.object_count,
+                   updated_at = excluded.updated_at",
+                &vals![cache_id, used_bytes, object_count, now],
+            )
+            .await?;
+        Ok(CacheUsage {
+            used_bytes,
+            object_count,
+            updated_at: now,
+        })
+    }
+
+    /// Open a GC run row for a cache; returns its id. The sweep fills the rest
+    /// via [`Database::finish_cache_gc_run`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn start_cache_gc_run(&self, cache_id: i64) -> Result<i64> {
+        self.backend
+            .execute_insert(
+                "INSERT INTO cache_gc_runs (cache_id, started_at, status)
+                 VALUES (?1, ?2, 'running')",
+                &vals![cache_id, unix_now()],
+            )
+            .await
+    }
+
+    /// Close out a GC run row with its outcome and counters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_cache_gc_run(
+        &self,
+        run_id: i64,
+        status: &str,
+        error: Option<String>,
+        scanned: i64,
+        retained: i64,
+        deleted_objects: i64,
+        freed_bytes: i64,
+    ) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE cache_gc_runs SET finished_at = ?2, status = ?3, error = ?4,
+                 scanned = ?5, retained = ?6, deleted_objects = ?7, freed_bytes = ?8
+                 WHERE id = ?1",
+                &vals![
+                    run_id,
+                    unix_now(),
+                    status,
+                    error,
+                    scanned,
+                    retained,
+                    deleted_objects,
+                    freed_bytes
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// List a cache's GC runs, most recent first, up to `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_gc_runs(&self, cache_id: i64, limit: i64) -> Result<Vec<CacheGcRun>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, cache_id, started_at, finished_at, status, error,
+                 scanned, retained, deleted_objects, freed_bytes
+                 FROM cache_gc_runs WHERE cache_id = ?1 ORDER BY id DESC LIMIT ?2",
+                &vals![cache_id, limit],
+            )
+            .await?;
+        rows.iter().map(row_to_cache_gc_run).collect()
     }
 
     // -- storage bindings ----------------------------------------------------
@@ -8246,6 +9067,282 @@ fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
 const REGISTRY_COLUMNS: &str = "id, slug, source_url, trust_keys, require_signatures, \
      org_id, project_path, visibility, storage_binding_id, prefix, hosted_key_id";
 
+/// A managed cache (system-of-record row) — a hub-hosted Nix binary cache.
+///
+/// A cache is a first-class sibling of a [`RegistryRecord`]: an org-scoped (or
+/// instance-level) surface backed by a storage binding plus a `prefix`,
+/// optionally signed by a hosted key, and exposed through one or more
+/// frontends. Where a registry serves a git wire surface, a cache serves a Nix
+/// binary cache (`nix-cache-info` + content-addressed NARs + Ed25519-signed
+/// `.narinfo`). See RFC-0004 `11-caches`.
+#[derive(Debug, Clone)]
+pub struct Cache {
+    /// Database id.
+    pub id: i64,
+    /// Owning org, or `None` for an instance-level standalone cache.
+    pub org_id: Option<i64>,
+    /// URL slug the cache is served under (globally unique).
+    pub slug: String,
+    /// Human-readable display name.
+    pub name: String,
+    /// Storage binding holding this cache's NAR/narinfo surface.
+    pub storage_binding_id: i64,
+    /// Sub-path under the binding root where this cache's surface lives.
+    pub prefix: String,
+    /// Hosted Ed25519 key signing `.narinfo`, or `None` for an unsigned cache.
+    pub hosted_key_id: Option<i64>,
+    /// Access scope: `public` | `internal` | `private`.
+    pub visibility: String,
+    /// `nix-cache-info` `Priority` (substituter ordering; lower = preferred).
+    pub priority: i64,
+    /// Default NAR compression (`zstd` | `xz` | `none`).
+    pub compression: String,
+    /// `nix-cache-info` `WantMassQuery` flag.
+    pub want_mass_query: bool,
+    /// Creation time (unix seconds).
+    pub created_at: i64,
+    /// Soft-delete tombstone (unix seconds), or `None` while live.
+    pub deleted_at: Option<i64>,
+    /// When a soft-deleted cache becomes eligible for hard purge.
+    pub purge_after: Option<i64>,
+}
+
+/// A registry⇄cache association (many-to-many; both flags independent).
+#[derive(Debug, Clone)]
+pub struct CacheRegistryLink {
+    /// The linked cache.
+    pub cache_id: i64,
+    /// The linked registry.
+    pub registry_id: i64,
+    /// The registry's live store paths pin GC roots in this cache.
+    pub roots_packages: bool,
+    /// This cache's URL is advertised in the registry's cache stack.
+    pub advertised: bool,
+    /// Link creation time (unix seconds).
+    pub created_at: i64,
+}
+
+/// A cache's garbage-collection retention policy (`NULL` field = unlimited).
+#[derive(Debug, Clone)]
+pub struct CacheGcPolicy {
+    /// The cache this policy governs.
+    pub cache_id: i64,
+    /// Soft byte cap that triggers LRU eviction of unrooted objects.
+    pub max_bytes: Option<i64>,
+    /// Soft object-count cap that triggers LRU eviction of unrooted objects.
+    pub max_objects: Option<i64>,
+    /// Grace period before an unreachable object is swept (seconds).
+    pub ttl_unreferenced_secs: Option<i64>,
+    /// Per linked registry, keep the closures of the N most-recent releases.
+    pub keep_release_versions: Option<i64>,
+    /// Always retain live channel-frontier closures.
+    pub keep_channel_frontier: bool,
+    /// Scheduled GC cadence (seconds), or `None` for on-demand only.
+    pub schedule_secs: Option<i64>,
+    /// Last policy update (unix seconds).
+    pub updated_at: i64,
+}
+
+/// A garbage-collection root pinning a store path (and its closure) in a cache.
+#[derive(Debug, Clone)]
+pub struct CacheGcRoot {
+    /// Database id.
+    pub id: i64,
+    /// The cache this root belongs to.
+    pub cache_id: i64,
+    /// The rooted store-path hash component.
+    pub store_hash: String,
+    /// `manual` | `release` | `channel` | `package_version` | `derived`.
+    pub root_kind: String,
+    /// Provenance for a derived root (e.g. `registry:42:channel:stable`); `""` for manual.
+    pub root_ref: String,
+    /// Manual-pin deadline (unix seconds); `None` = unlimited. Past it, the pin stops rooting.
+    pub expires_at: Option<i64>,
+    /// Root creation time (unix seconds).
+    pub created_at: i64,
+}
+
+/// One narinfo-indexed object in a cache (rebuildable from the bucket).
+#[derive(Debug, Clone)]
+pub struct CacheObject {
+    /// The owning cache.
+    pub cache_id: i64,
+    /// Store-path hash component (the `.narinfo` key).
+    pub store_hash: String,
+    /// Store-path name component (`<hash>-<name>`), for search/display.
+    pub store_name: String,
+    /// Relative URL of the NAR under the cache surface (`nar/<file-hash>.nar.<ext>`).
+    pub nar_url: String,
+    /// `NarHash` (sha256 of the uncompressed NAR).
+    pub nar_hash: String,
+    /// `NarSize` (uncompressed NAR byte length).
+    pub nar_size: i64,
+    /// `FileHash` (sha256 of the compressed NAR; the content address).
+    pub file_hash: String,
+    /// `FileSize` (compressed NAR byte length on disk).
+    pub file_size: i64,
+    /// NAR compression (`zstd` | `xz` | `none`).
+    pub compression: String,
+    /// `Deriver`, when known.
+    pub deriver: Option<String>,
+    /// Closure edges: the store hashes this path references.
+    pub refs: Vec<String>,
+    /// `Sig` line (`<keyname>:<base64>`), when signed.
+    pub sig: Option<String>,
+    /// `CA` (content-addressed derivation marker), when present.
+    pub ca: Option<String>,
+    /// Upload/index time (unix seconds).
+    pub uploaded_at: i64,
+    /// Last observed access (unix seconds), for LRU; `None` until first tap.
+    pub last_accessed_at: Option<i64>,
+}
+
+/// A cache's running storage totals.
+#[derive(Debug, Clone, Default)]
+pub struct CacheUsage {
+    /// Sum of `file_size` across the cache's objects.
+    pub used_bytes: i64,
+    /// Number of indexed objects.
+    pub object_count: i64,
+    /// Last recompute time (unix seconds).
+    pub updated_at: i64,
+}
+
+/// A past (or in-flight) garbage-collection run over a cache.
+#[derive(Debug, Clone)]
+pub struct CacheGcRun {
+    /// Database id.
+    pub id: i64,
+    /// The cache this run swept.
+    pub cache_id: i64,
+    /// Start time (unix seconds).
+    pub started_at: i64,
+    /// Completion time (unix seconds), or `None` while running.
+    pub finished_at: Option<i64>,
+    /// `running` | `ok` | `failed`.
+    pub status: String,
+    /// Failure detail when `status = failed`.
+    pub error: Option<String>,
+    /// Objects examined.
+    pub scanned: i64,
+    /// Objects retained (reachable from a live root).
+    pub retained: i64,
+    /// Objects deleted.
+    pub deleted_objects: i64,
+    /// Bytes reclaimed.
+    pub freed_bytes: i64,
+}
+
+/// `caches` columns in the canonical order [`row_to_cache`] expects.
+const CACHE_COLUMNS: &str = "id, org_id, slug, name, storage_binding_id, prefix, \
+     hosted_key_id, visibility, priority, compression, want_mass_query, \
+     created_at, deleted_at, purge_after";
+
+/// `cache_objects` columns in the canonical order [`row_to_cache_object`] expects.
+const CACHE_OBJECT_COLUMNS: &str = "cache_id, store_hash, store_name, nar_url, nar_hash, \
+     nar_size, file_hash, file_size, compression, deriver, refs, sig, ca, \
+     uploaded_at, last_accessed_at";
+
+/// Map a `caches` row (column order [`CACHE_COLUMNS`]) into a [`Cache`].
+fn row_to_cache(row: &Row) -> Result<Cache> {
+    Ok(Cache {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        slug: row.get(2)?,
+        name: row.get(3)?,
+        storage_binding_id: row.get(4)?,
+        prefix: row.get(5)?,
+        hosted_key_id: row.get(6)?,
+        visibility: row.get(7)?,
+        priority: row.get(8)?,
+        compression: row.get(9)?,
+        want_mass_query: row.get(10)?,
+        created_at: row.get(11)?,
+        deleted_at: row.get(12)?,
+        purge_after: row.get(13)?,
+    })
+}
+
+/// Map a `cache_objects` row (column order [`CACHE_OBJECT_COLUMNS`]) into a [`CacheObject`].
+fn row_to_cache_object(row: &Row) -> Result<CacheObject> {
+    let refs_json: String = row.get(10)?;
+    Ok(CacheObject {
+        cache_id: row.get(0)?,
+        store_hash: row.get(1)?,
+        store_name: row.get(2)?,
+        nar_url: row.get(3)?,
+        nar_hash: row.get(4)?,
+        nar_size: row.get(5)?,
+        file_hash: row.get(6)?,
+        file_size: row.get(7)?,
+        compression: row.get(8)?,
+        deriver: row.get(9)?,
+        // Strict (unlike registry trust-keys): a corrupt closure must not silently
+        // read as empty — a GC sweep would treat a NAR's real references as
+        // collectable. Only ever written via `serde_json::to_string`, so a parse
+        // failure is genuine corruption worth surfacing.
+        refs: serde_json::from_str(&refs_json).context("parsing cache_objects.refs")?,
+        sig: row.get(11)?,
+        ca: row.get(12)?,
+        uploaded_at: row.get(13)?,
+        last_accessed_at: row.get(14)?,
+    })
+}
+
+/// Map a `cache_registry_links` row (`cache_id, registry_id, roots_packages, advertised, created_at`).
+fn row_to_cache_link(row: &Row) -> Result<CacheRegistryLink> {
+    Ok(CacheRegistryLink {
+        cache_id: row.get(0)?,
+        registry_id: row.get(1)?,
+        roots_packages: row.get(2)?,
+        advertised: row.get(3)?,
+        created_at: row.get(4)?,
+    })
+}
+
+/// Map a `cache_gc_policy` row into a [`CacheGcPolicy`].
+fn row_to_cache_gc_policy(row: &Row) -> Result<CacheGcPolicy> {
+    Ok(CacheGcPolicy {
+        cache_id: row.get(0)?,
+        max_bytes: row.get(1)?,
+        max_objects: row.get(2)?,
+        ttl_unreferenced_secs: row.get(3)?,
+        keep_release_versions: row.get(4)?,
+        keep_channel_frontier: row.get(5)?,
+        schedule_secs: row.get(6)?,
+        updated_at: row.get(7)?,
+    })
+}
+
+/// Map a `cache_gc_roots` row into a [`CacheGcRoot`].
+fn row_to_cache_gc_root(row: &Row) -> Result<CacheGcRoot> {
+    Ok(CacheGcRoot {
+        id: row.get(0)?,
+        cache_id: row.get(1)?,
+        store_hash: row.get(2)?,
+        root_kind: row.get(3)?,
+        root_ref: row.get(4)?,
+        expires_at: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+/// Map a `cache_gc_runs` row into a [`CacheGcRun`].
+fn row_to_cache_gc_run(row: &Row) -> Result<CacheGcRun> {
+    Ok(CacheGcRun {
+        id: row.get(0)?,
+        cache_id: row.get(1)?,
+        started_at: row.get(2)?,
+        finished_at: row.get(3)?,
+        status: row.get(4)?,
+        error: row.get(5)?,
+        scanned: row.get(6)?,
+        retained: row.get(7)?,
+        deleted_objects: row.get(8)?,
+        freed_bytes: row.get(9)?,
+    })
+}
+
 fn row_to_registry(row: &Row) -> Result<RegistryRecord> {
     let trust_json: String = row.get(3)?;
     Ok(RegistryRecord {
@@ -8560,7 +9657,7 @@ mod tests {
         let channels = db.list_channels(id).await.unwrap();
         assert_eq!(channels[0].partitions.iter().flatten().count(), 256);
         assert_eq!(db.index_status(id).await.unwrap().unwrap().state, "fresh");
-        assert_eq!(db.list_caches(id).await.unwrap()[0].1, 40);
+        assert_eq!(db.list_advertised_caches(id).await.unwrap()[0].1, 40);
         assert!(db.list_releases(id).await.unwrap()[0].pack_present);
         assert_eq!(
             db.refs_digest(id).await.unwrap().as_deref(),
@@ -10175,6 +11272,219 @@ mod tests {
             .create_storage_binding(org, "r2", "external_r2", "s3://bucket")
             .await
             .is_err());
+    }
+
+    /// Set up an org + binding and return `(db, org_id, binding_id)`.
+    async fn cache_fixture() -> (Database, i64, i64) {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
+            .await
+            .unwrap();
+        (db, org, binding)
+    }
+
+    #[tokio::test]
+    async fn caches_crud_and_servable_filter() {
+        let (db, org, binding) = cache_fixture().await;
+        let id = db
+            .create_cache(
+                Some(org),
+                "acme-cache",
+                "Acme Cache",
+                binding,
+                "caches/acme",
+                None,
+                "public",
+                40,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        // Duplicate slug rejected; unsafe prefix rejected.
+        assert!(db
+            .create_cache(None, "acme-cache", "x", binding, "", None, "public", 40, "zstd", true)
+            .await
+            .is_err());
+        assert!(db
+            .create_cache(None, "bad", "x", binding, "../escape", None, "public", 40, "zstd", true)
+            .await
+            .is_err());
+
+        let c = db.cache_by_slug("acme-cache").await.unwrap().unwrap();
+        assert_eq!(c.id, id);
+        assert_eq!(c.org_id, Some(org));
+        assert_eq!(c.prefix, "caches/acme");
+        assert!(c.want_mass_query);
+        assert_eq!(db.cache_by_id(id).await.unwrap().unwrap().slug, "acme-cache");
+
+        // An instance-level standalone cache (no org).
+        db.create_cache(None, "standalone", "Standalone", binding, "caches/std", None, "public", 30, "xz", false)
+            .await
+            .unwrap();
+        assert_eq!(db.list_caches().await.unwrap().len(), 2);
+        assert_eq!(db.list_caches_for_org(org).await.unwrap().len(), 1);
+
+        db.update_cache(id, "Renamed", "private", 10, "none", false, None)
+            .await
+            .unwrap();
+        let c = db.cache_by_id(id).await.unwrap().unwrap();
+        assert_eq!(c.name, "Renamed");
+        assert_eq!(c.visibility, "private");
+        assert_eq!(c.priority, 10);
+        assert!(!c.want_mass_query);
+
+        // Soft-delete drops it from the servable list; hard-delete removes the row.
+        assert!(db.soft_delete_cache(id, unix_now() + 100).await.unwrap());
+        assert_eq!(db.list_caches().await.unwrap().len(), 1);
+        assert!(db.delete_cache(id).await.unwrap());
+        assert!(db.cache_by_id(id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_caches_excludes_soft_deleted_org() {
+        let (db, org, binding) = cache_fixture().await;
+        db.create_cache(Some(org), "owned", "Owned", binding, "p1", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        db.create_cache(None, "standalone", "Standalone", binding, "p2", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        assert_eq!(db.list_caches().await.unwrap().len(), 2);
+        // Soft-deleting the org drops its cache from the servable list; the
+        // instance-level (org_id IS NULL) cache still passes.
+        assert!(db.soft_delete_org(org, 86_400).await.unwrap());
+        let live = db.list_caches().await.unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].slug, "standalone");
+    }
+
+    #[tokio::test]
+    async fn cache_links_gc_policy_and_pins() {
+        let (db, org, binding) = cache_fixture().await;
+        let cache = db
+            .create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        let reg = db
+            .create_managed_registry(org, "", "reg", "public", Some(binding), "reg", &[], false)
+            .await
+            .unwrap();
+
+        // Link upserts: a second call updates the flags in place.
+        db.link_cache(cache, reg, false, true).await.unwrap();
+        db.link_cache(cache, reg, true, true).await.unwrap();
+        let links = db.list_cache_links(cache).await.unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(links[0].roots_packages && links[0].advertised);
+        assert_eq!(db.cache_links_for_registry(reg).await.unwrap().len(), 1);
+        assert!(db.unlink_cache(cache, reg).await.unwrap());
+        assert!(db.list_cache_links(cache).await.unwrap().is_empty());
+
+        // GC policy upsert.
+        db.set_cache_gc_policy(&CacheGcPolicy {
+            cache_id: cache,
+            max_bytes: Some(1_000_000),
+            max_objects: None,
+            ttl_unreferenced_secs: Some(86_400),
+            keep_release_versions: Some(3),
+            keep_channel_frontier: true,
+            schedule_secs: Some(3600),
+            updated_at: 0,
+        })
+        .await
+        .unwrap();
+        let p = db.cache_gc_policy(cache).await.unwrap().unwrap();
+        assert_eq!(p.max_bytes, Some(1_000_000));
+        assert_eq!(p.keep_release_versions, Some(3));
+
+        // Manual pin: renewable in place (no re-insert), then unpin.
+        db.pin_cache_path(cache, "abc123", None).await.unwrap();
+        db.pin_cache_path(cache, "abc123", Some(999)).await.unwrap(); // renew
+        let roots = db.list_cache_roots(cache).await.unwrap();
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].root_kind, "manual");
+        assert_eq!(roots[0].expires_at, Some(999));
+        assert!(db.unpin_cache_path(cache, "abc123").await.unwrap());
+        assert!(db.list_cache_roots(cache).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cache_objects_search_refcount_and_usage() {
+        let (db, org, binding) = cache_fixture().await;
+        let cache = db
+            .create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        let obj = CacheObject {
+            cache_id: cache,
+            store_hash: "aaaa".into(),
+            store_name: "aaaa-hello-1.0".into(),
+            nar_url: "nar/ff.nar.zst".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 4096,
+            file_hash: "ff".into(),
+            file_size: 1024,
+            compression: "zstd".into(),
+            deriver: Some("dddd-hello.drv".into()),
+            refs: vec!["bbbb".into(), "cccc".into()],
+            sig: None,
+            ca: None,
+            uploaded_at: unix_now(),
+            last_accessed_at: None,
+        };
+        db.upsert_cache_object(&obj).await.unwrap();
+        let got = db.cache_object(cache, "aaaa").await.unwrap().unwrap();
+        assert_eq!(got.refs, vec!["bbbb".to_string(), "cccc".to_string()]);
+        assert_eq!(got.file_size, 1024);
+
+        // Search by name / deriver substring.
+        assert_eq!(db.search_cache_objects(cache, "hello", 50).await.unwrap().len(), 1);
+        assert!(db.search_cache_objects(cache, "absent", 50).await.unwrap().is_empty());
+        assert_eq!(db.list_cache_objects(cache, 50).await.unwrap().len(), 1);
+
+        // Usage recompute.
+        let usage = db.refresh_cache_usage(cache).await.unwrap();
+        assert_eq!(usage.used_bytes, 1024);
+        assert_eq!(usage.object_count, 1);
+        assert_eq!(db.cache_usage(cache).await.unwrap().used_bytes, 1024);
+
+        // Content-addressed NAR refcount across the binding+prefix.
+        assert_eq!(db.nar_refcount(binding, "p", "ff").await.unwrap(), 1);
+        assert!(db.delete_cache_object(cache, "aaaa").await.unwrap());
+        assert_eq!(db.nar_refcount(binding, "p", "ff").await.unwrap(), 0);
+
+        // GC run lifecycle.
+        let run = db.start_cache_gc_run(cache).await.unwrap();
+        db.finish_cache_gc_run(run, "ok", None, 10, 8, 2, 2048).await.unwrap();
+        let runs = db.list_cache_gc_runs(cache, 10).await.unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "ok");
+        assert_eq!(runs[0].freed_bytes, 2048);
+    }
+
+    #[tokio::test]
+    async fn advertised_caches_rename_preserves_advertised_list() {
+        // After v22 the registry's advertised cache list lives in
+        // `advertised_caches`; the `caches` table is the managed object.
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
+            .await
+            .unwrap();
+        // A managed cache and a registry coexist without table collision.
+        db.create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        db.create_managed_registry(org, "", "reg", "public", Some(binding), "reg", &[], false)
+            .await
+            .unwrap();
+        // list_advertised_caches reads the renamed table (empty until indexed).
+        let reg = db.registry_by_slug("acme/reg").await.unwrap().unwrap();
+        assert!(db.list_advertised_caches(reg.id).await.unwrap().is_empty());
     }
 
     #[tokio::test]

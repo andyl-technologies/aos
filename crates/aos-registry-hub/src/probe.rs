@@ -114,7 +114,7 @@ async fn committed_cache_urls(db: &Database, registry_id: i64) -> Result<Vec<Str
     Ok(match stack {
         Some(node) => StackNode::endpoints(&node),
         None => db
-            .list_caches(registry_id)
+            .list_advertised_caches(registry_id)
             .await?
             .into_iter()
             .map(|(url, _)| url)
