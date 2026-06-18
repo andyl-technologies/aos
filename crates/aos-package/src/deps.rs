@@ -1230,6 +1230,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1273,6 +1274,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1304,6 +1306,7 @@ references = ["llllllllllllllllllllllllllllllll"]
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
         let high_candidate = PackageMeta {
@@ -1331,6 +1334,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             expose_artifact: None,
             permissions: Default::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
         let low_candidate = PackageMeta {
             name: "same-version-tool".into(),
@@ -1357,6 +1361,7 @@ references = ["llllllllllllllllllllllllllllllll"]
             expose_artifact: None,
             permissions: Default::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         assert_eq!(
@@ -1424,6 +1429,7 @@ references = []
                     expose_artifact: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
             InstalledMeta {
@@ -1447,6 +1453,7 @@ references = []
                     expose_artifact: None,
                     permissions: Default::default(),
                     bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
         ];

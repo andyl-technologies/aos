@@ -337,6 +337,7 @@ mod tests {
                         programs: vec!["aos_lsm_file_mprotect".into()],
                     }],
                 }),
+                attestation: Default::default(),
             }),
         }
     }

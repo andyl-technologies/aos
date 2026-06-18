@@ -577,6 +577,7 @@ async fn run_inner(
                     expose_artifact: meta.expose_artifact.clone(),
                     permissions: meta.permissions.clone(),
                     bpf_lsm: meta.bpf_lsm.clone(),
+                    attestation: meta.attestation.clone(),
                 }),
             };
 
@@ -1634,6 +1635,7 @@ mod tests {
             expose_artifact: None,
             permissions: Default::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         }
     }
 
@@ -1668,6 +1670,7 @@ mod tests {
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }
     }

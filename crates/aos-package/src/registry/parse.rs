@@ -42,8 +42,9 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use crate::types::{
-    BpfLsmPolicyMeta, ExposeArtifactMeta, ExposeMeta, PackageMeta, PermissionsMeta, SbatEntry,
-    SysrootImageEntry, package_name_bucket, validate_package_name, validate_supported_package_meta,
+    AttestationMeta, BpfLsmPolicyMeta, ExposeArtifactMeta, ExposeMeta, PackageMeta,
+    PermissionsMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
+    validate_supported_package_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,29 @@ struct PlatformEntry {
     /// Signed fleet BPF-LSM policy metadata.
     #[serde(default)]
     bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// dm-verity Merkle root hash for this package root.
+    #[serde(default)]
+    root_hash: Option<String>,
+    /// Registry-served PKCS#7 signature over `root_hash`.
+    #[serde(default)]
+    root_hash_sig: Option<String>,
+    /// Registry-served in-toto/SLSA provenance attestation reference.
+    #[serde(default)]
+    provenance: Option<String>,
+    /// Golden package measurement tuple.
+    #[serde(default)]
+    measurement: Option<String>,
+}
+
+impl PlatformEntry {
+    fn attestation(&self) -> AttestationMeta {
+        AttestationMeta {
+            root_hash: self.root_hash.clone(),
+            root_hash_sig: self.root_hash_sig.clone(),
+            provenance: self.provenance.clone(),
+            measurement: self.measurement.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -404,6 +428,7 @@ fn package_metas_for_platform(
             let min_format = max_optional_format(plat.min_format, plat.references.min_format());
             let requires_features =
                 merge_features(&plat.requires_features, plat.references.requires_features());
+            let attestation = plat.attestation();
             let meta = PackageMeta {
                 name: toml.package.name.clone(),
                 version: ver.version.clone(),
@@ -428,6 +453,7 @@ fn package_metas_for_platform(
                 expose_artifact: plat.expose_artifact.clone(),
                 permissions: plat.permissions.clone(),
                 bpf_lsm: plat.bpf_lsm.clone(),
+                attestation,
             };
             if (meta.expose.is_some()
                 || meta.expose_artifact.is_some()
@@ -435,7 +461,8 @@ fn package_metas_for_platform(
                 || meta
                     .bpf_lsm
                     .as_ref()
-                    .is_some_and(|bpf_lsm| !bpf_lsm.is_empty()))
+                    .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+                || !meta.attestation.is_empty())
                 && !plat.references.is_gate()
             {
                 bail!(
@@ -656,6 +683,36 @@ programs = ["aos_lsm_file_mprotect"]
 "#;
 
 #[cfg(test)]
+const ATTESTATION_TOML: &str = r#"
+[package]
+name = "verity-app"
+description = "Package root with verity attestation"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/verityhash12-verity-app-1.0.0"
+nar_hash = "sha256:abc123"
+nar_size = 1024
+closure_size = 1024
+source_drv = ""
+source_nar_hash = ""
+
+root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+root_hash_sig = "attestation/verity-app.roothash.p7s"
+provenance = "attestation/verity-app.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1"]
+"#;
+
+#[cfg(test)]
 pub(crate) const MULTI_VERSION_TOML: &str = r#"
 [package]
 name = "tool"
@@ -867,6 +924,58 @@ requires-features = ["bpf-lsm-policy-v1"]
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
         assert!(format!("{err:#}").contains("bpf-lsm-policy-v1"));
+    }
+
+    #[test]
+    fn parse_attestation_metadata() {
+        let meta = parse_package_toml(ATTESTATION_TOML, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(meta.min_format, Some(1));
+        assert_eq!(meta.requires_features, vec!["attestation-v1"]);
+        assert_eq!(
+            meta.attestation.root_hash.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            meta.attestation.root_hash_sig.as_deref(),
+            Some("attestation/verity-app.roothash.p7s")
+        );
+        assert_eq!(
+            meta.attestation.provenance.as_deref(),
+            Some("attestation/verity-app.provenance.jsonl")
+        );
+        assert_eq!(
+            meta.attestation.measurement.as_deref(),
+            Some("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+    }
+
+    #[test]
+    fn parse_attestation_metadata_requires_structural_gate() {
+        let content = ATTESTATION_TOML.replace(
+            r#"[versions.platforms.x86_64-linux.references]
+hashes = []
+min-format = 1
+requires-features = ["attestation-v1"]
+"#,
+            r#"references = []
+min-format = 1
+requires-features = ["attestation-v1"]
+"#,
+        );
+
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("structural references gate"));
+    }
+
+    #[test]
+    fn parse_attestation_metadata_requires_own_feature_gate() {
+        let content = ATTESTATION_TOML.replace("attestation-v1", "permissions-v1");
+
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+        assert!(format!("{err:#}").contains("attestation-v1"));
     }
 
     #[test]

@@ -257,7 +257,7 @@ in {
 
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
-  checks = {
+  checks = rec {
     eval = import ./lib/testing/eval.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
@@ -266,15 +266,16 @@ in {
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
     in {
-      inherit critical-pkgs hardening-probe kernel-config;
+      inherit critical-pkgs hardening-probe kernel-config systemd-verity;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs kernel-config]
+          [critical-pkgs kernel-config systemd-verity]
           ++ builtins.attrValues hardening-probe;
         phases = [
           {
@@ -296,6 +297,7 @@ in {
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
+    systemd-verity = build.systemd-verity;
     package-expose = import ./lib/testing/package-expose.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
     };

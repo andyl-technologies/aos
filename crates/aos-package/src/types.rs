@@ -65,6 +65,9 @@ pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
 /// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
 pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
 
+/// Registry feature flag for RFC-0001 package attestation metadata.
+pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
+
 const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_EXPOSE_V1,
     FEATURE_EXPOSE_ARTIFACT_V1,
@@ -77,6 +80,7 @@ const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
     FEATURE_MAC_PROFILE_V1,
     FEATURE_EBPF_NET_POLICY_V1,
     FEATURE_BPF_LSM_POLICY_V1,
+    FEATURE_ATTESTATION_V1,
 ];
 
 const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
@@ -571,6 +575,9 @@ pub struct PackageMeta {
     /// Signed fleet BPF-LSM policy artifact metadata.
     #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
     pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts for this package.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
 }
 
 /// RFC-0001 service exposure metadata carried by registry package metadata.
@@ -767,6 +774,39 @@ impl BpfLsmPolicyMeta {
     /// Returns whether the package declares no BPF-LSM policies.
     pub fn is_empty(&self) -> bool {
         self.policies.is_empty()
+    }
+}
+
+/// Registry-published runtime integrity, attestation, and provenance facts.
+///
+/// These are catalog facts, not runtime authority. The registry distributes
+/// signed root hashes and provenance references, while dm-verity is enforced by
+/// the kernel against the platform keyring and TPM measurements are verified by
+/// a fleet verifier against the golden tuple.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationMeta {
+    /// dm-verity Merkle root hash for the package root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash: Option<String>,
+    /// Registry-served PKCS#7 signature over [`AttestationMeta::root_hash`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash_sig: Option<String>,
+    /// Registry-served in-toto/SLSA provenance attestation reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+    /// Golden package measurement tuple extended into the package-set PCR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<String>,
+}
+
+impl AttestationMeta {
+    /// Returns whether no attestation facts are declared.
+    pub fn is_empty(&self) -> bool {
+        self.root_hash.is_none()
+            && self.root_hash_sig.is_none()
+            && self.provenance.is_none()
+            && self.measurement.is_none()
     }
 }
 
@@ -1142,6 +1182,11 @@ pub fn validate_supported_package_meta_with(
                 .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
         }
     }
+    if !meta.attestation.is_empty() {
+        require_feature(meta, FEATURE_ATTESTATION_V1)?;
+        validate_attestation_meta(&meta.attestation)
+            .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
+    }
 
     if let Some(expose) = &meta.expose {
         validate_expose_meta(expose)?;
@@ -1426,6 +1471,46 @@ pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Validate runtime integrity, attestation, and provenance metadata.
+///
+/// # Errors
+///
+/// Returns an error when root-hash/signature fields are incomplete, hash fields
+/// are malformed SHA-256 digests, or registry-served artifact references are
+/// unsafe.
+pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
+    if meta.root_hash.is_some() != meta.root_hash_sig.is_some() {
+        bail!("attestation root_hash and root_hash_sig must be declared together");
+    }
+    if meta.measurement.is_some() && meta.root_hash.is_none() {
+        bail!("attestation measurement requires root_hash/root_hash_sig");
+    }
+    if let Some(root_hash) = &meta.root_hash {
+        validate_sha256_digest("attestation root_hash", root_hash)?;
+    }
+    if let Some(measurement) = &meta.measurement {
+        validate_sha256_digest("attestation measurement", measurement)?;
+    }
+    if let Some(root_hash_sig) = &meta.root_hash_sig {
+        validate_relative_artifact_path("attestation root_hash_sig", root_hash_sig, ".p7s")?;
+    }
+    if let Some(provenance) = &meta.provenance {
+        validate_relative_artifact_path("attestation provenance", provenance, ".jsonl")?;
+    }
+    Ok(())
+}
+
+fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .with_context(|| format!("{kind} must start with sha256: or sha256-"))?;
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("{kind} must contain a 64-character SHA-256 digest");
     }
     Ok(())
 }
@@ -1893,6 +1978,9 @@ pub struct ApmMeta {
     /// Fleet BPF-LSM policy metadata captured at install time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts captured at install time.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
 }
 
 // ---------------------------------------------------------------------------
@@ -3504,6 +3592,7 @@ last_update = "2026-02-13T10:30:00Z"
                 expose_artifact: None,
                 permissions: Default::default(),
                 bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -3610,6 +3699,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         validate_supported_package_meta(&meta).unwrap();
@@ -3689,6 +3779,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err =
@@ -3725,6 +3816,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3769,6 +3861,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3811,6 +3904,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3855,6 +3949,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3917,6 +4012,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -3976,6 +4072,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4134,6 +4231,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4182,6 +4280,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4224,6 +4323,7 @@ last_update = "2026-02-13T10:30:00Z"
                     programs: vec!["aos_lsm_file_mprotect".into()],
                 }],
             }),
+            attestation: Default::default(),
         }
     }
 
@@ -4245,6 +4345,94 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(format!("{err:#}").contains("BPF-LSM object path"));
+    }
+
+    fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "verity-app".into(),
+            version: "1.0.0".into(),
+            description: "Package root with verity attestation".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/verityhash12-verity-app-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_hash: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash_sig: Some("attestation/verity-app.roothash.p7s".into()),
+                provenance: Some("attestation/verity-app.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_attestation_feature_gate() {
+        let mut meta = attestation_package_meta(vec![FEATURE_PERMISSIONS_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_ATTESTATION_V1));
+
+        meta.requires_features = vec![FEATURE_ATTESTATION_V1.into()];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_incomplete_attestation_root_hash() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("root_hash and root_hash_sig"));
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_measurement_without_root_hash() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash = None;
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("measurement requires root_hash"));
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_attestation_digest() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash = Some("sha256:not-a-digest".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("64-character SHA-256 digest"));
+    }
+
+    #[test]
+    fn package_meta_rejects_unsafe_attestation_artifact_paths() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = Some("../escape.p7s".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
     }
 
     #[test]
@@ -4285,6 +4473,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4337,6 +4526,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
