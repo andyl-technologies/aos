@@ -65,6 +65,11 @@ const OUT_PATH_ATTR: &[u8] = b"outPath";
 const DRV_PATH_ATTR: &[u8] = b"drvPath";
 const TYPE_ATTR: &[u8] = b"type";
 const NAME_ATTR: &[u8] = b"name";
+const ID_ATTR: &[u8] = b"id";
+const OWNER_ATTR: &[u8] = b"owner";
+const REPO_ATTR: &[u8] = b"repo";
+const HOST_ATTR: &[u8] = b"host";
+const DIR_ATTR: &[u8] = b"dir";
 const BUILDER_ATTR: &[u8] = b"builder";
 const SYSTEM_ATTR: &[u8] = b"system";
 const ARGS_ATTR: &[u8] = b"args";
@@ -1685,6 +1690,15 @@ struct FetchGitResult {
     last_modified_date: Vec<u8>,
     nar_hash: Vec<u8>,
     submodules: bool,
+}
+
+type FlakeRefAttrs = BTreeMap<Vec<u8>, FlakeRefAttrValue>;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FlakeRefAttrValue {
+    String(Vec<u8>),
+    Int(u64),
+    Bool(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -10655,6 +10669,1521 @@ impl TreeWalk {
     ) -> TreeWalkError {
         TreeWalkError::new(
             TreeWalkErrorKind::FetchTree {
+                id,
+                input: input.to_vec(),
+                message: source.to_string(),
+            },
+            span,
+        )
+    }
+
+    fn eval_parse_flake_ref_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let flake_ref =
+            self.context_free_string_bytes(argument, argument_span, value, "parseFlakeRef")?;
+        let attrs = Self::parse_flake_ref_attrs(argument, argument_span, &flake_ref)?;
+        self.alloc_flake_ref_attrs(id, span, attrs)
+    }
+
+    fn eval_flake_ref_to_string_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "attrs",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let attrs = self.flake_ref_attrs_from_value(argument, argument_span, value)?;
+        let flake_ref = self.flake_ref_attrs_to_string(argument, argument_span, &attrs)?;
+        self.alloc_static_string(id, span, &flake_ref)
+    }
+
+    fn parse_flake_ref_attrs(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let text = std::str::from_utf8(input)
+            .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+        if let Some(attrs) = Self::parse_indirect_flake_id_ref(id, span, input, text, false)? {
+            return Ok(attrs);
+        }
+        if let Ok(url) = Url::parse(text) {
+            if url.fragment().is_some_and(|fragment| !fragment.is_empty()) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "unexpected fragment in flake reference",
+                ));
+            }
+            return Self::parse_flake_ref_url(id, span, input, &url);
+        }
+        Self::parse_absolute_path_flake_ref(id, span, input, text)
+    }
+
+    fn parse_indirect_flake_id_ref(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        text: &str,
+        explicit_flake_scheme: bool,
+    ) -> Result<Option<FlakeRefAttrs>, TreeWalkError> {
+        let (without_fragment, fragment) = match text.split_once('#') {
+            Some((base, fragment)) => (base, fragment),
+            None => (text, ""),
+        };
+        if !fragment.is_empty() {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "unexpected fragment in flake reference",
+            ));
+        }
+        if without_fragment.contains('?') {
+            return Ok(None);
+        }
+        let mut parts = without_fragment.splitn(2, '/');
+        let Some(flake_id) = parts.next() else {
+            return Ok(None);
+        };
+        if !Self::is_flake_id(flake_id.as_bytes()) {
+            return Ok(None);
+        }
+
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(b"indirect".to_vec()),
+        );
+        attrs.insert(
+            ID_ATTR.to_vec(),
+            FlakeRefAttrValue::String(flake_id.as_bytes().to_vec()),
+        );
+
+        if let Some(rest) = parts.next() {
+            if rest.is_empty() {
+                return Ok(None);
+            }
+            if Self::is_git_rev(rest.as_bytes()) {
+                attrs.insert(
+                    REV_ATTR.to_vec(),
+                    FlakeRefAttrValue::String(rest.as_bytes().to_vec()),
+                );
+            } else if let Some((reference, rev)) = Self::split_ref_and_rev(rest) {
+                attrs.insert(
+                    REF_ATTR.to_vec(),
+                    FlakeRefAttrValue::String(reference.as_bytes().to_vec()),
+                );
+                attrs.insert(
+                    REV_ATTR.to_vec(),
+                    FlakeRefAttrValue::String(rev.as_bytes().to_vec()),
+                );
+            } else if Self::is_flake_ref_name(rest.as_bytes()) {
+                attrs.insert(
+                    REF_ATTR.to_vec(),
+                    FlakeRefAttrValue::String(rest.as_bytes().to_vec()),
+                );
+            } else if explicit_flake_scheme {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "invalid indirect flake reference",
+                ));
+            } else {
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(attrs))
+    }
+
+    fn parse_flake_ref_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let query = Self::decode_flake_ref_query(id, span, input, url.query())?;
+        let dir = query.get(DIR_ATTR).cloned();
+        let scheme = url.scheme();
+        let mut attrs = match scheme {
+            "flake" => {
+                let path = Self::percent_decode_flake_ref_component(url.path())
+                    .map_err(|message| Self::flake_ref_error(id, span, input, message))?;
+                let path = std::str::from_utf8(&path)
+                    .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+                Self::parse_indirect_flake_id_ref(id, span, input, path, true)?.ok_or_else(
+                    || Self::flake_ref_error(id, span, input, "invalid indirect flake reference"),
+                )?
+            }
+            "github" | "gitlab" | "sourcehut" => {
+                Self::parse_forge_flake_ref_url(id, span, input, url, &query)?
+            }
+            "git" | "git+http" | "git+https" | "git+ssh" | "git+file" => {
+                Self::parse_git_flake_ref_url(id, span, input, url, &query)?
+            }
+            "path" => Self::parse_path_flake_ref_url(id, span, input, url, &query)?,
+            _ => {
+                let Some(input_type) = Self::curl_flake_ref_url_type(url) else {
+                    return Err(Self::flake_ref_error(
+                        id,
+                        span,
+                        input,
+                        format!("unsupported flake reference scheme '{scheme}'"),
+                    ));
+                };
+                Self::parse_curl_flake_ref_url(id, span, input, url, &query, input_type)?
+            }
+        };
+        if let Some(dir) = dir {
+            attrs.insert(DIR_ATTR.to_vec(), FlakeRefAttrValue::String(dir));
+        }
+        Ok(attrs)
+    }
+
+    fn parse_forge_flake_ref_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        query: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let path = Self::percent_decode_flake_ref_component(url.path())
+            .map_err(|message| Self::flake_ref_error(id, span, input, message))?;
+        let path = std::str::from_utf8(&path)
+            .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+        let segments = path
+            .trim_start_matches('/')
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        if segments.len() < 2 {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "forge flake reference requires owner and repo",
+            ));
+        }
+
+        let mut rev = None;
+        let mut reference = None;
+        if segments.len() == 3 {
+            let candidate = segments[2];
+            if Self::is_git_rev(candidate.as_bytes()) {
+                rev = Some(candidate.as_bytes().to_vec());
+            } else if Self::is_flake_ref_name(candidate.as_bytes()) {
+                reference = Some(candidate.as_bytes().to_vec());
+            } else {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "invalid forge branch, tag, or revision",
+                ));
+            }
+        } else if segments.len() > 3 {
+            let candidate = segments[2..].join("/");
+            if !Self::is_flake_ref_name(candidate.as_bytes()) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "invalid forge branch or tag",
+                ));
+            }
+            reference = Some(candidate.into_bytes());
+        }
+
+        if let Some(query_rev) = query.get(REV_ATTR) {
+            if rev.is_some() {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "flake reference contains multiple commit hashes",
+                ));
+            }
+            if !Self::is_git_rev(query_rev) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "invalid forge commit hash",
+                ));
+            }
+            rev = Some(query_rev.clone());
+        }
+        if let Some(query_ref) = query.get(REF_ATTR) {
+            if !Self::is_flake_ref_name(query_ref) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "invalid forge branch or tag",
+                ));
+            }
+            if reference.is_some() {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    input,
+                    "flake reference contains multiple branch or tag names",
+                ));
+            }
+            reference = Some(query_ref.clone());
+        }
+        if reference.is_some() && rev.is_some() {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "flake reference contains both a commit hash and a branch or tag",
+            ));
+        }
+
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(url.scheme().as_bytes().to_vec()),
+        );
+        attrs.insert(
+            OWNER_ATTR.to_vec(),
+            FlakeRefAttrValue::String(segments[0].as_bytes().to_vec()),
+        );
+        attrs.insert(
+            REPO_ATTR.to_vec(),
+            FlakeRefAttrValue::String(segments[1].as_bytes().to_vec()),
+        );
+        if let Some(reference) = reference {
+            attrs.insert(REF_ATTR.to_vec(), FlakeRefAttrValue::String(reference));
+        }
+        if let Some(rev) = rev {
+            attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
+        }
+        if let Some(host) = query.get(HOST_ATTR) {
+            if !Self::is_forge_host(host) {
+                return Err(Self::flake_ref_error(id, span, input, "invalid forge host"));
+            }
+            attrs.insert(HOST_ATTR.to_vec(), FlakeRefAttrValue::String(host.clone()));
+        }
+        if let Some(nar_hash) = query.get(NAR_HASH_ATTR) {
+            attrs.insert(
+                NAR_HASH_ATTR.to_vec(),
+                FlakeRefAttrValue::String(nar_hash.clone()),
+            );
+        }
+        Ok(attrs)
+    }
+
+    fn parse_git_flake_ref_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        query: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(b"git".to_vec()),
+        );
+
+        let mut url_query = BTreeMap::new();
+        for (name, value) in query {
+            match name.as_slice() {
+                REV_ATTR | REF_ATTR | KEYTYPE_ATTR | PUBLIC_KEY_ATTR | PUBLIC_KEYS_ATTR => {
+                    attrs.insert(name.clone(), FlakeRefAttrValue::String(value.clone()));
+                }
+                SHALLOW_ATTR | SUBMODULES_ATTR | EXPORT_IGNORE_ATTR | ALL_REFS_ATTR
+                | VERIFY_COMMIT_ATTR => {
+                    attrs.insert(name.clone(), FlakeRefAttrValue::Bool(value == b"1"));
+                }
+                _ => {
+                    url_query.insert(name.clone(), value.clone());
+                }
+            }
+        }
+
+        if let Some(FlakeRefAttrValue::String(reference)) = attrs.get(REF_ATTR) {
+            if Self::is_bad_git_ref(reference) {
+                return Err(Self::flake_ref_error(id, span, input, "invalid Git ref"));
+            }
+        }
+
+        let url = Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            input,
+            url,
+            Self::flake_ref_transport_scheme(url.scheme()),
+            url_query,
+            BTreeMap::new(),
+        )?;
+        attrs.insert(URL_ATTR.to_vec(), FlakeRefAttrValue::String(url));
+        Ok(attrs)
+    }
+
+    fn parse_path_flake_ref_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        query: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        if url.has_host() {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "path flake reference must not have an authority",
+            ));
+        }
+        let path = Self::percent_decode_flake_ref_component(url.path())
+            .map_err(|message| Self::flake_ref_error(id, span, input, message))?;
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(b"path".to_vec()),
+        );
+        attrs.insert(PATH_ATTR.to_vec(), FlakeRefAttrValue::String(path));
+        for (name, value) in query {
+            match name.as_slice() {
+                REV_ATTR | NAR_HASH_ATTR => {
+                    attrs.insert(name.clone(), FlakeRefAttrValue::String(value.clone()));
+                }
+                REV_COUNT_ATTR | LAST_MODIFIED_ATTR => {
+                    attrs.insert(
+                        name.clone(),
+                        FlakeRefAttrValue::Int(Self::parse_flake_ref_u64(
+                            id, span, input, value, name,
+                        )?),
+                    );
+                }
+                _ => {
+                    return Err(Self::flake_ref_error(
+                        id,
+                        span,
+                        input,
+                        format!(
+                            "path flake reference has unsupported parameter '{}'",
+                            String::from_utf8_lossy(name)
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(attrs)
+    }
+
+    fn parse_curl_flake_ref_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        query: &BTreeMap<Vec<u8>, Vec<u8>>,
+        input_type: &[u8],
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let mut attrs = FlakeRefAttrs::new();
+        let mut url_query = query.clone();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(input_type.to_vec()),
+        );
+        if let Some(nar_hash) = url_query.remove(NAR_HASH_ATTR) {
+            attrs.insert(NAR_HASH_ATTR.to_vec(), FlakeRefAttrValue::String(nar_hash));
+        }
+        if let Some(rev) = url_query.remove(REV_ATTR) {
+            attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
+        }
+        if let Some(rev_count) = url_query.remove(REV_COUNT_ATTR) {
+            if let Ok(rev_count) =
+                Self::parse_flake_ref_u64(id, span, input, &rev_count, REV_COUNT_ATTR)
+            {
+                attrs.insert(REV_COUNT_ATTR.to_vec(), FlakeRefAttrValue::Int(rev_count));
+            }
+        }
+        if let Some(last_modified) = url_query.remove(LAST_MODIFIED_ATTR) {
+            if let Ok(last_modified) =
+                Self::parse_flake_ref_u64(id, span, input, &last_modified, LAST_MODIFIED_ATTR)
+            {
+                attrs.insert(
+                    LAST_MODIFIED_ATTR.to_vec(),
+                    FlakeRefAttrValue::Int(last_modified),
+                );
+            }
+        }
+        for attr in [TYPE_ATTR, URL_ATTR, NAME_ATTR, UNPACK_ATTR] {
+            url_query.remove(attr);
+        }
+        let url = Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            input,
+            url,
+            Self::flake_ref_transport_scheme(url.scheme()),
+            url_query,
+            BTreeMap::new(),
+        )?;
+        attrs.insert(URL_ATTR.to_vec(), FlakeRefAttrValue::String(url));
+        Ok(attrs)
+    }
+
+    fn parse_absolute_path_flake_ref(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        text: &str,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let (without_fragment, fragment) = match text.split_once('#') {
+            Some((base, fragment)) => (base, fragment),
+            None => (text, ""),
+        };
+        if !fragment.is_empty() {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "unexpected fragment in flake reference",
+            ));
+        }
+        let (path, query_text) = match without_fragment.split_once('?') {
+            Some((path, query)) => (path, Some(query)),
+            None => (without_fragment, None),
+        };
+        if !path.starts_with('/') {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input,
+                "flake reference is not an absolute path",
+            ));
+        }
+        let query = Self::decode_flake_ref_query(id, span, input, query_text)?;
+        let path = Self::percent_decode_flake_ref_component(path)
+            .map_err(|message| Self::flake_ref_error(id, span, input, message))?;
+        let mut path = String::from_utf8(path)
+            .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+        if let Some(dir) = query.get(DIR_ATTR) {
+            let dir = std::str::from_utf8(dir)
+                .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+            if !dir.is_empty() {
+                if !path.ends_with('/') {
+                    path.push('/');
+                }
+                path.push_str(dir);
+            }
+        }
+        let path = Self::canonicalize_flake_ref_path(&path);
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(b"path".to_vec()),
+        );
+        attrs.insert(PATH_ATTR.to_vec(), FlakeRefAttrValue::String(path));
+        Ok(attrs)
+    }
+
+    fn flake_ref_attrs_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FlakeRefAttrs, TreeWalkError> {
+        let entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            Self::clone_attr_entries_lexicographic(id, span, attrs)?
+        };
+        let mut values = FlakeRefAttrs::new();
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            let key = key.to_vec();
+            let value = match entry.value.tag() {
+                ValueTag::String => FlakeRefAttrValue::String(self.context_free_string_bytes(
+                    id,
+                    span,
+                    entry.value,
+                    "flakeRefToString",
+                )?),
+                ValueTag::Int => FlakeRefAttrValue::Int(
+                    entry
+                        .value
+                        .as_int()
+                        .map(|value| value as u64)
+                        .map_err(|source| Self::flake_ref_error(id, span, &key, source))?,
+                ),
+                ValueTag::Bool => FlakeRefAttrValue::Bool(
+                    entry
+                        .value
+                        .as_bool()
+                        .map_err(|source| Self::flake_ref_error(id, span, &key, source))?,
+                ),
+                actual => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::FlakeRefAttrType {
+                            id,
+                            attr: key,
+                            actual,
+                        },
+                        span,
+                    ));
+                }
+            };
+            values.insert(key, value);
+        }
+        Ok(values)
+    }
+
+    fn flake_ref_attrs_to_string(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let input_type = Self::required_flake_ref_string_attr(id, span, attrs, TYPE_ATTR)?;
+        let mut extra_query = BTreeMap::new();
+        if let Some(dir) = Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)? {
+            extra_query.insert(DIR_ATTR.to_vec(), dir.to_vec());
+        }
+        match input_type {
+            b"indirect" => self.indirect_flake_ref_to_string(id, span, attrs, extra_query),
+            b"github" | b"gitlab" | b"sourcehut" => {
+                self.forge_flake_ref_to_string(id, span, attrs, input_type, extra_query)
+            }
+            b"git" => self.git_flake_ref_to_string(id, span, attrs, extra_query),
+            b"path" => Self::path_flake_ref_to_string(id, span, attrs, extra_query),
+            b"tarball" | b"file" => self.curl_flake_ref_to_string(id, span, attrs, extra_query),
+            _ => Err(Self::flake_ref_error(
+                id,
+                span,
+                input_type,
+                "cannot show unsupported flake reference",
+            )),
+        }
+    }
+
+    fn indirect_flake_ref_to_string(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                ID_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                NAR_HASH_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let id_attr = Self::required_flake_ref_string_attr(id, span, attrs, ID_ATTR)?;
+        if !Self::is_flake_id(id_attr) {
+            return Err(Self::flake_ref_error(id, span, id_attr, "invalid flake ID"));
+        }
+        let mut path = id_attr.to_vec();
+        if let Some(reference) = Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)? {
+            if !Self::is_flake_ref_name(reference) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    reference,
+                    "invalid indirect ref",
+                ));
+            }
+            path.push(b'/');
+            path.extend_from_slice(reference);
+        }
+        if let Some(rev) = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)? {
+            let rev = self.canonical_flake_ref_rev(id, span, rev)?;
+            path.push(b'/');
+            path.extend_from_slice(&rev);
+        }
+        let mut query = BTreeMap::new();
+        Self::insert_extra_flake_ref_query(&mut query, extra_query);
+        let mut out = b"flake:".to_vec();
+        out.extend_from_slice(&Self::percent_encode_flake_ref_path(&path));
+        Self::append_flake_ref_query(&mut out, &query);
+        Ok(out)
+    }
+
+    fn forge_flake_ref_to_string(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        input_type: &[u8],
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                OWNER_ATTR,
+                REPO_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                HOST_ATTR,
+                b"treeHash",
+                DIR_ATTR,
+            ],
+        )?;
+        let owner = Self::required_flake_ref_string_attr(id, span, attrs, OWNER_ATTR)?;
+        let repo = Self::required_flake_ref_string_attr(id, span, attrs, REPO_ATTR)?;
+        let reference = Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?;
+        let rev = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?;
+        if reference.is_some() && rev.is_some() {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                input_type,
+                "forge flake reference cannot contain both ref and rev",
+            ));
+        }
+        let mut path = Vec::new();
+        path.extend_from_slice(owner);
+        path.push(b'/');
+        path.extend_from_slice(repo);
+        if let Some(reference) = reference {
+            if !Self::is_flake_ref_name(reference) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    reference,
+                    "invalid forge ref",
+                ));
+            }
+            path.push(b'/');
+            path.extend_from_slice(reference);
+        }
+        if let Some(rev) = rev {
+            let rev = self.canonical_flake_ref_rev(id, span, rev)?;
+            path.push(b'/');
+            path.extend_from_slice(&rev);
+        }
+
+        let mut query = BTreeMap::new();
+        if let Some(nar_hash) =
+            Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
+        {
+            query.insert(
+                NAR_HASH_ATTR.to_vec(),
+                self.canonical_flake_ref_nar_hash(id, span, nar_hash)?,
+            );
+        }
+        Self::insert_extra_flake_ref_query(&mut query, extra_query);
+        let mut out = input_type.to_vec();
+        out.push(b':');
+        out.extend_from_slice(&Self::percent_encode_flake_ref_path(&path));
+        Self::append_flake_ref_query(&mut out, &query);
+        Ok(out)
+    }
+
+    fn git_flake_ref_to_string(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                SHALLOW_ATTR,
+                SUBMODULES_ATTR,
+                EXPORT_IGNORE_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_COUNT_ATTR,
+                NAR_HASH_ATTR,
+                ALL_REFS_ATTR,
+                NAME_ATTR,
+                DIRTY_REV_ATTR,
+                DIRTY_SHORT_REV_ATTR,
+                VERIFY_COMMIT_ATTR,
+                KEYTYPE_ATTR,
+                PUBLIC_KEY_ATTR,
+                PUBLIC_KEYS_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
+        let url_text = std::str::from_utf8(url)
+            .map_err(|source| Self::flake_ref_error(id, span, url, source))?;
+        let url =
+            Url::parse(url_text).map_err(|source| Self::flake_ref_error(id, span, url, source))?;
+        let mut updates = BTreeMap::new();
+        if let Some(rev) = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)? {
+            updates.insert(
+                REV_ATTR.to_vec(),
+                self.canonical_flake_ref_rev(id, span, rev)?,
+            );
+        }
+        if let Some(reference) = Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)? {
+            if Self::is_bad_git_ref(reference) {
+                return Err(Self::flake_ref_error(
+                    id,
+                    span,
+                    reference,
+                    "invalid Git ref",
+                ));
+            }
+            updates.insert(REF_ATTR.to_vec(), reference.to_vec());
+        }
+        self.insert_git_verified_fetch_query_updates(id, span, attrs, &mut updates)?;
+        for attr in [
+            SHALLOW_ATTR,
+            SUBMODULES_ATTR,
+            EXPORT_IGNORE_ATTR,
+            VERIFY_COMMIT_ATTR,
+        ] {
+            if Self::optional_flake_ref_bool_attr(id, span, attrs, attr)? == Some(true) {
+                updates.insert(attr.to_vec(), b"1".to_vec());
+            }
+        }
+        Self::flake_ref_url_with_updates(
+            id,
+            span,
+            url.as_str().as_bytes(),
+            &url,
+            Some(Self::prefixed_git_scheme(url.scheme())?),
+            updates,
+            extra_query,
+        )
+    }
+
+    fn path_flake_ref_to_string(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                PATH_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                LAST_MODIFIED_ATTR,
+                NAR_HASH_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let path = Self::required_flake_ref_string_attr(id, span, attrs, PATH_ATTR)?;
+        let mut query = BTreeMap::new();
+        for attr in [LAST_MODIFIED_ATTR, NAR_HASH_ATTR, REV_ATTR, REV_COUNT_ATTR] {
+            if let Some(value) = attrs.get(attr) {
+                query.insert(attr.to_vec(), Self::flake_ref_attr_query_value(value));
+            }
+        }
+        Self::insert_extra_flake_ref_query(&mut query, extra_query);
+        let mut out = b"path:".to_vec();
+        out.extend_from_slice(&Self::percent_encode_flake_ref_path(path));
+        Self::append_flake_ref_query(&mut out, &query);
+        Ok(out)
+    }
+
+    fn curl_flake_ref_to_string(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                NAME_ATTR,
+                UNPACK_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                LAST_MODIFIED_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
+        let url_text = std::str::from_utf8(url)
+            .map_err(|source| Self::flake_ref_error(id, span, url, source))?;
+        let url =
+            Url::parse(url_text).map_err(|source| Self::flake_ref_error(id, span, url, source))?;
+        let mut updates = BTreeMap::new();
+        if let Some(nar_hash) =
+            Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
+        {
+            updates.insert(
+                NAR_HASH_ATTR.to_vec(),
+                self.canonical_flake_ref_nar_hash(id, span, nar_hash)?,
+            );
+        }
+        Self::flake_ref_url_with_updates(
+            id,
+            span,
+            url.as_str().as_bytes(),
+            &url,
+            None,
+            updates,
+            extra_query,
+        )
+    }
+
+    fn canonical_flake_ref_rev(
+        &self,
+        id: IrId,
+        span: Span,
+        rev: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let (algorithm, digest) =
+            self.decode_convert_hash(id, span, rev, Some(HashStringAlgorithm::Sha1))?;
+        if algorithm != HashStringAlgorithm::Sha1
+            || digest.len() != HashStringAlgorithm::Sha1.digest_len()
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::HashAlgorithmMismatch {
+                    id,
+                    hash: rev.to_vec(),
+                    expected: b"sha1".to_vec(),
+                },
+                span,
+            ));
+        }
+        Self::encode_convert_hash_digest(
+            id,
+            span,
+            HashStringAlgorithm::Sha1,
+            ConvertHashFormat::Base16,
+            &digest,
+        )
+    }
+
+    fn canonical_flake_ref_nar_hash(
+        &self,
+        id: IrId,
+        span: Span,
+        hash: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let Some((algorithm, input_format, payload)) =
+            Self::split_convert_hash_typed_input(id, span, hash)?
+        else {
+            return Err(Self::flake_ref_error(id, span, hash, "hash is not SRI"));
+        };
+        if !matches!(input_format, ConvertHashInputFormat::Sri) {
+            return Err(Self::flake_ref_error(id, span, hash, "hash is not SRI"));
+        }
+        if algorithm != HashStringAlgorithm::Sha256 {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                hash,
+                "narHash must use SHA-256",
+            ));
+        }
+        let digest = self.decode_sri_hash_payload(id, span, hash, algorithm, payload)?;
+        Self::encode_convert_hash_digest(id, span, algorithm, ConvertHashFormat::Sri, &digest)
+    }
+
+    fn insert_git_verified_fetch_query_updates(
+        &self,
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        updates: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), TreeWalkError> {
+        let keytype = Self::optional_flake_ref_string_attr(id, span, attrs, KEYTYPE_ATTR)?;
+        let public_key = Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEY_ATTR)?;
+        let public_keys = Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEYS_ATTR)?;
+
+        if let Some(public_keys) = public_keys {
+            return Self::insert_git_public_keys_query_update(id, span, public_keys, updates);
+        }
+
+        if let Some(public_key) = public_key {
+            updates.insert(
+                KEYTYPE_ATTR.to_vec(),
+                keytype.unwrap_or(b"ssh-ed25519").to_vec(),
+            );
+            updates.insert(PUBLIC_KEY_ATTR.to_vec(), public_key.to_vec());
+        }
+        Ok(())
+    }
+
+    fn insert_git_public_keys_query_update(
+        id: IrId,
+        span: Span,
+        public_keys: &[u8],
+        updates: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), TreeWalkError> {
+        let value = serde_json::from_slice::<JsonValue>(public_keys).map_err(|source| {
+            Self::flake_ref_error(
+                id,
+                span,
+                public_keys,
+                format!("invalid publicKeys JSON: {source}"),
+            )
+        })?;
+        let JsonValue::Array(keys) = value else {
+            return Err(Self::flake_ref_error(
+                id,
+                span,
+                public_keys,
+                "publicKeys must be a JSON array",
+            ));
+        };
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if keys.len() == 1 {
+            let key = &keys[0];
+            let keytype = Self::git_public_key_json_string(id, span, public_keys, key, "type")?;
+            let public_key = Self::git_public_key_json_string(id, span, public_keys, key, "key")?;
+            updates.insert(KEYTYPE_ATTR.to_vec(), keytype.as_bytes().to_vec());
+            updates.insert(PUBLIC_KEY_ATTR.to_vec(), public_key.as_bytes().to_vec());
+            return Ok(());
+        }
+        let json = serde_json::to_vec(&JsonValue::Array(keys)).map_err(|source| {
+            Self::flake_ref_error(
+                id,
+                span,
+                public_keys,
+                format!("invalid publicKeys JSON: {source}"),
+            )
+        })?;
+        updates.insert(PUBLIC_KEYS_ATTR.to_vec(), json);
+        Ok(())
+    }
+
+    fn git_public_key_json_string<'a>(
+        id: IrId,
+        span: Span,
+        public_keys: &[u8],
+        value: &'a JsonValue,
+        name: &str,
+    ) -> Result<&'a str, TreeWalkError> {
+        value.get(name).and_then(JsonValue::as_str).ok_or_else(|| {
+            Self::flake_ref_error(
+                id,
+                span,
+                public_keys,
+                format!("publicKeys entries must contain string '{name}' fields"),
+            )
+        })
+    }
+
+    fn alloc_flake_ref_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs: FlakeRefAttrs,
+    ) -> Result<Value, TreeWalkError> {
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        for (key, value) in attrs {
+            let symbol = self.symbols.intern(&key).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SymbolIntern {
+                        id,
+                        source: source.kind().clone(),
+                    },
+                    span,
+                )
+            })?;
+            let value = match value {
+                FlakeRefAttrValue::String(value) => self.alloc_static_string(id, span, &value)?,
+                FlakeRefAttrValue::Int(value) => {
+                    let value = i64::try_from(value).map_err(|_| {
+                        Self::flake_ref_error(
+                            id,
+                            span,
+                            &key,
+                            "flake reference integer does not fit in Nix int",
+                        )
+                    })?;
+                    Value::int(value)
+                }
+                FlakeRefAttrValue::Bool(value) => Value::bool(value),
+            };
+            entries.push(AttrEntry::new(symbol, value));
+        }
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn ensure_flake_ref_attrs(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        allowed: &[&[u8]],
+    ) -> Result<(), TreeWalkError> {
+        for key in attrs.keys() {
+            if !allowed.iter().any(|allowed| *allowed == key.as_slice()) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFlakeRefAttr {
+                        id,
+                        attr: key.clone(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn required_flake_ref_string_attr<'a>(
+        id: IrId,
+        span: Span,
+        attrs: &'a FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<&'a [u8], TreeWalkError> {
+        Self::optional_flake_ref_string_attr(id, span, attrs, name)?.ok_or_else(|| {
+            Self::flake_ref_error(
+                id,
+                span,
+                name,
+                format!(
+                    "input attribute '{}' is missing",
+                    String::from_utf8_lossy(name)
+                ),
+            )
+        })
+    }
+
+    fn optional_flake_ref_string_attr<'a>(
+        id: IrId,
+        span: Span,
+        attrs: &'a FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<Option<&'a [u8]>, TreeWalkError> {
+        match attrs.get(name) {
+            Some(FlakeRefAttrValue::String(value)) => Ok(Some(value)),
+            Some(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FlakeRef {
+                    id,
+                    input: name.to_vec(),
+                    message: "flake reference attribute is not a string".to_owned(),
+                },
+                span,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn optional_flake_ref_bool_attr(
+        id: IrId,
+        span: Span,
+        attrs: &FlakeRefAttrs,
+        name: &[u8],
+    ) -> Result<Option<bool>, TreeWalkError> {
+        match attrs.get(name) {
+            Some(FlakeRefAttrValue::Bool(value)) => Ok(Some(*value)),
+            Some(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FlakeRef {
+                    id,
+                    input: name.to_vec(),
+                    message: "flake reference attribute has the wrong type".to_owned(),
+                },
+                span,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    fn flake_ref_attr_query_value(value: &FlakeRefAttrValue) -> Vec<u8> {
+        match value {
+            FlakeRefAttrValue::String(value) => value.clone(),
+            FlakeRefAttrValue::Int(value) => value.to_string().into_bytes(),
+            FlakeRefAttrValue::Bool(value) => {
+                if *value {
+                    b"1".to_vec()
+                } else {
+                    b"0".to_vec()
+                }
+            }
+        }
+    }
+
+    fn flake_ref_url_with_updates(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        scheme: Option<Vec<u8>>,
+        updates: BTreeMap<Vec<u8>, Vec<u8>>,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let query = Self::decode_flake_ref_query(id, span, input, url.query())?;
+        let scheme = match scheme {
+            Some(scheme) => Some(
+                std::str::from_utf8(&scheme)
+                    .map_err(|source| Self::flake_ref_error(id, span, input, source))?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let mut query = query;
+        for (name, value) in updates {
+            query.insert(name, value);
+        }
+        Self::insert_extra_flake_ref_query(&mut query, extra_query);
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            input,
+            url,
+            scheme.as_deref(),
+            query,
+            BTreeMap::new(),
+        )
+    }
+
+    fn flake_ref_url_with_scheme_and_query(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &Url,
+        scheme: Option<&str>,
+        mut query: BTreeMap<Vec<u8>, Vec<u8>>,
+        updates: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        for (name, value) in updates {
+            query.insert(name, value);
+        }
+        let mut url = url.clone();
+        let fragment = url.fragment().map(|fragment| fragment.as_bytes().to_vec());
+        url.set_query(None);
+        url.set_fragment(None);
+        let mut out = url.as_str().as_bytes().to_vec();
+        if let Some(scheme) = scheme {
+            let colon = out.iter().position(|byte| *byte == b':').ok_or_else(|| {
+                Self::flake_ref_error(id, span, input, "URL is missing a scheme separator")
+            })?;
+            out.splice(0..colon, scheme.as_bytes().iter().copied());
+        }
+        Self::append_flake_ref_query(&mut out, &query);
+        if let Some(fragment) = fragment {
+            out.push(b'#');
+            out.extend_from_slice(&Self::percent_encode_flake_ref_path(&fragment));
+        }
+        Ok(out)
+    }
+
+    fn insert_extra_flake_ref_query(
+        query: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+        extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
+    ) {
+        for (name, value) in extra_query {
+            query.entry(name).or_insert(value);
+        }
+    }
+
+    fn append_flake_ref_query(out: &mut Vec<u8>, query: &BTreeMap<Vec<u8>, Vec<u8>>) {
+        if query.is_empty() {
+            return;
+        }
+        out.push(b'?');
+        let mut first = true;
+        for (name, value) in query {
+            if first {
+                first = false;
+            } else {
+                out.push(b'&');
+            }
+            out.extend_from_slice(&Self::percent_encode_flake_ref_query(name));
+            out.push(b'=');
+            out.extend_from_slice(&Self::percent_encode_flake_ref_query(value));
+        }
+    }
+
+    fn decode_flake_ref_query(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        query: Option<&str>,
+    ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, TreeWalkError> {
+        let mut values = BTreeMap::new();
+        let Some(query) = query else {
+            return Ok(values);
+        };
+        for piece in query.split('&') {
+            let Some((name, value)) = piece.split_once('=') else {
+                continue;
+            };
+            let name = name.as_bytes().to_vec();
+            let value = Self::percent_decode_flake_ref_component(value)
+                .map_err(|message| Self::flake_ref_error(id, span, input, message))?;
+            values.entry(name).or_insert(value);
+        }
+        Ok(values)
+    }
+
+    fn percent_decode_flake_ref_component(input: &str) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        let bytes = input.as_bytes();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%' {
+                let Some(first) = bytes.get(index + 1).copied() else {
+                    return Err(format!("invalid URI parameter '{input}'"));
+                };
+                let Some(second) = bytes.get(index + 2).copied() else {
+                    return Err(format!("invalid URI parameter '{input}'"));
+                };
+                let Some(high) = Self::flake_ref_hex_digit(first) else {
+                    return Err(format!("invalid URI parameter '{input}'"));
+                };
+                let Some(low) = Self::flake_ref_hex_digit(second) else {
+                    return Err(format!("invalid URI parameter '{input}'"));
+                };
+                out.push((high << 4) | low);
+                index += 3;
+            } else {
+                out.push(bytes[index]);
+                index += 1;
+            }
+        }
+        Ok(out)
+    }
+
+    fn percent_encode_flake_ref_path(input: &[u8]) -> Vec<u8> {
+        Self::percent_encode_flake_ref(input, b":@/")
+    }
+
+    fn percent_encode_flake_ref_query(input: &[u8]) -> Vec<u8> {
+        Self::percent_encode_flake_ref(input, b":@/?")
+    }
+
+    fn percent_encode_flake_ref(input: &[u8], keep: &[u8]) -> Vec<u8> {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut out = Vec::with_capacity(input.len());
+        for byte in input {
+            if byte.is_ascii_alphanumeric()
+                || matches!(*byte, b'-' | b'.' | b'_' | b'~')
+                || keep.contains(byte)
+            {
+                out.push(*byte);
+            } else {
+                out.push(b'%');
+                out.push(HEX[(byte >> 4) as usize]);
+                out.push(HEX[(byte & 0x0f) as usize]);
+            }
+        }
+        out
+    }
+
+    fn flake_ref_hex_digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    fn parse_flake_ref_u64(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        value: &[u8],
+        name: &[u8],
+    ) -> Result<u64, TreeWalkError> {
+        let text = std::str::from_utf8(value)
+            .map_err(|source| Self::flake_ref_error(id, span, input, source))?;
+        text.parse::<u64>().map_err(|source| {
+            Self::flake_ref_error(
+                id,
+                span,
+                input,
+                format!(
+                    "flake reference parameter '{}' is not an unsigned integer: {source}",
+                    String::from_utf8_lossy(name)
+                ),
+            )
+        })
+    }
+
+    fn curl_flake_ref_url_type(url: &Url) -> Option<&'static [u8]> {
+        let scheme = url.scheme();
+        let (application, transport) = match scheme.split_once('+') {
+            Some((application, transport)) => (Some(application), transport),
+            None => (None, scheme),
+        };
+        if !matches!(transport, "file" | "http" | "https") {
+            return None;
+        }
+        match application {
+            None | Some("tarball") => Some(b"tarball"),
+            Some("file") => Some(b"file"),
+            Some(_) => None,
+        }
+    }
+
+    fn flake_ref_transport_scheme(scheme: &str) -> Option<&str> {
+        scheme.split_once('+').map(|(_, transport)| transport)
+    }
+
+    fn prefixed_git_scheme(scheme: &str) -> Result<Vec<u8>, TreeWalkError> {
+        if scheme == "git" {
+            return Ok(b"git".to_vec());
+        }
+        let mut prefixed = b"git+".to_vec();
+        prefixed.extend_from_slice(scheme.as_bytes());
+        Ok(prefixed)
+    }
+
+    fn canonicalize_flake_ref_path(path: &str) -> Vec<u8> {
+        let mut parts = Vec::new();
+        for component in Path::new(path).components() {
+            match component {
+                Component::RootDir => {}
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    parts.pop();
+                }
+                Component::Normal(component) => parts.push(component.as_bytes().to_vec()),
+                Component::Prefix(_) => {}
+            }
+        }
+        let mut out = b"/".to_vec();
+        for (index, part) in parts.iter().enumerate() {
+            if index > 0 {
+                out.push(b'/');
+            }
+            out.extend_from_slice(part);
+        }
+        out
+    }
+
+    fn split_ref_and_rev(value: &str) -> Option<(&str, &str)> {
+        let (reference, rev) = value.rsplit_once('/')?;
+        (!reference.is_empty()
+            && Self::is_flake_ref_name(reference.as_bytes())
+            && Self::is_git_rev(rev.as_bytes()))
+        .then_some((reference, rev))
+    }
+
+    fn is_flake_id(value: &[u8]) -> bool {
+        let Some((first, rest)) = value.split_first() else {
+            return false;
+        };
+        first.is_ascii_alphabetic()
+            && rest
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-'))
+    }
+
+    fn is_flake_ref_name(value: &[u8]) -> bool {
+        let Some((first, rest)) = value.split_first() else {
+            return false;
+        };
+        (first.is_ascii_alphanumeric() || *first == b'@')
+            && rest.iter().all(|byte| {
+                byte.is_ascii_alphanumeric()
+                    || matches!(*byte, b'_' | b'.' | b'/' | b'@' | b'+' | b'-')
+            })
+    }
+
+    fn is_git_rev(value: &[u8]) -> bool {
+        value.len() == 40 && value.iter().all(|byte| byte.is_ascii_hexdigit())
+    }
+
+    fn is_bad_git_ref(value: &[u8]) -> bool {
+        value.is_empty()
+            || value == b"@"
+            || value.starts_with(b".")
+            || value.starts_with(b"/")
+            || value.ends_with(b".")
+            || value.ends_with(b"/")
+            || value.ends_with(b".lock")
+            || value
+                .windows(2)
+                .any(|window| matches!(window, b"//" | b".." | b"/."))
+            || value.windows(6).any(|window| window == b".lock/")
+            || value.windows(2).any(|window| window == b"@{")
+            || value.iter().any(|byte| {
+                byte.is_ascii_control()
+                    || byte.is_ascii_whitespace()
+                    || matches!(*byte, b':' | b'?' | b'^' | b'~' | b'[' | b'\\' | b'*')
+            })
+    }
+
+    fn is_forge_host(value: &[u8]) -> bool {
+        value
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'-'))
+    }
+
+    fn flake_ref_error(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        source: impl std::fmt::Display,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::FlakeRef {
                 id,
                 input: input.to_vec(),
                 message: source.to_string(),
@@ -24181,6 +25710,26 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetch_tree_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::FlakeRefToString => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_flake_ref_to_string_primop(
+                    call.id,
+                    call.span,
+                    argument,
+                    argument_span,
+                    value,
+                )
+            }
+            BuiltinExecution::ParseFlakeRef => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_parse_flake_ref_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -24459,6 +26008,28 @@ impl BuiltinRuntime for BuiltinMetadata {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
                 eval.eval_fetch_tree_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
+            BuiltinExecution::FlakeRefToString => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_flake_ref_to_string_primop(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
+            BuiltinExecution::ParseFlakeRef => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_parse_flake_ref_primop(
                     call.id,
                     call.span,
                     argument.id(),
@@ -25633,6 +27204,36 @@ pub enum TreeWalkErrorKind {
         /// The actual revision count.
         actual: usize,
     },
+    /// A flake reference could not be parsed or rendered.
+    #[error("invalid flake reference at node {id:?} input {input:?}: {message}")]
+    FlakeRef {
+        /// The flake-reference argument node.
+        id: IrId,
+        /// The rejected flake reference, type, attribute, or parameter bytes.
+        input: Vec<u8>,
+        /// The parser or renderer diagnostic.
+        message: String,
+    },
+    /// `builtins.flakeRefToString` used an unsupported input attribute.
+    #[error("unsupported flake reference input attribute at node {id:?}: {attr:?}")]
+    UnsupportedFlakeRefAttr {
+        /// The flake-reference argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// A flake-reference attrset contained a value with an unsupported type.
+    #[error(
+        "flake reference input attribute {attr:?} at node {id:?} has unsupported type {actual:?}"
+    )]
+    FlakeRefAttrType {
+        /// The flake-reference argument node.
+        id: IrId,
+        /// The attribute name bytes.
+        attr: Vec<u8>,
+        /// The unsupported value type.
+        actual: ValueTag,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -26363,12 +27964,7 @@ mod tests {
         "zipAttrsWith",
     ];
 
-    const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &[
-        "fetchMercurial",
-        "flakeRefToString",
-        "getFlake",
-        "parseFlakeRef",
-    ];
+    const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &["fetchMercurial", "getFlake"];
 
     const VERSION_GATED_BUILTIN_NAMES: &[&str] = &[
         "addDrvOutputDependencies",
@@ -32203,6 +33799,292 @@ mod tests {
             return;
         };
         assert_cpp_nix_hash_builtins_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_flake_ref_builtins_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+        for source in [
+            r#"builtins.parseFlakeRef "github:NixOS/nixpkgs?%64ir=lib""#,
+            r#"builtins.parseFlakeRef "file+https://example.com/blob.txt?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D""#,
+            r#"builtins.parseFlakeRef "https://example.com/source.tar.gz?revCount=bad&lastModified=nope&foo=bar""#,
+            r#"builtins.flakeRefToString {
+                narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                owner = "NixOS";
+                repo = "nixpkgs";
+                rev = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                type = "github";
+            }"#,
+            r#"builtins.flakeRefToString {
+                rev = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                type = "git";
+                url = "https://example.com/repo";
+            }"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            r#"builtins.flakeRefToString {
+                type = "git";
+                url = "https://example.com/repo";
+                rev = "bad";
+            }"#,
+            r#"builtins.flakeRefToString {
+                type = "tarball";
+                url = "https://example.com/source.tar.gz";
+                narHash = "not-a-hash";
+            }"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_json(oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_flake_ref_builtins_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_flake_ref_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_flake_ref_builtins_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix flake-ref check");
+            return;
+        };
+        assert_cpp_nix_flake_ref_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn parse_flake_ref_parses_github_example() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.toJSON (builtins.parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib")"#
+            ),
+            br#"{"dir":"lib","owner":"NixOS","ref":"23.05","repo":"nixpkgs","type":"github"}"#,
+        );
+    }
+
+    #[test]
+    fn parse_flake_ref_supports_first_class_indirect_refs() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"let parse = builtins.parseFlakeRef; in builtins.toJSON (parse "nixpkgs/unstable")"#
+            ),
+            br#"{"id":"nixpkgs","ref":"unstable","type":"indirect"}"#,
+        );
+    }
+
+    #[test]
+    fn parse_flake_ref_preserves_git_url_dir_query() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.toJSON (builtins.parseFlakeRef "git+https://example.com/repo.git?ref=main&dir=lib")"#
+            ),
+            br#"{"dir":"lib","ref":"main","type":"git","url":"https://example.com/repo.git?dir=lib"}"#,
+        );
+    }
+
+    #[test]
+    fn parse_flake_ref_decodes_query_values_but_not_names() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.toJSON (builtins.parseFlakeRef "github:NixOS/nixpkgs?%64ir=lib")"#
+            ),
+            br#"{"owner":"NixOS","repo":"nixpkgs","type":"github"}"#,
+        );
+    }
+
+    #[test]
+    fn parse_flake_ref_supports_file_curl_refs() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.toJSON (builtins.parseFlakeRef "file+https://example.com/blob.txt?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D")"#
+            ),
+            br#"{"narHash":"sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","type":"file","url":"https://example.com/blob.txt"}"#,
+        );
+    }
+
+    #[test]
+    fn parse_flake_ref_drops_invalid_curl_numeric_metadata() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.toJSON (builtins.parseFlakeRef "https://example.com/source.tar.gz?revCount=bad&lastModified=nope&foo=bar")"#
+            ),
+            br#"{"type":"tarball","url":"https://example.com/source.tar.gz?foo=bar"}"#,
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_renders_github_example() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"let render = builtins.flakeRefToString; in render {
+                    dir = "lib";
+                    owner = "NixOS";
+                    ref = "23.05";
+                    repo = "nixpkgs";
+                    type = "github";
+                }"#
+            ),
+            b"github:NixOS/nixpkgs/23.05?dir=lib",
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_canonicalizes_hash_attrs() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+                    owner = "NixOS";
+                    repo = "nixpkgs";
+                    rev = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                    type = "github";
+                }"#
+            ),
+            b"github:NixOS/nixpkgs/0000000000000000000000000000000000000000?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D",
+        );
+
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    rev = "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                    type = "git";
+                    url = "https://example.com/repo";
+                }"#
+            ),
+            b"git+https://example.com/repo?rev=0000000000000000000000000000000000000000",
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_renders_git_public_keys_like_cpp_nix() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    publicKey = "abc";
+                    type = "git";
+                    url = "https://example.com/repo";
+                }"#
+            ),
+            b"git+https://example.com/repo?keytype=ssh-ed25519&publicKey=abc",
+        );
+
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    publicKeys = "[{\"key\":\"abc\",\"type\":\"ssh-ed25519\"}]";
+                    type = "git";
+                    url = "https://example.com/repo";
+                }"#
+            ),
+            b"git+https://example.com/repo?keytype=ssh-ed25519&publicKey=abc",
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_renders_path_query_attrs() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    type = "path";
+                    path = "/tmp/source";
+                    revCount = 5;
+                    lastModified = 7;
+                    rev = "abcdef";
+                    narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                }"#
+            ),
+            b"path:/tmp/source?lastModified=7&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D&rev=abcdef&revCount=5",
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_inserts_dir_without_overwriting_url_dir() {
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    dir = "other";
+                    narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+                    type = "tarball";
+                    url = "https://example.com/source.tar.gz?dir=lib";
+                }"#
+            ),
+            b"https://example.com/source.tar.gz?dir=lib&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D",
+        );
+    }
+
+    #[test]
+    fn flake_ref_to_string_rejects_unsupported_attrs_and_value_types() {
+        let unsupported = eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "github";
+                owner = "NixOS";
+                repo = "nixpkgs";
+                bogus = "x";
+            }"#,
+        ))
+        .expect_err("unsupported flake-ref attrs are rejected");
+        assert!(matches!(
+            unsupported.kind(),
+            TreeWalkErrorKind::UnsupportedFlakeRefAttr { attr, .. } if attr.as_slice() == b"bogus"
+        ));
+
+        let bad_type = eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "github";
+                owner = null;
+                repo = "nixpkgs";
+            }"#,
+        ))
+        .expect_err("flake-ref attrs accept only strings, ints, and bools");
+        assert!(matches!(
+            bad_type.kind(),
+            TreeWalkErrorKind::FlakeRefAttrType { attr, actual: ValueTag::Null, .. }
+                if attr.as_slice() == b"owner"
+        ));
+
+        let thunk = eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "path";
+                path = "/tmp/source";
+                revCount = 1 + 1;
+            }"#,
+        ))
+        .expect_err("computed flake-ref attrs are not forced");
+        assert!(matches!(
+            thunk.kind(),
+            TreeWalkErrorKind::FlakeRefAttrType { attr, actual: ValueTag::Thunk, .. }
+                if attr.as_slice() == b"revCount"
+        ));
+
+        eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "git";
+                url = "https://example.com/repo";
+                rev = "bad";
+            }"#,
+        ))
+        .expect_err("invalid rendered git rev is rejected");
+
+        eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "tarball";
+                url = "https://example.com/source.tar.gz";
+                narHash = "not-a-hash";
+            }"#,
+        ))
+        .expect_err("invalid rendered narHash is rejected");
+
+        eval_whnf_owned(&lower(
+            r#"builtins.flakeRefToString {
+                type = "git";
+                url = "https://example.com/repo";
+                publicKeys = "not-json";
+            }"#,
+        ))
+        .expect_err("invalid rendered publicKeys JSON is rejected");
     }
 
     #[test]

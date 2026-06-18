@@ -939,8 +939,9 @@ exactly mirroring how the pinned `nix` behaves with the relevant experimental
 feature disabled:
 
 - [ ] `getFlake` (args) — fetch and evaluate a flake. Flakes; **stubbed/scoped**.
-- [ ] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
-      string ↔ attrset. Flakes; **stubbed/scoped**.
+- [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
+      string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
+      refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
 - [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local
       attrset inputs are native; string refs and forge fetchers remain pending.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix

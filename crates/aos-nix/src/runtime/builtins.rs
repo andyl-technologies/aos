@@ -361,7 +361,12 @@ define_builtins! {
     pub(crate) struct FlakeRefToStringBuiltin;
     impl BuiltinDefinition for FlakeRefToStringBuiltin {
         const NAME: &'static [u8] = b"flakeRefToString";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FlakeRefToString;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Pure,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const DOCS: &'static BuiltinDocs = &FLAKE_REF_TO_STRING_DOCS;
     }
 
     pub(crate) struct FloorBuiltin;
@@ -633,7 +638,12 @@ define_builtins! {
     pub(crate) struct ParseFlakeRefBuiltin;
     impl BuiltinDefinition for ParseFlakeRefBuiltin {
         const NAME: &'static [u8] = b"parseFlakeRef";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::ParseFlakeRef;
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
+            effect: BuiltinEffect::Pure,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const DOCS: &'static BuiltinDocs = &PARSE_FLAKE_REF_DOCS;
     }
 
     pub(crate) struct PartitionBuiltin;
@@ -999,6 +1009,10 @@ pub(crate) enum BuiltinExecution {
     FetchTarball,
     /// The builtin evaluates `fetchTree`.
     FetchTree,
+    /// The builtin converts flake-reference attrs to URL syntax.
+    FlakeRefToString,
+    /// The builtin parses flake-reference URL syntax into attrs.
+    ParseFlakeRef,
     /// The builtin evaluates `readDir`.
     ReadDir,
     /// The builtin evaluates `readFile`.
@@ -1123,6 +1137,8 @@ impl BuiltinExecution {
             | Self::FetchTarball
             | Self::FetchTree
             | Self::Fetchurl
+            | Self::FlakeRefToString
+            | Self::ParseFlakeRef
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1170,6 +1186,8 @@ impl BuiltinExecution {
             | Self::FetchTarball
             | Self::FetchTree
             | Self::Fetchurl
+            | Self::FlakeRefToString
+            | Self::ParseFlakeRef
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1395,6 +1413,14 @@ static FETCH_TARBALL_DOCS: BuiltinDocs = BuiltinDocs {
 
 static FETCH_TREE_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Fetches supported typed tree inputs as fixed-output store paths.",
+};
+
+static FLAKE_REF_TO_STRING_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Converts flake-reference attrs to URL syntax.",
+};
+
+static PARSE_FLAKE_REF_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Parses flake-reference URL syntax into attrs.",
 };
 
 static LANG_VERSION_DOCS: BuiltinDocs = BuiltinDocs {
@@ -1949,14 +1975,29 @@ mod tests {
             b"fetchGit".as_slice(),
             b"fetchMercurial".as_slice(),
             b"fetchTree".as_slice(),
-            b"flakeRefToString".as_slice(),
             b"getFlake".as_slice(),
-            b"parseFlakeRef".as_slice(),
         ] {
             assert_eq!(
                 BUILTINS.lookup(name).unwrap().first_class_arity(),
                 Some(1),
-                "{} should expose a unary unsupported stub",
+                "{} should expose a unary first-class builtin",
+                String::from_utf8_lossy(name),
+            );
+        }
+        for name in [b"flakeRefToString".as_slice(), b"parseFlakeRef".as_slice()] {
+            let metadata = BUILTINS.lookup(name).unwrap();
+            assert_eq!(
+                metadata.first_class_arity(),
+                Some(1),
+                "{} should expose a unary first-class builtin",
+                String::from_utf8_lossy(name),
+            );
+            assert_eq!(
+                metadata.direct(),
+                Some(BuiltinDirect::StrictUnary {
+                    effect: BuiltinEffect::Pure,
+                }),
+                "{} should lower as a pure strict unary builtin",
                 String::from_utf8_lossy(name),
             );
         }
@@ -2211,7 +2252,12 @@ mod tests {
         for metadata in BUILTINS.iter() {
             if matches!(
                 metadata.name(),
-                b"fetchurl" | b"fetchGit" | b"fetchTarball" | b"fetchTree"
+                b"fetchurl"
+                    | b"fetchGit"
+                    | b"fetchTarball"
+                    | b"fetchTree"
+                    | b"flakeRefToString"
+                    | b"parseFlakeRef"
             ) {
                 continue;
             }
@@ -2307,6 +2353,43 @@ mod tests {
         assert_eq!(
             fetch_tree.docs().summary(),
             "Fetches supported typed tree inputs as fixed-output store paths."
+        );
+
+        let parse_flake_ref = BUILTINS
+            .lookup(b"parseFlakeRef")
+            .expect("parseFlakeRef builtin is registered");
+        assert_eq!(parse_flake_ref.execution(), BuiltinExecution::ParseFlakeRef);
+        assert_eq!(
+            parse_flake_ref.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(parse_flake_ref.first_class_arity(), Some(1));
+        assert!(!parse_flake_ref.requires_native_cli_fallback());
+        assert_eq!(
+            parse_flake_ref.docs().summary(),
+            "Parses flake-reference URL syntax into attrs."
+        );
+
+        let flake_ref_to_string = BUILTINS
+            .lookup(b"flakeRefToString")
+            .expect("flakeRefToString builtin is registered");
+        assert_eq!(
+            flake_ref_to_string.execution(),
+            BuiltinExecution::FlakeRefToString
+        );
+        assert_eq!(
+            flake_ref_to_string.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure
+            })
+        );
+        assert_eq!(flake_ref_to_string.first_class_arity(), Some(1));
+        assert!(!flake_ref_to_string.requires_native_cli_fallback());
+        assert_eq!(
+            flake_ref_to_string.docs().summary(),
+            "Converts flake-reference attrs to URL syntax."
         );
     }
 
