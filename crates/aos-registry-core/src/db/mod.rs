@@ -1230,6 +1230,16 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX frontends_registry_idx ON frontends (registry_id);
     CREATE INDEX frontends_cache_idx ON frontends (cache_id);
     ",
+    // v25: frontend proxy settings (RFC-0004 "11-caches", proxy slice). A
+    // `proxied` frontend's behavior tuning — timeouts, streaming, body cap,
+    // retries/failover, Range/Cache-Control passthrough — is carried as a JSON
+    // `proxy_config` blob (NULL = conservative defaults), and `is_primary` marks
+    // the preferred frontend a consumer should reach first. Additive columns
+    // with safe defaults, so existing frontends keep today's behavior.
+    "
+    ALTER TABLE frontends ADD COLUMN proxy_config TEXT;
+    ALTER TABLE frontends ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1947,7 +1957,55 @@ pub struct MirrorSource {
     pub upstream_frontier: Option<String>,
 }
 
-/// A frontend domain serving some subset of a registry's surfaces
+/// Behavior tuning for a `proxied` frontend (RFC-0004 "11-caches" proxy slice).
+///
+/// Serialized as the `frontends.proxy_config` JSON blob; a `NULL` column means
+/// "use these conservative defaults" ([`ProxyConfig::default`]). All fields are
+/// `#[serde(default)]`, so a partial blob (an older or hand-written row) fills
+/// the rest from the defaults rather than failing to parse.
+///
+/// ```text
+/// { "connect_timeout_secs": 5, "read_timeout_secs": 30, "stream": true,
+///   "max_body_bytes": 5368709120, "retries": 2, "failover": true,
+///   "pass_range": true, "pass_cache_control": true }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ProxyConfig {
+    /// TCP/TLS connect timeout to the origin, in seconds.
+    pub connect_timeout_secs: u32,
+    /// Per-request read timeout from the origin, in seconds.
+    pub read_timeout_secs: u32,
+    /// Stream the origin response through rather than buffering it.
+    pub stream: bool,
+    /// Maximum proxied body size in bytes (a guard against unbounded origins).
+    pub max_body_bytes: u64,
+    /// How many times to retry a failed origin fetch before giving up.
+    pub retries: u32,
+    /// Fall over to the next-priority frontend on origin failure.
+    pub failover: bool,
+    /// Forward the client's `Range` header to the origin (ranged reads).
+    pub pass_range: bool,
+    /// Forward the origin's `Cache-Control` header back to the client.
+    pub pass_cache_control: bool,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        ProxyConfig {
+            connect_timeout_secs: 5,
+            read_timeout_secs: 30,
+            stream: true,
+            max_body_bytes: 5 * 1024 * 1024 * 1024,
+            retries: 2,
+            failover: true,
+            pass_range: true,
+            pass_cache_control: true,
+        }
+    }
+}
+
+/// A frontend domain serving some subset of a registry's or cache's surfaces
 /// (system-of-record row; RFC-0004 "Frontends: direct and proxied domains").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrontendRecord {
@@ -1978,6 +2036,10 @@ pub struct FrontendRecord {
     pub consumer_priority: i64,
     /// Whether the frontend is advertised to consumers.
     pub advertised: bool,
+    /// Proxy behavior tuning for a `proxied` frontend; `None` ⇒ defaults.
+    pub proxy_config: Option<ProxyConfig>,
+    /// Whether this is the preferred frontend a consumer should reach first.
+    pub is_primary: bool,
     /// Unix time the frontend was created.
     pub created_at: i64,
 }
@@ -3400,7 +3462,8 @@ impl Database {
             .backend
             .query(
                 "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
-                    serves_cache, serves_web, consumer_priority, advertised, created_at
+                    serves_cache, serves_web, consumer_priority, advertised,
+                    proxy_config, is_primary, created_at
              FROM frontends WHERE registry_id = ?1
              ORDER BY consumer_priority DESC, domain",
                 &vals![registry_id],
@@ -3471,6 +3534,36 @@ impl Database {
             .await
     }
 
+    /// Set a frontend's proxy tuning and primary flag. Returns `false` when no
+    /// frontend has `id`.
+    ///
+    /// `config` is serialized to the `proxy_config` JSON blob (`None` clears it
+    /// back to the conservative defaults). `is_primary` marks the preferred
+    /// frontend a consumer reaches first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `config` cannot be serialized or on database failure.
+    pub async fn set_frontend_proxy(
+        &self,
+        id: i64,
+        config: Option<&ProxyConfig>,
+        is_primary: bool,
+    ) -> Result<bool> {
+        let json = match config {
+            Some(c) => Some(serde_json::to_string(c).context("serializing proxy config")?),
+            None => None,
+        };
+        let n = self
+            .backend
+            .execute(
+                "UPDATE frontends SET proxy_config = ?2, is_primary = ?3 WHERE id = ?1",
+                &vals![id, json, is_primary],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
     /// List a managed cache's frontends, ordered by descending consumer
     /// priority then domain.
     ///
@@ -3482,7 +3575,8 @@ impl Database {
             .backend
             .query(
                 "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
-                    serves_cache, serves_web, consumer_priority, advertised, created_at
+                    serves_cache, serves_web, consumer_priority, advertised,
+                    proxy_config, is_primary, created_at
              FROM frontends WHERE cache_id = ?1
              ORDER BY consumer_priority DESC, domain",
                 &vals![cache_id],
@@ -9813,6 +9907,11 @@ fn frontend_probe_url(domain: &str) -> String {
 /// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
 /// [`Database::list_frontends`] selects).
 fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
+    // A malformed/partial proxy_config never fails the row: an unparseable blob
+    // falls back to conservative defaults (Some(default)), and NULL ⇒ None.
+    let proxy_config: Option<String> = row.get(11)?;
+    let proxy_config = proxy_config
+        .map(|json| serde_json::from_str::<ProxyConfig>(&json).unwrap_or_default());
     Ok(FrontendRecord {
         id: row.get(0)?,
         registry_id: row.get(1)?,
@@ -9825,7 +9924,9 @@ fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
         serves_web: row.get(8)?,
         consumer_priority: row.get(9)?,
         advertised: row.get(10)?,
-        created_at: row.get(11)?,
+        proxy_config,
+        is_primary: row.get(12)?,
+        created_at: row.get(13)?,
     })
 }
 
@@ -11792,6 +11893,28 @@ mod tests {
             .create_cache_frontend(cache, "direct.example", "", "direct", true, 40, true)
             .await
             .is_err());
+
+        // Proxy settings: default until set, then round-trip + primary flag.
+        let cache_fe = db.list_cache_frontends(cache).await.unwrap()[0].id;
+        assert!(db.list_cache_frontends(cache).await.unwrap()[0].proxy_config.is_none());
+        assert!(!db.list_cache_frontends(cache).await.unwrap()[0].is_primary);
+        let cfg = ProxyConfig {
+            read_timeout_secs: 90,
+            stream: false,
+            retries: 5,
+            ..ProxyConfig::default()
+        };
+        assert!(db.set_frontend_proxy(cache_fe, Some(&cfg), true).await.unwrap());
+        let fe = &db.list_cache_frontends(cache).await.unwrap()[0];
+        assert_eq!(fe.proxy_config.as_ref().unwrap().read_timeout_secs, 90);
+        assert!(!fe.proxy_config.as_ref().unwrap().stream);
+        assert_eq!(fe.proxy_config.as_ref().unwrap().retries, 5);
+        // An unset field keeps the conservative default.
+        assert_eq!(fe.proxy_config.as_ref().unwrap().connect_timeout_secs, 5);
+        assert!(fe.is_primary);
+        // Clearing reverts to defaults (None).
+        assert!(db.set_frontend_proxy(cache_fe, None, false).await.unwrap());
+        assert!(db.list_cache_frontends(cache).await.unwrap()[0].proxy_config.is_none());
     }
 
     /// Set up an org + binding and return `(db, org_id, binding_id)`.

@@ -402,6 +402,8 @@ mod tests {
             serves_web: true,
             consumer_priority: 100,
             advertised: true,
+            proxy_config: None,
+            is_primary: false,
             created_at: 0,
         };
         assert_eq!(
