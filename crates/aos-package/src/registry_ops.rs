@@ -78,12 +78,13 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    CacheEntry, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    AttestationMeta, CacheEntry, ConfinementClass, ExposeArtifactMeta, ExposeMeta,
+    FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
+    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
     FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
     FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
     RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
-    package_name_bucket, validate_branch_name, validate_channel_name,
+    package_name_bucket, validate_attestation_meta, validate_branch_name, validate_channel_name,
     validate_expose_artifact_meta, validate_expose_meta, validate_git_ref_name,
     validate_package_name, validate_permissions_meta, validate_platform_name,
     validate_registry_name,
@@ -1489,6 +1490,9 @@ pub async fn publish(
     let expose_artifact_info = expose_manifest_path
         .map(infer_publish_expose_artifact)
         .transpose()?;
+    let expose_manifest_digest = expose_manifest_path
+        .map(|path| read_publish_manifest_digest(Path::new(path)))
+        .transpose()?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1520,6 +1524,7 @@ pub async fn publish(
         source_info.as_ref(),
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
+        expose_manifest_digest.as_deref(),
     )?;
 
     std::fs::write(&toml_path, &new_content)?;
@@ -1710,6 +1715,7 @@ fn build_package_toml(
     source_info: Option<&StorePathInfo>,
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
+    expose_manifest_digest: Option<&str>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -1722,12 +1728,14 @@ fn build_package_toml(
         .unwrap_or_default();
     let platform_table = package_platform_table(
         name,
+        version,
         info,
         image_infos,
         source_drv,
         source_nar_hash,
         expose_manifest,
         expose_artifact_info,
+        expose_manifest_digest,
     )?;
 
     if existing.is_empty() {
@@ -1856,6 +1864,14 @@ fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<Publis
     }
 
     Ok(manifest)
+}
+
+fn read_publish_manifest_digest(path: &Path) -> Result<String> {
+    let bytes =
+        fs::read(path).with_context(|| format!("reading expose manifest {}", path.display()))?;
+    Ok(crate::package_attestation::package_manifest_digest_bytes(
+        &bytes,
+    ))
 }
 
 fn validate_publish_mac_profile_manifest(
@@ -3023,14 +3039,57 @@ fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbF
     })
 }
 
+fn publish_attestation_meta(
+    name: &str,
+    version: &str,
+    manifest: &PublishExposeManifest,
+    expose_manifest_digest: Option<&str>,
+) -> Result<Option<AttestationMeta>> {
+    let Some(image) = manifest
+        .expose
+        .images
+        .iter()
+        .find(|image| image.root_hash.is_some() || image.root_hash_sig.is_some())
+    else {
+        return Ok(None);
+    };
+
+    let root_hash = image
+        .root_hash
+        .clone()
+        .context("verity package root image is missing root_hash")?;
+    let root_hash_sig = image
+        .root_hash_sig
+        .clone()
+        .context("verity package root image is missing root_hash_sig")?;
+    let manifest_digest = expose_manifest_digest
+        .context("verity package root attestation requires an expose manifest digest")?;
+    let measurement = crate::package_attestation::package_measurement_digest(
+        name,
+        version,
+        &root_hash,
+        manifest_digest,
+    );
+    let meta = AttestationMeta {
+        root_hash: Some(root_hash),
+        root_hash_sig: Some(root_hash_sig),
+        provenance: None,
+        measurement: Some(measurement),
+    };
+    validate_attestation_meta(&meta)?;
+    Ok(Some(meta))
+}
+
 fn package_platform_table(
     name: &str,
+    version: &str,
     info: &StorePathInfo,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
     source_nar_hash: &str,
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
+    expose_manifest_digest: Option<&str>,
 ) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
@@ -3103,6 +3162,10 @@ fn package_platform_table(
     if let Some(manifest) = expose_manifest {
         let artifact = expose_artifact_info
             .context("expose manifest requires rendered expose artifact metadata")?;
+        let attestation = publish_attestation_meta(name, version, manifest, expose_manifest_digest)
+            .with_context(|| {
+                format!("deriving package attestation metadata for package '{name}'")
+            })?;
         table.insert(
             "min-format".into(),
             toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
@@ -3133,6 +3196,9 @@ fn package_platform_table(
         }
         if manifest.mac.is_some() {
             required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
+        }
+        if attestation.is_some() {
+            required_features.push(toml::Value::String(FEATURE_ATTESTATION_V1.to_string()));
         }
         table.insert(
             "requires-features".into(),
@@ -3169,6 +3235,32 @@ fn package_platform_table(
             toml::Value::try_from(&manifest.permissions)
                 .context("serializing permissions manifest metadata")?,
         );
+        if let Some(attestation) = attestation {
+            table.insert(
+                "root_hash".into(),
+                toml::Value::String(
+                    attestation
+                        .root_hash
+                        .context("package attestation root_hash missing")?,
+                ),
+            );
+            table.insert(
+                "root_hash_sig".into(),
+                toml::Value::String(
+                    attestation
+                        .root_hash_sig
+                        .context("package attestation root_hash_sig missing")?,
+                ),
+            );
+            table.insert(
+                "measurement".into(),
+                toml::Value::String(
+                    attestation
+                        .measurement
+                        .context("package attestation measurement missing")?,
+                ),
+            );
+        }
     }
 
     Ok(toml::Value::Table(table))
@@ -9379,6 +9471,37 @@ mod tests {
         .unwrap();
     }
 
+    fn verity_expose_manifest(root_hash: &str) -> PublishExposeManifest {
+        PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: vec![crate::types::SysrootImageEntry {
+                    format: "ext4-verity".into(),
+                    store_path: "/nix/store/imagehash111-webapp-root".into(),
+                    nar_hash: "sha256:image".into(),
+                    nar_size: 4096,
+                    sb_signer_cert_sha256: None,
+                    sbat: Vec::new(),
+                    expected_pcr11: None,
+                    root_image: Some("root.img".into()),
+                    root_verity: Some("root.verity".into()),
+                    root_hash: Some(root_hash.into()),
+                    root_hash_sig: Some("root.roothash.p7s".into()),
+                }],
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        }
+    }
+
     #[test]
     fn parse_sbat_csv_reads_component_generations() {
         let csv = "sbat,1,SBAT Version,sbat,1,https://x\naos,2,AOS,aos,2,https://aos\n# comment\n\nsystemd,1,systemd,systemd,1,https://systemd\n";
@@ -10500,6 +10623,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
@@ -10543,6 +10667,7 @@ mod tests {
             None,
             &[],
             Some(&source_info),
+            None,
             None,
             None,
         )
@@ -10606,6 +10731,25 @@ mod tests {
             mac.profile_path.as_deref(),
             Some("mac/selinux/aos_x2dpkg_x2dwebapp.pp")
         );
+    }
+
+    #[test]
+    fn read_publish_manifest_digest_tracks_manifest_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        fs::write(&path, br#"{"permissions":{"network":"private"}}"#).unwrap();
+        let first = read_publish_manifest_digest(&path).unwrap();
+
+        fs::write(&path, br#"{"permissions":{"network":"host"}}"#).unwrap();
+        let second = read_publish_manifest_digest(&path).unwrap();
+
+        assert_eq!(
+            first,
+            crate::package_attestation::package_manifest_digest_bytes(
+                br#"{"permissions":{"network":"private"}}"#
+            )
+        );
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -10848,6 +10992,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
+            None,
         )
         .unwrap();
 
@@ -11027,6 +11172,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
+            None,
         )
         .unwrap();
 
@@ -11091,6 +11237,7 @@ mod tests {
             None,
             Some(&manifest),
             None,
+            None,
         )
         .unwrap_err();
 
@@ -11146,6 +11293,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
+            None,
         )
         .unwrap();
 
@@ -11190,6 +11338,119 @@ mod tests {
     }
 
     #[test]
+    fn build_package_toml_records_package_attestation_measurement() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:deadbeef".into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let artifact = StorePathInfo {
+            path: "/nix/store/artifacthash111-expose-webapp".into(),
+            nar_hash: "sha256:artifact".into(),
+            nar_size: 2048,
+            references: vec![],
+            closure_size: 2048,
+        };
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target"},"permissions":{}}"#,
+        );
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &manifest_digest,
+        );
+
+        let content = build_package_toml(
+            "",
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some("Web application"),
+            None,
+            Some("MIT"),
+            Some("aos-team"),
+            false,
+            None,
+            &[],
+            None,
+            Some(&manifest),
+            Some(&artifact),
+            Some(&manifest_digest),
+        )
+        .unwrap();
+
+        let rendered: toml::Value = toml::from_str(&content).unwrap();
+        let platform = rendered
+            .get("versions")
+            .and_then(|versions| versions.as_array())
+            .and_then(|versions| versions.first())
+            .and_then(|version| version.get("platforms"))
+            .and_then(|platforms| platforms.get("x86_64-linux"))
+            .unwrap();
+        let features = platform
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .map(|features| {
+                features
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert!(features.contains(&FEATURE_ATTESTATION_V1));
+        assert_eq!(
+            platform.get("root_hash").and_then(toml::Value::as_str),
+            Some(root_hash)
+        );
+        assert_eq!(
+            platform.get("root_hash_sig").and_then(toml::Value::as_str),
+            Some("root.roothash.p7s")
+        );
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
+        );
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.attestation.root_hash.as_deref(), Some(root_hash));
+        assert_eq!(
+            parsed.attestation.root_hash_sig.as_deref(),
+            Some("root.roothash.p7s")
+        );
+        assert_eq!(
+            parsed.attestation.measurement.as_deref(),
+            Some(expected_measurement.as_str())
+        );
+    }
+
+    #[test]
+    fn package_attestation_measurement_changes_when_manifest_digest_changes() {
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let first = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &crate::package_attestation::package_manifest_digest_bytes(br#"{"network":"private"}"#),
+        );
+        let second = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            &crate::package_attestation::package_manifest_digest_bytes(br#"{"network":"host"}"#),
+        );
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn build_package_toml_update_existing() {
         let existing = r#"[package]
 name = "curl"
@@ -11229,6 +11490,7 @@ references = []
             false,
             None,
             &[],
+            None,
             None,
             None,
             None,
@@ -11276,6 +11538,7 @@ references = []
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -11314,6 +11577,7 @@ references = []
             false,
             Some("0.9.0+build\"meta"),
             &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
             None,
             None,
             None,

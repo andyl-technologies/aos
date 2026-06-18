@@ -1190,6 +1190,7 @@ pub fn validate_supported_package_meta_with(
 
     if let Some(expose) = &meta.expose {
         validate_expose_meta(expose)?;
+        validate_attestation_expose_consistency(meta)?;
         if !expose.requires.is_empty() {
             require_feature(meta, FEATURE_REQUIRES_V1)?;
         }
@@ -1504,6 +1505,41 @@ pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
     Ok(())
 }
 
+fn validate_attestation_expose_consistency(meta: &PackageMeta) -> Result<()> {
+    let (Some(root_hash), Some(root_hash_sig), Some(expose)) = (
+        meta.attestation.root_hash.as_deref(),
+        meta.attestation.root_hash_sig.as_deref(),
+        meta.expose.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    let Some(attestation_root_hash) = canonical_sha256_digest(root_hash) else {
+        return Ok(());
+    };
+
+    let mut saw_verity_image = false;
+    for image in &expose.images {
+        if image.root_hash.is_none() && image.root_hash_sig.is_none() {
+            continue;
+        }
+        saw_verity_image = true;
+        let image_root_hash = image.root_hash.as_deref().and_then(canonical_sha256_digest);
+        if image_root_hash.as_deref() == Some(attestation_root_hash.as_str())
+            && image.root_hash_sig.as_deref() == Some(root_hash_sig)
+        {
+            return Ok(());
+        }
+    }
+
+    if saw_verity_image {
+        bail!(
+            "attestation root_hash/root_hash_sig for package '{}' must match a verity expose image",
+            meta.name
+        );
+    }
+    Ok(())
+}
+
 fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
     let hex = digest
         .strip_prefix("sha256:")
@@ -1513,6 +1549,16 @@ fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
         bail!("{kind} must contain a 64-character SHA-256 digest");
     }
     Ok(())
+}
+
+fn canonical_sha256_digest(digest: &str) -> Option<String> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))?;
+    if hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Some(format!("sha256:{}", hex.to_ascii_lowercase()));
+    }
+    None
 }
 
 fn validate_policy_artifact_name(name: &str) -> Result<()> {
@@ -4520,6 +4566,37 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
+    }
+
+    #[test]
+    fn package_meta_accepts_attestation_matching_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash =
+            Some("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_that_diverges_from_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+        meta.attestation.root_hash =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("must match a verity expose image"));
     }
 
     fn expose_meta_with_image(image: SysrootImageEntry) -> ExposeMeta {
