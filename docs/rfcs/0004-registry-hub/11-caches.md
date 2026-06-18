@@ -656,16 +656,19 @@ the current spec. Phases are orderable; A lands first, E last.
       completed`/`failed` log; soft-delete tombstones the row + gates serving;
       org hard-purge cascades to `caches`/`cache_*` via `ON DELETE CASCADE`;
       and `export_org` carries an `ExportCache` slice.
-- [ ] DEPLOY.md + the [04](04-caching-and-mirroring.md)/[07](07-data-ops-and-testing.md)
+- [x] DEPLOY.md + the [04](04-caching-and-mirroring.md)/[07](07-data-ops-and-testing.md)
       reconciliation documented; `aos-hub cache` `--help` reviewed as
-      user-facing porcelain.
+      user-facing porcelain. The deploy guide's Maintenance section documents the
+      `cache` command tree against either backend (`--target`) and the
+      local-only `cache gc`; the clap `///` docs on every `CacheCommand` variant
+      read as porcelain.
 
 ### Changes to the current spec (cross-file)
 
-- [ ] [04](04-caching-and-mirroring.md): note that "CacheStore" is realized by
+- [x] [04](04-caching-and-mirroring.md): note that "CacheStore" is realized by
       a managed `caches` row, and that the advertised-endpoint table is renamed
-      `advertised_caches` (added below).
-- [ ] [07](07-data-ops-and-testing.md): schema sketch points the managed-cache
+      `advertised_caches` (added below). (Scope note at the top of [04](04-caching-and-mirroring.md).)
+- [x] [07](07-data-ops-and-testing.md): schema sketch points the managed-cache
       tables here; `cache_stores` in the sketch is superseded by `caches`.
-- [ ] [README](README.md): index this file; status header notes the cache
+- [x] [README](README.md): index this file; status header notes the cache
       addition + `aos-hub` rename as a proposed continuation.

@@ -154,6 +154,21 @@ round-trip. A few commands that operate on the local filesystem (`org export`,
   ```
   The `*/15` Cron then verifies the R2 surface and populates
   `releases`/`channels` into D1.
+- **Manage a hosted binary cache** — the `cache` command tree (create, list,
+  show, update, rm, link/unlink, gc-policy, pin/renew/unpin, search, info,
+  closure, gc-runs) runs against either backend via `--target`, the same as the
+  rest of the admin tree:
+  ```sh
+  "$HUB" cache create acme-cache --org acme --binding primary \
+    --visibility public --target d1:aos-registry-hub
+  "$HUB" cache link acme-cache acme/infra/prod/cdn --roots-packages \
+    --target d1:aos-registry-hub          # pin GC roots to the registry's packages
+  ```
+  `cache gc` is **local-only** (it sweeps NAR/narinfo bytes off the surface, so
+  it needs filesystem access — like `org export` and `validate repair`); run it
+  against the native `--target local` deployment or trigger it on the Worker via
+  its scheduled Cron. Cache uploads count toward the owning org's quota, and
+  `/metrics` exposes `aos_registry_hub_cache*` gauges + GC counters for scraping.
 
 ## Manual `wrangler` path (no installer)
 
