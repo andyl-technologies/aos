@@ -324,7 +324,7 @@ define_builtins! {
     pub(crate) struct FilterSourceBuiltin;
     impl BuiltinDefinition for FilterSourceBuiltin {
         const NAME: &'static [u8] = b"filterSource";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(2);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FilterSource;
     }
 
     pub(crate) struct FindFileBuiltin;
@@ -621,7 +621,7 @@ define_builtins! {
     pub(crate) struct PathBuiltin;
     impl BuiltinDefinition for PathBuiltin {
         const NAME: &'static [u8] = b"path";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Path;
     }
 
     pub(crate) struct PathExistsBuiltin;
@@ -962,6 +962,10 @@ pub(crate) enum BuiltinExecution {
     AddErrorContext,
     /// The builtin evaluates `pathExists`.
     PathExists,
+    /// The builtin evaluates `path`.
+    Path,
+    /// The builtin evaluates `filterSource`.
+    FilterSource,
     /// The builtin evaluates `readDir`.
     ReadDir,
     /// The builtin evaluates `readFile`.
@@ -1056,10 +1060,14 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Pure,
             }),
             Self::Import
+            | Self::Path
             | Self::PathExists
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType => Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful,
+            }),
+            Self::FilterSource => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::ToFile => Some(BuiltinDirect::StrictBinary {
@@ -1101,6 +1109,7 @@ impl BuiltinExecution {
             | Self::Import
             | Self::GenericClosure
             | Self::TryEval
+            | Self::Path
             | Self::PathExists
             | Self::ReadDir
             | Self::ReadFile
@@ -1109,6 +1118,7 @@ impl BuiltinExecution {
             | Self::ScopedImport
             | Self::AddErrorContext
             | Self::FindFile
+            | Self::FilterSource
             | Self::DirectBinary(_)
             | Self::ToFile
             | Self::Sort
@@ -1152,7 +1162,9 @@ impl BuiltinExecution {
             | Self::CurrentTimeValue
             | Self::StoreDirValue
             | Self::NixPathValue
+            | Self::Path
             | Self::PathExists
+            | Self::FilterSource
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType
@@ -1783,6 +1795,12 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"path"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"readDir"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -1797,6 +1815,12 @@ mod tests {
         assert_eq!(
             direct_builtin(b"readFileType"),
             Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"filterSource"),
+            Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful
             })
         );
@@ -1867,7 +1891,6 @@ mod tests {
             b"flakeRefToString".as_slice(),
             b"getFlake".as_slice(),
             b"parseFlakeRef".as_slice(),
-            b"path".as_slice(),
         ] {
             assert_eq!(
                 BUILTINS.lookup(name).unwrap().first_class_arity(),
@@ -1876,6 +1899,10 @@ mod tests {
                 String::from_utf8_lossy(name),
             );
         }
+        assert_eq!(
+            BUILTINS.lookup(b"path").unwrap().first_class_arity(),
+            Some(1)
+        );
         assert_eq!(
             BUILTINS
                 .lookup(b"filterSource")

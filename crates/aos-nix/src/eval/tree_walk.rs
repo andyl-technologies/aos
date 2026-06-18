@@ -71,6 +71,9 @@ const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
 const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
 const IMPURE_ATTR: &[u8] = b"__impure";
 const PATH_ATTR: &[u8] = b"path";
+const FILTER_ATTR: &[u8] = b"filter";
+const RECURSIVE_ATTR: &[u8] = b"recursive";
+const SHA256_ATTR: &[u8] = b"sha256";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
 const KEY_ATTR: &[u8] = b"key";
@@ -7807,6 +7810,175 @@ impl TreeWalk {
         self.alloc_static_string(id, span, file_type_name(file_type.file_type()))
     }
 
+    fn eval_path_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "set",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        self.validate_path_primop_attrs(argument, argument_span, value)?;
+
+        let path_value =
+            self.required_attr_value_by_name(argument, value, PATH_ATTR, argument_span)?;
+        let path_value = self.force_value(argument, argument_span, path_value)?;
+        let source_path = self.source_path_argument_bytes(argument, argument_span, path_value)?;
+
+        let name = if let Some(name_value) =
+            self.attr_value_by_name(argument, value, NAME_ATTR, argument_span)?
+        {
+            let name_value = self.force_value(argument, argument_span, name_value)?;
+            self.context_free_string_bytes(argument, argument_span, name_value, "path")?
+        } else {
+            self.default_source_path_name(argument, argument_span, &source_path)?
+        };
+        let name = Self::source_path_store_name(argument, argument_span, &source_path, &name)?;
+
+        let recursive = if let Some(recursive_value) =
+            self.attr_value_by_name(argument, value, RECURSIVE_ATTR, argument_span)?
+        {
+            let recursive_value = self.force_value(argument, argument_span, recursive_value)?;
+            self.expect_bool(argument, recursive_value, argument_span)?
+        } else {
+            true
+        };
+
+        let filter = if let Some(filter_value) =
+            self.attr_value_by_name(argument, value, FILTER_ATTR, argument_span)?
+        {
+            let filter_value = self.force_demanded_value(argument, argument_span, filter_value)?;
+            Some(SourcePathFilter {
+                function: self.ensure_applicable_value(argument, argument_span, filter_value)?,
+                id: argument,
+                span: argument_span,
+            })
+        } else {
+            None
+        };
+
+        let expected_sha256 = if let Some(hash_value) =
+            self.attr_value_by_name(argument, value, SHA256_ATTR, argument_span)?
+        {
+            let hash_value = self.force_value(argument, argument_span, hash_value)?;
+            let hash =
+                self.context_free_string_bytes(argument, argument_span, hash_value, "path")?;
+            let (algorithm, digest) = self.decode_convert_hash(
+                argument,
+                argument_span,
+                &hash,
+                Some(HashStringAlgorithm::Sha256),
+            )?;
+            if algorithm != HashStringAlgorithm::Sha256 {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::HashAlgorithmMismatch {
+                        id: argument,
+                        hash,
+                        expected: b"sha256".to_vec(),
+                    },
+                    argument_span,
+                ));
+            }
+            Some(digest)
+        } else {
+            None
+        };
+
+        let path = self.source_path_store_string_from_bytes(
+            argument,
+            argument_span,
+            &source_path,
+            name,
+            recursive,
+            expected_sha256.as_deref(),
+            filter.as_ref(),
+        )?;
+        self.heap
+            .alloc_string(path)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn eval_filter_source_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        filter_id: IrId,
+        filter_span: Span,
+        filter_value: Value,
+        path_id: IrId,
+        path_span: Span,
+        path_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let source_path = self.source_path_argument_bytes(path_id, path_span, path_value)?;
+        let name = self.default_source_path_name(path_id, path_span, &source_path)?;
+        let name = Self::source_path_store_name(path_id, path_span, &source_path, &name)?;
+        let filter_value = self.force_demanded_value(filter_id, filter_span, filter_value)?;
+        let filter = SourcePathFilter {
+            function: self.ensure_applicable_value(filter_id, filter_span, filter_value)?,
+            id: filter_id,
+            span: filter_span,
+        };
+        let path = self.source_path_store_string_from_bytes(
+            path_id,
+            path_span,
+            &source_path,
+            name,
+            true,
+            None,
+            Some(&filter),
+        )?;
+        self.heap
+            .alloc_string(path)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn validate_path_primop_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !matches!(
+                key,
+                PATH_ATTR | NAME_ATTR | FILTER_ATTR | RECURSIVE_ATTR | SHA256_ATTR
+            ) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedSourcePathAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn eval_to_file_primop(
         &mut self,
         id: IrId,
@@ -11320,7 +11492,7 @@ impl TreeWalk {
     }
 
     fn source_path_store_string(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         value: Value,
@@ -11329,9 +11501,20 @@ impl TreeWalk {
             .heap
             .get_path(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let bytes = path_without_trailing_path_markers(path.bytes());
-        let source_path = Path::new(OsStr::from_bytes(bytes));
-        if !source_path.is_absolute() {
+        let bytes = path_without_trailing_path_markers(path.bytes()).to_vec();
+        self.source_path_store_string_from_default_name(id, span, &bytes, true, None, None)
+    }
+
+    fn source_path_store_string_from_default_name(
+        &mut self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        recursive: bool,
+        expected_sha256: Option<&[u8]>,
+        filter: Option<&SourcePathFilter>,
+    ) -> Result<NixString, TreeWalkError> {
+        if !Path::new(OsStr::from_bytes(bytes)).is_absolute() {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::PathNotAbsolute {
                     id,
@@ -11341,7 +11524,94 @@ impl TreeWalk {
             ));
         }
         self.check_filesystem_path_access(id, span, bytes)?;
-        let Some(name) = source_path.file_name().map(OsStrExt::as_bytes) else {
+        let name = self.default_source_path_name(id, span, bytes)?;
+        let name = Self::source_path_store_name(id, span, bytes, &name)?;
+        self.source_path_store_string_from_bytes(
+            id,
+            span,
+            bytes,
+            name,
+            recursive,
+            expected_sha256,
+            filter,
+        )
+    }
+
+    fn source_path_store_string_from_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        name: &str,
+        recursive: bool,
+        expected_sha256: Option<&[u8]>,
+        filter: Option<&SourcePathFilter>,
+    ) -> Result<NixString, TreeWalkError> {
+        let source_path = Path::new(OsStr::from_bytes(bytes));
+        let digest = if recursive {
+            self.source_path_nar_sha256(id, span, source_path, filter)?
+        } else {
+            self.source_path_flat_sha256(id, span, source_path)?
+        };
+        if let Some(expected) = expected_sha256 {
+            if expected != digest.as_slice() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::SourcePathHashMismatch {
+                        id,
+                        path: bytes.to_vec(),
+                        expected: expected.to_vec(),
+                        actual: digest.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        let store_path = if recursive {
+            self.store_path_bytes_from_fingerprint_parts(id, span, bytes, b"source", name, &digest)?
+        } else {
+            let fixed_digest = Self::flat_source_fixed_output_digest(id, span, &digest)?;
+            self.store_path_bytes_from_fingerprint_parts(
+                id,
+                span,
+                bytes,
+                b"output:out",
+                name,
+                &fixed_digest,
+            )?
+        };
+        let context =
+            StringContext::singleton(ContextElement::opaque_path(store_path.clone()).map_err(
+                |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+            )?)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok(NixString::new(store_path, context))
+    }
+
+    fn source_path_argument_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        let path = self.coerce_to_path_string(id, span, value)?;
+        self.validate_ifd_path_context(id, span, &path, "path")?;
+        let bytes =
+            Self::copy_bytes_for_node(id, span, path_without_trailing_path_markers(path.bytes()))?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
+        self.realize_import_from_derivation(id, span, &path, "path")?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
+        Ok(bytes)
+    }
+
+    fn default_source_path_name(
+        &self,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let path = Path::new(OsStr::from_bytes(bytes));
+        let Some(name) = path.file_name().map(OsStrExt::as_bytes) else {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::SourcePathStoreName {
                     id,
@@ -11351,37 +11621,39 @@ impl TreeWalk {
                 span,
             ));
         };
-        let name = nix_compat::store_path::validate_name(name).map_err(|source| {
+        Self::copy_bytes_for_node(id, span, name)
+    }
+
+    fn source_path_store_name<'a>(
+        id: IrId,
+        span: Span,
+        source_path: &[u8],
+        name: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        nix_compat::store_path::validate_name(name).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SourcePathStoreName {
                     id,
-                    path: bytes.to_vec(),
+                    path: source_path.to_vec(),
                     message: source.to_string(),
                 },
                 span,
             )
-        })?;
-        let nar_digest = self.source_path_nar_sha256(id, span, source_path)?;
-        let store_path = self.source_store_path_bytes(id, span, bytes, name, &nar_digest)?;
-        let context =
-            StringContext::singleton(ContextElement::opaque_path(store_path.clone()).map_err(
-                |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
-            )?)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
-        Ok(NixString::new(store_path, context))
+        })
     }
 
     fn source_path_nar_sha256(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         path: &Path,
+        filter: Option<&SourcePathFilter>,
     ) -> Result<[u8; 32], TreeWalkError> {
         let mut nar = Vec::new();
         {
             let node = nix_compat::nar::writer::open(&mut nar)
                 .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
-            self.write_source_path_nar_node(id, span, path, node, true)?;
+            self.write_source_path_nar_node(id, span, path, node, true, filter)?;
         }
         let digest = Sha256::digest(&nar);
         let mut fixed = [0_u8; 32];
@@ -11389,13 +11661,28 @@ impl TreeWalk {
         Ok(fixed)
     }
 
-    fn write_source_path_nar_node<W: io::Write>(
+    fn source_path_flat_sha256(
         &self,
+        id: IrId,
+        span: Span,
+        path: &Path,
+    ) -> Result<[u8; 32], TreeWalkError> {
+        let contents = fs::read(path)
+            .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
+        let digest = Sha256::digest(&contents);
+        let mut fixed = [0_u8; 32];
+        fixed.copy_from_slice(&digest);
+        Ok(fixed)
+    }
+
+    fn write_source_path_nar_node<W: io::Write>(
+        &mut self,
         id: IrId,
         span: Span,
         path: &Path,
         node: nix_compat::nar::writer::Node<'_, W>,
         follow_root_symlink: bool,
+        filter: Option<&SourcePathFilter>,
     ) -> Result<(), TreeWalkError> {
         let metadata = if follow_root_symlink {
             fs::metadata(path)
@@ -11430,18 +11717,31 @@ impl TreeWalk {
             for entry in read_dir {
                 let entry = entry
                     .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
-                entries.push((entry.file_name().as_bytes().to_vec(), entry.path()));
+                let child_path = entry.path();
+                let child_type = fs::symlink_metadata(&child_path)
+                    .map_err(|source| {
+                        Self::source_path_archive_error(id, span, &child_path, source)
+                    })?
+                    .file_type();
+                entries.push((
+                    entry.file_name().as_bytes().to_vec(),
+                    child_path,
+                    child_type,
+                ));
             }
             entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 
             let mut directory = node
                 .directory()
                 .map_err(|source| Self::source_path_archive_error(id, span, path, source))?;
-            for (name, child_path) in entries {
+            for (name, child_path, child_type) in entries {
+                if !self.source_path_filter_includes(id, span, filter, &child_path, child_type)? {
+                    continue;
+                }
                 let child = directory.entry(&name).map_err(|source| {
                     Self::source_path_archive_error(id, span, &child_path, source)
                 })?;
-                self.write_source_path_nar_node(id, span, &child_path, child, false)?;
+                self.write_source_path_nar_node(id, span, &child_path, child, false, filter)?;
             }
             return directory
                 .close()
@@ -11457,19 +11757,79 @@ impl TreeWalk {
         ))
     }
 
-    fn source_store_path_bytes(
+    fn source_path_filter_includes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        filter: Option<&SourcePathFilter>,
+        path: &Path,
+        file_type: fs::FileType,
+    ) -> Result<bool, TreeWalkError> {
+        let Some(filter) = filter else {
+            return Ok(true);
+        };
+        let path_value = self.alloc_static_string(id, span, path.as_os_str().as_bytes())?;
+        let type_value = self.alloc_static_string(id, span, file_type_name(file_type))?;
+        let value = self.apply_lambda_value_2(
+            id,
+            span,
+            filter.id,
+            filter.function,
+            filter.span,
+            id,
+            span,
+            path_value,
+            id,
+            type_value,
+        )?;
+        let value = self.force_value(id, span, value)?;
+        self.expect_bool(id, value, span)
+    }
+
+    fn flat_source_fixed_output_digest(
+        id: IrId,
+        span: Span,
+        digest: &[u8; 32],
+    ) -> Result<[u8; 32], TreeWalkError> {
+        let digest = Self::lower_hex_bytes(id, span, digest)?;
+        let len = b"fixed:out:sha256:"
+            .len()
+            .checked_add(digest.len())
+            .and_then(|len| len.checked_add(1))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut fingerprint = Vec::new();
+        fingerprint.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        fingerprint.extend_from_slice(b"fixed:out:sha256:");
+        fingerprint.extend_from_slice(&digest);
+        fingerprint.push(b':');
+        Ok(Self::sha256_array(&fingerprint))
+    }
+
+    fn store_path_bytes_from_fingerprint_parts(
         &self,
         id: IrId,
         span: Span,
         source_path: &[u8],
+        fingerprint_type: &[u8],
         name: &str,
-        nar_digest: &[u8; 32],
+        inner_digest: &[u8; 32],
     ) -> Result<Vec<u8>, TreeWalkError> {
-        let digest = Self::lower_hex_bytes(id, span, nar_digest)?;
+        let digest = Self::lower_hex_bytes(id, span, inner_digest)?;
         let store_dir = self.options.store_dir();
-        let len = b"source:sha256:"
+        let len = fingerprint_type
             .len()
-            .checked_add(digest.len())
+            .checked_add(b":sha256:".len())
+            .and_then(|len| len.checked_add(digest.len()))
             .and_then(|len| len.checked_add(1))
             .and_then(|len| len.checked_add(store_dir.len()))
             .and_then(|len| len.checked_add(1))
@@ -11487,7 +11847,8 @@ impl TreeWalk {
         fingerprint.try_reserve_exact(len).map_err(|_| {
             TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
         })?;
-        fingerprint.extend_from_slice(b"source:sha256:");
+        fingerprint.extend_from_slice(fingerprint_type);
+        fingerprint.extend_from_slice(b":sha256:");
         fingerprint.extend_from_slice(&digest);
         fingerprint.push(b':');
         fingerprint.extend_from_slice(store_dir);
@@ -11699,7 +12060,7 @@ impl TreeWalk {
     }
 
     fn write_json_path_value(
-        &self,
+        &mut self,
         id: IrId,
         span: Span,
         path_id: IrId,
@@ -19858,6 +20219,13 @@ struct ReplaceStringReplacement {
     context: StringContext,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SourcePathFilter {
+    function: Value,
+    id: IrId,
+    span: Span,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HashStringAlgorithm {
     Md5,
@@ -20064,6 +20432,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_import_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::Path => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_path_primop(call.id, call.span, argument, argument_span, value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -20125,6 +20500,25 @@ impl BuiltinRuntime for BuiltinMetadata {
                     lookup,
                     lookup_span,
                     lookup_value,
+                )
+            }
+            BuiltinExecution::FilterSource => {
+                check_builtin_arity(call, 2, args.len())?;
+                let path = args[1];
+                let path_span = eval.node(path)?.span;
+                let path_value = eval.eval_node(path)?;
+                let filter = args[0];
+                let filter_span = eval.node(filter)?.span;
+                let filter_value = eval.eval_node(filter)?;
+                eval.eval_filter_source_primop(
+                    call.id,
+                    call.span,
+                    filter,
+                    filter_span,
+                    filter_value,
+                    path,
+                    path_span,
+                    path_value,
                 )
             }
             BuiltinExecution::DirectBinary(primop) => {
@@ -20280,6 +20674,12 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.force_primop_arg(argument)?;
                 eval.eval_import_primop(call.id, call.span, argument.id(), argument.span(), value)
             }
+            BuiltinExecution::Path => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let value = eval.force_primop_arg(argument)?;
+                eval.eval_path_primop(call.id, call.span, argument.id(), argument.span(), value)
+            }
             BuiltinExecution::ScopedImport => {
                 check_builtin_arity(call, 2, args.len())?;
                 let scope = args[0];
@@ -20341,6 +20741,19 @@ impl BuiltinRuntime for BuiltinMetadata {
                     lookup.id(),
                     lookup.span(),
                     lookup_value,
+                )
+            }
+            BuiltinExecution::FilterSource => {
+                check_builtin_arity(call, 2, args.len())?;
+                eval.eval_filter_source_primop(
+                    call.id,
+                    call.span,
+                    args[0].id(),
+                    args[0].span(),
+                    args[0].value(),
+                    args[1].id(),
+                    args[1].span(),
+                    args[1].value(),
                 )
             }
             BuiltinExecution::DirectBinary(primop) => {
@@ -21134,6 +21547,28 @@ pub enum TreeWalkErrorKind {
         /// The source path bytes.
         path: Vec<u8>,
     },
+    /// A `builtins.path` argument set used an unsupported attribute.
+    #[error("unsupported source path attribute at node {id:?}: {attr:?}")]
+    UnsupportedSourcePathAttr {
+        /// The `builtins.path` argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// A source path's actual SHA-256 digest differed from its expected digest.
+    #[error(
+        "source path hash mismatch at node {id:?} path {path:?}: expected {expected:?}, got {actual:?}"
+    )]
+    SourcePathHashMismatch {
+        /// The source path node or primop id.
+        id: IrId,
+        /// The source path bytes.
+        path: Vec<u8>,
+        /// The expected SHA-256 digest bytes.
+        expected: Vec<u8>,
+        /// The actual SHA-256 digest bytes.
+        actual: Vec<u8>,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -21870,11 +22305,9 @@ mod tests {
         "fetchTarball",
         "fetchTree",
         "fetchurl",
-        "filterSource",
         "flakeRefToString",
         "getFlake",
         "parseFlakeRef",
-        "path",
     ];
 
     const VERSION_GATED_BUILTIN_NAMES: &[&str] = &[
@@ -27479,6 +27912,39 @@ mod tests {
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, &source);
         }
+
+        let recursive_digest = "11a71b4754d812f4aea20161c533bdaa112ac5c853013e65d3aa9640b5735230";
+        let flat_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        for source in [
+            format!("builtins.path {{ path = {path}; }}"),
+            format!("builtins.path {{ path = {}; }}", nix_string_literal(&path)),
+            format!("builtins.path {{ path = {path}; name = \"renamed\"; }}"),
+            format!("let p = builtins.path; in p {{ path = {path}; name = \"renamed\"; }}"),
+            format!("builtins.path {{ path = {path}; recursive = false; }}"),
+            format!("builtins.path {{ path = {path}; sha256 = \"{recursive_digest}\"; }}"),
+            format!(
+                "builtins.path {{ path = {path}; recursive = false; sha256 = \"{flat_digest}\"; }}"
+            ),
+            format!(
+                "builtins.path {{ path = {path}; recursive = false; filter = path: type: builtins.throw \"called\"; }}"
+            ),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        let tree = dir.join("tree");
+        fs::create_dir(&tree).expect("oracle tree directory creates");
+        fs::write(tree.join("a"), b"one").expect("oracle included file writes");
+        fs::write(tree.join("b"), b"two").expect("oracle excluded file writes");
+        let tree = path_source(&tree);
+        let keep = r#"path: type: type != "directory" && builtins.hasContext path == false && builtins.baseNameOf path == "a""#;
+        for source in [
+            format!("builtins.filterSource ({keep}) {tree}"),
+            format!("builtins.path {{ path = {tree}; filter = ({keep}); }}"),
+            format!("let filterSource = builtins.filterSource; in filterSource ({keep}) {tree}"),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
         fs::remove_dir_all(dir).expect("temp directory removes");
 
         for source in [
@@ -27530,13 +27996,7 @@ mod tests {
 
     #[test]
     fn present_unimplemented_builtin_stubs_error_when_called() {
-        for (source, name) in [
-            ("builtins.fetchMercurial null", b"fetchMercurial".as_slice()),
-            (
-                "builtins.filterSource (path: type: true) /tmp",
-                b"filterSource".as_slice(),
-            ),
-        ] {
+        for (source, name) in [("builtins.fetchMercurial null", b"fetchMercurial".as_slice())] {
             let ir = lower(source);
             let error = eval_whnf_owned(&ir).expect_err("unimplemented builtin stub errors");
 
@@ -36062,6 +36522,214 @@ mod tests {
             eval_string_bytes(&format!("\"${{{executable}}}\"")),
             b"/nix/store/4fgv55agm9sz9yxqvqbm8b5s483bmldn-tool.sh"
         );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_primop_builds_source_store_paths_and_context() {
+        let (dir, path) = temp_file_with_bytes("path-primop", b"abc");
+        let path = path_source(&path);
+        let store_path = b"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt";
+        let renamed = b"/nix/store/lmv1fx64qbwh9yca6xv9a42fb3q3a1jx-renamed";
+
+        assert_eq!(
+            eval_string_bytes(&format!("builtins.path {{ path = {path}; }}")),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {}; }}",
+                nix_string_literal(&path)
+            )),
+            store_path
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {path}; name = \"renamed\"; }}"
+            )),
+            renamed
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "let p = builtins.path; in p {{ path = {path}; name = \"renamed\"; }}"
+            )),
+            renamed
+        );
+        assert_eq!(
+            eval_json_bytes(&format!(
+                "builtins.getContext (builtins.path {{ path = {path}; }})"
+            )),
+            br#"{"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt":{"path":true}}"#.to_vec()
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_primop_supports_flat_hashing_and_sha256_checks() {
+        let (dir, path) = temp_file_with_bytes("path-primop-flat", b"abc");
+        let path = path_source(&path);
+        let recursive_digest = "11a71b4754d812f4aea20161c533bdaa112ac5c853013e65d3aa9640b5735230";
+        let flat_digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {path}; sha256 = \"{recursive_digest}\"; }}"
+            )),
+            b"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {path}; recursive = false; }}"
+            )),
+            b"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {path}; recursive = false; sha256 = \"{flat_digest}\"; }}"
+            )),
+            b"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt"
+        );
+
+        let ir = lower(&format!(
+            "builtins.path {{ path = {path}; sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("sha256 mismatch rejects source path");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::SourcePathHashMismatch { .. }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filter_source_primop_filters_recursive_source_trees() {
+        let dir = unique_temp_dir("filter-source");
+        let tree = dir.join("tree");
+        fs::create_dir(&tree).expect("tree directory creates");
+        fs::write(tree.join("a"), b"one").expect("included file writes");
+        fs::write(tree.join("b"), b"two").expect("excluded file writes");
+        let tree = path_source(&tree);
+        let keep = r#"path: type: type != "directory" && builtins.hasContext path == false && builtins.baseNameOf path == "a""#;
+
+        let filtered = eval_string_bytes(&format!("builtins.filterSource ({keep}) {tree}"));
+        assert_eq!(
+            filtered,
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {tree}; filter = ({keep}); }}"
+            ))
+        );
+        assert_eq!(
+            filtered,
+            eval_string_bytes(&format!(
+                "let filterSource = builtins.filterSource; in filterSource ({keep}) {tree}"
+            ))
+        );
+        assert_ne!(
+            filtered,
+            eval_string_bytes(&format!("builtins.path {{ path = {tree}; }}"))
+        );
+        assert!(
+            String::from_utf8(filtered)
+                .expect("store path is UTF-8")
+                .ends_with("-tree")
+        );
+
+        let traced = eval_owned(&format!(
+            "builtins.path {{ path = {tree}; filter = path: type: builtins.trace (builtins.baseNameOf path) true; }}"
+        ));
+        let traces = traced.trace_output();
+        assert_eq!(traces.len(), 2);
+        assert_trace_output(&traces[0], EvalTraceKind::Trace, b"a");
+        assert_trace_output(&traces[1], EvalTraceKind::Trace, b"b");
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filter_source_does_not_filter_root_files() {
+        let (dir, path) = temp_file_with_bytes("filter-source-root-file", b"abc");
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.filterSource (path: type: builtins.throw \"called\") {path}"
+            )),
+            b"/nix/store/ffb76bbyqzzqzwb8yg9a8kqsj75by509-data.txt"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn path_primop_rejects_invalid_arguments() {
+        let dir = unique_temp_dir("path-primop-invalid");
+        let file = dir.join("data.txt");
+        fs::write(&file, b"abc").expect("temp file writes");
+        let tree = dir.join("tree");
+        fs::create_dir(&tree).expect("tree directory creates");
+        fs::write(tree.join("data.txt"), b"abc").expect("tree file writes");
+        let file = path_source(&file);
+        let tree = path_source(&tree);
+
+        let ir = lower(&format!("builtins.path {{ path = {file}; bogus = 1; }}"));
+        let error = eval_whnf_owned(&ir).expect_err("unknown path attr rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedSourcePathAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let ir = lower(&format!(
+            "builtins.path {{ path = {file}; filter = null; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("filter must be callable");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        assert_eq!(
+            eval_string_bytes(&format!(
+                "builtins.path {{ path = {file}; recursive = false; filter = path: type: builtins.throw \"called\"; }}"
+            )),
+            b"/nix/store/mypqc3c8w9d2adal1lax2yd0kkx186vg-data.txt"
+        );
+
+        let ir = lower(&format!(
+            "builtins.path {{ path = {tree}; recursive = false; }}"
+        ));
+        let error = eval_whnf_owned(&ir).expect_err("flat directory source paths reject");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::SourcePathArchive { .. }
+        ));
+
+        let ir = lower(&format!("builtins.filterSource null {file}"));
+        let error = eval_whnf_owned(&ir).expect_err("filterSource filter must be callable");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "lambda",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        for source in [
+            r#"builtins.filterSource null (builtins.throw "path")"#,
+            r#"let filterSource = builtins.filterSource; in filterSource null (builtins.throw "path")"#,
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("filterSource forces path before filter");
+            assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+        }
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }

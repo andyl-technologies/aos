@@ -1936,6 +1936,7 @@ mod tests {
             ("builtins.readFile ./foo.txt", b"readFile".as_slice()),
             ("builtins.readDir ./foo", b"readDir".as_slice()),
             ("builtins.pathExists ./foo", b"pathExists".as_slice()),
+            ("builtins.path { path = ./foo; }", b"path".as_slice()),
             ("builtins.readFileType ./foo", b"readFileType".as_slice()),
             ("builtins.getEnv \"HOME\"", b"getEnv".as_slice()),
             (
@@ -2174,18 +2175,29 @@ mod tests {
 
     #[test]
     fn lowers_effectful_strict_binary_primops_directly() {
-        let ir = lowered("builtins.hashFile \"sha256\" ./crates/Cargo.toml");
-        let root = root_node(&ir);
-        assert_eq!(root.kind, IrKind::PrimOp);
-        assert_eq!(root.effect, EffectClass::Effectful);
-        let IrData::PrimOp { symbol, args } = root.data else {
-            panic!("primop payload expected");
-        };
-        assert_eq!(symbol_text(&ir, symbol), b"hashFile");
-        let args = ir.arena.child_slice(args).expect("primop args exist");
-        assert_eq!(args.len(), 2);
-        for arg in args {
-            assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+        for (source, name) in [
+            (
+                "builtins.hashFile \"sha256\" ./crates/Cargo.toml",
+                b"hashFile".as_slice(),
+            ),
+            (
+                "builtins.filterSource (path: type: true) ./foo",
+                b"filterSource".as_slice(),
+            ),
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            assert_eq!(root.kind, IrKind::PrimOp);
+            assert_eq!(root.effect, EffectClass::Effectful);
+            let IrData::PrimOp { symbol, args } = root.data else {
+                panic!("primop payload expected");
+            };
+            assert_eq!(symbol_text(&ir, symbol), name);
+            let args = ir.arena.child_slice(args).expect("primop args exist");
+            assert_eq!(args.len(), 2);
+            for arg in args {
+                assert_ne!(node(&ir, *arg).kind, IrKind::ThunkAlloc);
+            }
         }
     }
 

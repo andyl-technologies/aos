@@ -573,14 +573,14 @@ fetchers). They are effects (they read sources and/or the network) **and**
 produce strings with store-path context. Fetchers are gated under restricted/pure
 eval (network access is disabled unless explicitly allowed).
 
-- [ ] `path` (args) — `{ path; name ? baseNameOf path; filter ? (p: t: true);
+- [x] `path` (args) — `{ path; name ? baseNameOf path; filter ? (p: t: true);
       recursive ? true; sha256 ? null; }` — copy a source path into the store
       (optionally filtered) and return its store path string with context.
       - The NAR/store-path hashing must match (`nix-compat`); the `filter`
         predicate is called `path -> type -> bool` per entry and its calls/order
         are observable. If `sha256` is given it is a fixed-output assertion.
       - This is the modern, named-argument superset of `filterSource`.
-- [ ] `filterSource` (e1 e2) — `path { path = e2; filter = e1; }` essentially:
+- [x] `filterSource` (e1 e2) — `path { path = e2; filter = e1; }` essentially:
       copy `e2` into the store keeping only entries for which
       `e1 path type` is true. Older API; still used. Same store-path hashing.
 - [x] `toFile` (name s) — write string `s` to a store file named `name`,
