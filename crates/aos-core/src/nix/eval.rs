@@ -11,15 +11,21 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+#[cfg(feature = "native-eval")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
-use aos_nix::{NativeEvalError, NixNative, eval::TreeWalkOptions};
+use aos_nix::{NativeCliFallbackReason, NativeEvalError, NixNative, eval::TreeWalkOptions};
 
 static NATIVE_MODE: OnceLock<NativeMode> = OnceLock::new();
+#[cfg(feature = "native-eval")]
+static NATIVE_FALLBACK_UNSUPPORTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_FALLBACK_INTERNAL: AtomicU64 = AtomicU64::new(0);
 
 /// An evaluator that reduces Nix source to derivations or JSON-rendered values.
 ///
@@ -247,33 +253,39 @@ impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         match self.native.instantiate(file, attr) {
             Ok(path) => Ok(path),
-            Err(error) if should_fallback(&error) => {
-                tracing::warn!(error = %error, "native eval fell back to nix-cli");
+            Err(error) => {
+                let Some(reason) = native_cli_fallback_reason(&error) else {
+                    return Err(error);
+                };
+                warn_native_cli_fallback(&error, reason);
                 self.fallback.instantiate(file, attr)
             }
-            Err(error) => Err(error),
         }
     }
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         match self.native.instantiate_expr(expr) {
             Ok(path) => Ok(path),
-            Err(error) if should_fallback(&error) => {
-                tracing::warn!(error = %error, "native eval fell back to nix-cli");
+            Err(error) => {
+                let Some(reason) = native_cli_fallback_reason(&error) else {
+                    return Err(error);
+                };
+                warn_native_cli_fallback(&error, reason);
                 self.fallback.instantiate_expr(expr)
             }
-            Err(error) => Err(error),
         }
     }
 
     fn eval_expr(&self, expr: &str) -> Result<String> {
         match self.native.eval_expr(expr) {
             Ok(value) => Ok(value),
-            Err(error) if should_fallback(&error) => {
-                tracing::warn!(error = %error, "native eval fell back to nix-cli");
+            Err(error) => {
+                let Some(reason) = native_cli_fallback_reason(&error) else {
+                    return Err(error);
+                };
+                warn_native_cli_fallback(&error, reason);
                 self.fallback.eval_expr(expr)
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -357,10 +369,40 @@ impl NixEval for ShadowEval {
 }
 
 #[cfg(feature = "native-eval")]
-fn should_fallback(error: &anyhow::Error) -> bool {
+fn native_cli_fallback_reason(error: &anyhow::Error) -> Option<NativeCliFallbackReason> {
     error
         .downcast_ref::<NativeEvalError>()
-        .is_some_and(NativeEvalError::permits_cli_fallback)
+        .and_then(NativeEvalError::cli_fallback_reason)
+}
+
+#[cfg(feature = "native-eval")]
+fn warn_native_cli_fallback(error: &anyhow::Error, reason: NativeCliFallbackReason) {
+    let count = record_native_cli_fallback(reason);
+    tracing::warn!(
+        error = %error,
+        fallback_reason = ?reason,
+        fallback_count = count,
+        "native eval fell back to nix-cli"
+    );
+}
+
+#[cfg(feature = "native-eval")]
+fn record_native_cli_fallback(reason: NativeCliFallbackReason) -> u64 {
+    let counter = match reason {
+        NativeCliFallbackReason::Unsupported => &NATIVE_FALLBACK_UNSUPPORTED,
+        NativeCliFallbackReason::Internal => &NATIVE_FALLBACK_INTERNAL,
+    };
+    counter.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(feature = "native-eval")]
+#[cfg(test)]
+fn native_cli_fallback_count(reason: NativeCliFallbackReason) -> u64 {
+    let counter = match reason {
+        NativeCliFallbackReason::Unsupported => &NATIVE_FALLBACK_UNSUPPORTED,
+        NativeCliFallbackReason::Internal => &NATIVE_FALLBACK_INTERNAL,
+    };
+    counter.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "native-eval")]
@@ -444,21 +486,48 @@ mod tests {
     #[test]
     fn native_fallback_decision_uses_native_error_taxonomy() {
         let unsupported: anyhow::Error = NativeEvalError::unsupported("missing primop").into();
-        assert!(should_fallback(&unsupported));
+        assert_eq!(
+            native_cli_fallback_reason(&unsupported),
+            Some(NativeCliFallbackReason::Unsupported)
+        );
 
         let internal: anyhow::Error = NativeEvalError::Internal {
             message: "bug".to_string(),
         }
         .into();
-        assert!(should_fallback(&internal));
+        assert_eq!(
+            native_cli_fallback_reason(&internal),
+            Some(NativeCliFallbackReason::Internal)
+        );
 
         let eval_error: anyhow::Error = NativeEvalError::EvalError {
             message: "type error".to_string(),
         }
         .into();
-        assert!(!should_fallback(&eval_error));
+        assert_eq!(native_cli_fallback_reason(&eval_error), None);
 
         let other = anyhow::anyhow!("non-native error");
-        assert!(!should_fallback(&other));
+        assert_eq!(native_cli_fallback_reason(&other), None);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_fallback_recording_counts_by_reason() {
+        let unsupported_before = native_cli_fallback_count(NativeCliFallbackReason::Unsupported);
+        let internal_before = native_cli_fallback_count(NativeCliFallbackReason::Internal);
+
+        let unsupported_after = record_native_cli_fallback(NativeCliFallbackReason::Unsupported);
+        assert!(unsupported_after > unsupported_before);
+        let unsupported_count = native_cli_fallback_count(NativeCliFallbackReason::Unsupported);
+        assert!(unsupported_count >= unsupported_after);
+        assert_eq!(
+            native_cli_fallback_count(NativeCliFallbackReason::Internal),
+            internal_before
+        );
+
+        let internal_after = record_native_cli_fallback(NativeCliFallbackReason::Internal);
+        assert!(internal_after > internal_before);
+        let internal_count = native_cli_fallback_count(NativeCliFallbackReason::Internal);
+        assert!(internal_count >= internal_after);
     }
 }

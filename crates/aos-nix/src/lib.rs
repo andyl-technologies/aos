@@ -48,5 +48,5 @@ pub mod string;
 pub mod syntax;
 pub mod value;
 
-pub use error::{NativeEvalError, SrcSpan};
+pub use error::{NativeCliFallbackReason, NativeEvalError, SrcSpan};
 pub use native::NixNative;

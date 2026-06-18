@@ -15,6 +15,15 @@ pub struct SrcSpan {
     pub end: u32,
 }
 
+/// The reason a native evaluator failure may be retried with C++ Nix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCliFallbackReason {
+    /// The native evaluator has not implemented the requested feature yet.
+    Unsupported,
+    /// The native evaluator failed internally and C++ Nix remains authoritative.
+    Internal,
+}
+
 /// A failure produced by the native evaluator.
 #[derive(Debug, Error)]
 pub enum NativeEvalError {
@@ -60,7 +69,16 @@ impl NativeEvalError {
     /// must surface as-is so native evaluation cannot hide semantic failures by
     /// retrying them.
     pub const fn permits_cli_fallback(&self) -> bool {
-        matches!(self, Self::Unsupported { .. } | Self::Internal { .. })
+        self.cli_fallback_reason().is_some()
+    }
+
+    /// Returns the C++ Nix fallback reason for retryable failures.
+    pub const fn cli_fallback_reason(&self) -> Option<NativeCliFallbackReason> {
+        match self {
+            Self::Unsupported { .. } => Some(NativeCliFallbackReason::Unsupported),
+            Self::Internal { .. } => Some(NativeCliFallbackReason::Internal),
+            Self::EvalError { .. } => None,
+        }
     }
 }
 
@@ -71,17 +89,35 @@ mod tests {
     #[test]
     fn fallback_policy_tracks_error_taxonomy() {
         assert!(NativeEvalError::unsupported("missing primop").permits_cli_fallback());
+        assert_eq!(
+            NativeEvalError::unsupported("missing primop").cli_fallback_reason(),
+            Some(NativeCliFallbackReason::Unsupported)
+        );
         assert!(
             NativeEvalError::Internal {
                 message: "bug".to_string()
             }
             .permits_cli_fallback()
         );
+        assert_eq!(
+            NativeEvalError::Internal {
+                message: "bug".to_string()
+            }
+            .cli_fallback_reason(),
+            Some(NativeCliFallbackReason::Internal)
+        );
         assert!(
             !NativeEvalError::EvalError {
                 message: "type error".to_string()
             }
             .permits_cli_fallback()
+        );
+        assert_eq!(
+            NativeEvalError::EvalError {
+                message: "type error".to_string()
+            }
+            .cli_fallback_reason(),
+            None
         );
     }
 }
