@@ -1056,6 +1056,21 @@ pub const MIGRATIONS: &[&str] = &[
     ",
 ];
 
+/// Returns every migration's individual SQL statements, in order.
+///
+/// Splits the [`MIGRATIONS`] scripts at statement boundaries via
+/// [`split_statements`](crate::backend::split_statements), flattened across all
+/// versions. Useful for tooling that must apply the schema outside the
+/// [`Database`] migration path — e.g. seeding a test D1 over its binding, or the
+/// `aos-registry-hub schema dump` command.
+#[must_use]
+pub fn migration_statements() -> Vec<String> {
+    MIGRATIONS
+        .iter()
+        .flat_map(|m| crate::backend::split_statements(m))
+        .collect()
+}
+
 /// Marker error: a membership mutation was refused because it would leave an
 /// org with zero owners.
 ///
@@ -2091,8 +2106,9 @@ impl Database {
     ///
     /// For read paths that open a fresh handle per request against a database
     /// some other path already migrated — notably the Cloudflare Worker, whose
-    /// schema is applied once via `/_init` and which must not pay a migration
-    /// round-trip on every read. Use
+    /// schema is applied by the operator CLI (`aos-registry-hub init --target
+    /// d1:<name>`) and which must not pay a migration round-trip on every read.
+    /// Use
     /// [`with_backend`](Self::with_backend) when the caller owns the schema and
     /// should migrate it.
     #[must_use]

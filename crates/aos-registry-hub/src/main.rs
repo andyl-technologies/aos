@@ -164,37 +164,28 @@ enum Command {
         #[command(subcommand)]
         command: FrontendCommand,
     },
-    /// Deploy and manage a Cloudflare Workers deployment of this hub.
-    Cloudflare {
-        #[command(subcommand)]
-        command: CloudflareCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum CloudflareCommand {
-    /// Provision, deploy, and initialise a fresh Cloudflare deployment.
+    /// Apply database migrations and (optionally) bootstrap the root admin.
     ///
-    /// One idempotent sequence: create the D1/R2/KV resources, deploy the
-    /// bundled Worker wasm, apply the runtime secrets, and `GET /_init` to
-    /// migrate the schema and bootstrap the root admin. `wrangler` reads the
-    /// operator's CLOUDFLARE_API_TOKEN (or OAuth login) from the environment.
-    Install(CloudflareArgs),
-    /// Re-deploy the bundled Worker wasm and re-run the schema migration.
-    Deploy(CloudflareArgs),
-    /// Provision the D1/R2/KV resources only (no deploy).
-    Provision(CloudflareArgs),
-    /// Apply the D1 schema (and bootstrap root) on the live Worker via /_init.
+    /// Provider-neutral: runs against whichever backend `--target` selects (the
+    /// local sqlite file or a live Cloudflare D1). This is the single, unified
+    /// schema-init path for every deployment — there is no public HTTP init
+    /// endpoint.
     Init {
-        /// The deployed Worker's externally-reachable base URL.
+        /// Bootstrap (create or update) this root admin email, if given.
         #[arg(long)]
-        external_url: String,
+        root_email: Option<String>,
+        /// The root admin password. Prefer --root-password-stdin.
+        #[arg(long)]
+        root_password: Option<String>,
+        /// Read the root admin password from stdin (one line).
+        #[arg(long)]
+        root_password_stdin: bool,
     },
-    /// Reset (or create) a root admin's password directly against live D1.
+    /// Reset (or create) a root admin's password.
     ///
-    /// Runs the shared `Database` user/password code over a `WranglerD1Backend`
-    /// — the same path the native hub's `user set-password` runs locally —
-    /// demonstrating one CLI across the native and Cloudflare backends.
+    /// Provider-neutral over `--target`: runs the same `Database` user/password
+    /// code the native `user set-password` runs, against the local file or live
+    /// D1.
     ResetRoot {
         /// The root admin email.
         #[arg(long)]
@@ -205,18 +196,58 @@ enum CloudflareCommand {
         /// Read the new password from stdin (one line).
         #[arg(long)]
         password_stdin: bool,
-        /// The D1 database name.
-        #[arg(long, default_value = "aos-registry-hub")]
-        d1_name: String,
-        /// Target the local miniflare D1 engine instead of remote (testing).
-        #[arg(long)]
-        local: bool,
+    },
+    /// Inspect the database schema.
+    Schema {
+        #[command(subcommand)]
+        command: SchemaCommand,
+    },
+    /// Deploy and manage the serverless Worker on a hosting provider.
+    Worker {
+        #[command(subcommand)]
+        command: WorkerCommand,
     },
 }
 
-/// Shared options for the Cloudflare deployment commands.
+#[derive(Subcommand)]
+enum SchemaCommand {
+    /// Print the migration statements as a JSON array (for tooling/tests).
+    Dump,
+}
+
+/// The hosting provider for the serverless Worker deployment.
+///
+/// Only Cloudflare Workers is implemented today; the abstraction leaves room for
+/// future providers (e.g. Fastly Compute) behind the same `worker` commands.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Provider {
+    /// Cloudflare Workers (D1 + R2 + KV), via the bundled `wrangler`.
+    Cloudflare,
+}
+
+#[derive(Subcommand)]
+enum WorkerCommand {
+    /// Provision provider resources, deploy the Worker, and set its secrets.
+    ///
+    /// Provider-specific only: it does **not** migrate the database — run
+    /// `init --target d1:<name>` for that (or use `worker install`).
+    Deploy(WorkerArgs),
+    /// Provision the provider resources only (no deploy).
+    Provision(WorkerArgs),
+    /// Convenience: `worker deploy` then `init --target d1:<name>` in one shot.
+    ///
+    /// Provisions + deploys + sets secrets, then migrates the schema and (if
+    /// `--root-email` is given) bootstraps the root admin — all CLI-driven over
+    /// D1, with no public init endpoint.
+    Install(WorkerArgs),
+}
+
+/// Shared options for the `worker` deployment commands.
 #[derive(Args)]
-struct CloudflareArgs {
+struct WorkerArgs {
+    /// The hosting provider.
+    #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
+    provider: Provider,
     /// The Worker name (also the default D1 database name).
     #[arg(long, default_value = "aos-registry-hub")]
     name: String,
@@ -229,10 +260,10 @@ struct CloudflareArgs {
     /// The KV namespace title for sessions.
     #[arg(long, default_value = "SESSIONS")]
     kv_title: String,
-    /// The deployed Worker's externally-reachable base URL (also /_init target).
+    /// The deployed Worker's externally-reachable base URL.
     #[arg(long)]
     external_url: String,
-    /// Bootstrap root admin email (paired with --root-password).
+    /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
     /// Bootstrap root admin password. Prefer --root-password-stdin.
@@ -1257,80 +1288,63 @@ async fn main() -> Result<()> {
             let db = open_db(&cli.root, &cli.target).await?;
             run_frontend_command(&db, command).await?;
         }
-        Command::Cloudflare { command } => {
-            run_cloudflare_command(command).await?;
+        Command::Init {
+            root_email,
+            root_password,
+            root_password_stdin,
+        } => {
+            // `open_db` opens-and-migrates: `Database::open` migrates the local
+            // file; `Database::with_backend` migrates over D1. One unified path,
+            // no public init endpoint.
+            let db = open_db(&cli.root, &cli.target).await?;
+            println!("schema migrated ({})", cli.target);
+            if let Some(email) = root_email {
+                let plaintext = read_password(root_password, root_password_stdin)?;
+                let (email, id) = ensure_root(&db, &email, &plaintext).await?;
+                println!("root admin '{email}' ready (user id {id})");
+            }
+        }
+        Command::ResetRoot {
+            email,
+            password,
+            password_stdin,
+        } => {
+            let db = open_db(&cli.root, &cli.target).await?;
+            let plaintext = read_password(password, password_stdin)?;
+            let (email, id) = ensure_root(&db, &email, &plaintext).await?;
+            println!("reset root password for '{email}' (user id {id})");
+        }
+        Command::Schema { command } => match command {
+            SchemaCommand::Dump => {
+                let stmts = aos_registry_hub::db::migration_statements();
+                println!("{}", serde_json::to_string_pretty(&stmts)?);
+            }
+        },
+        Command::Worker { command } => {
+            run_worker_command(&cli.root, command).await?;
         }
     }
     Ok(())
 }
 
-/// Dispatches the `cloudflare` subcommands (provision/deploy/install/init).
+/// Creates-or-updates the root admin's password, running the exact `Database`
+/// user/password path the native `user set-password` uses (so it works
+/// identically over any `--target` backend).
 ///
-/// All but `init` require the bundled wasm dist + `wrangler` launcher, resolved
-/// from the wrapper environment ([`cloudflare::Assets::from_env`]); `init` only
-/// makes an HTTP request to the live Worker.
+/// Returns the normalised email and the user id.
 ///
 /// # Errors
 ///
-/// Returns an error if asset resolution, any `wrangler` step, or the `/_init`
-/// request fails.
-async fn run_cloudflare_command(command: CloudflareCommand) -> Result<()> {
-    use aos_registry_hub::cloudflare;
-
-    match command {
-        CloudflareCommand::Init { external_url } => {
-            let body = cloudflare::init_remote(&external_url).await?;
-            println!("/_init: {}", body.trim());
-        }
-        CloudflareCommand::Provision(args) => {
-            let assets = cloudflare::Assets::from_env()?;
-            let cfg = provision_from_args(&assets, &args).await?;
-            println!(
-                "provisioned: D1 {} (id {}), R2 {}, KV id {}",
-                cfg.d1_name, cfg.d1_id, cfg.bucket, cfg.kv_id
-            );
-        }
-        CloudflareCommand::Deploy(args) => {
-            let assets = cloudflare::Assets::from_env()?;
-            deploy_and_init(&assets, &args).await?;
-        }
-        CloudflareCommand::Install(args) => {
-            let assets = cloudflare::Assets::from_env()?;
-            deploy_and_init(&assets, &args).await?;
-            println!("install complete: {}", args.external_url);
-        }
-        CloudflareCommand::ResetRoot {
-            email,
-            password,
-            password_stdin,
-            d1_name,
-            local,
-        } => {
-            let email = email.trim().to_lowercase();
-            let plaintext = read_password(password, password_stdin)?;
-            if plaintext.is_empty() {
-                anyhow::bail!("password must not be empty");
-            }
-            let assets = cloudflare::Assets::from_env()?;
-            // `--remote` must resolve the real D1 id (wrangler maps the name
-            // through a config entry); `--local` uses a placeholder.
-            let db_id = if local {
-                "local".to_string()
-            } else {
-                cloudflare::resolve_d1_id(&assets, &d1_name).await?
-            };
-            let backend = cloudflare::WranglerD1Backend::create(assets, d1_name, &db_id, !local)?;
-            // `with_backend` applies the shared MIGRATIONS idempotently (a no-op
-            // on an already-initialised deployment), then we run the exact same
-            // user/password path the native `user set-password` uses.
-            let db = Database::with_backend(Box::new(backend)).await?;
-            let user_id = db.find_or_create_user(&email).await?;
-            let hash = aos_registry_hub::auth::password::hash_password(&plaintext)?;
-            db.set_user_password(user_id, &hash).await?;
-            println!("reset root password for '{email}' (user id {user_id})");
-        }
+/// Returns an error if the password is empty, or any database step fails.
+async fn ensure_root(db: &Database, email: &str, plaintext: &str) -> Result<(String, i64)> {
+    let email = email.trim().to_lowercase();
+    if plaintext.is_empty() {
+        anyhow::bail!("password must not be empty");
     }
-    Ok(())
+    let user_id = db.find_or_create_user(&email).await?;
+    let hash = aos_registry_hub::auth::password::hash_password(plaintext)?;
+    db.set_user_password(user_id, &hash).await?;
+    Ok((email, user_id))
 }
 
 /// Reads a password from `password`, or stdin when `from_stdin`, trimming a
@@ -1338,7 +1352,7 @@ async fn run_cloudflare_command(command: CloudflareCommand) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error if `from_stdin` is set but stdin cannot be read.
+/// Returns an error if neither source is given, or stdin cannot be read.
 fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
     if let Some(p) = password {
         return Ok(p);
@@ -1351,31 +1365,61 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
             .context("reading password from stdin")?;
         return Ok(buf.trim_end_matches(['\n', '\r']).to_string());
     }
-    anyhow::bail!("provide --password or --password-stdin");
+    anyhow::bail!("provide --password / --root-password or the --*-stdin form");
 }
 
-/// Resolves the root password from the `--root-password` flag or stdin.
+/// Dispatches the `worker` subcommands (provision/deploy/install) for the
+/// selected hosting provider.
 ///
 /// # Errors
 ///
-/// Returns an error if `--root-password-stdin` is set but stdin cannot be read.
-fn resolve_root_password(args: &CloudflareArgs) -> Result<Option<String>> {
-    if args.root_password_stdin {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading root password from stdin")?;
-        Ok(Some(buf.trim_end_matches(['\n', '\r']).to_string()))
-    } else {
-        Ok(args.root_password.clone())
+/// Returns an error if the provider is unsupported, asset resolution fails, or
+/// any provisioning/deploy/migration step fails.
+async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
+    use aos_registry_hub::cloudflare;
+
+    let args = match &command {
+        WorkerCommand::Deploy(a) | WorkerCommand::Provision(a) | WorkerCommand::Install(a) => a,
+    };
+    // Only Cloudflare is implemented; the match documents the extension point.
+    match args.provider {
+        Provider::Cloudflare => {}
     }
+    let assets = cloudflare::Assets::from_env()?;
+
+    match &command {
+        WorkerCommand::Provision(args) => {
+            let cfg = provision_worker(&assets, args).await?;
+            println!(
+                "provisioned: D1 {} (id {}), R2 {}, KV id {}",
+                cfg.d1_name, cfg.d1_id, cfg.bucket, cfg.kv_id
+            );
+        }
+        WorkerCommand::Deploy(args) => {
+            deploy_worker(&assets, args).await?;
+        }
+        WorkerCommand::Install(args) => {
+            deploy_worker(&assets, args).await?;
+            // Migrate + bootstrap root over D1 via the CLI (no public endpoint),
+            // exactly as `init --target d1:<name>` would.
+            let target = format!("d1:{}", args.d1_name);
+            let db = open_db(root, &target).await?;
+            println!("schema migrated ({target})");
+            if let Some(email) = &args.root_email {
+                let plaintext = read_password(args.root_password.clone(), args.root_password_stdin)?;
+                let (email, id) = ensure_root(&db, email, &plaintext).await?;
+                println!("root admin '{email}' ready (user id {id})");
+            }
+            println!("install complete: {}", args.external_url);
+        }
+    }
+    Ok(())
 }
 
-/// Provisions resources and resolves a [`cloudflare::DeployConfig`] from CLI args.
-async fn provision_from_args(
+/// Provisions the provider resources and resolves a [`cloudflare::DeployConfig`].
+async fn provision_worker(
     assets: &aos_registry_hub::cloudflare::Assets,
-    args: &CloudflareArgs,
+    args: &WorkerArgs,
 ) -> Result<aos_registry_hub::cloudflare::DeployConfig> {
     aos_registry_hub::cloudflare::provision(
         assets,
@@ -1384,25 +1428,24 @@ async fn provision_from_args(
         &args.bucket,
         &args.kv_title,
         &args.external_url,
-        args.root_email.as_deref(),
         args.email_relay_url.as_deref(),
     )
     .await
 }
 
-/// Provisions, deploys, applies secrets, and runs `/_init` (the shared
-/// install/deploy body).
-async fn deploy_and_init(
+/// Provisions, deploys the bundled Worker wasm, and applies its runtime secrets.
+///
+/// Does **not** migrate the database — that is the provider-neutral `init` step.
+async fn deploy_worker(
     assets: &aos_registry_hub::cloudflare::Assets,
-    args: &CloudflareArgs,
+    args: &WorkerArgs,
 ) -> Result<()> {
     use aos_registry_hub::cloudflare;
 
-    let cfg = provision_from_args(assets, args).await?;
+    let cfg = provision_worker(assets, args).await?;
     let secrets = cloudflare::Secrets {
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
-        root_password: resolve_root_password(args)?,
         email_api_token: args.email_api_token.clone(),
     };
     let applied = cloudflare::deploy(assets, &cfg, &secrets).await?;
@@ -1411,9 +1454,7 @@ async fn deploy_and_init(
         println!("  HUB_JWT_SECRET={}", applied.jwt_secret);
         println!("  HUB_SEAL_KEY={}", applied.seal_key);
     }
-    println!("deployed; applying schema via /_init …");
-    let body = cloudflare::init_remote(&args.external_url).await?;
-    println!("/_init: {}", body.trim());
+    println!("deployed: {}", args.external_url);
     Ok(())
 }
 

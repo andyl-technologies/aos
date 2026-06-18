@@ -1,20 +1,20 @@
 # Cloudflare Workers config for the AOS registry hub Worker (RFC-0004).
 #
-# PREFER THE INSTALLER. `aos-registry-hub cloudflare install` (the
+# PREFER THE INSTALLER. `aos-registry-hub worker deploy` (the
 # `aos-registry-hub-cloudflare` package) generates this config over the prebuilt
-# wasm dist, provisions the resources, sets the secrets, and runs /_init — see
-# deploy/DEPLOY.md. This checked-in file is for the manual `wrangler deploy`
-# path; its placeholder ids are not real and must be replaced.
+# wasm dist, provisions the resources, and sets the secrets — see
+# deploy/DEPLOY.md. The schema is then migrated by `aos-registry-hub init
+# --target d1:<name>` over D1 (there is no public init endpoint). This checked-in
+# file is for the manual `wrangler deploy` path; its placeholder ids are not real.
 #
-# Runtime configuration the Worker reads (the installer sets these for you):
+# Runtime configuration the Worker reads (worker deploy sets these for you):
 #   HUB_JWT_SECRET      (secret, required) HS256 JWT signing key
 #   HUB_SEAL_KEY        (secret, required) at-rest AES-GCM sealing key
 #   HUB_EXTERNAL_URL    ([vars], required) externally-reachable base URL
-#   HUB_ROOT_EMAIL      ([vars], optional) bootstrap root admin email
-#   HUB_ROOT_PASSWORD   (secret, optional) bootstrap root admin password
 #   HUB_EMAIL_API_URL   ([vars], optional) magic-link email relay endpoint
 #   HUB_EMAIL_API_TOKEN (secret, optional) bearer token for the relay
-# Set secrets with `wrangler secret put <NAME>`; put [vars] in this file.
+# Set secrets with `wrangler secret put <NAME>`; put [vars] in this file. The
+# root admin is created by `init`/`reset-root` in D1, not as a Worker secret.
 #
 # Live validation requires a Cloudflare account; none of this can be validated
 # in a sandbox — see README.md and deploy/DEPLOY.md.
@@ -31,14 +31,12 @@ compatibility_date = "2024-09-23"
 command = "worker-build --release"
 
 # The D1 (sqlite) database. The binding name must match
-# `handlers::bindings::D1` (REGISTRY_DB). Apply the schema once after deploy by
-# requesting `GET /_init`, which constructs the shared
-# `aos_registry_core::db::Database` over D1 and applies the exact `MIGRATIONS`
-# the native hub uses (tracked in the `schema_version` table). This is the
-# single source of truth for the schema — there is intentionally no separate
-# `migrations_dir`, since a hand-maintained wrangler migration would diverge
-# from core's `MIGRATIONS` (which the worker's reads and indexer now run
-# against) and the two version-tracking systems would conflict.
+# `handlers::bindings::D1` (REGISTRY_DB). Apply the schema after deploy with
+# `aos-registry-hub init --target d1:<name>`, which runs the exact `MIGRATIONS`
+# the native hub uses (tracked in the `schema_version` table) over D1 via
+# `wrangler d1 execute`. This is the single source of truth for the schema —
+# there is intentionally no separate `migrations_dir` (a hand-maintained wrangler
+# migration would diverge from core's `MIGRATIONS`) and no public init endpoint.
 [[d1_databases]]
 binding = "REGISTRY_DB"
 database_name = "aos-registry-hub"

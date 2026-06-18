@@ -57,10 +57,10 @@
 //! console route is mounted on the Worker. The only console code that stays
 //! native is the hub's nested-canonical fallback for slugs with slashes.
 //!
-//! Still worker-local: the one-shot D1 schema setup (`GET /_init`,
-//! [`handlers::init_schema`]) and the Cron-trigger indexer ([`indexer`]). The
-//! `fetch` handler serves `/_init` worker-locally and bridges every other path
-//! to the shared router. See `README.md` and the RFC.
+//! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
+//! handler bridges every request to the shared router; there is no schema-init
+//! endpoint — migrations are CLI-driven over D1 (`aos-registry-hub init --target
+//! d1:<name>`). See `README.md` and the RFC.
 //!
 //! # Module map
 //!
@@ -79,7 +79,7 @@
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
 //! - `d1backend` — the [`aos_registry_core::backend::Backend`] over D1.
-//! - `handlers` — the one-shot `GET /_init` D1 schema setup.
+//! - `handlers` — the Wrangler binding names.
 //! - `indexer` — the Cron-trigger indexer: lists public registries from D1 and
 //!   runs the shared [`aos_registry_core::indexer`] over each registry's R2
 //!   [`surface`] fetcher.
@@ -129,9 +129,7 @@ pub mod workerlimit;
 mod entry {
     //! The Workers runtime entry points: the `fetch` and `scheduled` handlers.
     //!
-    //! The `fetch` handler serves the one-shot `GET /_init` D1 schema setup
-    //! worker-locally ([`crate::handlers::init_schema`]) and bridges **every
-    //! other path** to the shared `axum` router
+    //! The `fetch` handler bridges **every** request to the shared `axum` router
     //! ([`aos_registry_core::connect::router`]), built per request over the
     //! Worker's D1/R2 bindings ([`service_from`]) and bridged to the Workers
     //! runtime by [`crate::bridge`]. That one router serves the
@@ -154,19 +152,6 @@ mod entry {
         sealer_from_secret, WorkerHttpClient, WorkerMailer, WorkerReindexer,
     };
 
-    /// Whether a request path is the worker-local one-shot schema setup.
-    ///
-    /// The shared router ([`aos_registry_core::connect::router`]) now owns the
-    /// entire request surface — the `aos.registry.v1` RPC methods, the
-    /// machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), and the no-JS
-    /// browse UI + JSON read API (the hub home `/` and the `/{slug}/-/…` paths).
-    /// The only path that stays worker-local is `GET /_init`
-    /// ([`crate::handlers::init_schema`]), which applies the D1 schema once
-    /// after `wrangler deploy`; every other path bridges to the shared router.
-    fn is_init_path(path: &str) -> bool {
-        path.trim_start_matches('/') == "_init"
-    }
-
     /// The Wrangler secret holding the HS256 JWT signing secret.
     const HUB_JWT_SECRET: &str = "HUB_JWT_SECRET";
     /// The Wrangler secret holding the at-rest secret-sealing key.
@@ -186,8 +171,9 @@ mod entry {
     /// Build the shared `axum` router over the Worker's D1/R2 bindings.
     ///
     /// Constructs the runtime-neutral pieces once — a non-migrating [`Database`]
-    /// over the D1 [`crate::d1backend`] (the schema is applied via `GET /_init`),
-    /// the HS256 [`JwtKeys`], the external URL, and the D1-backed rate limiter
+    /// over the D1 [`crate::d1backend`] (the schema is applied by the operator
+    /// CLI, `aos-registry-hub init --target d1:<name>`), the HS256 [`JwtKeys`],
+    /// the external URL, and the D1-backed rate limiter
     /// ([`crate::workerlimit`]) — and wires them into **both** shared routers:
     ///
     /// - the RPC + facade + browse router built from the [`RpcService`]
@@ -295,7 +281,7 @@ mod entry {
         Ok(aos_registry_core::connect::router(service).merge(console_router(console_deps)))
     }
 
-    /// The HTTP entry point: the worker-local `/_init`, else the shared router.
+    /// The HTTP entry point: bridge every request to the shared router.
     ///
     /// The shared router ([`aos_registry_core::connect::router`]) owns the
     /// entire request surface — the `aos.registry.v1` RPC methods, the
@@ -304,21 +290,12 @@ mod entry {
     /// all single-sourced with the native hub. The [`crate::surface`]
     /// `SurfaceProvider` backs the facade and the `GitService` reads, and the
     /// shared [`aos_registry_core::web`] browse reads the same `RpcService` read
-    /// methods. Only `GET /_init` ([`is_init_path`]) stays worker-local in
-    /// [`crate::handlers::init_schema`]. A handler error is logged and returned
-    /// as a `500` so a binding/back-end failure never panics the isolate.
+    /// methods. There is no schema-init endpoint: migrations and root bootstrap
+    /// are applied by the authenticated operator's CLI over D1 (`aos-registry-hub
+    /// init --target d1:<name>`), never over HTTP. A handler error is logged and
+    /// returned as a `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-        // Peek the path without consuming the body (`url()` borrows `&self`).
-        let is_init = req
-            .url()
-            .map(|url| is_init_path(url.path()))
-            .unwrap_or(false);
-
-        if is_init {
-            return crate::handlers::init_schema(&env).await;
-        }
-
         let router = router_from(&env).await?;
         crate::bridge::dispatch(router, req).await
     }
