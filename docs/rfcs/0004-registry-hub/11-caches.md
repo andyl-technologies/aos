@@ -615,10 +615,13 @@ the current spec. Phases are orderable; A lands first, E last.
       object) + `aos-hub cache closure` CLI — the dependency graph in flat form
       on both shells. (An interactive SPA closure graph sharing the RFC-0005
       model is a later refinement.)
-- [ ] `ListNarContents(store_hash)` RPC over the `aos-core/src/nar` reader,
-      reading interior members via the ranged port (no whole-NAR buffering);
-      NAR file-tree browse page with per-file + whole-NAR download streamed
-      through the range-aware facade.
+- [x] **NAR explorer (native):** a `narlist` parser walks the NAR archive
+      (skipping contents; depth+entry-capped, bounds-checked) and the native hub
+      renders the file tree at `/<cache>/<nar>?explore` (decompression-bomb-
+      capped zstd/xz, symlink-contained), linked from each object page; whole-NAR
+      download streams via the range-aware facade. **Remaining:** per-file
+      download (extract one member) and a shared/worker path (worker can't
+      decompress in wasm) — the explorer is native-only by design.
 - [x] Cache browse pages in `core::web`: `/<cache-slug>/` summary
       (`nix-cache-info`, usage, GC state, substituter snippet), searchable
       object list, per-object narinfo + immediate-reference view; visibility +
