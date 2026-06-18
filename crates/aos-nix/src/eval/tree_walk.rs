@@ -15761,11 +15761,42 @@ impl<'ir> TreeWalk<'ir> {
         lhs: IrId,
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
+        match op {
+            ComparisonOp::Lt => self.eval_less_than_comparison(id, node, lhs, rhs, false),
+            ComparisonOp::Gt => self.eval_less_than_comparison(id, node, rhs, lhs, false),
+            ComparisonOp::Le => self.eval_less_than_comparison(id, node, rhs, lhs, true),
+            ComparisonOp::Ge => self.eval_less_than_comparison(id, node, lhs, rhs, true),
+        }
+    }
+
+    fn eval_less_than_comparison(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        rhs: IrId,
+        invert: bool,
+    ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
-        self.eval_comparison_values(id, node, op, lhs, lhs_span, left, rhs, rhs_span, right)
+        let value = self.eval_comparison_values(
+            id,
+            node,
+            ComparisonOp::Lt,
+            lhs,
+            lhs_span,
+            left,
+            rhs,
+            rhs_span,
+            right,
+        )?;
+        if invert {
+            Ok(Value::bool(!self.expect_bool(id, value, node.span)?))
+        } else {
+            Ok(value)
+        }
     }
 
     fn eval_comparison_values(
@@ -15929,11 +15960,21 @@ impl<'ir> TreeWalk<'ir> {
             .copied()
             .zip(right_elements.iter().copied())
         {
-            let left = self.force_value(id, node.span, left)?;
-            let right = self.force_value(id, node.span, right)?;
-            if self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+            if self.values_equal_for_ordering_nested_lazy(
+                id,
+                node,
+                id,
+                node.span,
+                left,
+                id,
+                node.span,
+                right,
+                equality_guard,
+            )? {
                 continue;
             }
+            let left = self.force_value(id, node.span, left)?;
+            let right = self.force_value(id, node.span, right)?;
             return self.compare_values_for_ordering(id, node, op, left, right, equality_guard);
         }
 
@@ -16026,6 +16067,46 @@ impl<'ir> TreeWalk<'ir> {
         }
     }
 
+    fn values_equal_for_ordering_nested_lazy(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        left_id: IrId,
+        left_span: Span,
+        left: Value,
+        right_id: IrId,
+        right_span: Span,
+        right: Value,
+        equality_guard: &mut EqualityPairGuard,
+    ) -> Result<bool, TreeWalkError> {
+        let left_identity = self.nested_identity_value(id, node.span, left)?;
+        let right_identity = self.nested_identity_value(id, node.span, right)?;
+        let shared_heap_identity =
+            left_identity.raw_eq(right_identity) && left_identity.tag().is_heap();
+        if shared_heap_identity && left_identity.tag() != ValueTag::Thunk {
+            return Ok(true);
+        }
+
+        let left = self.force_value(left_id, left_span, left_identity)?;
+        let right = self.force_value(right_id, right_span, right_identity)?;
+        if shared_heap_identity
+            && left.raw_eq(right)
+            && left.tag().is_heap()
+            && left.tag() != ValueTag::Thunk
+        {
+            return Ok(true);
+        }
+        if shared_heap_identity
+            && left.tag() == ValueTag::Float
+            && right.tag() == ValueTag::Float
+            && f64::from_bits(left.payload_bits()).is_nan()
+            && f64::from_bits(right.payload_bits()).is_nan()
+        {
+            return Ok(true);
+        }
+        self.values_equal_for_ordering(id, node, left, right, equality_guard)
+    }
+
     fn lists_equal_for_ordering(
         &mut self,
         id: IrId,
@@ -16068,9 +16149,17 @@ impl<'ir> TreeWalk<'ir> {
         }
 
         for (left, right) in left_elements.into_iter().zip(right_elements) {
-            let left = self.force_value(id, node.span, left)?;
-            let right = self.force_value(id, node.span, right)?;
-            if !self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+            if !self.values_equal_for_ordering_nested_lazy(
+                id,
+                node,
+                id,
+                node.span,
+                left,
+                id,
+                node.span,
+                right,
+                equality_guard,
+            )? {
                 return Ok(false);
             }
         }
@@ -16124,9 +16213,17 @@ impl<'ir> TreeWalk<'ir> {
             }
         }
         for (left, right) in left_entries.into_iter().zip(right_entries) {
-            let left = self.force_value(id, node.span, left.value)?;
-            let right = self.force_value(id, node.span, right.value)?;
-            if !self.values_equal_for_ordering(id, node, left, right, equality_guard)? {
+            if !self.values_equal_for_ordering_nested_lazy(
+                id,
+                node,
+                id,
+                node.span,
+                left.value,
+                id,
+                node.span,
+                right.value,
+                equality_guard,
+            )? {
                 return Ok(false);
             }
         }
@@ -18499,7 +18596,7 @@ mod tests {
         BUILTINS, BuiltinDirect, BuiltinEffect, BuiltinMetadata, direct_builtin,
     };
     use crate::string::{ContextElement, StringContext};
-    use crate::syntax::{Symbol, SymbolTable, parse_str};
+    use crate::syntax::{ParseErrorKind, Symbol, SymbolTable, parse_str};
     use crate::value::HeapObject;
 
     const PINNED_BUILTIN_SURFACE_EXPERIMENTAL_FEATURES: &str = "flakes";
@@ -19058,6 +19155,28 @@ mod tests {
         );
         let ir = lower(source);
         eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+    }
+
+    fn assert_cpp_nix_and_parser_reject_non_associative_operator(
+        oracle: &str,
+        source: &str,
+        operator: &'static str,
+    ) {
+        let output = Command::new(oracle)
+            .args(["--parse", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle parses expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly parsed {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+
+        let error = parse_str(source).expect_err("parser rejects operator chaining");
+        assert_eq!(
+            error.kind(),
+            &ParseErrorKind::NonAssociativeOperator { operator }
+        );
     }
 
     fn assert_cpp_nix_and_tree_walk_reject_with_final_error(
@@ -21055,6 +21174,105 @@ mod tests {
             return;
         };
         assert_cpp_nix_equality_semantics_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_comparison_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "1 < 2",
+            "2 > 1",
+            "2 <= 2",
+            "2 >= 3",
+            "1 < 1.5",
+            "1.5 >= 2",
+            "9007199254740993 < 9007199254740994.0",
+            "builtins.lessThan 1 2",
+            "let less = builtins.lessThan 1; in less 2",
+            "builtins.lessThan 2 1",
+            "builtins.lessThan 1 1",
+            r#""a" < "b""#,
+            r#""b" > "a""#,
+            r#""a" <= "a""#,
+            r#""a" >= "b""#,
+            r#""Z" < "a""#,
+            r#""a\n" < "aa""#,
+            "/tmp/a < /tmp/b",
+            "/tmp/b > /tmp/a",
+            "/tmp/a <= /tmp/a",
+            "builtins.lessThan /tmp/a /tmp/b",
+            "[1 2] < [1 3]",
+            "[1 3] > [1 2]",
+            "[1 2] <= [1 2]",
+            "[1 2] >= [1 3]",
+            "[1] < [1 0]",
+            "[1 0] > [1]",
+            "[] < [0]",
+            r#"[1 "a"] < [1 "b"]"#,
+            "[[1 2]] < [[1 3]]",
+            "[1 (builtins.throw \"x\")] < [2 (builtins.throw \"y\")]",
+            "[2 (builtins.throw \"x\")] < [1 (builtins.throw \"y\")]",
+            "let f = x: x; prefix = [ f ]; in (prefix ++ [ 1 ]) < (prefix ++ [ 2 ])",
+            "let xs = [ xs ]; in xs < xs",
+            "let xs = [ xs ]; in xs <= xs",
+            "let s = rec { a = s; }; in [s] < [s]",
+            "let s = rec { a = s; }; in [s] <= [s]",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan < nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan > nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan <= nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan >= nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in [ nan 1 ] < [ nan 2 ]",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            "true < false",
+            "null < null",
+            "{} < {}",
+            "(x: x) < (x: x)",
+            r#"1 < "a""#,
+            r#""a" < 1"#,
+            r#"/tmp/a < "a""#,
+            "[1] < true",
+            "[1] < [\"a\"]",
+            "false < [(1 / 0)]",
+            "1 < true",
+            r#""a" < true"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        assert_cpp_nix_and_tree_walk_throw_message(
+            oracle,
+            r#"[1 (builtins.throw "x")] <= [1 (builtins.throw "y")]"#,
+            "y",
+        );
+
+        for (source, operator) in [
+            ("1 < 2 < 3", "<"),
+            ("1 <= 2 <= 3", "<="),
+            ("3 > 2 > 1", ">"),
+            ("3 >= 2 >= 1", ">="),
+        ] {
+            assert_cpp_nix_and_parser_reject_non_associative_operator(oracle, source, operator);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_comparison_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_comparison_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_comparison_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix comparison check");
+            return;
+        };
+        assert_cpp_nix_comparison_semantics_match_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(oracle: &str) {
@@ -37147,6 +37365,16 @@ mod tests {
         assert_eq!(eval("[] < [0]").as_bool(), Ok(true));
         assert_eq!(eval("[1 \"a\"] < [1 \"b\"]").as_bool(), Ok(true));
         assert_eq!(eval("[[1 2]] < [[1 3]]").as_bool(), Ok(true));
+        assert_eq!(
+            eval("let f = x: x; prefix = [ f ]; in (prefix ++ [ 1 ]) < (prefix ++ [ 2 ])")
+                .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in [ nan 1 ] < [ nan 2 ]")
+                .as_bool(),
+            Ok(true)
+        );
     }
 
     #[test]
@@ -37156,18 +37384,18 @@ mod tests {
 
         let ir = lower("[1 (1 / 0)] <= [1 (2 / 0)]");
         let root = ir.arena.node(ir.root).expect("root exists");
-        let IrData::Binary { lhs, .. } = root.data else {
+        let IrData::Binary { rhs, .. } = root.data else {
             panic!("comparison root has binary payload");
         };
-        let left = ir.arena.node(lhs).expect("lhs exists");
-        let IrData::Children(left_elements) = left.data else {
-            panic!("lhs list has children");
+        let right = ir.arena.node(rhs).expect("rhs exists");
+        let IrData::Children(right_elements) = right.data else {
+            panic!("rhs list has children");
         };
-        let left_elements = ir
+        let right_elements = ir
             .arena
-            .child_slice(left_elements)
-            .expect("lhs elements exist");
-        let throwing_thunk = ir.arena.node(left_elements[1]).expect("thunk exists");
+            .child_slice(right_elements)
+            .expect("rhs elements exist");
+        let throwing_thunk = ir.arena.node(right_elements[1]).expect("thunk exists");
         let IrData::Node(throwing_element) = throwing_thunk.data else {
             panic!("list element is a thunk");
         };

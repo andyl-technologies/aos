@@ -559,18 +559,20 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 7.4 Comparison `< <= > >=`
 
-- [ ] **Numbers** — numeric ordering; int/float cross-compare promotes (verify).
-- [ ] **Strings** — byte-lexicographic ordering. Verify it is byte-wise (not
+- [x] **Numbers** — numeric ordering; int/float cross-compare promotes (verify).
+- [x] **Strings** — byte-lexicographic ordering. Verify it is byte-wise (not
       locale/collation) against pinned Nix.
-- [ ] **Lists** — lexicographic, elementwise: compare element 0, then 1, …; a
+- [x] **Paths** — byte-lexicographic ordering on path bytes; pinned Nix 2.24.12
+      supports both operator comparison and `builtins.lessThan` on paths.
+- [x] **Lists** — lexicographic, elementwise: compare element 0, then 1, …; a
       shorter prefix list is less. **Verify** Nix supports list `<` and its exact
       semantics against pinned Nix (some versions restrict comparable types).
-- [ ] **Type restrictions** — comparison is defined only on numbers, strings, and
-      (per above) lists; comparing other types (bools, sets, null, functions) is
-      a **must-error**. Verify the exact comparable-type set.
-- [ ] **Mixed-type comparison errors** — e.g. `1 < "a"` is a **must-error**
+- [x] **Type restrictions** — comparison is defined only on numbers, strings,
+      paths, and (per above) lists; comparing other types (bools, sets, null,
+      functions) is a **must-error**. Verify the exact comparable-type set.
+- [x] **Mixed-type comparison errors** — e.g. `1 < "a"` is a **must-error**
       (verify; numbers cross-compare but number-vs-string does not).
-- [ ] **Non-associative** — `a < b < c` is a parse error (§6).
+- [x] **Non-associative** — `a < b < c` is a parse error (§6).
 
 ---
 
