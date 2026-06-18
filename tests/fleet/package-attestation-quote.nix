@@ -40,6 +40,7 @@
 
       assert quote["nonce"] == nonce
       assert quote["pcr_selection"] == "sha256:7,11,12,15"
+      assert len(quote["quoted_pcr15"]) == 64
       for key in (
           "ek_public",
           "ek_name",
@@ -59,6 +60,7 @@
           f"-m {quote['quote_message']} "
           f"-s {quote['quote_signature']} "
           f"-f {quote['quote_pcrs']} "
+          f"-l sha256:7,11,12,15 "
           f"-g sha256 -q {nonce}"
       )
     '';

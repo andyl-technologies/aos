@@ -264,6 +264,7 @@ in {
       system = testSystem;
       bootMode = "image";
       imageDiskMiB = 16384;
+      tpm = true;
       packages = [
         "aos-test-agent"
         "package-root-image-good"
@@ -279,9 +280,15 @@ in {
   testScript =
     # python
     ''
+      import hashlib
+      import json
+      import shlex
+
       SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       DB_GUID = "d719b2cb-3d3a-4596-a3bc-dad00e67656f"
+      APM = "${pkgs.aos}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
+      TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
 
       def efivar_byte(name):
           path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
@@ -319,6 +326,12 @@ in {
               f"{JQ} -e --arg h sha256:{root_hash} "
               f"'.apm.expose.images[0].root_hash == $h' {meta}"
           )
+          target.succeed(
+              f"{JQ} -e --arg h sha256:{root_hash} "
+              f"'.apm.attestation.root_hash == $h "
+              f"and .apm.attestation.root_hash_sig == \"root.roothash.p7s\" "
+              f"and (.apm.attestation.measurement | test(\"^sha256:[0-9a-f]{{64}}$\"))' {meta}"
+          )
           unit = f"/etc/systemd/system.attached/{name}.service"
           assert_file_line(unit, f"RootImage={image}/root.img")
           assert_file_line(unit, f"RootVerity={image}/root.verity")
@@ -350,6 +363,153 @@ in {
               "systemctl daemon-reload\n"
           )
 
+      def assert_quote_verifies_package_event_log(prior_event_log=""):
+          nonce = "00112233445566778899aabbccddeeff"
+          out_dir = "/tmp/aos-package-quote"
+          target.wait_until_succeeds("test -s /run/log/aos-packages.cel", timeout=60)
+          target.succeed(f"test ! -e {out_dir}")
+          event_log = prior_event_log + target.succeed("cat /run/log/aos-packages.cel")
+          event_log_path = "/tmp/aos-packages-combined.cel"
+          target.succeed(f"printf %s {shlex.quote(event_log)} > {event_log_path}")
+          records = [json.loads(line) for line in event_log.splitlines() if line.strip()]
+          baseline_value = None
+          baseline_arg = ""
+          if records and records[0]["event_type"] == "aos-pcr-baseline":
+              baseline_value = records[0]["pcr_value"]
+              baseline_arg = f" --pcr15-baseline {shlex.quote(baseline_value)}"
+
+          raw = target.succeed(
+              f"{APM} --json _test-produce-package-attestation-quote "
+              f"--nonce {nonce} --output-dir {out_dir}"
+          )
+          print("=== package attestation quote ===")
+          print(raw)
+          quote = json.loads(raw)
+          assert quote["nonce"] == nonce
+          assert quote["pcr_selection"] == "sha256:7,11,12,15"
+          assert len(quote["quoted_pcr15"]) == 64
+
+          target.succeed(
+              f"{TPM2_CHECKQUOTE} -u {quote['ak_public']} "
+              f"-m {quote['quote_message']} "
+              f"-s {quote['quote_signature']} "
+              f"-f {quote['quote_pcrs']} "
+              f"-l sha256:7,11,12,15 "
+              f"-g sha256 -q {nonce}"
+          )
+
+          verified_raw = target.succeed(
+              f"{APM} --json _test-verify-package-attestation --system "
+              f"--event-log {event_log_path} "
+              f"--pcr15 {quote['quoted_pcr15']}{baseline_arg}"
+          )
+          print("=== package attestation verification ===")
+          print(verified_raw)
+          verified = json.loads(verified_raw)
+          assert verified["pcr15"] == quote["quoted_pcr15"]
+          assert verified["package_count"] >= 2
+          if baseline_value is not None:
+              out = target.fail(
+                  f"{APM} --json _test-verify-package-attestation --system "
+                  f"--event-log {event_log_path} "
+                  f"--pcr15 {quote['quoted_pcr15']} 2>&1"
+              )
+              assert "requires an expected baseline" in out, out
+              baseline_hex = baseline_value.split(":", 1)[1]
+              wrong_baseline = "sha256:" + (
+                  "00" * 32 if baseline_hex != "00" * 32 else "11" * 32
+              )
+              out = target.fail(
+                  f"{APM} --json _test-verify-package-attestation --system "
+                  f"--event-log {event_log_path} "
+                  f"--pcr15 {quote['quoted_pcr15']} "
+                  f"--pcr15-baseline {shlex.quote(wrong_baseline)} 2>&1"
+              )
+              assert "does not match the expected baseline" in out, out
+
+          def length_prefixed_word(schema, fields):
+              word = schema
+              for name, value in fields:
+                  word += f"|{name}={len(value)}:{value}"
+              return word
+
+          def digest_word(word):
+              return hashlib.sha256(word.encode()).hexdigest()
+
+          def replay_pcr15(records):
+              pcr = bytes(32)
+              for record in records:
+                  if record["event_type"] == "aos-pcr-baseline":
+                      pcr = bytes.fromhex(record["pcr_value"].split(":", 1)[1])
+                      continue
+                  digest = bytes.fromhex(record["digest"].split(":", 1)[1])
+                  pcr = hashlib.sha256(pcr + digest).digest()
+              return pcr.hex()
+
+          def refresh_package_set_digests(records):
+              index = 0
+              while index < len(records):
+                  record = records[index]
+                  if record["event_type"] != "aos-package-set":
+                      index += 1
+                      continue
+                  package_count = record["package_count"]
+                  package_digests = []
+                  for offset in range(1, package_count + 1):
+                      package_record = records[index + offset]
+                      assert package_record["event_type"] == "aos-package"
+                      package_digests.append(package_record["digest"])
+                  record["event"] = length_prefixed_word(
+                      "aos-package-set-v1",
+                      [
+                          ("package-count", str(package_count)),
+                          ("package-digests", ",".join(package_digests)),
+                      ],
+                  )
+                  record["digest"] = f"sha256:{digest_word(record['event'])}"
+                  index += package_count + 1
+
+          changed = False
+          for record in records:
+              if (
+                  record["event_type"] == "aos-package"
+                  and record["package"] == "package-root-image-good"
+              ):
+                  record["package"] = "package-root-image-evil"
+                  record["event"] = length_prefixed_word(
+                      "aos-package-v1",
+                      [
+                          ("name", record["package"]),
+                          ("version", record["version"]),
+                          ("root-digest", record["root_digest"]),
+                          ("manifest-digest", record["manifest_digest"]),
+                      ],
+                  )
+                  record["digest"] = f"sha256:{digest_word(record['event'])}"
+                  changed = True
+                  break
+          assert changed, "expected package-root-image-good in package event log"
+          refresh_package_set_digests(records)
+          tampered_log = "\n".join(
+              json.dumps(record, separators=(",", ":")) for record in records
+          ) + "\n"
+          tampered_pcr15 = replay_pcr15(records)
+          target.succeed(
+              f"printf %s {shlex.quote(tampered_log)} > /tmp/aos-packages-tampered.cel"
+          )
+          out = target.fail(
+              f"{APM} --json _test-verify-package-attestation --system "
+              f"--event-log /tmp/aos-packages-tampered.cel "
+              f"--pcr15 {quote['quoted_pcr15']}{baseline_arg} 2>&1"
+          )
+          assert "no golden measurement" in out or "replayed PCR 15" in out, out
+          out = target.fail(
+              f"{APM} --json _test-verify-package-attestation --system "
+              f"--event-log /tmp/aos-packages-tampered.cel "
+              f"--pcr15 {tampered_pcr15}{baseline_arg} 2>&1"
+          )
+          assert "no golden measurement" in out, out
+
       target.succeed("systemctl is-active multi-user.target")
       target.succeed("test -d /sys/firmware/efi/efivars")
       assert efivar_byte("SetupMode") == 1, "expected Setup Mode before enrollment"
@@ -361,6 +521,27 @@ in {
           target.succeed(f"{eu} -f {keys}/{auth} {var} 2>&1")
       target.succeed(f"test -r /sys/firmware/efi/efivars/db-{DB_GUID}")
       assert efivar_byte("SetupMode") == 0, "PK enrollment should exit Setup Mode"
+
+      try:
+          target.wait_until_succeeds(
+              "test -L /etc/systemd/system.attached/package-root-image-good.service "
+              "&& test -L /etc/systemd/system.attached/package-root-image-bad.service",
+              timeout=300,
+          )
+      except Exception:
+          dump_unit("aos-seed-baked-packages.service")
+          raise
+      assert_root_hash_metadata(
+          "package-root-image-good",
+          "${goodPackageHash}",
+          "${goodImage}",
+      )
+      assert_root_hash_metadata(
+          "package-root-image-bad",
+          "${badPackageHash}",
+          "${badImage}",
+      )
+      assert_quote_verifies_package_event_log()
 
       target.reboot()
       target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
