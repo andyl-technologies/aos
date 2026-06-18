@@ -433,6 +433,19 @@ pub enum PackageCommand {
         #[arg(long)]
         system: bool,
     },
+    /// Hidden: verify an RFC-0001 package attestation event log.
+    #[command(name = "_test-verify-package-attestation", hide = true)]
+    TestVerifyPackageAttestation {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: String,
+    },
     /// Hidden: load fleet BPF-LSM policies selected by host policy.
     #[command(name = "_load-ebpf-lsm-policies", hide = true)]
     LoadEbpfLsmPolicies {
@@ -558,6 +571,7 @@ impl PackageCommand {
             PackageCommand::Held { system, .. } => *system,
             PackageCommand::Orphans { system, .. } => *system,
             PackageCommand::TestReconcileExposedUnits { system } => *system,
+            PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             _ => false,
         }
     }
@@ -1976,6 +1990,9 @@ pub async fn run(
         PackageCommand::TestReconcileExposedUnits { .. } => {
             exposed_units::reconcile_system_profile(&config, printer).await
         }
+        PackageCommand::TestVerifyPackageAttestation {
+            event_log, pcr15, ..
+        } => run_test_verify_package_attestation(&config, event_log, pcr15, printer),
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -1990,6 +2007,37 @@ pub async fn run(
             unreachable!("LoadEbpfLsmPolicies is handled before ApmConfig::load")
         }
     }
+}
+
+fn run_test_verify_package_attestation(
+    config: &config::ApmConfig,
+    event_log: &PathBuf,
+    pcr15: &str,
+    printer: &Printer,
+) -> Result<()> {
+    let log = fs::read_to_string(event_log)
+        .with_context(|| format!("reading package event log {}", event_log.display()))?;
+    let registries = install::load_registries(config)?;
+    let catalog = registries
+        .registries()
+        .iter()
+        .flat_map(|registry| registry.package_versions().cloned())
+        .collect::<Vec<_>>();
+    let verified =
+        package_attestation::verify_package_event_log_against_catalog(&log, pcr15, &catalog)?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "pcr15": verified.pcr15,
+            "package_count": verified.package_count,
+        }));
+    } else {
+        printer.success(&format!(
+            "Package attestation event log verified ({} package events, PCR 15 {}).",
+            verified.package_count, verified.pcr15
+        ));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

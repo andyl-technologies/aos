@@ -286,7 +286,8 @@ pub fn parse_registry(
     dir: &Path,
     platform: &str,
 ) -> Result<(HashMap<String, PackageMeta>, HashMap<String, PackageMeta>)> {
-    parse_registry_matching(dir, platform, None)
+    let (packages, hash_index, _) = parse_registry_matching(dir, platform, None)?;
+    Ok((packages, hash_index))
 }
 
 /// Parse a registry directory, retaining only versions matched by `version_req`.
@@ -302,13 +303,17 @@ pub(crate) fn parse_registry_matching(
     dir: &Path,
     platform: &str,
     version_req: Option<&semver::VersionReq>,
-) -> Result<(HashMap<String, PackageMeta>, HashMap<String, PackageMeta>)> {
+) -> Result<(
+    HashMap<String, PackageMeta>,
+    HashMap<String, PackageMeta>,
+    Vec<PackageMeta>,
+)> {
     let packages_dir = dir.join("packages");
     let mut packages = HashMap::new();
     let mut all_versions = Vec::new();
 
     if !packages_dir.is_dir() {
-        return Ok((packages, HashMap::new()));
+        return Ok((packages, HashMap::new(), all_versions));
     }
 
     // Walk {first_letter}/{name}.toml
@@ -346,7 +351,7 @@ pub(crate) fn parse_registry_matching(
     }
 
     let hash_index = build_hash_index(&all_versions);
-    Ok((packages, hash_index))
+    Ok((packages, hash_index, all_versions))
 }
 
 /// Parse a single package TOML file and extract the newest version for the
@@ -1255,12 +1260,13 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-poli
         std::fs::write(packages_dir.join("tool.toml"), MULTI_VERSION_TOML).unwrap();
 
         let req = semver::VersionReq::parse("^1.0").unwrap();
-        let (packages, index) =
+        let (packages, index, versions) =
             parse_registry_matching(tmp.path(), "x86_64-linux", Some(&req)).unwrap();
 
         assert_eq!(packages.get("tool").unwrap().version, "1.0.0");
         assert!(index.contains_key("oldhash111111"));
         assert!(!index.contains_key("newhash222222"));
+        assert_eq!(versions.len(), 1);
     }
 
     #[test]
@@ -1275,12 +1281,13 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-poli
         std::fs::write(packages_dir.join("tool.toml"), content).unwrap();
 
         let req = semver::VersionReq::parse("^1.0").unwrap();
-        let (packages, index) =
+        let (packages, index, versions) =
             parse_registry_matching(tmp.path(), "x86_64-linux", Some(&req)).unwrap();
 
         assert_eq!(packages.get("tool").unwrap().version, "1.0.0");
         assert!(index.contains_key("oldhash111111"));
         assert!(!index.contains_key("newhash222222"));
+        assert_eq!(versions.len(), 1);
     }
 
     #[test]
