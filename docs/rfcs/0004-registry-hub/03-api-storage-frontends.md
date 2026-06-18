@@ -104,6 +104,16 @@ R2).
 
 ### Frontends: direct and proxied domains
 
+> **Extended for caches in [11-caches.md](11-caches.md).** Frontends serve
+> *caches* too (a nullable `frontends.cache_id`); that file also adds what this
+> sketch omitted and the thin shipped schema lacks — explicit proxy settings
+> (timeouts, streaming, retry/failover, range passthrough), a
+> `storage_bindings.access = public | private` mode with `public_base_url`,
+> hub-proxy-to-authenticated-origin (SigV4 / native R2 binding) with presigned
+> GET (`302`) reads, LRU access-signal handling under direct mode, and the
+> cross-visibility pointing matrix (public registry → private cache rejected;
+> private registry → public cache flagged).
+
 A **Frontend** is a domain serving some subset of a registry's
 surfaces, in a mode — **mode is a property of the frontend, not the
 registry**, and a registry can have many frontends:

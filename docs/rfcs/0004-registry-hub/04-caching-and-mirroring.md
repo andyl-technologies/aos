@@ -1,3 +1,12 @@
+> **Scope note.** This file covers caches the hub *observes* — the
+> advertised-endpoint stack a registry points consumers at, and the
+> always-on consistency validation over it. **Hosting and managing** caches
+> (GC, size limits, search, GC roots, NAR explorer) is
+> [11-caches.md](11-caches.md): the "CacheStore" below is realized by a managed
+> `caches` row, and the advertised-endpoint table (`caches(registry_id, url,
+> priority)`) is renamed `advertised_caches` there to free the `caches` name
+> for the managed object.
+
 ### Cache stores, stacks, and consistency validation
 
 **Shared NAR storage (no duplication).** Verified against the code:
