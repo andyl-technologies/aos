@@ -325,6 +325,23 @@ async fn browse_dispatch(
     query: Option<String>,
 ) -> Response {
     let q = browse::BrowseQuery::parse(query.as_deref());
+    // A cache slug routes to the managed-cache browse pages (caches and
+    // registries share the `/{slug}/…` namespace but are disjoint slugs).
+    if matches!(svc.db.cache_by_slug(&slug).await, Ok(Some(_))) {
+        let rendered = match rest.strip_prefix("api/") {
+            Some("objects") => browse::api_cache_objects(&svc, &slug, &q).await,
+            Some(_) => Rendered::NotFound,
+            None => match rest.as_str() {
+                "" => browse::cache_home(&svc, &headers, &slug).await,
+                "objects" => browse::cache_objects(&svc, &headers, &slug, &q).await,
+                other => match other.strip_prefix("objects/").filter(|h| !h.is_empty()) {
+                    Some(hash) => browse::cache_object(&svc, &headers, &slug, hash).await,
+                    None => Rendered::NotFound,
+                },
+            },
+        };
+        return browse_response(rendered);
+    }
     let rendered = match rest.strip_prefix("api/") {
         Some(api) => match api {
             "registry" => browse::api_registry(&svc, &slug).await,

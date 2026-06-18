@@ -602,18 +602,22 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase D — discovery, graph, NAR explorer, web
 
-- [ ] `SearchCache` over the FTS index; hub search box gains a cache scope;
-      `aos-hub cache search` CLI.
-- [ ] `CacheClosure(store_hash)` RPC (nodes+edges); no-JS edge table + SPA
-      interactive closure graph sharing the RFC-0005 graph model.
+- [x] `SearchCache` (indexed `LIKE`) + `aos-hub cache search` CLI + the cache
+      object-list page's `?q=` search box. (FTS5 ranking and a cache scope on the
+      instance-home search box are later refinements.)
+- [ ] `CacheClosure(store_hash)` RPC (nodes+edges) + SPA interactive closure
+      graph sharing the RFC-0005 graph model. (The no-JS object page already
+      shows the immediate-reference edge table.)
 - [ ] `ListNarContents(store_hash)` RPC over the `aos-core/src/nar` reader,
       reading interior members via the ranged port (no whole-NAR buffering);
       NAR file-tree browse page with per-file + whole-NAR download streamed
       through the range-aware facade.
-- [ ] Cache browse pages in `core::web`: `/<cache-slug>/` summary
-      (`nix-cache-info`, usage, GC policy + last run, public key), searchable
-      object list, per-object narinfo + closure view; `visibility`/auth honored
-      and identical on native hub + Worker.
+- [x] Cache browse pages in `core::web`: `/<cache-slug>/` summary
+      (`nix-cache-info`, usage, GC state, substituter snippet), searchable
+      object list, per-object narinfo + immediate-reference view; visibility +
+      soft-delete enforced, served on native hub **and** worker via the one
+      shared `browse_dispatch`. (Public-key line lands with signing; SPA closure
+      graph + NAR explorer are the items above.)
 
 ### Phase E — parity, ops, tests, docs
 

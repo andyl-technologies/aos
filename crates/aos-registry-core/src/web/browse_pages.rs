@@ -1229,6 +1229,198 @@ fn release_glyphs(channel: &ChannelSummary) -> (Vec<String>, BTreeMap<String, us
     (release_order, class_for)
 }
 
+/// The managed-cache home: `nix-cache-info` summary, storage usage, GC state,
+/// and the substituter setup snippet. No-JS, index-data only.
+#[allow(clippy::too_many_arguments)]
+pub fn cache_home(
+    cache: &crate::db::Cache,
+    usage: &crate::db::CacheUsage,
+    policy: Option<&crate::db::CacheGcPolicy>,
+    link_count: usize,
+    root_count: usize,
+    external_url: &str,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &cache.slug;
+    let mut body = String::new();
+    let _ = write!(body, "<h1>Cache {}</h1>\n", escape(&cache.name));
+    let _ = write!(
+        body,
+        "<p class=\"dim\">{} · priority {} · {} compression</p>\n",
+        escape(&cache.visibility),
+        cache.priority,
+        escape(&cache.compression),
+    );
+
+    body.push_str("<h2>nix-cache-info</h2>\n");
+    let info = vec![
+        vec!["StoreDir".to_string(), "/nix/store".to_string()],
+        vec!["Priority".to_string(), cache.priority.to_string()],
+        vec![
+            "WantMassQuery".to_string(),
+            if cache.want_mass_query { "1" } else { "0" }.to_string(),
+        ],
+        vec![
+            "Signed".to_string(),
+            if cache.hosted_key_id.is_some() { "yes" } else { "no" }.to_string(),
+        ],
+    ];
+    body.push_str(&table(&["field", "value"], &info));
+
+    body.push_str("<h2>Storage</h2>\n");
+    let _ = write!(
+        body,
+        "<p>{} across {} objects</p>\n",
+        human_size(usage.used_bytes.max(0) as u64),
+        usage.object_count,
+    );
+    let _ = write!(
+        body,
+        "<p class=\"dim\">{} linked registries · {} GC roots · GC policy {}</p>\n",
+        link_count,
+        root_count,
+        if policy.is_some() { "configured" } else { "default (no age sweep)" },
+    );
+
+    body.push_str("<h2>Use this cache</h2>\n");
+    let base = external_url.trim_end_matches('/');
+    let _ = write!(
+        body,
+        "<pre>nix.conf:\n  extra-substituters = {}/{}\n</pre>\n",
+        escape(base),
+        escape(slug),
+    );
+
+    let _ = write!(
+        body,
+        "<p><a href=\"/{}/-/objects\">browse objects →</a></p>\n",
+        escape(slug),
+    );
+
+    page_with_session(
+        &format!("cache {slug}"),
+        &[(String::new(), slug.clone())],
+        &body,
+        &StateLine::timed(started),
+        session,
+    )
+}
+
+/// A managed cache's object list, with a server-side search box (`?q=`).
+pub fn cache_objects(
+    cache: &crate::db::Cache,
+    objects: &[crate::db::CacheObject],
+    query: Option<&str>,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &cache.slug;
+    let mut body = String::new();
+    let _ = write!(body, "<h1>Objects · {}</h1>\n", escape(&cache.name));
+    let _ = write!(
+        body,
+        "<form method=\"get\" action=\"/{}/-/objects\">\
+         <input type=\"search\" name=\"q\" value=\"{}\" placeholder=\"name / hash / deriver\">\
+         <button type=\"submit\">search</button></form>\n",
+        escape(slug),
+        escape(query.unwrap_or("")),
+    );
+    let rows: Vec<Vec<String>> = objects
+        .iter()
+        .map(|o| {
+            vec![
+                format!(
+                    "<a href=\"/{}/-/objects/{}\">{}</a>",
+                    escape(slug),
+                    escape(&o.store_hash),
+                    escape(&o.store_name),
+                ),
+                escape(&o.compression),
+                human_size(o.file_size.max(0) as u64),
+            ]
+        })
+        .collect();
+    body.push_str(&live_table(&["store path", "compression", "size"], &rows, "objects"));
+    page_with_session(
+        &format!("objects · {slug}"),
+        &[
+            (format!("/{slug}/"), slug.clone()),
+            (String::new(), "objects".into()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        session,
+    )
+}
+
+/// One cache object's narinfo metadata and its immediate references.
+pub fn cache_object(
+    cache: &crate::db::Cache,
+    object: &crate::db::CacheObject,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &cache.slug;
+    let mut body = String::new();
+    let _ = write!(body, "<h1>{}</h1>\n", escape(&object.store_name));
+    let mut fields = vec![
+        vec![
+            "StoreHash".to_string(),
+            format!("<code>{}</code>", escape(&object.store_hash)),
+        ],
+        vec!["URL".to_string(), escape(&object.nar_url)],
+        vec!["Compression".to_string(), escape(&object.compression)],
+        vec![
+            "NarHash".to_string(),
+            format!("<code>{}</code>", escape(&object.nar_hash)),
+        ],
+        vec!["NarSize".to_string(), human_size(object.nar_size.max(0) as u64)],
+        vec![
+            "FileHash".to_string(),
+            format!("<code>{}</code>", escape(&object.file_hash)),
+        ],
+        vec!["FileSize".to_string(), human_size(object.file_size.max(0) as u64)],
+    ];
+    if let Some(d) = &object.deriver {
+        fields.push(vec!["Deriver".to_string(), format!("<code>{}</code>", escape(d))]);
+    }
+    if let Some(s) = &object.sig {
+        fields.push(vec!["Sig".to_string(), format!("<code>{}</code>", escape(s))]);
+    }
+    body.push_str(&table(&["field", "value"], &fields));
+
+    body.push_str("<h2>References</h2>\n");
+    if object.refs.is_empty() {
+        body.push_str("<p class=\"dim\">none</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = object
+            .refs
+            .iter()
+            .map(|r| {
+                vec![format!(
+                    "<a href=\"/{}/-/objects/{}\"><code>{}</code></a>",
+                    escape(slug),
+                    escape(r),
+                    escape(r),
+                )]
+            })
+            .collect();
+        body.push_str(&table(&["store hash"], &rows));
+    }
+    page_with_session(
+        &format!("{} · {slug}", object.store_name),
+        &[
+            (format!("/{slug}/"), slug.clone()),
+            (format!("/{slug}/-/objects"), "objects".into()),
+            (String::new(), object.store_hash.clone()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        session,
+    )
+}
+
 /// Render the 16×16 partition grid as a `<pre>` block plus its legend table.
 ///
 /// Shared by the consumer [`channel_page`] and the producer channel rollout
