@@ -242,6 +242,18 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
             })?;
         Ok(Box::new(LocalFsWrite { root }))
     }
+
+    async fn cache_writer(
+        &self,
+        cache: &crate::db::Cache,
+    ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
+        let root = self
+            .db
+            .cache_surface_root(cache.id)
+            .await?
+            .with_context(|| format!("cache '{}' has no surface root", cache.slug))?;
+        Ok(Box::new(LocalFsWrite { root }))
+    }
 }
 
 /// A filesystem-backed [`SurfaceWrite`](core_sw::SurfaceWrite) rooted at a

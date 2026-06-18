@@ -4802,6 +4802,10 @@ impl Database {
         if self.registry_by_slug(&slug).await?.is_some() {
             bail!("a registry already exists at '{slug}'");
         }
+        // Slugs are unique across registries and caches (shared facade namespace).
+        if self.cache_by_slug(&slug).await?.is_some() {
+            bail!("a cache already exists at '{slug}' (slugs are unique across registries and caches)");
+        }
         // Per-org registry-count quota (NULL/unset = unlimited).
         if let Some(max_registries) = self.org_quota(org_id).await?.max_registries {
             if self.org_registry_count(org_id).await? >= max_registries {
@@ -4902,6 +4906,12 @@ impl Database {
         }
         if self.cache_by_slug(slug).await?.is_some() {
             bail!("a cache already exists at '{slug}'");
+        }
+        // Slugs are unique *across* registries and caches: the facade serves both
+        // from one `/{slug}/…` namespace, so a shared slug would route reads and
+        // writes to different objects.
+        if self.registry_by_slug(slug).await?.is_some() {
+            bail!("a registry already exists at '{slug}' (slugs are unique across registries and caches)");
         }
         self.backend
             .execute_insert(

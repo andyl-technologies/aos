@@ -1100,7 +1100,17 @@ async fn machine_path(
             {
                 return response;
             }
-            resolve_nested(&state, &uri, &headers, peer, Instant::now()).await
+            let nested = resolve_nested(&state, &uri, &headers, peer, Instant::now()).await;
+            // A managed cache is tried last, so it can never shadow a flat or
+            // nested registry (or console path) that shares the first URL
+            // segment. Cache reads route through the shared facade (the same
+            // codepath the Worker uses) via `crate::facade::cache_get`.
+            if nested.status() == StatusCode::NOT_FOUND
+                && matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_)))
+            {
+                return crate::facade::cache_get(&state, &slug, &path, &headers).await;
+            }
+            nested
         }
         Err(err) => internal(err),
     }

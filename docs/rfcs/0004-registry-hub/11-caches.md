@@ -513,12 +513,17 @@ the current spec. Phases are orderable; A lands first, E last.
       streaming read (`fetch_range(path, offset, len)` → byte stream) over R2
       ranged GET and local-file seek; keep buffered `fetch()` for small surface
       objects.
-- [ ] **Streaming writes:** extend the surface-write port to accept a body
-      **stream** (R2 streaming/multipart put; local streamed file write);
-      `MintCacheUploadCredentials` + facade PUT becomes streaming and
-      content-addressed, enforcing the size cap + org quota from
-      `Content-Length` + a streaming byte counter (no buffer-then-measure);
-      reject over-quota with `507`.
+- [x] **Cache write facade (buffered):** `cache_writer` write-port (fs + R2)
+      and shared `put_machine_path`/`head_machine_path` cache fallthrough →
+      `put_cache_path`, so `nix copy --to <hub>/<cache>` works on **both** the
+      native hub and the worker (native PUT/HEAD via the existing shim; native
+      GET via `cache_get` → shared `facade_fetch`). Enforces cache write auth,
+      machine-path/traversal guards, `MAX_UPLOAD_BYTES`, and a TOCTOU-safe org
+      quota reserve-before-write (`507` on over-quota); rejects writes to a
+      tombstoned cache/org; cross-table slug uniqueness keeps `/{slug}/` routing
+      coherent. **Remaining (with #19):** stream the body (R2 multipart / local
+      streamed write) + `Content-Length`/byte-counter quota instead of buffering,
+      and `MintCacheUploadCredentials` (presigned/scoped-credential upload).
 - [ ] **Streaming Worker bridge:** stream request and response bodies through
       the `worker`⇄`axum` boundary (`worker::Body`/`ByteStream` ⇄
       `axum::body::Body`), replacing `req.bytes()` / `to_bytes(usize::MAX)` /
