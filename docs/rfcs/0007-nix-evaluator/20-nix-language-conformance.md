@@ -458,7 +458,7 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [x] **path + path → path**.
 - [x] **path + string → path** (string must lack store-path context; §4).
 - [x] **string + path → string** (path must exist, copied to store; §4).
-- [ ] **Mismatched `+` operands error** — e.g. `int + string`, `bool + bool`,
+- [x] **Mismatched `+` operands error** — e.g. `int + string`, `bool + bool`,
       `list + list` (lists use `++`, not `+`) are **must-error**. Verify the full
       legal/illegal `+` matrix against pinned Nix.
 

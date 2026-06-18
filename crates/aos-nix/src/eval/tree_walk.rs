@@ -15144,6 +15144,7 @@ impl<'ir> TreeWalk<'ir> {
                 self.concat_strings(id, node, left, right)
             }
             ValueTag::Path => self.eval_path_add(id, node, lhs, lhs_span, left, rhs),
+            ValueTag::Attrs => self.eval_attrs_add(id, node, lhs, lhs_span, left, rhs),
             actual => Err(TreeWalkError::new(
                 TreeWalkErrorKind::Type {
                     id: lhs,
@@ -15206,6 +15207,23 @@ impl<'ir> TreeWalk<'ir> {
         self.heap
             .alloc_path(NixString::from_bytes(bytes))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    fn eval_attrs_add(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        lhs: IrId,
+        lhs_span: Span,
+        left: Value,
+        rhs: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let left = self.coerce_to_string(lhs, left, lhs_span)?;
+        let rhs_span = self.node(rhs)?.span;
+        let right = self.eval_node(rhs)?;
+        let right = self.force_demanded_value(rhs, rhs_span, right)?;
+        let right = self.coerce_to_string(rhs, right, rhs_span)?;
+        self.concat_strings(id, node, left, right)
     }
 
     fn eval_equality(
@@ -19074,6 +19092,116 @@ mod tests {
         out
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum AddMatrixKind {
+        Int,
+        Float,
+        String,
+        Path,
+        Bool,
+        Null,
+        List,
+        PlainAttrs,
+        ToStringAttrs,
+        OutPathAttrs,
+        Lambda,
+        Primop,
+    }
+
+    #[derive(Debug)]
+    struct AddMatrixOperand {
+        kind: AddMatrixKind,
+        source: String,
+    }
+
+    fn add_operator_matrix_operands(prefix: &str) -> (PathBuf, Vec<AddMatrixOperand>) {
+        let dir = unique_temp_dir(prefix);
+        let path = dir.join("matrix.txt");
+        fs::write(&path, b"matrix").expect("matrix path writes");
+        let path = path_source(&path);
+        let operands = vec![
+            AddMatrixOperand {
+                kind: AddMatrixKind::Int,
+                source: "1".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Float,
+                source: "1.5".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::String,
+                source: r#""s""#.to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Path,
+                source: path,
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Bool,
+                source: "true".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Null,
+                source: "null".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::List,
+                source: "[ 1 ]".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::PlainAttrs,
+                source: "{ a = 1; }".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::ToStringAttrs,
+                source: r#"{ __toString = self: "attrs"; }"#.to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::OutPathAttrs,
+                source: r#"{ outPath = "out"; }"#.to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Lambda,
+                source: "x: x".to_owned(),
+            },
+            AddMatrixOperand {
+                kind: AddMatrixKind::Primop,
+                source: "builtins.length".to_owned(),
+            },
+        ];
+        (dir, operands)
+    }
+
+    fn add_operator_matrix_source(left: &AddMatrixOperand, right: &AddMatrixOperand) -> String {
+        format!("builtins.seq (({}) + ({})) true", left.source, right.source)
+    }
+
+    fn add_operator_matrix_kind_is_string_coercible(kind: AddMatrixKind) -> bool {
+        matches!(
+            kind,
+            AddMatrixKind::String
+                | AddMatrixKind::Path
+                | AddMatrixKind::ToStringAttrs
+                | AddMatrixKind::OutPathAttrs
+        )
+    }
+
+    fn add_operator_matrix_cell_is_legal(left: AddMatrixKind, right: AddMatrixKind) -> bool {
+        matches!(
+            (left, right),
+            (
+                AddMatrixKind::Int | AddMatrixKind::Float,
+                AddMatrixKind::Int | AddMatrixKind::Float
+            )
+        ) || (matches!(
+            left,
+            AddMatrixKind::String
+                | AddMatrixKind::Path
+                | AddMatrixKind::ToStringAttrs
+                | AddMatrixKind::OutPathAttrs
+        ) && add_operator_matrix_kind_is_string_coercible(right))
+    }
+
     fn eval_list_string_bytes(source: &str) -> Vec<Vec<u8>> {
         let outcome = eval_whnf_owned(&lower(source)).expect("source evaluates");
         let list = outcome
@@ -20744,6 +20872,10 @@ mod tests {
             "let xs = [ { a = 1; } ]; ys = [ { b = 2; } ]; in ((builtins.elemAt xs 0) // (builtins.elemAt ys 0)).b".to_owned(),
             "[ 1 ] ++ [ 2 ]".to_owned(),
             "builtins.length ([ (1 / 0) ] ++ [ 2 ])".to_owned(),
+            r#"{ __toString = self: "left"; } + "right""#.to_owned(),
+            r#"{ outPath = "left"; } + { outPath = "right"; }"#.to_owned(),
+            format!("{{ __toString = self: {suffix}; }} + {suffix}"),
+            format!("builtins.getContext ({{ __toString = self: {suffix}; }} + {suffix})"),
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, &source);
         }
@@ -20771,6 +20903,19 @@ mod tests {
         ] {
             assert_cpp_nix_and_tree_walk_reject_expression(oracle, &source);
         }
+
+        let (matrix_dir, operands) = add_operator_matrix_operands("cpp-nix-add-matrix");
+        for left in &operands {
+            for right in &operands {
+                let source = add_operator_matrix_source(left, right);
+                if add_operator_matrix_cell_is_legal(left.kind, right.kind) {
+                    assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+                } else {
+                    assert_cpp_nix_and_tree_walk_reject_expression(oracle, &source);
+                }
+            }
+        }
+        fs::remove_dir_all(matrix_dir).expect("matrix temp directory removes");
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }
@@ -35023,6 +35168,62 @@ mod tests {
         ] {
             eval_whnf_owned(&lower(source)).expect_err("mismatched addition operands are invalid");
         }
+    }
+
+    #[test]
+    fn addition_coerces_left_attrsets_with_raw_string_rules() {
+        let (dir, path) = temp_file_with_bytes("attrs-add-path", b"abc");
+        let path = path_source(&path);
+
+        assert_eq!(
+            eval_string_bytes(r#"{ __toString = self: "left"; } + "right""#),
+            b"leftright"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"{ outPath = "left"; } + { outPath = "right"; }"#),
+            b"leftright"
+        );
+        assert_eq!(
+            eval_string_bytes(&format!("{{ __toString = self: {path}; }} + {path}")),
+            format!("{path}{path}").as_bytes()
+        );
+        assert_eq!(
+            eval_json_bytes(&format!(
+                "builtins.getContext ({{ __toString = self: {path}; }} + {path})"
+            )),
+            b"{}"
+        );
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    fn addition_type_matrix_accepts_only_nix_legal_operand_pairs() {
+        let (dir, operands) = add_operator_matrix_operands("add-matrix");
+
+        for left in &operands {
+            for right in &operands {
+                let source = add_operator_matrix_source(left, right);
+                if add_operator_matrix_cell_is_legal(left.kind, right.kind) {
+                    assert_eq!(
+                        eval(&source).as_bool(),
+                        Ok(true),
+                        "{:?} + {:?} should be legal",
+                        left.kind,
+                        right.kind
+                    );
+                } else {
+                    assert!(
+                        eval_whnf_owned(&lower(&source)).is_err(),
+                        "{:?} + {:?} should be illegal",
+                        left.kind,
+                        right.kind
+                    );
+                }
+            }
+        }
+
+        fs::remove_dir_all(dir).expect("matrix temp directory removes");
     }
 
     #[test]
