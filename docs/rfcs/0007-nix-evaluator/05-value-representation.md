@@ -833,7 +833,7 @@ Value representation has no observable effect on `.drv` output by construction (
 
 ### Thunk representation (§6)
 
-- [ ] `Thunk { state: AtomicU64, code, env }` with the serial `Suspended → Blackhole → Forced` machine (the subset of the parallel superset), blackhole infinite-recursion detection (§6) — **P1**, `S-6`/`C-12` (atomic word from day 1).
+- [x] `Thunk { state: AtomicU64, code, env }` with the serial `Suspended → Blackhole → Forced` machine (the subset of the parallel superset), blackhole infinite-recursion detection (§6) — **P1**, `S-6`/`C-12` (atomic word from day 1). Implemented as `EvalThunk { kind, cell }`: `EvalThunkKind::Node` stores the lowered body plus captured lexical/`with`/scoped-global environments, application/select variants store their deferred work, and `ThunkCell` stores the atomic state word plus cached WHNF result. Covered by `eval::thunk::tests::*`, `allocates_thunk_values_and_recovers_body`, `allocates_apply_thunk_values_and_recovers_work`, and tree-walk recursion/cache tests such as `evaluates_static_recursive_attrsets_with_lazy_self_scope`, `forcing_attr_value_thunks_memoizes_whnf_results`, `shared_thunks_emit_trace_once_when_forced_repeatedly`, and `failed_thunks_reset_and_are_retried`.
 - [ ] Strictness-driven thunk deletion (worker-wrapper eager compile → no `Thunk` struct) and cardinality-driven collapse (single-entry → no blackhole/update machinery) (§6) — **P4**, `S-9`; analyses owned by [07](07-laziness-and-whole-program-analyses.md), reductions by [26](26-optimization-pass-catalog.md).
 
 ### Containers and strings (§7–§8)

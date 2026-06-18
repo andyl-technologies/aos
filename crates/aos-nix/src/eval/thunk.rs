@@ -121,11 +121,10 @@ impl Drop for ForceGuard<'_> {
 
 /// A serial, safe thunk state/result cell.
 ///
-/// This is not yet the full heap `Thunk { state, code, env }` object. It is the
-/// safe state and cached-result core that the tree-walk oracle will embed in
-/// heap thunks once environments and compiled thunk bodies exist. The cached
-/// result uses [`Cell`] and is intentionally single-threaded; the atomic state
-/// word exists now to preserve the future representation boundary.
+/// The heap thunk object stores this cell beside its deferred work and captured
+/// environments. The cached result uses [`Cell`] and is intentionally
+/// single-threaded for the tree-walk oracle; the atomic state word exists now
+/// to preserve the future parallel forcing boundary.
 #[derive(Debug)]
 pub struct ThunkCell {
     state: AtomicU64,
