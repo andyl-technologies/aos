@@ -527,8 +527,10 @@ a given mode does so identically.
       - Introduced Nix ≥ 2.14. Effect: a stat/lstat. Note for the version pin.
 - [x] `getEnv` (s) — value of a configured environment variable, or `""` if
       unset. Effect: the environment. The evaluator never reads the ambient
-      process environment; pure/default evaluation leaves the option map empty,
-      so every lookup returns `""`. Cache key = the configured variable's value.
+      process environment; default evaluation leaves the option map empty, and
+      pure evaluation hides the option map even when callers configure it, so
+      pure lookups return `""`. Cache key = the configured variable's value
+      outside pure mode.
       - nixpkgs reads `NIX_PATH`-adjacent vars and `IN_NIX_SHELL`-style vars via
         this; the empty-in-pure-mode behavior is what keeps pure eval
         reproducible.

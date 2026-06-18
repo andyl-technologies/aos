@@ -790,7 +790,8 @@ impl TreeWalkOptions {
     ///
     /// Only variables inserted into these options are visible to
     /// `builtins.getEnv`; the evaluator never reads the ambient process
-    /// environment.
+    /// environment. Pure evaluation mode hides configured variables from
+    /// `builtins.getEnv`.
     pub fn with_env_var(name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) -> Self {
         let mut options = Self::default();
         options.set_env_var(name, value);
@@ -1076,7 +1077,8 @@ impl TreeWalkOptions {
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
-    /// `builtins.getEnv`; absent variables evaluate to an empty string.
+    /// `builtins.getEnv`; absent variables evaluate to an empty string. Pure
+    /// evaluation mode hides configured variables from `builtins.getEnv`.
     pub fn set_env_var(&mut self, name: impl Into<Vec<u8>>, value: impl Into<Vec<u8>>) {
         self.env_vars.insert(name.into(), value.into());
     }
@@ -7826,7 +7828,12 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let name = self.context_free_string_bytes(argument, argument_span, value, "getEnv")?;
-        let env_value = self.options.env_var(&name).unwrap_or_default().to_vec();
+        let env_value = if self.options.eval_mode() == EvalMode::Pure {
+            &[][..]
+        } else {
+            self.options.env_var(&name).unwrap_or_default()
+        }
+        .to_vec();
         self.alloc_static_string(id, span, &env_value)
     }
 
@@ -47999,6 +48006,15 @@ mod tests {
             ),
             b""
         );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.getEnv \"HOME\"", {
+                let mut options =
+                    TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec());
+                options.set_eval_mode(EvalMode::Pure);
+                options
+            }),
+            b""
+        );
     }
 
     #[test]
@@ -48014,6 +48030,19 @@ mod tests {
 
         let error = eval_whnf_owned(&ir).expect_err("getEnv requires a string");
 
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: argument,
+                expected: "string",
+                actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+
+        let error =
+            eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+                .expect_err("pure getEnv still validates the argument before hiding env");
         assert_eq!(
             error.kind(),
             TreeWalkErrorKind::Type {
@@ -48040,10 +48069,9 @@ mod tests {
             .copied()
             .expect("getEnv argument exists");
         let argument_span = ir.arena.node(argument).expect("argument exists").span;
-        let mut evaluator = TreeWalk::with_options(
-            &ir,
-            TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec()),
-        );
+        let mut options = TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec());
+        options.set_eval_mode(EvalMode::Pure);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
         let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
             .expect("source context is valid");
         let value = evaluator

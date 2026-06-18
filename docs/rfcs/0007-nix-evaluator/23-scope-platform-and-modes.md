@@ -137,8 +137,11 @@ the manual's enumeration:
 - [ ] **`builtins.currentSystem`** is **not available in pure evaluation mode**
       (the manual states `currentSystem` is "Not available in pure evaluation
       mode"); same for `builtins.storePath`.
-- [ ] **`builtins.getEnv`** must not read the ambient process environment
-      (environment access is an impurity).
+- [x] **`builtins.getEnv`** must not read the ambient process environment
+      (environment access is an impurity). aos-nix never reads the host
+      environment directly, and pure mode hides even `TreeWalkOptions`-configured
+      environment values after normal argument validation, returning the Nix
+      empty-string result.
 - [ ] **`exec`** and other impure escape hatches are disabled.
 - [ ] **`$NIX_PATH` and `-I` are ignored**; impure path resolution is off.
 - [ ] **Fetchers require pinning** — `fetchGit`/`fetchMercurial` require a
