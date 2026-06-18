@@ -2492,10 +2492,26 @@ impl TreeWalk {
 
         let mut derivation = nix_compat::derivation::Derivation::default();
         let mut context = StringContext::empty();
-        let mut name = None;
+        let name = self.derivation_name_value(id, span, argument, argument_span, &entries)?;
+        derivation
+            .environment
+            .insert("name".to_owned(), name.clone().into());
         let mut builder = None;
         let mut system = None;
         let mut outputs_seen = false;
+        let structured_attrs =
+            self.derivation_structured_attrs_value(id, span, argument, argument_span, &entries)?;
+        if structured_attrs == Some(true) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                    id,
+                    feature: "structured attrs",
+                },
+                span,
+            ));
+        }
+        let ignore_nulls =
+            self.derivation_ignore_nulls_value(id, span, argument, argument_span, &entries)?;
 
         for entry in entries {
             let key = {
@@ -2510,9 +2526,17 @@ impl TreeWalk {
                 })?;
                 Self::copy_bytes_for_node(argument, argument_span, key)?
             };
-            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
 
             let value = self.force_value(argument, argument_span, entry.value)?;
+            if key == NAME_ATTR || key == IGNORE_NULLS_ATTR {
+                continue;
+            }
+            if ignore_nulls && value.tag() == ValueTag::Null {
+                continue;
+            }
+
+            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
+
             if key == ARGS_ATTR {
                 let (arguments, value_context) =
                     self.derivation_args_value(id, span, argument, argument_span, value)?;
@@ -2537,7 +2561,6 @@ impl TreeWalk {
                 .insert(env_key.clone(), env_value.clone().into());
 
             match key.as_slice() {
-                NAME_ATTR => name = Some(env_value),
                 BUILDER_ATTR => builder = Some(env_value),
                 SYSTEM_ATTR => system = Some(env_value),
                 OUTPUTS_ATTR => {
@@ -2549,7 +2572,6 @@ impl TreeWalk {
             }
         }
 
-        let name = name.ok_or_else(|| self.missing_derivation_strict_attr(id, span, NAME_ATTR))?;
         if name.is_empty() {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::DerivationStrict {
@@ -2603,6 +2625,123 @@ impl TreeWalk {
             })?;
         self.remember_derivation(drv_path.clone(), &derivation, known_hash);
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path)
+    }
+
+    fn derivation_name_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<String, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != NAME_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            if value.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: attrs_id,
+                        expected: "string",
+                        actual: value.tag(),
+                    },
+                    attrs_span,
+                ));
+            }
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if string.has_context() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed {
+                        id: attrs_id,
+                        op: "derivationStrict",
+                    },
+                    attrs_span,
+                ));
+            }
+            let bytes = Self::copy_bytes_for_node(attrs_id, attrs_span, string.bytes())?;
+            let name = Self::derivation_utf8_string(id, span, "derivation name", &bytes)?;
+            return Ok(name);
+        }
+
+        Err(self.missing_derivation_strict_attr(id, span, NAME_ATTR))
+    }
+
+    fn derivation_ignore_nulls_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<bool, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != IGNORE_NULLS_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            return self.expect_bool(id, value, span);
+        }
+
+        Ok(false)
+    }
+
+    fn derivation_structured_attrs_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<Option<bool>, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != STRUCTURED_ATTRS_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            return self.expect_bool(id, value, span).map(Some);
+        }
+
+        Ok(None)
     }
 
     fn derivation_args_value(
@@ -2717,8 +2856,6 @@ impl TreeWalk {
         key: &[u8],
     ) -> Result<(), TreeWalkError> {
         let feature = match key {
-            STRUCTURED_ATTRS_ATTR => Some("structured attrs"),
-            IGNORE_NULLS_ATTR => Some("ignore-nulls mode"),
             OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
                 Some("fixed-output derivations")
             }
@@ -38555,6 +38692,190 @@ mod tests {
                 "{source}: {error:?}"
             );
         }
+    }
+
+    #[test]
+    fn derivation_strict_supports_ignore_nulls() {
+        let source = r#"let
+             default = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+             withNull = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               foo = null;
+             };
+             ignored = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               foo = null;
+               __ignoreNulls = true;
+             };
+             explicitFalse = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               foo = null;
+               __ignoreNulls = false;
+             };
+             capital = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               A = null;
+               __ignoreNulls = true;
+             };
+             argsNull = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = null;
+               __ignoreNulls = true;
+             };
+             structuredFalse = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               __structuredAttrs = false;
+               foo = null;
+               __ignoreNulls = true;
+             };
+             unsupportedNulls = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputHash = null;
+               outputHashAlgo = null;
+               outputHashMode = null;
+               __contentAddressed = null;
+               allowedReferences = null;
+               disallowedReferences = null;
+               allowedRequisites = null;
+               disallowedRequisites = null;
+               exportReferencesGraph = null;
+               __ignoreNulls = true;
+             };
+           in {
+             argsNull = argsNull.drvPath;
+             capital = capital.drvPath;
+             default = default.drvPath;
+             explicitFalse = explicitFalse.drvPath;
+             ignored = ignored.drvPath;
+             structuredFalse = structuredFalse.drvPath;
+             unsupportedNulls = unsupportedNulls.drvPath;
+             withNull = withNull.drvPath;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"argsNull":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","capital":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","default":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","explicitFalse":"/nix/store/gbihbhvs2za69fzg3gl91x0f7zcq1ii9-x.drv","ignored":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","structuredFalse":"/nix/store/ch3c4m4ba4r554gq3z26r8v9h80sp119-x.drv","unsupportedNulls":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","withNull":"/nix/store/gbihbhvs2za69fzg3gl91x0f7zcq1ii9-x.drv"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_ignore_nulls_type_checks_flag_only() {
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __ignoreNulls = 1;
+               }"#,
+        ))
+        .expect_err("ignoreNulls must be a bool");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = null;
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __ignoreNulls = true;
+               }"#,
+        ))
+        .expect_err("ignoreNulls does not skip the mandatory name attr");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = builtins.appendContext "x" {
+                   "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; };
+                 };
+                 system = "x86_64-linux";
+                 builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+               }"#,
+        ))
+        .expect_err("derivation names cannot carry string context");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "derivationStrict",
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __structuredAttrs = null;
+                 __ignoreNulls = true;
+               }"#,
+        ))
+        .expect_err("ignoreNulls does not skip structuredAttrs type checking");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn derivation_strict_ignore_nulls_does_not_skip_args_elements() {
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               foo = null;
+               __ignoreNulls = true;
+               args = [ null ];
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/4ljrbgdg50gl74wbgr53yvv23ap9bfrz-x.drv","out":"/nix/store/j6kab8pd56kjnp4z2zsvwcsdm7fmn37f-x"}"#.to_vec()
+        );
     }
 
     #[test]
