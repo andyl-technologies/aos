@@ -112,6 +112,33 @@
       await expect("GET cache objects (HTML)", "/e2e-cache/-/objects", {},
         (s, b) => s === 200 && b.includes("aaaa-foo-1.0"));
 
+      // Streamed NAR fetch through the unified cache-serve path: put a NAR body
+      // in R2 and read it both whole (200) and ranged (Range -> 206). The ranged
+      // case is the regression guard for the streaming Worker bridge — R2 pushes
+      // the byte range down (OffsetWithLength) and the `!Send` ByteStream rides
+      // SendWrapper into the axum body, so the isolate never buffers the whole
+      // object. A 64 KiB body makes "served 4 bytes for bytes=0-3" meaningful.
+      const nar = new Uint8Array(65536);
+      for (let i = 0; i < nar.length; i++) nar[i] = i & 0xff;
+      await bucket.put("cache-prefix/nar/bbbb.nar.zst", nar);
+      await expect("GET cache NAR (whole, from R2)", "/e2e-cache/nar/bbbb.nar.zst", {},
+        (s, b) => s === 200 && b.length === 65536);
+      {
+        const r = await mf.dispatchFetch("http://localhost/e2e-cache/nar/bbbb.nar.zst",
+          { headers: { Range: "bytes=0-3" } });
+        const buf = await r.arrayBuffer();
+        const cr = r.headers.get("content-range") || "";
+        const good = r.status === 206 && buf.byteLength === 4
+          && cr.startsWith("bytes 0-3/65536");
+        console.log((good ? "ok   " : "FAIL ") + "GET cache NAR (Range bytes=0-3) -> "
+          + r.status + " " + cr);
+        if (!good) {
+          ok = false;
+          const txt = new TextDecoder().decode(buf);
+          console.error("  content-range=" + cr + " len=" + buf.byteLength + " body=" + txt.slice(0, 200));
+        }
+      }
+
       // Worker Cron cache-GC: seed a GC-policied cache (ttl=0) with one UNROOTED
       // object, trigger the scheduled handler, and assert the worker's gc_all
       // pass reclaimed it + recorded a run — the Cron counterpart to
