@@ -46646,6 +46646,37 @@ mod tests {
     }
 
     #[test]
+    fn derivation_magic_attrs_are_ordinary_language_attrs() {
+        let source = r#"let
+             attrs = {
+               __contentAddressed = "ca";
+               __darwinAllowLocalNetworking = "net";
+               __ignoreNulls = null;
+               __impure = false;
+               __structuredAttrs = "structured";
+             };
+             inherit (attrs)
+               __contentAddressed
+               __darwinAllowLocalNetworking
+               __ignoreNulls
+               __impure
+               __structuredAttrs;
+           in {
+             ca = __contentAddressed;
+             ignoredIsNull = __ignoreNulls == null;
+             impure = __impure;
+             names = builtins.attrNames attrs;
+             net = __darwinAllowLocalNetworking;
+             structured = __structuredAttrs;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"ca":"ca","ignoredIsNull":true,"impure":false,"names":["__contentAddressed","__darwinAllowLocalNetworking","__ignoreNulls","__impure","__structuredAttrs"],"net":"net","structured":"structured"}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn to_string_primop_forces_arguments_and_rejects_non_coercible_values() {
         let ir = lower("builtins.toString [ \"a\" (1 / 0) ]");
         let root = ir.arena.node(ir.root).expect("root exists");

@@ -853,10 +853,14 @@ derivation-level (consumed by `derivationStrict`).
       (doc 11/21); not language-level. Verify whether AOS uses impure
       derivations at all (likely not, given hermetic-from-source). Mark
       **verify against AOS package set**.
-- [ ] **Other `__`-prefixed derivation attributes** (`__contentAddressed`,
+- [x] **Other `__`-prefixed derivation attributes** (`__contentAddressed`,
       `__darwinAllowLocalNetworking`, etc.) — pass-through to the derivation layer
-      (doc 11/21), not interpreted by the language. Enumerate and confirm none
-      are accidentally treated as language-level.
+      (doc 11/21), not interpreted by the language. Language-layer behavior is
+      regression covered for representative derivation-marker names outside
+      `derivationStrict`:
+      `__contentAddressed`, `__darwinAllowLocalNetworking`, `__ignoreNulls`,
+      `__impure`, and `__structuredAttrs` select, inherit, compare, and enumerate
+      normally; per-marker derivation-layer semantics remain tracked separately.
 
 ---
 
