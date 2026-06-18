@@ -81,4 +81,21 @@ pub trait SurfaceProvider: BackendBounds {
     /// Returns an error when the registry's store cannot be resolved (e.g. an
     /// unknown or unreadable storage binding).
     async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>>;
+
+    /// Build the surface reader for a managed [`Cache`](crate::db::Cache).
+    ///
+    /// The cache analog of [`fetcher`](Self::fetcher): the native hub roots a
+    /// filesystem reader at the cache's binding root + prefix; the Worker scopes
+    /// an R2 reader to the cache's prefix. The provided default errors, so a
+    /// provider that does not host caches (e.g. a test double) need not override
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider does not serve caches, or when the
+    /// cache's store cannot be resolved.
+    async fn cache_fetcher(&self, cache: &crate::db::Cache) -> Result<Box<dyn SurfaceFetch>> {
+        let _ = cache;
+        anyhow::bail!("this surface provider does not serve caches")
+    }
 }

@@ -525,11 +525,14 @@ the current spec. Phases are orderable; A lands first, E last.
       `Response::from_bytes` in `bridge.rs` — the enabler without which facade
       streaming is re-buffered at the edge (verify `Range`/`206` passthrough end
       to end under workerd).
-- [ ] Serve the read facade for caches via `facade_fetch`/`head_machine_path`
-      pointed at the cache binding+prefix; **honor client `Range:` →
-      `206 Partial Content` + `Accept-Ranges: bytes`, streaming NAR bodies (no
-      whole-NAR buffering, Worker-isolate-safe)**; surface the
-      `trusted-public-keys` line + public-key endpoint.
+- [x] Serve the read facade for caches via `facade_fetch` (slug falls through
+      registry→cache) pointed at the cache binding+prefix — `nix-cache-info`
+      generated from the cache config, `<hash>.narinfo`/`nar/<file>` as
+      passthrough bytes from a cache-scoped fetcher (`cache_fetcher`), on native
+      **and** the wasm worker via the one shared router; visibility +
+      soft-delete (tombstone) enforced before any byte. **Remaining:** client
+      `Range:` → `206` streaming (with #19), and the `trusted-public-keys`
+      line + public-key endpoint (with signing, #20-step2).
 - [ ] **Backend access mode:** `storage_bindings.access` (public|private) +
       `public_base_url` + sealed `credential_ref`; reject a Direct frontend over
       a private binding.

@@ -5738,6 +5738,37 @@ impl Database {
         Ok(Some(PathBuf::from(path)))
     }
 
+    /// Resolve a cache's surface root: its storage binding's root joined with the
+    /// cache prefix. `None` when the cache does not exist.
+    ///
+    /// The cache analog of [`Database::registry_surface_root`]. A cache always
+    /// has a storage binding (the column is `NOT NULL`), so — unlike a registry —
+    /// there is no unbound/`source_url` fallback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cache's storage binding is missing, or on database
+    /// failure.
+    pub async fn cache_surface_root(&self, cache_id: i64) -> Result<Option<PathBuf>> {
+        let Some(cache) = self.cache_by_id(cache_id).await? else {
+            return Ok(None);
+        };
+        let binding = self
+            .storage_binding(cache.storage_binding_id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "cache {cache_id} bound to missing storage binding {}",
+                    cache.storage_binding_id
+                )
+            })?;
+        let mut path = PathBuf::from(binding.root);
+        if !cache.prefix.is_empty() {
+            path.push(&cache.prefix);
+        }
+        Ok(Some(path))
+    }
+
     // -- hosted signing keys (v10) ------------------------------------------
 
     /// Enroll a fresh hosted signing key for an org; returns its public

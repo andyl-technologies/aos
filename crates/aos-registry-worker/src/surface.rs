@@ -51,6 +51,16 @@ impl SurfaceProvider for R2SurfaceProvider {
             prefix: registry.prefix.clone(),
         }))
     }
+
+    async fn cache_fetcher(
+        &self,
+        cache: &aos_registry_core::db::Cache,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        Ok(Box::new(R2SurfaceFetch {
+            bucket: self.bucket.clone(),
+            prefix: cache.prefix.clone(),
+        }))
+    }
 }
 
 /// A [`SurfaceFetch`] reading one registry's prefix from an R2 bucket.

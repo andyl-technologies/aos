@@ -191,6 +191,20 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
         let hub_fetch = crate::gitwrite::fetcher_for_registry(&self.db, registry).await?;
         Ok(Box::new(CoreFetchAdapter(hub_fetch)))
     }
+
+    async fn cache_fetcher(
+        &self,
+        cache: &crate::db::Cache,
+    ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
+        let root = self
+            .db
+            .cache_surface_root(cache.id)
+            .await?
+            .with_context(|| format!("cache '{}' has no surface root", cache.slug))?;
+        // `LocalFsFetch` implements the core `SurfaceFetch` directly (see the impl
+        // below), so no `CoreFetchAdapter` is needed.
+        Ok(Box::new(crate::fetch::LocalFsFetch::new(root)))
+    }
 }
 
 /// The native [`SurfaceWriteProvider`](core_sw::SurfaceWriteProvider): resolves
