@@ -40,7 +40,7 @@ use aos_registry_core::db::Database;
 use aos_registry_core::fetch::SurfaceProvider as _;
 
 use crate::d1backend::D1Backend;
-use crate::surface::R2SurfaceProvider;
+use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 
 /// Index every public registry from R2 into D1 via the shared core indexer.
 ///
@@ -81,6 +81,77 @@ pub async fn index_all(backend: D1Backend, bucket: Bucket) -> Result<()> {
             // `index_and_record` already persisted the failure as the registry's
             // index state (stale/failed); this just surfaces it in the Cron log.
             worker::console_log!("index {} failed: {err:#}", registry.slug);
+        }
+    }
+    Ok(())
+}
+
+/// Garbage-collect every GC-policied managed cache from D1+R2 via the shared
+/// sweep.
+///
+/// The worker half of cache GC: the Cron-driven counterpart to the native hub's
+/// `aos-hub cache gc`. Drives the *same* [`sweep_cache`](aos_registry_core::gc::sweep_cache)
+/// the native path and the `RunCacheGc` RPC use, over the shared
+/// [`Database`](aos_registry_core::db::Database) (D1) and the R2 write surface,
+/// recording each sweep as a `cache_gc_runs` row. Only caches that have opted in
+/// with a GC policy are swept; each cache is independent — one cache's failure is
+/// recorded on its run row and logged, never aborting the pass. `now` is the
+/// Cron tick's Unix time (seconds), supplied by the caller since wasm has no
+/// ambient clock.
+///
+/// # Errors
+///
+/// Returns an error only if the cache list cannot be read from D1.
+pub async fn gc_all(backend: D1Backend, bucket: Bucket, now: i64) -> Result<()> {
+    let db = Database::attach(Box::new(backend));
+    let writers = R2SurfaceWriteProvider::new(bucket);
+
+    let caches = db.list_caches().await.context("listing caches")?;
+    for cache in caches {
+        // Scheduled GC is opt-in per cache: only sweep those with a GC policy.
+        match db.cache_gc_policy(cache.id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => continue,
+            Err(err) => {
+                worker::console_log!("gc {}: loading policy failed: {err:#}", cache.slug);
+                continue;
+            }
+        }
+        let run_id = match db.start_cache_gc_run(cache.id).await {
+            Ok(id) => id,
+            Err(err) => {
+                worker::console_log!("gc {}: opening run failed: {err:#}", cache.slug);
+                continue;
+            }
+        };
+        match aos_registry_core::gc::sweep_cache(&db, &writers, &cache, false, now).await {
+            Ok(stats) => {
+                let _ = db
+                    .finish_cache_gc_run(
+                        run_id,
+                        "ok",
+                        None,
+                        stats.scanned,
+                        stats.retained,
+                        stats.deleted_objects,
+                        stats.freed_bytes,
+                    )
+                    .await;
+                worker::console_log!(
+                    "gc {}: scanned {} retained {} deleted {} freed {}B",
+                    cache.slug,
+                    stats.scanned,
+                    stats.retained,
+                    stats.deleted_objects,
+                    stats.freed_bytes
+                );
+            }
+            Err(err) => {
+                let _ = db
+                    .finish_cache_gc_run(run_id, "failed", Some(format!("{err:#}")), 0, 0, 0, 0)
+                    .await;
+                worker::console_log!("gc {} failed: {err:#}", cache.slug);
+            }
         }
     }
     Ok(())
