@@ -292,13 +292,15 @@ input set. Each gets adversarial differential coverage.
       accepts syntactically valid store roots even when the path is not present
       locally.
       - Disabled under pure-/restricted-eval; flag accordingly (§13, §16).
-- [ ] `outputOf` (drv-ref output-name) — produce the deriving path string for a
+- [x] `outputOf` (drv-ref output-name) — produce the deriving path string for a
       named output of a (possibly CA / not-yet-known) derivation reference,
       enabling "output of the output of" indirection for dynamic derivations.
       - **Experimental** (`dynamic-derivations`); generally **out of scope /
         stubbed** for the pinned AOS target unless the package set uses it (§17).
         If present in the pinned `builtins`, it must at least *exist* so
         `attrNames builtins` matches even if it errors when exercised.
+      - **Pinned status**: absent from the pinned C++ Nix 2.24.12 flakes builtin
+        surface; aos-nix keeps it absent, so select-default fallback matches.
 
 The *general* string primops in §4 must also union contexts — that is where most
 context flows in practice (`"${a}${b}"`, `concatStringsSep`, `replaceStrings`).
@@ -611,10 +613,12 @@ eval (network access is disabled unless explicitly allowed).
         Tied to the flakes machinery; treat as **conditional scope** — implement
         only if the pinned AOS package set / flake inputs require it, else stub
         to existence (§17).
-- [ ] `fetchClosure` (args) — substitute an entire store-path closure from a
+- [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
       pinned set uses it (§17).
+      - **Pinned status**: absent from the pinned C++ Nix 2.24.12 flakes builtin
+        surface; aos-nix keeps it absent, so select-default fallback matches.
 - [ ] `fetchMercurial` (args) — hg analogue of `fetchGit`. Almost never used in
       AOS; implement to existence, likely **stubbed** beyond presence (§17).
 - [x] `findFile` (search-path lookup-path) — the engine behind `<nixpkgs>`-style
@@ -708,8 +712,9 @@ Here we enumerate only the *builtin surface* and the attributes it consumes.
         differential harness. Verified with `AOS_NIX_ORACLE` pointing at pinned
         C++ Nix 2.24.12 via
         `cargo test --manifest-path crates/Cargo.toml -p aos-nix --lib configured_cpp_nix_derivation_wrapper_matches_tree_walk -- --nocapture`.
-- [ ] `outputOf` (drv-ref output-name) — (also §5) deriving-path indirection for
-      dynamic derivations; experimental, conditional scope (§17).
+- [x] `outputOf` (drv-ref output-name) — (also §5) deriving-path indirection for
+      dynamic derivations; absent from the pinned C++ Nix 2.24.12 flakes builtin
+      surface, so aos-nix keeps it absent (§17).
 - [x] `unsafeDiscardOutputDependency` / `addDrvOutputDependencies` — (the §5
       context primops) are the explicit knobs nixpkgs uses to shape what a
       derivation depends on; relisted here as derivation-adjacent.
@@ -876,6 +881,10 @@ version reports**. Concretely:
       pinned version's *enabled experimental features* — present and functional
       only if the pinned config enables them, otherwise present-but-erroring or
       absent exactly as the pinned `nix` behaves.
+      - Pinned C++ Nix 2.24.12 exposes `fetchTree` as stable, and does not expose
+        `fetchClosure` or `outputOf` under the harness flakes feature surface.
+        CA-derivation attribute feature gating remains checked at the
+        `derivationStrict` boundary.
 
 Bumping the pinned Nix version is a deliberate, harness-revalidated event (it can
 change the builtin set, the wrapper `derivation.nix`, float formatting, or a
@@ -901,19 +910,23 @@ feature disabled:
 - [ ] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Flakes; **stubbed/scoped**.
 - [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11).
-- [ ] `fetchClosure` (args) — `fetch-closure`; **stubbed/scoped** (§11).
-- [ ] `outputOf` (…) — `dynamic-derivations`; **stubbed/scoped** (§5/§12).
+- [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
+      2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
+- [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix
+      2.24.12 flakes builtin surface, so aos-nix keeps it absent (§5/§12).
 - [ ] `fetchMercurial` (args) — present-but-likely-unexercised (§11).
 - [x] `scopedImport` (attrs path) — a real primop (it backs nixpkgs' `import`
       shadowing). **In scope**, but called out here because it deliberately
       does **not** memoize (unlike `import`); see
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §6.1. Not
       stubbed — listed to flag the memoization asymmetry.
-- [ ] `exec` — runs an external command during evaluation. Gated behind
+- [x] `exec` — runs an external command during evaluation. Gated behind
       `--allow-unsafe-native-code` / the `exec` capability and disabled in
       restricted/pure eval. nixpkgs does not use it on the build path. **Out of
       scope / stubbed**; present only if the pinned `builtins` exposes it, and
       then erroring under the AOS eval mode exactly as upstream does.
+      Pinned C++ Nix 2.24.12 does not expose it under the harness flakes surface;
+      aos-nix keeps it absent.
 - [x] `toPath` (s) — **deprecated**; implemented because it is present in the
       pinned set (§11).
 

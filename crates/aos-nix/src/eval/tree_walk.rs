@@ -24207,6 +24207,50 @@ mod tests {
         assert_pinned_cpp_nix_builtin_surface_matches_registry(&oracle);
     }
 
+    fn assert_pinned_absent_experimental_builtin_attrs_match_registry(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for name in ["exec", "fetchClosure", "outputOf"] {
+            let has_attr = format!(r#"builtins.hasAttr "{name}" builtins"#);
+            let reference =
+                cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, &has_attr);
+            assert_eq!(
+                reference, b"false",
+                "{name} should be absent from the pinned flakes builtin surface"
+            );
+            let candidate = eval_json_bytes(&has_attr);
+            assert_eq!(candidate, reference, "expression diverged: {has_attr}");
+
+            let default = format!("builtins.{name} or 42");
+            let reference =
+                cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, &default);
+            assert_eq!(
+                reference, b"42",
+                "{name} absence should allow select-default fallback"
+            );
+            let candidate = eval_json_bytes(&default);
+            assert_eq!(candidate, reference, "expression diverged: {default}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
+    fn pinned_absent_experimental_builtin_attrs_match_registry() {
+        let oracle = cpp_nix_oracle();
+        assert_pinned_absent_experimental_builtin_attrs_match_registry(&oracle);
+    }
+
+    #[test]
+    fn configured_pinned_absent_experimental_builtin_attrs_match_registry() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!(
+                "AOS_NIX_ORACLE not set; skipping configured C++ Nix absent experimental builtin check"
+            );
+            return;
+        };
+        assert_pinned_absent_experimental_builtin_attrs_match_registry(&oracle);
+    }
+
     #[test]
     #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
     fn cpp_nix_identity_constants_match_tree_walk() {
