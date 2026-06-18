@@ -568,10 +568,17 @@ the current spec. Phases are orderable; A lands first, E last.
       set-access` CLI; `create_frontend` rejects a **Direct** frontend over a
       private binding (must be proxied/presigned). Unit-tested. **Remaining (with
       the proxy slice):** the SigV4/presigned *use* of `credential_ref`.
-- [ ] **Frontend model for caches + proxy settings:** the `proxy` block
+- [~] **Frontend model for caches + proxy settings:** the `proxy` block
       (timeouts, stream, max_body, retries+failover, range/cache-control
       passthrough) and `primary` flag on `frontends`; proxied facade honors them
-      and streams; conservative defaults.
+      and streams; conservative defaults. **Done:** v25 adds `frontends.proxy_config`
+      (a JSON `ProxyConfig` blob — connect/read timeouts, stream, max_body_bytes,
+      retries, failover, pass_range, pass_cache_control, all `#[serde(default)]`
+      with conservative defaults) and `is_primary`; `set_frontend_proxy` setter;
+      `FrontendRecord` parses the blob (malformed ⇒ defaults, NULL ⇒ `None`).
+      Unit-tested (round-trip, partial-field defaulting, primary flag, clear).
+      **Remaining:** the proxied facade that *honors* these (blocked on external
+      S3/R2 bindings + the streamed proxy read below).
 - [~] **Proxy to authenticated origin:** SigV4 to private external S3/R2 (and
       native R2-binding on Workers) for proxied private bindings, streamed
       through; **presigned GET → `302`** for private direct-style reads;
