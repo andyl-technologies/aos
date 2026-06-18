@@ -22,6 +22,7 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     rc::Rc,
+    sync::Arc,
 };
 
 use base64::Engine as _;
@@ -325,6 +326,173 @@ pub enum EvalTraceKind {
     Trace,
     /// Output from `builtins.traceVerbose`.
     TraceVerbose,
+}
+
+/// A request to realize a derivation output needed during evaluation.
+///
+/// Import-from-derivation (IFD) is the one point where evaluation must pause for
+/// the build layer. The tree-walk evaluator does not build by itself; callers
+/// may install an [`IfdRealizer`] that realizes the requested derivation output
+/// and returns once the filesystem path can be read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IfdRealization<'a> {
+    path: &'a [u8],
+    drv_path: &'a [u8],
+    output_name: Option<&'a [u8]>,
+    context_kind: ContextKind,
+    op: &'static str,
+}
+
+impl<'a> IfdRealization<'a> {
+    /// Returns the filesystem path that triggered the IFD demand.
+    pub const fn path(&self) -> &'a [u8] {
+        self.path
+    }
+
+    /// Returns the derivation path whose output must be realized.
+    pub const fn drv_path(&self) -> &'a [u8] {
+        self.drv_path
+    }
+
+    /// Returns the requested output name for single-output contexts.
+    pub const fn output_name(&self) -> Option<&'a [u8]> {
+        self.output_name
+    }
+
+    /// Returns the string-context kind that caused the IFD demand.
+    pub const fn context_kind(&self) -> ContextKind {
+        self.context_kind
+    }
+
+    /// Returns the filesystem-reading builtin that triggered the demand.
+    pub const fn op(&self) -> &'static str {
+        self.op
+    }
+}
+
+/// A failure reported by an import-from-derivation realizer.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[error("{message}")]
+pub struct IfdRealizationError {
+    message: String,
+}
+
+impl IfdRealizationError {
+    /// Creates a realization error from a user-facing message.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    /// Returns the realizer failure message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// Detailed context for an import-from-derivation evaluator error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IfdErrorDetail {
+    path: Box<[u8]>,
+    drv_path: Box<[u8]>,
+    output_name: Option<Box<[u8]>>,
+    context_kind: ContextKind,
+    message: Option<String>,
+}
+
+impl IfdErrorDetail {
+    fn new(
+        path: Vec<u8>,
+        drv_path: Vec<u8>,
+        output_name: Option<Vec<u8>>,
+        context_kind: ContextKind,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            path: path.into_boxed_slice(),
+            drv_path: drv_path.into_boxed_slice(),
+            output_name: output_name.map(Vec::into_boxed_slice),
+            context_kind,
+            message,
+        }
+    }
+
+    /// Returns the filesystem path that triggered the IFD demand.
+    pub fn path(&self) -> &[u8] {
+        &self.path
+    }
+
+    /// Returns the derivation path recorded in the string context.
+    pub fn drv_path(&self) -> &[u8] {
+        &self.drv_path
+    }
+
+    /// Returns the requested output name for single-output contexts.
+    pub fn output_name(&self) -> Option<&[u8]> {
+        self.output_name.as_deref()
+    }
+
+    /// Returns the context kind that caused the IFD demand.
+    pub const fn context_kind(&self) -> ContextKind {
+        self.context_kind
+    }
+
+    /// Returns the realizer diagnostic, if the realizer failed.
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+}
+
+impl fmt::Display for IfdErrorDetail {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "path {:?}, derivation {:?}, output {:?}, context {:?}",
+            self.path,
+            self.drv_path,
+            self.output_name.as_deref(),
+            self.context_kind
+        )?;
+        if let Some(message) = &self.message {
+            write!(formatter, ": {message}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Callback used to realize derivation outputs at IFD boundaries.
+#[derive(Clone)]
+pub struct IfdRealizer {
+    realize:
+        Arc<dyn for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError> + Send + Sync>,
+}
+
+impl IfdRealizer {
+    /// Creates an IFD realizer from a callback.
+    pub fn new<F>(realize: F) -> Self
+    where
+        F: for<'a> Fn(IfdRealization<'a>) -> Result<(), IfdRealizationError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        Self {
+            realize: Arc::new(realize),
+        }
+    }
+
+    fn realize(&self, request: IfdRealization<'_>) -> Result<(), IfdRealizationError> {
+        (self.realize)(request)
+    }
+}
+
+impl fmt::Debug for IfdRealizer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IfdRealizer")
+            .finish_non_exhaustive()
+    }
 }
 
 /// User-facing warning output emitted by `builtins.warn`.
@@ -1125,6 +1293,10 @@ fn path_without_trailing_path_markers(path: &[u8]) -> &[u8] {
     &path[..end]
 }
 
+fn path_exists_requires_directory(path: &[u8]) -> bool {
+    path.ends_with(b"/") || path.ends_with(b"/.")
+}
+
 fn search_path_suffix<'a>(prefix: &[u8], lookup: &'a [u8]) -> Option<&'a [u8]> {
     if prefix.is_empty() {
         return Some(lookup);
@@ -1331,6 +1503,7 @@ pub struct TreeWalk {
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
+    ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
@@ -1369,6 +1542,7 @@ impl TreeWalk {
             find_file_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
+            ifd_realizer: None,
             call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
         }
@@ -1387,6 +1561,16 @@ impl TreeWalk {
     /// Returns user-facing warning output emitted so far.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    /// Installs the callback used to realize derivation outputs for IFD.
+    pub fn set_ifd_realizer(&mut self, realizer: IfdRealizer) {
+        self.ifd_realizer = Some(realizer);
+    }
+
+    /// Clears any configured IFD realizer.
+    pub fn clear_ifd_realizer(&mut self) {
+        self.ifd_realizer = None;
     }
 
     #[cfg(test)]
@@ -3425,20 +3609,128 @@ impl TreeWalk {
         value: Value,
         op: &'static str,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        let bytes = if value.tag() == ValueTag::Path {
-            let path = self.clone_path_value(id, span, value)?;
-            Self::copy_bytes_for_node(id, span, path.bytes())?
-        } else {
-            let string = self.coerce_to_string(id, value, span)?;
-            self.context_free_string_bytes(id, span, string, op)?
-        };
-        if !Path::new(OsStr::from_bytes(&bytes)).is_absolute() {
+        let path = self.coerce_to_path_string(id, span, value)?;
+        if path.has_context() {
             return Err(TreeWalkError::new(
-                TreeWalkErrorKind::PathNotAbsolute { id, path: bytes },
+                TreeWalkErrorKind::StringContextNotAllowed { id, op },
                 span,
             ));
         }
+        Self::copy_bytes_for_node(id, span, path.bytes())
+    }
+
+    fn coerce_to_filesystem_path_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let path = self.coerce_to_path_string(id, span, value)?;
+        self.validate_ifd_path_context(id, span, &path, op)?;
+        let bytes = Self::copy_bytes_for_node(id, span, path.bytes())?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
+        self.realize_import_from_derivation(id, span, &path, op)?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
         Ok(bytes)
+    }
+
+    fn coerce_to_path_string(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<NixString, TreeWalkError> {
+        let path = if value.tag() == ValueTag::Path {
+            self.clone_path_value(id, span, value)?
+        } else {
+            let string = self.coerce_to_string(id, value, span)?;
+            self.clone_string_value(id, span, string)?
+        };
+        if !Path::new(OsStr::from_bytes(path.bytes())).is_absolute() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::PathNotAbsolute {
+                    id,
+                    path: Self::copy_bytes_for_node(id, span, path.bytes())?,
+                },
+                span,
+            ));
+        }
+        Ok(path)
+    }
+
+    fn validate_ifd_path_context(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        op: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        for element in path.context().iter() {
+            if element.kind() == ContextKind::OpaquePath {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed { id, op },
+                    span,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn realize_import_from_derivation(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        op: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        for element in path.context().iter() {
+            match element.kind() {
+                ContextKind::OpaquePath => {}
+                ContextKind::SingleOutput | ContextKind::DeepDerivation => {
+                    let request = IfdRealization {
+                        path: path.bytes(),
+                        drv_path: element.path(),
+                        output_name: element.output(),
+                        context_kind: element.kind(),
+                        op,
+                    };
+                    let Some(realizer) = &self.ifd_realizer else {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedImportFromDerivation {
+                                id,
+                                op,
+                                detail: Box::new(IfdErrorDetail::new(
+                                    path.bytes().to_vec(),
+                                    element.path().to_vec(),
+                                    element.output().map(<[u8]>::to_vec),
+                                    element.kind(),
+                                    None,
+                                )),
+                            },
+                            span,
+                        ));
+                    };
+                    realizer.realize(request).map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::ImportFromDerivation {
+                                id,
+                                op,
+                                detail: Box::new(IfdErrorDetail::new(
+                                    path.bytes().to_vec(),
+                                    element.path().to_vec(),
+                                    element.output().map(<[u8]>::to_vec),
+                                    element.kind(),
+                                    Some(source.message().to_owned()),
+                                )),
+                            },
+                            span,
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn check_filesystem_path_access(
@@ -5797,7 +6089,8 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let must_be_dir = self.path_exists_requires_directory(argument, argument_span, value)?;
-        let path = self.coerce_to_path_bytes(argument, argument_span, value, "pathExists")?;
+        let path =
+            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "pathExists")?;
         self.check_filesystem_path_access(argument, argument_span, &path)?;
         let metadata = if must_be_dir {
             fs::metadata(Path::new(OsStr::from_bytes(&path)))
@@ -5845,7 +6138,7 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        Ok(string.bytes().ends_with(b"/") || string.bytes().ends_with(b"/."))
+        Ok(path_exists_requires_directory(string.bytes()))
     }
 
     fn eval_read_dir_primop(
@@ -5856,7 +6149,8 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readDir")?;
+        let path =
+            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "readDir")?;
         self.check_filesystem_path_access(argument, argument_span, &path)?;
         let entries = fs::read_dir(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
@@ -5919,7 +6213,8 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFile")?;
+        let path =
+            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "readFile")?;
         self.check_filesystem_path_access(argument, argument_span, &path)?;
         let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
@@ -5948,7 +6243,8 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path = self.coerce_to_path_bytes(argument, argument_span, value, "readFileType")?;
+        let path =
+            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "readFileType")?;
         self.check_filesystem_path_access(argument, argument_span, &path)?;
         let stat_path = path_without_trailing_path_markers(&path);
         let file_type =
@@ -5973,7 +6269,8 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path = self.coerce_to_path_bytes(argument, argument_span, value, "import")?;
+        let path =
+            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "import")?;
         let realpath = self.import_realpath(argument, argument_span, &path)?;
         let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
         match self.import_cache.get(&realpath).copied() {
@@ -6034,7 +6331,12 @@ impl TreeWalk {
                 scope_span,
             ));
         }
-        let path = self.coerce_to_path_bytes(argument, argument_span, argument_value, "import")?;
+        let path = self.coerce_to_filesystem_path_bytes(
+            argument,
+            argument_span,
+            argument_value,
+            "scopedImport",
+        )?;
         let realpath = self.import_realpath(argument, argument_span, &path)?;
         self.load_and_eval_import(
             id,
@@ -18971,6 +19273,26 @@ pub enum TreeWalkErrorKind {
         /// The primop rejecting the string context.
         op: &'static str,
     },
+    /// A filesystem-reading builtin reached IFD without a realizer callback.
+    #[error("{op} at node {id:?} requires import-from-derivation: {detail}")]
+    UnsupportedImportFromDerivation {
+        /// The argument node whose path triggered IFD.
+        id: IrId,
+        /// The filesystem-reading builtin that triggered the demand.
+        op: &'static str,
+        /// The IFD path and derivation context.
+        detail: Box<IfdErrorDetail>,
+    },
+    /// A configured IFD realizer failed.
+    #[error("{op} IFD realization failed at node {id:?}: {detail}")]
+    ImportFromDerivation {
+        /// The argument node whose path triggered IFD.
+        id: IrId,
+        /// The filesystem-reading builtin that triggered the demand.
+        op: &'static str,
+        /// The IFD path, derivation context, and realizer diagnostic.
+        detail: Box<IfdErrorDetail>,
+    },
     /// A context-transforming primop required exactly one string-context element.
     #[error("string context at node {id:?} must have exactly one element, but has {len}")]
     StringContextElementCount {
@@ -19372,7 +19694,10 @@ mod tests {
         path::{Path, PathBuf},
         process::Command,
         ptr::NonNull,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -23638,6 +23963,233 @@ mod tests {
             return;
         };
         assert_cpp_nix_filesystem_builtins_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn filesystem_builtins_report_unsupported_ifd_without_realizer() {
+        let root =
+            fs::canonicalize(unique_temp_dir("ifd-unsupported")).expect("temp dir canonicalizes");
+        let store = root.join("store");
+        fs::create_dir(&store).expect("store dir creates");
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let file_path = output_path.join("data.txt");
+        let source = format!(
+            "builtins.readFile (builtins.appendContext {file} {{ {drv} = {{ outputs = [ \"out\" ]; }}; }})",
+            file = nix_string_literal(&path_source(&file_path)),
+            drv = nix_string_literal(&path_source(&drv_path)),
+        );
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+            .expect("store dir configures");
+
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("IFD requires a realizer");
+        let TreeWalkErrorKind::UnsupportedImportFromDerivation { op, detail, .. } = error.kind()
+        else {
+            panic!("unexpected error kind: {error:?}");
+        };
+        assert_eq!(op, "readFile");
+        assert_eq!(detail.path(), file_path.as_os_str().as_bytes());
+        assert_eq!(detail.drv_path(), drv_path.as_os_str().as_bytes());
+        assert_eq!(detail.output_name(), Some(b"out".as_slice()));
+        assert_eq!(detail.context_kind(), ContextKind::SingleOutput);
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn filesystem_builtins_realize_ifd_context_before_reading_paths() {
+        let root = fs::canonicalize(unique_temp_dir("ifd-realizer"))
+            .expect("temp directory canonicalizes");
+        let store = root.join("store");
+        fs::create_dir(&store).expect("store dir creates");
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let data_path = output_path.join("data.txt");
+        let import_path = output_path.join("imported.nix");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_realizer = Arc::clone(&requests);
+        let drv_path_for_realizer = drv_path.as_os_str().as_bytes().to_vec();
+        let output_path_for_realizer = output_path.clone();
+        let data_path_for_realizer = data_path.clone();
+        let import_path_for_realizer = import_path.clone();
+        let realizer = IfdRealizer::new(move |request| {
+            if request.drv_path() != drv_path_for_realizer.as_slice() {
+                return Err(IfdRealizationError::new("unexpected derivation path"));
+            }
+            if request.output_name() != Some(b"out".as_slice()) {
+                return Err(IfdRealizationError::new("unexpected output name"));
+            }
+            requests_for_realizer
+                .lock()
+                .expect("request log lock")
+                .push((
+                    request.path().to_vec(),
+                    request.op(),
+                    request.context_kind(),
+                ));
+            fs::create_dir_all(&output_path_for_realizer)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            fs::write(&data_path_for_realizer, b"hello")
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            fs::write(&import_path_for_realizer, b"41")
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            Ok(())
+        });
+        let source = format!(
+            r#"let
+                 ctx = {{ {drv} = {{ outputs = [ "out" ]; }}; }};
+                 data = builtins.appendContext {data} ctx;
+                 dir = builtins.appendContext {output} ctx;
+                 imported = builtins.appendContext {imported} ctx;
+               in builtins.readFile data == "hello"
+                  && builtins.elem "data.txt" (builtins.attrNames (builtins.readDir dir))
+                  && builtins.pathExists data
+                  && builtins.readFileType data == "regular"
+                  && builtins.readFile data == "hello"
+                  && import imported == 41"#,
+            drv = nix_string_literal(&path_source(&drv_path)),
+            data = nix_string_literal(&path_source(&data_path)),
+            output = nix_string_literal(&path_source(&output_path)),
+            imported = nix_string_literal(&path_source(&import_path)),
+        );
+        let ir = lower(&source);
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+            .expect("store dir configures");
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.set_ifd_realizer(realizer);
+        let value = evaluator
+            .eval_root()
+            .expect("IFD-backed filesystem reads evaluate");
+        assert_eq!(value.as_bool().expect("result is bool"), true);
+
+        let requests = requests.lock().expect("request log lock");
+        assert!(requests.iter().any(|(_, op, _)| *op == "readFile"));
+        assert!(requests.iter().any(|(_, op, _)| *op == "readDir"));
+        assert!(requests.iter().any(|(_, op, _)| *op == "pathExists"));
+        assert!(requests.iter().any(|(_, op, _)| *op == "readFileType"));
+        assert!(requests.iter().any(|(_, op, _)| *op == "import"));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, op, _)| *op == "readFile")
+                .count(),
+            2
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|(_, _, kind)| *kind == ContextKind::SingleOutput)
+        );
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn denied_ifd_path_does_not_call_realizer() {
+        let root = fs::canonicalize(unique_temp_dir("ifd-denied")).expect("temp dir canonicalizes");
+        let store = root.join("store");
+        fs::create_dir(&store).expect("store dir creates");
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let file_path = output_path.join("data.txt");
+        let source = format!(
+            "builtins.readFile (builtins.appendContext {file} {{ {drv} = {{ outputs = [ \"out\" ]; }}; }})",
+            file = nix_string_literal(&path_source(&file_path)),
+            drv = nix_string_literal(&path_source(&drv_path)),
+        );
+        let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+            .expect("store dir configures");
+        options.set_eval_mode(EvalMode::Restricted);
+        let calls = Arc::new(AtomicU64::new(0));
+        let calls_for_realizer = Arc::clone(&calls);
+        let realizer = IfdRealizer::new(move |_| {
+            calls_for_realizer.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        let ir = lower(&source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.set_ifd_realizer(realizer);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("restricted mode rejects before IFD realization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::PathAccessDenied { .. }
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn mixed_opaque_and_derivation_context_rejects_before_ifd_realizer() {
+        let root = fs::canonicalize(unique_temp_dir("ifd-mixed")).expect("temp dir canonicalizes");
+        let store = root.join("store");
+        fs::create_dir(&store).expect("store dir creates");
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let opaque_path = store.join("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-source");
+        let file_path = output_path.join("data.txt");
+        let source = format!(
+            "builtins.readFile (builtins.appendContext {file} {{ {drv} = {{ outputs = [ \"out\" ]; }}; {opaque} = {{ path = true; }}; }})",
+            file = nix_string_literal(&path_source(&file_path)),
+            drv = nix_string_literal(&path_source(&drv_path)),
+            opaque = nix_string_literal(&path_source(&opaque_path)),
+        );
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+            .expect("store dir configures");
+        let calls = Arc::new(AtomicU64::new(0));
+        let calls_for_realizer = Arc::clone(&calls);
+        let realizer = IfdRealizer::new(move |_| {
+            calls_for_realizer.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        });
+        let ir = lower(&source);
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        evaluator.set_ifd_realizer(realizer);
+
+        let error = evaluator
+            .eval_root()
+            .expect_err("opaque context rejects before IFD realization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "readFile", .. }
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn scoped_import_ifd_error_reports_scoped_import_op() {
+        let root = fs::canonicalize(unique_temp_dir("ifd-scoped")).expect("temp dir canonicalizes");
+        let store = root.join("store");
+        fs::create_dir(&store).expect("store dir creates");
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let import_path = output_path.join("imported.nix");
+        let source = format!(
+            "builtins.scopedImport {{ }} (builtins.appendContext {file} {{ {drv} = {{ outputs = [ \"out\" ]; }}; }})",
+            file = nix_string_literal(&path_source(&import_path)),
+            drv = nix_string_literal(&path_source(&drv_path)),
+        );
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+            .expect("store dir configures");
+
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("scopedImport IFD requires a realizer");
+        let TreeWalkErrorKind::UnsupportedImportFromDerivation { op, detail, .. } = error.kind()
+        else {
+            panic!("unexpected error kind: {error:?}");
+        };
+        assert_eq!(op, "scopedImport");
+        assert_eq!(detail.path(), import_path.as_os_str().as_bytes());
+        assert_eq!(detail.drv_path(), drv_path.as_os_str().as_bytes());
+        assert_eq!(detail.output_name(), Some(b"out".as_slice()));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
     }
 
     #[test]

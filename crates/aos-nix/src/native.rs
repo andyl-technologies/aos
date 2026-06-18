@@ -142,6 +142,7 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
         | TreeWalkErrorKind::UnsupportedBinaryOp { .. }
         | TreeWalkErrorKind::UnsupportedPrimOp { .. }
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
+        | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
         | TreeWalkErrorKind::UnsupportedAttrPath { .. }
         | TreeWalkErrorKind::UnsupportedNode { .. } => true,
