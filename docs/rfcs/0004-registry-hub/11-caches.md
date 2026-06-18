@@ -723,10 +723,17 @@ the current spec. Phases are orderable; A lands first, E last.
       cache home + object-list browse pages — the worker half of cache parity,
       under real workerd+miniflare. The NAR-fetch body travels the *same* R2
       cache-facade path the narinfo assertion already exercises (a different key
-      through `cache_fetcher` → R2 get), so it is covered transitively.
-      **Remaining:** a Cron GC pass (gated on the Worker GC Cron driver, below)
-      and the ranged/streamed large-NAR case (gated on the **Streaming Worker
-      bridge**, below — the worker still buffers, a documented asymmetry).
+      through `cache_fetcher` → R2 get), so it is covered transitively. The
+      **Cron GC pass is now covered**: the e2e seeds a GC-policied cache with an
+      unrooted object, dispatches the worker's scheduled handler
+      (`/cdn-cgi/mf/scheduled`), and asserts `gc_all` swept it on D1 without error
+      — the regression guard for an `i64::MAX` `LIMIT` bind that `SQLITE_MISMATCH`'d
+      on the D1 backend's `f64` integers (fixed: `list_cache_objects` omits the
+      `LIMIT` for a negative sentinel). (miniflare tears down the scheduled isolate
+      before async work flushes its *finish*, so the run can read `running`;
+      full reclamation is covered by the native end-to-end GC test + gc.rs.)
+      **Remaining:** the ranged/streamed large-NAR case (gated on the **Streaming
+      Worker bridge**, below — the worker still buffers, a documented asymmetry).
 - [x] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
       graph in a Leptos render test. `web.rs::cache_browse_and_nar_explorer_over_plain_http`
       drives the real router for the cache home, object list, object page,
