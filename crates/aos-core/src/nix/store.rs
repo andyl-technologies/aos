@@ -14,12 +14,12 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, Command, Stdio};
 
 use anyhow::{Context, Result};
 
 use super::env::aos_nix_command;
-use super::eval::NixEval;
+use super::eval::{NixEval, NixEvalConfig};
 
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]
@@ -46,13 +46,22 @@ pub struct PathInfo {
 /// installation without experimental features.
 pub struct NixCli {
     verbose: u8,
+    eval_config: NixEvalConfig,
 }
 
 impl NixCli {
     /// Creates a wrapper with the given verbosity level; `verbose > 0`
     /// adds `--show-trace` to evaluation commands.
     pub fn new(verbose: u8) -> Self {
-        Self { verbose }
+        Self::with_eval_config(verbose, NixEvalConfig::default())
+    }
+
+    /// Creates a wrapper with explicit evaluator settings.
+    pub fn with_eval_config(verbose: u8, eval_config: NixEvalConfig) -> Self {
+        Self {
+            verbose,
+            eval_config,
+        }
     }
 
     /// Instantiates an attribute from a Nix file, returning the `.drv` path.
@@ -67,6 +76,7 @@ impl NixCli {
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = aos_nix_command("nix-instantiate");
         cmd.arg("-f").arg(file).arg("-A").arg(attr);
+        self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -96,6 +106,7 @@ impl NixCli {
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let mut cmd = aos_nix_command("nix-instantiate");
         cmd.arg("-E").arg(expr);
+        self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -125,6 +136,7 @@ impl NixCli {
     pub fn eval_expr(&self, expr: &str) -> Result<String> {
         let mut cmd = aos_nix_command("nix-instantiate");
         cmd.args(["--eval", "--strict", "--json", "-E"]).arg(expr);
+        self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -154,6 +166,7 @@ impl NixCli {
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = aos_nix_command("nix-build");
         cmd.arg(file).arg("-A").arg(attr).arg("--no-out-link");
+        self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
@@ -192,6 +205,12 @@ impl NixCli {
             .trim()
             .to_string();
         Ok(path)
+    }
+
+    fn append_eval_options(&self, cmd: &mut Command) {
+        for arg in self.eval_config.cli_option_args() {
+            cmd.arg(arg);
+        }
     }
 
     /// Returns the recursive closure of a store path (the path itself
@@ -393,6 +412,32 @@ impl NixEval for NixCli {
 
     fn name(&self) -> &'static str {
         "nix-cli"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command_args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn eval_config_emits_cpp_nix_system_option() -> Result<()> {
+        let nix =
+            NixCli::with_eval_config(0, NixEvalConfig::with_current_system("aos-test-target")?);
+        let mut command = Command::new("nix-instantiate");
+        nix.append_eval_options(&mut command);
+
+        assert_eq!(
+            command_args(&command),
+            ["--option", "system", "aos-test-target"]
+        );
+        Ok(())
     }
 }
 

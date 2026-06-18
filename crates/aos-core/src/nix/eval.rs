@@ -17,7 +17,7 @@ use anyhow::Result;
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
-use aos_nix::{NativeEvalError, NixNative};
+use aos_nix::{NativeEvalError, NixNative, eval::TreeWalkOptions};
 
 static NATIVE_MODE: OnceLock<NativeMode> = OnceLock::new();
 
@@ -54,6 +54,70 @@ pub trait NixEval: Send + Sync {
 
     /// Returns a stable implementation name for diagnostics and tracing.
     fn name(&self) -> &'static str;
+}
+
+/// Evaluator settings that must be shared by native and C++ Nix evaluators.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NixEvalConfig {
+    current_system: Option<String>,
+}
+
+impl NixEvalConfig {
+    /// Creates evaluator settings using C++ Nix's ambient defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates evaluator settings with a configured Nix `system` value.
+    ///
+    /// The value is passed to C++ Nix as `--option system <value>` and to the
+    /// native evaluator as `builtins.currentSystem`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `current_system` is empty.
+    pub fn with_current_system(current_system: impl Into<String>) -> Result<Self> {
+        let mut config = Self::default();
+        config.set_current_system(current_system)?;
+        Ok(config)
+    }
+
+    /// Returns the configured Nix `system` value, if one was provided.
+    pub fn current_system(&self) -> Option<&str> {
+        self.current_system.as_deref()
+    }
+
+    /// Returns C++ Nix CLI options that reproduce these evaluator settings.
+    pub(crate) fn cli_option_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(current_system) = self.current_system() {
+            args.extend([
+                "--option".to_string(),
+                "system".to_string(),
+                current_system.to_string(),
+            ]);
+        }
+        args
+    }
+
+    /// Replaces the configured Nix `system` value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `current_system` is empty.
+    pub fn set_current_system(&mut self, current_system: impl Into<String>) -> Result<()> {
+        let current_system = current_system.into();
+        if current_system.is_empty() {
+            anyhow::bail!("Nix currentSystem value must not be empty");
+        }
+        self.current_system = Some(current_system);
+        Ok(())
+    }
+
+    /// Clears the configured Nix `system` value.
+    pub fn clear_current_system(&mut self) {
+        self.current_system = None;
+    }
 }
 
 /// Requested native-evaluator mode from `AOS_NIX_NATIVE`.
@@ -114,18 +178,31 @@ pub fn native_mode_from_env() -> NativeMode {
 /// `Result` so callers can keep the same shape when a native provider is wired
 /// above `aos-core`.
 pub fn select_evaluator(verbose: u8) -> Result<Box<dyn NixEval>> {
+    select_evaluator_with_config(verbose, NixEvalConfig::default())
+}
+
+/// Selects the active evaluator using `AOS_NIX_NATIVE` and explicit settings.
+///
+/// # Errors
+///
+/// Returns an error if the selected native evaluator cannot be initialized with
+/// the supplied settings.
+pub fn select_evaluator_with_config(
+    verbose: u8,
+    config: NixEvalConfig,
+) -> Result<Box<dyn NixEval>> {
     match native_mode_from_env() {
-        NativeMode::Off => Ok(Box::new(NixCli::new(verbose))),
+        NativeMode::Off => Ok(Box::new(NixCli::with_eval_config(verbose, config))),
         #[cfg(feature = "native-eval")]
-        NativeMode::On => Ok(Box::new(NativeFallbackEval::new(verbose)?)),
+        NativeMode::On => Ok(Box::new(NativeFallbackEval::new(verbose, config)?)),
         #[cfg(feature = "native-eval")]
-        NativeMode::Shadow => Ok(Box::new(ShadowEval::new(verbose)?)),
+        NativeMode::Shadow => Ok(Box::new(ShadowEval::new(verbose, config)?)),
         #[cfg(not(feature = "native-eval"))]
         NativeMode::On | NativeMode::Shadow => {
             tracing::warn!(
                 "AOS_NIX_NATIVE requested but no native provider is linked; using nix-cli"
             );
-            Ok(Box::new(NixCli::new(verbose)))
+            Ok(Box::new(NixCli::with_eval_config(verbose, config)))
         }
     }
 }
@@ -138,10 +215,11 @@ struct NativeFallbackEval {
 
 #[cfg(feature = "native-eval")]
 impl NativeFallbackEval {
-    fn new(verbose: u8) -> Result<Self> {
+    fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
+        let native_options = tree_walk_options_from_config(&config)?;
         Ok(Self {
-            native: NixNative::new(verbose)?,
-            fallback: NixCli::new(verbose),
+            native: NixNative::with_options(verbose, native_options)?,
+            fallback: NixCli::with_eval_config(verbose, config),
         })
     }
 }
@@ -194,10 +272,11 @@ struct ShadowEval {
 
 #[cfg(feature = "native-eval")]
 impl ShadowEval {
-    fn new(verbose: u8) -> Result<Self> {
+    fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
+        let native_options = tree_walk_options_from_config(&config)?;
         Ok(Self {
-            native: NixNative::new(verbose)?,
-            fallback: NixCli::new(verbose),
+            native: NixNative::with_options(verbose, native_options)?,
+            fallback: NixCli::with_eval_config(verbose, config),
         })
     }
 }
@@ -267,9 +346,36 @@ fn should_fallback(error: &anyhow::Error) -> bool {
     )
 }
 
+#[cfg(feature = "native-eval")]
+fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
+    let mut options = TreeWalkOptions::new();
+    if let Some(current_system) = config.current_system() {
+        options.set_current_system(current_system.as_bytes().to_vec())?;
+    }
+    Ok(options)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eval_config_rejects_empty_current_system() {
+        let error = NixEvalConfig::with_current_system("")
+            .expect_err("empty currentSystem should be invalid");
+
+        assert!(error.to_string().contains("currentSystem"));
+    }
+
+    #[test]
+    fn eval_config_renders_cpp_nix_option_args() -> Result<()> {
+        assert_eq!(NixEvalConfig::new().cli_option_args(), Vec::<String>::new());
+        assert_eq!(
+            NixEvalConfig::with_current_system("aos-test-target")?.cli_option_args(),
+            ["--option", "system", "aos-test-target"]
+        );
+        Ok(())
+    }
 
     #[test]
     fn native_mode_defaults_off() {

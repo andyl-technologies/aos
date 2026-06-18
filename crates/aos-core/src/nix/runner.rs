@@ -17,6 +17,7 @@
 //! can map them to the standard exit codes.
 
 use std::env;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
@@ -24,7 +25,7 @@ use std::process::{Child, ExitStatus, Output, Stdio};
 use anyhow::{Context, Result};
 
 use crate::error::AosError;
-use crate::nix::{NixEval, aos_nix_command, select_evaluator};
+use crate::nix::{NixEval, NixEvalConfig, aos_nix_command, select_evaluator_with_config};
 
 /// Wraps interactions with the Nix CLI tools (`nix-build`, `nix-instantiate`,
 /// `nix-store`, `nix-collect-garbage`, `nix-shell`).
@@ -32,6 +33,7 @@ pub struct NixRunner {
     /// Path to the directory containing `default.nix`.
     root: PathBuf,
     evaluator: Box<dyn NixEval>,
+    eval_config: NixEvalConfig,
     verbose: u8,
     quiet: bool,
 }
@@ -46,15 +48,28 @@ impl NixRunner {
     /// `PATH`, or [`AosError::RootNotFound`] if no `default.nix` can be
     /// located (see `find_root` for the search order).
     pub fn new(verbose: u8, quiet: bool) -> Result<Self> {
+        Self::with_eval_config(verbose, quiet, NixEvalConfig::default())
+    }
+
+    /// Creates a new `NixRunner` with explicit evaluator settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] if `nix-build` is not on
+    /// `PATH`, [`AosError::RootNotFound`] if no `default.nix` can be
+    /// located, or another error if the configured evaluator cannot be
+    /// initialized.
+    pub fn with_eval_config(verbose: u8, quiet: bool, eval_config: NixEvalConfig) -> Result<Self> {
         // Verify nix is available.
         which("nix-build").map_err(|_| AosError::NixNotFound)?;
 
         let root = Self::find_root()?;
-        let evaluator = select_evaluator(verbose)?;
+        let evaluator = select_evaluator_with_config(verbose, eval_config.clone())?;
 
         Ok(Self {
             root,
             evaluator,
+            eval_config,
             verbose,
             quiet,
         })
@@ -337,8 +352,7 @@ impl NixRunner {
     /// with a non-zero status.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
         let status = aos_nix_command("nix")
-            .args(["repl", "--file"])
-            .arg(nix_file)
+            .args(self.repl_args(nix_file))
             .current_dir(&self.root)
             .status()
             .context("failed to start nix repl")?;
@@ -408,6 +422,7 @@ impl NixRunner {
     /// `verbose >= 2` the child's stderr is streamed to the terminal in
     /// real-time; otherwise it is captured and only shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
+        let args = self.args_with_eval_options(cmd, args);
         if self.verbose >= 3 {
             eprintln!("+ {} {}", cmd, args.join(" "));
         }
@@ -419,7 +434,7 @@ impl NixRunner {
         };
 
         let child = aos_nix_command(cmd)
-            .args(args)
+            .args(&args)
             .current_dir(&self.root)
             .stdout(Stdio::piped())
             .stderr(stderr_behavior)
@@ -469,6 +484,27 @@ impl NixRunner {
         }
     }
 
+    fn args_with_eval_options(&self, cmd: &str, args: &[String]) -> Vec<String> {
+        let mut args = args.to_vec();
+        if command_accepts_eval_options(cmd) {
+            args.extend(self.eval_config.cli_option_args());
+        }
+        args
+    }
+
+    fn repl_args(&self, nix_file: &Path) -> Vec<OsString> {
+        let mut args = vec![OsString::from("repl")];
+        args.extend(
+            self.eval_config
+                .cli_option_args()
+                .into_iter()
+                .map(OsString::from),
+        );
+        args.push(OsString::from("--file"));
+        args.push(nix_file.as_os_str().to_owned());
+        args
+    }
+
     /// Stream a child process's stdout and stderr line-by-line to the
     /// terminal.  Used for interactive / long-running commands where the user
     /// wants to see real-time output.
@@ -498,6 +534,93 @@ impl NixRunner {
 
         let status = child.wait().context("waiting for child process")?;
         Ok(status)
+    }
+}
+
+fn command_accepts_eval_options(cmd: &str) -> bool {
+    matches!(cmd, "nix-build" | "nix-instantiate")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn os_args_to_strings(args: Vec<OsString>) -> Vec<String> {
+        args.into_iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn runner_with_config(eval_config: NixEvalConfig) -> NixRunner {
+        NixRunner {
+            root: PathBuf::from("/aos"),
+            evaluator: Box::new(crate::nix::NixCli::new(0)),
+            eval_config,
+            verbose: 0,
+            quiet: true,
+        }
+    }
+
+    #[test]
+    fn runner_appends_eval_options_to_eval_commands() -> Result<()> {
+        let runner = runner_with_config(NixEvalConfig::with_current_system("aos-test-target")?);
+        let args = vec!["--eval".to_string(), "default.nix".to_string()];
+
+        assert_eq!(
+            runner.args_with_eval_options("nix-instantiate", &args),
+            [
+                "--eval",
+                "default.nix",
+                "--option",
+                "system",
+                "aos-test-target"
+            ]
+        );
+        assert_eq!(
+            runner.args_with_eval_options("nix-build", &args),
+            [
+                "--eval",
+                "default.nix",
+                "--option",
+                "system",
+                "aos-test-target"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runner_leaves_non_eval_commands_unchanged() -> Result<()> {
+        let runner = runner_with_config(NixEvalConfig::with_current_system("aos-test-target")?);
+        let args = vec!["--query".to_string(), "/nix/store/path".to_string()];
+
+        assert_eq!(
+            runner.args_with_eval_options("nix-store", &args),
+            ["--query", "/nix/store/path"]
+        );
+        assert_eq!(
+            runner.args_with_eval_options("nix-collect-garbage", &args),
+            ["--query", "/nix/store/path"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn runner_appends_eval_options_to_repl() -> Result<()> {
+        let runner = runner_with_config(NixEvalConfig::with_current_system("aos-test-target")?);
+
+        assert_eq!(
+            os_args_to_strings(runner.repl_args(Path::new("default.nix"))),
+            [
+                "repl",
+                "--option",
+                "system",
+                "aos-test-target",
+                "--file",
+                "default.nix"
+            ]
+        );
+        Ok(())
     }
 }
 

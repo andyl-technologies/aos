@@ -10,9 +10,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::compile::{EffectClass, Ir, IrData, IrKind, lower, resolve};
+use crate::compile::{
+    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrKind, lower, resolve,
+};
 use crate::error::NativeEvalError;
-use crate::eval::{TreeWalkError, TreeWalkErrorKind, eval_whnf_owned};
+use crate::eval::{
+    EvalMode, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, eval_whnf_owned_with_options,
+};
 use crate::runtime::builtins::lookup_builtin;
 use crate::syntax::{Span, parse_str};
 use crate::value::ValueTag;
@@ -21,6 +25,7 @@ use crate::value::ValueTag;
 #[derive(Debug, Clone)]
 pub struct NixNative {
     verbose: u8,
+    options: TreeWalkOptions,
 }
 
 impl NixNative {
@@ -32,7 +37,18 @@ impl NixNative {
     /// may return errors when opening the persistent cache or validating store
     /// paths.
     pub fn new(verbose: u8) -> Result<Self> {
-        Ok(Self { verbose })
+        Self::with_options(verbose, TreeWalkOptions::new())
+    }
+
+    /// Creates a native evaluator handle with explicit tree-walk settings.
+    ///
+    /// # Errors
+    ///
+    /// The Phase-1 shim has no fallible initialization. Future implementations
+    /// may return errors when opening the persistent cache or validating store
+    /// paths.
+    pub fn with_options(verbose: u8, options: TreeWalkOptions) -> Result<Self> {
+        Ok(Self { verbose, options })
     }
 
     /// Returns the configured verbosity level.
@@ -79,8 +95,9 @@ impl NixNative {
         let ir = lower(resolved).map_err(|source| {
             unsupported_frontend_error("lower", source.to_string(), source.span(), expr.len())
         })?;
-        ensure_native_json_subset(&ir, expr.len())?;
-        let outcome = eval_whnf_owned(&ir).map_err(|error| native_eval_error(error, expr.len()))?;
+        ensure_native_json_subset(&ir, expr.len(), &self.options)?;
+        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+            .map_err(|error| native_eval_error(error, expr.len()))?;
         let string = outcome
             .heap()
             .get_string(outcome.value())
@@ -155,8 +172,12 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
     }
 }
 
-fn ensure_native_json_subset(ir: &Ir, expr_len: usize) -> Result<(), NativeEvalError> {
-    for node in ir.arena.nodes() {
+fn ensure_native_json_subset(
+    ir: &Ir,
+    expr_len: usize,
+    options: &TreeWalkOptions,
+) -> Result<(), NativeEvalError> {
+    for (index, node) in ir.arena.nodes().iter().enumerate() {
         if node.effect == EffectClass::Effectful {
             return Err(unsupported_native_node(
                 "effectful expression evaluation",
@@ -171,6 +192,16 @@ fn ensure_native_json_subset(ir: &Ir, expr_len: usize) -> Result<(), NativeEvalE
             let Some(name) = ir.symbols.resolve(symbol) else {
                 continue;
             };
+            if name == b"builtins" {
+                if builtins_global_is_configured_current_system_select(ir, index, options) {
+                    continue;
+                }
+                return Err(unsupported_native_node(
+                    "CLI-sensitive builtin evaluation",
+                    node.span,
+                    expr_len,
+                ));
+            }
             if builtin_requires_cli_fallback(name) {
                 return Err(unsupported_native_node(
                     "CLI-sensitive builtin evaluation",
@@ -193,15 +224,48 @@ fn ensure_native_json_subset(ir: &Ir, expr_len: usize) -> Result<(), NativeEvalE
 }
 
 fn builtin_requires_cli_fallback(name: &[u8]) -> bool {
-    if name == b"builtins" {
-        return true;
-    }
-
     let Some(builtin) = lookup_builtin(name) else {
         return false;
     };
 
     builtin.requires_native_cli_fallback()
+}
+
+fn builtins_global_is_configured_current_system_select(
+    ir: &Ir,
+    receiver_index: usize,
+    options: &TreeWalkOptions,
+) -> bool {
+    if options.eval_mode() == EvalMode::Pure || options.current_system().is_none() {
+        return false;
+    }
+
+    ir.arena.nodes().iter().any(|node| {
+        let IrData::Select {
+            receiver,
+            path,
+            default: None,
+            ..
+        } = node.data
+        else {
+            return false;
+        };
+
+        receiver.index() == receiver_index && attr_path_is_static_symbol(ir, path, b"currentSystem")
+    })
+}
+
+fn attr_path_is_static_symbol(ir: &Ir, path: IrAttrPathId, expected: &[u8]) -> bool {
+    let Some(segments) = ir.attr_paths.get(path.index()) else {
+        return false;
+    };
+    if segments.len() != 1 {
+        return false;
+    }
+    match segments[0] {
+        IrAttrPathSegment::Static(symbol) => ir.symbols.resolve(symbol) == Some(expected),
+        IrAttrPathSegment::Dynamic(_) => false,
+    }
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {
@@ -321,6 +385,40 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn native_expression_eval_uses_configured_current_system() -> Result<()> {
+        let native = NixNative::with_options(
+            0,
+            TreeWalkOptions::with_current_system(b"aos-test-target".to_vec())?,
+        )?;
+
+        assert_eq!(
+            native.eval_expr("builtins.currentSystem")?,
+            "\"aos-test-target\""
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_native_expression_eval_still_rejects_reified_builtins_inventory() -> Result<()> {
+        let native = NixNative::with_options(
+            0,
+            TreeWalkOptions::with_current_system(b"aos-test-target".to_vec())?,
+        )?;
+
+        let err = native
+            .eval_expr("builtins.attrNames builtins")
+            .expect_err("reified builtins inventory should still fall back");
+        assert!(
+            matches!(
+                err.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported { span: Some(_), .. })
+            ),
+            "{err:?}"
+        );
         Ok(())
     }
 
