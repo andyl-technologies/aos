@@ -238,6 +238,8 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         &changed_credential_units,
     )
     .await?;
+    crate::package_attestation::measure_activated_packages(&root, &installed)
+        .context("measuring exposed package set into PCR 15")?;
 
     if current_targets.is_empty() {
         printer.info("Removed exposed package target enablement.");
@@ -1111,7 +1113,13 @@ fn validate_workload_root_images(
             continue;
         };
 
-        let root_image_keys = ["RootImage", "RootVerity", "RootHash", "RootHashSignature"];
+        let root_image_keys = [
+            "RootImage",
+            "RootVerity",
+            "RootHash",
+            "RootHashSignature",
+            "RootImagePolicy",
+        ];
         if let Some(image) = expected {
             validate_expected_workload_root_image(package_name, unit, &parsed, service, image)?;
         } else if root_image_keys.iter().any(|key| service.contains_key(*key)) {
@@ -1194,6 +1202,13 @@ fn validate_expected_workload_root_image(
         service,
         "RootHashSignature",
         &image_member_path(&image.store_path, root_hash_sig),
+    )?;
+    require_service_value(
+        package_name,
+        unit,
+        service,
+        "RootImagePolicy",
+        "root=signed",
     )?;
     require_service_value(package_name, unit, service, "PrivateDevices", "false")?;
     require_service_value(package_name, unit, service, "PermissionsStartOnly", "true")?;
@@ -3626,7 +3641,7 @@ mod tests {
         let guard = trusted_verity_root_guard_for_test();
         let precheck = format!("{guard} --signature-only {root_hash} {root_hash_signature}");
         format!(
-            "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\n[Service]\nRootImage={}/root.img\nRootVerity={}/root.verity\nRootHash={root_hash}\nRootHashSignature={}/root.roothash.p7s\nExecStartPre={precheck}\nPermissionsStartOnly=true\n{root_directory}PrivateDevices={private_devices}\nSlice=aos-pkg-{package_name}.slice\n",
+            "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\n[Service]\nRootImage={}/root.img\nRootVerity={}/root.verity\nRootHash={root_hash}\nRootHashSignature={}/root.roothash.p7s\nRootImagePolicy=root=signed\nExecStartPre={precheck}\nPermissionsStartOnly=true\n{root_directory}PrivateDevices={private_devices}\nSlice=aos-pkg-{package_name}.slice\n",
             image_path.display(),
             image_path.display(),
             image_path.display(),
@@ -4032,6 +4047,36 @@ mod tests {
         let err = exposed_packages(&profile, &[installed]).unwrap_err();
 
         assert!(format!("{err:#}").contains("invalid RootHash value"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_unsigned_verity_root_image_policy() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        let unit_text = verity_workload_service_text(
+            "web",
+            &image_path,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "false",
+            None,
+        )
+        .replace(
+            "RootImagePolicy=root=signed",
+            "RootImagePolicy=root=verity+signed",
+        );
+        write_service_unit(&installed, &unit_text);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid RootImagePolicy value"));
     }
 
     #[test]

@@ -672,7 +672,7 @@ Full spec: [`attestation.md`](attestation.md).
 
 **Deliverables.**
 
-- [ ] **dm-verity package roots (D21).** Build the package-set root (prefer one
+- [x] **dm-verity package roots (D21).** Build the package-set root (prefer one
       consolidated composefs/EROFS digest per generation) as a dm-verity image,
       hermetically (`veritysetup format`, no host tools). Consume via
       `RootImage=`+`RootHash=`+`RootVerity=`+`RootHashSignature=`; the PKCS#7
