@@ -192,6 +192,7 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
     };
     let installed = list_meta(&profile)?;
     rebuild_generation_expose_roots(&current, &installed)?;
+    rebuild_generation_expose_image_roots(&current, &installed)?;
 
     let packages = exposed_packages(&profile, &installed)?;
     let root = aos_root_path();

@@ -5,9 +5,14 @@
 ##! the package targets under systemd.
 {
   pkgs,
+  lib,
   mkSystem,
   testing,
 }: let
+  storePathHash = path:
+    builtins.elemAt (lib.splitString "-" (baseNameOf (builtins.toString path))) 0;
+  mkPackageRootImage = import ../build/package-root-image.nix {inherit pkgs lib;};
+
   privateOutboundNetnsHash = builtins.substring 0 8 (
     builtins.hashString "sha256" "expose-lifecycle-outbound"
   );
@@ -16,6 +21,7 @@
   privateOutboundNatTable = "aos_pkg_${privateOutboundNetnsHash}";
   privateOutboundHttpRuleComment = "aos-pkg-expose-lifecycle-outbound-http-test";
   uidSharedPath = "/tmp/aos-expose-lifecycle-uid-shared";
+  fakeVerityRootHash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
   privatePackageCommand = pkgs.writeShellScriptBin "expose-lifecycle-private-command" ''
     state=/var/lib/aos-pkg-expose-lifecycle-private
@@ -55,6 +61,12 @@
       exit 1
     fi
     printf denied > "$state/result"
+  '';
+
+  verityCommand = pkgs.writeShellScriptBin "expose-lifecycle-verity-command" ''
+    state=/var/lib/aos-pkg-expose-lifecycle-verity
+    test -r /share/expose-lifecycle-verity/payload.txt
+    printf verity-ok > "$state/result"
   '';
 
   socketServer = pkgs.writeTextFile {
@@ -334,6 +346,112 @@
     };
   };
 
+  verityRoot = pkgs.mkDerivation {
+    pname = "expose-lifecycle-verity-root";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin" "$out/share/expose-lifecycle-verity"
+          ln -s ${verityCommand}/bin/expose-lifecycle-verity-command "$out/bin/expose-lifecycle-verity-command"
+          printf verity-payload > "$out/share/expose-lifecycle-verity/payload.txt"
+        '';
+      }
+    ];
+  };
+
+  verityImage = mkPackageRootImage {
+    pname = "expose-lifecycle-verity-image";
+    root = verityRoot;
+    minSizeMiB = 16;
+    headroomMiB = 2;
+    rootHashKey = "${pkgs.secure-boot-test-keys}/db.key";
+    rootHashCert = "${pkgs.secure-boot-test-keys}/db.crt";
+  };
+  verityImageHash = storePathHash verityImage;
+
+  verityRenderedPackage = pkgs.mkDerivation {
+    pname = "expose-lifecycle-verity";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-lifecycle-verity-render"
+          printf verity-render > "$out/share/expose-lifecycle-verity-render/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-lifecycle-verity.service" = {
+        description = "RFC-0001 live verity RootImage package workload";
+        onlyManualStart = true;
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "/bin/expose-lifecycle-verity-command";
+          StateDirectory = "aos-pkg-expose-lifecycle-verity";
+        };
+      };
+      images = [
+        {
+          format = "ext4-verity";
+          store_path = "${verityImage}";
+          nar_hash = "sha256:test";
+          nar_size = 1;
+          root_image = "root.img";
+          root_verity = "root.verity";
+          root_hash = "sha256:${fakeVerityRootHash}";
+          root_hash_sig = "root.roothash.p7s";
+        }
+      ];
+      permissions = {
+        network = "private";
+        capabilities = [];
+        devices = [];
+        host-paths = [];
+        syscalls = "restricted";
+      };
+      requires = [];
+    };
+  };
+
+  verityExpose =
+    pkgs.runCommand "expose-lifecycle-verity-expose" {
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.grep
+        pkgs.sed
+      ];
+    } ''
+      set -eu
+      cp -a ${verityRenderedPackage.expose}/. "$out/"
+      chmod -R u+w "$out"
+
+      root_hash=$(cat ${verityImage}/root.roothash)
+      for path in \
+        "$out/manifest.json" \
+        "$out/network-policy.json" \
+        "$out/mac-profile.json" \
+        "$out"/units/*.service \
+        "$out"/mac/selinux/*.te; do
+        [ -e "$path" ] || continue
+        sed -i \
+          -e "s|${verityRenderedPackage.expose}|$out|g" \
+          -e "s|${fakeVerityRootHash}|$root_hash|g" \
+          "$path"
+      done
+
+      grep -Eq "\"root_hash\"[[:space:]]*:[[:space:]]*\"sha256:$root_hash\"" "$out/manifest.json"
+      grep -q "^RootHash=$root_hash$" "$out/units/expose-lifecycle-verity.service"
+    '';
+
   seedPackageProfile = pkgs.writeShellScriptBin "seed-expose-lifecycle-profile" ''
     set -eu
     profile=/var/lib/profiles/system-packages
@@ -349,7 +467,8 @@
       expose-lifecycle-socket-consumer ${socketConsumerPackage} ${socketConsumerPackage.expose} \
       expose-lifecycle-outbound ${privateOutboundPackage} ${privateOutboundPackage.expose} \
       expose-lifecycle-uid-writer ${uidWriterPackage} ${uidWriterPackage.expose} \
-      expose-lifecycle-uid-checker ${uidCheckerPackage} ${uidCheckerPackage.expose} <<'PY'
+      expose-lifecycle-uid-checker ${uidCheckerPackage} ${uidCheckerPackage.expose} \
+      expose-lifecycle-verity ${verityRoot} ${verityExpose} <<'PY'
     import json
     import pathlib
     import sys
@@ -460,6 +579,9 @@
           uidWriterPackage.expose
           uidCheckerPackage
           uidCheckerPackage.expose
+          verityRoot
+          verityImage
+          verityExpose
           seedPackageProfile
           pkgs.aos
           pkgs.aos-ebpf-lsm-policy
@@ -634,6 +756,18 @@ in
       vm.succeed("systemctl cat expose-lifecycle-outbound.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-outbound.service'")
       vm.succeed("systemctl cat expose-lifecycle-uid-writer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-writer.service'")
       vm.succeed("systemctl cat expose-lifecycle-uid-checker.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-checker.service'")
+      vm.succeed("systemctl cat expose-lifecycle-verity.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-verity.service'")
+      vm.succeed("test -L /var/lib/profiles/system-packages/current/expose-images/${verityImageHash}")
+      assert "${verityImage}" == vm.succeed(
+          "readlink /var/lib/profiles/system-packages/current/expose-images/${verityImageHash}"
+      ).strip()
+      vm.succeed("grep -q '^RootImage=${verityImage}/root.img$' /etc/systemd/system.attached/expose-lifecycle-verity.service")
+      vm.succeed("grep -q '^RootVerity=${verityImage}/root.verity$' /etc/systemd/system.attached/expose-lifecycle-verity.service")
+      vm.succeed("grep -q '^RootHashSignature=${verityImage}/root.roothash.p7s$' /etc/systemd/system.attached/expose-lifecycle-verity.service")
+      vm.succeed("root_hash=$(cat ${verityImage}/root.roothash); grep -q \"^RootHash=$root_hash$\" /etc/systemd/system.attached/expose-lifecycle-verity.service")
+      # Direct-kernel VM tests do not enroll the signing certificate into the
+      # platform keyring; Secure Boot image tests cover RootImage runtime start.
+      vm.succeed("test \"$(systemctl is-active expose-lifecycle-verity.service || true)\" = inactive")
       vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-private.service")
       vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
       vm.succeed("grep -q '^PrivateNetwork=true$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")

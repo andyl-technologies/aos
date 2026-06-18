@@ -154,7 +154,7 @@
     lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
 
   packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs lib mkSystem testing;
   };
   packagePresetCheck = import ./lib/testing/package-preset.nix {
     inherit pkgs mkSystem testing;
