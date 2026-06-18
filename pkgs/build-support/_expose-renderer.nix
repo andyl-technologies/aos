@@ -282,6 +282,39 @@
     "invalid security label '${builtins.toString label}'"
     label;
 
+  validateRelativeArtifactPath = field: path: let
+    components = lib.splitString "/" path;
+    invalidComponent = builtins.any (part: part == "" || part == "." || part == "..") components;
+  in
+    throwIfNot
+    (
+      builtins.isString path
+      && path != ""
+      && !lib.hasPrefix "/" path
+      && builtins.match ".*\\\\.*" path == null
+      && builtins.match hostPathType path != null
+      && !invalidComponent
+    )
+    "${field} must be a safe relative artifact path"
+    path;
+
+  validateRelativeArtifactPathWithSuffix = field: suffix: path:
+    throwIfNot
+    (lib.hasSuffix suffix path)
+    "${field} must be a relative ${suffix} artifact path"
+    (validateRelativeArtifactPath field path);
+
+  validateRootHash = field: hash:
+    throwIfNot
+    (builtins.isString hash && builtins.match "^sha256[:-][0-9A-Fa-f]{64}$" hash != null)
+    "${field} must be a sha256 digest"
+    hash;
+
+  rootHashHex = hash:
+    if lib.hasPrefix "sha256:" hash
+    then lib.removePrefix "sha256:" hash
+    else lib.removePrefix "sha256-" hash;
+
   selinuxIdentifierForLabel = label: let
     normalized =
       builtins.replaceStrings
@@ -307,6 +340,10 @@
           "sb_signer_cert_sha256"
           "sbat"
           "expected_pcr11"
+          "root_image"
+          "root_verity"
+          "root_hash"
+          "root_hash_sig"
         ];
         extraImageKeys = builtins.filter (
           key: !(builtins.elem key allowedImageKeys)
@@ -330,7 +367,39 @@
                 && (lib.hasPrefix "sha256:" image.nar_hash || lib.hasPrefix "sha256-" image.nar_hash)
               )
               "expose image '${builtins.toString image.store_path}' has invalid NAR hash"
-              (image // {store_path = validateAbsolutePath "image store path" image.store_path;})
+              (
+                let
+                  normalized = image // {store_path = validateAbsolutePath "image store path" image.store_path;};
+                  verityFields = [
+                    (image ? root_image)
+                    (image ? root_verity)
+                    (image ? root_hash)
+                    (image ? root_hash_sig)
+                  ];
+                  verityFieldCount = builtins.length (builtins.filter (present: present) verityFields);
+                  verityFormat = builtins.elem image.format ["ext4-verity" "erofs-verity"];
+                in
+                  if verityFieldCount == 0 && !verityFormat
+                  then normalized
+                  else
+                    throwIfNot
+                    verityFormat
+                    "expose image '${builtins.toString image.store_path}' declares dm-verity fields but format '${builtins.toString image.format}' is not a verity root format"
+                    (
+                      throwIfNot
+                      (verityFieldCount == 4)
+                      "expose image '${builtins.toString image.store_path}' must declare root_image, root_verity, root_hash, and root_hash_sig together"
+                      (
+                        normalized
+                        // {
+                          root_image = validateRelativeArtifactPath "expose image root_image" image.root_image;
+                          root_verity = validateRelativeArtifactPathWithSuffix "expose image root_verity" ".verity" image.root_verity;
+                          root_hash = validateRootHash "expose image root_hash" image.root_hash;
+                          root_hash_sig = validateRelativeArtifactPathWithSuffix "expose image root_hash_sig" ".p7s" image.root_hash_sig;
+                        }
+                      )
+                    )
+              )
             )
           )
         )
@@ -1023,6 +1092,25 @@ in rec {
       builtins.map
       validateImage
       (validateList "expose.images" (checkedExpose.images or []));
+    verityImages = builtins.filter (image: builtins.elem image.format ["ext4-verity" "erofs-verity"]) images;
+    verityImage =
+      throwIfNot
+      (builtins.length verityImages <= 1)
+      "mkDerivation expose for package '${packageName}' declares multiple verity root images"
+      (
+        if verityImages == []
+        then null
+        else builtins.head verityImages
+      );
+    verityRootConfig =
+      if verityImage == null
+      then null
+      else {
+        RootImage = "${verityImage.store_path}/${verityImage.root_image}";
+        RootVerity = "${verityImage.store_path}/${verityImage.root_verity}";
+        RootHash = rootHashHex verityImage.root_hash;
+        RootHashSignature = "${verityImage.store_path}/${verityImage.root_hash_sig}";
+      };
     checkedConfig = validateConfig packageName (checkedExpose.config or {});
     config = {
       inherit (checkedConfig) artifacts credentials;
@@ -1108,6 +1196,11 @@ in rec {
       else if confinementHoles == []
       then "sandboxed"
       else "sandboxed-with-holes";
+    verityConfinementValid =
+      throwIfNot
+      (!(verityImage != null && confinementClass == "unconfined"))
+      "mkDerivation expose for package '${packageName}' declares a verity root image but package permissions require unconfined service rendering"
+      true;
     confinementLabel =
       if confinementClass == "sandboxed-with-holes"
       then "sandboxed-with-holes (${builtins.concatStringsSep ", " confinementHoles})"
@@ -1411,85 +1504,101 @@ in rec {
         (!(generatedDynamicUser == false && !hasStaticUser && !privilegedUsers))
         "mkDerivation expose.units.${unitName} for package '${packageName}' disables DynamicUser without setting User"
         true;
+      authoredRootDirectoryAllowed =
+        throwIfNot
+        (!(verityRootConfig != null && checkedAuthoredServiceConfig ? RootDirectory))
+        "mkDerivation expose.units.${unitName} for package '${packageName}' sets serviceConfig.RootDirectory while expose.images declares a verity root image"
+        true;
     in
       builtins.seq dynamicUserIsBoolean (
         builtins.seq staticUserAllowed (
           builtins.seq dynamicUserDisabledHasIdentity (
-            checkedAuthoredServiceConfig
-            // lib.optionalAttrs (!unconfined) {
-              RootDirectory = "${payloadRoot}";
-              MountAPIVFS = true;
-              ProtectSystem = "strict";
-              ProtectHome = true;
-              PrivateTmp = "disconnected";
-              TemporaryFileSystem = ["/tmp" "/var/tmp"];
-              StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
-              NoNewPrivileges = true;
-              BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
-              BindPaths = readWriteHostPaths;
-              ProtectKernelTunables = true;
-              ProtectKernelModules = true;
-              ProtectKernelLogs = true;
-              ProtectClock = true;
-              ProtectHostname = true;
-              LockPersonality = true;
-              MemoryDenyWriteExecute = true;
-              RestrictSUIDSGID = true;
-            }
-            // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
-              StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
-            }
-            // lib.optionalAttrs unconfined {
-              Slice = packageSlice;
-            }
-            // lib.optionalAttrs (unconfined && cgroupDelegate) {
-              Delegate = true;
-            }
-            // lib.optionalAttrs (unconfined && privilegedUsers) {
-              DynamicUser = false;
-              PrivateUsers = false;
-            }
-            // lib.optionalAttrs (unconfined && network == "private") {
-              PrivateNetwork = true;
-            }
-            // lib.optionalAttrs (unconfined && network == "private-outbound") {
-              PrivateNetwork = false;
-              NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
-            }
-            // lib.optionalAttrs (!unconfined) {
-              DynamicUser = generatedDynamicUser;
-              PrivateUsers =
-                if privilegedUsers || macProfileEnabled
-                then false
-                else "identity";
-              PrivateNetwork = network == "private";
-              PrivateDevices = devices == [];
-              DevicePolicy = "closed";
-              DeviceAllow = deviceAllows;
-              Delegate = cgroupDelegate;
-              CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
-              AmbientCapabilities = builtins.concatStringsSep " " capabilities;
-              ProtectControlGroups =
-                if cgroupDelegate
-                then false
-                else "private";
-              SystemCallArchitectures = "native";
-              RestrictAddressFamilies = addressFamilies;
-              RestrictNamespaces = !privilegedUsers;
-              RestrictRealtime = true;
-              Slice = packageSlice;
-            }
-            // lib.optionalAttrs (!rootEquivalent) {
-              ProtectProc = "invisible";
-              ProcSubset = "pid";
-            }
-            // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
-            // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
-            // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile landlockEnabled)
-            // lib.optionalAttrs (network == "private-outbound") {
-              PrivateNetwork = false;
-              NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
-            }
+            builtins.seq authoredRootDirectoryAllowed (
+              checkedAuthoredServiceConfig
+              // lib.optionalAttrs (!unconfined) (
+                {
+                  MountAPIVFS = true;
+                  ProtectSystem = "strict";
+                  ProtectHome = true;
+                  PrivateTmp = "disconnected";
+                  TemporaryFileSystem = ["/tmp" "/var/tmp"];
+                  StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
+                  NoNewPrivileges = true;
+                  BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
+                  BindPaths = readWriteHostPaths;
+                  ProtectKernelTunables = true;
+                  ProtectKernelModules = true;
+                  ProtectKernelLogs = true;
+                  ProtectClock = true;
+                  ProtectHostname = true;
+                  LockPersonality = true;
+                  MemoryDenyWriteExecute = true;
+                  RestrictSUIDSGID = true;
+                }
+                // (
+                  if verityRootConfig == null
+                  then {RootDirectory = "${payloadRoot}";}
+                  else verityRootConfig
+                )
+              )
+              // lib.optionalAttrs (unconfined && checkedAuthoredServiceConfig ? StateDirectory) {
+                StateDirectory = checkedAuthoredServiceConfig.StateDirectory;
+              }
+              // lib.optionalAttrs unconfined {
+                Slice = packageSlice;
+              }
+              // lib.optionalAttrs (unconfined && cgroupDelegate) {
+                Delegate = true;
+              }
+              // lib.optionalAttrs (unconfined && privilegedUsers) {
+                DynamicUser = false;
+                PrivateUsers = false;
+              }
+              // lib.optionalAttrs (unconfined && network == "private") {
+                PrivateNetwork = true;
+              }
+              // lib.optionalAttrs (unconfined && network == "private-outbound") {
+                PrivateNetwork = false;
+                NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+              }
+              // lib.optionalAttrs (!unconfined) {
+                DynamicUser = generatedDynamicUser;
+                PrivateUsers =
+                  if privilegedUsers || macProfileEnabled
+                  then false
+                  else "identity";
+                PrivateNetwork = network == "private";
+                PrivateDevices =
+                  if verityRootConfig == null
+                  then devices == []
+                  else false;
+                DevicePolicy = "closed";
+                DeviceAllow = deviceAllows;
+                Delegate = cgroupDelegate;
+                CapabilityBoundingSet = builtins.concatStringsSep " " capabilities;
+                AmbientCapabilities = builtins.concatStringsSep " " capabilities;
+                ProtectControlGroups =
+                  if cgroupDelegate
+                  then false
+                  else "private";
+                SystemCallArchitectures = "native";
+                RestrictAddressFamilies = addressFamilies;
+                RestrictNamespaces = !privilegedUsers;
+                RestrictRealtime = true;
+                Slice = packageSlice;
+              }
+              // lib.optionalAttrs (!rootEquivalent) {
+                ProtectProc = "invisible";
+                ProcSubset = "pid";
+              }
+              // credentialServiceConfigFor unitName checkedAuthoredServiceConfig
+              // landlockServiceConfigFor unitName unit checkedAuthoredServiceConfig
+              // lib.optionalAttrs (!unconfined) (syscallFilterFor syscallProfile landlockEnabled)
+              // lib.optionalAttrs (network == "private-outbound") {
+                PrivateNetwork = false;
+                NetworkNamespacePath = "/run/netns/aos-pkg-${packageName}";
+              }
+            )
           )
         )
       );
@@ -1590,6 +1699,7 @@ in rec {
       reloadArtifacts = configReloadArtifactsForUnit name;
       reloadPaths = builtins.map (artifact: artifact.path) reloadArtifacts;
       reloadableArtifacts = builtins.filter (artifact: artifact.reload == "reload") reloadArtifacts;
+      rootImageUnitDependency = lib.optional (verityImage != null && lib.hasSuffix ".service" name) "systemd-udevd.service";
       directTargetMember =
         !(
           builtins.elem name socketActivatedServiceUnitNames
@@ -1603,8 +1713,8 @@ in rec {
         requiredBy = [];
         upheldBy = [];
         partOf = uniqueUnits ((unit.partOf or []) ++ [target]);
-        after = uniqueUnits ((unit.after or []) ++ sideEffectUnitNames);
-        requires = uniqueUnits ((unit.requires or []) ++ sideEffectUnitNames);
+        after = uniqueUnits ((unit.after or []) ++ sideEffectUnitNames ++ rootImageUnitDependency);
+        requires = uniqueUnits ((unit.requires or []) ++ sideEffectUnitNames ++ rootImageUnitDependency);
         unitConfig =
           (unit.unitConfig or {})
           // lib.optionalAttrs (conditionPaths != []) {
@@ -2180,17 +2290,19 @@ in rec {
     throwIfNot
     (exposeExtraKeys == [])
     "mkDerivation expose for package '${packageName}' contains unknown keys: ${builtins.concatStringsSep ", " exposeExtraKeys}"
-    (builtins.seq storageLinks (
-      pkgs.runCommand "expose-${packageName}" runCommandAttrs ''
-        set -eu
-        mkdir -p "$out/units"
-        cp -a "$unitsDrv"/. "$out/units/"
-        cp "$manifestPath" "$out/manifest.json"
-        cp "$networkPolicyPath" "$out/network-policy.json"
-        cp "$macProfilePath" "$out/mac-profile.json"
-        ${macProfileCommands}
-        ${exposeArtifactPathCommands}
-        ${credentialBlobCommands}
-      ''
+    (builtins.seq verityConfinementValid (
+      builtins.seq storageLinks (
+        pkgs.runCommand "expose-${packageName}" runCommandAttrs ''
+          set -eu
+          mkdir -p "$out/units"
+          cp -a "$unitsDrv"/. "$out/units/"
+          cp "$manifestPath" "$out/manifest.json"
+          cp "$networkPolicyPath" "$out/network-policy.json"
+          cp "$macProfilePath" "$out/mac-profile.json"
+          ${macProfileCommands}
+          ${exposeArtifactPathCommands}
+          ${credentialBlobCommands}
+        ''
+      )
     ));
 }

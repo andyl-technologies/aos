@@ -1527,8 +1527,20 @@ fn validate_policy_artifact_name(name: &str) -> Result<()> {
 }
 
 fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || !path.ends_with(suffix) {
+    if !path.ends_with(suffix) {
         bail!("{kind} path '{path}' must be a relative *{suffix} path");
+    }
+    validate_relative_artifact_member_path(kind, path)
+}
+
+fn validate_relative_artifact_member_path(kind: &str, path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+        bail!("{kind} path '{path}' must be a relative artifact path");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '+' | '=' | '@' | '-')
+    }) {
+        bail!("{kind} path '{path}' contains unsupported characters");
     }
     for component in Path::new(path).components() {
         match component {
@@ -1867,6 +1879,62 @@ fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
     if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
         bail!("image '{}' has invalid NAR hash", image.store_path);
     }
+    validate_image_verity_entry(image)?;
+    Ok(())
+}
+
+fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
+    let verity_field_count = [
+        image.root_image.as_ref(),
+        image.root_verity.as_ref(),
+        image.root_hash.as_ref(),
+        image.root_hash_sig.as_ref(),
+    ]
+    .iter()
+    .filter(|field| field.is_some())
+    .count();
+    let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
+
+    if verity_field_count == 0 && !verity_format {
+        return Ok(());
+    }
+
+    if !verity_format {
+        bail!(
+            "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
+            image.store_path,
+            image.format
+        );
+    }
+    if verity_field_count != 4 {
+        bail!(
+            "image '{}' must declare root_image, root_verity, root_hash, and root_hash_sig together",
+            image.store_path
+        );
+    }
+
+    let root_image = image
+        .root_image
+        .as_ref()
+        .context("verity root_image missing after field-count validation")?;
+    let root_verity = image
+        .root_verity
+        .as_ref()
+        .context("verity root_verity missing after field-count validation")?;
+    let root_hash = image
+        .root_hash
+        .as_ref()
+        .context("verity root_hash missing after field-count validation")?;
+    let root_hash_sig = image
+        .root_hash_sig
+        .as_ref()
+        .context("verity root_hash_sig missing after field-count validation")?;
+
+    validate_relative_artifact_member_path("verity root_image", root_image)?;
+    validate_relative_artifact_path("verity root_verity", root_verity, ".verity")?;
+    validate_sha256_digest("verity root_hash", root_hash)?;
+    validate_relative_artifact_path("verity root_hash_sig", root_hash_sig, ".p7s")?;
+
     Ok(())
 }
 
@@ -2844,6 +2912,21 @@ pub struct SysrootImageEntry {
     /// `None` when `systemd-measure` was unavailable at publish time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_pcr11: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the root
+    /// filesystem image consumed by `RootImage=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_image: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the separate
+    /// dm-verity hash tree consumed by `RootVerity=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_verity: Option<String>,
+    /// dm-verity root hash for [`SysrootImageEntry::root_image`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the PKCS#7
+    /// signature consumed by `RootHashSignature=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash_sig: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3666,6 +3749,10 @@ last_update = "2026-02-13T10:30:00Z"
                     sb_signer_cert_sha256: None,
                     sbat: Vec::new(),
                     expected_pcr11: None,
+                    root_image: None,
+                    root_verity: None,
+                    root_hash: None,
+                    root_hash_sig: None,
                 }],
                 requires: vec!["provider".into()],
                 config: Default::default(),
@@ -4433,6 +4520,96 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
+    }
+
+    fn expose_meta_with_image(image: SysrootImageEntry) -> ExposeMeta {
+        ExposeMeta {
+            target: "aos-pkg-verity-app.target".into(),
+            units: vec!["verity-app.service".into()],
+            images: vec![image],
+            requires: Vec::new(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn verity_image_entry() -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "ext4-verity".into(),
+            store_path: "/var/lib/store/verityimage-verity-app-root".into(),
+            nar_hash: "sha256:root".into(),
+            nar_size: 2048,
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: Some("root.img".into()),
+            root_verity: Some("root.verity".into()),
+            root_hash: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+        }
+    }
+
+    #[test]
+    fn expose_meta_accepts_complete_verity_image() {
+        let expose = expose_meta_with_image(verity_image_entry());
+
+        validate_expose_meta(&expose).unwrap();
+    }
+
+    #[test]
+    fn expose_meta_rejects_partial_verity_image() {
+        let mut image = verity_image_entry();
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_format_without_tuple() {
+        let mut image = verity_image_entry();
+        image.root_image = None;
+        image.root_verity = None;
+        image.root_hash = None;
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_fields_on_plain_image_format() {
+        let mut image = verity_image_entry();
+        image.format = "dir".into();
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("is not a verity root format"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsafe_verity_member_path() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("../root.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("verity root_image path"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsupported_verity_member_path_characters() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("root image.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported characters"));
     }
 
     #[test]

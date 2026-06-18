@@ -248,6 +248,18 @@ struct ImageEntry {
     /// Predicted PCR-11 for the image's UKI, when measured.
     #[serde(default)]
     expected_pcr11: Option<String>,
+    /// Relative path inside `store_path` to the root filesystem image.
+    #[serde(default)]
+    root_image: Option<String>,
+    /// Relative path inside `store_path` to the separate dm-verity hash tree.
+    #[serde(default)]
+    root_verity: Option<String>,
+    /// dm-verity root hash for `root_image`.
+    #[serde(default)]
+    root_hash: Option<String>,
+    /// Relative path inside `store_path` to the PKCS#7 root-hash signature.
+    #[serde(default)]
+    root_hash_sig: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +434,10 @@ fn package_metas_for_platform(
                     sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
                     sbat: img.sbat.clone(),
                     expected_pcr11: img.expected_pcr11.clone(),
+                    root_image: img.root_image.clone(),
+                    root_verity: img.root_verity.clone(),
+                    root_hash: img.root_hash.clone(),
+                    root_hash_sig: img.root_hash_sig.clone(),
                 })
                 .collect();
 
@@ -880,6 +896,42 @@ mod tests {
                 "syscalls:system-service".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn parse_expose_verity_image_metadata() {
+        let content = EXPOSED_TOML.replace(
+            r#"[[versions.platforms.x86_64-linux.expose.images]]
+format = "dir"
+store_path = "/var/lib/store/webapproot-webapp-root"
+nar_hash = "sha256:root"
+nar_size = 2048
+"#,
+            r#"[[versions.platforms.x86_64-linux.expose.images]]
+format = "ext4-verity"
+store_path = "/var/lib/store/webapproot-webapp-root"
+nar_hash = "sha256:root"
+nar_size = 2048
+root_image = "root.img"
+root_verity = "root.verity"
+root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+root_hash_sig = "root.roothash.p7s"
+"#,
+        );
+
+        let meta = parse_package_toml(&content, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        let image = &meta.expose.as_ref().unwrap().images[0];
+
+        assert_eq!(image.format, "ext4-verity");
+        assert_eq!(image.root_image.as_deref(), Some("root.img"));
+        assert_eq!(image.root_verity.as_deref(), Some("root.verity"));
+        assert_eq!(
+            image.root_hash.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(image.root_hash_sig.as_deref(), Some("root.roothash.p7s"));
     }
 
     #[test]
