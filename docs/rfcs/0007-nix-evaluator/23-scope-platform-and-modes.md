@@ -489,7 +489,7 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### Flakes are out of scope (§1)
 
-- [ ] Stub the three flake builtins (`getFlake`, `parseFlakeRef`, `flakeRefToString`) in the builtin table to raise `NativeEvalError::Unsupported{feature:"flakes"}`, triggering transparent top-level `NixCli` fallback — no partial flake support, no flake fixtures in the harness (the AOS closure contains none); a future flake entry point shows up as a fallback-counter increment, never a divergence (§1.1, §1.3) — **P1**, `C-22`; the excluded surface (`flake.nix` schema, `flake.lock`, flakeref grammar, flake eval cache, `getFlake` impurity rules) is documented as out-of-box (§1.2).
+- [x] Stub the three flake builtins (`getFlake`, `parseFlakeRef`, `flakeRefToString`) as native-fallback boundaries that raise `NativeEvalError::Unsupported{feature:"flakes"}`, triggering transparent top-level `NixCli` fallback — no partial flake support, no flake fixtures in the harness (the AOS closure contains none); a future flake entry point shows up as a fallback-counter increment, never a divergence (§1.1, §1.3) — **P1**, `C-22`; the excluded surface (`flake.nix` schema, `flake.lock`, flakeref grammar, flake eval cache, `getFlake` impurity rules) is documented as out-of-box (§1.2).
 
 ### Restricted / pure-eval modes and allowed-paths (§2)
 

@@ -193,6 +193,9 @@ fn ensure_native_json_subset(
                 continue;
             };
             if name == b"builtins" {
+                if let Some(feature) = builtins_global_cli_fallback_feature(ir, index, options) {
+                    return Err(unsupported_native_node(feature, node.span, expr_len));
+                }
                 if builtins_global_is_configured_current_system_select(ir, index, options) {
                     continue;
                 }
@@ -204,7 +207,7 @@ fn ensure_native_json_subset(
             }
             if builtin_requires_cli_fallback(name) {
                 return Err(unsupported_native_node(
-                    "CLI-sensitive builtin evaluation",
+                    native_fallback_feature(name),
                     node.span,
                     expr_len,
                 ));
@@ -217,7 +220,7 @@ fn ensure_native_json_subset(
             && builtin_requires_cli_fallback(name)
         {
             return Err(unsupported_native_node(
-                "CLI-sensitive builtin evaluation",
+                native_fallback_feature(name),
                 node.span,
                 expr_len,
             ));
@@ -235,12 +238,39 @@ fn ensure_native_json_subset(
     Ok(())
 }
 
+fn builtins_global_cli_fallback_feature(
+    ir: &Ir,
+    receiver_index: usize,
+    options: &TreeWalkOptions,
+) -> Option<&'static str> {
+    ir.arena.nodes().iter().find_map(|node| {
+        let IrData::Select { receiver, path, .. } = node.data else {
+            return None;
+        };
+        if receiver.index() != receiver_index {
+            return None;
+        }
+        let name = static_single_attr_path(ir, path)?;
+        if name == b"currentSystem" && options.eval_mode() != EvalMode::Pure {
+            return None;
+        }
+        builtin_requires_cli_fallback(name).then(|| native_fallback_feature(name))
+    })
+}
+
 fn builtin_requires_cli_fallback(name: &[u8]) -> bool {
     let Some(builtin) = lookup_builtin(name) else {
         return false;
     };
 
     builtin.requires_native_cli_fallback()
+}
+
+const fn native_fallback_feature(name: &[u8]) -> &'static str {
+    match name {
+        b"getFlake" | b"parseFlakeRef" | b"flakeRefToString" => "flakes",
+        _ => "CLI-sensitive builtin evaluation",
+    }
 }
 
 fn builtins_global_is_configured_current_system_select(
@@ -253,13 +283,7 @@ fn builtins_global_is_configured_current_system_select(
     }
 
     ir.arena.nodes().iter().any(|node| {
-        let IrData::Select {
-            receiver,
-            path,
-            default: None,
-            ..
-        } = node.data
-        else {
+        let IrData::Select { receiver, path, .. } = node.data else {
             return false;
         };
 
@@ -268,16 +292,17 @@ fn builtins_global_is_configured_current_system_select(
 }
 
 fn attr_path_is_static_symbol(ir: &Ir, path: IrAttrPathId, expected: &[u8]) -> bool {
+    static_single_attr_path(ir, path) == Some(expected)
+}
+
+fn static_single_attr_path<'a>(ir: &'a Ir, path: IrAttrPathId) -> Option<&'a [u8]> {
     let Some(segments) = ir.attr_paths.get(path.index()) else {
-        return false;
+        return None;
     };
-    if segments.len() != 1 {
-        return false;
-    }
-    match segments[0] {
-        IrAttrPathSegment::Static(symbol) => ir.symbols.resolve(symbol) == Some(expected),
-        IrAttrPathSegment::Dynamic(_) => false,
-    }
+    let [IrAttrPathSegment::Static(symbol)] = segments.as_ref() else {
+        return None;
+    };
+    ir.symbols.resolve(*symbol)
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {
@@ -403,6 +428,32 @@ mod tests {
     }
 
     #[test]
+    fn native_expression_eval_reports_flakes_as_the_fallback_feature() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        for source in [
+            r#"builtins.getFlake "github:NixOS/nixpkgs/0000000000000000000000000000000000000000""#,
+            "builtins.getFlake or null",
+            r#"builtins.parseFlakeRef "nixpkgs""#,
+            r#"let render = builtins.flakeRefToString; in render { type = "indirect"; id = "nixpkgs"; }"#,
+        ] {
+            let err = native
+                .eval_expr(source)
+                .expect_err("flake expressions must fall back");
+            assert!(
+                matches!(
+                    err.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                        if feature == "flakes"
+                ),
+                "{source}: {err:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn native_expression_eval_uses_configured_current_system() -> Result<()> {
         let native = NixNative::with_options(
             0,
@@ -411,6 +462,10 @@ mod tests {
 
         assert_eq!(
             native.eval_expr("builtins.currentSystem")?,
+            "\"aos-test-target\""
+        );
+        assert_eq!(
+            native.eval_expr(r#"builtins.currentSystem or "fallback""#)?,
             "\"aos-test-target\""
         );
         Ok(())
