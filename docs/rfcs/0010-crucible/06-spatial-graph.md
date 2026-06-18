@@ -722,7 +722,8 @@ reference to the family that generated it.
 ### 7.1 The reproduction artifact
 
 A failure is reproducible bit-identically from a **self-contained bundle**:
-`(seed, scenario, schedule)`. The bundle is self-contained in the strong sense —
+`(seed, scenario, schedule)` (the `seed` here is the `ScenarioDef`'s own `Seed`,
+not a separate third field). The bundle is self-contained in the strong sense —
 it contains (by content-addressed reference, dereferenceable from the content
 store, or inlined for fully offline transport) everything needed to reduce the
 run again to the same state: the `Seed`, the complete `ScenarioDef` (its `World`

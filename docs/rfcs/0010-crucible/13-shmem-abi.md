@@ -300,9 +300,11 @@ pub struct NodeSlot {
     /// Node kind (`KIND_VM` / `KIND_NET` / `KIND_BLK` / `KIND_9P`).
     pub kind: AtomicU8, // @ 37
     /// Nonzero while a device-I/O burst is active. While set, the node's idle
-    /// callback freezes virtual time so HZ ticks cannot slip between round
-    /// trips inside the burst. Written by the I/O device path, read by the
-    /// node's idle callback (15).
+    /// callback suppresses spurious HZ-tick advancement between submit and the
+    /// computed completion so timer ticks cannot slip mid-burst (it does NOT
+    /// freeze virtual time; the requester is still fast-forwarded to the
+    /// computed delivery icount, 15). Written by the I/O device path, read by
+    /// the node's idle callback (15).
     pub device_io_active: AtomicU8, // @ 38
     // @ 39 one byte padding to align the next 8-byte field.
     pub(crate) _pad0: u8, // @ 39
@@ -516,7 +518,8 @@ concept a scenario author reasons about.
   the slot array, not logical nodes in the spatial graph. A VM emits an outbound
   frame by enqueueing into the ring `(vm_slot -> SLOT_NET_ROUTER)` and receives
   inbound frames from `(SLOT_NET_ROUTER -> vm_slot)`; the router executor performs
-  topology-driven delivery and re-stamps `delivery_icount` per the link model.
+  topology-driven delivery and re-stamps `delivery_icount` per the link model
+  (ns→icount via the [TIME-4] ceil map).
   Block and 9p I/O use their own reserved slots so their rings never contend with
   the network router's. The logical model MUST NOT name these slots. *Gate:*
   `gate:abi-conformance`. *Spec:* §13.5, forward-ref [`15-io-subnodes.md`](15-io-subnodes.md).
@@ -691,8 +694,12 @@ the waker bumps the counter between the waiter's read of `v` and its
   slot's `wake_signal` word, using the race-free publish-precondition /
   read-counter / wait idiom in §13.7 so there is no lost-wake window. The futex
   MUST be the **non-private** (cross-process) variant, because the waiter and
-  waker are different processes sharing the word through the mapping. *Gate:*
-  `gate:layer1-injection`. *Spec:* §13.7.
+  waker are different processes sharing the word through the mapping. The
+  `wake_signal` futex is the **source of truth** for the wake; an auxiliary
+  primitive (e.g. the wake eventfd of [`14-protocol.md`](14-protocol.md) §3.4) MAY
+  be used to integrate the wait with a host event loop but MUST NOT replace it —
+  a futex-only waiter and an eventfd-driven waiter rendezvous on the same
+  `wake_signal`. *Gate:* `gate:layer1-injection`. *Spec:* §13.7.
 
 - **[SHM-27]** Every event that can make a parked node runnable — the scheduler
   raising `max_advance_icount` to or past `idle_wake_icount`, or a frame being
@@ -770,8 +777,13 @@ by when the producer's store landed in shared memory.
   visibility order MUST be the deterministic total order
   `(delivery_icount, src_node, seq)` of [INV-3], resolved identically across runs
   regardless of which producer's store landed first. A consumer MUST NOT deliver
-  frames in ring-arrival order. *Gate:* `gate:layer1-injection`. *Spec:* §13.9,
-  §4.4.
+  frames in ring-arrival order. This key is the **per-consumer projection** of the
+  global canonical order defined in [`08-scheduling.md`](08-scheduling.md) §8.6
+  (`(delivery_virtual_time, consumer_node_id, producer_node_id, sequence)`): the
+  consumer dimension is implicit because a consumer merges only its own inbound
+  rings, `src_node` is the `producer_node_id`, and `delivery_icount` is the
+  `delivery_virtual_time` under the fixed shift. *Gate:* `gate:layer1-injection`.
+  *Spec:* §13.9, §4.4.
 
 - **[SHM-35]** Because deliverability is `delivery_icount <= current_icount` and
   the scheduler holds every node's ceiling at or below its conservative lookahead

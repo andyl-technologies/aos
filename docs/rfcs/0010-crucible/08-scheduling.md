@@ -631,7 +631,8 @@ is illustrative ([CONV-1], 00).
 - **[SCHED-34]** The scheduler MUST treat each node's clock as icount-derived
   per [`09-virtual-time-icount.md`](09-virtual-time-icount.md): it converts a
   horizon virtual time to a per-node icount via the fixed shift (`ns = icount <<
-  shift`) and publishes *that icount* as the node's max-advance ceiling. All
+  shift`, using the [TIME-4] ceil map — a node must never stop before a deadline)
+  and publishes *that icount* as the node's max-advance ceiling. All
   horizon arithmetic is in virtual time; all per-node ceilings are in icount; the
   conversion is the fixed shift and nothing else. *Gate:*
   `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §8.10;

@@ -331,6 +331,8 @@ different shifts or different epochs on the scheduling axis.
 
 - **[TIME-15]** Cross-node ordering MUST use the shared virtual timeline, with
   the deterministic total order `(virtual_time, node_id, sequence)` of [INV-3]
+  (see [`08-scheduling.md`](08-scheduling.md) §8.6 for the full key; `node_id` here
+  is the consumer, with producer and sequence as further tiebreaks)
   resolving simultaneity. The mapping from each node's icount to this shared axis
   is exactly [TIME-3]; the scheduler ([`08-scheduling.md`](08-scheduling.md))
   consumes virtual-time points on this axis and converts each to the relevant

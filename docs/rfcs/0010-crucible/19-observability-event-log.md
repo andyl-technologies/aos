@@ -430,6 +430,11 @@ interleaving. This is exactly what `gate:replay-oracle` and `gate:e2e-determinis
 compare. Observational entries are excluded from this comparison: they may appear,
 vanish, or differ between the two runs without indicating a determinism bug.
 
+The **canonical run** (equivalently the **canonical event log**), as the term is
+used in 20/22, is this causal subsequence under the canonical serialization: the
+`EventClass::Causal` projection renumbered independently of observational
+interleaving. It is the deterministic backbone two runs are compared on.
+
 The renumbering is what makes the comparison robust to observational noise: two
 runs may interleave different numbers of `diagnostic` or `tracing`-bridged entries
 (host poll counts differ run to run), which would shift the dense `seq` of every
@@ -637,6 +642,11 @@ a backward-compatible, schema-versioned change ([OBS-10](#1922-payload-open-set-
 Kinds 18, 20, 22, and 24 all reference this catalog: assertion kinds feed 18, the
 streamed kinds feed 20/21, the coverage kind feeds 22, and the whole causal
 subsequence feeds the comparison and bisection of 24.
+
+An **I/O completion** (block/9p response, 15) is recorded as a
+`message_delivered`-class causal entry — its delivery is a cross-node event with a
+`deliver_icount` exactly like a frame delivery — rather than as a separate
+`io_completed` kind, so no distinct catalog kind is needed for it.
 
 | `kind` | class | source(s) | typed attributes (sketch) |
 | --- | --- | --- | --- |
