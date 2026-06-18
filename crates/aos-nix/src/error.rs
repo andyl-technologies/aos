@@ -52,4 +52,36 @@ impl NativeEvalError {
             span: None,
         }
     }
+
+    /// Returns whether callers may retry this failure with C++ Nix.
+    ///
+    /// Unsupported native features and internal native failures may fall back
+    /// because C++ Nix can still be authoritative. Normal Nix evaluation errors
+    /// must surface as-is so native evaluation cannot hide semantic failures by
+    /// retrying them.
+    pub const fn permits_cli_fallback(&self) -> bool {
+        matches!(self, Self::Unsupported { .. } | Self::Internal { .. })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_policy_tracks_error_taxonomy() {
+        assert!(NativeEvalError::unsupported("missing primop").permits_cli_fallback());
+        assert!(
+            NativeEvalError::Internal {
+                message: "bug".to_string()
+            }
+            .permits_cli_fallback()
+        );
+        assert!(
+            !NativeEvalError::EvalError {
+                message: "type error".to_string()
+            }
+            .permits_cli_fallback()
+        );
+    }
 }

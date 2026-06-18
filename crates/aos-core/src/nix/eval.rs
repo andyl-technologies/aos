@@ -358,10 +358,9 @@ impl NixEval for ShadowEval {
 
 #[cfg(feature = "native-eval")]
 fn should_fallback(error: &anyhow::Error) -> bool {
-    matches!(
-        error.downcast_ref::<NativeEvalError>(),
-        Some(NativeEvalError::Unsupported { .. } | NativeEvalError::Internal { .. })
-    )
+    error
+        .downcast_ref::<NativeEvalError>()
+        .is_some_and(NativeEvalError::permits_cli_fallback)
 }
 
 #[cfg(feature = "native-eval")]
@@ -439,5 +438,27 @@ mod tests {
         assert_eq!(NativeMode::parse(Some("1")), NativeMode::On);
         assert_eq!(NativeMode::parse(Some("true")), NativeMode::On);
         assert_eq!(NativeMode::parse(Some("yes")), NativeMode::On);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_fallback_decision_uses_native_error_taxonomy() {
+        let unsupported: anyhow::Error = NativeEvalError::unsupported("missing primop").into();
+        assert!(should_fallback(&unsupported));
+
+        let internal: anyhow::Error = NativeEvalError::Internal {
+            message: "bug".to_string(),
+        }
+        .into();
+        assert!(should_fallback(&internal));
+
+        let eval_error: anyhow::Error = NativeEvalError::EvalError {
+            message: "type error".to_string(),
+        }
+        .into();
+        assert!(!should_fallback(&eval_error));
+
+        let other = anyhow::anyhow!("non-native error");
+        assert!(!should_fallback(&other));
     }
 }
