@@ -27,6 +27,7 @@ p256 = { workspace = true }
 rsa = { workspace = true }
 ciborium = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 axum = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }

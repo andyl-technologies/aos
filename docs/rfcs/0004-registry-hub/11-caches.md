@@ -509,10 +509,15 @@ the current spec. Phases are orderable; A lands first, E last.
       (Ed25519-signed via `hosted_keys` sealer when keyed), content-addressed
       `nar/<file-hash>.nar.<ext>` with cross-cache refcount on the
       binding+prefix.
-- [ ] **Streaming reads:** extend the surface-read port with a ranged,
-      streaming read (`fetch_range(path, offset, len)` → byte stream) over R2
-      ranged GET and local-file seek; keep buffered `fetch()` for small surface
-      objects.
+- [x] **Streaming reads (native):** the native hub streams cache NAR/narinfo
+      from disk (`facade::cache_serve_file`: `tokio::fs` + `ReaderStream` +
+      `Body::from_stream`, symlink-contained) instead of buffering, and honors
+      `Range: bytes=…` with `206 Partial Content` + `Content-Range` +
+      `Accept-Ranges` (`nix-cache-info` generated; substituter HEAD probes
+      supported). **Remaining:** push the same through the worker — a
+      `fetch_range` on the shared `SurfaceFetch` port over R2 ranged GET + the
+      `worker`⇄`axum` bridge streaming below (the worker still buffers, no
+      regression).
 - [x] **Cache write facade (buffered):** `cache_writer` write-port (fs + R2)
       and shared `put_machine_path`/`head_machine_path` cache fallthrough →
       `put_cache_path`, so `nix copy --to <hub>/<cache>` works on **both** the
