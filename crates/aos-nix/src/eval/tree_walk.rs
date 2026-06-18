@@ -14668,6 +14668,12 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let string_value = self.coerce_to_string(argument, value, argument_span)?;
+        if self.options.eval_mode() == EvalMode::Pure {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::StorePathPureEval { id },
+                span,
+            ));
+        }
         let result = {
             let string = self.heap.get_string(string_value).map_err(|source| {
                 TreeWalkError::new(
@@ -27575,6 +27581,12 @@ pub enum TreeWalkErrorKind {
         /// The evaluation mode that denied access.
         mode: EvalMode,
     },
+    /// Pure evaluation rejected `builtins.storePath`.
+    #[error("builtins.storePath is not allowed in pure evaluation mode at node {id:?}")]
+    StorePathPureEval {
+        /// The call node that attempted to use `builtins.storePath`.
+        id: IrId,
+    },
     /// A file-content primop could not read its target path.
     #[error("failed to read file at node {id:?} path {path:?}: {message}")]
     FileRead {
@@ -40202,20 +40214,80 @@ mod tests {
         let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
         let source = format!(r#"builtins.storePath "{root}""#);
         let ir = lower(&source);
-        let (argument, argument_span) = primop_argument(&ir, 0);
 
         let error =
             eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
-                .expect_err("pure mode rejects unallowed storePath access");
+                .expect_err("pure mode rejects storePath calls");
         assert_eq!(
             error.kind(),
-            TreeWalkErrorKind::PathAccessDenied {
+            TreeWalkErrorKind::StorePathPureEval { id: ir.root }
+        );
+
+        assert_eq!(
+            eval_with_options(
+                "builtins ? storePath",
+                TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+            )
+            .as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.typeOf builtins.storePath",
+                TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+            ),
+            b"lambda"
+        );
+        let fallback_ir = lower("builtins.storePath or 42");
+        assert_eq!(
+            eval_whnf_owned_with_options(
+                &fallback_ir,
+                TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+            )
+            .expect("storePath is visible to select-or in pure mode")
+            .value()
+            .tag(),
+            ValueTag::Primop
+        );
+
+        let invalid_ir = lower("builtins.storePath 1");
+        let (argument, argument_span) = primop_argument(&invalid_ir, 0);
+        let error = eval_whnf_owned_with_options(
+            &invalid_ir,
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure storePath still validates its argument before mode rejection");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
                 id: argument,
-                path: root.as_bytes().to_vec(),
-                mode: EvalMode::Pure,
+                expected: "string",
+                actual: ValueTag::Int,
             }
         );
         assert_eq!(error.span(), argument_span);
+
+        let mut allowed_pure_options = TreeWalkOptions::with_eval_mode(EvalMode::Pure);
+        allowed_pure_options
+            .add_allowed_path(b"/nix/store".to_vec())
+            .expect("store root configures as allowed");
+        let error = eval_whnf_owned_with_options(&ir, allowed_pure_options)
+            .expect_err("pure mode rejects storePath even when path policy would allow it");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StorePathPureEval { id: ir.root }
+        );
+
+        let selected_call = lower(&format!(r#"let f = builtins.storePath; in f "{root}""#));
+        let error = eval_whnf_owned_with_options(
+            &selected_call,
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure mode rejects selected first-class storePath calls");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StorePathPureEval { .. }
+        ));
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options

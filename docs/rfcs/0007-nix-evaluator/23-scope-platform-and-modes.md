@@ -137,9 +137,13 @@ the manual's enumeration:
       `ImpureCurrentTime`: default evaluation omits it, configured impure
       evaluation exposes the pinned timestamp, and pure mode hides even a
       configured timestamp as a missing builtin attr.
-- [ ] **`builtins.currentSystem`** is **not available in pure evaluation mode**
+- [x] **`builtins.currentSystem`** is **not available in pure evaluation mode**
       (the manual states `currentSystem` is "Not available in pure evaluation
-      mode"); same for `builtins.storePath`.
+      mode"); `builtins.storePath` stays visible like pinned C++ Nix, but calls
+      are rejected in pure mode. `currentSystem` is registered as available only
+      outside pure mode when the target system is configured; `storePath` remains
+      selectable/enumerable and its direct and first-class call paths reject with
+      the same pure-mode error.
 - [x] **`builtins.getEnv`** must not read the ambient process environment
       (environment access is an impurity). aos-nix never reads the host
       environment directly, and pure mode hides even `TreeWalkOptions`-configured
@@ -478,7 +482,7 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### Restricted / pure-eval modes and allowed-paths (§2)
 
-- [ ] `--pure-eval` semantics matching the pinned C++ Nix *as behaviors*: `currentTime`/`currentSystem`/`storePath` unavailable, `getEnv` not reading the ambient env, `exec` disabled, `$NIX_PATH`/`-I` ignored, fetchers require pinning with no FS access outside fetched paths (§2.1) — **P1**, `C-23`; harness catches a divergent branch as a `.drv` byte diff or an error-outcome mismatch.
+- [ ] `--pure-eval` semantics matching the pinned C++ Nix *as behaviors*: `currentTime`/`currentSystem` unavailable, `storePath` visible but rejected when called, `getEnv` not reading the ambient env, `exec` disabled, `$NIX_PATH`/`-I` ignored, fetchers require pinning with no FS access outside fetched paths (§2.1) — **P1**, `C-23`; harness catches a divergent branch as a `.drv` byte diff or an error-outcome mismatch.
 - [ ] `restrict-eval` / `allowed-paths` / `allowed-uris` mediating the three eval-time operations (`readFile`/path-coercion, `import`, fetchers) with the *same* admit/refuse decisions C++ Nix makes — match, never innovate; error-class parity on forbidden reads (§2.2) — **P1**, `C-23`.
 - [ ] The allowed-paths/allowed-uris check as the single eval-time I/O choke point: a forbidden read refused *before* it becomes an awaited fiber I/O future, and every *permitted* impure read folded into the incremental-cache key so a cached result cannot outlive its input (§2.3) — co-designed with the fiber/tokio model ([13](13-parallel-evaluation.md) §5.5, **P3.5**) and impure-read cache keying ([12](12-incremental-evaluation-cache.md), **P2**), `C-23`/`R-10`.
 
