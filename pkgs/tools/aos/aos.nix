@@ -11,6 +11,7 @@
   perl,
   openssl,
   aos-landlock,
+  aos-selinux-run,
   aos-ebpf-net-policy,
   checkpolicy,
   policycoreutils,
@@ -68,7 +69,7 @@ in
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    runtimeDeps = [openssl aos-landlock aos-ebpf-net-policy checkpolicy policycoreutils semodule-utils] ++ runtimeTools;
+    runtimeDeps = [openssl aos-landlock aos-selinux-run aos-ebpf-net-policy checkpolicy policycoreutils semodule-utils] ++ runtimeTools;
 
     preBuild = ''
       export OPENSSL_DIR="${openssl}"
@@ -78,6 +79,7 @@ in
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
       export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
@@ -105,6 +107,7 @@ in
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
       export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
       export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
       export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
