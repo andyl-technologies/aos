@@ -844,7 +844,7 @@ Value representation has no observable effect on `.drv` output by construction (
 
 ### Verification (§11)
 
-- [ ] `// SAFETY:` invariant comments on every `unsafe` block (alignment ≥ 8, tag-payload agreement, canonical NaN-box pattern) (§11) — every phase touching the representation, `S-17`.
+- [x] `// SAFETY:` invariant comments on every `unsafe` block (alignment ≥ 8, tag-payload agreement, canonical NaN-box pattern) (§11) — every phase touching the representation, `S-17`. The current safe tree-walk value-representation baseline is stronger: `crates/aos-nix/src/lib.rs` has `#![forbid(unsafe_code)]`, `cargo check --manifest-path crates/Cargo.toml -p aos-nix --lib` passes under that lint, and `rg 'unsafe\\s*\\{|unsafe fn|unsafe impl' crates/aos-nix/src` finds no representation unsafe blocks to annotate. Future pointer-tag, NaN-box, GC, or JIT unsafe fast paths remain unchecked until implemented and must add per-block `// SAFETY:` invariants as part of those feature rows.
 - [ ] Differential check of every `unsafe` fast path (pointer tags, NaN-box) against the safe oracle: byte-identical `.drv` across the AOS package set is the complete correctness definition (§11) — gated by the differential harness in every phase.
 
 ## References
