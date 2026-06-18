@@ -35340,6 +35340,29 @@ mod tests {
     }
 
     #[test]
+    fn current_system_uses_configured_target_and_system_stays_absent() {
+        let options = TreeWalkOptions::with_current_system(b"aos-test-target".to_vec())
+            .expect("currentSystem is valid");
+
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.currentSystem", options.clone()),
+            b"aos-test-target"
+        );
+        assert_eq!(
+            eval_with_options("builtins ? currentSystem", options.clone()).as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval_with_options("builtins ? system", options.clone()).as_bool(),
+            Ok(false)
+        );
+        assert_eq!(
+            eval_string_bytes_with_options("builtins.system or \"fallback\"", options),
+            b"fallback"
+        );
+    }
+
+    #[test]
     fn unavailable_current_time_behaves_like_missing_attr() {
         let ir = lower("builtins.currentTime");
         let error = eval_whnf_owned(&ir).expect_err("currentTime is unavailable");

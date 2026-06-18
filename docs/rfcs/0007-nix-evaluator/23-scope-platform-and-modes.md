@@ -320,20 +320,22 @@ path must produce the slow path's answer or it is a bug.
 > arch-specific codegen detail leaked into a hash. See
 > [differential testing](15-differential-testing-and-benchmarking.md).
 
-### 3.4 `currentSystem` / `system` must report the target, not the host
+### 3.4 `currentSystem` must report the target, not the host
 
 The store path of a derivation embeds its `platform` field (e.g.
 `"x86_64-linux"`) directly in the ATerm
 ([compatibility constraints](02-compatibility-constraints.md) §4.2), and most
 AOS expressions derive that platform from `builtins.currentSystem`. So:
 
-- [ ] **`builtins.currentSystem` and `builtins.system`** must report the
-      configured **target system string** — the platform AOS is building *for* —
-      not an introspected host triple. This matters for two reasons: parity
-      (C++ Nix's `currentSystem` is the configured/overridable platform
-      identifier, per the manual, not `uname`), and AOS **cross-builds**, where
-      an x86-64 host legitimately evaluates with `currentSystem =
-      "aarch64-linux"` to produce aarch64 derivations.
+- [x] **`builtins.currentSystem`** reports the configured **target system
+      string** — the platform AOS is building *for* — not an introspected host
+      triple. This matters for two reasons: parity (C++ Nix's `currentSystem`
+      is the configured/overridable platform identifier, per the manual, not
+      `uname`), and AOS **cross-builds**, where an x86-64 host legitimately
+      evaluates with `currentSystem = "aarch64-linux"` to produce aarch64
+      derivations. `builtins.system` is not in the pinned C++ Nix 2.24.12
+      builtin surface, so aos-nix keeps it absent/defaultable instead of adding
+      a compatibility alias.
 - [ ] Because `currentSystem` is configurable/overridable (and is *unavailable*
       under `--pure-eval`, §2.1), aos-nix takes its value from the same
       configuration channel C++ Nix does (the `system` setting / override), so
@@ -500,7 +502,7 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 - [ ] Support x86-64 and aarch64 hosts (both AOS targets), 32-bit unsupported — the NaN-boxed/tagged value layout assumes 64-bit words, 8-byte-aligned heap objects, canonical addresses, which hold on both and on neither 32-bit target (§3.1) — **P1** value layout (`S-6`/`M-4`), Cranelift dual-backend **P6** (`S-3`); `C-24`.
 - [ ] The critical invariant — host architecture affects eval *speed* (codegen, register allocation, in-memory IC shapes), **never** eval *output*: the same `builtins.currentSystem` yields the byte-identical `.drv` on an x86-64 and an aarch64 host (§3.2, §3.3) — **P1**, `C-24`; defense-in-depth is the same JIT-vs-oracle relation.
 - [ ] The cross-host harness obligation: instantiate the AOS closure on an x86-64 builder and an aarch64 builder (pinning `currentSystem` identically) and assert byte-identical `.drv` closures to each other and to `NixCli` — over and above the per-host gate (§3.3) — gated by [15](15-differential-testing-and-benchmarking.md), `C-24`.
-- [ ] `currentSystem`/`system` report the configured **target** system string (taken from the same `system`-setting/override channel C++ Nix uses), not an introspected host triple — so cross-builds (x86-64 host, `aarch64-linux` target) and the host an eval runs on stay invisible to the `.drv` (§3.4) — **P1**, `C-24`.
+- [ ] Wire `currentSystem` to the configured **target** system string from the same `system`-setting/override channel C++ Nix uses, not an introspected host triple. The runtime value is already `TreeWalkOptions`-backed, and `builtins.system` stays absent because it is not in the pinned C++ Nix 2.24.12 builtin surface; the remaining work is end-to-end option plumbing so cross-builds (x86-64 host, `aarch64-linux` target) and the host an eval runs on stay invisible to this evaluator-visible platform value (§3.4) — **P1**, `C-24`.
 
 ### `nixVersion` / `langVersion` spoofing (§4)
 
