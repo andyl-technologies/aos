@@ -10,8 +10,12 @@
 ##! NixOS; miniflare honors `MINIFLARE_WORKERD_PATH`), with D1/R2/KV bindings, and
 ##! asserts the live request surface responds:
 ##!
+##! It first migrates the D1 binding from the operator CLI's `schema dump` (the
+##! same `MIGRATIONS` a real deploy applies via `init --target d1:<name>` — there
+##! is no public `/_init` endpoint), then asserts the live request surface:
+##!
 ##! ```text
-##! GET  /_init                                          -> 200 "schema applied"
+##! migrate D1 from schema dump                           (CLI-driven init)
 ##! POST /aos.registry.v1.RegistryService/ListRegistries -> 200 (RPC over D1)
 ##! GET  /                                                -> 200 HTML (browse)
 ##! GET  /missing/                                        -> 404 (visibility/miss)
@@ -34,6 +38,7 @@
 {
   mkDerivation,
   aos-registry-worker-dist,
+  aos-registry-hub,
   miniflare,
   nodejs,
   workerd,
@@ -41,6 +46,11 @@
 }: let
   # The miniflare-driven smoke, materialised as a store file so the launcher
   # never embeds it via a fragile nested heredoc.
+  #
+  # The schema is applied by the operator CLI's `schema dump` (baked to
+  # schema.json at build time) over the D1 *binding* — there is no public
+  # `/_init` endpoint; this mirrors how a real deployment migrates via
+  # `aos-registry-hub init --target d1:<name>`.
   e2eScript = builtins.toFile "aos-registry-worker-e2e.mjs" ''
     import { readFileSync } from "node:fs";
     const { Miniflare } = await import(process.env.MF_INDEX);
@@ -70,7 +80,12 @@
       if (!good) { ok = false; console.error("  body: " + body.slice(0, 160)); }
     }
     try {
-      await expect("GET /_init", "/_init", {}, (s, b) => s === 200 && b.includes("schema applied"));
+      // Migrate the D1 binding from the baked schema dump (CLI-driven init).
+      const stmts = JSON.parse(readFileSync(process.env.SCHEMA, "utf8"));
+      const db = await mf.getD1Database("REGISTRY_DB");
+      for (const stmt of stmts) { await db.prepare(stmt).run(); }
+      console.log("ok   migrate D1 from schema dump (" + stmts.length + " stmts)");
+
       await expect("POST RPC ListRegistries", "/aos.registry.v1.RegistryService/ListRegistries",
         { method: "POST", body: "{}" }, (s, b) => s === 200 && b.includes("registries"));
       await expect("GET / (browse HTML)", "/", {}, (s, b) => s === 200 && b.includes("<!DOCTYPE html>"));
@@ -102,6 +117,9 @@ in
         name = "install";
         script = ''
           mkdir -p "$out/bin"
+          # Bake the schema dump (the same MIGRATIONS the CLI applies) so the
+          # launcher can migrate miniflare's D1 binding offline — no /_init.
+          ${aos-registry-hub}/bin/aos-registry-hub schema dump > "$out/schema.json"
           cat > "$out/bin/aos-registry-worker-e2e" <<'EOF'
           #!${bash}/bin/bash
           # Run the deployed Worker under miniflare + the from-source workerd and
@@ -116,6 +134,7 @@ in
           export MINIFLARE_WORKERD_PATH="${workerd}/bin/workerd"
           export MF_INDEX="file://${miniflare}/lib/node_modules/miniflare/dist/src/index.js"
           export DIST="$work"
+          export SCHEMA="${builtins.placeholder "out"}/schema.json"
           exec ${nodejs}/bin/node e2e.mjs
           EOF
           chmod +x "$out/bin/aos-registry-worker-e2e"

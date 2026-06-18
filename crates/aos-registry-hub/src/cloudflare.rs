@@ -8,15 +8,17 @@
 //! Worker (`shim.mjs` + `index.wasm`) is a **payload it ships**, not something it
 //! runs in-process. This module shells out to a bundled `wrangler` (located via
 //! [`Assets::from_env`], packaged by the `aos-registry-hub-cloudflare` Nix
-//! wrapper) and drives the deployment end to end:
+//! wrapper) for the **provider-specific** part of a deployment:
 //!
 //! 1. **provision** — create the D1 database, R2 bucket, and KV namespace,
 //! 2. **deploy** — render a [`wrangler.toml`](render_wrangler_toml) over the
 //!    bundled wasm dist and `wrangler deploy` it,
-//! 3. **secrets** — `wrangler secret put` the runtime secrets,
-//! 4. **init** — `GET /_init` on the live Worker, which applies the shared
-//!    `aos_registry_core` migrations over D1 and (when `HUB_ROOT_EMAIL` /
-//!    `HUB_ROOT_PASSWORD` are set) bootstraps the root admin.
+//! 3. **secrets** — `wrangler secret put` the runtime secrets.
+//!
+//! Database migration and root-admin bootstrap are **not** done here and there
+//! is no public init endpoint: they run through the provider-neutral CLI `init`
+//! over `--target d1:<name>` (the [`WranglerD1Backend`] in this module), so the
+//! schema is applied by the authenticated operator, not over HTTP.
 //!
 //! The generated config has no `[build]` command — it deploys the *prebuilt*
 //! hermetic dist rather than re-running `worker-build` on the operator's
@@ -56,7 +58,7 @@
 //!
 //! The pure pieces — argv construction, TOML rendering, `wrangler … list --json`
 //! id parsing, secret generation — are unit-tested in this module. The live
-//! `wrangler` invocations and the `/_init` request require a real Cloudflare
+//! `wrangler` invocations (provision, deploy, `d1 execute`) require a real Cloudflare
 //! account and are validated operator-side (see `DEPLOY.md`), exactly like the
 //! Worker runtime tests that need a workerd host.
 
@@ -142,8 +144,6 @@ pub struct DeployConfig {
     pub kv_id: String,
     /// The externally-reachable hub URL (`HUB_EXTERNAL_URL` `[vars]` entry).
     pub external_url: String,
-    /// The root admin email (`HUB_ROOT_EMAIL` `[vars]`); `None` skips bootstrap.
-    pub root_email: Option<String>,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
 }
@@ -153,18 +153,14 @@ pub struct DeployConfig {
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
 /// staged). There is intentionally **no** `[build]` command — the hermetic dist
 /// is deployed as-is rather than rebuilt on the operator's machine. The non-
-/// secret configuration (`HUB_EXTERNAL_URL`, optional `HUB_ROOT_EMAIL` /
-/// `HUB_EMAIL_API_URL`) is baked into `[vars]`; secrets are applied separately
-/// with [`secret_put_args`].
+/// secret configuration (`HUB_EXTERNAL_URL`, optional `HUB_EMAIL_API_URL`) is
+/// baked into `[vars]`; secrets are applied separately with [`secret_put_args`].
 #[must_use]
 pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     let mut vars = format!(
         "[vars]\nHUB_EXTERNAL_URL = {}\n",
         toml_string(&cfg.external_url)
     );
-    if let Some(email) = &cfg.root_email {
-        vars.push_str(&format!("HUB_ROOT_EMAIL = {}\n", toml_string(email)));
-    }
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
     }
@@ -426,9 +422,6 @@ pub struct Secrets {
     pub jwt_secret: Option<String>,
     /// `HUB_SEAL_KEY` — at-rest AES-GCM sealing key (minted if `None`).
     pub seal_key: Option<String>,
-    /// `HUB_ROOT_PASSWORD` — bootstrap root admin password (paired with
-    /// `HUB_ROOT_EMAIL`).
-    pub root_password: Option<String>,
     /// `HUB_EMAIL_API_TOKEN` — bearer token for the magic-link email relay.
     pub email_api_token: Option<String>,
 }
@@ -462,7 +455,6 @@ pub async fn provision(
     bucket: &str,
     kv_title: &str,
     external_url: &str,
-    root_email: Option<&str>,
     email_relay_url: Option<&str>,
 ) -> Result<DeployConfig> {
     run_wrangler_tolerant(assets, &d1_create_args(d1_name), "d1 create").await;
@@ -481,7 +473,6 @@ pub async fn provision(
         bucket: bucket.to_string(),
         kv_id,
         external_url: external_url.to_string(),
-        root_email: root_email.map(str::to_string),
         email_relay_url: email_relay_url.map(str::to_string),
     })
 }
@@ -537,9 +528,6 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
 
     put_secret(assets, "HUB_JWT_SECRET", &jwt_secret, &config).await?;
     put_secret(assets, "HUB_SEAL_KEY", &seal_key, &config).await?;
-    if let Some(pw) = &secrets.root_password {
-        put_secret(assets, "HUB_ROOT_PASSWORD", pw, &config).await?;
-    }
     if let Some(tok) = &secrets.email_api_token {
         put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &config).await?;
     }
@@ -561,33 +549,6 @@ async fn put_secret(assets: &Assets, name: &str, value: &str, config: &Path) -> 
         .await
         .with_context(|| format!("setting secret {name}"))?;
     Ok(())
-}
-
-/// Requests `GET {base_url}/_init` to apply the schema (and bootstrap root) on
-/// the live Worker.
-///
-/// The Worker's `/_init` runs the shared `aos_registry_core` migrations over D1
-/// and — when `HUB_ROOT_EMAIL`/`HUB_ROOT_PASSWORD` are set — creates the root
-/// admin. It needs no JWT/seal secret (that path is Worker-local), so it can run
-/// immediately after deploy.
-///
-/// # Errors
-///
-/// Returns an error if the request fails or the Worker responds non-success
-/// (the body is included for diagnosis).
-pub async fn init_remote(base_url: &str) -> Result<String> {
-    let url = format!("{}/_init", base_url.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("requesting {url}"))?;
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    if !status.is_success() {
-        bail!("GET {url} returned {status}: {}", body.trim());
-    }
-    Ok(body)
 }
 
 // ── WranglerD1Backend — the unification seam ────────────────────────────────
@@ -1058,7 +1019,6 @@ mod tests {
             bucket: "aos-registry-surfaces".into(),
             kv_id: "kv-id".into(),
             external_url: "https://reg.example.com".into(),
-            root_email: Some("ops@example.com".into()),
             email_relay_url: None,
         };
         let toml = render_wrangler_toml(&cfg);
@@ -1070,10 +1030,8 @@ mod tests {
             parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
             Some("https://reg.example.com")
         );
-        assert_eq!(
-            parsed["vars"]["HUB_ROOT_EMAIL"].as_str(),
-            Some("ops@example.com")
-        );
+        // Root bootstrap is CLI-driven now; the worker no longer reads it.
+        assert!(parsed["vars"].get("HUB_ROOT_EMAIL").is_none());
         assert_eq!(parsed["d1_databases"][0]["binding"].as_str(), Some(D1_BINDING));
         assert_eq!(parsed["d1_databases"][0]["database_id"].as_str(), Some("d1-uuid"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));

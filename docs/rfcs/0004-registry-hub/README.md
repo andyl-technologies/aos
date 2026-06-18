@@ -48,12 +48,14 @@
   the gap `cargo test` (native-only) can't cover.
 
   The unification extends to **deployment + maintenance**: the native
-  `aos-registry-hub` binary doubles as the Cloudflare installer
-  (`aos-registry-hub cloudflare install/deploy/provision/reset-root`, packaged
-  with `wrangler` + the Worker wasm as `pkgs.aos-registry-hub-cloudflare`). A
-  `WranglerD1Backend` runs the *same* `core::Database` maintenance code over live
-  D1 via `wrangler d1 execute` (e.g. `reset-root`), so the management CLI is one
-  codebase across the native and Cloudflare backends — see
+  `aos-registry-hub` binary doubles as the installer. Provider-specific work is
+  `aos-registry-hub worker deploy --provider cloudflare` (provision + deploy +
+  secrets, packaged with `wrangler` + the Worker wasm as
+  `pkgs.aos-registry-hub-cloudflare`); everything else is provider-neutral over
+  `--target`: `init` (migrate + bootstrap root), `reset-root`, and every admin
+  command run the *same* `core::Database` code over the local sqlite file or live
+  D1 (the `WranglerD1Backend`, via `wrangler d1 execute`). Schema migration is
+  CLI-driven — there is **no public init endpoint** on the Worker. See
   `crates/aos-registry-worker/deploy/DEPLOY.md`.
 
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the

@@ -56,8 +56,10 @@ on `visibility = 'public'`.
 /{slug}/-/releases             releases (HTML)
 /{slug}/-/api/...              the JSON read API
 /{slug}/{machine-path}         the R2 facade
-/_init                         apply the D1 schema (optional one-shot)
 ```
+
+The schema is migrated by the operator CLI over D1 (`aos-registry-hub init
+--target d1:<name>`), not by any HTTP endpoint — there is no `/_init`.
 
 Human pages live under the reserved `/-/` segment (the GitLab convention) so
 they cannot shadow the machine surface that owns the registry root.
@@ -68,8 +70,9 @@ they cannot shadow the machine surface that owns the registry root.
 > `aos.registry.v1` surface are **no longer native-only** — they now live in the
 > shared `aos-registry-core` router and the Worker serves them over its D1/R2/KV
 > bindings (the transport is Connect-JSON over `axum`, since the `connectrpc`
-> *server* runtime can't target wasm). The only path that stays Worker-local is
-> `GET /_init`. The genuinely still-deferred items are below.
+> *server* runtime can't target wasm). The Worker serves only the request
+> surface — schema migration is CLI-driven over D1, with no init endpoint. The
+> genuinely still-deferred items are below.
 
 ## What is NOT ported (native-only for now)
 
@@ -105,7 +108,7 @@ broken by this crate.
 
 ## Deploy (requires a Cloudflare account)
 
-The native `aos-registry-hub` binary is also the Cloudflare **installer** — see
+The native `aos-registry-hub` binary is also the **installer** — see
 [`deploy/DEPLOY.md`](deploy/DEPLOY.md) for the full walkthrough. The short
 version, using the `aos-registry-hub-cloudflare` Nix package (which bundles
 `wrangler` + `node` + the prebuilt Worker wasm):
@@ -113,23 +116,25 @@ version, using the `aos-registry-hub-cloudflare` Nix package (which bundles
 ```sh
 HUB=$(nix-build -A pkgs.aos-registry-hub-cloudflare --no-out-link)/bin/aos-registry-hub
 export CLOUDFLARE_API_TOKEN=…                # or `wrangler login`
-"$HUB" cloudflare install \
-  --external-url https://reg.example.com \
+# 1. Provider: provision D1/R2/KV, deploy the wasm, set secrets.
+"$HUB" worker deploy --provider cloudflare --external-url https://reg.example.com
+# 2. Database: migrate + bootstrap root over D1 (no public init endpoint).
+"$HUB" init --target d1:aos-registry-hub \
   --root-email ops@example.com --root-password-stdin <<<"$ROOT_PASSWORD"
 ```
 
-One idempotent command provisions D1/R2/KV, deploys the bundled wasm, applies
-the runtime secrets (`HUB_JWT_SECRET`/`HUB_SEAL_KEY` minted if omitted), and
-`GET /_init`s to migrate the schema and bootstrap root. Update the running
-deployment with `cloudflare deploy`; reset the root password with `cloudflare
-reset-root`. `deploy/cf-seed.sh` seeds a registry row + its signed R2 surface,
-which the `*/15` Cron then indexes into `releases`/`channels`.
+`worker deploy` provisions D1/R2/KV, deploys the bundled wasm, and sets the
+runtime secrets (`HUB_JWT_SECRET`/`HUB_SEAL_KEY` minted if omitted). `init
+--target d1:<name>` then migrates the schema and bootstraps root over D1 via the
+bundled `wrangler d1 execute` — the same `Database` code the native hub runs. A
+one-shot `worker install` composes both. Reset the root password with
+`reset-root --target d1:…`; `deploy/cf-seed.sh` seeds a registry + its signed R2
+surface, which the `*/15` Cron then indexes into `releases`/`channels`.
 
-The schema is always applied by `GET /_init` (it runs `aos_registry_core`'s
-`MIGRATIONS` over D1, tracked in `schema_version`) — the same schema the native
-hub uses. There is no separate `wrangler d1 migrations` step: a hand-maintained
-migration file would diverge from core's `MIGRATIONS`. A manual `wrangler
-deploy` path (without the installer) is in `deploy/DEPLOY.md`.
+The schema is applied by the operator's CLI over D1, never an HTTP endpoint —
+`aos-registry-hub schema dump` prints the canonical `MIGRATIONS` (the single
+source of truth). A manual `wrangler deploy` path (without the installer) is in
+`deploy/DEPLOY.md`.
 
 ## Validation gap (be explicit)
 

@@ -83,18 +83,19 @@ test-worker-e2e:
     bin=`nix-build -A pkgs.aos-registry-worker-e2e --no-out-link`; exec "$bin/bin/aos-registry-worker-e2e"
 
 # ===========================================================================
-# Cloudflare deployment
+# Worker (serverless) deployment
 # ===========================================================================
 
-# Run the Cloudflare installer (bundles wrangler + node + the Worker wasm).
-# Forwards args to `aos-registry-hub cloudflare`, e.g.:
-#   just cloudflare install --external-url https://reg.example.com --root-email a@b.c --root-password-stdin
-#   just cloudflare deploy  --external-url https://reg.example.com
-#   just cloudflare reset-root --email a@b.c --password-stdin
+# Run the bundled hub installer (wrangler + node + the Worker wasm). Forwards
+# args to `aos-registry-hub`, e.g.:
+#   just hub worker install --external-url https://reg.example.com --root-email a@b.c --root-password-stdin
+#   just hub worker deploy  --external-url https://reg.example.com
+#   just hub init --target d1:aos-registry-hub --root-email a@b.c --root-password-stdin
+#   just hub reset-root --target d1:aos-registry-hub --email a@b.c --password-stdin
 # Requires CLOUDFLARE_API_TOKEN (or `wrangler login`). See
 # crates/aos-registry-worker/deploy/DEPLOY.md.
-cloudflare *args:
-    `nix-build -A pkgs.aos-registry-hub-cloudflare --no-out-link`/bin/aos-registry-hub cloudflare {{args}}
+hub *args:
+    `nix-build -A pkgs.aos-registry-hub-cloudflare --no-out-link`/bin/aos-registry-hub {{args}}
 
 # ===========================================================================
 # Development

@@ -6,10 +6,12 @@
 # cryptographic root of trust) and upload the signed surface to R2. The Cron
 # indexer then derives packages/channels/releases from R2.
 #
-# The D1 schema is NOT applied here: it is created by requesting `GET /_init` on
-# the deployed Worker, which runs the shared `aos_registry_core` MIGRATIONS over
-# D1. So the deploy order is: `wrangler deploy` -> `curl .../\_init` -> this
-# script (which seeds the registry row the schema must already hold).
+# The D1 schema is NOT applied here: it is migrated by the operator CLI,
+# `aos-registry-hub init --target d1:<name>`, which runs the shared
+# `aos_registry_core` MIGRATIONS over D1 (there is no public init endpoint). So
+# the deploy order is: `aos-registry-hub worker deploy` -> `aos-registry-hub init
+# --target d1:<name>` -> this script (which seeds the registry row the schema
+# must already hold).
 #
 # This is OPERATOR tooling run on a developer machine against your Cloudflare
 # account (not a hermetic build) — it shells out to `wrangler`. See DEPLOY.md for
@@ -29,7 +31,7 @@
 # Run with no surface upload by passing an empty/absent --surface (registry row
 # only). Idempotent for the surface upload; the registry-row INSERT uses INSERT
 # OR REPLACE keyed on the unique slug. The schema must already exist (via
-# `GET /_init` on the deployed Worker).
+# `aos-registry-hub init --target d1:<name>`).
 set -euo pipefail
 
 DB="aos-registry-hub"

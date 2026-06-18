@@ -394,9 +394,9 @@ path. *Handler unification has landed: the worker now serves the **entire**
 shared router — RPC, the facade read **and write** (`PUT`), browse, the full
 producer console (login/OIDC/activate/passkey/IAM/config/changes), and
 hosted-key channel advance — so `aos hub … --hub https://…workers.dev`
-administers a Cloudflare deployment identically to a native one. The worker's
-install-time root bootstrap runs in `GET /_init` from `HUB_ROOT_EMAIL` +
-`HUB_ROOT_PASSWORD` (step 6).*
+administers a Cloudflare deployment identically to a native one. Schema
+migration and root bootstrap are CLI-driven over D1 (`aos-registry-hub init
+--target d1:<name>`) — the Worker has no public init endpoint.*
 
 ## The D1 transaction audit (the gate)
 
@@ -507,10 +507,11 @@ unification) are the remaining work that wins parity.
 5. ✅ **Move the CLI to the API** under `aos hub …` — the client speaks
    Connect-JSON and answers identically from the native hub or the worker.
    *Done.*
-6. ✅ **Install-time root bootstrap** as the sole non-API mutation path. *Done* —
-   native via `aos-registry-hub user set-password` (in-process `find_or_create_user`
-   + `hash_password` + `set_user_password`); the worker runs the same shared calls
-   idempotently in `GET /_init` from `HUB_ROOT_EMAIL` + `HUB_ROOT_PASSWORD`.
+6. ✅ **Schema migration + root bootstrap are CLI-driven** (provider-neutral over
+   `--target`), not a public endpoint. *Done* — `aos-registry-hub init --target
+   <local|d1:name>` runs the shared `MIGRATIONS` then `find_or_create_user` +
+   `hash_password` + `set_user_password`, against the local sqlite file or live
+   D1 (the `WranglerD1Backend`). The Worker has no `/_init` endpoint.
 
 The indexer is also unified: `core::indexer` is the single canonical
 fetch→verify→load→index orchestration over the `SurfaceFetch` port — the native

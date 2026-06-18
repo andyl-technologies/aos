@@ -10,7 +10,8 @@
 //! isolate of the deployment.
 //!
 //! The `publish_leases` table is owned by the shared `MIGRATIONS` (v21), so it
-//! is created by the Worker's `_init` schema bootstrap, not lazily here.
+//! is created by the operator CLI's schema migration (`aos-registry-hub init
+//! --target d1:<name>`), not lazily here.
 //!
 //! # Atomicity
 //!
