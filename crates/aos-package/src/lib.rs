@@ -446,6 +446,16 @@ pub enum PackageCommand {
         #[arg(long)]
         pcr15: String,
     },
+    /// Hidden: produce an RFC-0001 package attestation TPM quote.
+    #[command(name = "_test-produce-package-attestation-quote", hide = true)]
+    TestProducePackageAttestationQuote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: String,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
     /// Hidden: load fleet BPF-LSM policies selected by host policy.
     #[command(name = "_load-ebpf-lsm-policies", hide = true)]
     LoadEbpfLsmPolicies {
@@ -1745,6 +1755,10 @@ pub async fn run(
         return ebpf_lsm::load_system_policies();
     }
 
+    if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
+        return run_test_produce_package_attestation_quote(nonce, output_dir, printer);
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -1993,6 +2007,9 @@ pub async fn run(
         PackageCommand::TestVerifyPackageAttestation {
             event_log, pcr15, ..
         } => run_test_verify_package_attestation(&config, event_log, pcr15, printer),
+        PackageCommand::TestProducePackageAttestationQuote { .. } => {
+            unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
+        }
         // Dispatched by the early-return above, before `ApmConfig::load`.
         PackageCommand::TestSystemdClient { .. } => {
             unreachable!("TestSystemdClient is handled before ApmConfig::load")
@@ -2035,6 +2052,26 @@ fn run_test_verify_package_attestation(
         printer.success(&format!(
             "Package attestation event log verified ({} package events, PCR 15 {}).",
             verified.package_count, verified.pcr15
+        ));
+    }
+    Ok(())
+}
+
+fn run_test_produce_package_attestation_quote(
+    nonce: &str,
+    output_dir: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let quote = package_attestation::produce_package_quote(nonce, output_dir)?;
+    let json = serde_json::to_value(&quote).context("serializing package quote artifacts")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Package attestation quote written to {} ({}).",
+            output_dir.display(),
+            quote.pcr_selection
         ));
     }
     Ok(())
