@@ -687,19 +687,27 @@ Here we enumerate only the *builtin surface* and the attributes it consumes.
       - Input-addressed is the **default** (no `outputHash`, no
         `__contentAddressed`): output path = `hashDerivationModulo`-derived
         (§5.2/§5.3 of doc 11).
-- [ ] `derivation` (attrs) — **the `lib`/corepkgs wrapper**, not a primop in the
-      same sense: it is a thin Nix function (`derivation.nix`) that fills
-      defaults (`system`, etc.), calls `derivationStrict`, and reshapes the
-      result into the familiar derivation attrset (with `outPath`, `drvPath`,
-      `type = "derivation"`, the `outputs` attrs, `all`, etc.).
+- [x] `derivation` (attrs) — **the core wrapper**, not a primop in the same
+      sense: in the pinned C++ Nix it is the thin Nix function
+      `<nix/derivation-internal.nix>` that defaults `outputs` to `[ "out" ]`,
+      calls `derivationStrict`, and reshapes the result into the familiar
+      derivation attrset (with `outPath`, `drvPath`, `type = "derivation"`, the
+      output attrs, `all`, etc.). `system` is still required by
+      `derivationStrict`; the pinned wrapper does not default it.
       - Exposed in the **global scope** as well as `builtins.derivation`. Its
         behavior is determined entirely by `derivationStrict` plus the wrapper
         logic; the wrapper itself is Nix code shipped with Nix (so its *exact*
         text for the pinned version matters — a divergence between our bundled
-        `derivation.nix` and the pinned one changes results). Pin the wrapper
-        source to the reference version.
+        `<nix/derivation-internal.nix>` and the pinned one changes results). Pin
+        the wrapper source to the reference version.
       - The historical `derivation` vs `derivationStrict` `outputs`-coercion
         discrepancy (NixOS/nix#7569) is a known wart to reproduce, not fix.
+      - **Implemented evidence**: aos-nix embeds the pinned
+        `<nix/derivation-internal.nix>` source, exposes `derivation` and
+        `builtins.derivation` as that lambda, and adds a configured pinned-oracle
+        differential harness. Verified with `AOS_NIX_ORACLE` pointing at pinned
+        C++ Nix 2.24.12 via
+        `cargo test --manifest-path crates/Cargo.toml -p aos-nix --lib configured_cpp_nix_derivation_wrapper_matches_tree_walk -- --nocapture`.
 - [ ] `outputOf` (drv-ref output-name) — (also §5) deriving-path indirection for
       dynamic derivations; experimental, conditional scope (§17).
 - [x] `unsafeDiscardOutputDependency` / `addDrvOutputDependencies` — (the §5

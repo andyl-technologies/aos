@@ -93,6 +93,61 @@ const ADD_ERROR_CONTEXT_MESSAGE_CONTEXT: &[u8] =
     b"while evaluating the error message passed to builtins.addErrorContext";
 const I64_MAX_EXCLUSIVE_AS_F64: f64 = 9_223_372_036_854_775_808.0;
 const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
+const DERIVATION_INTERNAL_PATH: &[u8] = b"<nix/derivation-internal.nix>";
+const DERIVATION_INTERNAL_SOURCE: &str = r#"
+# This is the implementation of the ‘derivation’ builtin function.
+# It's actually a wrapper around the ‘derivationStrict’ primop.
+# Note that the following comment will be shown in :doc in the repl, but not in the manual.
+
+/**
+  Create a derivation.
+
+  # Inputs
+
+  The single argument is an attribute set that describes what to build and how to build it.
+  See https://nix.dev/manual/nix/2.23/language/derivations
+
+  # Output
+
+  The result is an attribute set that describes the derivation.
+  Notably it contains the outputs, which in the context of the Nix language are special strings that refer to the output paths, which may not yet exist.
+  The realisation of these outputs only occurs when needed; for example
+
+    * When `nix-build` or a similar command is run, it realises the outputs that were requested on its command line.
+      See https://nix.dev/manual/nix/2.23/command-ref/nix-build
+
+    * When `import`, `readFile`, `readDir` or some other functions are called, they have to realise the outputs they depend on.
+      This is referred to as "import from derivation".
+      See https://nix.dev/manual/nix/2.23/language/import-from-derivation
+
+  Note that `derivation` is very bare-bones, and provides almost no commands during the build.
+  Most likely, you'll want to use functions like `stdenv.mkDerivation` in Nixpkgs to set up a basic environment.
+*/
+drvAttrs @ { outputs ? [ "out" ], ... }:
+
+let
+
+  strict = derivationStrict drvAttrs;
+
+  commonAttrs = drvAttrs // (builtins.listToAttrs outputsList) //
+    { all = map (x: x.value) outputsList;
+      inherit drvAttrs;
+    };
+
+  outputToAttrListElement = outputName:
+    { name = outputName;
+      value = commonAttrs // {
+        outPath = builtins.getAttr outputName strict;
+        drvPath = strict.drvPath;
+        type = "derivation";
+        inherit outputName;
+      };
+    };
+
+  outputsList = map outputToAttrListElement outputs;
+
+in (builtins.head outputsList).value
+"#;
 
 #[derive(Debug)]
 struct RegexCaptureMatch {
@@ -2445,6 +2500,7 @@ impl TreeWalk {
             | BuiltinExecution::NixVersionValue
             | BuiltinExecution::LangVersionValue
             | BuiltinExecution::NixPathValue => builtin.select(self, id, span, symbol),
+            BuiltinExecution::Derivation => self.eval_derivation_wrapper_lambda(id, span),
             _ => self
                 .heap
                 .alloc_primop(EvalPrimOp::new(symbol))
@@ -2545,6 +2601,34 @@ impl TreeWalk {
         })?;
         cloned.extend_from_slice(elements);
         Ok(cloned)
+    }
+
+    fn eval_derivation_wrapper_lambda(
+        &mut self,
+        id: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        self.load_and_eval_import_bytes(
+            id,
+            span,
+            id,
+            span,
+            DERIVATION_INTERNAL_PATH,
+            b"/",
+            DERIVATION_INTERNAL_SOURCE.as_bytes(),
+            ImportGlobalScope::Fresh,
+        )
+    }
+
+    fn eval_derivation_wrapper_call(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let wrapper = self.eval_derivation_wrapper_lambda(id, span)?;
+        self.apply_lambda_value(id, span, id, wrapper, span, argument, argument_value)
     }
 
     fn eval_derivation_strict(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
@@ -19934,6 +20018,7 @@ impl BuiltinRuntime for BuiltinMetadata {
             }
             BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
             BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
+            BuiltinExecution::Derivation => eval.eval_derivation_wrapper_lambda(id, span),
             _ if self.first_class_arity().is_some() => eval
                 .heap
                 .alloc_primop(EvalPrimOp::new(symbol))
@@ -19949,6 +20034,13 @@ impl BuiltinRuntime for BuiltinMetadata {
         node: &IrNode,
         args: &[IrId],
     ) -> Result<Value, TreeWalkError> {
+        if self.execution() == BuiltinExecution::Derivation {
+            check_builtin_arity(call, 1, args.len())?;
+            let argument = args[0];
+            let argument_value = eval.eval_node(argument)?;
+            return eval.eval_derivation_wrapper_call(call.id, call.span, argument, argument_value);
+        }
+
         eval.enter_call(call.id, call.span)?;
         let result = (|| match self.execution() {
             BuiltinExecution::DerivationStrict => {
@@ -20160,6 +20252,16 @@ impl BuiltinRuntime for BuiltinMetadata {
         args: &[EvalPrimOpArg],
     ) -> Result<Value, TreeWalkError> {
         match self.execution() {
+            BuiltinExecution::Derivation => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_derivation_wrapper_call(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.value(),
+                )
+            }
             BuiltinExecution::DerivationStrict => {
                 check_builtin_arity(call, 1, args.len())?;
                 eval.ensure_derivation_strict_supported(call.id, call.span)?;
@@ -25643,6 +25745,111 @@ mod tests {
             return;
         };
         assert_cpp_nix_string_coercion_contexts_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_derivation_wrapper_matches_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            r#"let
+                 d = derivation {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in {
+                 allLen = builtins.length d.all;
+                 allOutputNames = builtins.map (x: x.outputName) d.all;
+                 attrNames = builtins.attrNames d;
+                 drvAttrs = builtins.attrNames d.drvAttrs;
+                 drvPath = d.drvPath;
+                 functionArgs = builtins.functionArgs derivation;
+                 isFunction = builtins.isFunction builtins.derivation;
+                 kind = d.type;
+                 outNames = builtins.attrNames d.out;
+                 outputName = d.outputName;
+                 pathOut = d.outPath;
+                 rendered = "${d}";
+                 renderedContext = builtins.getContext "${d}";
+                 type = builtins.typeOf derivation;
+               }"#,
+            r#"let
+                 d = builtins.derivation {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                   outputs = [ "out" "dev" ];
+                 };
+               in {
+                 allLen = builtins.length d.all;
+                 allOutputNames = builtins.map (x: x.outputName) d.all;
+                 devNested = d.dev.out.dev.dev.outPath;
+                 devOutPath = d.dev.outPath;
+                 drvAttrs = builtins.attrNames d.drvAttrs;
+                 names = builtins.attrNames d;
+                 outNested = d.out.dev.out.outPath;
+                 pathOut = d.outPath;
+                 outputs = d.outputs;
+               }"#,
+            r#"let
+                 d = derivation {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                   outputs = [ "dev" ];
+                 };
+               in {
+                 allLen = builtins.length d.all;
+                 hasDev = builtins.hasAttr "dev" d;
+                 hasOut = builtins.hasAttr "out" d;
+                 names = builtins.attrNames d;
+                 outputName = d.outputName;
+                 pathOut = d.outPath;
+               }"#,
+            r#"let
+                 f = builtins.derivation;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in d.outPath"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            r#"derivation {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = "out dev";
+               }"#,
+            r#"derivation {
+                 name = "x";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }.drvPath"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+    fn cpp_nix_derivation_wrapper_matches_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_derivation_wrapper_matches_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_derivation_wrapper_matches_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!(
+                "AOS_NIX_ORACLE not set; skipping configured C++ Nix derivation wrapper check"
+            );
+            return;
+        };
+        assert_cpp_nix_derivation_wrapper_matches_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_to_string_builtin_matches_tree_walk(oracle: &str) {
@@ -40610,6 +40817,168 @@ mod tests {
             eval_json_bytes(source),
             br#"{"drvContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"allOutputs":true}},"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","names":["drvPath","out"],"out":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","outContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_wrapper_returns_default_output_derivation_shape() {
+        let source = r#"let
+             d = derivation {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+           in {
+             allLen = builtins.length d.all;
+             drvAttrs = builtins.attrNames d.drvAttrs;
+             drvPath = d.drvPath;
+             names = builtins.attrNames d;
+             outNames = builtins.attrNames d.out;
+             pathOut = d.outPath;
+             outputName = d.outputName;
+             rendered = "${d}";
+             renderedContext = builtins.getContext "${d}";
+             kind = d.type;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"allLen":1,"drvAttrs":["builder","name","system"],"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","kind":"derivation","names":["all","builder","drvAttrs","drvPath","name","out","outPath","outputName","system","type"],"outNames":["all","builder","drvAttrs","drvPath","name","out","outPath","outputName","system","type"],"outputName":"out","pathOut":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","rendered":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","renderedContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_wrapper_preserves_custom_outputs_and_recursive_aliases() {
+        let source = r#"let
+             d = derivation {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputs = [ "out" "dev" ];
+             };
+           in {
+             allLen = builtins.length d.all;
+             allOutputNames = builtins.map (x: x.outputName) d.all;
+             devNested = d.dev.out.dev.dev.outPath;
+             devOutPath = d.dev.outPath;
+             drvAttrs = builtins.attrNames d.drvAttrs;
+             names = builtins.attrNames d;
+             outNested = d.out.dev.out.outPath;
+             pathOut = d.outPath;
+             outputs = d.outputs;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"allLen":2,"allOutputNames":["out","dev"],"devNested":"/nix/store/phkb0v7mn27i2c5y0qg9d18wvgch5x2w-x-dev","devOutPath":"/nix/store/phkb0v7mn27i2c5y0qg9d18wvgch5x2w-x-dev","drvAttrs":["builder","name","outputs","system"],"names":["all","builder","dev","drvAttrs","drvPath","name","out","outPath","outputName","outputs","system","type"],"outNested":"/nix/store/kpxa7fq9k2f03c5mn9ipsqjs09lnj1gj-x","outputs":["out","dev"],"pathOut":"/nix/store/kpxa7fq9k2f03c5mn9ipsqjs09lnj1gj-x"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_wrapper_supports_non_out_first_output() {
+        let source = r#"let
+             d = derivation {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               outputs = [ "dev" ];
+             };
+           in {
+             allLen = builtins.length d.all;
+             hasDev = builtins.hasAttr "dev" d;
+             hasOut = builtins.hasAttr "out" d;
+             names = builtins.attrNames d;
+             pathOut = d.outPath;
+             outputName = d.outputName;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"allLen":1,"hasDev":true,"hasOut":false,"names":["all","builder","dev","drvAttrs","drvPath","name","outPath","outputName","outputs","system","type"],"outputName":"dev","pathOut":"/nix/store/3igymyyr87hiw3y11n2jknh5fn06qkz4-x-dev"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_wrapper_first_class_values_call_builtin() {
+        for source in [
+            r#"let
+                 f = derivation;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in d.outPath"#,
+            r#"let
+                 f = builtins.derivation;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in d.outPath"#,
+            r#"let
+                 d = builtins.derivation {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in d.outPath"#,
+            r#"with { derivation = x: x; }; let
+                 f = derivation;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in d.outPath"#,
+        ] {
+            assert_eq!(
+                eval_string_bytes(source),
+                b"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x",
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn derivation_wrapper_is_exposed_as_reference_lambda() {
+        let source = r#"let
+             inspect = f: {
+               args = builtins.functionArgs f;
+               isFunction = builtins.isFunction f;
+               type = builtins.typeOf f;
+             };
+           in {
+             attr = inspect builtins.derivation;
+             global = inspect derivation;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"attr":{"args":{"outputs":true},"isFunction":true,"type":"lambda"},"global":{"args":{"outputs":true},"isFunction":true,"type":"lambda"}}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_wrapper_rejects_non_list_outputs_like_cpp_wrapper() {
+        let error = eval_whnf_owned(&lower(
+            r#"derivation {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 outputs = "out dev";
+               }"#,
+        ))
+        .expect_err("derivation wrapper maps over outputs as a list");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "list",
+                actual: ValueTag::String,
+                ..
+            }
+        ));
     }
 
     #[test]

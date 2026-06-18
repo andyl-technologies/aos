@@ -305,6 +305,8 @@ mod tests {
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
             "<nixpkgs>",
+            r#"derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
+            r#"builtins.derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
         ] {
             let err = native
                 .eval_expr(source)

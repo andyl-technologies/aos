@@ -238,7 +238,7 @@ define_builtins! {
     pub(crate) struct DerivationBuiltin;
     impl BuiltinDefinition for DerivationBuiltin {
         const NAME: &'static [u8] = b"derivation";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::Derivation;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
@@ -907,6 +907,8 @@ pub(crate) enum BuiltinExecution {
     Import,
     /// The builtin parses another Nix file with an injected global scope.
     ScopedImport,
+    /// The builtin evaluates Nix's derivation wrapper around `derivationStrict`.
+    Derivation,
     /// The builtin lowers to the derivation boundary and is not first-class.
     DerivationStrict,
     /// The builtin evaluates to the recursive builtin attribute set.
@@ -1024,6 +1026,9 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Pure,
             }),
             Self::StrictBinary { effect, .. } => Some(BuiltinDirect::StrictBinary { effect }),
+            Self::Derivation => Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::ScopedImport => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
             }),
@@ -1083,6 +1088,7 @@ impl BuiltinExecution {
         match self {
             Self::StrictUnary { .. }
             | Self::LazyUnary
+            | Self::Derivation
             | Self::DerivationStrict
             | Self::Import
             | Self::GenericClosure
@@ -1130,6 +1136,7 @@ impl BuiltinExecution {
     const fn requires_native_cli_fallback(self) -> bool {
         match self {
             Self::Unsupported
+            | Self::Derivation
             | Self::Import
             | Self::ScopedImport
             | Self::DerivationStrict
@@ -1686,6 +1693,12 @@ mod tests {
     #[test]
     fn direct_builtin_metadata_marks_effectful_boundaries() {
         assert_eq!(
+            direct_builtin(b"derivation"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"derivationStrict"),
             Some(BuiltinDirect::DerivationStrict)
         );
@@ -1995,6 +2008,10 @@ mod tests {
             Some(3)
         );
         assert_eq!(
+            BUILTINS.lookup(b"derivation").unwrap().first_class_arity(),
+            Some(1)
+        );
+        assert_eq!(
             BUILTINS
                 .lookup(b"derivationStrict")
                 .unwrap()
@@ -2027,6 +2044,7 @@ mod tests {
     #[test]
     fn builtin_metadata_records_native_fallback_policy() {
         for name in [
+            b"derivation".as_slice(),
             b"derivationStrict".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),

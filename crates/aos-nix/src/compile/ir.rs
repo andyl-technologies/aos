@@ -1938,6 +1938,10 @@ mod tests {
             ("builtins.pathExists ./foo", b"pathExists".as_slice()),
             ("builtins.readFileType ./foo", b"readFileType".as_slice()),
             ("builtins.getEnv \"HOME\"", b"getEnv".as_slice()),
+            (
+                "builtins.derivation { name = \"x\"; system = \"x86_64-linux\"; builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder\"; }",
+                b"derivation".as_slice(),
+            ),
         ] {
             let ir = lowered(source);
             let root = root_node(&ir);
@@ -1951,6 +1955,19 @@ mod tests {
             assert_eq!(args.len(), 1);
             assert_ne!(node(&ir, args[0]).kind, IrKind::ThunkAlloc);
         }
+    }
+
+    #[test]
+    fn bare_derivation_stays_wrapper_application() {
+        let ir = lowered(
+            "derivation { name = \"x\"; system = \"x86_64-linux\"; builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder\"; }",
+        );
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::Apply);
+        let IrData::Pair { first, .. } = root.data else {
+            panic!("application payload expected");
+        };
+        assert_eq!(node(&ir, first).kind, IrKind::GlobalVar);
     }
 
     #[test]
