@@ -504,7 +504,10 @@ the current spec. Phases are orderable; A lands first, E last.
       `CHECK ((registry_id IS NULL) <> (cache_id IS NULL))`; `FrontendRecord` carries
       both as `Option`; `create_cache_frontend`/`list_cache_frontends` added; rebuild
       clears the rebuildable `frontend_probes` (re-populated by the probe job).
-      Unit-tested (coexistence, per-target listing, Direct-on-private-cache reject).
+      Unit-tested (coexistence, per-target listing, Direct-on-private-cache reject)
+      **and validated on the D1 path** — the worker-e2e migrates from the
+      `schema dump` (now 90 statements incl. the v24 rebuild) on miniflare's
+      SQLite engine and the cache surface still serves green.
       **Remaining (with the proxied facade):** gate serving on `serves_cache`.
 - [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
       update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
@@ -569,10 +572,16 @@ the current spec. Phases are orderable; A lands first, E last.
       (timeouts, stream, max_body, retries+failover, range/cache-control
       passthrough) and `primary` flag on `frontends`; proxied facade honors them
       and streams; conservative defaults.
-- [ ] **Proxy to authenticated origin:** SigV4 to private external S3/R2 (and
+- [~] **Proxy to authenticated origin:** SigV4 to private external S3/R2 (and
       native R2-binding on Workers) for proxied private bindings, streamed
       through; **presigned GET → `302`** for private direct-style reads;
-      presigned PUT via the `mint` purpose.
+      presigned PUT via the `mint` purpose. **Done:** the `sigv4` module — a pure,
+      `wasm`-clean AWS SigV4 presigned-URL signer (HMAC-SHA256/SHA-256 over the
+      same `hmac`/`sha2` the HS256 JWT path uses), validated bit-for-bit against
+      AWS's documented worked example, with hardened input validation (rejects a
+      malformed `X-Amz-Date` and CRLF/structural chars in `host`; secret never
+      enters the URL). **Remaining:** wire it into the facade — presigned GET →
+      `302` redirect, and the streamed proxied read of a private origin.
 - [ ] **Visibility enforcement:** private/internal objects served proxied only;
       `require_read` enforced on the cache facade; Direct-on-private rejected.
 - [x] `aos-hub cache create/list/show/update/rm/link/unlink/links/gc-policy/
