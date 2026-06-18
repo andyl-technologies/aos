@@ -2699,7 +2699,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         symbol: Symbol,
-        builtin: BuiltinMetadata,
+        builtin: Builtin,
     ) -> Result<Value, TreeWalkError> {
         match builtin.execution() {
             BuiltinExecution::BuiltinsValue => self.alloc_thunk_for_node(id, id, span),
@@ -26351,7 +26351,7 @@ trait BuiltinRuntime {
     ) -> Result<Value, TreeWalkError>;
 }
 
-impl BuiltinRuntime for BuiltinMetadata {
+impl BuiltinRuntime for Builtin {
     fn is_available(self, eval: &TreeWalk) -> bool {
         match self.availability() {
             BuiltinAvailability::Always => true,
@@ -27065,7 +27065,7 @@ fn check_builtin_arity(
     ))
 }
 
-fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<BuiltinMetadata> {
+fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<Builtin> {
     symbols.resolve(symbol).and_then(lookup_builtin)
 }
 
@@ -28613,7 +28613,7 @@ mod tests {
         IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
     use crate::runtime::builtins::{
-        BUILTINS, BuiltinDirect, BuiltinEffect, BuiltinMetadata, direct_builtin,
+        BUILTINS, Builtin, BuiltinDirect, BuiltinEffect, direct_builtin,
     };
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::{ParseErrorKind, Symbol, SymbolTable, parse_str};
@@ -30105,15 +30105,12 @@ mod tests {
     }
 
     #[test]
-    fn builtin_lookup_uses_shared_metadata_registry() {
-        let metadata_names = BUILTINS
-            .iter()
-            .map(BuiltinMetadata::name)
-            .collect::<BTreeSet<_>>();
+    fn builtin_lookup_uses_shared_declaration_registry() {
+        let builtin_names = BUILTINS.iter().map(Builtin::name).collect::<BTreeSet<_>>();
 
-        assert_eq!(metadata_names.len(), BUILTINS.len());
-        for metadata in BUILTINS.iter().copied() {
-            assert_eq!(lookup_builtin(metadata.name()), Some(metadata));
+        assert_eq!(builtin_names.len(), BUILTINS.len());
+        for builtin in BUILTINS.iter().copied() {
+            assert_eq!(lookup_builtin(builtin.name()), Some(builtin));
         }
     }
 
@@ -30125,7 +30122,7 @@ mod tests {
 
         let registry_names = BUILTINS
             .iter()
-            .map(|metadata| metadata.name().to_vec())
+            .map(|builtin| builtin.name().to_vec())
             .collect::<Vec<_>>();
         assert_eq!(registry_names, fixture);
 
@@ -30163,7 +30160,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_effectful_unary_builtin_metadata_matches_runtime_impls() {
+    fn custom_effectful_unary_builtin_declarations_match_runtime_impls() {
         for name in [
             b"pathExists".as_slice(),
             b"readDir".as_slice(),
@@ -30745,19 +30742,18 @@ mod tests {
     }
 
     #[test]
-    fn builtins_global_evaluates_to_metadata_backed_attrset() {
+    fn builtins_global_evaluates_to_registry_backed_attrset() {
         fn expected_builtin_names(include_system: bool, include_time: bool) -> Vec<Vec<u8>> {
             let mut names = BUILTINS
                 .iter()
-                .filter(|metadata| {
+                .filter(|builtin| {
                     include_system
-                        || metadata.availability() != BuiltinAvailability::ImpureCurrentSystem
+                        || builtin.availability() != BuiltinAvailability::ImpureCurrentSystem
                 })
-                .filter(|metadata| {
-                    include_time
-                        || metadata.availability() != BuiltinAvailability::ImpureCurrentTime
+                .filter(|builtin| {
+                    include_time || builtin.availability() != BuiltinAvailability::ImpureCurrentTime
                 })
-                .map(|metadata| metadata.name().to_vec())
+                .map(|builtin| builtin.name().to_vec())
                 .collect::<Vec<_>>();
             names.sort();
             names

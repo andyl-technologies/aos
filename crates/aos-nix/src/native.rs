@@ -197,11 +197,11 @@ fn builtin_requires_cli_fallback(name: &[u8]) -> bool {
         return true;
     }
 
-    let Some(metadata) = lookup_builtin(name) else {
+    let Some(builtin) = lookup_builtin(name) else {
         return false;
     };
 
-    metadata.requires_native_cli_fallback()
+    builtin.requires_native_cli_fallback()
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {

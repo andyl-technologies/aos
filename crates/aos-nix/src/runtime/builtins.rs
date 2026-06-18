@@ -2,7 +2,7 @@
 //!
 //! Each builtin marker type implements [`BuiltinDefinition`] with its static
 //! execution strategy, documentation, and top-level name policy. The execution
-//! strategy provides default direct-lowering and first-class arity metadata, and
+//! strategy provides default direct-lowering and first-class arity, and
 //! custom builtins can override those fields in their definition impl. The
 //! declaration macro publishes those typed definitions as both the ordered
 //! `builtins` attrset inventory and the exact-name lookup used by evaluator
@@ -14,9 +14,9 @@ macro_rules! builtin_registry {
             $ty:ident,
         )*
     ) => {
-        const BUILTIN_METADATA: &[BuiltinMetadata] = &[
+        const BUILTIN_DECLARATIONS: &[Builtin] = &[
             $(
-                <$ty as BuiltinDefinition>::METADATA,
+                <$ty as BuiltinDefinition>::DECLARATION,
             )*
         ];
 
@@ -27,10 +27,10 @@ macro_rules! builtin_registry {
             )*
         ];
 
-        fn lookup_builtin_metadata(name: &[u8]) -> Option<BuiltinMetadata> {
+        fn lookup_builtin_declaration(name: &[u8]) -> Option<Builtin> {
             $(
                 if name == <$ty as BuiltinDefinition>::NAME {
-                    return Some(<$ty as BuiltinDefinition>::METADATA);
+                    return Some(<$ty as BuiltinDefinition>::DECLARATION);
                 }
             )*
 
@@ -39,7 +39,7 @@ macro_rules! builtin_registry {
 
         /// Builtin declarations recognized by the resolver and evaluator.
         pub(crate) const BUILTINS: BuiltinRegistry =
-            BuiltinRegistry::new(BUILTIN_METADATA, lookup_builtin_metadata);
+            BuiltinRegistry::new(BUILTIN_DECLARATIONS, lookup_builtin_declaration);
     };
 }
 
@@ -912,7 +912,7 @@ pub(crate) enum BuiltinEffect {
     Effectful,
 }
 
-/// Direct lowering metadata for a builtin.
+/// Direct lowering behavior for a builtin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinDirect {
     /// The builtin lowers to the derivation boundary IR node.
@@ -1076,7 +1076,7 @@ impl BuiltinExecution {
         }
     }
 
-    /// Returns direct-lowering metadata implied by this execution strategy.
+    /// Returns direct-lowering behavior implied by this execution strategy.
     pub(crate) const fn direct(self) -> Option<BuiltinDirect> {
         match self {
             Self::DerivationStrict => Some(BuiltinDirect::DerivationStrict),
@@ -1492,9 +1492,9 @@ pub(crate) enum BuiltinNameScope {
     UnshadowableGlobal,
 }
 
-/// Static metadata shared by builtin resolution, lowering, and execution.
+/// A builtin declaration shared by resolution, lowering, and execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BuiltinMetadata {
+pub(crate) struct Builtin {
     name: &'static [u8],
     execution: BuiltinExecution,
     direct: Option<BuiltinDirect>,
@@ -1505,8 +1505,8 @@ pub(crate) struct BuiltinMetadata {
     docs: &'static BuiltinDocs,
 }
 
-impl BuiltinMetadata {
-    /// Creates builtin metadata.
+impl Builtin {
+    /// Creates a builtin declaration.
     const fn new(
         name: &'static [u8],
         execution: BuiltinExecution,
@@ -1539,7 +1539,7 @@ impl BuiltinMetadata {
         self.execution
     }
 
-    /// Returns direct-lowering metadata for the builtin, if any.
+    /// Returns direct-lowering behavior for the builtin, if any.
     pub(crate) const fn direct(&self) -> Option<BuiltinDirect> {
         self.direct
     }
@@ -1583,37 +1583,37 @@ impl BuiltinMetadata {
 /// Registry of builtin declarations known to the evaluator.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BuiltinRegistry {
-    metadata: &'static [BuiltinMetadata],
-    lookup: fn(&[u8]) -> Option<BuiltinMetadata>,
+    declarations: &'static [Builtin],
+    lookup: fn(&[u8]) -> Option<Builtin>,
 }
 
 impl BuiltinRegistry {
-    /// Creates a builtin registry from static metadata.
-    const fn new(
-        metadata: &'static [BuiltinMetadata],
-        lookup: fn(&[u8]) -> Option<BuiltinMetadata>,
-    ) -> Self {
-        Self { metadata, lookup }
+    /// Creates a builtin registry from trait-generated declarations.
+    const fn new(declarations: &'static [Builtin], lookup: fn(&[u8]) -> Option<Builtin>) -> Self {
+        Self {
+            declarations,
+            lookup,
+        }
     }
 
     /// Returns the number of builtin declarations.
     pub(crate) const fn len(&self) -> usize {
-        self.metadata.len()
+        self.declarations.len()
     }
 
-    /// Returns an iterator over builtin metadata.
-    pub(crate) fn iter(&self) -> std::slice::Iter<'static, BuiltinMetadata> {
-        self.metadata.iter()
+    /// Returns an iterator over builtin declarations.
+    pub(crate) fn iter(&self) -> std::slice::Iter<'static, Builtin> {
+        self.declarations.iter()
     }
 
-    /// Returns shared metadata for a builtin name.
-    pub(crate) fn lookup(&self, name: &[u8]) -> Option<BuiltinMetadata> {
+    /// Returns the declaration for a builtin name.
+    pub(crate) fn lookup(&self, name: &[u8]) -> Option<Builtin> {
         (self.lookup)(name)
     }
 
-    /// Returns direct lowering metadata for a builtin name.
+    /// Returns direct lowering behavior for a builtin name.
     pub(crate) fn direct(&self, name: &[u8]) -> Option<BuiltinDirect> {
-        self.lookup(name).and_then(|metadata| metadata.direct())
+        self.lookup(name).and_then(|builtin| builtin.direct())
     }
 
     /// Returns whether `name` is a builtin attribute known to this evaluator.
@@ -1624,11 +1624,11 @@ impl BuiltinRegistry {
     /// Returns whether `name` is a top-level Nix name that active `with` scopes cannot shadow.
     pub(crate) fn is_unshadowable_global_name(&self, name: &[u8]) -> bool {
         self.lookup(name)
-            .is_some_and(|metadata| metadata.is_unshadowable_global())
+            .is_some_and(|builtin| builtin.is_unshadowable_global())
     }
 }
 
-/// Provides static metadata for a concrete builtin marker type.
+/// Provides the single static declaration for a concrete builtin marker type.
 trait BuiltinDefinition {
     /// Byte-oriented builtin attribute name.
     const NAME: &'static [u8];
@@ -1639,7 +1639,7 @@ trait BuiltinDefinition {
     /// Static documentation attached to this builtin.
     const DOCS: &'static BuiltinDocs = &TODO_BUILTIN_DOCS;
 
-    /// Direct-lowering metadata attached to this builtin.
+    /// Direct-lowering behavior attached to this builtin.
     const DIRECT: Option<BuiltinDirect> = Self::EXECUTION.direct();
 
     /// Arity exposed when this builtin is selected as a first-class value.
@@ -1654,8 +1654,8 @@ trait BuiltinDefinition {
     /// Whether native JSON evaluation must defer this builtin to C++ Nix.
     const REQUIRES_NATIVE_CLI_FALLBACK: bool = Self::EXECUTION.requires_native_cli_fallback();
 
-    /// Metadata shared by all evaluator tiers for this builtin.
-    const METADATA: BuiltinMetadata = BuiltinMetadata::new(
+    /// Declaration shared by all evaluator tiers for this builtin.
+    const DECLARATION: Builtin = Builtin::new(
         Self::NAME,
         Self::EXECUTION,
         Self::DIRECT,
@@ -1667,13 +1667,13 @@ trait BuiltinDefinition {
     );
 }
 
-/// Returns direct lowering metadata for a builtin name.
+/// Returns direct lowering behavior for a builtin name.
 pub(crate) fn direct_builtin(name: &[u8]) -> Option<BuiltinDirect> {
     BUILTINS.direct(name)
 }
 
-/// Returns shared metadata for a builtin name.
-pub(crate) fn lookup_builtin(name: &[u8]) -> Option<BuiltinMetadata> {
+/// Returns the declaration for a builtin name.
+pub(crate) fn lookup_builtin(name: &[u8]) -> Option<Builtin> {
     BUILTINS.lookup(name)
 }
 
@@ -1694,18 +1694,15 @@ mod tests {
 
     #[test]
     fn builtin_names_are_unique() {
-        let names = BUILTINS
-            .iter()
-            .map(BuiltinMetadata::name)
-            .collect::<BTreeSet<_>>();
+        let names = BUILTINS.iter().map(Builtin::name).collect::<BTreeSet<_>>();
 
         assert_eq!(names.len(), BUILTINS.len());
     }
 
     #[test]
-    fn generated_builtin_lookup_covers_declared_metadata() {
-        for metadata in BUILTINS.iter().copied() {
-            assert_eq!(BUILTINS.lookup(metadata.name()), Some(metadata));
+    fn generated_builtin_lookup_covers_declared_builtins() {
+        for builtin in BUILTINS.iter().copied() {
+            assert_eq!(BUILTINS.lookup(builtin.name()), Some(builtin));
         }
         assert_eq!(BUILTINS.lookup(b"toXML\0"), None);
         assert_eq!(BUILTINS.lookup(b"foldl"), None);
@@ -1754,9 +1751,9 @@ mod tests {
             b"derivationStrict".as_slice(),
         ] {
             assert!(is_unshadowable_global_name(name), "{name:?}");
-            let metadata = lookup_builtin(name).expect("top-level builtin is registered");
-            assert_eq!(metadata.name_scope(), BuiltinNameScope::UnshadowableGlobal);
-            assert!(metadata.is_unshadowable_global());
+            let builtin = lookup_builtin(name).expect("top-level builtin is registered");
+            assert_eq!(builtin.name_scope(), BuiltinNameScope::UnshadowableGlobal);
+            assert!(builtin.is_unshadowable_global());
         }
         for name in [
             b"length".as_slice(),
@@ -1766,9 +1763,9 @@ mod tests {
         ] {
             assert!(!is_unshadowable_global_name(name), "{name:?}");
             assert!(is_known_builtin_attr(name), "{name:?}");
-            let metadata = lookup_builtin(name).expect("builtin attr is registered");
-            assert_eq!(metadata.name_scope(), BuiltinNameScope::BuiltinsAttrOnly);
-            assert!(!metadata.is_unshadowable_global());
+            let builtin = lookup_builtin(name).expect("builtin attr is registered");
+            assert_eq!(builtin.name_scope(), BuiltinNameScope::BuiltinsAttrOnly);
+            assert!(!builtin.is_unshadowable_global());
         }
     }
 
@@ -1794,7 +1791,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_builtin_metadata_marks_effectful_boundaries() {
+    fn direct_builtin_declarations_mark_effectful_boundaries() {
         assert_eq!(
             direct_builtin(b"derivation"),
             Some(BuiltinDirect::StrictUnary {
@@ -1970,7 +1967,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_metadata_records_first_class_arity_by_category() {
+    fn builtin_declarations_record_first_class_arity_by_category() {
         for name in [
             b"fetchGit".as_slice(),
             b"fetchMercurial".as_slice(),
@@ -1985,15 +1982,15 @@ mod tests {
             );
         }
         for name in [b"flakeRefToString".as_slice(), b"parseFlakeRef".as_slice()] {
-            let metadata = BUILTINS.lookup(name).unwrap();
+            let builtin = BUILTINS.lookup(name).unwrap();
             assert_eq!(
-                metadata.first_class_arity(),
+                builtin.first_class_arity(),
                 Some(1),
                 "{} should expose a unary first-class builtin",
                 String::from_utf8_lossy(name),
             );
             assert_eq!(
-                metadata.direct(),
+                builtin.direct(),
                 Some(BuiltinDirect::StrictUnary {
                     effect: BuiltinEffect::Pure,
                 }),
@@ -2192,7 +2189,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_metadata_records_contextual_availability() {
+    fn builtin_declarations_record_contextual_availability() {
         assert_eq!(
             BUILTINS.lookup(b"length").unwrap().availability(),
             BuiltinAvailability::Always
@@ -2208,7 +2205,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_metadata_records_native_fallback_policy() {
+    fn builtin_declarations_record_native_fallback_policy() {
         for name in [
             b"derivation".as_slice(),
             b"derivationStrict".as_slice(),
@@ -2248,10 +2245,10 @@ mod tests {
     }
 
     #[test]
-    fn default_builtin_metadata_stays_derived_from_execution_strategy() {
-        for metadata in BUILTINS.iter() {
+    fn default_builtin_declarations_stay_derived_from_execution_strategy() {
+        for builtin in BUILTINS.iter() {
             if matches!(
-                metadata.name(),
+                builtin.name(),
                 b"fetchurl"
                     | b"fetchGit"
                     | b"fetchTarball"
@@ -2261,28 +2258,28 @@ mod tests {
             ) {
                 continue;
             }
-            let execution = metadata.execution();
-            assert_eq!(metadata.direct(), execution.direct(), "{metadata:?}");
+            let execution = builtin.execution();
+            assert_eq!(builtin.direct(), execution.direct(), "{builtin:?}");
             assert_eq!(
-                metadata.first_class_arity(),
+                builtin.first_class_arity(),
                 execution.first_class_arity(),
-                "{metadata:?}",
+                "{builtin:?}",
             );
             assert_eq!(
-                metadata.availability(),
+                builtin.availability(),
                 execution.availability(),
-                "{metadata:?}",
+                "{builtin:?}",
             );
             assert_eq!(
-                metadata.requires_native_cli_fallback(),
+                builtin.requires_native_cli_fallback(),
                 execution.requires_native_cli_fallback(),
-                "{metadata:?}",
+                "{builtin:?}",
             );
         }
     }
 
     #[test]
-    fn custom_builtin_metadata_stays_attached_to_definition() {
+    fn custom_builtin_declaration_stays_attached_to_definition() {
         let fetchurl = BUILTINS
             .lookup(b"fetchurl")
             .expect("fetchurl builtin is registered");
@@ -2394,7 +2391,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_builtin_docs_stay_attached_to_metadata() {
+    fn custom_builtin_docs_stay_attached_to_declaration() {
         assert_eq!(
             BUILTINS.lookup(b"appendContext").unwrap().docs().summary(),
             "Returns a string with reflected string context appended."
