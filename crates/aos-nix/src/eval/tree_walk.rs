@@ -1726,6 +1726,14 @@ enum FetchTreeArguments {
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
     },
+    Forge {
+        canonical_uri: Vec<u8>,
+        archive_url: Vec<u8>,
+        check_archive_url_access: bool,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Vec<u8>,
+    },
     Git {
         args: FetchGitArguments,
         expected_nar_hash: Option<[u8; 32]>,
@@ -9457,6 +9465,24 @@ impl TreeWalk {
                 last_modified_from_lock,
                 rev,
                 rev_count,
+                true,
+            )?,
+            FetchTreeArguments::Forge {
+                canonical_uri,
+                archive_url,
+                check_archive_url_access,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+            } => self.eval_fetch_tree_forge(
+                argument,
+                argument_span,
+                canonical_uri,
+                archive_url,
+                check_archive_url_access,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
             )?,
             FetchTreeArguments::Git {
                 args,
@@ -9529,6 +9555,9 @@ impl TreeWalk {
             b"file" => self.fetch_tree_file_arguments(id, span, value),
             b"tarball" => self.fetch_tree_tarball_arguments(id, span, value),
             b"git" => self.fetch_tree_git_arguments(id, span, value),
+            b"github" | b"gitlab" | b"sourcehut" => {
+                self.fetch_tree_forge_arguments(id, span, value, &input_type)
+            }
             _ => Err(TreeWalkError::new(
                 TreeWalkErrorKind::FetchTree {
                     id,
@@ -9561,6 +9590,9 @@ impl TreeWalk {
             b"file" => self.fetch_tree_file_flake_ref_arguments(id, span, attrs),
             b"tarball" => self.fetch_tree_tarball_flake_ref_arguments(id, span, attrs),
             b"git" => self.fetch_tree_git_flake_ref_arguments(id, span, input, attrs),
+            b"github" | b"gitlab" | b"sourcehut" => {
+                self.fetch_tree_forge_flake_ref_arguments(id, span, input_type, attrs)
+            }
             _ => Err(Self::fetch_tree_error(
                 id,
                 span,
@@ -9682,6 +9714,85 @@ impl TreeWalk {
         })
     }
 
+    fn fetch_tree_forge_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        input_type: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                OWNER_ATTR,
+                REPO_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                HOST_ATTR,
+                b"treeHash",
+            ],
+        )?;
+        if Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?.is_some() {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input_type,
+                "fetchTree forge reference resolution is not implemented by the native evaluator",
+            ));
+        }
+        let Some(rev) = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)? else {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input_type,
+                "fetchTree forge inputs require a rev in the native evaluator",
+            ));
+        };
+        let rev = self.canonical_flake_ref_rev(id, span, rev)?;
+        let owner = Self::required_flake_ref_string_attr(id, span, attrs, OWNER_ATTR)?;
+        let repo = Self::required_flake_ref_string_attr(id, span, attrs, REPO_ATTR)?;
+        Self::validate_forge_path_segment(id, span, owner, "fetchTree forge owner is invalid")?;
+        Self::validate_forge_path_segment(id, span, repo, "fetchTree forge repo is invalid")?;
+        let host = Self::optional_flake_ref_string_attr(id, span, attrs, HOST_ATTR)?;
+        let check_archive_url_access = host.is_some_and(|host| {
+            Self::default_forge_host(input_type)
+                .is_none_or(|default_host| host != default_host.as_bytes())
+        });
+        if let Some(host) = host {
+            if !Self::is_forge_host(host) {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    host,
+                    "fetchTree forge host is invalid",
+                ));
+            }
+        }
+        let canonical_uri =
+            self.forge_flake_ref_to_string(id, span, attrs, input_type, BTreeMap::new())?;
+        let archive_url =
+            Self::fetch_tree_forge_archive_url(id, span, input_type, owner, repo, host, &rev)?;
+
+        Ok(FetchTreeArguments::Forge {
+            canonical_uri,
+            archive_url,
+            check_archive_url_access,
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            rev,
+        })
+    }
+
     fn fetch_tree_git_flake_ref_arguments(
         &self,
         id: IrId,
@@ -9786,6 +9897,95 @@ impl TreeWalk {
             query,
             BTreeMap::new(),
         )
+    }
+
+    fn fetch_tree_forge_archive_url(
+        id: IrId,
+        span: Span,
+        input_type: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        rev: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let rev = Self::percent_encode_flake_ref(rev, b"");
+        let host = match host {
+            Some(host) => std::str::from_utf8(host)
+                .map_err(|source| Self::fetch_tree_error(id, span, host, source))?,
+            None => Self::default_forge_host(input_type).ok_or_else(|| {
+                Self::fetch_tree_error(id, span, input_type, "unsupported forge input type")
+            })?,
+        };
+        let mut url = b"https://".to_vec();
+        url.extend_from_slice(host.as_bytes());
+        match input_type {
+            b"github" if host == "github.com" => {
+                url.push(b'/');
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/archive/");
+                url.extend_from_slice(&rev);
+                url.extend_from_slice(b".tar.gz");
+            }
+            b"github" => {
+                url.extend_from_slice(b"/api/v3/repos/");
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/tarball/");
+                url.extend_from_slice(&rev);
+            }
+            b"gitlab" => {
+                url.extend_from_slice(b"/api/v4/projects/");
+                url.extend_from_slice(&owner);
+                url.extend_from_slice(b"%2F");
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/repository/archive.tar.gz?sha=");
+                url.extend_from_slice(&rev);
+            }
+            b"sourcehut" => {
+                url.push(b'/');
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/archive/");
+                url.extend_from_slice(&rev);
+                url.extend_from_slice(b".tar.gz");
+            }
+            _ => {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    input_type,
+                    "unsupported forge input type",
+                ));
+            }
+        }
+        Ok(url)
+    }
+
+    fn default_forge_host(input_type: &[u8]) -> Option<&'static str> {
+        match input_type {
+            b"github" => Some("github.com"),
+            b"gitlab" => Some("gitlab.com"),
+            b"sourcehut" => Some("git.sr.ht"),
+            _ => None,
+        }
+    }
+
+    fn validate_forge_path_segment(
+        id: IrId,
+        span: Span,
+        value: &[u8],
+        message: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        if value.is_empty() || value.contains(&b'/') {
+            return Err(Self::fetch_tree_error(id, span, value, message));
+        }
+        Ok(())
     }
 
     fn fetch_tree_path_arguments(
@@ -9922,6 +10122,93 @@ impl TreeWalk {
             rev,
             rev_count,
         })
+    }
+
+    fn fetch_tree_forge_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        input_type: &[u8],
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                OWNER_ATTR,
+                REPO_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                HOST_ATTR,
+                b"treeHash",
+            ],
+        )?;
+
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(input_type.to_vec()),
+        );
+        let owner_value = self.required_attr_value_by_name(id, value, OWNER_ATTR, span)?;
+        let owner_value = self.force_value(id, span, owner_value)?;
+        attrs.insert(
+            OWNER_ATTR.to_vec(),
+            FlakeRefAttrValue::String(self.context_free_string_bytes(
+                id,
+                span,
+                owner_value,
+                "fetchTree",
+            )?),
+        );
+        let repo_value = self.required_attr_value_by_name(id, value, REPO_ATTR, span)?;
+        let repo_value = self.force_value(id, span, repo_value)?;
+        attrs.insert(
+            REPO_ATTR.to_vec(),
+            FlakeRefAttrValue::String(self.context_free_string_bytes(
+                id,
+                span,
+                repo_value,
+                "fetchTree",
+            )?),
+        );
+        if let Some(reference) = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)? {
+            attrs.insert(REF_ATTR.to_vec(), FlakeRefAttrValue::String(reference));
+        }
+        if let Some(rev) = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)? {
+            attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
+        }
+        if let Some(nar_hash) =
+            self.optional_fetch_tree_string_attr(id, span, value, NAR_HASH_ATTR)?
+        {
+            attrs.insert(NAR_HASH_ATTR.to_vec(), FlakeRefAttrValue::String(nar_hash));
+        }
+        if let Some(last_modified) =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?
+        {
+            let last_modified = u64::try_from(last_modified).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTree {
+                        id,
+                        input: LAST_MODIFIED_ATTR.to_vec(),
+                        message: "fetchTree integer attribute must be non-negative".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+            attrs.insert(
+                LAST_MODIFIED_ATTR.to_vec(),
+                FlakeRefAttrValue::Int(last_modified),
+            );
+        }
+        if let Some(host) = self.optional_fetch_tree_string_attr(id, span, value, HOST_ATTR)? {
+            attrs.insert(HOST_ATTR.to_vec(), FlakeRefAttrValue::String(host));
+        }
+
+        self.fetch_tree_forge_flake_ref_arguments(id, span, input_type, &attrs)
     }
 
     fn fetch_tree_git_arguments(
@@ -10247,6 +10534,9 @@ impl TreeWalk {
             | FetchTreeArguments::Tarball {
                 expected_nar_hash, ..
             } => expected_nar_hash.is_some(),
+            FetchTreeArguments::Forge {
+                expected_nar_hash, ..
+            } => expected_nar_hash.is_some(),
             FetchTreeArguments::Git { args, .. } => args.rev.is_some(),
         };
         if locked {
@@ -10268,6 +10558,7 @@ impl TreeWalk {
             FetchTreeArguments::File { url, .. } | FetchTreeArguments::Tarball { url, .. } => {
                 url.clone()
             }
+            FetchTreeArguments::Forge { canonical_uri, .. } => canonical_uri.clone(),
             FetchTreeArguments::Git { args, .. } => Self::fetch_tree_git_canonical_uri(args),
         }
     }
@@ -10441,9 +10732,12 @@ impl TreeWalk {
         last_modified_from_lock: bool,
         rev: Option<Vec<u8>>,
         rev_count: Option<usize>,
+        check_url_access: bool,
     ) -> Result<FetchTreeResult, TreeWalkError> {
         let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
-        self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
         let contents = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
         let temp_dir = Self::fetch_tarball_temp_dir(id, span, &url)?;
         let unpack_dir = temp_dir.join("unpacked");
@@ -10516,6 +10810,35 @@ impl TreeWalk {
         })();
         let _ = fs::remove_dir_all(&temp_dir);
         result
+    }
+
+    fn eval_fetch_tree_forge(
+        &mut self,
+        id: IrId,
+        span: Span,
+        canonical_uri: Vec<u8>,
+        archive_url: Vec<u8>,
+        check_archive_url_access: bool,
+        expected_nar_hash: Option<[u8; 32]>,
+        expected_last_modified: Option<i64>,
+        rev: Vec<u8>,
+    ) -> Result<FetchTreeResult, TreeWalkError> {
+        self.check_fetch_tree_forge_access(id, span, &canonical_uri)?;
+        if check_archive_url_access {
+            let parsed = Self::parse_fetch_tree_url(id, span, &archive_url)?;
+            self.check_fetch_tree_url_access(id, span, &archive_url, &parsed)?;
+        }
+        self.eval_fetch_tree_tarball(
+            id,
+            span,
+            archive_url,
+            expected_nar_hash,
+            expected_last_modified,
+            false,
+            Some(rev),
+            None,
+            false,
+        )
     }
 
     fn eval_fetch_tree_git(
@@ -10640,6 +10963,27 @@ impl TreeWalk {
     }
 
     fn check_fetch_tree_git_access(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+    ) -> Result<(), TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Restricted
+            && !self.options.uri_is_allowed(canonical_uri)
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTreeAccessDenied {
+                    id,
+                    input: canonical_uri.to_vec(),
+                    mode: EvalMode::Restricted,
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_fetch_tree_forge_access(
         &self,
         id: IrId,
         span: Span,
@@ -12604,9 +12948,10 @@ impl TreeWalk {
     }
 
     fn is_forge_host(value: &[u8]) -> bool {
-        value
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'-'))
+        !value.is_empty()
+            && value
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'-'))
     }
 
     fn flake_ref_error(
@@ -44659,6 +45004,168 @@ mod tests {
 
         fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_forge_refs_lower_to_archive_urls_and_gate_access() {
+        let rev = "0000000000000000000000000000000000000000";
+        let nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let nar_hash_query = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D";
+        let ir = lower("null");
+        let span = ir.arena.node(ir.root).expect("root node exists").span;
+        let evaluator = TreeWalk::new(&ir);
+
+        for (raw, canonical, archive) in [
+            (
+                format!("github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!("github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz"),
+            ),
+            (
+                format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!(
+                    "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={rev}"
+                ),
+            ),
+            (
+                format!("sourcehut:~andyl/aos/{rev}?narHash={nar_hash_query}"),
+                format!("sourcehut:~andyl/aos/{rev}?narHash={nar_hash_query}"),
+                format!("https://git.sr.ht/~andyl/aos/archive/{rev}.tar.gz"),
+            ),
+        ] {
+            let attrs = TreeWalk::parse_flake_ref_attrs(ir.root, span, raw.as_bytes())
+                .expect("forge flake ref parses");
+            let arguments = evaluator
+                .fetch_tree_flake_ref_arguments(ir.root, span, raw.as_bytes(), &attrs)
+                .expect("forge flake ref lowers to fetchTree arguments");
+            let FetchTreeArguments::Forge {
+                canonical_uri,
+                archive_url,
+                rev: actual_rev,
+                expected_nar_hash,
+                ..
+            } = arguments
+            else {
+                panic!("forge flake ref lowers to forge arguments");
+            };
+            assert_eq!(canonical_uri, canonical.as_bytes());
+            assert_eq!(archive_url, archive.as_bytes());
+            assert_eq!(actual_rev, rev.as_bytes());
+            assert!(expected_nar_hash.is_some());
+        }
+
+        let enterprise_url = TreeWalk::fetch_tree_forge_archive_url(
+            ir.root,
+            span,
+            b"github",
+            b"NixOS",
+            b"nixpkgs",
+            Some(b"git.example"),
+            rev.as_bytes(),
+        )
+        .expect("enterprise GitHub archive URL renders");
+        assert_eq!(
+            enterprise_url,
+            format!("https://git.example/api/v3/repos/NixOS/nixpkgs/tarball/{rev}").into_bytes()
+        );
+
+        let encoded_url = TreeWalk::fetch_tree_forge_archive_url(
+            ir.root,
+            span,
+            b"github",
+            b"NixOS?org",
+            b"nixpkgs#repo",
+            Some(b"git.example"),
+            rev.as_bytes(),
+        )
+        .expect("enterprise GitHub archive URL encodes path components");
+        assert_eq!(
+            encoded_url,
+            format!("https://git.example/api/v3/repos/NixOS%3Forg/nixpkgs%23repo/tarball/{rev}")
+                .into_bytes()
+        );
+
+        let restricted_source = format!(
+            r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; rev = "{rev}"; narHash = "{nar_hash}"; host = "git.example"; }}"#
+        );
+        let error = eval_whnf_owned_with_options(
+            &lower(&restricted_source),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted forge fetchTree rejects before archive access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!("github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}").as_bytes()
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri(format!(
+                "github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"
+            ))
+            .expect("canonical forge URI is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(&lower(&restricted_source), options)
+            .expect_err("custom forge host requires archive URL authorization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!("https://git.example/api/v3/repos/NixOS/nixpkgs/tarball/{rev}").as_bytes()
+        ));
+
+        for source in [
+            format!(
+                r#"builtins.fetchTree {{ type = "gitlab"; owner = "group"; repo = "project/private"; rev = "{rev}"; narHash = "{nar_hash}"; }}"#
+            ),
+            format!(
+                r#"builtins.fetchTree {{ type = "gitlab"; owner = ""; repo = "project"; rev = "{rev}"; narHash = "{nar_hash}"; }}"#
+            ),
+            format!(
+                r#"builtins.fetchTree {{ type = "gitlab"; owner = "group"; repo = ""; rev = "{rev}"; narHash = "{nar_hash}"; }}"#
+            ),
+        ] {
+            let error = eval_whnf_owned(&lower(&source))
+                .expect_err("forge owner and repo must be single path segments");
+            assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+        }
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri(format!(
+                "gitlab:group/project/{rev}?narHash={nar_hash_query}"
+            ))
+            .expect("canonical gitlab forge URI is a valid allowed URI prefix");
+        let source = format!(
+            r#"builtins.fetchTree {{ type = "gitlab"; owner = "group"; repo = "project/private"; rev = "{rev}"; narHash = "{nar_hash}"; }}"#
+        );
+        let error = eval_whnf_owned_with_options(&lower(&source), options)
+            .expect_err("slash-bearing forge repo rejects before restricted prefix can overmatch");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let pure_source = format!(r#"builtins.fetchTree "github:NixOS/nixpkgs/{rev}""#);
+        let error = eval_whnf_owned_with_options(
+            &lower(&pure_source),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure forge fetchTree requires a narHash lock");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#))
+            .expect_err("forge ref resolution stays pending");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
     }
 
     #[test]

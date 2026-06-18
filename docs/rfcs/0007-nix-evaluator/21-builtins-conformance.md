@@ -647,9 +647,11 @@ eval (network access is disabled unless explicitly allowed).
         path strings are rejected to match C++ Nix's URL-style `fetchTree`
         string argument contract. `dir` metadata is accepted for tarball and
         git string refs without re-rooting the materialized tree, matching the
-        pinned C++ Nix behavior; file refs reject it. Registry/indirect refs
-        and forge fetchers (`github`, `gitlab`, `sourcehut`) remain pending, so
-        the full builtin stays open.
+        pinned C++ Nix behavior; file refs reject it. Rev-pinned forge fetchers
+        (`github`, `gitlab`, `sourcehut`) lower to the pinned provider archive
+        URLs with canonical flake-ref restricted-mode gating. Registry/indirect
+        refs, provider ref resolution, and forge `dir` metadata remain pending,
+        so the full builtin stays open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -950,8 +952,9 @@ feature disabled:
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
 - [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local attrset
       inputs and URL-style string refs for native path/file/tarball/git inputs
-      are native; bare absolute path strings are rejected for parity, while
-      registry/indirect refs and forge fetchers remain pending.
+      are native; rev-pinned forge refs are native; bare absolute path strings
+      are rejected for parity, while registry/indirect refs, provider ref
+      resolution, and forge `dir` metadata remain pending.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix
