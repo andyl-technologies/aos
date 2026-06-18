@@ -1311,6 +1311,14 @@ in rec {
     macProfilePathPlaceholder = "@AOS_EXPOSE_ARTIFACT@/${macProfilePath}";
     macLoadCommand = "${pkgs.policycoreutils}/sbin/semodule -i ${macProfilePathPlaceholder}";
     macRunPrefix = "${pkgs.aos-selinux-run}/bin/aos-selinux-run --context ${macContext} --";
+    verityRootHash =
+      if verityImage == null
+      then null
+      else rootHashHex verityImage.root_hash;
+    verityRootGuardPrefix =
+      if verityRootConfig == null
+      then null
+      else "${pkgs.aos-verity-root-guard}/bin/aos-verity-root-guard ${verityRootHash} ${verityRootConfig.RootHashSignature} --";
     netnsHostIf = "aos${netnsHash}h";
     netnsPeerIf = "aos${netnsHash}p";
     netnsSubnetIndex =
@@ -1438,10 +1446,15 @@ in rec {
         )
       );
 
-    execWrapperPrefix = builtins.concatStringsSep " " (
+    sandboxExecWrapperPrefix = builtins.concatStringsSep " " (
       lib.optional macProfileEnabled macRunPrefix
       ++ lib.optional landlockEnabled landlockPrefix
     );
+    verityRootGuardPrecheckCommand =
+      if verityRootGuardPrefix == null
+      then null
+      else "${pkgs.aos-verity-root-guard}/bin/aos-verity-root-guard --signature-only ${verityRootHash} ${verityRootConfig.RootHashSignature}";
+    execWrapperPrefix = sandboxExecWrapperPrefix;
 
     wrapSandboxExecCommand = unitName: key: value:
       if builtins.isList value
@@ -1463,6 +1476,16 @@ in rec {
         })
         presentExecKeys
       );
+      wrappedExecStartPre = asList (wrappedExecConfig.ExecStartPre or []);
+      generatedExecStartPre = lib.optional (verityRootGuardPrecheckCommand != null) verityRootGuardPrecheckCommand;
+      wrappedExecConfigWithPrecheck =
+        builtins.removeAttrs wrappedExecConfig ["ExecStartPre"]
+        // lib.optionalAttrs (generatedExecStartPre != [] || wrappedExecStartPre != []) {
+          ExecStartPre = generatedExecStartPre ++ wrappedExecStartPre;
+        };
+      authoredExecConfigWithPrecheck = lib.optionalAttrs (generatedExecStartPre != []) {
+        ExecStartPre = generatedExecStartPre ++ asList (authoredServiceConfig.ExecStartPre or []);
+      };
       scriptSupported =
         throwIfNot
         (!(landlockEnabled && scriptDerivedExecs != []))
@@ -1470,7 +1493,9 @@ in rec {
         true;
     in
       builtins.seq scriptSupported (
-        lib.optionalAttrs landlockEnabled wrappedExecConfig
+        if landlockEnabled
+        then wrappedExecConfigWithPrecheck
+        else authoredExecConfigWithPrecheck
       );
 
     sandboxServiceConfig = unitName: unit: let
@@ -1524,7 +1549,12 @@ in rec {
                   TemporaryFileSystem = ["/tmp" "/var/tmp"];
                   StateDirectory = authoredServiceConfig.StateDirectory or "aos-pkg-${packageName}";
                   NoNewPrivileges = true;
-                  BindReadOnlyPaths = uniqueUnits (["/nix/store"] ++ readOnlyHostPaths ++ configArtifactPathsForUnit unitName);
+                  BindReadOnlyPaths = uniqueUnits (
+                    ["/nix/store"]
+                    ++ lib.optional (verityRootConfig != null) "/sys/firmware/efi/efivars:/run/aos-secure-boot-efivars"
+                    ++ readOnlyHostPaths
+                    ++ configArtifactPathsForUnit unitName
+                  );
                   BindPaths = readWriteHostPaths;
                   ProtectKernelTunables = true;
                   ProtectKernelModules = true;
@@ -1586,6 +1616,9 @@ in rec {
                 RestrictNamespaces = !privilegedUsers;
                 RestrictRealtime = true;
                 Slice = packageSlice;
+              }
+              // lib.optionalAttrs (verityRootConfig != null) {
+                PermissionsStartOnly = true;
               }
               // lib.optionalAttrs (!rootEquivalent) {
                 ProtectProc = "invisible";

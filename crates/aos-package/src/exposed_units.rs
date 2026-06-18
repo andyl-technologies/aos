@@ -33,6 +33,7 @@ const GENERATED_CREDSTORE_REL: &str = "run/credstore.encrypted/aos";
 const GENERATED_CREDSTORE_SOURCE_PREFIX: &str = "/run/credstore.encrypted/";
 const LANDLOCK_WRAPPER_ENV: &str = "AOS_LANDLOCK_WRAPPER";
 const SELINUX_RUNNER_ENV: &str = "AOS_SELINUX_RUNNER";
+const VERITY_ROOT_GUARD_ENV: &str = "AOS_VERITY_ROOT_GUARD";
 const EBPF_NET_POLICY_ENV: &str = "AOS_EBPF_NET_POLICY";
 const EBPF_NET_POLICY_OBJECT_ENV: &str = "AOS_EBPF_NET_POLICY_OBJECT";
 const SEMODULE_ENV: &str = "AOS_SEMODULE";
@@ -1005,6 +1006,7 @@ fn validate_workload_exec_wrappers(
     let expected_args = expected_landlock_args(&permissions, &expected_state_paths);
     let trusted_selinux_runner = trusted_selinux_runner_path()?;
     let trusted_landlock_wrapper = trusted_landlock_wrapper_path()?;
+    let trusted_verity_root_guard = trusted_verity_root_guard_path()?;
     let expected_context = expected_selinux_context(
         permissions
             .security_label
@@ -1030,11 +1032,29 @@ fn validate_workload_exec_wrappers(
             };
             for command in commands {
                 let tokens = command.split_whitespace().collect::<Vec<_>>();
-                let command_tokens = validate_selinux_exec_command(
+                let is_signature_only_precheck = *key == "ExecStartPre"
+                    && tokens
+                        .first()
+                        .is_some_and(|token| *token == trusted_verity_root_guard)
+                    && tokens
+                        .get(1)
+                        .is_some_and(|token| *token == "--signature-only");
+                let command_tokens = validate_verity_root_guard_exec_command(
                     package_name,
                     unit,
                     key,
                     &tokens,
+                    &trusted_verity_root_guard,
+                    service,
+                )?;
+                if is_signature_only_precheck && command_tokens.is_empty() {
+                    continue;
+                }
+                let command_tokens = validate_selinux_exec_command(
+                    package_name,
+                    unit,
+                    key,
+                    command_tokens,
                     &trusted_selinux_runner,
                     &expected_context,
                 )?;
@@ -1176,6 +1196,23 @@ fn validate_expected_workload_root_image(
         &image_member_path(&image.store_path, root_hash_sig),
     )?;
     require_service_value(package_name, unit, service, "PrivateDevices", "false")?;
+    require_service_value(package_name, unit, service, "PermissionsStartOnly", "true")?;
+    let trusted_guard = trusted_verity_root_guard_path()?;
+    let has_precheck = service.get("ExecStartPre").is_some_and(|values| {
+        values.iter().any(|value| {
+            value
+                .split_whitespace()
+                .next()
+                .is_some_and(|first| first == trusted_guard)
+        })
+    });
+    if !has_precheck {
+        bail!(
+            "service unit '{}' for package '{}' must run aos-verity-root-guard in ExecStartPre",
+            unit,
+            package_name
+        );
+    }
 
     Ok(())
 }
@@ -1867,6 +1904,28 @@ fn trusted_selinux_runner_path() -> Result<String> {
     }
 }
 
+fn trusted_verity_root_guard_path() -> Result<String> {
+    if let Ok(path) = std::env::var(VERITY_ROOT_GUARD_ENV) {
+        if path.is_empty() {
+            bail!("{VERITY_ROOT_GUARD_ENV} must not be empty");
+        }
+        if !path.starts_with('/') || !path.ends_with("/bin/aos-verity-root-guard") {
+            bail!("{VERITY_ROOT_GUARD_ENV} must point to an absolute aos-verity-root-guard binary");
+        }
+        return Ok(path);
+    }
+
+    #[cfg(test)]
+    {
+        return Ok("/nix/store/hash-aos-verity-root-guard-0/bin/aos-verity-root-guard".to_string());
+    }
+
+    #[cfg(not(test))]
+    {
+        bail!("{VERITY_ROOT_GUARD_ENV} is not configured for RootImage validation");
+    }
+}
+
 fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bool {
     [
         "host-paths",
@@ -1879,6 +1938,64 @@ fn is_generated_expose_side_effect_service(package_name: &str, unit: &str) -> bo
     ]
     .into_iter()
     .any(|suffix| unit == format!("aos-pkg-{package_name}-{suffix}.service"))
+}
+
+fn validate_verity_root_guard_exec_command<'a>(
+    package_name: &str,
+    unit: &str,
+    key: &str,
+    tokens: &'a [&'a str],
+    trusted_guard: &str,
+    service: &BTreeMap<String, Vec<String>>,
+) -> Result<&'a [&'a str]> {
+    let Some((guard, rest)) = tokens.split_first() else {
+        return Ok(tokens);
+    };
+    if *guard != trusted_guard {
+        return Ok(tokens);
+    }
+    let Some(root_hash) = service.get("RootHash").and_then(|values| values.first()) else {
+        bail!(
+            "workload service '{}' {} for package '{}' uses aos-verity-root-guard without RootHash",
+            unit,
+            key,
+            package_name
+        );
+    };
+    let expected_hash = root_hash_hex(root_hash);
+    let Some(root_hash_signature) = service
+        .get("RootHashSignature")
+        .and_then(|values| values.first())
+    else {
+        bail!(
+            "workload service '{}' {} for package '{}' uses aos-verity-root-guard without RootHashSignature",
+            unit,
+            key,
+            package_name
+        );
+    };
+    let signature_only = rest.first().is_some_and(|arg| *arg == "--signature-only");
+    let offset = if signature_only { 1 } else { 0 };
+    if signature_only
+        && rest.len() == offset + 2
+        && rest[offset] == expected_hash
+        && rest[offset + 1] == root_hash_signature
+    {
+        return Ok(&[]);
+    }
+    if rest.len() < offset + 4
+        || rest[offset] != expected_hash
+        || rest[offset + 1] != root_hash_signature
+        || rest[offset + 2] != "--"
+    {
+        bail!(
+            "workload service '{}' {} for package '{}' has invalid aos-verity-root-guard arguments",
+            unit,
+            key,
+            package_name
+        );
+    }
+    Ok(&rest[offset + 3..])
 }
 
 fn validate_selinux_exec_command<'a>(
@@ -3505,12 +3622,24 @@ mod tests {
         let root_directory = root_directory
             .map(|path| format!("RootDirectory={path}\n"))
             .unwrap_or_default();
+        let root_hash_signature = format!("{}/root.roothash.p7s", image_path.display());
+        let guard = trusted_verity_root_guard_for_test();
+        let precheck = format!("{guard} --signature-only {root_hash} {root_hash_signature}");
         format!(
-            "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\n[Service]\nRootImage={}/root.img\nRootVerity={}/root.verity\nRootHash={root_hash}\nRootHashSignature={}/root.roothash.p7s\n{root_directory}PrivateDevices={private_devices}\nSlice=aos-pkg-{package_name}.slice\n",
+            "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\n[Service]\nRootImage={}/root.img\nRootVerity={}/root.verity\nRootHash={root_hash}\nRootHashSignature={}/root.roothash.p7s\nExecStartPre={precheck}\nPermissionsStartOnly=true\n{root_directory}PrivateDevices={private_devices}\nSlice=aos-pkg-{package_name}.slice\n",
             image_path.display(),
             image_path.display(),
             image_path.display(),
         )
+    }
+
+    fn without_verity_guard_precheck(unit_text: &str) -> String {
+        unit_text
+            .lines()
+            .filter(|line| !line.starts_with("ExecStartPre="))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
     }
 
     fn workload_service_text(package_name: &str, text: &str) -> String {
@@ -3531,6 +3660,10 @@ mod tests {
         trusted_selinux_runner_path().unwrap()
     }
 
+    fn trusted_verity_root_guard_for_test() -> String {
+        trusted_verity_root_guard_path().unwrap()
+    }
+
     fn selinux_prefix_for_test(package_name: &str) -> String {
         let runner = trusted_selinux_runner_for_test();
         let context = expected_selinux_context(&format!("aos-pkg-{package_name}"));
@@ -3541,6 +3674,18 @@ mod tests {
         let selinux = selinux_prefix_for_test(package_name);
         let landlock = trusted_landlock_wrapper_for_test();
         format!("{selinux} {landlock} {landlock_args} -- {command}")
+    }
+
+    fn verity_guard_exec_for_test(
+        package_name: &str,
+        root_hash: &str,
+        root_hash_signature: &str,
+        landlock_args: &str,
+        command: &str,
+    ) -> String {
+        let guard = trusted_verity_root_guard_for_test();
+        let sandboxed = sandbox_exec_for_test(package_name, landlock_args, command);
+        format!("{guard} {root_hash} {root_hash_signature} -- {sandboxed}")
     }
 
     fn trusted_ebpf_net_policy_for_test() -> String {
@@ -3719,6 +3864,119 @@ mod tests {
         let packages = exposed_packages(&profile, &[installed]).unwrap();
 
         assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_accepts_verity_root_guard_wrapper() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_network_policy_file(&installed, &[], &[]);
+        let root_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash_signature = format!("{}/root.roothash.p7s", image_path.display());
+        let exec_start = verity_guard_exec_for_test(
+            "web",
+            root_hash,
+            &root_hash_signature,
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "/bin/true",
+        );
+        let unit_text = format!(
+            "{}ExecStart={exec_start}\n",
+            verity_workload_service_text("web", &image_path, root_hash, "false", None),
+        );
+        write_service_unit(&installed, &unit_text);
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_verity_root_guard_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_network_policy_file(&installed, &[], &[]);
+        let root_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash_signature = format!("{}/root.roothash.p7s", image_path.display());
+        let exec_start = verity_guard_exec_for_test(
+            "web",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            &root_hash_signature,
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "/bin/true",
+        );
+        let unit_text = format!(
+            "{}ExecStart={exec_start}\n",
+            verity_workload_service_text("web", &image_path, root_hash, "false", None),
+        );
+        write_service_unit(&installed, &unit_text);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("invalid aos-verity-root-guard arguments"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_verity_root_image_missing_guard_precheck() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_network_policy_file(&installed, &[], &[]);
+        let root_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash_signature = format!("{}/root.roothash.p7s", image_path.display());
+        let exec_start = verity_guard_exec_for_test(
+            "web",
+            root_hash,
+            &root_hash_signature,
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "/bin/true",
+        );
+        let unit_text = format!(
+            "{}ExecStart={exec_start}\n",
+            without_verity_guard_precheck(&verity_workload_service_text(
+                "web",
+                &image_path,
+                root_hash,
+                "false",
+                None,
+            )),
+        );
+        write_service_unit(&installed, &unit_text);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must run aos-verity-root-guard in ExecStartPre"),
+            "{err:?}"
+        );
     }
 
     #[test]
