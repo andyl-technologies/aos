@@ -520,21 +520,22 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 7.3 Equality `==` / `!=`
 
-- [ ] **Deep structural equality** — `==` compares by value, recursively.
-- [ ] **Partial strictness** — "evaluated until a difference is found" — `==`
+- [x] **Deep structural equality** — `==` compares by value, recursively.
+- [x] **Partial strictness** — "evaluated until a difference is found" — `==`
       forces both sides only as far as needed to decide; reproduce the
       short-circuit forcing so that *un-demanded* errors don't fire (e.g.
       `[1 (throw "x")] == [2 (throw "y")]` should be `false` without forcing the
       throwing elements). **Verify the exact forcing order against pinned Nix.**
-- [ ] **Attribute sets** — equal iff same key set and all values equal
-      (compared by names then values).
-- [ ] **Lists** — equal iff same length and elementwise-equal.
-- [ ] **int vs float cross-equality** — `1 == 1.0` is **`true`**: Nix treats the
+- [x] **Attribute sets** — equal iff same key set and all values equal
+      (after key-set comparison, values are forced/compared in pinned C++ Nix's
+      symbol order, not source order).
+- [x] **Lists** — equal iff same length and elementwise-equal.
+- [x] **int vs float cross-equality** — `1 == 1.0` is **`true`**: Nix treats the
       two numeric types as type-compatible for `==` (the operators page states
       numbers are compared as type-compatible). Reproduce int/float cross-equality
       as `true` for equal numeric values; pin the precision corner (below) against
       pinned Nix.
-- [ ] **Functions compare unequal *by structural equality*** — a *direct*
+- [x] **Functions compare unequal *by structural equality*** — a *direct*
       comparison of two functions returns `false`, including a function with
       itself: `let f = x: x; in f == f` is **`false`** (each lambda has a fresh
       identity; structural function equality is undefined and returns `false`).
@@ -546,14 +547,15 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       lists/attrsets can compare equal by identity. Reproduce this exact
       asymmetry bug-for-bug; do not "fix" it. **Verify the precise
       pointer-equality short-circuit points against pinned Nix.**
-- [ ] **Derivations / sets with `outPath`** — compared structurally as sets
+- [x] **Derivations / sets with `outPath`** — compared structurally as sets
       (not by out-path identity) unless Nix special-cases; **verify** against
       pinned Nix.
-- [ ] **Float precision corner** — "floating-point precision is limited"; equal
+- [x] **Float precision corner** — "floating-point precision is limited"; equal
       floats that differ in low bits compare unequal. Reproduce IEEE semantics.
-- [ ] **NaN** — if a NaN is reachable (e.g. via builtins producing it), `NaN ==
+- [x] **NaN** — if a NaN is reachable (e.g. via builtins producing it), `NaN ==
       NaN` is false and ordering is undefined; verify reachability and behavior
-      against pinned Nix (likely unreachable in pure Nix; mark accordingly).
+      against pinned Nix (pinned Nix 2.24.12 reaches NaN via overflow arithmetic,
+      compares direct `NaN == NaN` as false, and returns false for `NaN < NaN`).
 
 ### 7.4 Comparison `< <= > >=`
 

@@ -20974,6 +20974,89 @@ mod tests {
         }
     }
 
+    fn assert_cpp_nix_equality_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "1 == 1",
+            "1 == 2",
+            "1 != 2",
+            "1 == 1.0",
+            "1 != 1.5",
+            "9007199254740993 == 9007199254740992.0",
+            "0.1 + 0.2 == 0.3",
+            "1.0000000000000002 == 1.0",
+            "1.0000000000000001 == 1.0",
+            "true == true",
+            "true != false",
+            "null == null",
+            "null == false",
+            "1 == true",
+            r#""a" == "a""#,
+            r#""a" == "b""#,
+            r#""a" != "b""#,
+            r#""line\n" == "line\n""#,
+            "[1 \"a\" null] == [1 \"a\" null]",
+            "[1] != [1 2]",
+            "[1 2] == [1 3]",
+            r#"[1 (builtins.throw "x")] == [2 (builtins.throw "y")]"#,
+            "{ b = 2; a = 1; } == { a = 1; b = 2; }",
+            r#"{ a = 1; } == { a = 1; b = builtins.throw "x"; }"#,
+            r#"{ a = 1; z = builtins.throw "x"; } == { a = 2; z = builtins.throw "y"; }"#,
+            "{ a = { x = 1; }; } == { a = { x = 1; }; }",
+            "let f = x: x; in f == f",
+            "let f = x: x; in f != f",
+            "let f = x: x; g = x: x; in f == g",
+            "(x: x) == 1",
+            "let f = x: x; in [ f ] == [ f ]",
+            "[ (x: x) ] == [ (x: x) ]",
+            "let v = { a = x: x; }; in [ v.a ] == [ v.a ]",
+            "let v = { a = x: x; }; xs = [ v.a ]; in xs == xs",
+            "let f = x: x; in { inherit f; } == { inherit f; }",
+            r#"let xs = [ (builtins.throw "x") ]; in [ xs ] == [ xs ]"#,
+            r#"let s = { a = builtins.throw "x"; }; in [ s ] == [ s ]"#,
+            r#"{ outPath = "/a"; a = 1; } == { outPath = "/a"; a = 1; }"#,
+            r#"{ outPath = "/a"; a = 1; } == { outPath = "/a"; a = 2; }"#,
+            r#"let a = { outPath = "/a"; }; in a == "/a""#,
+            r#"let a = { type = "derivation"; outPath = "/a"; drvPath = "/a.drv"; };
+               in a == { type = "derivation"; outPath = "/a"; drvPath = "/a.drv"; }"#,
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan == nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan != nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in [ nan ] == [ nan ]",
+            "[ ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) ] == [ ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)) ]",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in nan < nan",
+            "let nan = ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308)); in builtins.tryEval (nan < nan)",
+            "[1] == { }",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            r#"[1 (builtins.throw "x")] == [1 (builtins.throw "y")]"#,
+            r#"{ z = builtins.throw "x"; a = 1; } == { a = 2; z = builtins.throw "y"; }"#,
+            r#"let xs = [ (builtins.throw "x") ]; in xs == xs"#,
+            r#"let s = { a = builtins.throw "x"; }; in s == s"#,
+        ] {
+            assert_cpp_nix_and_tree_walk_throw_message(oracle, source, "x");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_equality_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_equality_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_equality_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix equality check");
+            return;
+        };
+        assert_cpp_nix_equality_semantics_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [
