@@ -211,6 +211,18 @@ fn ensure_native_json_subset(
             }
         }
 
+        if node.kind == IrKind::PrimOp
+            && let IrData::PrimOp { symbol, .. } = node.data
+            && let Some(name) = ir.symbols.resolve(symbol)
+            && builtin_requires_cli_fallback(name)
+        {
+            return Err(unsupported_native_node(
+                "CLI-sensitive builtin evaluation",
+                node.span,
+                expr_len,
+            ));
+        }
+
         if node.kind == IrKind::SearchPath {
             return Err(unsupported_native_node(
                 "configured Nix search path lookup",
@@ -369,6 +381,8 @@ mod tests {
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
             "builtins.fetchMercurial",
+            r#"builtins.parseFlakeRef "nixpkgs""#,
+            r#"builtins.flakeRefToString { type = "indirect"; id = "nixpkgs"; }"#,
             "<nixpkgs>",
             r#"derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
             r#"builtins.derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,

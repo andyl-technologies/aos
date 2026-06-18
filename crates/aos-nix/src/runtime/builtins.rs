@@ -366,6 +366,7 @@ define_builtins! {
             effect: BuiltinEffect::Pure,
         });
         const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FLAKE_REF_TO_STRING_DOCS;
     }
 
@@ -643,6 +644,7 @@ define_builtins! {
             effect: BuiltinEffect::Pure,
         });
         const FIRST_CLASS_ARITY: Option<usize> = Some(1);
+        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &PARSE_FLAKE_REF_DOCS;
     }
 
@@ -2219,8 +2221,10 @@ mod tests {
             b"fetchMercurial".as_slice(),
             b"fetchTree".as_slice(),
             b"fetchurl".as_slice(),
+            b"flakeRefToString".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),
+            b"parseFlakeRef".as_slice(),
             b"readFile".as_slice(),
             b"trace".as_slice(),
         ] {
@@ -2370,7 +2374,7 @@ mod tests {
             })
         );
         assert_eq!(parse_flake_ref.first_class_arity(), Some(1));
-        assert!(!parse_flake_ref.requires_native_cli_fallback());
+        assert!(parse_flake_ref.requires_native_cli_fallback());
         assert_eq!(
             parse_flake_ref.docs().summary(),
             "Parses flake-reference URL syntax into attrs."
@@ -2390,7 +2394,7 @@ mod tests {
             })
         );
         assert_eq!(flake_ref_to_string.first_class_arity(), Some(1));
-        assert!(!flake_ref_to_string.requires_native_cli_fallback());
+        assert!(flake_ref_to_string.requires_native_cli_fallback());
         assert_eq!(
             flake_ref_to_string.docs().summary(),
             "Converts flake-reference attrs to URL syntax."
