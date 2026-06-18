@@ -655,25 +655,32 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ## 10. Laziness and evaluation
 
-- [ ] **Call-by-need / WHNF** — expressions evaluate to *weak head normal form*
+- [x] **Call-by-need / WHNF** — expressions evaluate to *weak head normal form*
       on demand; sub-structures stay thunked until forced. This is the core
-      evaluation model.
-- [ ] **Thunks** — every unforced binding/argument/list-element/attr-value is a
-      thunk; forced at most once (memoized). Verify single-evaluation (a thunk
-      that prints/throws does so at most once).
-- [ ] **Un-demanded errors do not fire** — `let x = throw "e"; in 1` evaluates to
+      evaluation model. Verified attr/list/lambda WHNF boundaries against pinned
+      Nix.
+- [x] **Thunks** — every unforced binding/argument/list-element/attr-value is a
+      thunk; successful forces are memoized, while failed forces reset and may be
+      retried. Verified shared let bindings, lambda arguments, list elements, and
+      attr values trace once after successful repeated forcing; verified failed
+      throwing thunks trace again on retry like pinned Nix.
+- [x] **Un-demanded errors do not fire** — `let x = throw "e"; in 1` evaluates to
       `1`; `{ a = throw "e"; b = 2; }.b` evaluates to `2`. This is the
       admissibility boundary for any strictness analysis (see
       [laziness analyses](07-laziness-and-whole-program-analyses.md) and
       [compatibility constraints](02-compatibility-constraints.md) §6): forcing a
       thunk Nix would not force can turn a non-error into an error — observable,
-      therefore forbidden.
-- [ ] **`seq` (shallow force)** — `builtins.seq a b` forces `a` to WHNF then
+      therefore forbidden. Verified latent `throw` and `abort` cases in
+      let/lambda/list/attr positions.
+- [x] **`seq` (shallow force)** — `builtins.seq a b` forces `a` to WHNF then
       returns `b` (builtin in doc 21; the *evaluation effect* — forcing to WHNF
-      only, not deep — is the language behavior to match).
-- [ ] **`deepSeq` (deep force)** — forces `a` fully (recursively) then returns
+      only, not deep — is the language behavior to match). Verified shallow
+      forcing and left-to-right errors against pinned Nix.
+- [x] **`deepSeq` (deep force)** — forces `a` fully (recursively) then returns
       `b`; reproduce the deep-forcing order and that it makes otherwise-hidden
       errors fire (e.g. `deepSeq { x = throw "e"; } 1` throws). Builtin in doc 21.
+      Verified nested list/attr forcing, cyclic data, attr source order, and
+      delayed second-argument forcing.
 - [x] **`tryEval` catches `throw` and `assert`** — `(tryEval (throw "x")).success`
       is `false`; same for a failed `assert`. (Verified: tryEval catches throw and
       assert.)
@@ -686,10 +693,12 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [x] **`tryEval` and non-catchable evaluator errors** — builtin type errors,
       missing attributes, and list-bounds failures are not converted by
       `tryEval`; they remain ordinary evaluation failures.
-- [ ] **Evaluation order of errors is observable in some contexts** — which of two
+- [x] **Evaluation order of errors is observable in some contexts** — which of two
       failing branches surfaces first can depend on forcing order; reproduce
       Nix's order where observable (see
       [parallel evaluation](13-parallel-evaluation.md) for the parallel caveat).
+      Verified `seq`, `deepSeq`, and strict-builtin throw ordering against pinned
+      Nix.
 
 ---
 

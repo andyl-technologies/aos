@@ -21936,19 +21936,21 @@ mod tests {
         assert_cpp_nix_sort_and_less_than_builtins_match_tree_walk(&oracle);
     }
 
-    #[test]
-    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
-    fn cpp_nix_seq_builtins_match_tree_walk() {
-        let oracle = cpp_nix_oracle();
-        let version = cpp_nix_version(&oracle);
-        assert!(
-            version.contains("(Nix) 2.24."),
-            "expected a C++ Nix 2.24.x oracle, got {version}"
-        );
-        eprintln!("C++ Nix oracle: {version}");
+    fn assert_cpp_nix_laziness_and_evaluation_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
 
         for source in [
+            "builtins.isAttrs { x = builtins.throw \"unforced\"; }",
+            "builtins.length [ (builtins.throw \"unforced\") ]",
+            "(x: 1) (builtins.throw \"unforced\")",
+            "let x = builtins.throw \"unforced\"; in 1",
+            "{ a = builtins.throw \"unforced\"; b = 2; }.b",
+            "let x = builtins.abort \"unforced\"; in 1",
+            "(x: 1) (builtins.abort \"unforced\")",
+            "builtins.length [ (builtins.abort \"unforced\") ]",
+            "{ a = builtins.abort \"unforced\"; } ? a",
             "builtins.seq { x = 1 / 0; } 2",
+            "builtins.seq [ (1 / 0) ] 2",
             "builtins.length (builtins.seq 1 [ (1 / 0) ])",
             "let seq = builtins.seq 1; in seq 2",
             "builtins.deepSeq [ 1 [ 2 ] ] 3",
@@ -21957,9 +21959,84 @@ mod tests {
             "let x = { a = x; }; in builtins.deepSeq x 3",
             "let x = [ x ]; in builtins.deepSeq x 3",
             "let deepSeq = builtins.deepSeq [ 1 ]; in deepSeq 2",
+            "(builtins.tryEval (builtins.throw \"boom\")).success",
+            "(builtins.tryEval (assert false; 1)).success",
+            "(builtins.tryEval 7).value",
+            "(builtins.tryEval { x = builtins.throw \"boom\"; }).success",
+            "builtins.isAttrs (builtins.tryEval { x = builtins.throw \"boom\"; }).value",
+            "(builtins.tryEval [ (builtins.throw \"boom\") ]).success",
+            "builtins.length (builtins.tryEval [ (builtins.throw \"boom\") ]).value",
         ] {
-            assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
+
+        for source in [
+            "let x = builtins.trace \"let\" 1; in x + x",
+            "(x: x + x) (builtins.trace \"arg\" 1)",
+            "let xs = [ (builtins.trace \"list\" 1) ]; in (builtins.elemAt xs 0) + (builtins.elemAt xs 0)",
+            "let set = { x = builtins.trace \"attr\" 1; }; in set.x + set.x",
+            "let x = builtins.trace \"retry\" (builtins.throw \"boom\"); a = builtins.tryEval x; b = builtins.tryEval x; in if a.success == false && b.success == false then 1 else 0",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+            let reference = cpp_nix_eval_stderr(oracle, source);
+            let stderr = eval_captured_stderr(source);
+            assert_eq!(stderr, reference, "trace stderr diverged for {source}");
+        }
+
+        for source in [
+            "builtins.tryEval (builtins.abort \"boom\")",
+            "builtins.tryEval (1 + true)",
+            "builtins.tryEval ({ }).missing",
+            "builtins.tryEval (builtins.elemAt [] 0)",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        for (source, expected_message) in [
+            (
+                "builtins.seq (builtins.throw \"first\") (builtins.throw \"second\")",
+                "first",
+            ),
+            ("builtins.seq 1 (builtins.throw \"second\")", "second"),
+            (
+                "builtins.deepSeq [ (builtins.throw \"first\") (builtins.throw \"second\") ] 1",
+                "first",
+            ),
+            (
+                "builtins.deepSeq { z = builtins.throw \"z\"; a = builtins.throw \"a\"; } 1",
+                "z",
+            ),
+            (
+                "builtins.deepSeq [ 1 ] (builtins.throw \"second\")",
+                "second",
+            ),
+            (
+                "builtins.add (builtins.throw \"left\") (builtins.throw \"right\")",
+                "left",
+            ),
+            (
+                "builtins.deepSeq { x = builtins.throw \"nested\"; } 1",
+                "nested",
+            ),
+        ] {
+            assert_cpp_nix_and_tree_walk_throw_message(oracle, source, expected_message);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_laziness_and_evaluation_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_laziness_and_evaluation_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_laziness_and_evaluation_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix laziness check");
+            return;
+        };
+        assert_cpp_nix_laziness_and_evaluation_semantics_match_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_string_context_builtins_match_tree_walk(oracle: &str) {
@@ -34755,6 +34832,55 @@ mod tests {
             .force_value(ir.root, Span::new(0, 0), thunk_value)
             .expect("forced thunk reuses cache");
         assert_eq!(forced_again.as_int(), Ok(3));
+    }
+
+    #[test]
+    fn shared_thunks_emit_trace_once_when_forced_repeatedly() {
+        for (source, expected) in [
+            (
+                "let x = builtins.trace \"let\" 1; in x + x",
+                &b"trace: let\n"[..],
+            ),
+            (
+                "(x: x + x) (builtins.trace \"arg\" 1)",
+                &b"trace: arg\n"[..],
+            ),
+            (
+                "let xs = [ (builtins.trace \"list\" 1) ]; in (builtins.elemAt xs 0) + (builtins.elemAt xs 0)",
+                &b"trace: list\n"[..],
+            ),
+            (
+                "let set = { x = builtins.trace \"attr\" 1; }; in set.x + set.x",
+                &b"trace: attr\n"[..],
+            ),
+        ] {
+            let ir = lower(source);
+            let mut evaluator = TreeWalk::new(&ir);
+            evaluator.capture_stderr();
+            let value = evaluator
+                .eval_root()
+                .expect("shared thunk expression evaluates");
+            assert_eq!(value.as_int(), Ok(2), "{source}");
+            let stderr = evaluator.captured_stderr();
+            assert_eq!(stderr, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn failed_thunks_reset_and_are_retried() {
+        let source = "let x = builtins.trace \"retry\" (builtins.throw \"boom\"); \
+                      a = builtins.tryEval x; \
+                      b = builtins.tryEval x; \
+                      in if a.success == false && b.success == false then 1 else 0";
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::new(&ir);
+        evaluator.capture_stderr();
+        let value = evaluator
+            .eval_root()
+            .expect("tryEval catches both failed thunk forces");
+        assert_eq!(value.as_int(), Ok(1));
+        let stderr = evaluator.captured_stderr();
+        assert_eq!(stderr, b"trace: retry\ntrace: retry\n");
     }
 
     #[test]
