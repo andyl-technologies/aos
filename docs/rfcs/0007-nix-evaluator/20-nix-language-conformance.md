@@ -320,8 +320,11 @@ search paths, and store coercion.
       order, supports computed string names, and rejects `null`, paths, and
       attrsets with string-coercion hooks and context-bearing strings like
       pinned Nix.
-- [ ] **`or` with dynamic select** — `s.${e} or d` is legal; verify against
-      pinned Nix.
+- [x] **`or` with dynamic select** — `s.${e} or d` is legal and follows pinned
+      Nix selection-default order: the default remains lazy on success, covers
+      missing and non-attr prefixes, does not mask errors from the currently
+      reached dynamic key, and skips later dynamic keys after an earlier
+      fallback.
 
 ### 5.2 Has-attribute `?`
 

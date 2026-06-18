@@ -33880,6 +33880,78 @@ mod tests {
     }
 
     #[test]
+    fn select_defaults_with_dynamic_keys_match_pinned_order() {
+        assert_eq!(eval("({ a = 1; }).${\"a\"} or (1 / 0)").as_int(), Ok(1));
+        assert_eq!(eval("({}).${\"a\"} or 2").as_int(), Ok(2));
+        assert_eq!(eval("({ a = {}; }).${\"a\"}.${\"b\"} or 2").as_int(), Ok(2));
+        assert_eq!(eval("({ a = 1; }).${\"a\"}.${\"b\"} or 2").as_int(), Ok(2));
+        assert_eq!(eval("(1).${\"a\"} or 2").as_int(), Ok(2));
+        assert_eq!(eval("({}).${\"missing\"}.${null} or 2").as_int(), Ok(2));
+
+        let receiver_error = lower("((1 / 0)).${\"a\"} or 2");
+        let error =
+            eval_whnf_owned(&receiver_error).expect_err("receiver errors before default fallback");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        for source in [
+            "({}).${1 / 0} or 2",
+            "(1).${1 / 0} or 2",
+            "({ a = 1; }).a.${1 / 0} or 2",
+        ] {
+            let ir = lower(source);
+            let error =
+                eval_whnf_owned(&ir).expect_err("reached dynamic key errors before default");
+
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::DivisionByZero { .. }
+            ));
+        }
+
+        for (source, actual) in [
+            ("({}).${null} or 2", ValueTag::Null),
+            ("({}).${/tmp/x} or 2", ValueTag::Path),
+            (
+                "({}).${ { __toString = self: \"value\"; } } or 2",
+                ValueTag::Attrs,
+            ),
+        ] {
+            let ir = lower(source);
+            let error =
+                eval_whnf_owned(&ir).expect_err("dynamic select defaults require string keys");
+
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    expected: "string",
+                    actual: observed,
+                    ..
+                } if observed == actual
+            ));
+        }
+
+        let context_key = lower(
+            r#"({}).${builtins.appendContext "name" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
+               }} or 2"#,
+        );
+        let error = eval_whnf_owned(&context_key)
+            .expect_err("dynamic select defaults reject string context");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "dynamic attribute name",
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn select_evaluates_receiver_and_reached_dynamic_keys_in_order() {
         let ir = lower("(1 / 0).${\"a\"}");
         let error = eval_whnf_owned(&ir).expect_err("receiver errors before dynamic key success");
