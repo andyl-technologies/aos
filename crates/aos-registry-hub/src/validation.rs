@@ -292,7 +292,7 @@ pub async fn validate_registry(
     let cache_urls: Vec<String> = match &stack {
         Some(node) => node.endpoints(),
         None => db
-            .list_caches(registry.id)
+            .list_advertised_caches(registry.id)
             .await?
             .into_iter()
             .map(|(u, _)| u)

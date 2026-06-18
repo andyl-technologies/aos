@@ -631,7 +631,7 @@ impl RpcService {
     ) -> Result<pb::Registry, RpcError> {
         let caches = self
             .db
-            .list_caches(record.id)
+            .list_advertised_caches(record.id)
             .await
             .map_err(RpcError::internal)?
             .into_iter()

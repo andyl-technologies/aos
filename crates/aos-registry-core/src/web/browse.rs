@@ -426,7 +426,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     };
     let channels = svc.db.list_channels(registry.id).await.unwrap_or_default();
     let packages = svc.db.list_packages(registry.id).await.unwrap_or_default();
-    let caches = svc.db.list_caches(registry.id).await.unwrap_or_default();
+    let caches = svc.db.list_advertised_caches(registry.id).await.unwrap_or_default();
     let roster = svc.db.list_roster(registry.id).await.unwrap_or_default();
     let validations = svc
         .db
