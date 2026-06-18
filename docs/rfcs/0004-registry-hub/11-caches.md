@@ -569,7 +569,10 @@ the current spec. Phases are orderable; A lands first, E last.
 - [ ] Derived-root refresh from linked registries (`roots_packages`): live
       channel-frontier + `keep_release_versions` closures → `cache_gc_roots`.
 - [ ] Mark/sweep over `cache_objects.refs`; narinfo delete + content-addressed
-      NAR delete at zero refcount; `ttl_unreferenced_secs` grace.
+      NAR delete at zero refcount; `ttl_unreferenced_secs` grace. (NAR deletion
+      must resolve the on-disk object via `cache_objects.nar_url` — the actual
+      surface key — not by reconstructing a name from `file_hash`, since the
+      stored `file_hash` is the `sha256:…` content address, not the URL stem.)
 - [ ] Manual-pin expiry: `cache_gc_roots.expires_at` (NULL = unlimited
       default); expired pins skipped at mark and reaped; `cache pin --ttl` /
       `cache renew` upsert the deadline with no re-upload (`PinCachePath`
