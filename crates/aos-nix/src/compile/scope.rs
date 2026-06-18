@@ -19,7 +19,7 @@ use std::convert::TryFrom;
 
 use thiserror::Error;
 
-use crate::runtime::builtins::is_known_builtin_attr;
+use crate::runtime::builtins::{is_known_builtin_attr, is_unshadowable_global_name};
 use crate::syntax::{
     AstArena, AstError, AstErrorKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParsedAst,
     Span, Symbol, SymbolTable,
@@ -458,6 +458,10 @@ impl ResolverState {
             return self.replace_node(id, kind, data);
         }
 
+        if self.is_unshadowable_global_symbol(symbol) {
+            return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
+        }
+
         if !self.active_withs.is_empty() {
             let chain = self.push_with_chain(node.span)?;
             return self.replace_node(
@@ -471,13 +475,13 @@ impl ResolverState {
         }
 
         if self.is_global_symbol(symbol) {
-            self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol))
-        } else {
-            Err(ScopeError::new(
-                ScopeErrorKind::UndefinedSymbol(symbol),
-                node.span,
-            ))
+            return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
         }
+
+        Err(ScopeError::new(
+            ScopeErrorKind::UndefinedSymbol(symbol),
+            node.span,
+        ))
     }
 
     fn resolve_let_in(&mut self, id: NodeId, node: Node) -> Result<(), ScopeError> {
@@ -1050,6 +1054,12 @@ impl ResolverState {
         self.symbols.resolve(symbol).is_some_and(is_global_name)
     }
 
+    fn is_unshadowable_global_symbol(&self, symbol: Symbol) -> bool {
+        self.symbols
+            .resolve(symbol)
+            .is_some_and(is_unshadowable_global_name)
+    }
+
     fn lookup_symbol(&self, symbol: Symbol) -> Option<(u32, u32, usize)> {
         for (depth, frame) in self.active_frames.iter().rev().enumerate() {
             let builder = &self.frames[frame.id.index()];
@@ -1212,7 +1222,7 @@ fn push_unique(symbols: &mut Vec<Symbol>, symbol: Symbol) {
 }
 
 fn is_global_name(bytes: &[u8]) -> bool {
-    is_known_builtin_attr(bytes)
+    is_known_builtin_attr(bytes) || is_unshadowable_global_name(bytes)
 }
 
 /// A scope-resolution failure.
@@ -1631,6 +1641,42 @@ mod tests {
         };
         assert_eq!(node(&ast, lambda_body).kind, NodeKind::LocalVar);
         assert_eq!(local_slot(&ast, lambda_body), 0);
+    }
+
+    #[test]
+    fn unshadowable_global_names_shadow_active_with_scopes() {
+        for source in [
+            "with { true = 1; }; true",
+            "with { false = 1; }; false",
+            "with { null = 1; }; null",
+            "with { builtins = 1; }; builtins",
+            "with { map = f: xs: 7; }; map",
+            "with { toString = x: \"with\"; }; toString",
+            "with { derivationStrict = x: x; }; derivationStrict",
+        ] {
+            let ast = resolved(source);
+            let NodeData::Pair { second, .. } = node(&ast, ast.root).data else {
+                panic!("with payload expected");
+            };
+            assert_eq!(node(&ast, second).kind, NodeKind::GlobalVar, "{source}");
+        }
+    }
+
+    #[test]
+    fn shadowable_builtin_attrs_use_active_with_scopes() {
+        for source in [
+            "with { currentTime = 123; }; currentTime",
+            "with { storeDir = \"with\"; }; storeDir",
+            "with { langVersion = 9; }; langVersion",
+            "with { length = x: 7; }; length",
+            "with { concatMap = f: xs: 7; }; concatMap",
+        ] {
+            let ast = resolved(source);
+            let NodeData::Pair { second, .. } = node(&ast, ast.root).data else {
+                panic!("with payload expected");
+            };
+            assert_eq!(node(&ast, second).kind, NodeKind::WithVar, "{source}");
+        }
     }
 
     #[test]

@@ -1856,6 +1856,12 @@ impl<'ir> TreeWalk<'ir> {
         if name == b"builtins" {
             return self.eval_builtins_attrset(id, node.span);
         }
+        if is_unshadowable_global_name(name) {
+            if let Some(builtin) = lookup_builtin(name).filter(|builtin| builtin.is_available(self))
+            {
+                return self.eval_builtin_attrset_value(id, node.span, symbol, builtin);
+            }
+        }
         Err(TreeWalkError::new(
             TreeWalkErrorKind::UnsupportedNode {
                 id,
@@ -2019,18 +2025,37 @@ impl<'ir> TreeWalk<'ir> {
         let IrData::Node(argument) = node.data else {
             return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
         };
+        self.ensure_derivation_strict_supported(id, node.span)?;
+        let argument_span = self.node(argument)?.span;
+        let value = self.eval_node(argument)?;
+        self.eval_derivation_strict_value(id, node.span, argument, argument_span, value)
+    }
+
+    fn ensure_derivation_strict_supported(
+        &self,
+        id: IrId,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
         if self.options.store_dir() != DEFAULT_STORE_DIR {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
                     id,
                     feature: "custom store directory",
                 },
-                node.span,
+                span,
             ));
         }
+        Ok(())
+    }
 
-        let argument_span = self.node(argument)?.span;
-        let value = self.eval_node(argument)?;
+    fn eval_derivation_strict_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
         let value = self.force_demanded_value(argument, argument_span, value)?;
         if value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -2077,19 +2102,18 @@ impl<'ir> TreeWalk<'ir> {
                 })?;
                 Self::copy_bytes_for_node(argument, argument_span, key)?
             };
-            self.reject_unsupported_derivation_strict_attr(id, node.span, &key)?;
+            self.reject_unsupported_derivation_strict_attr(id, span, &key)?;
 
             let value = self.force_value(argument, argument_span, entry.value)?;
             let rendered =
-                self.derivation_to_string_value(id, node.span, argument, argument_span, value)?;
+                self.derivation_to_string_value(id, span, argument, argument_span, value)?;
             let (bytes, value_context) = rendered.into_parts();
             context = context.union(&value_context).map_err(|source| {
-                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, node.span)
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
             })?;
 
-            let env_key = Self::derivation_utf8_string(id, node.span, "environment name", &key)?;
-            let env_value =
-                Self::derivation_utf8_string(id, node.span, "environment value", &bytes)?;
+            let env_key = Self::derivation_utf8_string(id, span, "environment name", &key)?;
+            let env_value = Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
             derivation
                 .environment
                 .insert(env_key.clone(), env_value.clone().into());
@@ -2102,23 +2126,22 @@ impl<'ir> TreeWalk<'ir> {
             }
         }
 
-        let name =
-            name.ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, NAME_ATTR))?;
+        let name = name.ok_or_else(|| self.missing_derivation_strict_attr(id, span, NAME_ATTR))?;
         if name.is_empty() {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::DerivationStrict {
                     id,
                     message: "derivation name must not be empty".to_owned(),
                 },
-                node.span,
+                span,
             ));
         }
-        derivation.builder = builder
-            .ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, BUILDER_ATTR))?;
-        derivation.system = system
-            .ok_or_else(|| self.missing_derivation_strict_attr(id, node.span, SYSTEM_ATTR))?;
+        derivation.builder =
+            builder.ok_or_else(|| self.missing_derivation_strict_attr(id, span, BUILDER_ATTR))?;
+        derivation.system =
+            system.ok_or_else(|| self.missing_derivation_strict_attr(id, span, SYSTEM_ATTR))?;
         derivation.environment.insert("out".to_owned(), "".into());
-        self.add_derivation_context_inputs(id, node.span, &mut derivation, &context)?;
+        self.add_derivation_context_inputs(id, span, &mut derivation, &context)?;
 
         derivation.validate(false).map_err(|source| {
             TreeWalkError::new(
@@ -2126,10 +2149,10 @@ impl<'ir> TreeWalk<'ir> {
                     id,
                     message: source.to_string(),
                 },
-                node.span,
+                span,
             )
         })?;
-        let input_hashes = self.known_derivation_hashes_for_inputs(id, node.span, &derivation)?;
+        let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
         let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
         derivation
             .calculate_output_paths(&name, &hash)
@@ -2139,7 +2162,7 @@ impl<'ir> TreeWalk<'ir> {
                         id,
                         message: source.to_string(),
                     },
-                    node.span,
+                    span,
                 )
             })?;
         let known_hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes);
@@ -2151,11 +2174,11 @@ impl<'ir> TreeWalk<'ir> {
                         id,
                         message: source.to_string(),
                     },
-                    node.span,
+                    span,
                 )
             })?;
         self.remember_derivation(drv_path.clone(), &derivation, known_hash);
-        self.alloc_derivation_strict_result(id, node.span, &derivation, &drv_path)
+        self.alloc_derivation_strict_result(id, span, &derivation, &drv_path)
     }
 
     fn reject_unsupported_derivation_strict_attr(
@@ -17177,6 +17200,20 @@ impl BuiltinRuntime for BuiltinMetadata {
     ) -> Result<Value, TreeWalkError> {
         eval.enter_call(call.id, call.span)?;
         let result = (|| match self.execution() {
+            BuiltinExecution::DerivationStrict => {
+                check_builtin_arity(call, 1, args.len())?;
+                eval.ensure_derivation_strict_supported(call.id, call.span)?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_derivation_strict_value(
+                    call.id,
+                    call.span,
+                    argument,
+                    argument_span,
+                    value,
+                )
+            }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -17333,6 +17370,18 @@ impl BuiltinRuntime for BuiltinMetadata {
         args: &[EvalPrimOpArg],
     ) -> Result<Value, TreeWalkError> {
         match self.execution() {
+            BuiltinExecution::DerivationStrict => {
+                check_builtin_arity(call, 1, args.len())?;
+                eval.ensure_derivation_strict_supported(call.id, call.span)?;
+                let argument = args[0];
+                eval.eval_derivation_strict_value(
+                    call.id,
+                    call.span,
+                    argument.id(),
+                    argument.span(),
+                    argument.value(),
+                )
+            }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -19250,6 +19299,29 @@ mod tests {
         );
         let ir = lower(source);
         eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+    }
+
+    fn assert_cpp_nix_parse_and_aos_frontend_reject_expression(oracle: &str, source: &str) {
+        let output = Command::new(oracle)
+            .args(["--parse", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle parses expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly parsed {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+
+        let Ok(parsed) = parse_str(source) else {
+            return;
+        };
+        let Ok(resolved) = resolve_ast(parsed) else {
+            return;
+        };
+        assert!(
+            lower_ir(resolved).is_err(),
+            "AOS frontend unexpectedly accepted {source:?}"
+        );
     }
 
     fn assert_cpp_nix_and_parser_reject_non_associative_operator(
@@ -22037,6 +22109,116 @@ mod tests {
             return;
         };
         assert_cpp_nix_laziness_and_evaluation_semantics_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_let_with_scoping_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "let a = 1; b = a + 1; in b",
+            "let a = b; b = 1; in a",
+            "let a = 1; in let b = a + 1; in b",
+            "let x = 1 / 0; in 7",
+            r#"let ${"x"} = 1; in x"#,
+            r#"let ${"a"}.b = 1; in a.b"#,
+            "let x = 1; inherited = let inherit x; in x; in let x = 2; in inherited",
+            "let src = { x = 1; y = 2; }; inherit (src) x y; in x + y",
+            "let inherit (src) x; src = { x = 5; }; in x",
+            "let inherit ({}) x; in 42",
+            "with { a = 1; }; a",
+            "with { f = x: x + 1; }; f 2",
+            "with (1 / 0); 7",
+            "with { a = 1 / 0; }; 7",
+            "with { a = 1; }; with { a = 2; }; a",
+            "let a = 3; in with { a = 1; }; a",
+            "with { a = 1; }; let a = 3; in a",
+            "(x: with { x = 1; }; x) 3",
+            "with { true = 1; }; true",
+            "with { false = 1; }; false",
+            "with { null = 1; }; null",
+            "builtins.isAttrs (with { builtins = 1; }; builtins)",
+            "with { currentTime = 123; }; currentTime",
+            r#"with { storeDir = "with"; }; storeDir"#,
+            "with { langVersion = 9; }; langVersion",
+            r#"with { nixVersion = "with"; }; nixVersion"#,
+            "with { length = xs: 7; }; length [ 1 ]",
+            "with { concatMap = f: xs: 7; }; concatMap (x: [ x ]) [ 1 ]",
+            "with { map = f: xs: 7; }; map (x: x) [ 1 ]",
+            r#"with { toString = x: "with"; }; toString 1"#,
+            "with { baseNameOf = x: \"with\"; }; baseNameOf /a/b",
+            r#"let f = derivationStrict; d = f {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }; in builtins.hasAttr "out" d"#,
+            r#"let f = builtins.derivationStrict; d = f {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }; in builtins.hasAttr "drvPath" d"#,
+            r#"with { derivationStrict = x: x; }; let f = derivationStrict; d = f {
+                 name = "x";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }; in builtins.hasAttr "out" d"#,
+            "with {}; true",
+            "with {}; false",
+            "with {}; null",
+            "let x = 1; f = y: with { a = x + y; }; a; in let x = 10; in f x",
+            "let x = 1; scope = { a = x; }; f = y: with scope; a + y; in f 2",
+            "let f = with { a = 1; }; x: a + x; in f 2",
+            "(with { a = 1 + 2; }; { b = a; }).b",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+
+        for source in [
+            r#"let inherit (builtins.trace "source" { x = 1; }) x; in 42"#,
+            r#"let inherit (builtins.trace "source" { x = 1; y = 2; }) x y; in x + y"#,
+            r#"with (builtins.trace "scope" { a = 1; }); 7"#,
+            r#"with (builtins.trace "scope" { a = 1; }); a"#,
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+            let reference = cpp_nix_eval_stderr(oracle, source);
+            let stderr = eval_captured_stderr(source);
+            assert_eq!(stderr, reference, "trace stderr diverged for {source}");
+        }
+
+        for source in [
+            r#"let name = "a"; ${name} = 1; in a"#,
+            r#"let ${"x" + "y"} = 1; in 1"#,
+            r#"let ${"a${"b"}"} = 1; in 1"#,
+            "let a = 1; a = 2; in a",
+            "let inherit x; x = 1; in x",
+            "let inherit (src) x; x = 1; in x",
+        ] {
+            assert_cpp_nix_parse_and_aos_frontend_reject_expression(oracle, source);
+        }
+
+        for source in ["with 1; missing", "with {}; missing"] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, source);
+        }
+
+        assert_cpp_nix_and_tree_walk_reject_expression(
+            oracle,
+            "with { derivationStrict = x: x; }; let f = derivationStrict; in f 1",
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_let_with_scoping_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_let_with_scoping_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_let_with_scoping_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix let/with check");
+            return;
+        };
+        assert_cpp_nix_let_with_scoping_semantics_match_tree_walk(&oracle);
     }
 
     fn assert_cpp_nix_string_context_builtins_match_tree_walk(oracle: &str) {
@@ -35233,7 +35415,41 @@ mod tests {
         assert_eq!(eval("with { a = 1 / 0; }; 7").as_int(), Ok(7));
         assert_eq!(eval("with { a = 1; }; with { a = 2; }; a").as_int(), Ok(2));
         assert_eq!(eval("let a = 3; in with { a = 1; }; a").as_int(), Ok(3));
-        assert_eq!(eval("with { true = 1; }; true").as_int(), Ok(1));
+        assert_eq!(eval("with { true = 1; }; true").as_bool(), Ok(true));
+        assert_eq!(eval("with { false = 1; }; false").as_bool(), Ok(false));
+        assert_eq!(eval("with { null = 1; }; null").tag(), ValueTag::Null);
+        assert_eq!(
+            eval("builtins.isAttrs (with { builtins = 1; }; builtins)").as_bool(),
+            Ok(true)
+        );
+        assert_eq!(
+            eval("with { currentTime = 123; }; currentTime").as_int(),
+            Ok(123)
+        );
+        assert_eq!(
+            eval_string_bytes(r#"with { storeDir = "with"; }; storeDir"#),
+            b"with"
+        );
+        assert_eq!(
+            eval("with { langVersion = 9; }; langVersion").as_int(),
+            Ok(9)
+        );
+        assert_eq!(
+            eval("with { length = xs: 7; }; length [ 1 ]").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("with { concatMap = f: xs: 7; }; concatMap (x: [ x ]) [ 1 ]").as_int(),
+            Ok(7)
+        );
+        assert_eq!(
+            eval("builtins.elemAt (with { map = f: xs: 7; }; map (x: x) [ 1 ]) 0").as_int(),
+            Ok(1)
+        );
+        assert_eq!(
+            eval_string_bytes(r#"with { toString = x: "with"; }; toString 1"#),
+            b"1"
+        );
         assert_eq!(eval("with {}; true").as_bool(), Ok(true));
         assert_eq!(eval("with {}; false").as_bool(), Ok(false));
         assert_eq!(eval("with {}; null").tag(), ValueTag::Null);
@@ -36238,6 +36454,49 @@ mod tests {
             eval_json_bytes(source),
             br#"{"drvContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"allOutputs":true}},"drvPath":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","names":["drvPath","out"],"out":"/nix/store/ss8z7hsjimnxam6mx6z8znm64qrk08cn-x","outContext":{"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv":{"outputs":["out"]}}}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_strict_first_class_values_call_builtin() {
+        for source in [
+            r#"let
+                 f = derivationStrict;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in builtins.hasAttr "out" d"#,
+            r#"let
+                 f = builtins.derivationStrict;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in builtins.hasAttr "drvPath" d"#,
+            r#"with { derivationStrict = x: x; }; let
+                 f = derivationStrict;
+                 d = f {
+                   name = "x";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in builtins.hasAttr "out" d"#,
+        ] {
+            assert_eq!(eval(source).as_bool(), Ok(true), "{source}");
+        }
+
+        let ir = lower("with { derivationStrict = x: x; }; let f = derivationStrict; in f 1");
+        let error = eval_whnf_owned(&ir).expect_err("derivationStrict remains unshadowable");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "attrs",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
     }
 
     #[test]

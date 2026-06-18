@@ -1,11 +1,11 @@
 //! Builtin declarations shared by scope resolution and runtime dispatch.
 //!
 //! Each builtin marker type implements [`BuiltinDefinition`] with its static
-//! execution strategy and documentation. The execution strategy derives
-//! direct-lowering and first-class arity metadata, and the registry macro
-//! publishes those typed definitions as both the ordered `builtins` attrset
-//! inventory and the exact-name lookup used by evaluator dispatch and frontend
-//! passes.
+//! execution strategy, documentation, and top-level name policy. The execution
+//! strategy derives direct-lowering and first-class arity metadata, and the
+//! registry macro publishes those typed definitions as both the ordered
+//! `builtins` attrset inventory and the exact-name lookup used by evaluator
+//! dispatch and frontend passes.
 
 macro_rules! builtin_registry {
     (
@@ -46,6 +46,7 @@ pub(crate) struct AbortBuiltin;
 impl BuiltinDefinition for AbortBuiltin {
     const NAME: &'static [u8] = b"abort";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::Abort);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct AddBuiltin;
@@ -107,6 +108,7 @@ impl BuiltinDefinition for BaseNameOfBuiltin {
     const NAME: &'static [u8] = b"baseNameOf";
     const EXECUTION: BuiltinExecution =
         BuiltinExecution::strict_unary(StrictUnaryPrimOp::BaseNameOf);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct BitAndBuiltin;
@@ -131,12 +133,14 @@ pub(crate) struct BreakBuiltin;
 impl BuiltinDefinition for BreakBuiltin {
     const NAME: &'static [u8] = b"break";
     const EXECUTION: BuiltinExecution = BuiltinExecution::LazyUnary;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct BuiltinsBuiltin;
 impl BuiltinDefinition for BuiltinsBuiltin {
     const NAME: &'static [u8] = b"builtins";
     const EXECUTION: BuiltinExecution = BuiltinExecution::BuiltinsValue;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct CatAttrsBuiltin;
@@ -210,18 +214,21 @@ pub(crate) struct DerivationBuiltin;
 impl BuiltinDefinition for DerivationBuiltin {
     const NAME: &'static [u8] = b"derivation";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct DerivationStrictBuiltin;
 impl BuiltinDefinition for DerivationStrictBuiltin {
     const NAME: &'static [u8] = b"derivationStrict";
     const EXECUTION: BuiltinExecution = BuiltinExecution::DerivationStrict;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct DirOfBuiltin;
 impl BuiltinDefinition for DirOfBuiltin {
     const NAME: &'static [u8] = b"dirOf";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::DirOf);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct DivBuiltin;
@@ -246,30 +253,35 @@ pub(crate) struct FalseBuiltin;
 impl BuiltinDefinition for FalseBuiltin {
     const NAME: &'static [u8] = b"false";
     const EXECUTION: BuiltinExecution = BuiltinExecution::FalseValue;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FetchGitBuiltin;
 impl BuiltinDefinition for FetchGitBuiltin {
     const NAME: &'static [u8] = b"fetchGit";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FetchMercurialBuiltin;
 impl BuiltinDefinition for FetchMercurialBuiltin {
     const NAME: &'static [u8] = b"fetchMercurial";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FetchTarballBuiltin;
 impl BuiltinDefinition for FetchTarballBuiltin {
     const NAME: &'static [u8] = b"fetchTarball";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FetchTreeBuiltin;
 impl BuiltinDefinition for FetchTreeBuiltin {
     const NAME: &'static [u8] = b"fetchTree";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FetchurlBuiltin;
@@ -325,6 +337,7 @@ pub(crate) struct FromTomlBuiltin;
 impl BuiltinDefinition for FromTomlBuiltin {
     const NAME: &'static [u8] = b"fromTOML";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::FromToml);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct FunctionArgsBuiltin;
@@ -420,6 +433,7 @@ pub(crate) struct ImportBuiltin;
 impl BuiltinDefinition for ImportBuiltin {
     const NAME: &'static [u8] = b"import";
     const EXECUTION: BuiltinExecution = BuiltinExecution::EffectfulUnaryUnsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct IntersectAttrsBuiltin;
@@ -470,6 +484,7 @@ pub(crate) struct IsNullBuiltin;
 impl BuiltinDefinition for IsNullBuiltin {
     const NAME: &'static [u8] = b"isNull";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::IsNull);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct IsPathBuiltin;
@@ -515,6 +530,7 @@ pub(crate) struct MapBuiltin;
 impl BuiltinDefinition for MapBuiltin {
     const NAME: &'static [u8] = b"map";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_binary(StrictBinaryPrimOp::Map);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct MapAttrsBuiltin;
@@ -554,6 +570,7 @@ pub(crate) struct NullBuiltin;
 impl BuiltinDefinition for NullBuiltin {
     const NAME: &'static [u8] = b"null";
     const EXECUTION: BuiltinExecution = BuiltinExecution::NullValue;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct ParseDrvNameBuiltin;
@@ -595,6 +612,7 @@ impl BuiltinDefinition for PlaceholderBuiltin {
     const EXECUTION: BuiltinExecution =
         BuiltinExecution::strict_unary(StrictUnaryPrimOp::Placeholder);
     const DOCS: &'static BuiltinDocs = &PLACEHOLDER_DOCS;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct ReadDirBuiltin;
@@ -623,6 +641,7 @@ impl BuiltinDefinition for RemoveAttrsBuiltin {
     const NAME: &'static [u8] = b"removeAttrs";
     const EXECUTION: BuiltinExecution =
         BuiltinExecution::DirectBinary(DirectBinaryPrimOp::RemoveAttrs);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct ReplaceStringsBuiltin;
@@ -636,6 +655,7 @@ pub(crate) struct ScopedImportBuiltin;
 impl BuiltinDefinition for ScopedImportBuiltin {
     const NAME: &'static [u8] = b"scopedImport";
     const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct SeqBuiltin;
@@ -708,6 +728,7 @@ pub(crate) struct ThrowBuiltin;
 impl BuiltinDefinition for ThrowBuiltin {
     const NAME: &'static [u8] = b"throw";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::Throw);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct ToFileBuiltin;
@@ -733,6 +754,7 @@ pub(crate) struct ToStringBuiltin;
 impl BuiltinDefinition for ToStringBuiltin {
     const NAME: &'static [u8] = b"toString";
     const EXECUTION: BuiltinExecution = BuiltinExecution::strict_unary(StrictUnaryPrimOp::ToString);
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct ToXmlBuiltin;
@@ -763,6 +785,7 @@ pub(crate) struct TrueBuiltin;
 impl BuiltinDefinition for TrueBuiltin {
     const NAME: &'static [u8] = b"true";
     const EXECUTION: BuiltinExecution = BuiltinExecution::TrueValue;
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
 pub(crate) struct TryEvalBuiltin;
@@ -1144,6 +1167,7 @@ impl BuiltinExecution {
         match self {
             Self::StrictUnary { .. }
             | Self::LazyUnary
+            | Self::DerivationStrict
             | Self::GenericClosure
             | Self::TryEval
             | Self::PathExists
@@ -1162,7 +1186,6 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported
             | Self::EffectfulUnaryUnsupported
-            | Self::DerivationStrict
             | Self::BuiltinsValue
             | Self::TrueValue
             | Self::FalseValue
@@ -1429,6 +1452,15 @@ static WARN_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Prints a warning to stderr and returns the second argument.",
 };
 
+/// How a builtin's spelling participates in top-level name resolution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltinNameScope {
+    /// The builtin is reachable through the `builtins` attribute set.
+    BuiltinsAttrOnly,
+    /// The builtin is also a top-level name that active `with` scopes cannot shadow.
+    UnshadowableGlobal,
+}
+
 /// Static metadata shared by builtin resolution, lowering, and execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuiltinMetadata {
@@ -1436,6 +1468,7 @@ pub(crate) struct BuiltinMetadata {
     execution: BuiltinExecution,
     direct: Option<BuiltinDirect>,
     first_class_arity: Option<usize>,
+    name_scope: BuiltinNameScope,
     availability: BuiltinAvailability,
     requires_native_cli_fallback: bool,
     docs: &'static BuiltinDocs,
@@ -1448,6 +1481,7 @@ impl BuiltinMetadata {
         execution: BuiltinExecution,
         direct: Option<BuiltinDirect>,
         first_class_arity: Option<usize>,
+        name_scope: BuiltinNameScope,
         availability: BuiltinAvailability,
         requires_native_cli_fallback: bool,
         docs: &'static BuiltinDocs,
@@ -1457,6 +1491,7 @@ impl BuiltinMetadata {
             execution,
             direct,
             first_class_arity,
+            name_scope,
             availability,
             requires_native_cli_fallback,
             docs,
@@ -1481,6 +1516,19 @@ impl BuiltinMetadata {
     /// Returns the arity exposed when the builtin is selected as a first-class value.
     pub(crate) const fn first_class_arity(&self) -> Option<usize> {
         self.first_class_arity
+    }
+
+    /// Returns how this builtin's spelling participates in top-level name resolution.
+    pub(crate) const fn name_scope(&self) -> BuiltinNameScope {
+        self.name_scope
+    }
+
+    /// Returns whether active `with` scopes cannot shadow this builtin's spelling.
+    pub(crate) const fn is_unshadowable_global(&self) -> bool {
+        match self.name_scope {
+            BuiltinNameScope::BuiltinsAttrOnly => false,
+            BuiltinNameScope::UnshadowableGlobal => true,
+        }
     }
 
     /// Returns when this builtin is visible through the reified `builtins` attrset.
@@ -1540,6 +1588,12 @@ impl BuiltinRegistry {
     pub(crate) fn is_known_attr(&self, name: &[u8]) -> bool {
         self.lookup(name).is_some()
     }
+
+    /// Returns whether `name` is a top-level Nix name that active `with` scopes cannot shadow.
+    pub(crate) fn is_unshadowable_global_name(&self, name: &[u8]) -> bool {
+        self.lookup(name)
+            .is_some_and(|metadata| metadata.is_unshadowable_global())
+    }
 }
 
 /// Provides static metadata for a concrete builtin marker type.
@@ -1559,6 +1613,9 @@ trait BuiltinDefinition {
     /// Arity exposed when this builtin is selected as a first-class value.
     const FIRST_CLASS_ARITY: Option<usize> = Self::EXECUTION.first_class_arity();
 
+    /// Scope behavior for this builtin's spelling.
+    const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::BuiltinsAttrOnly;
+
     /// Contextual availability of this builtin in the reified `builtins` set.
     const AVAILABILITY: BuiltinAvailability = Self::EXECUTION.availability();
 
@@ -1571,6 +1628,7 @@ trait BuiltinDefinition {
         Self::EXECUTION,
         Self::DIRECT,
         Self::FIRST_CLASS_ARITY,
+        Self::NAME_SCOPE,
         Self::AVAILABILITY,
         Self::REQUIRES_NATIVE_CLI_FALLBACK,
         Self::DOCS,
@@ -1590,6 +1648,11 @@ pub(crate) fn lookup_builtin(name: &[u8]) -> Option<BuiltinMetadata> {
 /// Returns whether `name` is a builtin attribute known to this evaluator.
 pub(crate) fn is_known_builtin_attr(name: &[u8]) -> bool {
     BUILTINS.is_known_attr(name)
+}
+
+/// Returns whether `name` is a top-level Nix name that active `with` scopes cannot shadow.
+pub(crate) fn is_unshadowable_global_name(name: &[u8]) -> bool {
+    BUILTINS.is_unshadowable_global_name(name)
 }
 
 #[cfg(test)]
@@ -1643,6 +1706,34 @@ mod tests {
         assert_eq!(lookup_builtin(b"length"), BUILTINS.lookup(b"length"));
         assert_eq!(lookup_builtin(b"__missing"), None);
         assert_eq!(direct_builtin(b"length"), BUILTINS.direct(b"length"));
+    }
+
+    #[test]
+    fn builtin_lookup_distinguishes_top_level_names_from_attrs() {
+        for name in [
+            b"true".as_slice(),
+            b"builtins".as_slice(),
+            b"map".as_slice(),
+            b"toString".as_slice(),
+            b"derivationStrict".as_slice(),
+        ] {
+            assert!(is_unshadowable_global_name(name), "{name:?}");
+            let metadata = lookup_builtin(name).expect("top-level builtin is registered");
+            assert_eq!(metadata.name_scope(), BuiltinNameScope::UnshadowableGlobal);
+            assert!(metadata.is_unshadowable_global());
+        }
+        for name in [
+            b"length".as_slice(),
+            b"concatMap".as_slice(),
+            b"currentTime".as_slice(),
+            b"storeDir".as_slice(),
+        ] {
+            assert!(!is_unshadowable_global_name(name), "{name:?}");
+            assert!(is_known_builtin_attr(name), "{name:?}");
+            let metadata = lookup_builtin(name).expect("builtin attr is registered");
+            assert_eq!(metadata.name_scope(), BuiltinNameScope::BuiltinsAttrOnly);
+            assert!(!metadata.is_unshadowable_global());
+        }
     }
 
     #[test]
@@ -1975,7 +2066,7 @@ mod tests {
                 .lookup(b"derivationStrict")
                 .unwrap()
                 .first_class_arity(),
-            None
+            Some(1)
         );
         assert_eq!(BUILTINS.lookup(b"true").unwrap().first_class_arity(), None);
         assert_eq!(

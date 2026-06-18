@@ -706,42 +706,57 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 11.1 `let ... in`
 
-- [ ] **`let a = 1; b = a + 1; in body`** — bindings are mutually recursive and
-      order-independent; visible in later bindings and in `body`.
-- [ ] **`let` with `inherit`** — `let inherit (e) x; in …` (§5.3).
-- [ ] **`let` binding names are static** — no dynamic/computed names (§2.3).
-- [ ] **Duplicate `let` binding errors** — `let a = 1; a = 2; in …` is a
-      **must-error**.
+- [x] **`let a = 1; b = a + 1; in body`** — bindings are mutually recursive and
+      order-independent; visible in later bindings and in `body`. Verified direct,
+      nested, lazy, and forward references against pinned Nix.
+- [x] **`let` with `inherit`** — `let inherit (e) x; in …` (§5.3). Verified
+      lexical inherit, sourced inherit, forward source references, missing-source
+      laziness, and shared source forcing against pinned Nix.
+- [x] **`let` binding names are static** — no dynamic/computed names (§2.3).
+      Verified static literal interpolations and rejection of computed keys
+      (`let name = "a"; ${name} = ...`) against pinned Nix.
+- [x] **Duplicate `let` binding errors** — `let a = 1; a = 2; in …` is a
+      **must-error**. Verified direct and inherit-introduced duplicates against
+      pinned Nix.
 
 ### 11.2 The deprecated `let { ... }` body form
 
-- [ ] **`let { x = …; body = …; }`** — the legacy recursive form whose value is
+- [x] **`let { x = …; body = …; }`** — the legacy recursive form whose value is
       its `body` attribute (`let { body = "x"; }` ≡ `"x"`). **Decision: treat as
       deprecated.** Verify whether the AOS package set or any conformance case
       uses it; if AOS never uses it, it may be in the *documented skip list* (doc
       15 §3.4) — but record the decision explicitly here rather than silently
-      omitting. **Verify it is unused in AOS before skipping.**
+      omitting. Verified pinned Nix still accepts it; AOS `.nix` sources do not
+      use it (`rg --glob '*.nix' 'let\s*\{' .` returned no matches), so it remains
+      an intentional frontend gap that native expression evaluation sends to the
+      C++ Nix CLI fallback.
 
 ### 11.3 `with`
 
-- [ ] **`with e; body`** — introduces the attributes of set `e` into the *dynamic*
-      scope of `body` (their names become usable as bare identifiers).
-- [ ] **`with` binds LOOSER than lexical scope** — *the bindings introduced by
+- [x] **`with e; body`** — introduces the attributes of set `e` into the *dynamic*
+      scope of `body` (their names become usable as bare identifiers). Verified
+      lookup, function values, non-attr/missing-name failures, unshadowable
+      top-level names (`true`, `builtins`, `map`, `toString`, first-class
+      `derivationStrict`), and shadowable builtin attrs (`currentTime`,
+      `storeDir`, `length`, `concatMap`) against pinned Nix.
+- [x] **`with` binds LOOSER than lexical scope** — *the bindings introduced by
       `with` do not shadow bindings introduced by other means* (a `let`/lambda/`rec`
       binding of the same name **wins** over a `with`). Concretely
       `let a = 3; in with { a = 1; }; a` is `3`, equivalent to
       `let a = 1; in let a = 3; in a`. Reproduce this precedence exactly — it is
-      the opposite of most languages' intuition. (Verified against the syntax page.)
-- [ ] **Inner `with` shadows outer `with`** — `with a; with b; x` resolves `x`
+      the opposite of most languages' intuition. Verified against pinned Nix.
+- [x] **Inner `with` shadows outer `with`** — `with a; with b; x` resolves `x`
       from `b` first, then `a`. Verify the innermost-wins order among nested
-      `with`s.
-- [ ] **`with` does not capture statically-unknown names for error reporting** —
+      `with`s. Verified against pinned Nix.
+- [x] **`with` does not capture statically-unknown names for error reporting** —
       an undefined bare identifier under `with` is resolved at *use* time; verify
       the error behavior (undefined variable) when no `with` set provides it.
-- [ ] **`with` is lazy in `e`** — `e` is forced to WHNF only when a name resolved
-      through it is actually used. Verify the forcing point.
-- [ ] **Interaction with lambda params** — a function parameter shadows a `with`
-      binding of the same name (lexical wins). Verify.
+      Verified missing-name and non-attr forcing failures against pinned Nix.
+- [x] **`with` is lazy in `e`** — `e` is forced to WHNF only when a name resolved
+      through it is actually used. Verify the forcing point. Verified unused
+      throwing scopes/attrs remain latent and used traced scopes force once.
+- [x] **Interaction with lambda params** — a function parameter shadows a `with`
+      binding of the same name (lexical wins). Verified against pinned Nix.
 
 ---
 
@@ -848,9 +863,10 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       with a recorded reason. *Verify the AOS package set contains no unquoted
       URL literals* (it should not); if any are found, they must be quoted at the
       source rather than supported in the lexer.
-- [ ] **Deprecated `let { ... body = ...; }` form** — covered as *deprecated* in
+- [x] **Deprecated `let { ... body = ...; }` form** — covered as *deprecated* in
       §11.2; included only if AOS uses it (verify), otherwise skipped with a
-      recorded reason.
+      recorded reason. Verified unused in AOS `.nix` sources and intentionally
+      left to native CLI fallback.
 - [ ] **Experimental pipe operators `|>` / `<|`** — covered conditionally in §6;
       out of scope unless the pinned Nix has the experimental feature enabled and
       AOS uses it (verify the feature flag).

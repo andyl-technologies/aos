@@ -1761,17 +1761,12 @@ mod tests {
     }
 
     #[test]
-    fn with_shadowed_bool_name_remains_dynamic() {
+    fn with_shadowed_bool_name_remains_global() {
         let ir = lowered("with { true = 1; }; true");
-        let IrData::Pair { first, second } = root_node(&ir).data else {
+        let IrData::Pair { second, .. } = root_node(&ir).data else {
             panic!("with payload expected");
         };
-        assert_eq!(node(&ir, second).kind, IrKind::WithVar);
-        let IrData::WithVar { chain, .. } = node(&ir, second).data else {
-            panic!("with-var payload expected");
-        };
-        let chain = &ir.with_chains[chain as usize];
-        assert_eq!(chain.scopes.as_ref(), &[first]);
+        assert_eq!(node(&ir, second).kind, IrKind::Bool);
     }
 
     #[test]
@@ -1856,16 +1851,17 @@ mod tests {
     }
 
     #[test]
-    fn with_shadowed_derivation_strict_stays_dynamic_application() {
+    fn with_shadowed_derivation_strict_lowers_to_effectful_boundary() {
         let ir = lowered("with { derivationStrict = x: x; }; derivationStrict 1");
         let IrData::Pair { second: body, .. } = root_node(&ir).data else {
             panic!("with payload expected");
         };
-        assert_eq!(node(&ir, body).kind, IrKind::Apply);
-        let IrData::Pair { first, .. } = node(&ir, body).data else {
-            panic!("apply payload expected");
+        assert_eq!(node(&ir, body).kind, IrKind::DerivationStrict);
+        assert_eq!(node(&ir, body).effect, EffectClass::Effectful);
+        let IrData::Node(argument) = node(&ir, body).data else {
+            panic!("derivationStrict payload expected");
         };
-        assert_eq!(node(&ir, first).kind, IrKind::WithVar);
+        assert_eq!(node(&ir, argument).kind, IrKind::Int);
     }
 
     #[test]
