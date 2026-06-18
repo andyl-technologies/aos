@@ -587,3 +587,125 @@ async fn producer_js_is_inert_but_data_plane_is_verbatim() {
     );
     assert!(body.contains("StorePath:"), "verbatim narinfo: {body}");
 }
+
+/// Append a NAR length-prefixed, 8-byte-padded string.
+fn nar_put(out: &mut Vec<u8>, s: &[u8]) {
+    out.extend_from_slice(&(s.len() as u64).to_le_bytes());
+    out.extend_from_slice(s);
+    let pad = (8 - (s.len() % 8)) % 8;
+    out.extend(std::iter::repeat(0u8).take(pad));
+}
+
+/// A minimal uncompressed NAR: a directory holding one regular file `hi`.
+fn sample_nar() -> Vec<u8> {
+    let mut n = Vec::new();
+    nar_put(&mut n, b"nix-archive-1");
+    nar_put(&mut n, b"(");
+    nar_put(&mut n, b"type");
+    nar_put(&mut n, b"directory");
+    nar_put(&mut n, b"entry");
+    nar_put(&mut n, b"(");
+    nar_put(&mut n, b"name");
+    nar_put(&mut n, b"hi");
+    nar_put(&mut n, b"node");
+    nar_put(&mut n, b"(");
+    nar_put(&mut n, b"type");
+    nar_put(&mut n, b"regular");
+    nar_put(&mut n, b"contents");
+    nar_put(&mut n, b"hello\n");
+    nar_put(&mut n, b")");
+    nar_put(&mut n, b")");
+    nar_put(&mut n, b")");
+    n
+}
+
+/// The no-JS managed-cache browse surface — home, object list, object page,
+/// closure page, `nix-cache-info`, and the NAR explorer — all over plain HTTP
+/// against the real router, with no JavaScript required (RFC-0004 "11-caches").
+#[tokio::test]
+async fn cache_browse_and_nar_explorer_over_plain_http() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let cache = db
+        .create_cache(
+            Some(org),
+            "acme-cache",
+            "Acme Cache",
+            binding,
+            "cache",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    db.upsert_cache_object(&aos_registry_core::db::CacheObject {
+        cache_id: cache,
+        store_hash: "h7j3k8l2m9n4".into(),
+        store_name: "h7j3k8l2m9n4-hello-1.0".into(),
+        nar_url: "nar/test.nar".into(),
+        nar_hash: "sha256:aa".into(),
+        nar_size: 64,
+        file_hash: "aa".into(),
+        file_size: 64,
+        compression: "none".into(),
+        deriver: None,
+        refs: vec![],
+        sig: None,
+        ca: None,
+        uploaded_at: 0,
+        last_accessed_at: None,
+    })
+    .await
+    .unwrap();
+    // Write the (uncompressed) NAR onto the cache surface for the explorer.
+    let nar_dir = root.path().join("cache/nar");
+    std::fs::create_dir_all(&nar_dir).unwrap();
+    std::fs::write(nar_dir.join("test.nar"), sample_nar()).unwrap();
+
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
+    ))
+    .await;
+
+    // Home page: a no-JS HTML summary naming the cache.
+    let (status, _, home) = get(&app, "/acme-cache/").await;
+    assert_eq!(status, StatusCode::OK, "cache home: {home}");
+    assert!(home.contains("<!DOCTYPE html>") && home.contains("Acme Cache"), "{home}");
+
+    // Object list: the indexed object's store name shows up.
+    let (status, _, objects) = get(&app, "/acme-cache/-/objects").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(objects.contains("h7j3k8l2m9n4-hello-1.0"), "{objects}");
+
+    // Object page: narinfo metadata + an explore link.
+    let (status, _, object) = get(&app, "/acme-cache/-/objects/h7j3k8l2m9n4").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(object.contains("h7j3k8l2m9n4-hello-1.0"), "{object}");
+
+    // Closure page renders (single-node closure for a refs-less object).
+    let (status, _, closure) = get(&app, "/acme-cache/-/closure/h7j3k8l2m9n4").await;
+    assert_eq!(status, StatusCode::OK, "closure: {closure}");
+
+    // nix-cache-info is generated from the cache config.
+    let (status, _, info) = get(&app, "/acme-cache/nix-cache-info").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(info.contains("StoreDir: /nix/store"), "{info}");
+
+    // NAR explorer: `?explore` lists the archive's file tree instead of the
+    // raw download — the `hi` entry inside the sample NAR appears.
+    let (status, _, explore) = get(&app, "/acme-cache/nar/test.nar?explore").await;
+    assert_eq!(status, StatusCode::OK, "explore: {explore}");
+    assert!(explore.contains("hi"), "NAR explorer lists entries: {explore}");
+
+    // Without `?explore`, the same path downloads the raw NAR bytes.
+    let (status, _headers, _) = get(&app, "/acme-cache/nar/test.nar").await;
+    assert_eq!(status, StatusCode::OK);
+}
