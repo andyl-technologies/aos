@@ -865,13 +865,22 @@ Stated so the design record does not overstate coverage. Each exclusion is a
 *deliberate, documented* decision (mirroring the skip-list discipline in doc 15
 §3.4), not a silent omission.
 
-- [ ] **Deprecated unquoted URL literals** — bare URLs like `http://example.com`
-      as string literals (without quotes). These are **deprecated in stock Nix**
-      and the user has chosen to **skip** them: aos-nix is **not** required to
-      lex bare URL literals, and conformance cases exercising them are skipped
-      with a recorded reason. *Verify the AOS package set contains no unquoted
-      URL literals* (it should not); if any are found, they must be quoted at the
-      source rather than supported in the lexer.
+- [x] **Deprecated unquoted URL literals** — bare URLs like `http://example.com`
+      as string literals (without quotes). These are **deprecated in stock Nix**,
+      but aos-nix implements them for compatibility rather than keeping this as a
+      skip: the lexer emits `TokenKind::Uri`, the parser/IR preserve URI literal
+      nodes, and the tree-walk evaluator returns them as strings. Coverage:
+      `syntax::lexer::tests::accepts_and_rejects_uri_scheme_boundaries`,
+      `syntax::lexer::tests::uri_fragment_marker_starts_line_comment`,
+      `syntax::lexer::tests::distinguishes_paths_division_update_and_uris`,
+      `compile::ir::tests::uri_literals_are_trivial_values`, and
+      `eval::tree_walk::tests::evaluates_uri_literals_as_strings`. Verified
+      against local C++ Nix 2.24.5 with
+      `nix-instantiate --eval --json --expr 'http://example.com/a-b?c=d'`;
+      raw `#` fragment markers are covered against the same oracle behavior; and
+      against AOS sources with `rg` source scans: URL-looking hits are comments,
+      strings, or shell/test command text, so the package set does not rely on
+      unquoted fetch URLs in expression position.
 - [x] **Deprecated `let { ... body = ...; }` form** — covered as *deprecated* in
       §11.2; included only if AOS uses it (verify), otherwise skipped with a
       recorded reason. Verified unused in AOS `.nix` sources and intentionally
@@ -944,10 +953,11 @@ shallow-force rules (§10), `let`/`with` scoping with the *`with` binds looser
 than lexical scope* rule (§11), control flow and the throw/abort/assert
 catchability matrix (§12), import semantics and IFD (§13), and the language-level
 `__functor`/`__toString`/`outPath` magic attributes (§14). Everything not
-covered is explicitly scoped out (§15): deprecated unquoted URL literals (skipped
-per the user's decision), the deprecated `let {}` body form (deprecated; skip if
-unused), experimental pipe operators (feature-gated), and error-text byte-parity
-(best-effort). Every `- [ ]` is both a unit of implementation work and a
+covered is explicitly scoped out (§15): the deprecated `let {}` body form
+(deprecated; skip if unused), experimental pipe operators (feature-gated), and
+error-text byte-parity (best-effort). Deprecated unquoted URL literals are no
+longer an exclusion because aos-nix implements them for C++ Nix compatibility.
+Every `- [ ]` is both a unit of implementation work and a
 conformance-suite assertion; items tagged **verify against pinned Nix** are the
 ones whose behavior is implementation-defined and must be confirmed against the
 exact C++ Nix rev AOS builds against (doc 15 §9 Q1), never inferred from the

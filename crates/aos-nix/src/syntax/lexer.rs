@@ -1061,7 +1061,6 @@ fn is_uri_body(byte: u8) -> bool {
                 | b'*'
                 | b'\''
                 | b'-'
-                | b'#'
         )
 }
 
@@ -1473,6 +1472,22 @@ mod tests {
                 TokenKind::Ident,
                 TokenKind::Colon,
                 TokenKind::Ident,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn uri_fragment_marker_starts_line_comment() {
+        let kinds = lex_kinds("https://example.test/%23 https://example.test/path#fragment")
+            .expect("lexes");
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::Uri,
+                TokenKind::Whitespace,
+                TokenKind::Uri,
+                TokenKind::LineComment,
                 TokenKind::Eof,
             ]
         );

@@ -29997,6 +29997,10 @@ mod tests {
             b"https://example.test/path?x=1"
         );
         assert_eq!(
+            eval_string_bytes("https://example.test/path#fragment"),
+            b"https://example.test/path"
+        );
+        assert_eq!(
             eval_string_bytes("https://example.test + \"/more\""),
             b"https://example.test/more"
         );
