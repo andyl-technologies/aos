@@ -261,13 +261,17 @@ armed deadlines — both pure virtual-time quantities.
 ### 12.3.3 Blocking on the scheduler, not the wall clock
 
 - **[PLUG-12]** When the plugin's desired wake icount exceeds the published
-  ceiling, the plugin MUST park by waiting on QEMU's main-loop / AIO event source
-  driven by the node's wake fd ([`14-protocol.md`](14-protocol.md) §3.4), or
-  equivalently on the cross-process futex on the slot's `wake_signal`
-  ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7) — using the race-free
-  publish-precondition / read-counter / wait idiom so there is no lost-wake
-  window. The plugin MUST NOT busy-spin re-reading the ceiling and MUST NOT sleep
-  for a wall-clock interval as a substitute for the wake. *Gate:*
+  ceiling, the plugin MUST park on the **cross-process futex on the slot's
+  `wake_signal`** word ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7), using the
+  race-free publish-precondition / read-counter / wait idiom so there is no
+  lost-wake window. The `wake_signal` futex is the canonical, source-of-truth wake
+  primitive. The inherited wake **eventfd** ([`14-protocol.md`](14-protocol.md)
+  §3.4) is an OPTIONAL auxiliary nudge that integrates the wait with QEMU's
+  main-loop / AIO event source; when used, it is layered *on top of* the futex (it
+  signals the same wake but does not replace `wake_signal` as the source of
+  truth), so a futex-only reader and an eventfd-driven reader rendezvous on the
+  same `wake_signal`. The plugin MUST NOT busy-spin re-reading the ceiling and
+  MUST NOT sleep for a wall-clock interval as a substitute for the wake. *Gate:*
   `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §12.3.3,
   forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.7; routes [INV-8],
   [G-9].
@@ -283,11 +287,11 @@ armed deadlines — both pure virtual-time quantities.
 
 Blocking the single vCPU thread is correct and intended: with `-smp 1` the vCPU
 thread has no guest work to do at HLT, and QEMU's main loop continues on its own
-thread. Parking on QEMU's AIO/main-loop wait is the mechanism that lets the host
-scheduler's wake (a write to the eventfd, or a futex bump) unblock the plugin
-without any polling — the host raises the ceiling, then wakes, in release order,
-so the woken plugin observes a consistent `(ceiling, pending-inputs)` snapshot
-([SHM-36]).
+thread. Parking on the `wake_signal` futex is the mechanism that lets the host
+scheduler's wake (a futex bump, optionally accompanied by a write to the auxiliary
+eventfd for main-loop integration) unblock the plugin without any polling — the
+host raises the ceiling, then wakes, in release order, so the woken plugin
+observes a consistent `(ceiling, pending-inputs)` snapshot ([SCHED-36]).
 
 ### 12.3.4 Exact next-deadline introspection
 
@@ -330,7 +334,7 @@ The synchronous-drain requirement is what makes idle fast-forward exact: a
 [`25-performance-targets.md`](25-performance-targets.md)) and every timer that was
 due in that gap fires at its exact icount, in the same order, on every run.
 
-## 12.4 Idle/resume handling and freezing time during device I/O
+## 12.4 Idle/resume handling and holding HZ ticks during device I/O
 
 ### 12.4.1 Idle/resume lifecycle
 
@@ -375,41 +379,54 @@ due in that gap fires at its exact icount, in the same order, on every run.
   is a defect, never a tolerated condition. *Gate:* `gate:layer1-injection`,
   `gate:divergence-bisect`. *Spec:* §12.4.2; routes [DET-12], [INV-10].
 
-### 12.4.3 Freezing virtual time during in-flight device I/O
+### 12.4.3 Holding HZ ticks across in-flight device I/O
 
 A device-I/O round trip (a block read, a 9p request) is submitted at one icount
 and answered later. If the guest's HZ timer ticks were allowed to advance virtual
 time freely between submit and completion, the icount at which the completion
 became visible would depend on how many idle jumps happened to occur in that
-window — a host-timing artifact. The plugin freezes virtual time across an I/O
-burst so the completion lands at a deterministic icount.
+window — a host-timing artifact. The plugin therefore suppresses *spurious* HZ-tick
+advancement of virtual time across an I/O burst so the completion lands at the
+scheduler-computed icount. This does **not** freeze virtual time (which
+[`15-io-subnodes.md`](15-io-subnodes.md) forbids): the requester still advances to
+the scheduler-computed completion via the exact-local-event fast-forward (§8.4,
+[`15-io-subnodes.md`](15-io-subnodes.md) [IO-2]/[IO-10]); only the host-timing-
+dependent extra HZ ticks between submit and completion are held back.
 
 - **[PLUG-21]** While any device-I/O request the plugin has submitted for its node
-  is in flight, the plugin MUST hold virtual time frozen at the submit icount: the
-  idle handler MUST clamp its wake icount to the current icount (no jump) for as
-  long as the per-node `device_io_active` flag is set or the plugin's pending-I/O
-  counter is non-zero ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-9]
-  `device_io_active`). This pins the virtual-time moment at which an I/O completion
-  becomes visible to the submit-time moment, independent of wall-clock variation
-  in how long the executor takes to serve the request. *Gate:*
-  `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.4.3,
+  is in flight, the plugin MUST suppress spurious HZ-tick advancement of virtual
+  time between submit and the computed completion: the idle handler MUST NOT let
+  background guest HZ ticks advance the clock past what the scheduler authorizes
+  for the burst for as long as the per-node `device_io_active` flag is set or the
+  plugin's pending-I/O counter is non-zero ([`13-shmem-abi.md`](13-shmem-abi.md)
+  [SHM-9] `device_io_active`). The completion does NOT become visible at the submit
+  instant: it becomes visible at the scheduler-computed
+  `delivery_icount = submit_icount + modeled_latency`, to which the requester is
+  fast-forwarded via the exact-local-event mechanism (§8.4,
+  [`15-io-subnodes.md`](15-io-subnodes.md) [IO-2]/[IO-10]). Holding the HZ ticks
+  makes that delivery icount independent of wall-clock variation in how long the
+  executor takes to serve the request, so timer ticks cannot slip mid-burst.
+  *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`. *Spec:* §12.4.3,
   forward-ref [`15-io-subnodes.md`](15-io-subnodes.md); routes [DET-19],
   [INV-4].
 
 - **[PLUG-22]** The plugin MUST set `device_io_active` (and/or increment its
   pending-I/O counter) on the I/O *submit* path and clear it (decrement) on the
   matching *completion* path, pairing submit and completion one-to-one regardless
-  of completion status, so the freeze is released exactly when the last in-flight
-  request for the burst has been answered. A burst-done signal from the device
+  of completion status, so the HZ-tick hold ([PLUG-21]) is released exactly when
+  the last in-flight request for the burst has been answered. A burst-done signal
+  from the device
   (for multi-request bursts, §12.6) MUST clear the flag for the whole burst.
   *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.4.3, §12.6; routes [DET-19],
   [INV-4].
 
-The freeze is not a stall: the completion still arrives (the executor serves the
-request and writes the response into the inbound ring), and the device's
-completion mechanism un-halts the guest, after which the next idle callback
-advances normally. What the freeze removes is the *wall-clock-dependent number of
-HZ ticks* that would otherwise slip between submit and completion.
+Holding the HZ ticks is not a stall: the completion still arrives (the executor
+serves the request and writes the response into the inbound ring), the requester
+is fast-forwarded to the computed `delivery_icount`, and the device's completion
+mechanism un-halts the guest, after which the next idle callback advances normally.
+What this removes is only the *wall-clock-dependent number of HZ ticks* that would
+otherwise slip between submit and the computed completion; virtual time is never
+frozen at the submit instant.
 
 ## 12.5 Network frame emit and inject
 
@@ -525,10 +542,10 @@ the round trip (§12.4.3).
 - **[PLUG-30]** A response delivered to the guest MUST be gated by its
   `delivery_icount`: the plugin MUST NOT expose an I/O completion before its
   delivery icount has been reached in virtual time (the poll callback returns
-  "not ready" until the gate passes). Because the submit freezes virtual time
-  ([PLUG-21]) and the executor stamps the completion's delivery icount at or after
-  the submit icount, the gate is anchored to a deterministic instruction-derived
-  virtual time, never to wall-clock. *Gate:* `gate:layer1-injection`. *Spec:*
+  "not ready" until the gate passes). Because the submit holds back spurious HZ
+  ticks ([PLUG-21]) and the executor stamps the completion's delivery icount at or
+  after the submit icount, the gate is anchored to a deterministic
+  instruction-derived virtual time, never to wall-clock. *Gate:* `gate:layer1-injection`. *Spec:*
   §12.6; routes [DET-19], [DET-13].
 
 - **[PLUG-31]** The block and 9p callbacks MUST use the same re-entrancy-safe
@@ -661,9 +678,10 @@ section states the plugin's obligations on that channel and at the boot barrier.
   publish the initial `max_advance_icount` ceiling (the boot rendezvous target)
   for its slot ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-11]). The slot's
   ceiling initializes to 0 so the plugin cannot advance before this barrier
-  releases; the plugin MUST block on the boot barrier (waiting on the wake fd /
-  futex, never a fixed wall-clock sleep used as the gate) until the scheduler
-  raises the ceiling. *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`.
+  releases; the plugin MUST block on the boot barrier (parking on the `wake_signal`
+  futex as the primary wait primitive, optionally integrated with the main loop via
+  the auxiliary wake eventfd, never a fixed wall-clock sleep used as the gate) until
+  the scheduler raises the ceiling. *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`.
   *Spec:* §12.9.3, forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.6; routes
   [DET-12], [INV-8].
 
@@ -775,7 +793,7 @@ plugin = the in-VM cdylib (-plugin), single vCPU thread ⇒ state uncontended (P
     idle (HLT/WFI): publish icount → exact next deadline → wake = min(timer,
                     inbound delivery, ceiling) → PARK on wake-fd/futex (no spin)
                     → jump (drain timers/BHs) → inject due frames in order    (PLUG-10..16)
-    freeze virtual time across in-flight device I/O (device_io_active)        (PLUG-21..22)
+    hold HZ ticks across in-flight device I/O (device_io_active)              (PLUG-21..22)
   net: TX → outbound ring (emit icount); RX inject iff delivery<=now, in
        (delivery_icount, src, seq) order; passed-delivery ⇒ fail loud         (PLUG-23..27)
   block/9p: submit→ring(freeze time); poll→validate delivery_icount→deliver   (PLUG-28..31)

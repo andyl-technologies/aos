@@ -75,14 +75,19 @@ reconstructed on demand, and it is what makes the replay oracle even *expressibl
 ```rust,illustrative
 /// The immutable definition of a run: topology, fault plan, properties, seed.
 /// Content-addressed; see file 06. This is "configuration #0."
+// NOTE: `world`/`plan`/`properties` are shown inline here for readability;
+// canonically they are content-addressed `Ref<_>` values and `id` is BLAKE3 over
+// the component hashes plus the Seed — see 06 §2 [SPAT-3]/[SPAT-4], which is
+// authoritative.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
-    /// Hash of the canonical serialization of (World, Plan, Properties, Seed).
-    /// Two `ScenarioDef`s are equal iff their `id` is equal.
+    /// BLAKE3 over the tuple of component hashes (World, Plan, Properties) plus
+    /// the Seed (06 §2 [SPAT-4], authoritative). Two `ScenarioDef`s are equal iff
+    /// their `id` is equal.
     pub id: ContentHash,
-    pub world: World,         // nodes + links + per-node static config (file 06)
-    pub plan: Plan,           // declarative fault/event schedule over v-time (06, 17)
-    pub properties: Properties, // assertions to check (file 18)
+    pub world: Ref<World>,         // nodes + links + per-node static config (file 06)
+    pub plan: Ref<Plan>,           // declarative fault/event schedule over v-time (06, 17)
+    pub properties: Ref<Properties>, // assertions to check (file 18)
     pub seed: Seed,           // root entropy for all decision RNG (file 04)
 }
 

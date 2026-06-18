@@ -251,7 +251,9 @@ Contract B reduces to one precise requirement about *how an input is timed*.
 
 - **[DET-14]** When multiple inputs target the same VM at the same delivery
   icount, their visibility order MUST be the deterministic total order
-  `(virtual_time, node_id, sequence)` of [INV-3], resolved by the single
+  `(virtual_time, node_id, sequence)` of [INV-3] (see [`08-scheduling.md`](08-scheduling.md)
+  §8.6 for the full key; `node_id` here is the consumer, with producer and sequence
+  as further tiebreaks), resolved by the single
   authoritative scheduler, identical across runs. *Gate:* `gate:layer1-injection`.
   *Spec:* §4.4, forward-ref 08.
 

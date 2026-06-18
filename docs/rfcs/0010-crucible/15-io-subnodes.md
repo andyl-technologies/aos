@@ -88,7 +88,8 @@ otherwise-idle requester, which is both correct and fast.
   observed at the requester's icount `t`, the sub-node MUST compute a
   deterministic completion virtual time `completion_vt = vt(t) + latency(req)`,
   convert it to the consumer's `delivery_icount` via the fixed shift
-  ([`09-virtual-time-icount.md`](09-virtual-time-icount.md)), and emit the
+  ([`09-virtual-time-icount.md`](09-virtual-time-icount.md); ns→icount via the
+  [TIME-4] ceil map), and emit the
   response so it becomes visible **at exactly that icount** ([SCHED-29],
   [SHM-33]). Crucible MUST NOT implement I/O by pausing or "freezing" virtual
   time during a host I/O operation; the freeze-time approach is forbidden because

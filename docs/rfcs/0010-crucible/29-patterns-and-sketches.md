@@ -421,7 +421,7 @@ fn park_at_ceiling(slot: &NodeSlot, wake_icount: u64) {
 /// add so a concurrent about-to-wait returns immediately, then FUTEX_WAKE. A
 /// wake is cheap even when no one is parked ([SHM-27]). The scheduler MUST
 /// write any due input to the inbound ring BEFORE this wake, so the woken
-/// plugin sees a consistent (ceiling, pending-inputs) snapshot ([SHM-36]).
+/// plugin sees a consistent (ceiling, pending-inputs) snapshot ([SCHED-36]).
 fn wake(slot: &NodeSlot) {
     slot.wake_signal.fetch_add(1, Ordering::Release);
     futex_wake_shared(&slot.wake_signal, 1);
