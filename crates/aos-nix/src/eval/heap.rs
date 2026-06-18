@@ -13,6 +13,7 @@ use std::rc::Rc;
 use thiserror::Error;
 
 use super::env::{EvalEnv, EvalWithEnv};
+use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
 use crate::compile::{FrameId, IrAttrPathId, IrId};
@@ -32,7 +33,7 @@ pub(crate) enum EvalThunkKind {
     /// Evaluates a lowered IR body under captured lexical and dynamic scopes.
     Node {
         /// The lowered body to evaluate when forced.
-        body: IrId,
+        body: EvalNodeRef,
         /// Captured lexical frames.
         env: EvalEnv,
         /// Captured dynamic `with` scopes.
@@ -41,39 +42,39 @@ pub(crate) enum EvalThunkKind {
     /// Applies a forced function value to a lazy argument value.
     Apply {
         /// The IR node that produced the function.
-        function_id: IrId,
+        function: EvalNodeRef,
         /// The source span associated with the function.
         function_span: Span,
         /// The forced function value.
-        function: Value,
+        function_value: Value,
         /// The IR node that produced the argument.
-        argument_id: IrId,
+        argument: EvalNodeRef,
         /// The lazy argument value.
-        argument: Value,
+        argument_value: Value,
     },
     /// Applies a forced function value to two lazy argument values.
     Apply2 {
         /// The IR node that produced the function.
-        function_id: IrId,
+        function: EvalNodeRef,
         /// The source span associated with the function.
         function_span: Span,
         /// The function value, forced only when this thunk is forced.
-        function: Value,
+        function_value: Value,
         /// The IR node associated with the first argument.
-        first_argument_id: IrId,
+        first_argument: EvalNodeRef,
         /// The source span associated with the first argument.
         first_argument_span: Span,
         /// The first lazy argument value.
-        first_argument: Value,
+        first_argument_value: Value,
         /// The IR node associated with the second argument.
-        second_argument_id: IrId,
+        second_argument: EvalNodeRef,
         /// The second lazy argument value.
-        second_argument: Value,
+        second_argument_value: Value,
     },
     /// Selects an attribute path from an already allocated lazy receiver.
     Select {
         /// The IR select node that defines the path and diagnostic span.
-        select_id: IrId,
+        select: EvalNodeRef,
         /// The shared lazy receiver value.
         receiver: Value,
         /// The lowered attribute path to select.
@@ -93,19 +94,24 @@ pub struct EvalThunk {
 impl EvalThunk {
     /// Creates a suspended environment-free thunk record for `body`.
     pub fn new(body: IrId) -> Self {
-        Self::with_env(body, EvalEnv::default())
+        Self::with_env(EvalModuleId::ROOT, body, EvalEnv::default())
     }
 
     /// Creates a suspended thunk record for `body` and `env`.
-    pub fn with_env(body: IrId, env: EvalEnv) -> Self {
-        Self::with_captures(body, env, EvalWithEnv::default())
+    pub fn with_env(module: EvalModuleId, body: IrId, env: EvalEnv) -> Self {
+        Self::with_captures(module, body, env, EvalWithEnv::default())
     }
 
     /// Creates a suspended thunk record with lexical and dynamic captures.
-    pub fn with_captures(body: IrId, env: EvalEnv, with_env: EvalWithEnv) -> Self {
+    pub fn with_captures(
+        module: EvalModuleId,
+        body: IrId,
+        env: EvalEnv,
+        with_env: EvalWithEnv,
+    ) -> Self {
         Self {
             kind: EvalThunkKind::Node {
-                body,
+                body: EvalNodeRef::new(module, body),
                 env,
                 with_env,
             },
@@ -115,19 +121,21 @@ impl EvalThunk {
 
     /// Creates a suspended function-application thunk record.
     pub const fn apply(
+        function_module: EvalModuleId,
         function_id: IrId,
         function_span: Span,
-        function: Value,
+        function_value: Value,
+        argument_module: EvalModuleId,
         argument_id: IrId,
-        argument: Value,
+        argument_value: Value,
     ) -> Self {
         Self {
             kind: EvalThunkKind::Apply {
-                function_id,
+                function: EvalNodeRef::new(function_module, function_id),
                 function_span,
-                function,
-                argument_id,
-                argument,
+                function_value,
+                argument: EvalNodeRef::new(argument_module, argument_id),
+                argument_value,
             },
             cell: ThunkCell::new(),
         }
@@ -136,35 +144,43 @@ impl EvalThunk {
     /// Creates a suspended two-argument function-application thunk record.
     #[allow(clippy::too_many_arguments)]
     pub const fn apply2(
+        function_module: EvalModuleId,
         function_id: IrId,
         function_span: Span,
-        function: Value,
+        function_value: Value,
+        first_argument_module: EvalModuleId,
         first_argument_id: IrId,
         first_argument_span: Span,
-        first_argument: Value,
+        first_argument_value: Value,
+        second_argument_module: EvalModuleId,
         second_argument_id: IrId,
-        second_argument: Value,
+        second_argument_value: Value,
     ) -> Self {
         Self {
             kind: EvalThunkKind::Apply2 {
-                function_id,
+                function: EvalNodeRef::new(function_module, function_id),
                 function_span,
-                function,
-                first_argument_id,
+                function_value,
+                first_argument: EvalNodeRef::new(first_argument_module, first_argument_id),
                 first_argument_span,
-                first_argument,
-                second_argument_id,
-                second_argument,
+                first_argument_value,
+                second_argument: EvalNodeRef::new(second_argument_module, second_argument_id),
+                second_argument_value,
             },
             cell: ThunkCell::new(),
         }
     }
 
     /// Creates a suspended static attribute selection thunk record.
-    pub const fn select(select_id: IrId, receiver: Value, path: IrAttrPathId) -> Self {
+    pub const fn select(
+        module: EvalModuleId,
+        select_id: IrId,
+        receiver: Value,
+        path: IrAttrPathId,
+    ) -> Self {
         Self {
             kind: EvalThunkKind::Select {
-                select_id,
+                select: EvalNodeRef::new(module, select_id),
                 receiver,
                 path,
             },
@@ -179,6 +195,16 @@ impl EvalThunk {
 
     /// Returns the lowered body this thunk will evaluate when forced, if any.
     pub const fn body(&self) -> Option<IrId> {
+        match &self.kind {
+            EvalThunkKind::Node { body, .. } => Some(body.id()),
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
+        }
+    }
+
+    /// Returns the module-qualified lowered body this thunk will evaluate.
+    pub const fn body_ref(&self) -> Option<EvalNodeRef> {
         match &self.kind {
             EvalThunkKind::Node { body, .. } => Some(*body),
             EvalThunkKind::Apply { .. }
@@ -220,6 +246,7 @@ impl EvalThunk {
 /// environments captured when the lambda was constructed.
 #[derive(Debug)]
 pub struct EvalLambda {
+    module: EvalModuleId,
     pattern: IrId,
     body: IrId,
     frame: FrameId,
@@ -230,11 +257,19 @@ pub struct EvalLambda {
 impl EvalLambda {
     /// Creates a lambda closure record.
     pub fn new(pattern: IrId, body: IrId, frame: FrameId, env: EvalEnv) -> Self {
-        Self::with_captures(pattern, body, frame, env, EvalWithEnv::default())
+        Self::with_captures(
+            EvalModuleId::ROOT,
+            pattern,
+            body,
+            frame,
+            env,
+            EvalWithEnv::default(),
+        )
     }
 
     /// Creates a lambda closure record with lexical and dynamic captures.
     pub fn with_captures(
+        module: EvalModuleId,
         pattern: IrId,
         body: IrId,
         frame: FrameId,
@@ -242,12 +277,18 @@ impl EvalLambda {
         with_env: EvalWithEnv,
     ) -> Self {
         Self {
+            module,
             pattern,
             body,
             frame,
             env,
             with_env,
         }
+    }
+
+    /// Returns the module that owns this lambda's lowered pattern and body.
+    pub const fn module(&self) -> EvalModuleId {
+        self.module
     }
 
     /// Returns the lowered parameter pattern.
@@ -279,6 +320,7 @@ impl EvalLambda {
 /// One lazy argument captured by a partially applied builtin.
 #[derive(Clone, Copy, Debug)]
 pub struct EvalPrimOpArg {
+    module: EvalModuleId,
     id: IrId,
     span: Span,
     value: Value,
@@ -287,7 +329,22 @@ pub struct EvalPrimOpArg {
 impl EvalPrimOpArg {
     /// Creates a captured builtin argument record.
     pub const fn new(id: IrId, span: Span, value: Value) -> Self {
-        Self { id, span, value }
+        Self::new_in_module(EvalModuleId::ROOT, id, span, value)
+    }
+
+    /// Creates a captured builtin argument record in a specific IR module.
+    pub const fn new_in_module(module: EvalModuleId, id: IrId, span: Span, value: Value) -> Self {
+        Self {
+            module,
+            id,
+            span,
+            value,
+        }
+    }
+
+    /// Returns the module that owns the IR node that produced the argument.
+    pub const fn module(&self) -> EvalModuleId {
+        self.module
     }
 
     /// Returns the IR node that produced the argument.
@@ -1049,9 +1106,11 @@ mod tests {
         let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
         let value = heap
             .alloc_thunk(EvalThunk::apply(
+                EvalModuleId::ROOT,
                 IrId::new(1),
                 Span::new(0, 1),
                 Value::int(7),
+                EvalModuleId::ROOT,
                 IrId::new(2),
                 Value::bool(true),
             ))

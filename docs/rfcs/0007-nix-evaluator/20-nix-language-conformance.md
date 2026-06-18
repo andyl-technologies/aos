@@ -795,19 +795,20 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ## 13. Imports and scoping across files
 
-- [ ] **`import path`** — parse and evaluate the file at `path`, returning its
+- [x] **`import path`** — parse and evaluate the file at `path`, returning its
       value. The imported expression is evaluated in a *fresh* scope (it does not
       see the importer's `with`/`let` — `import` is not textual inclusion).
       Verify the scope isolation against pinned Nix.
-- [ ] **Import a directory** — `import ./dir` loads `./dir/default.nix`. Verify
+- [x] **Import a directory** — `import ./dir` loads `./dir/default.nix`. Verify
       the `default.nix` resolution and the error when it is absent (**must-error**).
-- [ ] **Import caching** — a given store path / file is parsed+evaluated **once**
+- [x] **Import caching** — a given store path / file is parsed+evaluated **once**
       and the result is shared across all `import`s of it (memoized by resolved
       path). Reproduce the caching so repeated imports share thunks (observable
       via identity and via single-evaluation of top-level effects). Verify the
       cache key (canonicalized path?) against pinned Nix.
-- [ ] **`import` forces the path argument** — coerces its argument to a path/store
-      path; importing a derivation triggers IFD (below).
+- [x] **`import` forces the path argument** — coerces its argument to a path/store
+      path before reading the imported source. Importing a derivation output is
+      covered by the IFD row below.
 - [ ] **`scopedImport`** — variant that injects extra bindings into the imported
       file's global scope (builtin in doc 21; the language-level note is that it
       changes the *scope* the imported file evaluates in, unlike plain `import`).

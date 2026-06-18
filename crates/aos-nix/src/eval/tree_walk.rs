@@ -37,16 +37,17 @@ use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
 use super::heap::{
     EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk, EvalThunkKind,
 };
+use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
     FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
-    IrKind, IrNode, IrShapeId,
+    IrKind, IrNode, IrShapeId, lower, resolve,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
-use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind};
+use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
 use crate::value::{Value, ValueTag};
 
 const TO_STRING_ATTR: &[u8] = b"__toString";
@@ -1283,10 +1284,25 @@ impl EvalStderr {
     }
 }
 
+/// One lowered IR module loaded into a tree-walk evaluator.
+#[derive(Clone, Debug)]
+struct TreeWalkModule {
+    ir: Ir,
+    path_literal_base: Option<Vec<u8>>,
+}
+
+/// In-process import cache state.
+#[derive(Clone, Copy, Debug)]
+enum ImportCacheEntry {
+    Evaluating,
+    Ready(Value),
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
-pub struct TreeWalk<'ir> {
-    ir: &'ir Ir,
+pub struct TreeWalk {
+    modules: Vec<TreeWalkModule>,
+    current_module: EvalModuleId,
     symbols: SymbolTable,
     heap: EvalHeap,
     env: Vec<Rc<EvalFrame>>,
@@ -1297,6 +1313,7 @@ pub struct TreeWalk<'ir> {
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
+    import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
     call_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
     lazy_identity_thunks: BTreeSet<u64>,
@@ -1308,16 +1325,21 @@ struct KnownDerivation {
     output_names: BTreeSet<String>,
 }
 
-impl<'ir> TreeWalk<'ir> {
+impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir`.
-    pub fn new(ir: &'ir Ir) -> Self {
+    pub fn new(ir: &Ir) -> Self {
         Self::with_options(ir, TreeWalkOptions::default())
     }
 
     /// Creates a tree-walk evaluator over `ir` with explicit runtime options.
-    pub fn with_options(ir: &'ir Ir, options: TreeWalkOptions) -> Self {
+    pub fn with_options(ir: &Ir, options: TreeWalkOptions) -> Self {
+        let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
         Self {
-            ir,
+            modules: vec![TreeWalkModule {
+                ir: ir.clone(),
+                path_literal_base,
+            }],
+            current_module: EvalModuleId::ROOT,
             symbols: ir.symbols.clone(),
             heap: EvalHeap::new(),
             env: Vec::new(),
@@ -1328,6 +1350,7 @@ impl<'ir> TreeWalk<'ir> {
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
+            import_cache: BTreeMap::new(),
             call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
         }
@@ -1397,7 +1420,8 @@ impl<'ir> TreeWalk<'ir> {
     ///
     /// Returns [`TreeWalkError`] if evaluation of the root node fails.
     pub fn eval_root(&mut self) -> Result<Value, TreeWalkError> {
-        self.eval_node(self.ir.root)
+        let root = self.current_ir().root;
+        self.eval_node(root)
     }
 
     /// Evaluates a node to weak head normal form.
@@ -1551,10 +1575,10 @@ impl<'ir> TreeWalk<'ir> {
             .heap
             .get_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let Some(body) = thunk.body() else {
+        let Some(body) = thunk.body_ref() else {
             return Ok(false);
         };
-        Ok(self.node(body)?.kind == IrKind::Path)
+        Ok(self.node_in_module(body.module(), body.id())?.kind == IrKind::Path)
     }
 
     fn consume_suspended_lazy_identity_thunk(
@@ -1587,9 +1611,85 @@ impl<'ir> TreeWalk<'ir> {
     }
 
     fn node(&self, id: IrId) -> Result<&IrNode, TreeWalkError> {
-        self.ir.arena.node(id).ok_or_else(|| {
+        self.node_in_module(self.current_module, id)
+    }
+
+    fn node_in_module(&self, module: EvalModuleId, id: IrId) -> Result<&IrNode, TreeWalkError> {
+        self.module_ir(module)?.arena.node(id).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidNodeId { id }, Span::default())
         })
+    }
+
+    fn current_ir(&self) -> &Ir {
+        &self.modules[self.current_module.index()].ir
+    }
+
+    fn module_path_literal_base(
+        &self,
+        module: EvalModuleId,
+        span: Span,
+    ) -> Result<Option<&[u8]>, TreeWalkError> {
+        self.modules
+            .get(module.index())
+            .map(|module| module.path_literal_base.as_deref())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidModuleId {
+                        module: module.as_u32(),
+                    },
+                    span,
+                )
+            })
+    }
+
+    fn module_ir(&self, module: EvalModuleId) -> Result<&Ir, TreeWalkError> {
+        self.modules
+            .get(module.index())
+            .map(|module| &module.ir)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidModuleId {
+                        module: module.as_u32(),
+                    },
+                    Span::default(),
+                )
+            })
+    }
+
+    fn with_current_module<T>(
+        &mut self,
+        module: EvalModuleId,
+        f: impl FnOnce(&mut Self) -> Result<T, TreeWalkError>,
+    ) -> Result<T, TreeWalkError> {
+        self.module_ir(module)?;
+        let saved = self.current_module;
+        self.current_module = module;
+        let result = f(self);
+        self.current_module = saved;
+        result
+    }
+
+    fn push_module(
+        &mut self,
+        id: IrId,
+        span: Span,
+        ir: Ir,
+        path_literal_base: Vec<u8>,
+    ) -> Result<EvalModuleId, TreeWalkError> {
+        let raw = u32::try_from(self.modules.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::TooManyModules {
+                    id,
+                    modules: self.modules.len(),
+                },
+                span,
+            )
+        })?;
+        self.modules.push(TreeWalkModule {
+            ir,
+            path_literal_base: Some(path_literal_base),
+        });
+        Ok(EvalModuleId::new(raw))
     }
 
     fn binding_range(
@@ -1602,7 +1702,7 @@ impl<'ir> TreeWalk<'ir> {
         let end = start.checked_add(slice.len()).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidBindingSlice { id, slice }, span)
         })?;
-        if self.ir.bindings.get(start..end).is_none() {
+        if self.current_ir().bindings.get(start..end).is_none() {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidBindingSlice { id, slice },
                 span,
@@ -1617,7 +1717,7 @@ impl<'ir> TreeWalk<'ir> {
         frame: FrameId,
         span: Span,
     ) -> Result<&crate::compile::FrameInfo, TreeWalkError> {
-        self.ir.frames.get(frame.index()).ok_or_else(|| {
+        self.current_ir().frames.get(frame.index()).ok_or_else(|| {
             TreeWalkError::new(
                 TreeWalkErrorKind::InvalidFrameId {
                     id,
@@ -1694,7 +1794,7 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<(), TreeWalkError> {
         let mut binding_keys = 0usize;
         for binding_index in binding_range {
-            let binding = self.ir.bindings[binding_index];
+            let binding = self.current_ir().bindings[binding_index];
             let actual = match binding.key {
                 IrAttrPathSegment::Static(symbol) => symbol,
                 IrAttrPathSegment::Dynamic(_) => continue,
@@ -1746,7 +1846,7 @@ impl<'ir> TreeWalk<'ir> {
         path: IrAttrPathId,
         span: Span,
     ) -> Result<&[IrAttrPathSegment], TreeWalkError> {
-        self.ir
+        self.current_ir()
             .attr_paths
             .get(path.index())
             .map(|segments| segments.as_ref())
@@ -1786,7 +1886,7 @@ impl<'ir> TreeWalk<'ir> {
         chain: u32,
         span: Span,
     ) -> Result<usize, TreeWalkError> {
-        self.ir
+        self.current_ir()
             .with_chains
             .get(chain as usize)
             .map(|chain| chain.scopes.len())
@@ -1802,7 +1902,7 @@ impl<'ir> TreeWalk<'ir> {
         index: usize,
         span: Span,
     ) -> Result<IrId, TreeWalkError> {
-        self.ir
+        self.current_ir()
             .with_chains
             .get(chain as usize)
             .and_then(|chain| chain.scopes.get(index).copied())
@@ -1811,14 +1911,38 @@ impl<'ir> TreeWalk<'ir> {
             })
     }
 
-    fn with_scope_value(&self, id: IrId, scope: IrId, span: Span) -> Result<Value, TreeWalkError> {
+    fn with_chain_scope_ref(
+        &self,
+        id: IrId,
+        chain: u32,
+        index: usize,
+        span: Span,
+    ) -> Result<EvalNodeRef, TreeWalkError> {
+        Ok(EvalNodeRef::new(
+            self.current_module,
+            self.with_chain_scope(id, chain, index, span)?,
+        ))
+    }
+
+    fn with_scope_value(
+        &self,
+        id: IrId,
+        scope: EvalNodeRef,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
         self.with_scopes
             .iter()
             .rev()
-            .find(|active| active.scope() == scope)
+            .find(|active| active.scope_ref() == scope)
             .map(EvalWithScope::value)
             .ok_or_else(|| {
-                TreeWalkError::new(TreeWalkErrorKind::MissingWithScope { id, scope }, span)
+                TreeWalkError::new(
+                    TreeWalkErrorKind::MissingWithScope {
+                        id,
+                        scope: scope.id(),
+                    },
+                    span,
+                )
             })
     }
 
@@ -2860,17 +2984,22 @@ impl<'ir> TreeWalk<'ir> {
                 self.coerce_to_interpolation_string(child, value, span)
             }
             IrData::Children(children) => {
-                let children = self.ir.arena.child_slice(children).ok_or_else(|| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidChildSlice {
-                            id,
-                            slice: children,
-                        },
-                        node.span,
-                    )
-                })?;
-                if self.interp_children_have_path_fragments(children)? {
-                    return self.eval_path_interp(id, node, children);
+                let children = self
+                    .current_ir()
+                    .arena
+                    .child_slice(children)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::InvalidChildSlice {
+                                id,
+                                slice: children,
+                            },
+                            node.span,
+                        )
+                    })?
+                    .to_vec();
+                if self.interp_children_have_path_fragments(&children)? {
+                    return self.eval_path_interp(id, node, &children);
                 }
                 let Some((first, rest)) = children.split_first() else {
                     return self
@@ -3363,15 +3492,20 @@ impl<'ir> TreeWalk<'ir> {
         let IrData::Children(children) = node.data else {
             return Err(self.invalid_payload(id, node, "list children"));
         };
-        let children = self.ir.arena.child_slice(children).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::InvalidChildSlice {
-                    id,
-                    slice: children,
-                },
-                node.span,
-            )
-        })?;
+        let children = self
+            .current_ir()
+            .arena
+            .child_slice(children)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice {
+                        id,
+                        slice: children,
+                    },
+                    node.span,
+                )
+            })?
+            .to_vec();
         let mut elements = Vec::new();
         elements.try_reserve_exact(children.len()).map_err(|_| {
             TreeWalkError::new(
@@ -3461,7 +3595,12 @@ impl<'ir> TreeWalk<'ir> {
         let env = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
         self.heap
-            .alloc_thunk(EvalThunk::with_captures(body, env, with_env))
+            .alloc_thunk(EvalThunk::with_captures(
+                self.current_module,
+                body,
+                env,
+                with_env,
+            ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -3478,9 +3617,11 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         self.heap
             .alloc_thunk(EvalThunk::apply(
+                self.current_module,
                 function_id,
                 function_span,
                 function,
+                self.current_module,
                 argument_id,
                 argument,
             ))
@@ -3503,12 +3644,15 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         self.heap
             .alloc_thunk(EvalThunk::apply2(
+                self.current_module,
                 function_id,
                 function_span,
                 function,
+                self.current_module,
                 first_argument_id,
                 first_argument_span,
                 first_argument,
+                self.current_module,
                 second_argument_id,
                 second_argument,
             ))
@@ -3524,7 +3668,12 @@ impl<'ir> TreeWalk<'ir> {
         path: IrAttrPathId,
     ) -> Result<Value, TreeWalkError> {
         self.heap
-            .alloc_thunk(EvalThunk::select(select_id, receiver, path))
+            .alloc_thunk(EvalThunk::select(
+                self.current_module,
+                select_id,
+                receiver,
+                path,
+            ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
@@ -3558,58 +3707,68 @@ impl<'ir> TreeWalk<'ir> {
                         let saved_env = std::mem::replace(&mut self.env, thunk_env);
                         let saved_with_scopes =
                             std::mem::replace(&mut self.with_scopes, thunk_with_env);
-                        let result = self.eval_node(*body);
+                        let result = self
+                            .with_current_module(body.module(), |eval| eval.eval_node(body.id()));
                         self.env = saved_env;
                         self.with_scopes = saved_with_scopes;
                         result
                     }
                     EvalThunkKind::Apply {
-                        function_id,
-                        function_span,
                         function,
-                        argument_id,
+                        function_span,
+                        function_value,
                         argument,
-                    } => self.apply_lambda_value(
-                        id,
-                        span,
-                        *function_id,
-                        *function,
-                        *function_span,
-                        *argument_id,
-                        *argument,
-                    ),
+                        argument_value,
+                    } => self.with_current_module(function.module(), |eval| {
+                        eval.apply_lambda_value(
+                            id,
+                            span,
+                            function.id(),
+                            *function_value,
+                            *function_span,
+                            argument.id(),
+                            *argument_value,
+                        )
+                    }),
                     EvalThunkKind::Apply2 {
-                        function_id,
-                        function_span,
                         function,
-                        first_argument_id,
-                        first_argument_span,
+                        function_span,
+                        function_value,
                         first_argument,
-                        second_argument_id,
+                        first_argument_span,
+                        first_argument_value,
                         second_argument,
-                    } => self.apply_lambda_value_2(
-                        id,
-                        span,
-                        *function_id,
-                        *function,
-                        *function_span,
-                        *first_argument_id,
-                        *first_argument_span,
-                        *first_argument,
-                        *second_argument_id,
-                        *second_argument,
-                    ),
+                        second_argument_value,
+                    } => self.with_current_module(function.module(), |eval| {
+                        eval.apply_lambda_value_2(
+                            id,
+                            span,
+                            function.id(),
+                            *function_value,
+                            *function_span,
+                            first_argument.id(),
+                            *first_argument_span,
+                            *first_argument_value,
+                            second_argument.id(),
+                            *second_argument_value,
+                        )
+                    }),
                     EvalThunkKind::Select {
-                        select_id,
+                        select,
                         receiver,
                         path,
-                    } => {
-                        let span = self.node(*select_id)?.span;
-                        let value = self.eval_select_from_value(
-                            *select_id, span, *receiver, *path, None, true,
+                    } => self.with_current_module(select.module(), |eval| {
+                        let span = eval.node(select.id())?.span;
+                        let value = eval.eval_select_from_value(
+                            select.id(),
+                            span,
+                            *receiver,
+                            *path,
+                            None,
+                            true,
                         )?;
-                        self.force_node_result(*select_id, span, value)
-                    }
+                        eval.force_node_result(select.id(), span, value)
+                    }),
                 };
                 let value = result?;
                 let value = guard.finish(value).map_err(|source| {
@@ -3655,7 +3814,7 @@ impl<'ir> TreeWalk<'ir> {
         let result = (|| {
             let mut inherit_source_thunks = BTreeMap::new();
             for (slot, binding_index) in binding_range.enumerate() {
-                let binding = self.ir.bindings[binding_index];
+                let binding = self.current_ir().bindings[binding_index];
                 if !matches!(binding.key, IrAttrPathSegment::Static(_)) {
                     return Err(TreeWalkError::new(
                         TreeWalkErrorKind::UnsupportedLetBindingKey { id },
@@ -3697,7 +3856,8 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
-        self.with_scopes.push(EvalWithScope::new(scope, value));
+        self.with_scopes
+            .push(EvalWithScope::new(self.current_module, scope, value));
         let result = self.eval_node(body);
         let _ = self.with_scopes.pop();
         result
@@ -3707,7 +3867,7 @@ impl<'ir> TreeWalk<'ir> {
         let IrData::WithVar { symbol, chain } = node.data else {
             return Err(self.invalid_payload(id, node, "with-var payload"));
         };
-        if self.ir.symbols.resolve(symbol).is_none() {
+        if self.symbols.resolve(symbol).is_none() {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::InvalidSymbol { id, symbol },
                 node.span,
@@ -3717,9 +3877,12 @@ impl<'ir> TreeWalk<'ir> {
         let scope_count = self.with_chain_scope_count(id, chain, node.span)?;
         for index in 0..scope_count {
             let scope = self.with_chain_scope(id, chain, index, node.span)?;
-            let scope_span = self.node(scope)?.span;
-            let scope_value = self.with_scope_value(id, scope, node.span)?;
-            let attrs_value = self.force_value(scope, scope_span, scope_value)?;
+            let scope_ref = self.with_chain_scope_ref(id, chain, index, node.span)?;
+            let scope_span = self.node_in_module(scope_ref.module(), scope)?.span;
+            let scope_value = self.with_scope_value(id, scope_ref, node.span)?;
+            let attrs_value = self.with_current_module(scope_ref.module(), |eval| {
+                eval.force_value(scope, scope_span, scope_value)
+            })?;
             if attrs_value.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::Type {
@@ -3766,7 +3929,12 @@ impl<'ir> TreeWalk<'ir> {
         let with_env = self.capture_with_env(id, node.span)?;
         self.heap
             .alloc_lambda(EvalLambda::with_captures(
-                pattern, body, frame, env, with_env,
+                self.current_module,
+                pattern,
+                body,
+                frame,
+                env,
+                with_env,
             ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
@@ -3810,19 +3978,24 @@ impl<'ir> TreeWalk<'ir> {
         let name = self.symbols.resolve(symbol).ok_or_else(|| {
             TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
         })?;
-        let args = self.ir.arena.child_slice(args).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
-                node.span,
-            )
-        })?;
+        let args = self
+            .current_ir()
+            .arena
+            .child_slice(args)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice { id, slice: args },
+                    node.span,
+                )
+            })?
+            .to_vec();
         let Some(builtin) = lookup_builtin(name) else {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
                 node.span,
             ));
         };
-        builtin.apply_direct(self, BuiltinCall::new(id, node.span, symbol), node, args)
+        builtin.apply_direct(self, BuiltinCall::new(id, node.span, symbol), node, &args)
     }
 
     fn eval_strict_unary_primop_value(
@@ -4555,7 +4728,7 @@ impl<'ir> TreeWalk<'ir> {
                 value_span,
             )
         })?;
-        let body = thunk.body();
+        let body = thunk.body_ref();
         let cached = thunk
             .cell()
             .cached_value()
@@ -4579,29 +4752,30 @@ impl<'ir> TreeWalk<'ir> {
         &self,
         id: IrId,
         span: Span,
-        body: IrId,
+        body: EvalNodeRef,
         out: &mut Vec<u8>,
         top_level: bool,
     ) -> Result<bool, TreeWalkError> {
-        let node = *self.node(body)?;
+        let body_id = body.id();
+        let node = *self.node_in_module(body.module(), body_id)?;
         match node.kind {
             IrKind::Int => {
                 let IrData::Int(value) = node.data else {
-                    return Err(self.invalid_payload(body, &node, "integer payload"));
+                    return Err(self.invalid_payload(body_id, &node, "integer payload"));
                 };
                 let bytes = Self::raw_int_bytes(value);
                 Self::extend_bytes_for_node(id, span, out, &bytes)?;
             }
             IrKind::Float => {
                 let IrData::Float(value) = node.data else {
-                    return Err(self.invalid_payload(body, &node, "float payload"));
+                    return Err(self.invalid_payload(body_id, &node, "float payload"));
                 };
                 let bytes = Self::raw_float_bytes(value);
                 Self::extend_bytes_for_node(id, span, out, &bytes)?;
             }
             IrKind::Bool => {
                 let IrData::Bool(value) = node.data else {
-                    return Err(self.invalid_payload(body, &node, "boolean payload"));
+                    return Err(self.invalid_payload(body_id, &node, "boolean payload"));
                 };
                 if value {
                     Self::extend_bytes_for_node(id, span, out, b"true")?;
@@ -4611,17 +4785,20 @@ impl<'ir> TreeWalk<'ir> {
             }
             IrKind::Null => {
                 if node.data != IrData::None {
-                    return Err(self.invalid_payload(body, &node, "empty payload"));
+                    return Err(self.invalid_payload(body_id, &node, "empty payload"));
                 }
                 Self::extend_bytes_for_node(id, span, out, b"null")?;
             }
             IrKind::Str | IrKind::Uri => {
                 let IrData::Symbol(symbol) = node.data else {
-                    return Err(self.invalid_payload(body, &node, "string symbol payload"));
+                    return Err(self.invalid_payload(body_id, &node, "string symbol payload"));
                 };
                 let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
                     TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidSymbol { id: body, symbol },
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: body_id,
+                            symbol,
+                        },
                         node.span,
                     )
                 })?;
@@ -4633,15 +4810,23 @@ impl<'ir> TreeWalk<'ir> {
             }
             IrKind::Path => {
                 let IrData::Symbol(symbol) = node.data else {
-                    return Err(self.invalid_payload(body, &node, "path symbol payload"));
+                    return Err(self.invalid_payload(body_id, &node, "path symbol payload"));
                 };
                 let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
                     TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidSymbol { id: body, symbol },
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: body_id,
+                            symbol,
+                        },
                         node.span,
                     )
                 })?;
-                let path = self.path_literal_bytes_for_node(body, node.span, bytes)?;
+                let path = self.path_literal_bytes_for_module_node(
+                    body.module(),
+                    body_id,
+                    node.span,
+                    bytes,
+                )?;
                 Self::extend_bytes_for_node(id, span, out, &path)?;
             }
             _ => return Ok(false),
@@ -5668,6 +5853,148 @@ impl<'ir> TreeWalk<'ir> {
         self.alloc_static_string(id, span, file_type_name(file_type.file_type()))
     }
 
+    fn eval_import_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let path = self.coerce_to_path_bytes(argument, argument_span, value, "import")?;
+        self.check_filesystem_path_access(argument, argument_span, &path)?;
+        let target = self.import_target_path(argument, argument_span, &path)?;
+        self.check_filesystem_path_access(argument, argument_span, target.as_os_str().as_bytes())?;
+        let realpath = fs::canonicalize(&target).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FileRead {
+                    id: argument,
+                    path: target.as_os_str().as_bytes().to_vec(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
+        match self.import_cache.get(&realpath).copied() {
+            Some(ImportCacheEntry::Ready(value)) => return Ok(value),
+            Some(ImportCacheEntry::Evaluating) => {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::RecursiveImport {
+                        id: argument,
+                        path: realpath_bytes,
+                    },
+                    argument_span,
+                ));
+            }
+            None => {}
+        }
+
+        self.import_cache
+            .insert(realpath.clone(), ImportCacheEntry::Evaluating);
+        let result = self.load_and_eval_import(id, span, argument, argument_span, &realpath);
+        match result {
+            Ok(value) => {
+                self.import_cache
+                    .insert(realpath, ImportCacheEntry::Ready(value));
+                Ok(value)
+            }
+            Err(error) => {
+                self.import_cache.remove(&realpath);
+                Err(error)
+            }
+        }
+    }
+
+    fn import_target_path(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &[u8],
+    ) -> Result<PathBuf, TreeWalkError> {
+        let requested = Path::new(OsStr::from_bytes(path));
+        let metadata = fs::metadata(requested).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::PathStat {
+                    id,
+                    path: path.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
+        if metadata.is_dir() {
+            return Ok(requested.join("default.nix"));
+        }
+        Ok(requested.to_path_buf())
+    }
+
+    fn load_and_eval_import(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        realpath: &Path,
+    ) -> Result<Value, TreeWalkError> {
+        let path = realpath.as_os_str().as_bytes().to_vec();
+        let source = fs::read(realpath).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FileRead {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let parsed = parse_bytes_with_symbols(&source, self.symbols.clone()).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportParse {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let resolved = resolve(parsed).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportScope {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        let ir = lower(resolved).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportLower {
+                    id: argument,
+                    path: path.clone(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })?;
+        self.symbols = ir.symbols.clone();
+        let base = realpath
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .as_os_str()
+            .as_bytes()
+            .to_vec();
+        let root = ir.root;
+        let module = self.push_module(id, span, ir, base)?;
+        let saved_env = std::mem::take(&mut self.env);
+        let saved_with_scopes = std::mem::take(&mut self.with_scopes);
+        let result = self.with_current_module(module, |eval| eval.eval_node(root));
+        self.env = saved_env;
+        self.with_scopes = saved_with_scopes;
+        result
+    }
+
     fn alloc_reflected_context_group(
         &mut self,
         id: IrId,
@@ -5764,13 +6091,23 @@ impl<'ir> TreeWalk<'ir> {
         span: Span,
         bytes: &[u8],
     ) -> Result<Vec<u8>, TreeWalkError> {
+        self.path_literal_bytes_for_module_node(self.current_module, id, span, bytes)
+    }
+
+    fn path_literal_bytes_for_module_node(
+        &self,
+        module: EvalModuleId,
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
         if let Some(suffix) = bytes.strip_prefix(b"~/") {
             return self.home_path_literal_bytes_for_node(id, span, bytes, suffix);
         }
         if Path::new(OsStr::from_bytes(bytes)).is_absolute() {
             return Self::absolute_path_bytes_for_node(id, span, bytes);
         }
-        let Some(base) = self.options.path_literal_base() else {
+        let Some(base) = self.module_path_literal_base(module, span)? else {
             return Self::absolute_path_bytes_for_node(id, span, bytes);
         };
         join_path_literal(id, span, base, bytes)
@@ -9682,7 +10019,7 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         Self::write_xml_open_element(id, span, out, depth, b"function", &[])?;
-        self.write_xml_lambda_pattern(id, span, lambda.pattern(), depth + 1, out)?;
+        self.write_xml_lambda_pattern(id, span, lambda.module(), lambda.pattern(), depth + 1, out)?;
         Self::write_xml_close_element(id, span, out, depth, b"function")
     }
 
@@ -9690,11 +10027,12 @@ impl<'ir> TreeWalk<'ir> {
         &self,
         id: IrId,
         span: Span,
+        module: EvalModuleId,
         pattern: IrId,
         depth: usize,
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
-        let pattern_node = *self.node(pattern)?;
+        let pattern_node = *self.node_in_module(module, pattern)?;
         match pattern_node.kind {
             IrKind::Formal => {
                 let IrData::Formal { name, .. } = pattern_node.data else {
@@ -9760,7 +10098,7 @@ impl<'ir> TreeWalk<'ir> {
                 }
 
                 let mut formal_names =
-                    self.xml_formal_names(id, span, pattern, pattern_node.span, formals)?;
+                    self.xml_formal_names(id, span, module, pattern, pattern_node.span, formals)?;
                 formal_names.sort_by(|left, right| left.as_slice().cmp(right.as_slice()));
 
                 Self::write_xml_open_element(id, span, out, depth, b"attrspat", &attrs)?;
@@ -9787,19 +10125,24 @@ impl<'ir> TreeWalk<'ir> {
         &self,
         id: IrId,
         span: Span,
+        module: EvalModuleId,
         pattern: IrId,
         pattern_span: Span,
         formals: IrChildSlice,
     ) -> Result<Vec<Vec<u8>>, TreeWalkError> {
-        let formal_slice = self.ir.arena.child_slice(formals).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::InvalidChildSlice {
-                    id: pattern,
-                    slice: formals,
-                },
-                pattern_span,
-            )
-        })?;
+        let formal_slice = self
+            .module_ir(module)?
+            .arena
+            .child_slice(formals)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice {
+                        id: pattern,
+                        slice: formals,
+                    },
+                    pattern_span,
+                )
+            })?;
         let mut names = Vec::new();
         names.try_reserve_exact(formal_slice.len()).map_err(|_| {
             TreeWalkError::new(
@@ -9811,7 +10154,7 @@ impl<'ir> TreeWalk<'ir> {
             )
         })?;
         for formal in formal_slice {
-            let formal_node = *self.node(*formal)?;
+            let formal_node = *self.node_in_module(module, *formal)?;
             let IrData::Formal { name, .. } = formal_node.data else {
                 return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
             };
@@ -13140,7 +13483,9 @@ impl<'ir> TreeWalk<'ir> {
                         argument_span,
                     )
                 })?;
-                self.function_args_entries(id, span, lambda.pattern())?
+                self.with_current_module(lambda.module(), |eval| {
+                    eval.function_args_entries(id, span, lambda.pattern())
+                })?
             }
             ValueTag::Primop => Vec::new(),
             actual => {
@@ -13174,15 +13519,19 @@ impl<'ir> TreeWalk<'ir> {
                 let IrData::FormalSet { formals, .. } = pattern_node.data else {
                     return Err(self.invalid_payload(pattern, &pattern_node, "formal-set payload"));
                 };
-                let formal_slice = self.ir.arena.child_slice(formals).ok_or_else(|| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::InvalidChildSlice {
-                            id: pattern,
-                            slice: formals,
-                        },
-                        pattern_node.span,
-                    )
-                })?;
+                let formal_slice =
+                    self.current_ir()
+                        .arena
+                        .child_slice(formals)
+                        .ok_or_else(|| {
+                            TreeWalkError::new(
+                                TreeWalkErrorKind::InvalidChildSlice {
+                                    id: pattern,
+                                    slice: formals,
+                                },
+                                pattern_node.span,
+                            )
+                        })?;
                 let mut entries = Vec::new();
                 entries.try_reserve_exact(formal_slice.len()).map_err(|_| {
                     TreeWalkError::new(
@@ -13273,6 +13622,12 @@ impl<'ir> TreeWalk<'ir> {
     ) -> Result<Value, TreeWalkError> {
         let value = self.force_value(id, span, value)?;
         self.ensure_callable_value(id, span, value)
+    }
+
+    fn force_primop_arg(&mut self, argument: EvalPrimOpArg) -> Result<Value, TreeWalkError> {
+        self.with_current_module(argument.module(), |eval| {
+            eval.force_value(argument.id(), argument.span(), argument.value())
+        })
     }
 
     fn ensure_applicable_value(
@@ -13383,7 +13738,12 @@ impl<'ir> TreeWalk<'ir> {
                     function_id,
                     function,
                     function_span,
-                    EvalPrimOpArg::new(argument_id, argument_span, argument),
+                    EvalPrimOpArg::new_in_module(
+                        self.current_module,
+                        argument_id,
+                        argument_span,
+                        argument,
+                    ),
                 );
             }
             ValueTag::Attrs => {
@@ -13417,45 +13777,50 @@ impl<'ir> TreeWalk<'ir> {
                 function_span,
             )
         })?;
-        let slot_count = self.frame_info(id, lambda.frame(), span)?.slot_count as usize;
-        let call_frame = EvalFrame::new(slot_count)
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))?;
-        let mut call_env = self.clone_env_frames(id, lambda.env(), span)?;
-        let call_with_env = self.clone_with_scopes(id, lambda.with_scope_env(), span)?;
-        call_env.try_reserve_exact(1).map_err(|_| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::Env {
-                    id,
-                    source: EvalEnvError::CaptureAllocationFailed {
-                        frames: call_env.len() + 1,
-                    },
-                },
-                span,
-            )
-        })?;
-        call_env.push(call_frame);
-        self.enter_call(id, span)?;
-        let saved_env = std::mem::replace(&mut self.env, call_env);
-        let saved_with_scopes = std::mem::replace(&mut self.with_scopes, call_with_env);
-        let result = (|| {
-            let call_frame = self.env.last().cloned().ok_or_else(|| {
-                TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
+        let argument_span = self.node(argument_id)?.span;
+        self.with_current_module(lambda.module(), |eval| {
+            let slot_count = eval.frame_info(id, lambda.frame(), span)?.slot_count as usize;
+            let call_frame = EvalFrame::new(slot_count).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
             })?;
-            self.bind_lambda_argument(
-                id,
-                lambda.pattern(),
-                slot_count,
-                &call_frame,
-                argument_id,
-                argument,
-                span,
-            )?;
-            self.eval_node(lambda.body())
-        })();
-        self.env = saved_env;
-        self.with_scopes = saved_with_scopes;
-        self.leave_call();
-        result
+            let mut call_env = eval.clone_env_frames(id, lambda.env(), span)?;
+            let call_with_env = eval.clone_with_scopes(id, lambda.with_scope_env(), span)?;
+            call_env.try_reserve_exact(1).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Env {
+                        id,
+                        source: EvalEnvError::CaptureAllocationFailed {
+                            frames: call_env.len() + 1,
+                        },
+                    },
+                    span,
+                )
+            })?;
+            call_env.push(call_frame);
+            eval.enter_call(id, span)?;
+            let saved_env = std::mem::replace(&mut eval.env, call_env);
+            let saved_with_scopes = std::mem::replace(&mut eval.with_scopes, call_with_env);
+            let result = (|| {
+                let call_frame = eval.env.last().cloned().ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
+                })?;
+                eval.bind_lambda_argument(
+                    id,
+                    lambda.pattern(),
+                    slot_count,
+                    &call_frame,
+                    argument_id,
+                    argument_span,
+                    argument,
+                    span,
+                )?;
+                eval.eval_node(lambda.body())
+            })();
+            eval.env = saved_env;
+            eval.with_scopes = saved_with_scopes;
+            eval.leave_call();
+            result
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -14543,6 +14908,7 @@ impl<'ir> TreeWalk<'ir> {
         slot_count: usize,
         frame: &EvalFrame,
         argument_id: IrId,
+        argument_span: Span,
         argument: Value,
         span: Span,
     ) -> Result<(), TreeWalkError> {
@@ -14584,6 +14950,7 @@ impl<'ir> TreeWalk<'ir> {
                 slot_count,
                 frame,
                 argument_id,
+                argument_span,
                 argument,
                 span,
             ),
@@ -14603,6 +14970,7 @@ impl<'ir> TreeWalk<'ir> {
         slot_count: usize,
         frame: &EvalFrame,
         argument_id: IrId,
+        argument_span: Span,
         argument: Value,
         span: Span,
     ) -> Result<(), TreeWalkError> {
@@ -14614,15 +14982,19 @@ impl<'ir> TreeWalk<'ir> {
         else {
             return Err(self.invalid_payload(pattern, pattern_node, "formal-set payload"));
         };
-        let formal_slice = self.ir.arena.child_slice(formals).ok_or_else(|| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::InvalidChildSlice {
-                    id: pattern,
-                    slice: formals,
-                },
-                pattern_node.span,
-            )
-        })?;
+        let formal_slice = self
+            .current_ir()
+            .arena
+            .child_slice(formals)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice {
+                        id: pattern,
+                        slice: formals,
+                    },
+                    pattern_node.span,
+                )
+            })?;
         let mut formal_ids = Vec::new();
         formal_ids
             .try_reserve_exact(formal_slice.len())
@@ -14652,7 +15024,7 @@ impl<'ir> TreeWalk<'ir> {
             let IrData::Formal { name, .. } = formal_node.data else {
                 return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
             };
-            if self.ir.symbols.resolve(name).is_none() {
+            if self.symbols.resolve(name).is_none() {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::InvalidSymbol {
                         id: *formal,
@@ -14664,7 +15036,7 @@ impl<'ir> TreeWalk<'ir> {
             names.push(name);
         }
         if let Some(alias) = alias {
-            if self.ir.symbols.resolve(alias).is_none() {
+            if self.symbols.resolve(alias).is_none() {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::InvalidSymbol {
                         id: pattern,
@@ -14687,7 +15059,6 @@ impl<'ir> TreeWalk<'ir> {
             ));
         }
 
-        let argument_span = self.node(argument_id)?.span;
         let attrs_value = self.force_value(argument_id, argument_span, argument)?;
         if attrs_value.tag() != ValueTag::Attrs {
             return Err(TreeWalkError::new(
@@ -14769,21 +15140,21 @@ impl<'ir> TreeWalk<'ir> {
         let binding_range = self.binding_range(id, bindings, node.span)?;
         {
             let shape_keys = self
-                .ir
+                .current_ir()
                 .shapes
                 .get(shape.index())
                 .ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::InvalidShapeId { id, shape }, node.span)
                 })?
                 .keys
-                .as_ref();
-            self.validate_attrset_shape(id, shape, shape_keys, binding_range.clone(), node.span)?;
+                .to_vec();
+            self.validate_attrset_shape(id, shape, &shape_keys, binding_range.clone(), node.span)?;
         }
         let static_bindings = binding_range
             .clone()
             .filter(|binding_index| {
                 matches!(
-                    self.ir.bindings[*binding_index].key,
+                    self.current_ir().bindings[*binding_index].key,
                     IrAttrPathSegment::Static(_)
                 )
             })
@@ -14834,7 +15205,7 @@ impl<'ir> TreeWalk<'ir> {
             if let Some(frame_values) = &frame_values {
                 let mut slot = 0u32;
                 for binding_index in binding_range.clone() {
-                    let binding = self.ir.bindings[binding_index];
+                    let binding = self.current_ir().bindings[binding_index];
                     if matches!(binding.key, IrAttrPathSegment::Static(_)) {
                         let value = self.eval_attr_binding_value(
                             id,
@@ -14852,7 +15223,7 @@ impl<'ir> TreeWalk<'ir> {
 
             let mut slot = 0u32;
             for binding_index in binding_range {
-                let binding = self.ir.bindings[binding_index];
+                let binding = self.current_ir().bindings[binding_index];
                 let key = self.eval_attr_name(
                     id,
                     binding.key,
@@ -15466,10 +15837,10 @@ impl<'ir> TreeWalk<'ir> {
             .heap
             .clone_thunk(value)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
-        let Some(body) = thunk.body() else {
+        let Some(body) = thunk.body_ref() else {
             return Ok(value);
         };
-        let body_node = *self.node(body)?;
+        let body_node = *self.node_in_module(body.module(), body.id())?;
         if !matches!(
             body_node.kind,
             IrKind::LocalVar | IrKind::UpvalVar | IrKind::ThunkAlloc
@@ -15487,7 +15858,9 @@ impl<'ir> TreeWalk<'ir> {
         let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
         let saved_env = std::mem::replace(&mut self.env, thunk_env);
         let saved_with_scopes = std::mem::replace(&mut self.with_scopes, thunk_with_env);
-        let result = self.eval_nested_equality_operand(body);
+        let result = self.with_current_module(body.module(), |eval| {
+            eval.eval_nested_equality_operand(body.id())
+        });
         self.env = saved_env;
         self.with_scopes = saved_with_scopes;
         result
@@ -17101,11 +17474,11 @@ impl BuiltinCall {
 }
 
 trait BuiltinRuntime {
-    fn is_available(self, eval: &TreeWalk<'_>) -> bool;
+    fn is_available(self, eval: &TreeWalk) -> bool;
 
     fn select(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         id: IrId,
         span: Span,
         symbol: Symbol,
@@ -17113,7 +17486,7 @@ trait BuiltinRuntime {
 
     fn apply_direct(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         call: BuiltinCall,
         node: &IrNode,
         args: &[IrId],
@@ -17121,14 +17494,14 @@ trait BuiltinRuntime {
 
     fn apply(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         call: BuiltinCall,
         args: &[EvalPrimOpArg],
     ) -> Result<Value, TreeWalkError>;
 }
 
 impl BuiltinRuntime for BuiltinMetadata {
-    fn is_available(self, eval: &TreeWalk<'_>) -> bool {
+    fn is_available(self, eval: &TreeWalk) -> bool {
         match self.availability() {
             BuiltinAvailability::Always => true,
             BuiltinAvailability::ImpureCurrentSystem => {
@@ -17143,7 +17516,7 @@ impl BuiltinRuntime for BuiltinMetadata {
 
     fn select(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         id: IrId,
         span: Span,
         symbol: Symbol,
@@ -17193,7 +17566,7 @@ impl BuiltinRuntime for BuiltinMetadata {
 
     fn apply_direct(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         call: BuiltinCall,
         node: &IrNode,
         args: &[IrId],
@@ -17213,6 +17586,13 @@ impl BuiltinRuntime for BuiltinMetadata {
                     argument_span,
                     value,
                 )
+            }
+            BuiltinExecution::Import => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                let value = eval.eval_node(argument)?;
+                eval.eval_import_primop(call.id, call.span, argument, argument_span, value)
             }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
@@ -17352,11 +17732,6 @@ impl BuiltinRuntime for BuiltinMetadata {
                 )?;
                 eval.eval_lazy_node(args[1])
             }
-            BuiltinExecution::EffectfulUnaryUnsupported => {
-                check_builtin_arity(call, 1, args.len())?;
-                eval.eval_node(args[0])?;
-                unsupported_primop(call)
-            }
             _ => unsupported_primop(call),
         })();
         eval.leave_call();
@@ -17365,7 +17740,7 @@ impl BuiltinRuntime for BuiltinMetadata {
 
     fn apply(
         self,
-        eval: &mut TreeWalk<'_>,
+        eval: &mut TreeWalk,
         call: BuiltinCall,
         args: &[EvalPrimOpArg],
     ) -> Result<Value, TreeWalkError> {
@@ -17382,10 +17757,16 @@ impl BuiltinRuntime for BuiltinMetadata {
                     argument.value(),
                 )
             }
+            BuiltinExecution::Import => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let value = eval.force_primop_arg(argument)?;
+                eval.eval_import_primop(call.id, call.span, argument.id(), argument.span(), value)
+            }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                let value = eval.force_primop_arg(argument)?;
                 eval.eval_strict_unary_primop_value(
                     call.id,
                     call.span,
@@ -17414,10 +17795,9 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::FindFile => {
                 check_builtin_arity(call, 2, args.len())?;
                 let search_path = args[0];
-                let search_path_value =
-                    eval.force_value(search_path.id(), search_path.span(), search_path.value())?;
+                let search_path_value = eval.force_primop_arg(search_path)?;
                 let lookup = args[1];
-                let lookup_value = eval.force_value(lookup.id(), lookup.span(), lookup.value())?;
+                let lookup_value = eval.force_primop_arg(lookup)?;
                 eval.eval_find_file_primop(
                     call.id,
                     call.span,
@@ -17465,19 +17845,19 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::PathExists => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                let value = eval.force_primop_arg(argument)?;
                 eval.eval_path_exists_primop(argument.id(), argument.span(), value)
             }
             BuiltinExecution::ReadDir => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                let value = eval.force_primop_arg(argument)?;
                 eval.eval_read_dir_primop(call.id, call.span, argument.id(), argument.span(), value)
             }
             BuiltinExecution::ReadFile => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                let value = eval.force_primop_arg(argument)?;
                 eval.eval_read_file_primop(
                     call.id,
                     call.span,
@@ -17489,7 +17869,7 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::ReadFileType => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
-                let value = eval.force_value(argument.id(), argument.span(), argument.value())?;
+                let value = eval.force_primop_arg(argument)?;
                 eval.eval_read_file_type_primop(
                     call.id,
                     call.span,
@@ -17501,14 +17881,14 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::Seq => {
                 check_builtin_arity(call, 2, args.len())?;
                 let first = args[0];
-                let value = eval.force_value(first.id(), first.span(), first.value())?;
+                let value = eval.force_primop_arg(first)?;
                 eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)?;
                 Ok(args[1].value())
             }
             BuiltinExecution::DeepSeq => {
                 check_builtin_arity(call, 2, args.len())?;
                 let first = args[0];
-                let value = eval.force_value(first.id(), first.span(), first.value())?;
+                let value = eval.force_primop_arg(first)?;
                 if !eval.consume_suspended_lazy_identity_thunk(first.id(), first.span(), value)? {
                     let mut visited = Vec::new();
                     eval.deep_force_value(first.id(), first.span(), value, &mut visited)?;
@@ -17521,7 +17901,7 @@ impl BuiltinRuntime for BuiltinMetadata {
                     return Ok(args[1].value());
                 }
                 let first = args[0];
-                let value = eval.force_value(first.id(), first.span(), first.value())?;
+                let value = eval.force_primop_arg(first)?;
                 eval.eval_trace_primop_value(
                     call.id,
                     call.span,
@@ -17535,7 +17915,7 @@ impl BuiltinRuntime for BuiltinMetadata {
             BuiltinExecution::Warn => {
                 check_builtin_arity(call, 2, args.len())?;
                 let message = args[0];
-                let value = eval.force_value(message.id(), message.span(), message.value())?;
+                let value = eval.force_primop_arg(message)?;
                 eval.eval_warn_primop_value(
                     call.id,
                     call.span,
@@ -17858,6 +18238,20 @@ pub enum TreeWalkErrorKind {
         /// The missing node id.
         id: IrId,
     },
+    /// The evaluator was asked to read a missing loaded IR module.
+    #[error("invalid IR module id {module}")]
+    InvalidModuleId {
+        /// The missing module id.
+        module: u32,
+    },
+    /// The evaluator loaded too many IR modules.
+    #[error("too many loaded IR modules at node {id:?}: {modules}")]
+    TooManyModules {
+        /// The import node that needed another module.
+        id: IrId,
+        /// The number of modules already loaded.
+        modules: usize,
+    },
     /// The node kind and node payload disagreed.
     #[error("invalid payload for {kind:?} node {id:?}; expected {expected}")]
     InvalidPayload {
@@ -18094,6 +18488,44 @@ pub enum TreeWalkErrorKind {
         /// The file path bytes.
         path: Vec<u8>,
         /// The filesystem diagnostic.
+        message: String,
+    },
+    /// An import recursively demanded a file already being imported.
+    #[error("recursive import at node {id:?} path {path:?}")]
+    RecursiveImport {
+        /// The import path-valued node.
+        id: IrId,
+        /// The canonical imported file path.
+        path: Vec<u8>,
+    },
+    /// Imported source bytes could not be parsed.
+    #[error("failed to parse imported file at node {id:?} path {path:?}: {message}")]
+    ImportParse {
+        /// The import path-valued node.
+        id: IrId,
+        /// The canonical imported file path.
+        path: Vec<u8>,
+        /// The parser diagnostic.
+        message: String,
+    },
+    /// Imported source could not be scope-resolved.
+    #[error("failed to resolve imported file at node {id:?} path {path:?}: {message}")]
+    ImportScope {
+        /// The import path-valued node.
+        id: IrId,
+        /// The canonical imported file path.
+        path: Vec<u8>,
+        /// The resolver diagnostic.
+        message: String,
+    },
+    /// Imported source could not be lowered to evaluator IR.
+    #[error("failed to lower imported file at node {id:?} path {path:?}: {message}")]
+    ImportLower {
+        /// The import path-valued node.
+        id: IrId,
+        /// The canonical imported file path.
+        path: Vec<u8>,
+        /// The lowering diagnostic.
         message: String,
     },
     /// A file-content primop read bytes that cannot be represented as a Nix string.
@@ -22290,6 +22722,109 @@ mod tests {
         assert_cpp_nix_control_flow_and_error_semantics_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_import_semantics_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let root = fs::canonicalize(unique_temp_dir("cpp-nix-import"))
+            .expect("temp directory canonicalizes");
+        let subdir = root.join("sub");
+        let dir_import = root.join("dir");
+        let empty_dir = root.join("empty-dir");
+        fs::create_dir(&subdir).expect("sub directory creates");
+        fs::create_dir(&dir_import).expect("import directory creates");
+        fs::create_dir(&empty_dir).expect("empty import directory creates");
+        fs::write(subdir.join("dep.nix"), b"2").expect("dep writes");
+        fs::write(subdir.join("inc.nix"), b"3").expect("inc writes");
+        fs::write(subdir.join("data.txt"), b"data").expect("data writes");
+        fs::write(subdir.join("rec.nix"), b"rec { x = 4; y = x; }").expect("rec writes");
+        fs::write(
+            subdir.join("child.nix"),
+            br#"{
+              a = 1;
+              nested = import ./dep.nix;
+              f = x: x + import ./inc.nix;
+              formal = { a ? 1, b }: a + b;
+              rel = ./data.txt;
+            }"#,
+        )
+        .expect("child writes");
+        fs::write(dir_import.join("default.nix"), b"5").expect("default writes");
+        fs::write(root.join("fresh.nix"), b"secret").expect("fresh writes");
+        fs::write(root.join("traced.nix"), br#"builtins.trace "once" 9"#).expect("traced writes");
+        std::os::unix::fs::symlink(root.join("traced.nix"), root.join("traced-link.nix"))
+            .expect("trace symlink creates");
+        let traced_dir = root.join("traced-dir");
+        fs::create_dir(&traced_dir).expect("traced dir creates");
+        fs::write(
+            traced_dir.join("default.nix"),
+            br#"builtins.trace "dir-once" 8"#,
+        )
+        .expect("traced default writes");
+
+        let child = path_source(&subdir.join("child.nix"));
+        let dir = path_source(&dir_import);
+        let empty_dir = path_source(&empty_dir);
+        for source in [
+            format!("(import {child}).a"),
+            format!("(import {child}).nested"),
+            format!("(import {child}).f 4"),
+            format!("builtins.baseNameOf ((import {child}).rel)"),
+            format!("import {dir}"),
+            format!("let f = import; in builtins.isAttrs (f {child})"),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        let fresh = path_source(&root.join("fresh.nix"));
+        assert_cpp_nix_and_tree_walk_reject_expression(
+            oracle,
+            &format!("with {{ secret = 42; }}; import {fresh}"),
+        );
+        assert_cpp_nix_and_tree_walk_reject_expression(oracle, &format!("import {empty_dir}"));
+
+        for source in [
+            format!(
+                "builtins.deepSeq [ (import {path}) (import {path}) ] 0",
+                path = path_source(&root.join("traced.nix"))
+            ),
+            format!(
+                "builtins.deepSeq [ (import {path}) (import {link}) ] 0",
+                path = path_source(&root.join("traced.nix")),
+                link = path_source(&root.join("traced-link.nix"))
+            ),
+            format!(
+                "builtins.deepSeq [ (import {dir}) (import {default}) ] 0",
+                dir = path_source(&traced_dir),
+                default = path_source(&traced_dir.join("default.nix"))
+            ),
+        ] {
+            let reference = cpp_nix_eval_stderr(oracle, &source);
+            let stderr = eval_captured_stderr(&source);
+            assert_eq!(
+                stderr, reference,
+                "import cache stderr diverged for {source}"
+            );
+        }
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_import_semantics_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_import_semantics_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_import_semantics_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix import check");
+            return;
+        };
+        assert_cpp_nix_import_semantics_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_string_context_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [
@@ -22807,6 +23342,197 @@ mod tests {
         assert_cpp_nix_filesystem_builtins_match_tree_walk(&oracle);
     }
 
+    #[test]
+    fn import_evaluates_files_directories_and_escaping_values_in_one_heap() {
+        let root = fs::canonicalize(unique_temp_dir("import-basic"))
+            .expect("temp directory canonicalizes");
+        let subdir = root.join("sub");
+        let dir_import = root.join("dir");
+        let empty_dir = root.join("empty-dir");
+        fs::create_dir(&subdir).expect("sub directory creates");
+        fs::create_dir(&dir_import).expect("import directory creates");
+        fs::create_dir(&empty_dir).expect("empty import directory creates");
+        fs::write(subdir.join("dep.nix"), b"2").expect("dep writes");
+        fs::write(subdir.join("inc.nix"), b"3").expect("inc writes");
+        fs::write(subdir.join("data.txt"), b"data").expect("data writes");
+        fs::write(subdir.join("rec.nix"), b"rec { x = 4; y = x; }").expect("rec writes");
+        fs::write(
+            subdir.join("child.nix"),
+            br#"{
+              a = 1;
+              nested = import ./dep.nix;
+              f = x: x + import ./inc.nix;
+              formal = { a ? 1, b }: a + b;
+              rel = ./data.txt;
+            }"#,
+        )
+        .expect("child writes");
+        fs::write(dir_import.join("default.nix"), b"5").expect("default writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+
+        assert_eq!(
+            eval_with_options("(import ./sub/child.nix).a", options.clone())
+                .as_int()
+                .expect("imported attr is int"),
+            1
+        );
+        assert_eq!(
+            eval_with_options("(import ./sub/child.nix).nested", options.clone())
+                .as_int()
+                .expect("imported nested value is int"),
+            2
+        );
+        assert_eq!(
+            eval_with_options("(import ./sub/child.nix).f 4", options.clone())
+                .as_int()
+                .expect("imported function result is int"),
+            7
+        );
+        assert_eq!(
+            eval_string_bytes_with_options(
+                "builtins.baseNameOf ((import ./sub/child.nix).rel)",
+                options.clone(),
+            ),
+            b"data.txt"
+        );
+        assert_eq!(
+            eval_with_options("(import ./sub/rec.nix).y == 4", options.clone())
+                .as_bool()
+                .expect("imported recursive attr equality is bool"),
+            true
+        );
+        assert_eq!(
+            eval_with_options(
+                r#"let args = builtins.functionArgs (import ./sub/child.nix).formal;
+                   in args.a && !(args.b)"#,
+                options.clone(),
+            )
+            .as_bool()
+            .expect("imported functionArgs result is bool"),
+            true
+        );
+        let xml = eval_string_bytes_with_options(
+            "builtins.toXML (import ./sub/child.nix).formal",
+            options.clone(),
+        );
+        assert!(
+            xml.windows(b"attrspat".len())
+                .any(|window| window == b"attrspat"),
+            "imported formal-set lambda XML includes attrspat"
+        );
+        let traced_path = eval_whnf_owned_with_options(
+            &lower("builtins.trace (import ./sub/child.nix).rel 0"),
+            options.clone(),
+        )
+        .expect("imported path trace evaluates");
+        let expected_path = subdir.join("data.txt").as_os_str().as_bytes().to_vec();
+        assert_eq!(traced_path.trace_output().len(), 1);
+        assert_trace_output(
+            traced_path
+                .trace_output()
+                .first()
+                .expect("path trace output exists"),
+            EvalTraceKind::Trace,
+            &expected_path,
+        );
+        assert_eq!(
+            eval_with_options("import ./dir", options.clone())
+                .as_int()
+                .expect("directory import is int"),
+            5
+        );
+        let missing_default =
+            eval_whnf_owned_with_options(&lower("import ./empty-dir"), options.clone())
+                .expect_err("directory import without default.nix rejects");
+        assert!(matches!(
+            missing_default.kind(),
+            TreeWalkErrorKind::FileRead { .. }
+        ));
+        let first_class =
+            eval_whnf_owned_with_options(&lower("let f = import; in f ./sub/child.nix"), options)
+                .expect("first-class import evaluates");
+        assert_eq!(first_class.value().tag(), ValueTag::Attrs);
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn import_uses_fresh_scope_and_shared_result_cache() {
+        let root = fs::canonicalize(unique_temp_dir("import-scope-cache"))
+            .expect("temp directory canonicalizes");
+        fs::write(root.join("fresh.nix"), b"secret").expect("fresh writes");
+        fs::write(root.join("traced.nix"), br#"builtins.trace "once" 9"#).expect("traced writes");
+        std::os::unix::fs::symlink(root.join("traced.nix"), root.join("traced-link.nix"))
+            .expect("trace symlink creates");
+        fs::write(root.join("self.nix"), b"import ./self.nix").expect("self writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+
+        let fresh_error = eval_whnf_owned_with_options(
+            &lower("with { secret = 42; }; import ./fresh.nix"),
+            options.clone(),
+        )
+        .expect_err("imported file does not inherit caller with-scope");
+        assert!(matches!(
+            fresh_error.kind(),
+            TreeWalkErrorKind::ImportScope { .. } | TreeWalkErrorKind::UnresolvedWithVar { .. }
+        ));
+        let fresh_let_error = eval_whnf_owned_with_options(
+            &lower("let secret = 42; in import ./fresh.nix"),
+            options.clone(),
+        )
+        .expect_err("imported file does not inherit caller let-scope");
+        assert!(matches!(
+            fresh_let_error.kind(),
+            TreeWalkErrorKind::ImportScope { .. } | TreeWalkErrorKind::UnresolvedWithVar { .. }
+        ));
+
+        let traced = eval_whnf_owned_with_options(
+            &lower("builtins.deepSeq [ (import ./traced.nix) (import ./traced.nix) ] 0"),
+            options.clone(),
+        )
+        .expect("cached imports evaluate");
+        assert_eq!(traced.value().as_int().expect("trace result is int"), 0);
+        assert_eq!(traced.trace_output().len(), 1);
+        assert_trace_output(
+            traced.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"once",
+        );
+
+        let symlinked = eval_whnf_owned_with_options(
+            &lower("builtins.deepSeq [ (import ./traced.nix) (import ./traced-link.nix) ] 0"),
+            options.clone(),
+        )
+        .expect("canonicalized imports share cache");
+        assert_eq!(symlinked.value().as_int().expect("trace result is int"), 0);
+        assert_eq!(symlinked.trace_output().len(), 1);
+        assert_trace_output(
+            symlinked
+                .trace_output()
+                .first()
+                .expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"once",
+        );
+
+        let cycle = eval_whnf_owned_with_options(&lower("import ./self.nix"), options)
+            .expect_err("recursive import is rejected");
+        assert!(matches!(
+            cycle.kind(),
+            TreeWalkErrorKind::RecursiveImport { .. }
+        ));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
     fn search_path_options(prefix: &[u8], path: &Path) -> TreeWalkOptions {
         let mut options = TreeWalkOptions::new();
         options
@@ -22845,7 +23571,7 @@ mod tests {
         path.as_os_str().as_bytes().to_vec()
     }
 
-    fn path_value_bytes(evaluator: &TreeWalk<'_>, value: Value) -> Vec<u8> {
+    fn path_value_bytes(evaluator: &TreeWalk, value: Value) -> Vec<u8> {
         evaluator
             .heap()
             .get_path(value)
@@ -34215,7 +34941,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_strict_primops_force_arguments_before_reporting_unsupported() {
+    fn import_forces_argument_before_filesystem_access() {
         let ir = lower("builtins.import (1 / 0)");
         let root = ir.arena.node(ir.root).expect("root exists");
         let IrData::PrimOp { args, .. } = root.data else {
@@ -34225,7 +34951,7 @@ mod tests {
         let argument = args[0];
         let argument_span = ir.arena.node(argument).expect("argument exists").span;
 
-        let error = eval_whnf(&ir).expect_err("unsupported primop still forces argument");
+        let error = eval_whnf(&ir).expect_err("import forces its argument");
 
         assert_eq!(
             error.kind(),
@@ -34235,23 +34961,28 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_primops_report_symbol_and_span() {
-        let ir = lower("builtins.import \"/tmp/aos-nix-missing-import.nix\"");
+    fn import_reports_missing_path_stat_error() {
+        let missing = "/tmp/aos-nix-missing-import.nix";
+        let ir = lower(&format!("builtins.import {}", nix_string_literal(missing)));
         let root = ir.arena.node(ir.root).expect("root exists");
-        let IrData::PrimOp { symbol, .. } = root.data else {
+        let IrData::PrimOp { args, .. } = root.data else {
             panic!("root is a primop");
         };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let argument = args[0];
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
 
-        let error = eval_whnf_owned(&ir).expect_err("import remains unsupported");
+        let error = eval_whnf_owned(&ir).expect_err("missing import path rejects");
 
         assert_eq!(
             error.kind(),
-            TreeWalkErrorKind::UnsupportedPrimOp {
-                id: ir.root,
-                symbol,
+            TreeWalkErrorKind::PathStat {
+                id: argument,
+                path: missing.as_bytes().to_vec(),
+                message: "No such file or directory (os error 2)".to_owned(),
             }
         );
-        assert_eq!(error.span(), root.span);
+        assert_eq!(error.span(), argument_span);
     }
 
     #[test]

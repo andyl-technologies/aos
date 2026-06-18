@@ -432,7 +432,7 @@ impl BuiltinDefinition for HeadBuiltin {
 pub(crate) struct ImportBuiltin;
 impl BuiltinDefinition for ImportBuiltin {
     const NAME: &'static [u8] = b"import";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::EffectfulUnaryUnsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::Import;
     const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
@@ -997,8 +997,8 @@ pub(crate) enum BuiltinDirect {
 pub(crate) enum BuiltinExecution {
     /// The builtin is known but not implemented by the tree-walk evaluator.
     Unsupported,
-    /// The builtin lowers as effectful strict unary but reports unsupported at runtime.
-    EffectfulUnaryUnsupported,
+    /// The builtin parses and evaluates another Nix file.
+    Import,
     /// The builtin lowers to the derivation boundary and is not first-class.
     DerivationStrict,
     /// The builtin evaluates to the recursive builtin attribute set.
@@ -1129,7 +1129,7 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(BuiltinDirect::StrictTernary {
                 effect: BuiltinEffect::Pure,
             }),
-            Self::EffectfulUnaryUnsupported
+            Self::Import
             | Self::PathExists
             | Self::ReadDir
             | Self::ReadFile
@@ -1168,6 +1168,7 @@ impl BuiltinExecution {
             Self::StrictUnary { .. }
             | Self::LazyUnary
             | Self::DerivationStrict
+            | Self::Import
             | Self::GenericClosure
             | Self::TryEval
             | Self::PathExists
@@ -1185,7 +1186,6 @@ impl BuiltinExecution {
             | Self::Warn => Some(2),
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported
-            | Self::EffectfulUnaryUnsupported
             | Self::BuiltinsValue
             | Self::TrueValue
             | Self::FalseValue
@@ -1212,7 +1212,7 @@ impl BuiltinExecution {
     const fn requires_native_cli_fallback(self) -> bool {
         match self {
             Self::Unsupported
-            | Self::EffectfulUnaryUnsupported
+            | Self::Import
             | Self::DerivationStrict
             | Self::CurrentSystemValue
             | Self::CurrentTimeValue
@@ -1519,6 +1519,7 @@ impl BuiltinMetadata {
     }
 
     /// Returns how this builtin's spelling participates in top-level name resolution.
+    #[cfg(test)]
     pub(crate) const fn name_scope(&self) -> BuiltinNameScope {
         self.name_scope
     }
@@ -1944,7 +1945,7 @@ mod tests {
         );
         assert_eq!(
             BUILTINS.lookup(b"import").unwrap().first_class_arity(),
-            None
+            Some(1)
         );
         assert_eq!(
             BUILTINS.lookup(b"add").unwrap().first_class_arity(),

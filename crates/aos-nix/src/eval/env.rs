@@ -12,6 +12,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
+use super::module::{EvalModuleId, EvalNodeRef};
 use crate::compile::IrId;
 use crate::value::Value;
 
@@ -82,19 +83,32 @@ impl EvalWithEnv {
 /// One active dynamic `with` scope.
 #[derive(Clone, Copy, Debug)]
 pub struct EvalWithScope {
-    scope: IrId,
+    scope: EvalNodeRef,
     value: Value,
 }
 
 impl EvalWithScope {
     /// Creates an active `with` scope entry.
-    pub const fn new(scope: IrId, value: Value) -> Self {
-        Self { scope, value }
+    pub const fn new(module: EvalModuleId, scope: IrId, value: Value) -> Self {
+        Self {
+            scope: EvalNodeRef::new(module, scope),
+            value,
+        }
+    }
+
+    /// Returns the module-qualified lowered scrutinee node for this scope.
+    pub const fn scope_ref(&self) -> EvalNodeRef {
+        self.scope
+    }
+
+    /// Returns the module that owns this scope's lowered scrutinee node.
+    pub const fn module(&self) -> EvalModuleId {
+        self.scope.module()
     }
 
     /// Returns the lowered scrutinee node for this scope.
     pub const fn scope(&self) -> IrId {
-        self.scope
+        self.scope.id()
     }
 
     /// Returns the lazy attrset value for this scope.
