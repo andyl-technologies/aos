@@ -222,6 +222,18 @@ fn channel_message(channel: crate::db::ChannelSummary) -> pb::Channel {
     }
 }
 
+/// Render a `nix-cache-info` body for a managed cache.
+///
+/// The three-line file a Nix substituter reads to learn the store directory,
+/// whether it answers mass `?path-info` queries, and its substituter priority.
+fn render_nix_cache_info(want_mass_query: bool, priority: i64) -> String {
+    format!(
+        "StoreDir: /nix/store\nWantMassQuery: {}\nPriority: {}\n",
+        u8::from(want_mass_query),
+        priority,
+    )
+}
+
 /// Project a [`CacheObject`](crate::db::CacheObject) onto the wire [`pb::CacheObject`].
 fn cache_object_message(o: crate::db::CacheObject) -> pb::CacheObject {
     pb::CacheObject {
@@ -1525,6 +1537,14 @@ impl RpcService {
         auth: Option<&str>,
         cache: &crate::db::Cache,
     ) -> Result<(), RpcError> {
+        // A soft-deleted (tombstoned) cache is invisible to reads — symmetric
+        // with `list_caches`, which filters `deleted_at`, and with the facade.
+        // Unconditional: a standalone cache (org_id = None) has no org-activity
+        // check to fall back on, and registries rely on org-level soft-delete
+        // only (they carry no per-row tombstone), so this guard is cache-specific.
+        if cache.deleted_at.is_some() {
+            return Err(RpcError::not_found("cache"));
+        }
         if let Some(org_id) = cache.org_id {
             if !self
                 .db
@@ -2654,20 +2674,74 @@ impl RpcService {
         if !keymap::is_machine_path(machine_path) {
             return Ok(None);
         }
-        let registry = self.registry_or_not_found(slug).await?;
-        self.require_read(auth, &registry).await?;
+        // A registry slug wins; a slug that is not a registry falls through to a
+        // managed cache (the two are separate namespaces). Both shells reach this
+        // one method, so cache serving is at parity automatically.
+        if let Some(registry) = self
+            .db
+            .registry_by_slug(slug)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            self.require_read(auth, &registry).await?;
+            let fetch = self
+                .surface
+                .fetcher(&registry)
+                .await
+                .map_err(RpcError::internal)?;
+            let Some(bytes) = fetch.fetch(machine_path).await.map_err(RpcError::internal)? else {
+                return Ok(None);
+            };
+            return Ok(Some(FacadeObject {
+                bytes,
+                content_type: keymap::content_type(machine_path),
+                cache_control: keymap::cache_control(machine_path),
+            }));
+        }
+        if let Some(cache) = self.db.cache_by_slug(slug).await.map_err(RpcError::internal)? {
+            return self.cache_facade_fetch(auth, &cache, machine_path).await;
+        }
+        Err(RpcError::not_found("registry"))
+    }
+
+    /// Serve a managed cache's machine surface.
+    ///
+    /// `nix-cache-info` is generated from the cache's config; `<hash>.narinfo`
+    /// and `nar/<file>` are served as stored bytes from the cache surface. Reads
+    /// honor the cache's visibility ([`Self::require_cache_read`]).
+    ///
+    /// # Errors
+    ///
+    /// Auth errors for a non-public cache read without authority, and
+    /// [`RpcError::Internal`] on store/database failure. `Ok(None)` is a 404 for
+    /// an absent object.
+    async fn cache_facade_fetch(
+        &self,
+        auth: Option<&str>,
+        cache: &crate::db::Cache,
+        path: &str,
+    ) -> Result<Option<FacadeObject>, RpcError> {
+        self.require_cache_read(auth, cache).await?;
+        if path == "nix-cache-info" {
+            let body = render_nix_cache_info(cache.want_mass_query, cache.priority);
+            return Ok(Some(FacadeObject {
+                bytes: body.into_bytes(),
+                content_type: keymap::content_type(path),
+                cache_control: keymap::cache_control(path),
+            }));
+        }
         let fetch = self
             .surface
-            .fetcher(&registry)
+            .cache_fetcher(cache)
             .await
             .map_err(RpcError::internal)?;
-        let Some(bytes) = fetch.fetch(machine_path).await.map_err(RpcError::internal)? else {
+        let Some(bytes) = fetch.fetch(path).await.map_err(RpcError::internal)? else {
             return Ok(None);
         };
         Ok(Some(FacadeObject {
             bytes,
-            content_type: keymap::content_type(machine_path),
-            cache_control: keymap::cache_control(machine_path),
+            content_type: keymap::content_type(path),
+            cache_control: keymap::cache_control(path),
         }))
     }
 
