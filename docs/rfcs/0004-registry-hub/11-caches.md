@@ -607,9 +607,12 @@ the current spec. Phases are orderable; A lands first, E last.
 - [x] `cache_gc_runs` history + `cache_usage` maintenance; `RunCacheGc` /
       `ListCacheGcRuns` RPCs; `aos-hub cache gc [--dry-run]` (local target) /
       `cache gc-policy` / `cache pin|renew|unpin|roots` CLI.
-- [ ] Worker GC: extend the existing Cron trigger with a cache-GC pass over
-      D1+R2 (the `RunCacheGc` RPC is already reachable on the worker; only the
-      scheduled Cron driver is pending).
+- [x] Worker GC: the `scheduled` handler now runs `indexer::gc_all` after the
+      index pass — the Cron counterpart to `aos-hub cache gc`, driving the shared
+      `gc::sweep_cache` over D1 + the R2 write surface for every GC-policied cache
+      and recording each sweep as a `cache_gc_runs` row (one cache's failure is
+      logged, never aborting the pass). `Date::now()` supplies the tick time
+      (wasm has no ambient clock). Compiles for `wasm32-unknown-unknown`.
 
 ### Phase D — discovery, graph, NAR explorer, web
 

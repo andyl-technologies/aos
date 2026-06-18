@@ -329,5 +329,22 @@ mod entry {
         if let Err(err) = crate::indexer::index_all(backend, bucket).await {
             worker::console_error!("scheduled index failed: {err:#}");
         }
+
+        // Then a cache-GC pass over the same D1+R2, the Cron counterpart to the
+        // native `aos-hub cache gc`. Fresh binding handles (the D1/Bucket handles
+        // above were moved into the indexer); `Date::now()` is the Cron tick time
+        // in seconds (wasm has no ambient clock, so `sweep_cache` takes it).
+        let (Ok(gc_db), Ok(gc_bucket)) = (
+            env.d1(crate::handlers::bindings::D1),
+            env.bucket(crate::handlers::bindings::R2),
+        ) else {
+            worker::console_error!("scheduled gc: D1/R2 binding missing");
+            return;
+        };
+        let now = (worker::Date::now().as_millis() / 1000) as i64;
+        let gc_backend = crate::d1backend::D1Backend::new(gc_db);
+        if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now).await {
+            worker::console_error!("scheduled cache gc failed: {err:#}");
+        }
     }
 }
