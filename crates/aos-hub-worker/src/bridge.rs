@@ -94,10 +94,9 @@ pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
 /// Returns an error if the response body cannot be collected, a header name or
 /// value is not valid UTF-8, or the [`worker::Response`] cannot be built.
 pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
+    use futures_util::TryStreamExt as _;
+
     let (parts, body) = resp.into_parts();
-    let bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .map_err(|err| worker::Error::RustError(format!("reading router response body: {err}")))?;
 
     let mut headers = Headers::new();
     for (name, value) in parts.headers.iter() {
@@ -107,7 +106,17 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
         headers.set(name.as_str(), value)?;
     }
 
-    Ok(Response::from_bytes(bytes.to_vec())?
+    // Stream the router's response body straight through to the Workers runtime
+    // rather than buffering it (no `to_bytes(usize::MAX)`): a large cache NAR the
+    // shared `cache_serve` streams from R2 never lands fully in the isolate's
+    // memory. Each `Bytes` chunk becomes a `Vec<u8>` the runtime emits as it
+    // arrives; an axum body error maps to a worker error.
+    let stream = body
+        .into_data_stream()
+        .map_ok(|chunk| chunk.to_vec())
+        .map_err(|err| worker::Error::RustError(format!("router response body: {err}")));
+
+    Ok(Response::from_stream(stream)?
         .with_status(parts.status.as_u16())
         .with_headers(headers))
 }

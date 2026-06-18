@@ -1136,78 +1136,47 @@ async fn machine_path(
             // generated from the cache's config.
             if nested.status() == StatusCode::NOT_FOUND {
                 if let Ok(Some(cache)) = state.db.cache_by_slug(&slug).await {
-                    if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
-                        return *deny;
-                    }
-                    // Authenticated-origin read: a private external binding has
-                    // no local bytes — mint a presigned origin URL and 302 the
-                    // client to it (the shared decision; rendered here for the
-                    // native hub). `nix-cache-info` below is hub-generated, so
-                    // it is checked after this and never presigned.
-                    if path != "nix-cache-info" {
-                        match crate::facade::write_service(&state)
-                            .presign_cache_read(&cache, &path, now_secs())
-                            .await
-                        {
-                            Ok(Some(url)) => match axum::http::HeaderValue::from_str(&url) {
-                                Ok(value) => {
-                                    return (
-                                        StatusCode::FOUND,
-                                        [(axum::http::header::LOCATION, value)],
-                                    )
-                                        .into_response();
-                                }
-                                Err(err) => return internal(anyhow::anyhow!("{err}")),
-                            },
-                            Ok(None) => {}
-                            Err(err) => return internal(err),
-                        }
-                    }
-                    if path == "nix-cache-info" {
-                        let body = format!(
-                            "StoreDir: /nix/store\nWantMassQuery: {}\nPriority: {}\n",
-                            u8::from(cache.want_mass_query),
-                            cache.priority,
-                        );
-                        return (
-                            StatusCode::OK,
-                            [(
-                                axum::http::header::CONTENT_TYPE,
-                                "text/plain; charset=utf-8",
-                            )],
-                            body,
-                        )
-                            .into_response();
-                    }
-                    let Some(root) =
-                        state.db.cache_surface_root(cache.id).await.ok().flatten()
-                    else {
-                        return StatusCode::NOT_FOUND.into_response();
-                    };
-                    // NAR explorer: `/{cache}/nar/<file>?explore` lists the
-                    // archive's file tree (native only) instead of downloading.
-                    // `nix` substitution never sends `?explore`, so downloads
-                    // stream as normal.
+                    // NAR explorer (native-only): `/{cache}/nar/<file>?explore`
+                    // lists the archive's file tree instead of downloading. `nix`
+                    // substitution never sends `?explore`. Gate + resolve the
+                    // surface root here; everything else flows through the shared
+                    // streaming serve below.
                     if path.starts_with("nar/")
-                        && uri
-                            .query()
-                            .is_some_and(|q| {
-                                q.split('&')
-                                    .any(|kv| kv == "explore" || kv.starts_with("explore="))
-                            })
+                        && uri.query().is_some_and(|q| {
+                            q.split('&')
+                                .any(|kv| kv == "explore" || kv.starts_with("explore="))
+                        })
                     {
+                        if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
+                            return *deny;
+                        }
+                        let Some(root) =
+                            state.db.cache_surface_root(cache.id).await.ok().flatten()
+                        else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
                         return nar_explore_page(&slug, &root, &path).await;
                     }
-                    // Tap the LRU access signal on a narinfo read (best-effort,
-                    // debounced in the DB) — the native hub serves bytes via its
-                    // own streaming path, so it taps here rather than through the
-                    // shared `cache_facade_fetch`.
-                    if let Some(hash) =
-                        path.strip_suffix(".narinfo").filter(|h| !h.contains('/'))
+                    // The ONE shared streaming cache-read path — identical code to
+                    // the Worker: visibility gate, generated `nix-cache-info`,
+                    // presigned-`302` for a private origin, and Range-aware
+                    // streaming (a large NAR never buffers into memory).
+                    let auth = headers
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok());
+                    let range = headers
+                        .get(axum::http::header::RANGE)
+                        .and_then(|v| v.to_str().ok());
+                    return match crate::facade::write_service(&state)
+                        .cache_serve(auth, &cache, &path, range)
+                        .await
                     {
-                        let _ = state.db.touch_cache_object(cache.id, hash, now_secs()).await;
-                    }
-                    return crate::facade::cache_serve_file(&root, &path, &headers).await;
+                        Ok(Some(resp)) => resp,
+                        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                        Err(err) => StatusCode::from_u16(err.http_status())
+                            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+                            .into_response(),
+                    };
                 }
             }
             nested

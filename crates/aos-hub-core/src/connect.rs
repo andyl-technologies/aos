@@ -181,6 +181,19 @@ async fn facade(
     path: String,
 ) -> Response {
     let auth = auth_header(&headers);
+    // A managed cache: stream NAR/narinfo through the shared `cache_serve`
+    // (Range-aware, generated `nix-cache-info`, presigned-`302`) — the *same*
+    // path the native hub uses, so the Worker streams a NAR from R2 rather than
+    // buffering it. Caches and registries are separate slug namespaces, so a
+    // cache slug is never a registry; registries fall through to `facade_fetch`.
+    if let Ok(Some(cache)) = svc.db.cache_by_slug(&slug).await {
+        let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+        return match svc.cache_serve(auth.as_deref(), &cache, &path, range).await {
+            Ok(Some(resp)) => resp,
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(err) => error_response(&err),
+        };
+    }
     match svc.facade_fetch(auth.as_deref(), &slug, &path).await {
         // A presigned private-origin read: `302` to the (short-lived) origin URL
         // the client fetches directly, instead of serving bytes through the hub.

@@ -23,6 +23,23 @@ use anyhow::Result;
 use crate::backend::BackendBounds;
 use crate::db::RegistryRecord;
 
+/// A streaming read of a surface object: the body, the object's total size, and
+/// the served byte range (`None` = the whole object was served).
+///
+/// The body is an [`axum::body::Body`] — a stream — so the *same* shared serve
+/// path streams on both shells: the native hub wraps a `tokio` file
+/// `ReaderStream`, the Worker wraps an R2 ranged-GET stream. Neither buffers a
+/// NAR into memory.
+pub struct StreamedRead {
+    /// The (streaming) response body for the object or the requested range.
+    pub body: axum::body::Body,
+    /// The object's full byte length (the `Content-Range` denominator).
+    pub total: u64,
+    /// The inclusive `(start, end)` byte range actually served, or `None` for a
+    /// whole-object read (a `200` rather than a `206`).
+    pub range: Option<(u64, u64)>,
+}
+
 /// Read access to a registry surface by relative path (the "Blobs" read port).
 ///
 /// Mirrors the native hub's surface reader so the relocated read logic (facade,
@@ -40,6 +57,49 @@ pub trait SurfaceFetch: BackendBounds {
     ///
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Stream one surface path, optionally just the inclusive byte `range`.
+    ///
+    /// The streaming counterpart of [`fetch`](Self::fetch) and the single read
+    /// path the shared cache facade serves NAR/narinfo through, so the native hub
+    /// and the Worker stream identically. Returns `Ok(None)` when the path does
+    /// not exist.
+    ///
+    /// The provided default buffers via [`fetch`](Self::fetch) and wraps the
+    /// (optionally sliced) bytes in a one-chunk body — correct on any store. An
+    /// implementation whose store streams natively (a filesystem `ReaderStream`,
+    /// an R2 ranged GET) **should override this** so a large NAR never lands in
+    /// memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for IO/transport failures other than absence.
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        let Some(bytes) = self.fetch(path).await? else {
+            return Ok(None);
+        };
+        let total = bytes.len() as u64;
+        match range {
+            Some((start, end)) if start <= end && start < total => {
+                let end = end.min(total.saturating_sub(1));
+                let slice = bytes[start as usize..=end as usize].to_vec();
+                Ok(Some(StreamedRead {
+                    body: axum::body::Body::from(slice),
+                    total,
+                    range: Some((start, end)),
+                }))
+            }
+            _ => Ok(Some(StreamedRead {
+                body: axum::body::Body::from(bytes),
+                total,
+                range: None,
+            })),
+        }
+    }
 
     /// The byte length of the object at `path`, or `None` when it does not exist.
     ///

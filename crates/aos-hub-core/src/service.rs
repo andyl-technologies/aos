@@ -317,6 +317,29 @@ fn render_nix_cache_info(want_mass_query: bool, priority: i64) -> String {
     )
 }
 
+/// Parse a `Range: bytes=START-END` header into an inclusive `(start, end)`.
+///
+/// Only a single `bytes=` range is supported (the substituter case). An
+/// open-ended `bytes=START-` yields `(start, u64::MAX)`, which the streaming
+/// fetcher clamps to the object's last byte. Returns `None` for an absent,
+/// malformed, multi-range, or suffix (`bytes=-N`) header — the caller then
+/// serves the whole object.
+fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
+    let spec = header?.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') {
+        return None;
+    }
+    let (start, end) = spec.split_once('-')?;
+    let start: u64 = start.trim().parse().ok()?;
+    let end = end.trim();
+    let end: u64 = if end.is_empty() {
+        u64::MAX
+    } else {
+        end.parse().ok()?
+    };
+    (start <= end).then_some((start, end))
+}
+
 /// Rank a visibility string for ordering comparisons: `public` (2) is the most
 /// visible, then `internal` (1), then `private` (0). An unknown value ranks as
 /// the most restrictive (`0`) so a typo never widens exposure.
@@ -3216,6 +3239,106 @@ impl RpcService {
             crate::sigv4::presign_get_url(&params)?
         };
         Ok(Some(url))
+    }
+
+    /// Serve a managed cache's machine surface as a **streaming** response — the
+    /// single shared cache-read path both shells route through.
+    ///
+    /// This replaces the former native-only `cache_serve_file` so the native hub
+    /// and the Worker stream NAR/narinfo through the *same* code: visibility gate
+    /// → generated `nix-cache-info` → presigned-`302` for a private origin → a
+    /// streaming body from [`SurfaceFetch::fetch_stream`](crate::fetch::SurfaceFetch::fetch_stream)
+    /// honoring `Range:` (`206` + `Content-Range`). Each shell's fetcher supplies
+    /// the stream (native: a `tokio` file `ReaderStream`; Worker: an R2 ranged
+    /// GET), so a large NAR never buffers into memory on either.
+    ///
+    /// Returns `Ok(None)` for an absent object (the caller renders `404`).
+    ///
+    /// # Errors
+    ///
+    /// Auth/visibility errors for a non-public cache read without authority, and
+    /// [`RpcError::Internal`] on store/database failure.
+    pub async fn cache_serve(
+        &self,
+        auth: Option<&str>,
+        cache: &crate::db::Cache,
+        path: &str,
+        range_header: Option<&str>,
+    ) -> Result<Option<axum::response::Response>, RpcError> {
+        use axum::http::{header, StatusCode};
+        self.require_cache_read(auth, cache).await?;
+
+        // `nix-cache-info` is hub-generated — small, never streamed or presigned.
+        if path == "nix-cache-info" {
+            let body = render_nix_cache_info(cache.want_mass_query, cache.priority);
+            let resp = axum::response::IntoResponse::into_response((
+                [
+                    (header::CONTENT_TYPE, keymap::content_type(path)),
+                    (header::CACHE_CONTROL, keymap::cache_control(path)),
+                ],
+                body,
+            ));
+            return Ok(Some(resp));
+        }
+
+        // A private external origin: 302 to a presigned URL (client fetches it).
+        if let Some(url) = self
+            .presign_cache_read(cache, path, clock::now_unix_secs())
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let location = axum::http::HeaderValue::from_str(&url)
+                .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
+            return Ok(Some(axum::response::IntoResponse::into_response((
+                StatusCode::FOUND,
+                [(header::LOCATION, location)],
+            ))));
+        }
+
+        // Stream the object (or a byte range) through the shared fetch port.
+        let fetch = self
+            .surface
+            .cache_fetcher(cache)
+            .await
+            .map_err(RpcError::internal)?;
+        let requested = parse_byte_range(range_header);
+        let Some(read) = fetch
+            .fetch_stream(path, requested)
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+
+        // Tap the LRU access signal on a narinfo read (best-effort, debounced).
+        if let Some(hash) = path.strip_suffix(".narinfo").filter(|h| !h.contains('/')) {
+            let _ = self
+                .db
+                .touch_cache_object(cache.id, hash, clock::now_unix_secs())
+                .await;
+        }
+
+        let ct = keymap::content_type(path);
+        let cc = keymap::cache_control(path);
+        let resp = match read.range {
+            Some((start, end)) => axum::response::Response::builder()
+                .status(StatusCode::PARTIAL_CONTENT)
+                .header(header::CONTENT_TYPE, ct)
+                .header(header::CACHE_CONTROL, cc)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{}", read.total))
+                .header(header::CONTENT_LENGTH, end - start + 1)
+                .body(read.body),
+            None => axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, ct)
+                .header(header::CACHE_CONTROL, cc)
+                .header(header::ACCEPT_RANGES, "bytes")
+                .header(header::CONTENT_LENGTH, read.total)
+                .body(read.body),
+        }
+        .map_err(|e| RpcError::internal(anyhow::anyhow!("{e}")))?;
+        Ok(Some(resp))
     }
 
     /// Write one object (`<hash>.narinfo` or `nar/<file>`) into a managed cache's

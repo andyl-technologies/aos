@@ -266,6 +266,73 @@ impl LocalFsFetch {
     pub fn root(&self) -> &std::path::Path {
         &self.root
     }
+
+    /// Stream a file from the surface (optionally an inclusive byte `range`),
+    /// with the same symlink containment as [`fetch`](Self::fetch).
+    ///
+    /// Backs the core [`SurfaceFetch::fetch_stream`](aos_hub_core::fetch::SurfaceFetch::fetch_stream)
+    /// impl in [`crate::coreports`], so the native hub streams a NAR from disk
+    /// (a `tokio` `ReaderStream`) rather than buffering it — the same shared
+    /// cache-serve path the Worker uses with its R2 stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a symlink escape or an IO failure other than absence
+    /// (an absent file is `Ok(None)`).
+    pub(crate) async fn stream_read(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+        use tokio_util::io::ReaderStream;
+
+        let full = safe_join(&self.root, path)?;
+        let root = match tokio::fs::canonicalize(&self.root).await {
+            Ok(root) => root,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(fetch_err(format!("canonicalizing surface root: {err}"))),
+        };
+        let canonical = match tokio::fs::canonicalize(&full).await {
+            Ok(canonical) => canonical,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(fetch_err(format!("resolving {}: {err}", full.display()))),
+        };
+        if !canonical.starts_with(&root) {
+            return Err(fetch_err(format!(
+                "surface path '{path}' escapes the surface root via symlink"
+            )));
+        }
+        let mut file = match tokio::fs::File::open(&canonical).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(fetch_err(format!("opening {}: {err}", canonical.display()))),
+        };
+        let total = file
+            .metadata()
+            .await
+            .map_err(|err| fetch_err(format!("stat {}: {err}", canonical.display())))?
+            .len();
+        match range {
+            Some((start, end)) if start < total => {
+                let end = end.min(total.saturating_sub(1));
+                file.seek(std::io::SeekFrom::Start(start))
+                    .await
+                    .map_err(|err| fetch_err(format!("seek {}: {err}", canonical.display())))?;
+                let stream = ReaderStream::new(file.take(end - start + 1));
+                Ok(Some(aos_hub_core::fetch::StreamedRead {
+                    body: axum::body::Body::from_stream(stream),
+                    total,
+                    range: Some((start, end)),
+                }))
+            }
+            _ => Ok(Some(aos_hub_core::fetch::StreamedRead {
+                body: axum::body::Body::from_stream(ReaderStream::new(file)),
+                total,
+                range: None,
+            })),
+        }
+    }
 }
 
 #[async_trait]

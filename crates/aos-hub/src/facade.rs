@@ -154,110 +154,12 @@ pub async fn head_machine_path(
     render(outcome, path)
 }
 
-/// Stream a cache surface file from disk, honoring a `Range:` request.
-///
-/// The native cache read path **streams** (rather than buffering the whole NAR
-/// into memory like the registry `compat` reader), so a multi-hundred-MB NAR
-/// never sits in RAM. A `Range: bytes=…` request is answered with `206 Partial
-/// Content` + `Content-Range`; every response advertises `Accept-Ranges: bytes`.
-/// Authorization/visibility is the caller's responsibility
-/// ([`crate::server::authorize_cache_read`]); this serves bytes from an
-/// already-authorized cache surface, with symlink containment under `root`.
-pub async fn cache_serve_file(root: &std::path::Path, rel: &str, headers: &HeaderMap) -> Response {
-    use axum::body::Body;
-    use axum::http::StatusCode;
-    use axum::response::IntoResponse as _;
-    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-    use tokio_util::io::ReaderStream;
+// NOTE: the former native-only `cache_serve_file` (+ `parse_range`) was removed
+// in favor of the ONE shared streaming cache-read path
+// ([`RpcService::cache_serve`](aos_hub_core::service::RpcService::cache_serve)),
+// which both the native hub and the Worker route through so NAR/narinfo stream
+// identically (each shell's `SurfaceFetch::fetch_stream` supplies the stream).
 
-    let Ok(target) = crate::fetch::safe_join(root, rel) else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    // Symlink containment: the resolved file must stay under the real surface
-    // root (the same guard `LocalFsFetch` applies to buffered reads).
-    let (real_root, real_target) =
-        match (tokio::fs::canonicalize(root).await, tokio::fs::canonicalize(&target).await) {
-            (Ok(r), Ok(t)) => (r, t),
-            _ => return StatusCode::NOT_FOUND.into_response(),
-        };
-    if !real_target.starts_with(&real_root) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let file = match tokio::fs::File::open(&real_target).await {
-        Ok(f) => f,
-        Err(_) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let total = match file.metadata().await {
-        Ok(m) => m.len(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let ct = aos_hub_core::keymap::content_type(rel);
-    let cc = aos_hub_core::keymap::cache_control(rel);
-
-    if let Some((start, end)) = parse_range(headers, total) {
-        let len = end - start + 1;
-        let mut file = file;
-        if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-        let stream = ReaderStream::new(file.take(len));
-        return axum::http::Response::builder()
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header(header::CONTENT_TYPE, ct)
-            .header(header::CACHE_CONTROL, cc)
-            .header(header::ACCEPT_RANGES, "bytes")
-            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{total}"))
-            .header(header::CONTENT_LENGTH, len)
-            .body(Body::from_stream(stream))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
-    }
-
-    let stream = ReaderStream::new(file);
-    axum::http::Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, ct)
-        .header(header::CACHE_CONTROL, cc)
-        .header(header::ACCEPT_RANGES, "bytes")
-        .header(header::CONTENT_LENGTH, total)
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-/// Parse a single-range `Range: bytes=start-end` header against `total` bytes.
-///
-/// Returns the inclusive `(start, end)` range, or `None` when there is no
-/// `Range`, it is malformed, multi-range, or unsatisfiable (the caller then
-/// serves the full body). Supports `bytes=START-`, `bytes=START-END`, and the
-/// suffix form `bytes=-SUFFIXLEN`.
-fn parse_range(headers: &HeaderMap, total: u64) -> Option<(u64, u64)> {
-    if total == 0 {
-        return None;
-    }
-    let spec = headers.get(header::RANGE)?.to_str().ok()?.strip_prefix("bytes=")?;
-    if spec.contains(',') {
-        return None; // multi-range unsupported; serve full
-    }
-    let (start_s, end_s) = spec.split_once('-')?;
-    let (start, end) = if start_s.is_empty() {
-        let suffix: u64 = end_s.parse().ok()?;
-        if suffix == 0 {
-            return None;
-        }
-        (total.saturating_sub(suffix), total - 1)
-    } else {
-        let start: u64 = start_s.parse().ok()?;
-        let end = if end_s.is_empty() {
-            total - 1
-        } else {
-            end_s.parse::<u64>().ok()?.min(total - 1)
-        };
-        (start, end)
-    };
-    if start > end || start >= total {
-        return None;
-    }
-    Some((start, end))
-}
 
 /// Render a shared-handler [`FacadeWrite`] outcome as the hub's HTTP response.
 ///

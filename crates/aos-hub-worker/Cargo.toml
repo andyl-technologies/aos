@@ -67,6 +67,10 @@ http = { workspace = true }
 # exceeds the cap, so a chunked no-Content-Length response cannot OOM the
 # isolate). Lightweight, wasm-clean.
 futures-util = "0.3"
+# Wrap the `!Send` R2 body stream so `axum::body::Body::from_stream` (which
+# requires `Send`) accepts it — sound on the single-threaded Worker. Already in
+# the workspace lockfile via aos-hub-core, so this adds no new vendored crate.
+send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
 # The `gen_surface` example (the worker integration test's fixture generator)
