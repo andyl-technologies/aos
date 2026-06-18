@@ -1103,12 +1103,37 @@ async fn machine_path(
             let nested = resolve_nested(&state, &uri, &headers, peer, Instant::now()).await;
             // A managed cache is tried last, so it can never shadow a flat or
             // nested registry (or console path) that shares the first URL
-            // segment. Cache reads route through the shared facade (the same
-            // codepath the Worker uses) via `crate::facade::cache_get`.
-            if nested.status() == StatusCode::NOT_FOUND
-                && matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_)))
-            {
-                return crate::facade::cache_get(&state, &slug, &path, &headers).await;
+            // segment. NARs/narinfo are streamed from the cache surface
+            // (Range-aware, never buffered into RAM); `nix-cache-info` is
+            // generated from the cache's config.
+            if nested.status() == StatusCode::NOT_FOUND {
+                if let Ok(Some(cache)) = state.db.cache_by_slug(&slug).await {
+                    if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
+                        return *deny;
+                    }
+                    if path == "nix-cache-info" {
+                        let body = format!(
+                            "StoreDir: /nix/store\nWantMassQuery: {}\nPriority: {}\n",
+                            u8::from(cache.want_mass_query),
+                            cache.priority,
+                        );
+                        return (
+                            StatusCode::OK,
+                            [(
+                                axum::http::header::CONTENT_TYPE,
+                                "text/plain; charset=utf-8",
+                            )],
+                            body,
+                        )
+                            .into_response();
+                    }
+                    let Some(root) =
+                        state.db.cache_surface_root(cache.id).await.ok().flatten()
+                    else {
+                        return StatusCode::NOT_FOUND.into_response();
+                    };
+                    return crate::facade::cache_serve_file(&root, &path, &headers).await;
+                }
             }
             nested
         }
@@ -1172,6 +1197,12 @@ async fn head_machine_path(
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
+        }
+        // A managed cache: the shared `head_machine_path` has a cache branch
+        // (read-visibility + surface existence), so a substituter's `.narinfo`
+        // HEAD probe works against caches too.
+        Ok(None) if matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_))) => {
+            crate::facade::head_machine_path(&state, &slug, &path, &headers).await
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
@@ -1759,6 +1790,56 @@ pub(crate) async fn authorize_registry_read(
 
 
 /// Whether the request's session user holds any membership covering `org_id`.
+/// Whether this caller may read `cache` — the cache analog of
+/// [`authorize_registry_read`]: a tombstoned cache or one under a suspended org
+/// is `404`; `public` is open; `internal` requires org membership; `private`
+/// requires `read` on the owning org scope (or root for an instance-level
+/// cache). Returns the `404` response to send on denial.
+pub(crate) async fn authorize_cache_read(
+    state: &AppState,
+    cache: &crate::db::Cache,
+    headers: &HeaderMap,
+) -> Result<(), Box<Response>> {
+    let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
+    if cache.deleted_at.is_some() {
+        return Err(denied());
+    }
+    if let Some(org_id) = cache.org_id {
+        if !matches!(state.db.org_is_active(org_id).await, Ok(true)) {
+            return Err(denied());
+        }
+    }
+    match cache.visibility.as_str() {
+        "public" => Ok(()),
+        "internal" => match cache.org_id {
+            None => Ok(()),
+            Some(org_id) => {
+                if session_is_org_member(state, headers, org_id).await {
+                    Ok(())
+                } else {
+                    Err(denied())
+                }
+            }
+        },
+        _ => {
+            let scope = match cache.org_id {
+                Some(org_id) => match state.db.org_by_id(org_id).await.ok().flatten() {
+                    Some(org) => Scope::parse(&org.slug),
+                    None => return Err(denied()),
+                },
+                None => Scope::root(),
+            };
+            if session_allows_read(state, headers, &scope).await
+                || bearer_allows_read(state, headers, &scope)
+            {
+                Ok(())
+            } else {
+                Err(denied())
+            }
+        }
+    }
+}
+
 async fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i64) -> bool {
     let Some(org) = state.db.org_by_id(org_id).await.ok().flatten() else {
         return false;
