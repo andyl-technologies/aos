@@ -677,8 +677,12 @@ enum BindingCommand {
         /// Binding name, unique within the org.
         name: String,
         /// Filesystem path the binding roots at.
+        ///
+        /// Spelled `--path` (not `--root`) so it never collides with the global
+        /// `--root` hub-state-directory flag, which is `global = true` and would
+        /// otherwise shadow a subcommand `--root` of a different type.
         #[arg(long)]
-        root: String,
+        path: String,
     },
     /// List an org's storage bindings.
     List {
@@ -1444,7 +1448,7 @@ async fn main() -> Result<()> {
                 BindingCommand::Add {
                     org,
                     name,
-                    root: binding_root,
+                    path: binding_root,
                 } => {
                     let org_record = db
                         .org_by_slug(&org)
