@@ -32,9 +32,11 @@ Deployment is **two concerns, cleanly split**:
 nix-build -A pkgs.aos-registry-hub-cloudflare
 HUB=./result/bin/aos-registry-hub
 
-# Authenticate wrangler with your Cloudflare account (either works):
-export CLOUDFLARE_API_TOKEN=…            # an API token with Workers/D1/R2/KV scopes
-#   …or run an interactive OAuth login once: `wrangler login`
+# Authenticate with the provider — EITHER option works:
+#   (a) API token: export CLOUDFLARE_API_TOKEN=… (Workers/D1/R2/KV + Account:Read)
+#   (b) browser OAuth, once: "$HUB" worker login
+# Check it with: "$HUB" worker whoami   (clear it with: "$HUB" worker logout)
+export CLOUDFLARE_API_TOKEN=…
 
 # 1. Provider: provision D1/R2/KV, deploy the wasm, set the runtime secrets.
 "$HUB" worker deploy \
@@ -74,6 +76,27 @@ the same Cloudflare account**. Set `--external-url` to the same `https://…` UR
 **One-shot convenience:** `"$HUB" worker install --provider cloudflare
 --external-url … --root-email … --root-password-stdin` composes `worker deploy`
 then `init --target d1:<name>` in a single command.
+
+### Authentication (two options)
+
+Provider auth is a `worker` concern (each provider has its own); for Cloudflare:
+
+- **API token** — `export CLOUDFLARE_API_TOKEN=…` (a token with Workers / D1 /
+  R2 / KV edit + Account Settings read). Best for CI and remote/headless hosts.
+- **Browser OAuth** — `"$HUB" worker login` opens your browser to authorize and
+  stores the credentials; `worker deploy`/`init` then use them automatically.
+  `"$HUB" worker whoami` shows the current identity; `"$HUB" worker logout`
+  clears it.
+
+The deploy/migrate commands accept **either** transparently. Tokens are never
+passed on argv; the installer doesn't handle credentials itself.
+
+> **OAuth over SSH (remote builder):** `worker login` runs a callback on
+> `localhost:8976` of the host it runs on. When you run it on a remote builder
+> over SSH, forward that port so your local browser's redirect reaches it:
+> `ssh -L 8976:localhost:8976 dylan@builder …`, then run `"$HUB" worker login`
+> and open the printed URL in your local browser. (A token via
+> `CLOUDFLARE_API_TOKEN` avoids the port-forward entirely.)
 
 ### Runtime configuration
 

@@ -240,6 +240,21 @@ enum WorkerCommand {
     /// `--root-email` is given) bootstraps the root admin — all CLI-driven over
     /// D1, with no public init endpoint.
     Install(WorkerArgs),
+    /// Authenticate with the hosting provider (browser OAuth, as an alternative
+    /// to a provider API token in the environment).
+    Login(ProviderOpt),
+    /// Clear the hosting provider's stored credentials.
+    Logout(ProviderOpt),
+    /// Show the current hosting-provider authentication.
+    Whoami(ProviderOpt),
+}
+
+/// The provider selector for `worker` subcommands that take no other options.
+#[derive(Args)]
+struct ProviderOpt {
+    /// The hosting provider.
+    #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
+    provider: Provider,
 }
 
 /// Shared options for the `worker` deployment commands.
@@ -1382,16 +1397,23 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
 async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
     use aos_registry_hub::cloudflare;
 
-    let args = match &command {
-        WorkerCommand::Deploy(a) | WorkerCommand::Provision(a) | WorkerCommand::Install(a) => a,
+    let provider = match &command {
+        WorkerCommand::Deploy(a) | WorkerCommand::Provision(a) | WorkerCommand::Install(a) => {
+            a.provider
+        }
+        WorkerCommand::Login(p) | WorkerCommand::Logout(p) | WorkerCommand::Whoami(p) => p.provider,
     };
-    // Only Cloudflare is implemented; the match documents the extension point.
-    match args.provider {
+    // Only Cloudflare is implemented; the match documents the extension point
+    // for future providers (each would resolve its own assets + auth).
+    match provider {
         Provider::Cloudflare => {}
     }
     let assets = cloudflare::Assets::from_env()?;
 
     match &command {
+        WorkerCommand::Login(_) => cloudflare::login(&assets).await?,
+        WorkerCommand::Logout(_) => cloudflare::logout(&assets).await?,
+        WorkerCommand::Whoami(_) => cloudflare::whoami(&assets).await?,
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
             println!(
