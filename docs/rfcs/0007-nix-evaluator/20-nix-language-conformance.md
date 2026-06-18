@@ -156,7 +156,10 @@ exactly.
       `a.${foo} / b` is division. Verify against pinned Nix
       (string-interpolation page).
 - [x] **In attribute names** — `{ ${e} = v; }` and `s.${e}` (dynamic/computed
-      attr names, §5.4). The interpolated value must coerce to a string.
+      attr names, §5.4). The interpolated value must evaluate to a string;
+      unlike string/path interpolation, dynamic attr names do not coerce paths
+      or attrsets with `outPath` / `__toString`, and context-bearing strings
+      are rejected.
 - [x] **Only static names in first-position `let` binding names** — a `let`
       binding's first left-hand-side segment must be statically known:
       `let ${"x"} = ...; in ...` is legal and binds `x`, but computed first
@@ -312,8 +315,11 @@ search paths, and store coercion.
       cover missing leaf, missing intermediate, missing first component, and
       non-attr intermediate fallback. `d` stays lazy when the full path exists
       and is forced only when fallback is taken.
-- [ ] **Dynamic select `s.${e}`** — computed attribute name on selection; `e`
-      coerces to a string.
+- [x] **Dynamic select `s.${e}`** — computed attribute name on selection; `e`
+      must evaluate to a string. AOS evaluates dynamic key expressions in path
+      order, supports computed string names, and rejects `null`, paths, and
+      attrsets with string-coercion hooks and context-bearing strings like
+      pinned Nix.
 - [ ] **`or` with dynamic select** — `s.${e} or d` is legal; verify against
       pinned Nix.
 

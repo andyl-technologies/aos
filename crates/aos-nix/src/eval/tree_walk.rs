@@ -3171,7 +3171,7 @@ impl<'ir> TreeWalk<'ir> {
                 Ok(Some(symbol))
             }
             IrAttrPathSegment::Dynamic(dynamic) => {
-                self.eval_dynamic_attr_name(id, self.dynamic_attr_expression(dynamic)?, null_policy)
+                self.eval_dynamic_attr_name(self.dynamic_attr_expression(dynamic)?, null_policy)
             }
         }
     }
@@ -3188,7 +3188,6 @@ impl<'ir> TreeWalk<'ir> {
 
     fn eval_dynamic_attr_name(
         &mut self,
-        id: IrId,
         expression: IrId,
         null_policy: DynamicAttrNullPolicy,
     ) -> Result<Option<Symbol>, TreeWalkError> {
@@ -3196,10 +3195,17 @@ impl<'ir> TreeWalk<'ir> {
         let value = self.eval_node(expression)?;
         match value.tag() {
             ValueTag::Null if null_policy == DynamicAttrNullPolicy::SkipNull => Ok(None),
-            _ => {
-                let string = self.coerce_to_string(expression, value, span)?;
-                self.intern_string_value(id, string, span).map(Some)
-            }
+            ValueTag::String => self
+                .intern_context_free_string_value(expression, value, span, "dynamic attribute name")
+                .map(Some),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: expression,
+                    expected: "string",
+                    actual,
+                },
+                span,
+            )),
         }
     }
 
@@ -3226,7 +3232,22 @@ impl<'ir> TreeWalk<'ir> {
             bytes.extend_from_slice(string.bytes());
             bytes
         };
-        self.symbols.intern(&bytes).map_err(|source| {
+        self.intern_attr_name_bytes(id, &bytes)
+    }
+
+    fn intern_context_free_string_value(
+        &mut self,
+        id: IrId,
+        value: Value,
+        span: Span,
+        op: &'static str,
+    ) -> Result<Symbol, TreeWalkError> {
+        let bytes = self.context_free_string_bytes(id, span, value, op)?;
+        self.intern_attr_name_bytes(id, &bytes)
+    }
+
+    fn intern_attr_name_bytes(&mut self, id: IrId, bytes: &[u8]) -> Result<Symbol, TreeWalkError> {
+        self.symbols.intern(bytes).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::SymbolIntern {
                     id,
@@ -32791,15 +32812,50 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_attr_names_use_string_coercion() {
+    fn dynamic_attr_names_require_string_values() {
+        assert_eq!(eval("{ ${\"name\"} = 7; }.name").as_int(), Ok(7));
         assert_eq!(
-            eval("{ ${ { outPath = \"name\"; } } = 7; }.name").as_int(),
-            Ok(7)
-        );
-        assert_eq!(
-            eval("{ value = 9; }.${ { __toString = self: \"value\"; } }").as_int(),
+            eval("let name = \"value\"; in { value = 9; }.${name}").as_int(),
             Ok(9)
         );
+
+        for (source, actual) in [
+            ("{ ${ { outPath = \"name\"; } } = 7; }", ValueTag::Attrs),
+            (
+                "{ ${ { __toString = self: \"value\"; } } = 7; }",
+                ValueTag::Attrs,
+            ),
+            ("{ ${/tmp/x} = 7; }", ValueTag::Path),
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir)
+                .expect_err("dynamic attribute names do not coerce non-strings");
+
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    expected: "string",
+                    actual: observed,
+                    ..
+                } if observed == actual
+            ));
+        }
+
+        let context_key = lower(
+            r#"{ ${builtins.appendContext "name" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
+               }} = 7; }"#,
+        );
+        let error =
+            eval_whnf_owned(&context_key).expect_err("dynamic attribute names reject context");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "dynamic attribute name",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -33741,6 +33797,7 @@ mod tests {
         );
         assert_eq!(eval("({ a = { b = 1 + 2; }; }).a.b").as_int(), Ok(3));
         assert_eq!(eval("({ a = 1; }).${\"a\"}").as_int(), Ok(1));
+        assert_eq!(eval("({ ab = 3; }).${\"a\" + \"b\"}").as_int(), Ok(3));
         assert_eq!(
             eval("let name = \"a\"; in { a = { b = 2; }; }.${name}.b").as_int(),
             Ok(2)
@@ -33784,6 +33841,42 @@ mod tests {
                 .expect("null key expression exists")
                 .span
         );
+
+        for (source, actual) in [
+            (
+                "({ value = 9; }).${ { __toString = self: \"value\"; } }",
+                ValueTag::Attrs,
+            ),
+            ("({ \"/tmp/x\" = 5; }).${/tmp/x}", ValueTag::Path),
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("dynamic selects require string keys");
+
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    expected: "string",
+                    actual: observed,
+                    ..
+                } if observed == actual
+            ));
+        }
+
+        let context_key = lower(
+            r#"({ name = 7; }).${builtins.appendContext "name" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
+               }}"#,
+        );
+        let error =
+            eval_whnf_owned(&context_key).expect_err("dynamic select rejects string context");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "dynamic attribute name",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -33871,6 +33964,42 @@ mod tests {
                 .expect("null key expression exists")
                 .span
         );
+
+        for (source, actual) in [
+            (
+                "({ value = 9; } ? ${ { __toString = self: \"value\"; } })",
+                ValueTag::Attrs,
+            ),
+            ("({ \"/tmp/x\" = 5; } ? ${/tmp/x})", ValueTag::Path),
+        ] {
+            let ir = lower(source);
+            let error = eval_whnf_owned(&ir).expect_err("dynamic has-attr requires string keys");
+
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::Type {
+                    expected: "string",
+                    actual: observed,
+                    ..
+                } if observed == actual
+            ));
+        }
+
+        let context_key = lower(
+            r#"({ name = 7; } ? ${builtins.appendContext "name" {
+                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source" = { path = true; };
+               }})"#,
+        );
+        let error =
+            eval_whnf_owned(&context_key).expect_err("dynamic has-attr rejects string context");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "dynamic attribute name",
+                ..
+            }
+        ));
     }
 
     #[test]
