@@ -90,6 +90,27 @@
         { method: "POST", body: "{}" }, (s, b) => s === 200 && b.includes("registries"));
       await expect("GET / (browse HTML)", "/", {}, (s, b) => s === 200 && b.includes("<!DOCTYPE html>"));
       await expect("GET /missing/", "/missing/", {}, (s) => s === 404);
+
+      // Seed a PUBLIC managed cache (org + binding + cache + one indexed
+      // object) and an R2 narinfo, then assert the worker serves the cache
+      // surface and browse pages — the worker half of the cache parity claim.
+      await db.prepare("INSERT INTO orgs (slug, name, created_at) VALUES ('acme','Acme',0)").run();
+      await db.prepare("INSERT INTO storage_bindings (org_id, name, kind, root, created_at) VALUES (1,'b','local_fs','/srv',0)").run();
+      await db.prepare("INSERT INTO caches (org_id, slug, name, storage_binding_id, prefix, visibility, priority, compression, want_mass_query, created_at) VALUES (1,'e2e-cache','E2E Cache',1,'cache-prefix','public',40,'zstd',1,0)").run();
+      await db.prepare("INSERT INTO cache_objects (cache_id, store_hash, store_name, nar_url, nar_hash, nar_size, file_hash, file_size, compression, refs, uploaded_at) VALUES (1,'aaaa','aaaa-foo-1.0','nar/bbbb.nar.zst','sha256:cccc',100,'sha256:bbbb',50,'zstd','[]',0)").run();
+      const bucket = await mf.getR2Bucket("REGISTRY_BUCKET");
+      const narinfo = "StorePath: /nix/store/aaaa-foo-1.0\nURL: nar/bbbb.nar.zst\nCompression: zstd\nNarHash: sha256:cccc\nNarSize: 100\nFileHash: sha256:bbbb\nFileSize: 50\n";
+      await bucket.put("cache-prefix/aaaa.narinfo", narinfo);
+      console.log("ok   seeded public cache + R2 narinfo");
+
+      await expect("GET cache nix-cache-info", "/e2e-cache/nix-cache-info", {},
+        (s, b) => s === 200 && b.includes("StoreDir: /nix/store"));
+      await expect("GET cache narinfo (from R2)", "/e2e-cache/aaaa.narinfo", {},
+        (s, b) => s === 200 && b.includes("StorePath: /nix/store/aaaa-foo-1.0"));
+      await expect("GET cache home (HTML)", "/e2e-cache/", {},
+        (s, b) => s === 200 && b.includes("E2E Cache"));
+      await expect("GET cache objects (HTML)", "/e2e-cache/-/objects", {},
+        (s, b) => s === 200 && b.includes("aaaa-foo-1.0"));
     } catch (e) {
       ok = false;
       console.error("E2E threw: " + (e.stack || e.message || e).slice(0, 400));
