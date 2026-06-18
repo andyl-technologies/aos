@@ -18,6 +18,7 @@ mod build;
 mod cache;
 mod doc;
 mod gc;
+mod nix_diff;
 mod package;
 mod prefetch;
 mod server;
@@ -29,6 +30,7 @@ pub use server::*;
 pub use test::*;
 
 use clap::{ArgAction, Parser, Subcommand};
+pub use nix_diff::NixDiffMode;
 
 #[derive(Parser)]
 #[command(name = "aos", about = "AOS build tool", version)]
@@ -143,6 +145,17 @@ pub enum Commands {
         /// Dependency to trace
         dependency: String,
     },
+    /// Compare evaluator .drv output
+    NixDiff {
+        /// Attribute to instantiate
+        #[arg(short = 'A', long)]
+        attr: String,
+        /// Nix file to instantiate (default: repository default.nix)
+        file: Option<std::path::PathBuf>,
+        /// Comparison mode
+        #[arg(long, value_enum, default_value_t = NixDiffMode::Byte)]
+        mode: NixDiffMode,
+    },
     /// Show repository info
     Describe,
     /// Prefetch source hashes (parallel downloads with mirror failover)
@@ -223,4 +236,54 @@ pub enum SystemCmd {
     Image,
     /// Evaluate the system configuration
     Eval,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nix_diff_defaults_to_byte_mode_and_default_file() {
+        let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.hello"]);
+
+        match cli.command {
+            Commands::NixDiff { attr, file, mode } => {
+                assert_eq!(attr, "pkgs.hello");
+                assert_eq!(file, None);
+                assert_eq!(mode, NixDiffMode::Byte);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_explicit_file_and_path_mode() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.busybox",
+            "--mode",
+            "path",
+            "systems/base.nix",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff { attr, file, mode } => {
+                assert_eq!(attr, "pkgs.busybox");
+                assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
+                assert_eq!(mode, NixDiffMode::Path);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    fn parse_cli<const N: usize>(args: [&'static str; N]) -> Cli {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || Cli::try_parse_from(args).expect("nix-diff argv should parse"))
+            .expect("parser test thread should spawn")
+            .join()
+            .expect("parser test thread should finish")
+    }
 }

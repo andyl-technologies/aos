@@ -139,6 +139,21 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command, &eval_config).await;
     }
 
+    if let Commands::NixDiff { attr, file, mode } = &cli.command {
+        let file = match file {
+            Some(file) => file.clone(),
+            None => NixRunner::find_root()?.join("default.nix"),
+        };
+        return commands::nix_diff::run(
+            &printer,
+            cli.verbose,
+            eval_config,
+            &file,
+            attr,
+            (*mode).into(),
+        );
+    }
+
     let nix = NixRunner::with_eval_config(cli.verbose, cli.quiet, eval_config)?;
 
     match &cli.command {
@@ -230,6 +245,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Token { .. } => unreachable!(),
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
+        Commands::NixDiff { .. } => unreachable!(),
     }
 }
 
@@ -243,6 +259,16 @@ async fn run(cli: &Cli) -> Result<()> {
 fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
 
+    // `aos nix-diff` renders the full divergence report before returning this
+    // sentinel error. Preserve the failing exit code without printing a second
+    // generic error object, especially in `--json` mode.
+    if err
+        .downcast_ref::<commands::nix_diff::NixDiffReportedFailure>()
+        .is_some()
+    {
+        return 1;
+    }
+
     // Walk the error chain looking for a typed AosError so we can pick the
     // right exit code.
     if let Some(aos_err) = err.downcast_ref::<AosError>() {
@@ -254,4 +280,27 @@ fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
     // Fallback: unknown error type — treat as build failure.
     printer.error(&format!("{err:#}"));
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_error_suppresses_rendered_nix_diff_divergence() {
+        let cli = Cli {
+            command: Commands::NixDiff {
+                attr: "pkgs.hello".to_string(),
+                file: None,
+                mode: crate::cli::NixDiffMode::Byte,
+            },
+            verbose: 0,
+            quiet: false,
+            json: true,
+            trace_verbose: false,
+        };
+        let error: anyhow::Error = commands::nix_diff::NixDiffReportedFailure::diverged(1).into();
+
+        assert_eq!(handle_error(&cli, error), 1);
+    }
 }

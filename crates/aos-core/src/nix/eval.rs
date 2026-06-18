@@ -231,6 +231,33 @@ pub fn select_evaluator_with_config(
     }
 }
 
+/// Selects the raw native evaluator for differential `.drv` comparison.
+///
+/// Unlike [`select_evaluator_with_config`], this does not wrap native
+/// evaluation in transparent C++ Nix fallback. Unsupported native features
+/// surface as native errors so the diff harness can report them as candidate
+/// divergences instead of comparing `nix-cli` to itself.
+///
+/// # Errors
+///
+/// Returns an error if the binary was built without the `native-eval` feature,
+/// or if the native evaluator cannot be initialized with the supplied settings.
+pub fn select_native_diff_candidate_with_config(
+    verbose: u8,
+    config: NixEvalConfig,
+) -> Result<Box<dyn NixEval>> {
+    #[cfg(feature = "native-eval")]
+    {
+        Ok(Box::new(NativeOnlyEval::new(verbose, config)?))
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    {
+        let _ = (verbose, config);
+        anyhow::bail!("aos nix-diff requires the native-eval feature")
+    }
+}
+
 #[cfg(feature = "native-eval")]
 struct NativeFallbackEval {
     native: NixNative,
@@ -291,6 +318,40 @@ impl NixEval for NativeFallbackEval {
 
     fn name(&self) -> &'static str {
         "aos-nix"
+    }
+}
+
+#[cfg(feature = "native-eval")]
+struct NativeOnlyEval {
+    native: NixNative,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeOnlyEval {
+    fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
+        let native_options = tree_walk_options_from_config(&config)?;
+        Ok(Self {
+            native: NixNative::with_options(verbose, native_options)?,
+        })
+    }
+}
+
+#[cfg(feature = "native-eval")]
+impl NixEval for NativeOnlyEval {
+    fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
+        self.native.instantiate(file, attr)
+    }
+
+    fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
+        self.native.instantiate_expr(expr)
+    }
+
+    fn eval_expr(&self, expr: &str) -> Result<String> {
+        self.native.eval_expr(expr)
+    }
+
+    fn name(&self) -> &'static str {
+        self.native.name()
     }
 }
 
@@ -480,6 +541,33 @@ mod tests {
         assert_eq!(NativeMode::parse(Some("1")), NativeMode::On);
         assert_eq!(NativeMode::parse(Some("true")), NativeMode::On);
         assert_eq!(NativeMode::parse(Some("yes")), NativeMode::On);
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    #[test]
+    fn native_diff_candidate_requires_native_feature() {
+        let error = match select_native_diff_candidate_with_config(0, NixEvalConfig::new()) {
+            Ok(_) => panic!("native diff selector should require native-eval"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("native-eval feature"));
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_diff_candidate_does_not_fall_back_to_cli() -> Result<()> {
+        let candidate = select_native_diff_candidate_with_config(0, NixEvalConfig::new())?;
+
+        let error = candidate
+            .instantiate_expr("1")
+            .expect_err("raw native instantiation should remain unsupported");
+
+        assert!(matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { .. })
+        ));
+        Ok(())
     }
 
     #[cfg(feature = "native-eval")]

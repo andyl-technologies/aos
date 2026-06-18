@@ -27,7 +27,7 @@ pub mod store;
 pub use env::{aos_nix_command, aos_nix_env, aos_tokio_nix_command};
 pub use eval::{
     NativeMode, NixEval, NixEvalConfig, native_mode_from_env, select_evaluator,
-    select_evaluator_with_config,
+    select_evaluator_with_config, select_native_diff_candidate_with_config,
 };
 pub use runner::NixRunner;
 pub use store::{NixCli, PathInfo};

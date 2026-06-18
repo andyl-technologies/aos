@@ -385,11 +385,18 @@ impl NixRunner {
         self.root.join("default.nix")
     }
 
-    /// Locate the project root by:
-    ///   1. Checking the `AOS_ROOT` environment variable.
-    ///   2. Walking upward from the current directory looking for `default.nix`.
-    ///   3. Checking relative to the binary's own location.
-    fn find_root() -> Result<PathBuf> {
+    /// Locates the project root.
+    ///
+    /// The search order is:
+    ///
+    /// 1. `AOS_ROOT`, when it points at a directory containing `default.nix`.
+    /// 2. The current directory and its parents.
+    /// 3. The binary directory, then the binary directory's parent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::RootNotFound`] if no `default.nix` can be located.
+    pub fn find_root() -> Result<PathBuf> {
         // 1. Environment variable.
         if let Ok(root) = env::var("AOS_ROOT") {
             let p = PathBuf::from(&root);
@@ -429,6 +436,17 @@ impl NixRunner {
         }
 
         Err(AosError::RootNotFound.into())
+    }
+
+    /// Verifies that `nix-instantiate` is available on `PATH`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] if `nix-instantiate` cannot be
+    /// located.
+    pub fn ensure_nix_instantiate_available() -> Result<()> {
+        which("nix-instantiate").map_err(|_| AosError::NixNotFound)?;
+        Ok(())
     }
 
     /// Core runner: spawn a Nix subprocess and capture its output.  When

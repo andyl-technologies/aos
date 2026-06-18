@@ -15,6 +15,7 @@ pub mod fmt;
 pub mod gc;
 pub mod graph;
 pub mod lint;
+pub mod nix_diff;
 pub mod package;
 pub mod prefetch;
 pub mod repl;
