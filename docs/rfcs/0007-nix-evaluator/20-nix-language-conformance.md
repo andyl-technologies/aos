@@ -504,14 +504,19 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 7.2 Printing/formatting of numbers (observable!)
 
-- [ ] **Integer printing** — `--eval` and `toString` must format integers exactly
-      as C++ Nix does (no thousands separators, leading `-` for negatives).
-- [ ] **Float printing** — reproduce C++ Nix's **exact** float-to-string
+- [x] **Integer printing** — raw numeric rendering and `toString` must format
+      integers exactly as C++ Nix does (no thousands separators, leading `-` for
+      negatives).
+- [x] **Float printing** — reproduce C++ Nix's **exact** float-to-string
       formatting (precision, trailing zeros, exponent form). This is a notorious
       divergence source (the conformance `eval-okay-*` cases compare rendered
       values byte-for-byte; doc 15 §3.2). **Verify the exact float format**
       (significant digits, `%g`-style?) against pinned Nix.
-- [ ] **`toString` of int vs float** differs in formatting; pin both.
+- [x] **`toString` of int vs float** differs in formatting; pin both.
+
+      Note: the raw-rendering check here is number-scoped. It pins the numeric
+      byte format that C++ Nix exposes through `--eval`; full raw rendering for
+      non-number values is covered by the later value-rendering/corpus harness.
 
 ### 7.3 Equality `==` / `!=`
 

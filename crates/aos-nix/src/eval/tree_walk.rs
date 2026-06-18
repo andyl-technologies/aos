@@ -200,6 +200,37 @@ pub fn eval_whnf_owned_with_options(
     })
 }
 
+/// Evaluates an IR root and renders a numeric value like raw `nix-instantiate --eval`.
+///
+/// This renderer is intentionally number-scoped. The native integration
+/// currently exposes strict JSON evaluation, while raw rendering for strings,
+/// paths, lists, attribute sets, functions, and thunks is pinned separately by
+/// the surfaces that already need them.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails, or if the root value is
+/// not an integer or float.
+pub fn eval_number_raw_bytes(ir: &Ir) -> Result<Vec<u8>, TreeWalkError> {
+    eval_number_raw_bytes_with_options(ir, TreeWalkOptions::default())
+}
+
+/// Evaluates an IR root with explicit options and renders a numeric raw value.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails, or if the root value is
+/// not an integer or float.
+pub fn eval_number_raw_bytes_with_options(
+    ir: &Ir,
+    options: TreeWalkOptions,
+) -> Result<Vec<u8>, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    let value = evaluator.eval_root()?;
+    let span = evaluator.node(ir.root)?.span;
+    TreeWalk::raw_number_bytes(ir.root, span, value)
+}
+
 /// A tree-walk evaluation result with its owning evaluator heap.
 #[derive(Debug)]
 pub struct EvalOutcome {
@@ -4396,14 +4427,12 @@ impl<'ir> TreeWalk<'ir> {
                     Self::extend_bytes_for_node(id, span, out, b"false")
                 }
             }
-            ValueTag::Int => Self::extend_bytes_for_node(
-                id,
-                span,
-                out,
-                (value.payload_bits() as i64).to_string().as_bytes(),
-            ),
+            ValueTag::Int => {
+                let bytes = Self::raw_int_bytes(value.payload_bits() as i64);
+                Self::extend_bytes_for_node(id, span, out, &bytes)
+            }
             ValueTag::Float => {
-                let bytes = Self::xml_float_bytes(f64::from_bits(value.payload_bits()));
+                let bytes = Self::raw_float_bytes(f64::from_bits(value.payload_bits()));
                 Self::extend_bytes_for_node(id, span, out, &bytes)
             }
             ValueTag::String => {
@@ -4490,13 +4519,14 @@ impl<'ir> TreeWalk<'ir> {
                 let IrData::Int(value) = node.data else {
                     return Err(self.invalid_payload(body, &node, "integer payload"));
                 };
-                Self::extend_bytes_for_node(id, span, out, value.to_string().as_bytes())?;
+                let bytes = Self::raw_int_bytes(value);
+                Self::extend_bytes_for_node(id, span, out, &bytes)?;
             }
             IrKind::Float => {
                 let IrData::Float(value) = node.data else {
                     return Err(self.invalid_payload(body, &node, "float payload"));
                 };
-                let bytes = Self::xml_float_bytes(value);
+                let bytes = Self::raw_float_bytes(value);
                 Self::extend_bytes_for_node(id, span, out, &bytes)?;
             }
             IrKind::Bool => {
@@ -9817,6 +9847,29 @@ impl<'ir> TreeWalk<'ir> {
             }
         }
         Ok(())
+    }
+
+    fn raw_number_bytes(id: IrId, span: Span, value: Value) -> Result<Vec<u8>, TreeWalkError> {
+        match value.tag() {
+            ValueTag::Int => Ok(Self::raw_int_bytes(value.payload_bits() as i64)),
+            ValueTag::Float => Ok(Self::raw_float_bytes(f64::from_bits(value.payload_bits()))),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "number",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn raw_int_bytes(value: i64) -> Vec<u8> {
+        value.to_string().into_bytes()
+    }
+
+    fn raw_float_bytes(value: f64) -> Vec<u8> {
+        Self::xml_float_bytes(value)
     }
 
     fn xml_float_bytes(value: f64) -> Vec<u8> {
@@ -18745,6 +18798,20 @@ mod tests {
         trim_command_stdout(output.stdout)
     }
 
+    fn cpp_nix_eval_raw(oracle: &str, source: &str) -> Vec<u8> {
+        let mut command = Command::new(oracle);
+        command.args(["--eval", "--strict", "--expr", source]);
+        let output = command
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            output.status.success(),
+            "C++ Nix oracle failed for {source:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        trim_command_stdout(output.stdout)
+    }
+
     fn cpp_nix_eval_json_with_nix_options(
         oracle: &str,
         source: &str,
@@ -20546,7 +20613,13 @@ mod tests {
         for source in [
             r#"builtins.trace "hello" 7"#,
             r#"builtins.trace "a\n\"b" 1"#,
+            "builtins.trace 1.0 1",
+            "builtins.trace (-0.0) 1",
+            "builtins.trace 0.0001 1",
+            "builtins.trace 0.00001 1",
+            "builtins.trace 100000.0 1",
             "builtins.trace 1000000.0 1",
+            "builtins.trace 1.23456789 1",
             "builtins.trace builtins.length 1",
             "builtins.trace { } 1",
         ] {
@@ -20621,6 +20694,109 @@ mod tests {
             return;
         };
         assert_cpp_nix_trace_and_warn_stderr_match_tree_walk(&oracle);
+    }
+
+    fn assert_cpp_nix_number_printing_matches_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for source in [
+            "1",
+            "(-2)",
+            "9223372036854775807",
+            "(-9223372036854775807 - 1)",
+            "1.0",
+            "1.25",
+            "1.23456789",
+            "(-0.0)",
+            "0.0001",
+            "0.00001",
+            "100000.0",
+            "1000000.0",
+            "((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))",
+            "(1.0e308 * 1.0e308)",
+            "(builtins.sub 0.0 (1.0e308 * 1.0e308))",
+        ] {
+            let reference = cpp_nix_eval_raw(oracle, source);
+            let candidate =
+                eval_number_raw_bytes(&lower(source)).expect("tree-walk renders raw number");
+            assert_eq!(
+                candidate, reference,
+                "raw number rendering diverged for {source}"
+            );
+        }
+
+        for source in [
+            "builtins.toString 1",
+            "builtins.toString (-2)",
+            "builtins.toString 9223372036854775807",
+            "builtins.toString (-9223372036854775807 - 1)",
+            "builtins.toString 1.0",
+            "builtins.toString 1.25",
+            "builtins.toString 1.23456789",
+            "builtins.toString (-0.0)",
+            "builtins.toString 0.00001",
+            "builtins.toString 0.0000001",
+            "builtins.toString 1000000.0",
+            "builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))",
+            "builtins.toString (1.0e308 * 1.0e308)",
+            "builtins.toString (builtins.sub 0.0 (1.0e308 * 1.0e308))",
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, source);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_number_printing_matches_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_number_printing_matches_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_number_printing_matches_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix number printing check");
+            return;
+        };
+        assert_cpp_nix_number_printing_matches_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn number_raw_renderer_formats_integer_and_float_values() {
+        for (source, expected) in [
+            ("1", b"1".as_slice()),
+            ("(-2)", b"-2"),
+            ("9223372036854775807", b"9223372036854775807"),
+            ("(-9223372036854775807 - 1)", b"-9223372036854775808"),
+            ("1.0", b"1"),
+            ("1.25", b"1.25"),
+            ("1.23456789", b"1.23457"),
+            ("(-0.0)", b"0"),
+            ("0.0001", b"0.0001"),
+            ("0.00001", b"1e-05"),
+            ("100000.0", b"100000"),
+            ("1000000.0", b"1e+06"),
+            ("((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))", b"nan"),
+            ("(1.0e308 * 1.0e308)", b"inf"),
+            ("(builtins.sub 0.0 (1.0e308 * 1.0e308))", b"-inf"),
+        ] {
+            assert_eq!(
+                eval_number_raw_bytes(&lower(source)).as_deref(),
+                Ok(expected),
+                "{source}"
+            );
+        }
+
+        let ir = lower(r#""x""#);
+        let error = eval_number_raw_bytes(&ir).expect_err("raw number renderer rejects strings");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: ir.root,
+                expected: "number",
+                actual: ValueTag::String,
+            }
+        );
     }
 
     #[test]
@@ -21382,8 +21558,18 @@ mod tests {
             r#"builtins.toString "x""#.to_owned(),
             "builtins.toString 1".to_owned(),
             "builtins.toString (-2)".to_owned(),
+            "builtins.toString 9223372036854775807".to_owned(),
+            "builtins.toString (-9223372036854775807 - 1)".to_owned(),
+            "builtins.toString 1.0".to_owned(),
             "builtins.toString 1.25".to_owned(),
+            "builtins.toString 1.23456789".to_owned(),
             "builtins.toString (-0.0)".to_owned(),
+            "builtins.toString 0.00001".to_owned(),
+            "builtins.toString 0.0000001".to_owned(),
+            "builtins.toString 1000000.0".to_owned(),
+            "builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))".to_owned(),
+            "builtins.toString (1.0e308 * 1.0e308)".to_owned(),
+            "builtins.toString (builtins.sub 0.0 (1.0e308 * 1.0e308))".to_owned(),
             "builtins.toString true".to_owned(),
             "builtins.toString false".to_owned(),
             "builtins.toString null".to_owned(),
@@ -31319,8 +31505,30 @@ mod tests {
         assert_eq!(eval_string_bytes("builtins.toString \"x\""), b"x");
         assert_eq!(eval_string_bytes("builtins.toString 1"), b"1");
         assert_eq!(eval_string_bytes("builtins.toString (-2)"), b"-2");
+        assert_eq!(
+            eval_string_bytes("builtins.toString 9223372036854775807"),
+            b"9223372036854775807"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString (-9223372036854775807 - 1)"),
+            b"-9223372036854775808"
+        );
+        assert_eq!(eval_string_bytes("builtins.toString 1.0"), b"1.000000");
         assert_eq!(eval_string_bytes("builtins.toString 1.25"), b"1.250000");
+        assert_eq!(
+            eval_string_bytes("builtins.toString 1.23456789"),
+            b"1.234568"
+        );
         assert_eq!(eval_string_bytes("builtins.toString (-0.0)"), b"0.000000");
+        assert_eq!(eval_string_bytes("builtins.toString 0.00001"), b"0.000010");
+        assert_eq!(
+            eval_string_bytes("builtins.toString 0.0000001"),
+            b"0.000000"
+        );
+        assert_eq!(
+            eval_string_bytes("builtins.toString 1000000.0"),
+            b"1000000.000000"
+        );
         assert_eq!(
             eval_string_bytes("builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))"),
             b"nan"
