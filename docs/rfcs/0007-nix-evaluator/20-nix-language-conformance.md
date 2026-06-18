@@ -306,10 +306,12 @@ search paths, and store coercion.
 - [x] **Attr-path selection `s.a.b.c`** — dotted path selection descends one
       component at a time through attrsets. A missing leaf or intermediate
       component is a must-error without an `or` default.
-- [ ] **Selection with `or` default `s.a.b or d`** — `or` supplies a default if
-      *any* component of the attr path is missing; `d` is only evaluated when the
-      path is absent (laziness, §10). Verify `or` binds to the *whole* preceding
-      attr-path selection, not just the last component.
+- [x] **Selection with `or` default `s.a.b or d`** — `or` supplies a default if
+      *any* component of the attr path is missing. The parser attaches the
+      default to the whole preceding attr-path selection, and tree-walk tests
+      cover missing leaf, missing intermediate, missing first component, and
+      non-attr intermediate fallback. `d` stays lazy when the full path exists
+      and is forced only when fallback is taken.
 - [ ] **Dynamic select `s.${e}`** — computed attribute name on selection; `e`
       coerces to a string.
 - [ ] **`or` with dynamic select** — `s.${e} or d` is legal; verify against

@@ -33604,13 +33604,35 @@ mod tests {
     #[test]
     fn select_defaults_are_lazy_and_forced_when_missing() {
         assert_eq!(eval("({ a = 1; }).a or (1 / 0)").as_int(), Ok(1));
+        assert_eq!(eval("({ a = { b = 1; }; }).a.b or (1 / 0)").as_int(), Ok(1));
         assert_eq!(eval("({ a = 1; }).b or (1 + 2)").as_int(), Ok(3));
+        assert_eq!(eval("({ a = {}; }).a.b or 7").as_int(), Ok(7));
+        assert_eq!(eval("({ a = {}; }).a.b.c or 7").as_int(), Ok(7));
         assert_eq!(eval("({}).a.b or 2").as_int(), Ok(2));
+        assert_eq!(eval("({}).a.b.c or 7").as_int(), Ok(7));
         assert_eq!(eval("(1).a or 2").as_int(), Ok(2));
         assert_eq!(eval("({ a = 1; }).a.b or 2").as_int(), Ok(2));
+        assert_eq!(eval("({ a = { b = 1; }; }).a.b.c or 7").as_int(), Ok(7));
 
         let ir = lower("({ a = 1; }).b or (1 / 0)");
         let error = eval_whnf_owned(&ir).expect_err("missing key forces default thunk");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let nested = lower("({ a = {}; }).a.b or (1 / 0)");
+        let error = eval_whnf_owned(&nested).expect_err("nested miss forces default thunk");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DivisionByZero { .. }
+        ));
+
+        let nested = lower("({ a = {}; }).a.b.c or (1 / 0)");
+        let error = eval_whnf_owned(&nested)
+            .expect_err("missing intermediate component forces default thunk");
 
         assert!(matches!(
             error.kind(),
