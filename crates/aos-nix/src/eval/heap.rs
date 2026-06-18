@@ -347,7 +347,7 @@ impl EvalLambda {
     }
 }
 
-/// One lazy argument captured by a partially applied builtin.
+/// One lazy argument captured by the tree-walk `PrimopApp` equivalent.
 #[derive(Clone, Copy, Debug)]
 pub struct EvalPrimOpArg {
     module: EvalModuleId,
@@ -393,7 +393,13 @@ impl EvalPrimOpArg {
     }
 }
 
-/// A builtin function or partially-applied builtin heap record.
+/// A builtin function or partially applied builtin heap record.
+///
+/// This is the tree-walk oracle's representation of the RFC `PrimopApp`
+/// wrapper. `symbol` identifies the registered builtin, and `args` stores the
+/// already supplied lazy arguments. A record with fewer captured arguments than
+/// the builtin's declared arity is a WHNF function value; the evaluator calls
+/// the builtin only after saturation.
 #[derive(Debug)]
 pub struct EvalPrimOp {
     symbol: Symbol,
@@ -401,7 +407,7 @@ pub struct EvalPrimOp {
 }
 
 impl EvalPrimOp {
-    /// Creates an unapplied builtin record for `symbol`.
+    /// Creates an unapplied first-class builtin record for `symbol`.
     pub const fn new(symbol: Symbol) -> Self {
         Self {
             symbol,
@@ -409,7 +415,7 @@ impl EvalPrimOp {
         }
     }
 
-    /// Creates a builtin record with previously captured arguments.
+    /// Creates a partially applied builtin record with captured arguments.
     pub fn with_args(symbol: Symbol, args: Vec<EvalPrimOpArg>) -> Self {
         Self { symbol, args }
     }
