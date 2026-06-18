@@ -39,6 +39,48 @@ pub fn nix_public_key_line(key_name: &str, key: &VerifyingKey) -> String {
     )
 }
 
+/// Derive the Nix cache public-key line from a hosted key's stored SSH line.
+///
+/// A hosted key persists its public half as the SSHSIG trusted-key line
+/// `name:Ed25519:<base64 ssh-wire-blob>` (used for git tag/partition
+/// verification). A Nix substituter instead pins `name:<base64 raw-32-byte-key>`.
+/// This converts the former to the latter by parsing the SSH `ssh-ed25519` wire
+/// blob (`string "ssh-ed25519"` then `string <32-byte key>`) and re-encoding the
+/// raw key — no secret material involved, so it needs no sealer.
+///
+/// Returns `None` when the line is not a well-formed `name:Ed25519:<base64>` or
+/// the decoded blob is not a valid `ssh-ed25519` public key.
+#[must_use]
+pub fn nix_public_key_from_ssh_line(ssh_line: &str) -> Option<String> {
+    // `name:Ed25519:<base64>` — the name may itself contain no ':'.
+    let (name, rest) = ssh_line.split_once(':')?;
+    let b64 = rest.strip_prefix("Ed25519:")?;
+    let blob = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    // SSH wire: u32 len + "ssh-ed25519", then u32 len(32) + 32-byte key.
+    let read_field = |buf: &[u8], at: usize| -> Option<(usize, usize)> {
+        let end = at.checked_add(4)?;
+        let len = u32::from_be_bytes(buf.get(at..end)?.try_into().ok()?) as usize;
+        let field_end = end.checked_add(len)?;
+        if field_end > buf.len() {
+            return None;
+        }
+        Some((end, field_end))
+    };
+    let (a0, a1) = read_field(&blob, 0)?;
+    if &blob[a0..a1] != b"ssh-ed25519" {
+        return None;
+    }
+    let (k0, k1) = read_field(&blob, a1)?;
+    let key = &blob[k0..k1];
+    if key.len() != 32 {
+        return None;
+    }
+    Some(format!(
+        "{name}:{}",
+        base64::engine::general_purpose::STANDARD.encode(key)
+    ))
+}
+
 /// Build the Nix narinfo fingerprint for a store path.
 ///
 /// `references` are the **absolute** store paths of the direct references.
@@ -263,6 +305,24 @@ mod tests {
         let signed = sign_narinfo(&with_client_sig, "acme-cache", &key).unwrap();
         assert!(signed.contains("Sig: client-key:deadbeef"));
         assert_eq!(signed.matches("Sig: acme-cache:").count(), 1);
+    }
+
+    #[test]
+    fn ssh_line_converts_to_the_same_nix_public_key() {
+        let key = test_key();
+        // The SSHSIG trusted-key line a hosted key stores...
+        let ssh_line =
+            aos_registry_surface::sshsig::trusted_key_line("acme-cache", &key.verifying_key());
+        // ...converts to the Nix cache public-key line for the same raw key.
+        let nix_line = nix_public_key_from_ssh_line(&ssh_line).expect("valid ssh line converts");
+        assert_eq!(nix_line, nix_public_key_line("acme-cache", &key.verifying_key()));
+    }
+
+    #[test]
+    fn ssh_line_conversion_rejects_malformed_input() {
+        assert!(nix_public_key_from_ssh_line("not-a-line").is_none());
+        assert!(nix_public_key_from_ssh_line("name:Ed25519:!!!notbase64").is_none());
+        assert!(nix_public_key_from_ssh_line("name:RSA:AAAA").is_none());
     }
 
     #[test]

@@ -683,4 +683,24 @@ async fn keyed_cache_signs_uploaded_narinfo() {
         "served narinfo must carry the hub signature: {text}"
     );
     assert!(text.contains("StorePath: /nix/store/aaaa-foo-1.0"), "{text}");
+
+    // The signed cache's home page advertises its Nix public key to pin.
+    let home = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/signed-cache/")
+                .header(header::ACCEPT, "text/html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(home.status(), StatusCode::OK);
+    let home_body = axum::body::to_bytes(home.into_body(), 1 << 20).await.unwrap();
+    let home_text = String::from_utf8_lossy(&home_body);
+    assert!(
+        home_text.contains("extra-trusted-public-keys = acme-cache-key:"),
+        "cache home advertises the trusted public key: {home_text}"
+    );
 }

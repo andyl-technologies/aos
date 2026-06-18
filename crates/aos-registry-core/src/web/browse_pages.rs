@@ -1239,6 +1239,7 @@ pub fn cache_home(
     link_count: usize,
     root_count: usize,
     external_url: &str,
+    pubkey: Option<&str>,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1285,11 +1286,17 @@ pub fn cache_home(
 
     body.push_str("<h2>Use this cache</h2>\n");
     let base = external_url.trim_end_matches('/');
+    // A signed cache also needs its public key pinned as a trusted key.
+    let trusted_line = match pubkey {
+        Some(key) => format!("  extra-trusted-public-keys = {}\n", escape(key)),
+        None => String::new(),
+    };
     let _ = write!(
         body,
-        "<pre>nix.conf:\n  extra-substituters = {}/{}\n</pre>\n",
+        "<pre>nix.conf:\n  extra-substituters = {}/{}\n{}</pre>\n",
         escape(base),
         escape(slug),
+        trusted_line,
     );
 
     let _ = write!(
