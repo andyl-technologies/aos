@@ -44,6 +44,7 @@ test that enforces it, and a back-pointer to the defining section.
 | Prefix | Area | File |
 | --- | --- | --- |
 | `G` / `NG` / `INV` | Goals / Non-goals / Invariants | 01 |
+| `ARCH` | Architecture-level requirements | 03 |
 | `DET` | Determinism contract | 04 |
 | `EXEC` | Execution model (`Configuration`/`step`/`instantiate`/`bake`) | 05 |
 | `SPAT` | Spatial graph (ScenarioDef) | 06 |
@@ -74,14 +75,18 @@ MAY group them under sub-headings but the numbers are flat within the file.
 
 ## Task IDs and the checkbox plan
 
-The implementation plan is a flat, ordered list of **tasks**, each with an ID
-`T-<phase>.<seq>` (e.g. `T-1.4` = phase 1, fourth task). A task is written as a
-GitHub-flavored checkbox:
+Each task has a stable, **area-scoped** ID `T-<AREA>-<n>` (e.g. `T-DET-4` = the
+fourth determinism task), using the same area prefixes as requirement IDs. Stable
+IDs survive reordering: the master plan ([`32-implementation-plan.md`](32-implementation-plan.md))
+arranges these tasks into ordered **phases** (Phase 1 = the determinism /
+harness / transport / API foundation, etc.) by *listing* their IDs, so a task can
+be re-sequenced without renumbering. A task is written as a GitHub-flavored
+checkbox:
 
 ```text
-- [ ] **T-1.4** Implement the single-VM execution fingerprint (periodic
-  icount + register/memory hash) and the `harness/single-vm-fingerprint`
-  gate. — satisfies [DET-3], [HARN-2]; spec §24.3.
+- [ ] **T-DET-4** Implement the single-VM execution fingerprint (periodic
+  icount + register/memory hash) and the `gate:single-vm-fingerprint`
+  check. — satisfies [DET-3], [HARN-2]; spec §24.3.
 ```
 
 Rules:
