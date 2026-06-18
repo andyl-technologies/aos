@@ -35,6 +35,21 @@ struct Cli {
     #[arg(long, global = true)]
     root: Option<PathBuf>,
 
+    /// Which deployment's database to operate on:
+    ///   local            the native sqlite file under --root (default)
+    ///   d1:<name>        a live Cloudflare D1 database, via bundled wrangler
+    ///   d1-local:<name>  the local miniflare D1 engine (for testing)
+    /// The same admin commands run against whichever backend is selected.
+    #[arg(long, global = true, default_value = "local")]
+    target: String,
+
+    /// At-rest sealing key (hex/base64 or any string) for commands that store
+    /// sealed secrets (idp/hosted-key/channel) against a non-local --target.
+    /// Falls back to the HUB_SEAL_KEY environment variable. Ignored for --target
+    /// local (which uses the on-disk instance key).
+    #[arg(long, global = true)]
+    seal_key: Option<String>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -784,8 +799,7 @@ async fn main() -> Result<()> {
             .await?;
         }
         Command::Registry { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 RegistryCommand::Add {
                     slug,
@@ -900,8 +914,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Org { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 OrgCommand::Add { slug, name } => {
                     validate_slug(&slug)?;
@@ -937,6 +950,7 @@ async fn main() -> Result<()> {
                     println!("set quota for org '{org}'");
                 }
                 OrgCommand::Export { org, output } => {
+                    ensure_local_target(&cli.target, "org export")?;
                     run_org_export(&db, &org, &output).await?;
                 }
                 OrgCommand::Delete { org, grace_days } => {
@@ -980,8 +994,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::User { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 UserCommand::SetPassword { email, password } => {
                     let email = email.trim().to_lowercase();
@@ -1010,6 +1023,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Seed => {
+            // Seed writes demo `file://` surfaces to disk, so it is local-only.
             let root = resolve_root(cli.root, false)?;
             let db = Database::open(&root.join("hub.db")).await?;
             match aos_registry_hub::seed::seed_dev(&db, &root).await? {
@@ -1020,8 +1034,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Instance { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 InstanceCommand::SetSignupPolicy { policy } => {
                     let parsed = match policy.as_str() {
@@ -1054,8 +1067,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Validate { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 ValidateCommand::Run { canonical, depth } => {
                     let registry = db
@@ -1082,6 +1094,7 @@ async fn main() -> Result<()> {
                     canonical,
                     external_url,
                 } => {
+                    ensure_local_target(&cli.target, "validate repair")?;
                     let registry = db
                         .registry_by_slug(&canonical)
                         .await?
@@ -1113,8 +1126,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Project { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 ProjectCommand::Add { org, path, name } => {
                     let org_record = db
@@ -1136,8 +1148,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Binding { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 BindingCommand::Add {
                     org,
@@ -1165,8 +1176,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Index { slug } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             let registries = match slug {
                 Some(slug) => vec![db
                     .registry_by_slug(&slug)
@@ -1193,8 +1203,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Token { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             match command {
                 TokenCommand::Mint {
                     path,
@@ -1205,8 +1214,7 @@ async fn main() -> Result<()> {
             }
         }
         Command::Audit { scope } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             for entry in db.list_audit(&scope).await? {
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
@@ -1219,38 +1227,34 @@ async fn main() -> Result<()> {
             }
         }
         Command::Idp { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
-            run_idp_command(&db, &root, command).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
+            let sealer = build_sealer(&cli.root, &cli.target, &cli.seal_key)?;
+            run_idp_command(&db, sealer.as_ref(), command).await?;
         }
         Command::Domain { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             run_domain_command(&db, command).await?;
         }
         Command::HostedKey { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
-            run_hosted_key_command(&db, &root, command).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
+            let sealer = build_sealer(&cli.root, &cli.target, &cli.seal_key)?;
+            run_hosted_key_command(&db, sealer.as_ref(), command).await?;
         }
         Command::Channel { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
-            run_channel_command(db, &root, command).await?;
+            let db = Arc::new(open_db(&cli.root, &cli.target).await?);
+            let sealer = build_sealer(&cli.root, &cli.target, &cli.seal_key)?;
+            run_channel_command(db, sealer.as_ref(), command).await?;
         }
         Command::Webhook { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             run_webhook_command(&db, command).await?;
         }
         Command::Mirror { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             run_mirror_command(&db, command).await?;
         }
         Command::Frontend { command } => {
-            let root = resolve_root(cli.root, false)?;
-            let db = Database::open(&root.join("hub.db")).await?;
+            let db = open_db(&cli.root, &cli.target).await?;
             run_frontend_command(&db, command).await?;
         }
         Command::Cloudflare { command } => {
@@ -1618,19 +1622,17 @@ async fn run_webhook_command(db: &Database, command: WebhookCommand) -> Result<(
 /// server uses, so the seed round-trips between this CLI and `serve`.
 async fn run_hosted_key_command(
     db: &Database,
-    root: &Path,
+    sealer: &dyn aos_registry_core::auth::seal::SecretSealer,
     command: HostedKeyCommand,
 ) -> Result<()> {
-    use aos_registry_hub::auth::seal::instance_sealer;
     match command {
         HostedKeyCommand::Create { org, key_id } => {
             let org_record = db
                 .org_by_slug(&org)
                 .await?
                 .with_context(|| format!("no org '{org}'"))?;
-            let sealer = instance_sealer(root)?;
             let public = db
-                .create_hosted_key(sealer.as_ref(), org_record.id, &key_id)
+                .create_hosted_key(sealer, org_record.id, &key_id)
                 .await?;
             println!("enrolled hosted key '{key_id}' in org '{org}'");
             println!("pin this trusted-key line as a registry anchor:");
@@ -1672,8 +1674,11 @@ async fn run_hosted_key_command(
 ///
 /// This is the hosted-key path. It errors clearly when the registry has no
 /// hosted key, pointing at the prepared-operation/CLI flow instead.
-async fn run_channel_command(db: Arc<Database>, root: &Path, command: ChannelCommand) -> Result<()> {
-    use aos_registry_hub::auth::seal::instance_sealer;
+async fn run_channel_command(
+    db: Arc<Database>,
+    sealer: &dyn aos_registry_core::auth::seal::SecretSealer,
+    command: ChannelCommand,
+) -> Result<()> {
     match command {
         ChannelCommand::Advance {
             canonical,
@@ -1692,7 +1697,6 @@ async fn run_channel_command(db: Arc<Database>, root: &Path, command: ChannelCom
                      attach a hosted key with `hosted-key attach`"
                 );
             }
-            let sealer = instance_sealer(root)?;
             let when = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -1702,7 +1706,7 @@ async fn run_channel_command(db: Arc<Database>, root: &Path, command: ChannelCom
             let reindexer = aos_registry_hub::coreports::HubReindexer::new(Arc::clone(&db));
             let outcome = aos_registry_hub::signing::advance_channel(
                 &db,
-                sealer.as_ref(),
+                sealer,
                 &surface_write,
                 &reindexer,
                 &registry,
@@ -1731,8 +1735,11 @@ async fn run_channel_command(db: Arc<Database>, root: &Path, command: ChannelCom
 /// [`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer) the
 /// server uses before storing it, so the secret round-trips to `serve`;
 /// `show` prints the configuration with the secret redacted.
-async fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Result<()> {
-    use aos_registry_hub::auth::seal::instance_sealer;
+async fn run_idp_command(
+    db: &Database,
+    sealer: &dyn aos_registry_core::auth::seal::SecretSealer,
+    command: IdpCommand,
+) -> Result<()> {
     use aos_registry_hub::db::IdpConfigRecord;
     match command {
         IdpCommand::Set(args) => {
@@ -1761,7 +1768,6 @@ async fn run_idp_command(db: &Database, root: &Path, command: IdpCommand) -> Res
             if aos_registry_hub::domain::Role::parse(&default_role).is_none() {
                 anyhow::bail!("invalid --default-role '{default_role}'");
             }
-            let sealer = instance_sealer(root)?;
             let client_secret_enc = match &client_secret {
                 Some(secret) => Some(sealer.seal(secret)?),
                 None => None,
@@ -2179,6 +2185,104 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     std::fs::create_dir_all(&root)
         .with_context(|| format!("creating hub root {}", root.display()))?;
     Ok(root)
+}
+
+/// Opens the `Database` for the selected `--target`, so the admin commands share
+/// one tree across deployment backends.
+///
+/// - `local` — the native sqlite file under `--root` ([`Database::open`]).
+/// - `d1:<name>` — a live Cloudflare D1 database via the bundled `wrangler`
+///   ([`cloudflare::WranglerD1Backend`], remote).
+/// - `d1-local:<name>` — the local miniflare D1 engine (for testing).
+///
+/// The D1 targets attach via [`Database::with_backend`], which applies the shared
+/// migrations idempotently.
+///
+/// # Errors
+///
+/// Returns an error for an unknown `--target`, or if the local file / D1 backend
+/// cannot be opened.
+async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
+    use aos_registry_hub::cloudflare;
+
+    if target == "local" {
+        let root = resolve_root(root.clone(), false)?;
+        return Database::open(&root.join("hub.db")).await;
+    }
+    let (name, local) = match (target.strip_prefix("d1:"), target.strip_prefix("d1-local:")) {
+        (Some(name), _) => (name, false),
+        (_, Some(name)) => (name, true),
+        _ => anyhow::bail!(
+            "unknown --target '{target}' (expected: local, d1:<name>, or d1-local:<name>)"
+        ),
+    };
+    let assets = cloudflare::Assets::from_env()?;
+    let db_id = if local {
+        "local".to_string()
+    } else {
+        cloudflare::resolve_d1_id(&assets, name).await?
+    };
+    let backend = cloudflare::WranglerD1Backend::create(assets, name.to_string(), &db_id, !local)?;
+    Database::with_backend(Box::new(backend)).await
+}
+
+/// Rejects a non-local `--target` for commands that read or write the local
+/// filesystem (surface exports, `file://` cache repairs) and so are only
+/// meaningful against a local deployment — rather than silently degrading to an
+/// empty/no-op result against a remote one.
+///
+/// # Errors
+///
+/// Returns an error when `target` is not `local`.
+fn ensure_local_target(target: &str, command: &str) -> Result<()> {
+    if target != "local" {
+        anyhow::bail!(
+            "`{command}` operates on the local filesystem and is only supported with \
+             --target local; run it on the deployment host"
+        );
+    }
+    Ok(())
+}
+
+/// Builds the at-rest secret [`SecretSealer`] for the selected `--target`.
+///
+/// For `local`, the on-disk instance key under `--root`
+/// ([`instance_sealer`](aos_registry_hub::auth::seal::instance_sealer)). For a D1
+/// target, the deployment's seal key from `--seal-key` (or the `HUB_SEAL_KEY`
+/// environment variable) — the *same* key the running hub/Worker uses, so sealed
+/// secrets round-trip — derived exactly as the Worker derives it (a key of the
+/// right length is used verbatim, else SHA-256 of the string).
+///
+/// # Errors
+///
+/// Returns an error if the local instance key cannot be loaded, or if a D1
+/// target has no `--seal-key`/`HUB_SEAL_KEY`, or the derived key is rejected.
+fn build_sealer(
+    root: &Option<PathBuf>,
+    target: &str,
+    seal_key: &Option<String>,
+) -> Result<Box<dyn aos_registry_core::auth::seal::SecretSealer>> {
+    use aos_registry_core::auth::seal::{parse_key, AesGcmSealer};
+
+    if target == "local" {
+        let root = resolve_root(root.clone(), false)?;
+        return aos_registry_hub::auth::seal::instance_sealer(&root);
+    }
+    let key_string = seal_key
+        .clone()
+        .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
+        .filter(|s| !s.is_empty())
+        .context(
+            "a non-local --target needs the deployment's seal key for this command; \
+             pass --seal-key or set HUB_SEAL_KEY (the same value used at deploy)",
+        )?;
+    // Mirror the Worker's `sealer_from_secret`: a correctly-sized key is used
+    // as-is, otherwise SHA-256 of the string is the instance key.
+    let key = parse_key(key_string.as_bytes()).unwrap_or_else(|_| {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(key_string.as_bytes()).to_vec()
+    });
+    Ok(Box::new(AesGcmSealer::new(&key)?))
 }
 
 /// Parse a validation-depth CLI argument.

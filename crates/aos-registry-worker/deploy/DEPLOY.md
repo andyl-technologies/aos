@@ -71,6 +71,23 @@ the installer never handles your Cloudflare credentials itself.
 
 ## Maintenance
 
+Every `aos-registry-hub` admin command takes a global `--target`, so the *same*
+command tree runs against either deployment backend:
+
+```text
+--target local            the native sqlite file under --root (default)
+--target d1:<name>        a live Cloudflare D1 database (via bundled wrangler)
+--target d1-local:<name>  the local miniflare D1 engine (for testing)
+```
+
+For example `aos-registry-hub org add acme "Acme" --target d1:aos-registry-hub`
+runs `create_org` against live D1 with the identical code path the native hub
+uses locally. Commands that store sealed secrets (`idp`, `hosted-key`,
+`channel`) need the deployment's seal key for a non-local target — pass
+`--seal-key` or set `HUB_SEAL_KEY` (the same value used at deploy) so the secrets
+round-trip. A few commands that operate on the local filesystem (`org export`,
+`validate repair`) are local-only and reject a non-local `--target`.
+
 The installer also performs ongoing maintenance against the live deployment.
 
 - **Update the deployed Worker** (after a new build):
