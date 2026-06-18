@@ -266,16 +266,17 @@ in {
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
     in {
-      inherit critical-pkgs hardening-probe kernel-config systemd-verity;
+      inherit critical-pkgs hardening-probe kernel-config package-root-image systemd-verity;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs kernel-config systemd-verity]
+          [critical-pkgs kernel-config package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe;
         phases = [
           {
