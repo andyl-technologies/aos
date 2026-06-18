@@ -31,7 +31,8 @@ use aos_registry_hub::domain::{Permission, Principal};
 /// every dialect.
 ///
 /// Covers: org/user/service-account creation, membership grants and effective
-/// scope resolution, token mint + validation, managed-registry creation, a
+/// scope resolution, token mint + validation, managed-registry creation,
+/// managed-cache CRUD + link + object index + GC-run lifecycle + metrics, a
 /// config change-set apply, audit record + scoped list, and the webhook
 /// enqueue/list path.
 async fn exercise(db: &Database) {
@@ -146,6 +147,65 @@ async fn exercise(db: &Database) {
     assert_eq!(record.id, reg);
     assert_eq!(record.visibility, "private");
     assert_eq!(record.storage_binding_id, Some(binding));
+
+    // -- managed caches (v22+) -------------------------------------------------
+    // Exercise the cache schema on every dialect: create, link to a registry,
+    // index an object, recompute usage, run the GC-run lifecycle, and read the
+    // instance-wide metrics aggregate.
+    let cache = db
+        .create_cache(
+            Some(org),
+            "acme-cache",
+            "Acme Cache",
+            binding,
+            "cache",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        db.cache_by_slug("acme-cache").await.unwrap().unwrap().id,
+        cache
+    );
+    db.link_cache(cache, reg, true, true).await.unwrap();
+    assert_eq!(db.list_cache_links(cache).await.unwrap().len(), 1);
+    db.upsert_cache_object(&aos_registry_core::db::CacheObject {
+        cache_id: cache,
+        store_hash: "cafe".into(),
+        store_name: "cafe-hello-1.0".into(),
+        nar_url: "nar/aa.nar.zst".into(),
+        nar_hash: "sha256:aa".into(),
+        nar_size: 200,
+        file_hash: "aa".into(),
+        file_size: 120,
+        compression: "zstd".into(),
+        deriver: None,
+        refs: vec![],
+        sig: None,
+        ca: None,
+        uploaded_at: 0,
+        last_accessed_at: None,
+    })
+    .await
+    .unwrap();
+    let usage = db.refresh_cache_usage(cache).await.unwrap();
+    assert_eq!(usage.object_count, 1);
+    assert_eq!(usage.used_bytes, 120);
+    assert_eq!(db.search_cache_objects(cache, "hello", 10).await.unwrap().len(), 1);
+    let run = db.start_cache_gc_run(cache).await.unwrap();
+    db.finish_cache_gc_run(run, "ok", None, 1, 1, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(db.list_cache_gc_runs(cache, 10).await.unwrap().len(), 1);
+    let m = db.cache_metrics().await.unwrap();
+    assert_eq!(m.cache_count, 1);
+    assert_eq!(m.object_count, 1);
+    assert_eq!(m.used_bytes, 120);
+    assert_eq!(m.gc_runs_ok, 1);
 
     // -- configuration change-set ---------------------------------------------
     let change_id = "00000000-0000-4000-8000-000000000001";
