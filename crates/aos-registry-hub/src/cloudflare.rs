@@ -429,6 +429,67 @@ async fn run_wrangler_tolerant(assets: &Assets, args: &[String], what: &str) {
     }
 }
 
+/// Runs `wrangler` with the parent's stdio **inherited** (no capture), for
+/// interactive flows such as the OAuth browser login that print a URL and wait
+/// on a local callback.
+///
+/// # Errors
+///
+/// Returns an error if the process cannot be spawned or exits non-zero.
+async fn run_wrangler_interactive(assets: &Assets, args: &[String]) -> Result<()> {
+    let (program, prefix) = assets
+        .wrangler
+        .split_first()
+        .context("AOS_HUB_WRANGLER resolved to an empty launcher")?;
+    let status = Command::new(program)
+        .args(prefix)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await
+        .with_context(|| format!("spawning `{program} {}`", args.join(" ")))?;
+    if !status.success() {
+        bail!("`wrangler {}` failed ({status})", args.join(" "));
+    }
+    Ok(())
+}
+
+/// Cloudflare's interactive **OAuth browser login** (`wrangler login`).
+///
+/// An alternative to the `CLOUDFLARE_API_TOKEN` environment variable: it opens
+/// the operator's browser to authorize, then stores the OAuth credentials that
+/// the deploy/`d1 execute` calls pick up automatically. The callback runs on a
+/// localhost port of the *host running this command*, so over SSH to a remote
+/// builder it needs a forwarded port (see `DEPLOY.md`).
+///
+/// # Errors
+///
+/// Returns an error if `wrangler login` fails.
+pub async fn login(assets: &Assets) -> Result<()> {
+    run_wrangler_interactive(assets, &["login".to_string()]).await
+}
+
+/// Clears Cloudflare's stored OAuth credentials (`wrangler logout`).
+///
+/// # Errors
+///
+/// Returns an error if `wrangler logout` fails.
+pub async fn logout(assets: &Assets) -> Result<()> {
+    run_wrangler_interactive(assets, &["logout".to_string()]).await
+}
+
+/// Shows the current Cloudflare authentication — token or OAuth, and the account
+/// (`wrangler whoami`).
+///
+/// # Errors
+///
+/// Returns an error if `wrangler whoami` fails.
+pub async fn whoami(assets: &Assets) -> Result<()> {
+    run_wrangler_interactive(assets, &["whoami".to_string()]).await
+}
+
 /// The runtime secrets to apply to the Worker.
 ///
 /// `jwt_secret` and `seal_key` are required by the Worker at request time and
