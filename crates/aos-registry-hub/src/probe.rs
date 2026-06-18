@@ -392,7 +392,8 @@ mod tests {
     fn frontend_base_url_normalizes_path() {
         let frontend = |domain: &str, base_path: &str| FrontendRecord {
             id: 1,
-            registry_id: 1,
+            registry_id: Some(1),
+            cache_id: None,
             domain: domain.to_string(),
             base_path: base_path.to_string(),
             mode: "direct".to_string(),

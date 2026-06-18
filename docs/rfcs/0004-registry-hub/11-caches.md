@@ -498,8 +498,14 @@ the current spec. Phases are orderable; A lands first, E last.
       `cache_gc_roots` (with `expires_at`) SoR tables; `cache_objects`,
       `cache_usage`, `cache_gc_runs` derived tables; indexed `LIKE` search over
       `cache_objects(store_name)` (FTS5 ranking deferred to D-web for D1 safety).
-- [ ] Migration: add nullable `frontends.cache_id`; enforce exactly one of
-      `registry_id`/`cache_id`; gate the cache facade on `serves_cache`.
+- [~] Migration: add nullable `frontends.cache_id`; enforce exactly one of
+      `registry_id`/`cache_id`; gate the cache facade on `serves_cache`. **Done:**
+      v24 rebuilds `frontends` so `registry_id`/`cache_id` are both nullable with a
+      `CHECK ((registry_id IS NULL) <> (cache_id IS NULL))`; `FrontendRecord` carries
+      both as `Option`; `create_cache_frontend`/`list_cache_frontends` added; rebuild
+      clears the rebuildable `frontend_probes` (re-populated by the probe job).
+      Unit-tested (coexistence, per-target listing, Direct-on-private-cache reject).
+      **Remaining (with the proxied facade):** gate serving on `serves_cache`.
 - [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
       update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
       pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,
