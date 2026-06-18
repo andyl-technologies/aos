@@ -658,4 +658,3 @@ ran in-process against the double or over the wire against QEMU.
   and RPC arrival order do not influence the causal subsequence or State; read-only
   RPCs never enter the schedule. — satisfies [API-30], [API-31]; spec §21.7;
   cross-ref 20 §8, §9.
-```
