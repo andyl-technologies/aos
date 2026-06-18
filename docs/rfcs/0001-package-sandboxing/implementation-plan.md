@@ -577,7 +577,7 @@ Full spec: [`enforcement.md`](enforcement.md).
       shared — the layer for `sandboxed-with-holes` packages. Host-owned TCP
       socket listeners are validated against the socket-capability /
       `tcp-bind` contract before units can be attached.
-- [ ] **Generated MAC profile (D20).** Render a default-deny per-package
+- [x] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux profile named from the manifest security label and load it before
       package workload units start. The profile name is part of the measured
       manifest digest (P9). Current coverage renders deterministic
@@ -597,9 +597,14 @@ Full spec: [`enforcement.md`](enforcement.md).
       are missing, and then applies the requested mode. `checks.selinux-base`
       opts out of the generic disabled-SELinux VM seed, boots an enforcing
       SELinux system, verifies the base policy is loaded, reboots through the
-      marker/cache path, and installs a smoke SELinux module. Remaining gap:
-      package workloads still need to enter the generated package domain and
-      prove a default-denied operation is denied.
+      marker/cache path, installs a smoke SELinux module, bakes a generated
+      `pkg.expose` package, reconciles the generated target/unit/MAC loader
+      path, proves the workload service enters
+      `system_u:system_r:aos_x2eselinux_x2dgenerated_t`, and proves the same
+      generated domain cannot perform an out-of-policy `/tmp` write. Generated
+      MAC workload units temporarily disable `PrivateUsers=` because the current
+      base policy denies systemd user-namespace setup before the
+      `aos-selinux-run` transition.
 - [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).

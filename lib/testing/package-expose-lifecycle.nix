@@ -554,8 +554,8 @@ in
       vm.succeed("systemctl cat expose-lifecycle-outbound.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-outbound.service'")
       vm.succeed("systemctl cat expose-lifecycle-uid-writer.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-writer.service'")
       vm.succeed("systemctl cat expose-lifecycle-uid-checker.service | grep -F '# /etc/systemd/system.attached/expose-lifecycle-uid-checker.service'")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-private.service")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
+      vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-private.service")
+      vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
       vm.succeed("grep -q '^PrivateNetwork=true$' /etc/systemd/system.attached/expose-lifecycle-consumer.service")
       vm.succeed("grep -q '^Wants=.*expose-lifecycle-provider.socket' /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target.d/50-aos-capability-routes.conf")
       vm.succeed("if grep -q '^Wants=.*expose-lifecycle-consumer.service' /etc/systemd/system.attached/aos-pkg-expose-lifecycle-socket-consumer.target; then exit 1; fi")
@@ -564,9 +564,9 @@ in
       vm.succeed("if grep -R -q '^PrivateNetwork=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
       vm.succeed("if grep -R -q '^NetworkNamespacePath=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
       vm.succeed("if grep -R -q '^JoinsNamespaceOf=' /etc/systemd/system.attached/expose-lifecycle-provider.socket /etc/systemd/system.attached/expose-lifecycle-provider.socket.d; then exit 1; fi")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-uid-writer.service")
-      vm.succeed("grep -q '^PrivateUsers=identity$' /etc/systemd/system.attached/expose-lifecycle-uid-checker.service")
+      vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-outbound.service")
+      vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-uid-writer.service")
+      vm.succeed("grep -q '^PrivateUsers=false$' /etc/systemd/system.attached/expose-lifecycle-uid-checker.service")
 
       vm.succeed("systemctl start aos-pkg-expose-lifecycle-private.target")
       assert "private-ok" in vm.succeed(
@@ -577,7 +577,7 @@ in
       ).strip() != host_netns
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-private/userns"
-      ).strip() != host_userns
+      ).strip() == host_userns
       assert "${privatePackage}" in vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-private.service"
       )
@@ -633,7 +633,7 @@ in
       ).strip() != host_netns
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-socket/userns"
-      ).strip() != host_userns
+      ).strip() == host_userns
       assert "${socketConsumerPackage}" in vm.succeed(
           "systemctl show -p RootDirectory --value expose-lifecycle-consumer.service"
       )
@@ -651,7 +651,7 @@ in
       ).strip() != host_netns
       assert vm.succeed(
           "cat /var/lib/aos-pkg-expose-lifecycle-outbound/userns"
-      ).strip() != host_userns
+      ).strip() == host_userns
       vm.succeed("ip netns exec aos-pkg-expose-lifecycle-outbound ${pkgs.iproute2}/sbin/ip route show default | grep -q ' dev ${privateOutboundPeerIf}'")
       vm.succeed("ip -4 route show dev ${privateOutboundHostIf}")
       assert "no" in vm.succeed(
