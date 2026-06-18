@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use super::env::{EvalEnv, EvalWithEnv};
+use super::env::{EvalEnv, EvalScopedGlobalEnv, EvalWithEnv};
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::ThunkCell;
 use crate::attrs::FlatAttrs;
@@ -38,6 +38,8 @@ pub(crate) enum EvalThunkKind {
         env: EvalEnv,
         /// Captured dynamic `with` scopes.
         with_env: EvalWithEnv,
+        /// Captured scoped-import global scopes.
+        scoped_globals: EvalScopedGlobalEnv,
     },
     /// Applies a forced function value to a lazy argument value.
     Apply {
@@ -99,7 +101,13 @@ impl EvalThunk {
 
     /// Creates a suspended thunk record for `body` and `env`.
     pub fn with_env(module: EvalModuleId, body: IrId, env: EvalEnv) -> Self {
-        Self::with_captures(module, body, env, EvalWithEnv::default())
+        Self::with_captures(
+            module,
+            body,
+            env,
+            EvalWithEnv::default(),
+            EvalScopedGlobalEnv::default(),
+        )
     }
 
     /// Creates a suspended thunk record with lexical and dynamic captures.
@@ -108,12 +116,14 @@ impl EvalThunk {
         body: IrId,
         env: EvalEnv,
         with_env: EvalWithEnv,
+        scoped_globals: EvalScopedGlobalEnv,
     ) -> Self {
         Self {
             kind: EvalThunkKind::Node {
                 body: EvalNodeRef::new(module, body),
                 env,
                 with_env,
+                scoped_globals,
             },
             cell: ThunkCell::new(),
         }
@@ -233,6 +243,16 @@ impl EvalThunk {
         }
     }
 
+    /// Returns the captured scoped-import global environment, if any.
+    pub const fn scoped_global_env(&self) -> Option<&EvalScopedGlobalEnv> {
+        match &self.kind {
+            EvalThunkKind::Node { scoped_globals, .. } => Some(scoped_globals),
+            EvalThunkKind::Apply { .. }
+            | EvalThunkKind::Apply2 { .. }
+            | EvalThunkKind::Select { .. } => None,
+        }
+    }
+
     /// Returns the serial state/result cell for this thunk.
     pub const fn cell(&self) -> &ThunkCell {
         &self.cell
@@ -252,6 +272,7 @@ pub struct EvalLambda {
     frame: FrameId,
     env: EvalEnv,
     with_env: EvalWithEnv,
+    scoped_globals: EvalScopedGlobalEnv,
 }
 
 impl EvalLambda {
@@ -264,6 +285,7 @@ impl EvalLambda {
             frame,
             env,
             EvalWithEnv::default(),
+            EvalScopedGlobalEnv::default(),
         )
     }
 
@@ -275,6 +297,7 @@ impl EvalLambda {
         frame: FrameId,
         env: EvalEnv,
         with_env: EvalWithEnv,
+        scoped_globals: EvalScopedGlobalEnv,
     ) -> Self {
         Self {
             module,
@@ -283,6 +306,7 @@ impl EvalLambda {
             frame,
             env,
             with_env,
+            scoped_globals,
         }
     }
 
@@ -314,6 +338,11 @@ impl EvalLambda {
     /// Returns the dynamic `with` environment captured when this lambda was allocated.
     pub const fn with_scope_env(&self) -> &EvalWithEnv {
         &self.with_env
+    }
+
+    /// Returns the scoped-import global environment captured when this lambda was allocated.
+    pub const fn scoped_global_env(&self) -> &EvalScopedGlobalEnv {
+        &self.scoped_globals
     }
 }
 

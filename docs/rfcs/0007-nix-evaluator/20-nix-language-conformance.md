@@ -809,10 +809,11 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 - [x] **`import` forces the path argument** — coerces its argument to a path/store
       path before reading the imported source. Importing a derivation output is
       covered by the IFD row below.
-- [ ] **`scopedImport`** — variant that injects extra bindings into the imported
+- [x] **`scopedImport`** — variant that injects extra bindings into the imported
       file's global scope (builtin in doc 21; the language-level note is that it
       changes the *scope* the imported file evaluates in, unlike plain `import`).
-      Verify whether AOS uses it.
+      Verified injected globals, builtin/import shadowing, escaped values, plain
+      import freshness, and deliberate non-memoization against pinned Nix.
 - [ ] **Import-from-derivation (IFD)** — importing/reading a path that is a
       *derivation output* forces that derivation to be **built** before evaluation
       can continue. Since aos-nix is eval-only (it does not build), reproduce the

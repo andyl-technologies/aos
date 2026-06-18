@@ -9,8 +9,8 @@ pub mod scope;
 
 pub use ir::{
     EffectClass, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice,
-    IrChildSlice, IrData, IrError, IrErrorKind, IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape,
-    IrShapeId, IrWithChain, lower,
+    IrChildSlice, IrData, IrError, IrErrorKind, IrId, IrInlineCacheSiteId, IrKind, IrLowerOptions,
+    IrNode, IrShape, IrShapeId, IrWithChain, lower, lower_with_options,
 };
 pub use scope::{
     FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, ResolvedAst,

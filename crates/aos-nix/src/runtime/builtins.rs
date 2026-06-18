@@ -654,7 +654,7 @@ impl BuiltinDefinition for ReplaceStringsBuiltin {
 pub(crate) struct ScopedImportBuiltin;
 impl BuiltinDefinition for ScopedImportBuiltin {
     const NAME: &'static [u8] = b"scopedImport";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::ScopedImport;
     const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
 }
 
@@ -999,6 +999,8 @@ pub(crate) enum BuiltinExecution {
     Unsupported,
     /// The builtin parses and evaluates another Nix file.
     Import,
+    /// The builtin parses another Nix file with an injected global scope.
+    ScopedImport,
     /// The builtin lowers to the derivation boundary and is not first-class.
     DerivationStrict,
     /// The builtin evaluates to the recursive builtin attribute set.
@@ -1114,6 +1116,9 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Pure,
             }),
             Self::StrictBinary { effect, .. } => Some(BuiltinDirect::StrictBinary { effect }),
+            Self::ScopedImport => Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::FindFile => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
             }),
@@ -1176,6 +1181,7 @@ impl BuiltinExecution {
             | Self::ReadFile
             | Self::ReadFileType => Some(1),
             Self::StrictBinary { .. }
+            | Self::ScopedImport
             | Self::AddErrorContext
             | Self::FindFile
             | Self::DirectBinary(_)
@@ -1213,6 +1219,7 @@ impl BuiltinExecution {
         match self {
             Self::Unsupported
             | Self::Import
+            | Self::ScopedImport
             | Self::DerivationStrict
             | Self::CurrentSystemValue
             | Self::CurrentTimeValue
@@ -1946,6 +1953,13 @@ mod tests {
         assert_eq!(
             BUILTINS.lookup(b"import").unwrap().first_class_arity(),
             Some(1)
+        );
+        assert_eq!(
+            BUILTINS
+                .lookup(b"scopedImport")
+                .unwrap()
+                .first_class_arity(),
+            Some(2)
         );
         assert_eq!(
             BUILTINS.lookup(b"add").unwrap().first_class_arity(),

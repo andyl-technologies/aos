@@ -78,13 +78,27 @@ impl Default for ScopeResolver {
 /// Configuration for scope resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolverOptions {
-    _future: (),
+    allow_unresolved_globals: bool,
 }
 
 impl ResolverOptions {
     /// Creates default resolver options.
     pub const fn new() -> Self {
-        Self { _future: () }
+        Self {
+            allow_unresolved_globals: false,
+        }
+    }
+
+    /// Creates resolver options that preserve unresolved names as global lookups.
+    pub const fn with_unresolved_globals() -> Self {
+        Self {
+            allow_unresolved_globals: true,
+        }
+    }
+
+    /// Returns whether unresolved identifiers are kept as runtime global lookups.
+    pub const fn allow_unresolved_globals(&self) -> bool {
+        self.allow_unresolved_globals
     }
 }
 
@@ -350,6 +364,7 @@ enum BindingResolveMode {
 
 #[derive(Clone, Debug)]
 struct ResolverState {
+    options: ResolverOptions,
     root: NodeId,
     arena: AstArena,
     symbols: SymbolTable,
@@ -363,9 +378,10 @@ struct ResolverState {
 }
 
 impl ResolverState {
-    fn new(parsed: ParsedAst, _options: ResolverOptions) -> Self {
+    fn new(parsed: ParsedAst, options: ResolverOptions) -> Self {
         let node_count = parsed.arena.len();
         Self {
+            options,
             root: parsed.root,
             arena: parsed.arena,
             symbols: parsed.symbols,
@@ -475,6 +491,10 @@ impl ResolverState {
         }
 
         if self.is_global_symbol(symbol) {
+            return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
+        }
+
+        if self.options.allow_unresolved_globals() {
             return self.replace_node(id, NodeKind::GlobalVar, NodeData::Symbol(symbol));
         }
 

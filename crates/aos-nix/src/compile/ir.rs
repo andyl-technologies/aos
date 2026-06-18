@@ -23,7 +23,44 @@ use crate::syntax::{
 /// Returns [`IrError`] when the resolved AST contains an invalid shape for the
 /// lowering contract or when an IR side table exceeds `u32` addressability.
 pub fn lower(resolved: ResolvedAst) -> Result<Ir, IrError> {
-    IrLowerer::new(resolved).lower()
+    lower_with_options(resolved, IrLowerOptions::new())
+}
+
+/// Lowers a scope-resolved AST into evaluator IR with explicit options.
+///
+/// # Errors
+///
+/// Returns [`IrError`] when the resolved AST contains an invalid shape for the
+/// lowering contract or when an IR side table exceeds `u32` addressability.
+pub fn lower_with_options(resolved: ResolvedAst, options: IrLowerOptions) -> Result<Ir, IrError> {
+    IrLowerer::new(resolved, options).lower()
+}
+
+/// Configuration for IR lowering.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IrLowerOptions {
+    dynamic_builtin_scope: bool,
+}
+
+impl IrLowerOptions {
+    /// Creates default IR lowering options.
+    pub const fn new() -> Self {
+        Self {
+            dynamic_builtin_scope: false,
+        }
+    }
+
+    /// Creates options for modules whose global `builtins` binding is runtime-shadowable.
+    pub const fn with_dynamic_builtin_scope() -> Self {
+        Self {
+            dynamic_builtin_scope: true,
+        }
+    }
+
+    /// Returns whether builtin references must remain dynamic runtime lookups.
+    pub const fn dynamic_builtin_scope(&self) -> bool {
+        self.dynamic_builtin_scope
+    }
 }
 
 /// A lowered evaluator IR artifact.
@@ -627,6 +664,7 @@ impl From<crate::syntax::AstError> for IrError {
 
 struct IrLowerer {
     resolved: ResolvedAst,
+    options: IrLowerOptions,
     arena: IrArena,
     lowered_nodes: BTreeMap<NodeId, IrId>,
     attr_paths: Vec<Box<[IrAttrPathSegment]>>,
@@ -639,9 +677,10 @@ struct IrLowerer {
 }
 
 impl IrLowerer {
-    fn new(resolved: ResolvedAst) -> Self {
+    fn new(resolved: ResolvedAst, options: IrLowerOptions) -> Self {
         Self {
             resolved,
+            options,
             arena: IrArena::new(),
             lowered_nodes: BTreeMap::new(),
             attr_paths: Vec::new(),
@@ -737,6 +776,9 @@ impl IrLowerer {
         let NodeData::Symbol(symbol) = node.data else {
             return Err(self.invalid_shape(node, "global symbol payload"));
         };
+        if self.options.dynamic_builtin_scope() {
+            return self.push(IrKind::GlobalVar, node.span, IrData::Symbol(symbol));
+        }
         match self.resolved.symbols.resolve(symbol) {
             Some(b"true") => self.push(IrKind::Bool, node.span, IrData::Bool(true)),
             Some(b"false") => self.push(IrKind::Bool, node.span, IrData::Bool(false)),
@@ -949,6 +991,9 @@ impl IrLowerer {
     }
 
     fn direct_builtin_ref_symbol(&self, id: NodeId) -> Result<Option<Symbol>, IrError> {
+        if self.options.dynamic_builtin_scope() {
+            return Ok(None);
+        }
         let node = self.node(id)?;
         match node.kind {
             NodeKind::GlobalVar => {

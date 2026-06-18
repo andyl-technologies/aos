@@ -33,7 +33,9 @@ use sha2::{Sha256, Sha512};
 use thiserror::Error;
 use toml::Value as TomlValue;
 
-use super::env::{EvalEnv, EvalEnvError, EvalFrame, EvalWithEnv, EvalWithScope};
+use super::env::{
+    EvalEnv, EvalEnvError, EvalFrame, EvalScopedGlobalEnv, EvalWithEnv, EvalWithScope,
+};
 use super::heap::{
     EvalHeap, EvalHeapError, EvalLambda, EvalPrimOp, EvalPrimOpArg, EvalThunk, EvalThunkKind,
 };
@@ -42,7 +44,8 @@ use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
 use crate::compile::{
     FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
-    IrKind, IrNode, IrShapeId, lower, resolve,
+    IrKind, IrLowerOptions, IrNode, IrShapeId, ResolverOptions, ScopeResolver, lower,
+    lower_with_options, resolve,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
@@ -1298,6 +1301,19 @@ enum ImportCacheEntry {
     Ready(Value),
 }
 
+/// The runtime global scope used while evaluating an imported file.
+#[derive(Clone, Copy, Debug)]
+enum ImportGlobalScope {
+    Fresh,
+    Scoped(Value),
+}
+
+impl ImportGlobalScope {
+    const fn is_scoped(self) -> bool {
+        matches!(self, Self::Scoped(_))
+    }
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk {
@@ -1307,6 +1323,7 @@ pub struct TreeWalk {
     heap: EvalHeap,
     env: Vec<Rc<EvalFrame>>,
     with_scopes: Vec<EvalWithScope>,
+    scoped_globals: Vec<Value>,
     options: TreeWalkOptions,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
@@ -1344,6 +1361,7 @@ impl TreeWalk {
             heap: EvalHeap::new(),
             env: Vec::new(),
             with_scopes: Vec::new(),
+            scoped_globals: Vec::new(),
             options,
             trace_output: Vec::new(),
             warning_output: Vec::new(),
@@ -1738,6 +1756,15 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
     }
 
+    fn capture_scoped_global_env(
+        &self,
+        id: IrId,
+        span: Span,
+    ) -> Result<EvalScopedGlobalEnv, TreeWalkError> {
+        EvalScopedGlobalEnv::capture(&self.scoped_globals)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span))
+    }
+
     fn clone_env_frames(
         &self,
         id: IrId,
@@ -1774,6 +1801,29 @@ impl TreeWalk {
                 TreeWalkErrorKind::Env {
                     id,
                     source: EvalEnvError::WithCaptureAllocationFailed {
+                        scopes: scopes.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(scopes);
+        Ok(cloned)
+    }
+
+    fn clone_scoped_globals(
+        &self,
+        id: IrId,
+        env: &EvalScopedGlobalEnv,
+        span: Span,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let scopes = env.scopes();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(scopes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Env {
+                    id,
+                    source: EvalEnvError::ScopedGlobalCaptureAllocationFailed {
                         scopes: scopes.len(),
                     },
                 },
@@ -1952,6 +2002,9 @@ impl TreeWalk {
         symbol: Symbol,
         span: Span,
     ) -> Result<Value, TreeWalkError> {
+        if let Some(value) = self.scoped_global_value(id, symbol, span)? {
+            return Ok(value);
+        }
         match self.symbols.resolve(symbol) {
             Some(b"true") => Ok(Value::bool(true)),
             Some(b"false") => Ok(Value::bool(false)),
@@ -1967,6 +2020,43 @@ impl TreeWalk {
         }
     }
 
+    fn scoped_global_value(
+        &self,
+        id: IrId,
+        symbol: Symbol,
+        span: Span,
+    ) -> Result<Option<Value>, TreeWalkError> {
+        if self.symbols.resolve(symbol).is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidSymbol { id, symbol },
+                span,
+            ));
+        }
+
+        for scope in self.scoped_globals.iter().rev().copied() {
+            if scope.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: scope.tag(),
+                    },
+                    span,
+                ));
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(scope).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(symbol)
+            };
+            if let Some(value) = selected {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
     fn eval_global_var(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
         let IrData::Symbol(symbol) = node.data else {
             return Err(self.invalid_payload(id, node, "global symbol payload"));
@@ -1977,6 +2067,18 @@ impl TreeWalk {
                 node.span,
             ));
         };
+        if let Some(value) = self.scoped_global_value(id, symbol, node.span)? {
+            return Ok(value);
+        }
+        if !self.scoped_globals.is_empty()
+            && name != b"builtins"
+            && !is_unshadowable_global_name(name)
+        {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnresolvedWithVar { id, symbol },
+                node.span,
+            ));
+        }
         if name == b"builtins" {
             return self.eval_builtins_attrset(id, node.span);
         }
@@ -3594,12 +3696,14 @@ impl TreeWalk {
         self.node(body)?;
         let env = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
+        let scoped_globals = self.capture_scoped_global_env(id, span)?;
         self.heap
             .alloc_thunk(EvalThunk::with_captures(
                 self.current_module,
                 body,
                 env,
                 with_env,
+                scoped_globals,
             ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
@@ -3701,16 +3805,22 @@ impl TreeWalk {
                         body,
                         env,
                         with_env,
+                        scoped_globals,
                     } => {
                         let thunk_env = self.clone_env_frames(id, env, span)?;
                         let thunk_with_env = self.clone_with_scopes(id, with_env, span)?;
+                        let thunk_scoped_globals =
+                            self.clone_scoped_globals(id, scoped_globals, span)?;
                         let saved_env = std::mem::replace(&mut self.env, thunk_env);
                         let saved_with_scopes =
                             std::mem::replace(&mut self.with_scopes, thunk_with_env);
+                        let saved_scoped_globals =
+                            std::mem::replace(&mut self.scoped_globals, thunk_scoped_globals);
                         let result = self
                             .with_current_module(body.module(), |eval| eval.eval_node(body.id()));
                         self.env = saved_env;
                         self.with_scopes = saved_with_scopes;
+                        self.scoped_globals = saved_scoped_globals;
                         result
                     }
                     EvalThunkKind::Apply {
@@ -3927,6 +4037,7 @@ impl TreeWalk {
         self.frame_info(id, frame, node.span)?;
         let env = self.capture_env(id, node.span)?;
         let with_env = self.capture_with_env(id, node.span)?;
+        let scoped_globals = self.capture_scoped_global_env(id, node.span)?;
         self.heap
             .alloc_lambda(EvalLambda::with_captures(
                 self.current_module,
@@ -3935,6 +4046,7 @@ impl TreeWalk {
                 frame,
                 env,
                 with_env,
+                scoped_globals,
             ))
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
     }
@@ -5862,19 +5974,7 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let path = self.coerce_to_path_bytes(argument, argument_span, value, "import")?;
-        self.check_filesystem_path_access(argument, argument_span, &path)?;
-        let target = self.import_target_path(argument, argument_span, &path)?;
-        self.check_filesystem_path_access(argument, argument_span, target.as_os_str().as_bytes())?;
-        let realpath = fs::canonicalize(&target).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::FileRead {
-                    id: argument,
-                    path: target.as_os_str().as_bytes().to_vec(),
-                    message: source.to_string(),
-                },
-                argument_span,
-            )
-        })?;
+        let realpath = self.import_realpath(argument, argument_span, &path)?;
         let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
         match self.import_cache.get(&realpath).copied() {
             Some(ImportCacheEntry::Ready(value)) => return Ok(value),
@@ -5892,7 +5992,14 @@ impl TreeWalk {
 
         self.import_cache
             .insert(realpath.clone(), ImportCacheEntry::Evaluating);
-        let result = self.load_and_eval_import(id, span, argument, argument_span, &realpath);
+        let result = self.load_and_eval_import(
+            id,
+            span,
+            argument,
+            argument_span,
+            &realpath,
+            ImportGlobalScope::Fresh,
+        );
         match result {
             Ok(value) => {
                 self.import_cache
@@ -5904,6 +6011,60 @@ impl TreeWalk {
                 Err(error)
             }
         }
+    }
+
+    fn eval_scoped_import_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        scope: IrId,
+        scope_span: Span,
+        scope_value: Value,
+        argument: IrId,
+        argument_span: Span,
+        argument_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if scope_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: scope,
+                    expected: "attrs",
+                    actual: scope_value.tag(),
+                },
+                scope_span,
+            ));
+        }
+        let path = self.coerce_to_path_bytes(argument, argument_span, argument_value, "import")?;
+        let realpath = self.import_realpath(argument, argument_span, &path)?;
+        self.load_and_eval_import(
+            id,
+            span,
+            argument,
+            argument_span,
+            &realpath,
+            ImportGlobalScope::Scoped(scope_value),
+        )
+    }
+
+    fn import_realpath(
+        &self,
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+    ) -> Result<PathBuf, TreeWalkError> {
+        self.check_filesystem_path_access(argument, argument_span, path)?;
+        let target = self.import_target_path(argument, argument_span, path)?;
+        self.check_filesystem_path_access(argument, argument_span, target.as_os_str().as_bytes())?;
+        fs::canonicalize(&target).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::FileRead {
+                    id: argument,
+                    path: target.as_os_str().as_bytes().to_vec(),
+                    message: source.to_string(),
+                },
+                argument_span,
+            )
+        })
     }
 
     fn import_target_path(
@@ -5936,6 +6097,7 @@ impl TreeWalk {
         argument: IrId,
         argument_span: Span,
         realpath: &Path,
+        global_scope: ImportGlobalScope,
     ) -> Result<Value, TreeWalkError> {
         let path = realpath.as_os_str().as_bytes().to_vec();
         let source = fs::read(realpath).map_err(|source| {
@@ -5958,7 +6120,12 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        let resolved = resolve(parsed).map_err(|source| {
+        let resolved = if global_scope.is_scoped() {
+            ScopeResolver::with_options(ResolverOptions::with_unresolved_globals()).resolve(parsed)
+        } else {
+            resolve(parsed)
+        }
+        .map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportScope {
                     id: argument,
@@ -5968,7 +6135,12 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        let ir = lower(resolved).map_err(|source| {
+        let ir = if global_scope.is_scoped() {
+            lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
+        } else {
+            lower(resolved)
+        }
+        .map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportLower {
                     id: argument,
@@ -5987,12 +6159,38 @@ impl TreeWalk {
             .to_vec();
         let root = ir.root;
         let module = self.push_module(id, span, ir, base)?;
+        let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
         let saved_env = std::mem::take(&mut self.env);
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);
+        let saved_scoped_globals =
+            std::mem::replace(&mut self.scoped_globals, imported_scoped_globals);
         let result = self.with_current_module(module, |eval| eval.eval_node(root));
         self.env = saved_env;
         self.with_scopes = saved_with_scopes;
+        self.scoped_globals = saved_scoped_globals;
         result
+    }
+
+    fn import_scoped_globals(
+        &self,
+        id: IrId,
+        span: Span,
+        global_scope: ImportGlobalScope,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let mut scoped_globals = Vec::new();
+        if let ImportGlobalScope::Scoped(scope) = global_scope {
+            scoped_globals.try_reserve_exact(1).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Env {
+                        id,
+                        source: EvalEnvError::ScopedGlobalCaptureAllocationFailed { scopes: 1 },
+                    },
+                    span,
+                )
+            })?;
+            scoped_globals.push(scope);
+        }
+        Ok(scoped_globals)
     }
 
     fn alloc_reflected_context_group(
@@ -13785,6 +13983,8 @@ impl TreeWalk {
             })?;
             let mut call_env = eval.clone_env_frames(id, lambda.env(), span)?;
             let call_with_env = eval.clone_with_scopes(id, lambda.with_scope_env(), span)?;
+            let call_scoped_globals =
+                eval.clone_scoped_globals(id, lambda.scoped_global_env(), span)?;
             call_env.try_reserve_exact(1).map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::Env {
@@ -13800,6 +14000,8 @@ impl TreeWalk {
             eval.enter_call(id, span)?;
             let saved_env = std::mem::replace(&mut eval.env, call_env);
             let saved_with_scopes = std::mem::replace(&mut eval.with_scopes, call_with_env);
+            let saved_scoped_globals =
+                std::mem::replace(&mut eval.scoped_globals, call_scoped_globals);
             let result = (|| {
                 let call_frame = eval.env.last().cloned().ok_or_else(|| {
                     TreeWalkError::new(TreeWalkErrorKind::MissingEnvironment { id }, span)
@@ -13818,6 +14020,7 @@ impl TreeWalk {
             })();
             eval.env = saved_env;
             eval.with_scopes = saved_with_scopes;
+            eval.scoped_globals = saved_scoped_globals;
             eval.leave_call();
             result
         })
@@ -15450,6 +15653,9 @@ impl TreeWalk {
         path_id: IrAttrPathId,
         default: Option<IrId>,
     ) -> Result<Option<Value>, TreeWalkError> {
+        if !self.scoped_globals.is_empty() {
+            return Ok(None);
+        }
         let receiver_node = self.node(receiver)?;
         let IrData::Symbol(receiver_symbol) = receiver_node.data else {
             return Ok(None);
@@ -15585,6 +15791,9 @@ impl TreeWalk {
         receiver: IrId,
         path_id: IrAttrPathId,
     ) -> Result<Option<Value>, TreeWalkError> {
+        if !self.scoped_globals.is_empty() {
+            return Ok(None);
+        }
         let receiver_node = self.node(receiver)?;
         let IrData::Symbol(receiver_symbol) = receiver_node.data else {
             return Ok(None);
@@ -17594,6 +17803,25 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_import_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::ScopedImport => {
+                check_builtin_arity(call, 2, args.len())?;
+                let scope = args[0];
+                let scope_span = eval.node(scope)?.span;
+                let scope_value = eval.eval_node(scope)?;
+                let argument = args[1];
+                let argument_span = eval.node(argument)?.span;
+                let argument_value = eval.eval_node(argument)?;
+                eval.eval_scoped_import_primop(
+                    call.id,
+                    call.span,
+                    scope,
+                    scope_span,
+                    scope_value,
+                    argument,
+                    argument_span,
+                    argument_value,
+                )
+            }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -17762,6 +17990,23 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let argument = args[0];
                 let value = eval.force_primop_arg(argument)?;
                 eval.eval_import_primop(call.id, call.span, argument.id(), argument.span(), value)
+            }
+            BuiltinExecution::ScopedImport => {
+                check_builtin_arity(call, 2, args.len())?;
+                let scope = args[0];
+                let scope_value = eval.force_primop_arg(scope)?;
+                let argument = args[1];
+                let argument_value = eval.force_primop_arg(argument)?;
+                eval.eval_scoped_import_primop(
+                    call.id,
+                    call.span,
+                    scope.id(),
+                    scope.span(),
+                    scope_value,
+                    argument.id(),
+                    argument.span(),
+                    argument_value,
+                )
             }
             BuiltinExecution::StrictUnary { primop, .. } => {
                 check_builtin_arity(call, 1, args.len())?;
@@ -22751,6 +22996,20 @@ mod tests {
         fs::write(dir_import.join("default.nix"), b"5").expect("default writes");
         fs::write(root.join("fresh.nix"), b"secret").expect("fresh writes");
         fs::write(root.join("traced.nix"), br#"builtins.trace "once" 9"#).expect("traced writes");
+        fs::write(root.join("scoped-value.nix"), b"x").expect("scoped value writes");
+        fs::write(root.join("scoped-shadow.nix"), b"builtins.add 1 2")
+            .expect("scoped shadow writes");
+        fs::write(root.join("scoped-lambda.nix"), b"y: secret + y").expect("scoped lambda writes");
+        fs::write(root.join("scoped-importer.nix"), b"import ./fresh.nix")
+            .expect("scoped importer writes");
+        fs::write(root.join("scoped-true.nix"), b"true").expect("scoped true writes");
+        fs::write(root.join("scoped-false.nix"), b"false").expect("scoped false writes");
+        fs::write(root.join("scoped-null.nix"), b"null").expect("scoped null writes");
+        fs::write(
+            root.join("scoped-trace.nix"),
+            br#"builtins.trace "scoped" 1"#,
+        )
+        .expect("scoped trace writes");
         std::os::unix::fs::symlink(root.join("traced.nix"), root.join("traced-link.nix"))
             .expect("trace symlink creates");
         let traced_dir = root.join("traced-dir");
@@ -22771,6 +23030,34 @@ mod tests {
             format!("builtins.baseNameOf ((import {child}).rel)"),
             format!("import {dir}"),
             format!("let f = import; in builtins.isAttrs (f {child})"),
+            format!(
+                "builtins.scopedImport {{ x = 7; }} {path}",
+                path = path_source(&root.join("scoped-value.nix"))
+            ),
+            format!(
+                "builtins.scopedImport {{ builtins = {{ add = a: b: 10; }}; }} {path}",
+                path = path_source(&root.join("scoped-shadow.nix"))
+            ),
+            format!(
+                "(builtins.scopedImport {{ secret = 5; }} {path}) 2",
+                path = path_source(&root.join("scoped-lambda.nix"))
+            ),
+            format!(
+                "builtins.scopedImport {{ import = path: 42; }} {path}",
+                path = path_source(&root.join("scoped-importer.nix"))
+            ),
+            format!(
+                "builtins.scopedImport {{ true = 1; }} {path}",
+                path = path_source(&root.join("scoped-true.nix"))
+            ),
+            format!(
+                "builtins.scopedImport {{ false = 2; }} {path}",
+                path = path_source(&root.join("scoped-false.nix"))
+            ),
+            format!(
+                "builtins.scopedImport {{ null = 3; }} {path}",
+                path = path_source(&root.join("scoped-null.nix"))
+            ),
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, &source);
         }
@@ -22781,6 +23068,13 @@ mod tests {
             &format!("with {{ secret = 42; }}; import {fresh}"),
         );
         assert_cpp_nix_and_tree_walk_reject_expression(oracle, &format!("import {empty_dir}"));
+        assert_cpp_nix_and_tree_walk_reject_expression(
+            oracle,
+            &format!(
+                "builtins.scopedImport {{ secret = 9; }} {path}",
+                path = path_source(&root.join("scoped-importer.nix"))
+            ),
+        );
 
         for source in [
             format!(
@@ -22796,6 +23090,10 @@ mod tests {
                 "builtins.deepSeq [ (import {dir}) (import {default}) ] 0",
                 dir = path_source(&traced_dir),
                 default = path_source(&traced_dir.join("default.nix"))
+            ),
+            format!(
+                "builtins.deepSeq [ (builtins.scopedImport {{ }} {path}) (builtins.scopedImport {{ }} {path}) ] 0",
+                path = path_source(&root.join("scoped-trace.nix"))
             ),
         ] {
             let reference = cpp_nix_eval_stderr(oracle, &source);
@@ -23533,6 +23831,138 @@ mod tests {
         fs::remove_dir_all(root).expect("temp directory removes");
     }
 
+    #[test]
+    fn scoped_import_injects_globals_and_bypasses_result_cache() {
+        let root = fs::canonicalize(unique_temp_dir("scoped-import"))
+            .expect("temp directory canonicalizes");
+        let dir_import = root.join("dir");
+        fs::create_dir(&dir_import).expect("import directory creates");
+        fs::write(root.join("value.nix"), b"x").expect("value writes");
+        fs::write(root.join("shadow-builtins.nix"), b"builtins.add 1 2")
+            .expect("shadow builtins writes");
+        fs::write(root.join("lambda.nix"), b"y: secret + y").expect("lambda writes");
+        fs::write(root.join("shadow-import.nix"), b"import ./nested.nix")
+            .expect("shadow import writes");
+        fs::write(root.join("nested.nix"), b"secret").expect("nested writes");
+        fs::write(root.join("true.nix"), b"true").expect("true writes");
+        fs::write(root.join("false.nix"), b"false").expect("false writes");
+        fs::write(root.join("null.nix"), b"null").expect("null writes");
+        fs::write(root.join("trace.nix"), br#"builtins.trace "scoped" 1"#).expect("trace writes");
+        fs::write(dir_import.join("default.nix"), b"x").expect("default writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { x = 7; } ./value.nix",
+                options.clone()
+            )
+            .as_int()
+            .expect("scoped global is int"),
+            7
+        );
+        assert_eq!(
+            eval_with_options("builtins.scopedImport { x = 8; } ./dir", options.clone())
+                .as_int()
+                .expect("scoped directory import is int"),
+            8
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { builtins = { add = a: b: 10; }; } ./shadow-builtins.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("scoped builtins shadow is int"),
+            10
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { import = path: 42; } ./shadow-import.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("scoped import shadow is int"),
+            42
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { true = 1; false = 2; null = 3; } ./true.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("scoped true shadow is int"),
+            1
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { true = 1; false = 2; null = 3; } ./false.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("scoped false shadow is int"),
+            2
+        );
+        assert_eq!(
+            eval_with_options(
+                "builtins.scopedImport { true = 1; false = 2; null = 3; } ./null.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("scoped null shadow is int"),
+            3
+        );
+        assert_eq!(
+            eval_with_options(
+                "(builtins.scopedImport { secret = 5; } ./lambda.nix) 2",
+                options.clone(),
+            )
+            .as_int()
+            .expect("escaped lambda sees scoped globals"),
+            7
+        );
+        assert_eq!(
+            eval_with_options(
+                "let f = builtins.scopedImport { x = 11; }; in f ./value.nix",
+                options.clone(),
+            )
+            .as_int()
+            .expect("partially applied scopedImport evaluates"),
+            11
+        );
+
+        let traced = eval_whnf_owned_with_options(
+            &lower(
+                "builtins.deepSeq [
+                  (builtins.scopedImport {} ./trace.nix)
+                  (builtins.scopedImport {} ./trace.nix)
+                ] 0",
+            ),
+            options.clone(),
+        )
+        .expect("scoped imports evaluate");
+        assert_eq!(traced.value().as_int().expect("trace result is int"), 0);
+        assert_eq!(traced.trace_output().len(), 2);
+        for trace in traced.trace_output() {
+            assert_trace_output(trace, EvalTraceKind::Trace, b"scoped");
+        }
+
+        let plain_inner = eval_whnf_owned_with_options(
+            &lower("builtins.scopedImport { secret = 9; } ./shadow-import.nix"),
+            options,
+        )
+        .expect_err("plain import inside scopedImport does not inherit scoped globals");
+        assert!(matches!(
+            plain_inner.kind(),
+            TreeWalkErrorKind::ImportScope { .. } | TreeWalkErrorKind::UnresolvedWithVar { .. }
+        ));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
     fn search_path_options(prefix: &[u8], path: &Path) -> TreeWalkOptions {
         let mut options = TreeWalkOptions::new();
         options
@@ -24238,7 +24668,6 @@ mod tests {
         for (source, name) in [
             ("builtins.fetchGit or 42", b"fetchGit".as_slice()),
             ("builtins.getFlake or 42", b"getFlake".as_slice()),
-            ("builtins.scopedImport or 42", b"scopedImport".as_slice()),
         ] {
             let ir = lower(source);
             let error = eval_whnf_owned(&ir).expect_err("known builtin does not use default");

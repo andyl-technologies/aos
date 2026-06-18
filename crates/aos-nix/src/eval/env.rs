@@ -4,8 +4,9 @@
 //! thunks can capture the frame graph at allocation time. Slots are filled after
 //! the frame is pushed, which supports Nix's self-visible `let` bindings and
 //! lets recursive thunks blackhole through the ordinary thunk state machine.
-//! Dynamic `with` scopes are captured alongside lexical frames so escaping
-//! thunks and closures preserve the same runtime lookup chain.
+//! Dynamic `with` scopes and scoped-import globals are captured alongside
+//! lexical frames so escaping thunks and closures preserve the same runtime
+//! lookup chain.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -76,6 +77,38 @@ impl EvalWithEnv {
 
     /// Returns the captured `with` scopes, ordered outermost to innermost.
     pub fn scopes(&self) -> &[EvalWithScope] {
+        &self.scopes
+    }
+}
+
+/// A captured scoped-import global scope stack.
+#[derive(Clone, Debug, Default)]
+pub struct EvalScopedGlobalEnv {
+    scopes: Box<[Value]>,
+}
+
+impl EvalScopedGlobalEnv {
+    /// Captures the active scoped-import global scope stack.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalEnvError::ScopedGlobalCaptureAllocationFailed`] if the
+    /// snapshot scope list cannot be reserved.
+    pub fn capture(scopes: &[Value]) -> Result<Self, EvalEnvError> {
+        let mut captured = Vec::new();
+        captured.try_reserve_exact(scopes.len()).map_err(|_| {
+            EvalEnvError::ScopedGlobalCaptureAllocationFailed {
+                scopes: scopes.len(),
+            }
+        })?;
+        captured.extend_from_slice(scopes);
+        Ok(Self {
+            scopes: captured.into_boxed_slice(),
+        })
+    }
+
+    /// Returns the captured scoped-import globals, ordered outermost to innermost.
+    pub fn scopes(&self) -> &[Value] {
         &self.scopes
     }
 }
@@ -202,6 +235,12 @@ pub enum EvalEnvError {
     #[error("failed to reserve {scopes} captured with scopes")]
     WithCaptureAllocationFailed {
         /// The requested number of captured `with` scopes.
+        scopes: usize,
+    },
+    /// A captured scoped-import global scope list could not be allocated.
+    #[error("failed to reserve {scopes} captured scoped-import globals")]
+    ScopedGlobalCaptureAllocationFailed {
+        /// The requested number of captured scoped-import global scopes.
         scopes: usize,
     },
     /// A frame was already borrowed in an incompatible mode.

@@ -742,7 +742,7 @@ places C++ Nix would.
       path — single evaluation shared across all `import`s of the same path) and
       the IFD trigger (importing a derivation output forces a build, §12). Caches
       results, *unlike* `scopedImport`.
-- [ ] `scopedImport` (attrs path) — like `import` but injects `attrs` into the
+- [x] `scopedImport` (attrs path) — like `import` but injects `attrs` into the
       imported file's *global* scope (overriding/shadowing `builtins`, `derivation`,
       etc.); it backs nixpkgs' `import` shadowing. **In scope.** Distinct parity
       note: it **does not memoize** (each call re-evaluates), unlike `import` —
@@ -876,7 +876,7 @@ feature disabled:
 - [ ] `fetchClosure` (args) — `fetch-closure`; **stubbed/scoped** (§11).
 - [ ] `outputOf` (…) — `dynamic-derivations`; **stubbed/scoped** (§5/§12).
 - [ ] `fetchMercurial` (args) — present-but-likely-unexercised (§11).
-- [ ] `scopedImport` (attrs path) — a real primop (it backs nixpkgs' `import`
+- [x] `scopedImport` (attrs path) — a real primop (it backs nixpkgs' `import`
       shadowing). **In scope**, but called out here because it deliberately
       does **not** memoize (unlike `import`); see
       [primops and the runtime ABI](10-primops-and-runtime-abi.md) §6.1. Not
