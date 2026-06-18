@@ -439,7 +439,7 @@ in {
       #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
       #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
       #                                              entries (metacopy)
-      #   upperdir = /run/etc/upper-<gen>/upper    — tmpfs, runtime writes
+      #   upperdir = /run/etc/upper-<gen>/dir      — runtime writes (tmpfs-backed)
       #
       # The active toplevel is read at runtime by
       # `readlink /sysroot/var/lib/profiles/system/current/toplevel`;
@@ -501,7 +501,7 @@ in {
           upper_root=/run/etc/upper-$gen
 
           mkdir -p "$sys/metadata" "$sys/content" \
-                   "$upper_root/upper" "$upper_root/work"
+                   "$upper_root/dir" "$upper_root/work"
           # $ign/etc already exists from ignition-files.service's
           # ExecStartPre.
 
@@ -529,7 +529,7 @@ in {
           # vfsmount refs at mount time, so the literal source string
           # in the option line never gets re-resolved post-pivot.
           ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
-            nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/upper,workdir=$upper_root/work \
+            nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
             /sysroot/etc
 
           # Inspection symlinks (relative targets so they survive
@@ -695,7 +695,8 @@ in {
       # Mount a tmpfs on /run/etc once, before anything else writes
       # under it. ignition-files writes its per-gen
       # /run/etc/ignition-<gen>/ subtree here, and etc-overlay-setup
-      # later creates the system/upper mountpoints alongside.
+      # later creates the system-<gen> mount points and the upper-<gen>
+      # dir (a plain directory, not its own mount) alongside.
       #
       # Why the initrd's /run rather than /sysroot/run:
       # systemd-initrd-switch-root does `mount --move /run
