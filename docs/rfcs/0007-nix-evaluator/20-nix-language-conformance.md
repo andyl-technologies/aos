@@ -345,15 +345,16 @@ search paths, and store coercion.
 
 ### 5.3 Nested definitions, merging, duplicate keys
 
-- [ ] **Nested attr definition `a.b.c = v;`** — desugars to nested sets
+- [x] **Nested attr definition `a.b.c = v;`** — desugars to nested sets
       `a = { b = { c = v; }; };`.
-- [ ] **Merging of distinct nested paths** — `{ a.b = 1; a.c = 2; }` merges into
-      `{ a = { b = 1; c = 2; }; }`. This merge is a *parser-level* construction,
-      not the `//` operator.
-- [ ] **Duplicate key is an error** — `{ a = 1; a = 2; }` and conflicting nested
-      definitions (`{ a.b = 1; a.b = 2; }`) are a **must-error** ("attribute
-      'a' already defined"). Verify the exact cases that merge vs error against
-      pinned Nix (e.g. `{ a = {b=1;}; a.c = 2; }` — does it merge or error?).
+- [x] **Merging of distinct nested paths** — `{ a.b = 1; a.c = 2; }` merges into
+      `{ a = { b = 1; c = 2; }; }`. This merge is a parser-level construction,
+      not the `//` operator. AOS also matches pinned Nix for literal attrset
+      merges in both orders, e.g. `{ a = { b = 1; }; a.c = 2; }`.
+- [x] **Duplicate key is an error** — `{ a = 1; a = 2; }` and conflicting nested
+      definitions (`{ a.b = 1; a.b = 2; }`) are a **must-error**. AOS rejects
+      direct duplicates, scalar-vs-nested conflicts, and literal nested attrset
+      leaf conflicts in either order.
 - [ ] **`inherit x y;`** — copies `x`, `y` from the surrounding lexical scope:
       `inherit x;` ≡ `x = x;`.
 - [ ] **`inherit (e) x y;`** — copies from set `e`: ≡ `x = e.x; y = e.y;`. `e` is

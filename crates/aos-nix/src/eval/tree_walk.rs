@@ -33171,6 +33171,30 @@ mod tests {
     }
 
     #[test]
+    fn nested_static_attr_definitions_merge_like_pinned_nix() {
+        assert_eq!(
+            eval_json_bytes("{ a.b.c = 1; }"),
+            br#"{"a":{"b":{"c":1}}}"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes("{ a.b = 1; a.c = 2; }"),
+            br#"{"a":{"b":1,"c":2}}"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes("{ a.b.c = 1; a.b.d = 2; }"),
+            br#"{"a":{"b":{"c":1,"d":2}}}"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes("{ a = { b = 1; }; a.c = 2; }"),
+            br#"{"a":{"b":1,"c":2}}"#.to_vec()
+        );
+        assert_eq!(
+            eval_json_bytes("{ a.b = 1; a = { c = 2; }; }"),
+            br#"{"a":{"b":1,"c":2}}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn evaluates_static_recursive_attrsets_with_lazy_self_scope() {
         assert_eq!(eval("(rec { a = 1; b = a + 2; }).b").as_int(), Ok(3));
         assert_eq!(eval("(rec { a = b; b = 1; }).a").as_int(), Ok(1));

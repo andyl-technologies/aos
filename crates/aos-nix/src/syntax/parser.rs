@@ -2292,6 +2292,22 @@ mod tests {
         assert_eq!(nested_bindings.len(), 2);
         assert_eq!(binding_name(&ast, nested_bindings[0]), b"b");
         assert_eq!(binding_name(&ast, nested_bindings[1]), b"c");
+
+        let ast = parse("{ a = { b = 1; }; a.c = 2; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
+
+        let ast = parse("{ a.b = 1; a = { c = 2; }; }");
+        let NodeData::Children(bindings) = node(&ast, ast.root).data else {
+            panic!("attrset children expected");
+        };
+        let bindings = child_ids(&ast, bindings);
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(binding_name(&ast, bindings[0]), b"a");
     }
 
     #[test]
@@ -2352,8 +2368,11 @@ mod tests {
     #[test]
     fn duplicate_static_attr_paths_are_parse_errors() {
         for source in [
+            "{ a = 1; a = 2; }",
             "{ a.b = 1; a.b = 2; }",
             "{ a = 1; a.b = 2; }",
+            "{ a = { b = 1; }; a.b = 2; }",
+            "{ a.b = 1; a = { b = 2; }; }",
             "let x = 1; in { inherit x; x = 2; }",
             "let x = 1; in { inherit x; inherit x; }",
             "let x = 1; in { a = { inherit x; }; a.x = 2; }",
