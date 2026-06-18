@@ -69,6 +69,7 @@ const OUTPUT_HASH_ATTR: &[u8] = b"outputHash";
 const OUTPUT_HASH_ALGO_ATTR: &[u8] = b"outputHashAlgo";
 const OUTPUT_HASH_MODE_ATTR: &[u8] = b"outputHashMode";
 const CONTENT_ADDRESSED_ATTR: &[u8] = b"__contentAddressed";
+const IMPURE_ATTR: &[u8] = b"__impure";
 const ALLOWED_REFERENCES_ATTR: &[u8] = b"allowedReferences";
 const DISALLOWED_REFERENCES_ATTR: &[u8] = b"disallowedReferences";
 const ALLOWED_REQUISITES_ATTR: &[u8] = b"allowedRequisites";
@@ -2566,6 +2567,17 @@ impl TreeWalk {
                         TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
                             id,
                             feature: "content-addressed derivations",
+                        },
+                        span,
+                    ));
+                }
+            }
+            if key == IMPURE_ATTR {
+                if self.expect_bool(id, value, span)? {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                            id,
+                            feature: "impure derivations",
                         },
                         span,
                     ));
@@ -39687,6 +39699,45 @@ mod tests {
     }
 
     #[test]
+    fn derivation_strict_supports_disabled_impure_marker() {
+        let source = r#"let
+             explicitFalse = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = false;
+             };
+             structuredFalse = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __impure = false;
+             };
+             ignoredNull = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __impure = null;
+               __ignoreNulls = true;
+             };
+           in {
+             explicitFalseDrv = explicitFalse.drvPath;
+             explicitFalseOut = explicitFalse.out;
+             ignoredNullDrv = ignoredNull.drvPath;
+             ignoredNullOut = ignoredNull.out;
+             structuredFalseDrv = structuredFalse.drvPath;
+             structuredFalseOut = structuredFalse.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"explicitFalseDrv":"/nix/store/byy6hf9vzifjqikj1wxh1dlz1k2mm55y-foo.drv","explicitFalseOut":"/nix/store/zyxk99gi89lp0n4acr3ingrdp8pwjqcp-foo","ignoredNullDrv":"/nix/store/qsg1hv3lkdblqrzknfz5hrwa2ylhqi7d-foo.drv","ignoredNullOut":"/nix/store/m1839r6ds9nkq40ndigls6fgmi6h4j6x-foo","structuredFalseDrv":"/nix/store/q0bwyr5jasf511qq3jzz93s31782kw17-foo.drv","structuredFalseOut":"/nix/store/9jld8vmqis8rk1n1vgcncxznx3s3v8yr-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
     fn derivation_strict_rejects_unsupported_content_addressed_derivations() {
         let error = eval_whnf_owned(&lower(
             r#"derivationStrict {
@@ -39717,6 +39768,57 @@ mod tests {
                }"#,
         ))
         .expect_err("content-addressed marker must be a bool");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "bool",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn derivation_strict_rejects_unsupported_impure_derivations() {
+        for source in [
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __impure = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 __impure = true;
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("impure derivations are still feature-gated");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                        feature: "impure derivations",
+                        ..
+                    }
+                ),
+                "{source}: {error:?}"
+            );
+        }
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = "foo";
+                 system = ":";
+                 builder = ":";
+                 __impure = 1;
+               }"#,
+        ))
+        .expect_err("impure marker must be a bool");
 
         assert!(matches!(
             error.kind(),
