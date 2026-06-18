@@ -538,6 +538,10 @@ in {
           ln -sfn system-$gen   /run/etc/system
           ln -sfn ignition-$gen /run/etc/ignition
           ln -sfn upper-$gen    /run/etc/upper
+
+          # Both readers have run; drop the gen-handoff file so it
+          # doesn't ride mount --move into stage-2 with a stale value.
+          rm -f /run/aos-profile-gen.env
         '';
       };
 
