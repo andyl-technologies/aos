@@ -334,10 +334,17 @@ async fn browse_dispatch(
             None => match rest.as_str() {
                 "" => browse::cache_home(&svc, &headers, &slug).await,
                 "objects" => browse::cache_objects(&svc, &headers, &slug, &q).await,
-                other => match other.strip_prefix("objects/").filter(|h| !h.is_empty()) {
-                    Some(hash) => browse::cache_object(&svc, &headers, &slug, hash).await,
-                    None => Rendered::NotFound,
-                },
+                other => {
+                    if let Some(hash) = other.strip_prefix("objects/").filter(|h| !h.is_empty()) {
+                        browse::cache_object(&svc, &headers, &slug, hash).await
+                    } else if let Some(hash) =
+                        other.strip_prefix("closure/").filter(|h| !h.is_empty())
+                    {
+                        browse::cache_closure(&svc, &headers, &slug, hash).await
+                    } else {
+                        Rendered::NotFound
+                    }
+                }
             },
         };
         return browse_response(rendered);
@@ -518,6 +525,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCacheObject", get_cache_object);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheGcRuns", list_cache_gc_runs);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
+    r = rpc_route!(r, "/aos.registry.v1.CacheService/CacheClosure", cache_closure);
     // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
     // eliding the body) for the registry machine path, registered LAST. The
     // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over
