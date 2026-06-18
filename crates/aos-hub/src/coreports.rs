@@ -491,3 +491,109 @@ impl core_reindex::Reindexer for HubReindexer {
         Ok(Some(outcome.commit))
     }
 }
+
+/// A `reqwest`-backed [`OriginFetch`](core_fetch::OriginFetch) for the native hub.
+///
+/// Streams a private external origin's bytes through the hub (the proxy-read
+/// alternative to a `302` presigned redirect), forwarding a byte range as a
+/// `Range` request header and re-deriving the served range/total from the
+/// origin's `Content-Range`/`Content-Length` response headers. The body is
+/// `reqwest`'s chunked `bytes_stream`, so a large NAR never buffers in the hub.
+pub struct ReqwestOriginFetch {
+    http: reqwest::Client,
+}
+
+impl ReqwestOriginFetch {
+    /// Wrap the hub's shared `reqwest` client as an origin proxy fetcher.
+    #[must_use]
+    pub fn new(http: reqwest::Client) -> ReqwestOriginFetch {
+        ReqwestOriginFetch { http }
+    }
+}
+
+#[async_trait]
+impl core_fetch::OriginFetch for ReqwestOriginFetch {
+    async fn get_stream(
+        &self,
+        url: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<core_fetch::StreamedRead>> {
+        use reqwest::header;
+
+        let mut req = self.http.get(url);
+        if let Some((start, end)) = range {
+            // Forward the inclusive range as an HTTP `Range` header; an open-ended
+            // request (`end == u64::MAX`) becomes `bytes=start-`.
+            let spec = if end == u64::MAX {
+                format!("bytes={start}-")
+            } else {
+                format!("bytes={start}-{end}")
+            };
+            req = req.header(header::RANGE, spec);
+        }
+        let resp = req
+            .send()
+            .await
+            .with_context(|| format!("origin GET {url}"))?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            bail!("origin GET {url}: status {status}");
+        }
+        // `Content-Range: bytes start-end/total` on a 206 gives both the served
+        // range and the full size; a plain 200 carries the size in
+        // `Content-Length` and serves the whole object.
+        let served;
+        let total;
+        if status == reqwest::StatusCode::PARTIAL_CONTENT {
+            let cr = resp
+                .headers()
+                .get(header::CONTENT_RANGE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(parse_content_range)
+                .context("origin 206 without a parseable Content-Range")?;
+            // Trust nothing from the origin: a malformed `Content-Range`
+            // (`end < start`, or `end` past `total`) would underflow/overflow the
+            // `Content-Length` arithmetic downstream. Enforce `fetch_stream`'s
+            // invariant — `start <= end < total` — at the boundary.
+            if cr.0 > cr.1 || cr.1 >= cr.2 {
+                bail!(
+                    "origin {url}: malformed Content-Range bytes {}-{}/{}",
+                    cr.0,
+                    cr.1,
+                    cr.2
+                );
+            }
+            served = Some((cr.0, cr.1));
+            total = cr.2;
+        } else {
+            served = None;
+            total = resp
+                .content_length()
+                .context("origin 200 without a Content-Length")?;
+        }
+        // `reqwest::Error` satisfies `Body::from_stream`'s `Into<BoxError>` bound,
+        // so the chunked body streams straight through with no re-wrapping.
+        Ok(Some(core_fetch::StreamedRead {
+            body: axum::body::Body::from_stream(resp.bytes_stream()),
+            total,
+            range: served,
+        }))
+    }
+}
+
+/// Parse a `Content-Range: bytes START-END/TOTAL` value into `(start, end, total)`.
+///
+/// Returns `None` for an unsatisfiable (`bytes */TOTAL`) or malformed value.
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let rest = value.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((
+        start.trim().parse().ok()?,
+        end.trim().parse().ok()?,
+        total.trim().parse().ok()?,
+    ))
+}

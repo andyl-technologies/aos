@@ -322,7 +322,10 @@ pub async fn router(state: Arc<AppState>) -> Router {
         Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
         Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
         Some(Arc::clone(&state.sealer)),
-    ));
+    )
+    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+        state.http.clone(),
+    ))));
     // The shared router owns `/aos.registry.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
     // the finished AppState-stated router below. The *facade-less* variant is

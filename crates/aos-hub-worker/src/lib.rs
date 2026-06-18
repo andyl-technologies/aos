@@ -253,17 +253,20 @@ mod entry {
             ));
         let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer);
 
-        let service = Arc::new(RpcService::new(
-            Arc::clone(&db),
-            jwt_keys.clone(),
-            external_url.clone(),
-            Arc::clone(&ratelimit),
-            Arc::clone(&surface),
-            Arc::clone(&surface_write),
-            Arc::clone(&lease),
-            Arc::clone(&reindexer),
-            Some(Arc::clone(&sealer)),
-        ));
+        let service = Arc::new(
+            RpcService::new(
+                Arc::clone(&db),
+                jwt_keys.clone(),
+                external_url.clone(),
+                Arc::clone(&ratelimit),
+                Arc::clone(&surface),
+                Arc::clone(&surface_write),
+                Arc::clone(&lease),
+                Arc::clone(&reindexer),
+                Some(Arc::clone(&sealer)),
+            )
+            .with_origin_fetch(Arc::new(crate::surface::WorkerOriginFetch)),
+        );
 
         let console_deps = ConsoleDeps {
             db,
