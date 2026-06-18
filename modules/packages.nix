@@ -61,41 +61,57 @@
   packageTarget = package:
     package.package.expose.passthru.manifest.expose.target;
 
-  packageMeta = name: package: {
-    store_path = builtins.toString package.package;
-    pushed_at = 1;
-    pushed_by = "aos-image";
-    expires_at = null;
-    is_root = true;
-    last_accessed = 1;
-    access_count = 0;
-    apm = {
-      inherit name;
-      version = package.package.version or "0";
-      explicit = true;
-      registry = "seed";
-      installed_at = "1970-01-01T00:00:00Z";
-      held = false;
-      source_drv = "";
-      source_nar_hash = "";
-      expose = package.package.expose.passthru.manifest.expose;
-      expose_artifact = {
-        store_path = builtins.toString package.package.expose;
-        nar_hash = "sha256:aos-image";
-        nar_size = 1;
-      };
-      permissions = package.package.expose.passthru.permissions;
-    };
-  };
-
   packageMetaFile = name: package: let
     packageHash = storePathHash package.package;
+    packageVersion = package.package.version or "0";
   in
-    pkgs.writeTextFile {
-      name = "aos-package-${name}-meta.json";
-      text = builtins.toJSON (packageMeta name package);
-      destination = "/${packageHash}.json";
-    };
+    pkgs.runCommand "aos-package-${name}-meta.json" {
+      buildDeps = [pkgs.jq];
+      preferLocalBuild = true;
+      allowSubstitutes = false;
+    } ''
+      set -eu
+      mkdir -p "$out"
+      jq -n \
+        --slurpfile manifest ${package.package.expose}/manifest.json \
+        --arg store_path ${lib.escapeShellArg (builtins.toString package.package)} \
+        --arg name ${lib.escapeShellArg name} \
+        --arg version ${lib.escapeShellArg packageVersion} \
+        --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
+        -e '(($manifest[0].expose | type) == "object") and (($manifest[0].permissions | type) == "object")' >/dev/null
+      jq -n \
+        --slurpfile manifest ${package.package.expose}/manifest.json \
+        --arg store_path ${lib.escapeShellArg (builtins.toString package.package)} \
+        --arg name ${lib.escapeShellArg name} \
+        --arg version ${lib.escapeShellArg packageVersion} \
+        --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
+        '{
+          store_path: $store_path,
+          pushed_at: 1,
+          pushed_by: "aos-image",
+          expires_at: null,
+          is_root: true,
+          last_accessed: 1,
+          access_count: 0,
+          apm: {
+            name: $name,
+            version: $version,
+            explicit: true,
+            registry: "seed",
+            installed_at: "1970-01-01T00:00:00Z",
+            held: false,
+            source_drv: "",
+            source_nar_hash: "",
+            expose: $manifest[0].expose,
+            expose_artifact: {
+              store_path: $expose_path,
+              nar_hash: "sha256:aos-image",
+              nar_size: 1
+            },
+            permissions: $manifest[0].permissions
+          }
+        }' > "$out/${packageHash}.json"
+    '';
 
   packageSeedBundle =
     pkgs.runCommand "aos-package-profile-seed" {
