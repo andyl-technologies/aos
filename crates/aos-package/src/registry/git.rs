@@ -1692,6 +1692,7 @@ mod tests {
             pin: None,
             max_staleness_seconds,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: Some(SigningConfig {

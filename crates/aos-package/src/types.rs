@@ -587,6 +587,9 @@ pub struct RegistryConfig {
     /// with the committed root registry.toml caches, then sorted by priority.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    /// Producer-side internal cache staging policy.
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
@@ -669,6 +672,26 @@ fn default_priority() -> u32 {
 /// Serde default for boolean fields that default to `true`.
 fn default_true() -> bool {
     true
+}
+
+/// Default retention for producer-side static-cache staging.
+pub const DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS: u64 = 30;
+
+/// Producer-side internal static-cache staging policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryCacheConfig {
+    /// Number of days to retain unused staged narinfo/NAR pairs. When unset,
+    /// `apr cache gc` and automatic successful-run GC use 30 days.
+    #[serde(default)]
+    pub max_age_days: Option<u64>,
+}
+
+impl RegistryCacheConfig {
+    /// Returns the configured retention period, defaulting to 30 days.
+    pub fn max_age_days(&self) -> u64 {
+        self.max_age_days
+            .unwrap_or(DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
+    }
 }
 
 /// Signing configuration embedded in a registry config.
@@ -1062,6 +1085,17 @@ impl ProfileScope {
         }
     }
 
+    /// Path for producer-side static-cache staging for one registry.
+    ///
+    /// Rooted under [`nar_cache_path`](Self::nar_cache_path) — the scope's
+    /// regenerable-bytes location (`~/.cache/apm` for user,
+    /// `/var/lib/apm/cache` for system) — with a `registry-static/` infix that
+    /// keeps producer staging separate from the consumer NAR download cache.
+    /// The per-registry leaf preserves the one-`StoreDir`-per-cache invariant.
+    pub fn registry_cache_path(&self, registry: &str) -> PathBuf {
+        self.nar_cache_path().join("registry-static").join(registry)
+    }
+
     /// Path for registry config files.
     ///
     /// This is the read-only `/etc/apm` image seed (system) or `~/.config/apm`
@@ -1218,6 +1252,8 @@ pub struct RegistryFileInner {
     pub max_staleness_seconds: Option<u64>,
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
@@ -1789,6 +1825,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1811,6 +1848,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1833,6 +1871,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1855,6 +1894,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1877,6 +1917,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1892,6 +1933,10 @@ mod tests {
             PathBuf::from("/var/lib/profiles/system")
         );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
+        assert_eq!(
+            scope.registry_cache_path("core"),
+            PathBuf::from("/var/lib/apm/cache/registry-static/core"),
+        );
         assert_eq!(scope.config_dir(), PathBuf::from("/etc/apm"));
     }
 
@@ -1918,6 +1963,20 @@ auto_gc = false
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
+    }
+
+    #[test]
+    fn parse_registry_cache_config() {
+        let toml_str = r#"
+[registry]
+url = "https://registry.example.com/core"
+
+[registry.cache]
+max_age_days = 7
+"#;
+        let file: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(file.registry.cache.max_age_days, Some(7));
+        assert_eq!(RegistryCacheConfig::default().max_age_days(), 30);
     }
 
     #[test]
@@ -2108,6 +2167,7 @@ last_update = "2026-02-13T10:30:00Z"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,

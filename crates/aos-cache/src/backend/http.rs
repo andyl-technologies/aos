@@ -187,6 +187,13 @@ impl HttpBackend {
 
 #[async_trait]
 impl CacheBackend for HttpBackend {
+    async fn exists(&self, relative_path: &str) -> Result<bool> {
+        let url = self.static_file_url(relative_path);
+        let req = self.add_headers(TransferRequest::head(&url));
+        let result = self.engine.execute(req).await?;
+        Ok(result.status < 400)
+    }
+
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.narinfo_url(store_hash);
         let req = self.add_headers(TransferRequest::head(&url));

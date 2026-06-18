@@ -34,13 +34,27 @@ use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
 /// backend-relative `nar/...` URLs recorded in the narinfo `URL` field.
 #[async_trait]
 pub trait CacheBackend: Send + Sync {
+    /// Checks whether a backend-relative cache object exists.
+    ///
+    /// `relative_path` is rooted at the binary cache/origin root, for example
+    /// `"<hash>.narinfo"`, `"nar/<name>.nar.zst"`, or
+    /// `"objects/<fanout>/<object>"`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the existence check itself fails. A clean "not
+    /// found" is `Ok(false)`.
+    async fn exists(&self, relative_path: &str) -> Result<bool>;
+
     /// Checks whether a narinfo exists for a store hash.
     ///
     /// # Errors
     ///
     /// Returns an error if the existence check itself fails (transport
     /// error); a clean "not found" is `Ok(false)`.
-    async fn has_narinfo(&self, store_hash: &str) -> Result<bool>;
+    async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
+        self.exists(&format!("{store_hash}.narinfo")).await
+    }
 
     /// Fetches narinfo text for a store hash.
     ///
