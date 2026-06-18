@@ -99,24 +99,23 @@ impl SurfaceFetch for R2SurfaceFetch {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
-        use futures_util::TryStreamExt as _;
+        use futures_util::{StreamExt as _, TryStreamExt as _};
 
         let key = keymap::r2_key(&self.prefix, path);
-        // A ranged GET pushes the byte range down to R2 — the object's bytes are
-        // never fully read into the isolate; the body streams chunk by chunk.
-        let mut get = self.bucket.get(&key);
-        if let Some((start, end)) = range {
-            let r = if end == u64::MAX {
-                worker::Range::OffsetToEnd { offset: start }
-            } else {
-                worker::Range::OffsetWithLength {
-                    offset: start,
-                    length: end - start + 1,
-                }
-            };
-            get = get.range(r);
-        }
-        let object = get
+        // NOTE: we deliberately do *not* push the byte range into the R2 `get`
+        // (`GetOptionsBuilder::range`). workers-rs 0.4.x serializes every `Range`
+        // variant with an explicit `suffix: undefined` property, and the runtime's
+        // R2 binding rejects the *presence* of the `suffix` key alongside `offset`
+        // ("Suffix is incompatible with offset"), so a pushed-down range errors on
+        // workerd. Instead we open the whole-object stream and trim it chunk by
+        // chunk below — the isolate still never holds the whole object in memory
+        // (it streams through, dropping pre-`start` bytes and stopping at the
+        // range end), so the memory-safety property the streaming path guarantees
+        // is preserved; only the discarded pre-`start` bytes cross R2→isolate
+        // (nil for the whole-object and prefix reads nix actually issues).
+        let object = self
+            .bucket
+            .get(&key)
             .execute()
             .await
             .map_err(|err| anyhow::anyhow!("R2 get {key}: {err}"))?;
@@ -131,21 +130,69 @@ impl SurfaceFetch for R2SurfaceFetch {
             _ => None,
         };
         let Some(body) = object.body() else {
+            // A bodyless R2 object is zero-length, so there is nothing to range
+            // over — serve a whole-object empty body (`range: None`) regardless of
+            // what was requested, so `cache_serve` emits `Content-Length: 0`
+            // rather than a positive length against an empty body.
             return Ok(Some(aos_hub_core::fetch::StreamedRead {
                 body: axum::body::Body::empty(),
                 total,
-                range: served,
+                range: None,
             }));
         };
         let stream = body
             .stream()
             .map_err(|err| anyhow::anyhow!("R2 stream {key}: {err}"))?
             .map_err(|err| std::io::Error::other(err.to_string()));
+        // Trim the whole-object stream to the served byte range without buffering:
+        // `skip` leading bytes are dropped (splitting a straddling chunk) and at
+        // most `remaining` bytes are emitted (truncating the final chunk, then
+        // ending the stream). For a whole-object read both bounds are wide open.
+        let (skip, remaining) = match served {
+            Some((start, end)) => (start, end - start + 1),
+            None => (0, u64::MAX),
+        };
+        let trimmed = futures_util::stream::try_unfold(
+            (stream.boxed_local(), skip, remaining),
+            |(mut stream, mut skip, mut remaining)| async move {
+                if remaining == 0 {
+                    return Ok(None);
+                }
+                loop {
+                    match stream.next().await {
+                        None => return Ok(None),
+                        Some(Err(err)) => return Err(err),
+                        Some(Ok(mut chunk)) => {
+                            if skip > 0 {
+                                // `skip as usize` is sound on wasm32 (32-bit
+                                // usize) because `.min(chunk.len())` bounds it
+                                // below `usize::MAX` before the cast.
+                                let drop = (skip as usize).min(chunk.len());
+                                chunk.drain(..drop);
+                                skip -= drop as u64;
+                                if chunk.is_empty() {
+                                    continue;
+                                }
+                            }
+                            // Compare/clamp in `u64`: `remaining` can exceed
+                            // `u32::MAX` for a multi-GiB range, so `remaining as
+                            // usize` on wasm32 would truncate the high bits and
+                            // wrongly truncate the chunk. `chunk.len()` fits a
+                            // u32, so the *bounded* `take` casts back safely.
+                            let take = remaining.min(chunk.len() as u64) as usize;
+                            chunk.truncate(take);
+                            remaining -= take as u64;
+                            return Ok(Some((chunk, (stream, skip, remaining))));
+                        }
+                    }
+                }
+            },
+        );
         // `axum::body::Body::from_stream` requires `Send`; the R2 `ByteStream` is
         // `!Send`. `SendWrapper` makes it `Send` (sound on the single-threaded
         // Worker), so the *same* `StreamedRead` the native file path returns
         // flows through the shared `cache_serve` and the streaming bridge.
-        let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(stream));
+        let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(trimmed));
         Ok(Some(aos_hub_core::fetch::StreamedRead {
             body,
             total,

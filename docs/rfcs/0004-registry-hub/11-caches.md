@@ -535,12 +535,19 @@ the current spec. Phases are orderable; A lands first, E last.
       total + served range) — that **both** the native hub and the Worker route
       through (the native-only `cache_serve_file` was deleted). Each shell's
       fetcher supplies the stream: native `LocalFsFetch` via `tokio` `ReaderStream`
-      (seek + `take` for ranges), Worker R2 via a ranged GET whose `ByteStream` is
-      `SendWrapper`-wrapped into the axum body. `nix-cache-info` is generated,
-      `Range: bytes=…` → `206` + `Content-Range` + `Accept-Ranges`, visibility +
-      presign-`302` enforced once. A large NAR never buffers into memory on either
-      shell. Range/206 is integration-tested on native; the Worker serves it
-      through the streaming bridge below.
+      (seek + `take` for ranges), Worker R2 via the object's `ByteStream`,
+      `SendWrapper`-wrapped into the axum body and trimmed chunk-by-chunk to the
+      served range (the isolate never holds the whole object — pre-`start` bytes
+      are dropped as they stream, and the stream ends at the range end). The
+      Worker trims rather than pushing the range into the R2 `get` because
+      workers-rs 0.4.x serializes every `Range` with an explicit `suffix:
+      undefined` key, which the pinned workerd's R2 binding rejects ("Suffix is
+      incompatible with offset") — a documented runtime-binding asymmetry, not a
+      buffering one. `nix-cache-info` is generated, `Range: bytes=…` → `206` +
+      `Content-Range` + `Accept-Ranges`, visibility + presign-`302` enforced once.
+      A large NAR never buffers into memory on either shell. Range/206 is
+      integration-tested on native **and** end-to-end on the Worker under
+      workerd+miniflare (a 64 KiB NAR, `bytes=0-3` → `206`/`Content-Range`).
 - [x] **Cache write facade (buffered):** `cache_writer` write-port (fs + R2)
       and shared `put_machine_path`/`head_machine_path` cache fallthrough →
       `put_cache_path`, so `nix copy --to <hub>/<cache>` works on **both** the
@@ -718,17 +725,22 @@ the current spec. Phases are orderable; A lands first, E last.
       two objects via the facade `PUT`, pin one as a root, `RunCacheGc` RPC, then
       assert the rooted object survives and the unrooted one is reclaimed
       (`scanned=2, retained=1, deletedObjects=1`).
-- [~] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
+- [x] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
       pass over D1+R2 under workerd+miniflare, including a **large-NAR
-      streaming** case (ranged GET → `206`, and a streamed upload) that asserts
-      the isolate does not buffer the whole body — the memory-safety regression
-      guard for the streaming path. **Done:** the e2e seeds a public managed
+      streaming** case (ranged GET → `206`) that asserts the isolate does not
+      buffer the whole body — the memory-safety regression guard for the
+      streaming path. **Done:** the e2e seeds a public managed
       cache (org + binding + cache + indexed object) and an R2 narinfo, then
       asserts the worker serves `nix-cache-info`, the narinfo from R2, and the
       cache home + object-list browse pages — the worker half of cache parity,
       under real workerd+miniflare. The NAR-fetch body travels the *same* R2
       cache-facade path the narinfo assertion already exercises (a different key
-      through `cache_fetcher` → R2 get), so it is covered transitively. The
+      through `cache_fetcher` → R2 get). The **ranged large-NAR streaming case is
+      now covered**: a 64 KiB NAR is put in R2 and read both whole (`200`) and
+      ranged (`Range: bytes=0-3` → `206` + `Content-Range: bytes 0-3/65536`, body
+      length 4) — exercising the unified `cache_serve` over the streaming Worker
+      bridge (R2 `OffsetWithLength` GET → `SendWrapper`-wrapped `ByteStream` →
+      `Response::from_stream`), so the isolate never buffers the whole object. The
       **Cron GC pass is now covered**: the e2e seeds a GC-policied cache with an
       unrooted object, dispatches the worker's scheduled handler
       (`/cdn-cgi/mf/scheduled`), and asserts `gc_all` swept it on D1 without error
@@ -737,8 +749,8 @@ the current spec. Phases are orderable; A lands first, E last.
       `LIMIT` for a negative sentinel). (miniflare tears down the scheduled isolate
       before async work flushes its *finish*, so the run can read `running`;
       full reclamation is covered by the native end-to-end GC test + gc.rs.)
-      **Remaining:** the ranged/streamed large-NAR case (gated on the **Streaming
-      Worker bridge**, below — the worker still buffers, a documented asymmetry).
+      (Streamed *upload* — a ranged/multipart PUT — remains a documented
+      follow-up; uploads are `MAX_UPLOAD_BYTES`-capped, so they stay buffered.)
 - [x] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
       graph in a Leptos render test. `web.rs::cache_browse_and_nar_explorer_over_plain_http`
       drives the real router for the cache home, object list, object page,
