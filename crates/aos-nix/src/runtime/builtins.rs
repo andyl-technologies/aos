@@ -734,7 +734,7 @@ impl BuiltinDefinition for ThrowBuiltin {
 pub(crate) struct ToFileBuiltin;
 impl BuiltinDefinition for ToFileBuiltin {
     const NAME: &'static [u8] = b"toFile";
-    const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+    const EXECUTION: BuiltinExecution = BuiltinExecution::ToFile;
 }
 
 pub(crate) struct ToJsonBuiltin;
@@ -1057,6 +1057,8 @@ pub(crate) enum BuiltinExecution {
     ReadFile,
     /// The builtin evaluates `readFileType`.
     ReadFileType,
+    /// The builtin evaluates `toFile`.
+    ToFile,
     /// The builtin evaluates `seq`.
     Seq,
     /// The builtin evaluates `deepSeq`.
@@ -1141,6 +1143,9 @@ impl BuiltinExecution {
             | Self::ReadFileType => Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
             }),
+            Self::ToFile => Some(BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::TryEval => Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Pure,
             }),
@@ -1185,6 +1190,7 @@ impl BuiltinExecution {
             | Self::AddErrorContext
             | Self::FindFile
             | Self::DirectBinary(_)
+            | Self::ToFile
             | Self::Sort
             | Self::Seq
             | Self::DeepSeq
@@ -1229,6 +1235,7 @@ impl BuiltinExecution {
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType
+            | Self::ToFile
             | Self::FindFile
             | Self::Trace { .. }
             | Self::Warn => true,

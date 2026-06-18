@@ -1483,6 +1483,12 @@ impl ImportGlobalScope {
     }
 }
 
+#[derive(Clone, Debug)]
+struct TextStoreEntry {
+    contents: Vec<u8>,
+    references: StringContext,
+}
+
 /// A safe recursive evaluator for lowered IR.
 #[derive(Debug)]
 pub struct TreeWalk {
@@ -1500,6 +1506,7 @@ pub struct TreeWalk {
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
+    text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
     // Lazy identity primops expose their returned argument thunk to strict consumers.
@@ -1595,6 +1602,7 @@ impl TreeWalk {
             find_file_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
+            text_store: BTreeMap::new(),
             ifd_realizer: None,
             call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
@@ -4951,23 +4959,6 @@ impl TreeWalk {
         Ok(bytes)
     }
 
-    fn coerce_to_path_bytes(
-        &mut self,
-        id: IrId,
-        span: Span,
-        value: Value,
-        op: &'static str,
-    ) -> Result<Vec<u8>, TreeWalkError> {
-        let path = self.coerce_to_path_string(id, span, value)?;
-        if path.has_context() {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::StringContextNotAllowed { id, op },
-                span,
-            ));
-        }
-        Self::copy_bytes_for_node(id, span, path.bytes())
-    }
-
     fn coerce_to_filesystem_path_bytes(
         &mut self,
         id: IrId,
@@ -4982,6 +4973,34 @@ impl TreeWalk {
         self.realize_import_from_derivation(id, span, &path, op)?;
         self.check_filesystem_path_access(id, span, &bytes)?;
         Ok(bytes)
+    }
+
+    fn coerce_to_filesystem_or_text_store_path_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<(Vec<u8>, bool), TreeWalkError> {
+        let path = self.coerce_to_path_string(id, span, value)?;
+        let bytes = Self::copy_bytes_for_node(id, span, path.bytes())?;
+        if self.text_store_path_has_allowed_context(&path) {
+            return Ok((bytes, true));
+        }
+        self.validate_ifd_path_context(id, span, &path, op)?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
+        self.realize_import_from_derivation(id, span, &path, op)?;
+        self.check_filesystem_path_access(id, span, &bytes)?;
+        Ok((bytes, false))
+    }
+
+    fn text_store_path_has_allowed_context(&self, path: &NixString) -> bool {
+        if !self.text_store.contains_key(path.bytes()) {
+            return false;
+        }
+        path.context().iter().all(|element| {
+            element.kind() == ContextKind::OpaquePath && element.path() == path.bytes()
+        })
     }
 
     fn coerce_to_path_string(
@@ -7438,9 +7457,15 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let must_be_dir = self.path_exists_requires_directory(argument, argument_span, value)?;
-        let path =
-            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "pathExists")?;
-        self.check_filesystem_path_access(argument, argument_span, &path)?;
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
+            argument,
+            argument_span,
+            value,
+            "pathExists",
+        )?;
+        if is_text_store {
+            return Ok(Value::bool(true));
+        }
         let metadata = if must_be_dir {
             fs::metadata(Path::new(OsStr::from_bytes(&path)))
         } else {
@@ -7562,9 +7587,36 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path =
-            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "readFile")?;
-        self.check_filesystem_path_access(argument, argument_span, &path)?;
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
+            argument,
+            argument_span,
+            value,
+            "readFile",
+        )?;
+        if is_text_store {
+            let entry = self.text_store.get(&path).cloned().ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FileRead {
+                        id: argument,
+                        path: path.clone(),
+                        message: "text store path is missing".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+            if entry.contents.contains(&0) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FileReadContainsNul { id: argument, path },
+                    argument_span,
+                ));
+            }
+            return self
+                .heap
+                .alloc_string(NixString::new(entry.contents, entry.references))
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                });
+        }
         let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::FileRead {
@@ -7592,9 +7644,15 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        let path =
-            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "readFileType")?;
-        self.check_filesystem_path_access(argument, argument_span, &path)?;
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
+            argument,
+            argument_span,
+            value,
+            "readFileType",
+        )?;
+        if is_text_store {
+            return self.alloc_static_string(id, span, b"regular");
+        }
         let stat_path = path_without_trailing_path_markers(&path);
         let file_type =
             fs::symlink_metadata(Path::new(OsStr::from_bytes(stat_path))).map_err(|source| {
@@ -7610,25 +7668,151 @@ impl TreeWalk {
         self.alloc_static_string(id, span, file_type_name(file_type.file_type()))
     }
 
-    fn eval_import_primop(
+    fn eval_to_file_primop(
         &mut self,
         id: IrId,
         span: Span,
+        name_id: IrId,
+        name_span: Span,
+        name_value: Value,
+        contents_id: IrId,
+        contents_span: Span,
+        force_contents: impl FnOnce(&mut Self) -> Result<Value, TreeWalkError>,
+    ) -> Result<Value, TreeWalkError> {
+        let name = self.context_free_string_bytes(name_id, name_span, name_value, "toFile")?;
+        let contents_value = force_contents(self)?;
+        if contents_value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: contents_id,
+                    expected: "string",
+                    actual: contents_value.tag(),
+                },
+                contents_span,
+            ));
+        }
+
+        let (contents, references, reference_context) = {
+            let string = self.heap.get_string(contents_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: contents_id,
+                        source,
+                    },
+                    contents_span,
+                )
+            })?;
+            let contents = Self::copy_bytes_for_node(contents_id, contents_span, string.bytes())?;
+            let mut references = BTreeSet::new();
+            for element in string.context() {
+                if element.kind() != ContextKind::OpaquePath {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::ToFileDerivationReference {
+                            id: contents_id,
+                            name: name.clone(),
+                            reference: element.path().to_vec(),
+                            kind: element.kind(),
+                            output: element.output().map(Vec::from),
+                        },
+                        contents_span,
+                    ));
+                }
+                let reference =
+                    Self::context_store_path(contents_id, contents_span, element.path())?
+                        .to_absolute_path();
+                references.insert(reference);
+            }
+            let reference_context =
+                string
+                    .context()
+                    .union(&StringContext::empty())
+                    .map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::String {
+                                id: contents_id,
+                                source,
+                            },
+                            contents_span,
+                        )
+                    })?;
+            (contents, references, reference_context)
+        };
+
+        let name_str = Self::to_file_store_path_name(id, name_span, &name)?;
+        let store_path: nix_compat::store_path::StorePath<String> =
+            nix_compat::store_path::build_text_path(name_str, &contents, references).map_err(
+                |source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ToFilePath {
+                            id,
+                            name: name.clone(),
+                            message: source.to_string(),
+                        },
+                        span,
+                    )
+                },
+            )?;
+        let path = store_path.to_absolute_path().into_bytes();
+        let context = StringContext::singleton(ContextElement::opaque_path(path.clone()).map_err(
+            |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
+        )?)
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        self.text_store.insert(
+            path.clone(),
+            TextStoreEntry {
+                contents,
+                references: reference_context,
+            },
+        );
+        self.heap
+            .alloc_string(NixString::new(path, context))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    fn to_file_store_path_name<'a>(
+        id: IrId,
+        span: Span,
+        name: &'a [u8],
+    ) -> Result<&'a str, TreeWalkError> {
+        let name_str = nix_compat::store_path::validate_name(name).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ToFilePath {
+                    id,
+                    name: name.to_vec(),
+                    message: source.to_string(),
+                },
+                span,
+            )
+        })?;
+        let first_component = name_str.split('-').next().unwrap_or_default();
+        if matches!(first_component, "." | "..") {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ToFilePath {
+                    id,
+                    name: name.to_vec(),
+                    message: "first dash-separated component must not be '.' or '..'".to_owned(),
+                },
+                span,
+            ));
+        }
+        Ok(name_str)
+    }
+
+    fn load_cached_import(
+        &mut self,
         argument: IrId,
         argument_span: Span,
-        value: Value,
+        cache_path: PathBuf,
+        diagnostic_path: Vec<u8>,
+        load: impl FnOnce(&mut Self) -> Result<Value, TreeWalkError>,
     ) -> Result<Value, TreeWalkError> {
-        let path =
-            self.coerce_to_filesystem_path_bytes(argument, argument_span, value, "import")?;
-        let realpath = self.import_realpath(argument, argument_span, &path)?;
-        let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
-        match self.import_cache.get(&realpath).copied() {
+        match self.import_cache.get(&cache_path).copied() {
             Some(ImportCacheEntry::Ready(value)) => return Ok(value),
             Some(ImportCacheEntry::Evaluating) => {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::RecursiveImport {
                         id: argument,
-                        path: realpath_bytes,
+                        path: diagnostic_path,
                     },
                     argument_span,
                 ));
@@ -7637,26 +7821,62 @@ impl TreeWalk {
         }
 
         self.import_cache
-            .insert(realpath.clone(), ImportCacheEntry::Evaluating);
-        let result = self.load_and_eval_import(
-            id,
-            span,
-            argument,
-            argument_span,
-            &realpath,
-            ImportGlobalScope::Fresh,
-        );
+            .insert(cache_path.clone(), ImportCacheEntry::Evaluating);
+        let result = load(self);
         match result {
             Ok(value) => {
                 self.import_cache
-                    .insert(realpath, ImportCacheEntry::Ready(value));
+                    .insert(cache_path, ImportCacheEntry::Ready(value));
                 Ok(value)
             }
             Err(error) => {
-                self.import_cache.remove(&realpath);
+                self.import_cache.remove(&cache_path);
                 Err(error)
             }
         }
+    }
+
+    fn eval_import_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
+            argument,
+            argument_span,
+            value,
+            "import",
+        )?;
+        if is_text_store {
+            let cache_path = PathBuf::from(OsStr::from_bytes(&path));
+            let text_path = path.clone();
+            return self.load_cached_import(argument, argument_span, cache_path, path, |eval| {
+                eval.load_and_eval_text_store_import(
+                    id,
+                    span,
+                    argument,
+                    argument_span,
+                    &text_path,
+                    ImportGlobalScope::Fresh,
+                )
+            });
+        }
+        let realpath = self.import_realpath(argument, argument_span, &path)?;
+        let realpath_bytes = realpath.as_os_str().as_bytes().to_vec();
+        let import_path = realpath.clone();
+        self.load_cached_import(argument, argument_span, realpath, realpath_bytes, |eval| {
+            eval.load_and_eval_import(
+                id,
+                span,
+                argument,
+                argument_span,
+                &import_path,
+                ImportGlobalScope::Fresh,
+            )
+        })
     }
 
     fn eval_scoped_import_primop(
@@ -7680,12 +7900,22 @@ impl TreeWalk {
                 scope_span,
             ));
         }
-        let path = self.coerce_to_filesystem_path_bytes(
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
             argument,
             argument_span,
             argument_value,
             "scopedImport",
         )?;
+        if is_text_store {
+            return self.load_and_eval_text_store_import(
+                id,
+                span,
+                argument,
+                argument_span,
+                &path,
+                ImportGlobalScope::Scoped(scope_value),
+            );
+        }
         let realpath = self.import_realpath(argument, argument_span, &path)?;
         self.load_and_eval_import(
             id,
@@ -7761,11 +7991,82 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
-        let parsed = parse_bytes_with_symbols(&source, self.symbols.clone()).map_err(|source| {
+        let base = realpath
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .as_os_str()
+            .as_bytes()
+            .to_vec();
+        self.load_and_eval_import_bytes(
+            id,
+            span,
+            argument,
+            argument_span,
+            &path,
+            &base,
+            &source,
+            global_scope,
+        )
+    }
+
+    fn load_and_eval_text_store_import(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Result<Value, TreeWalkError> {
+        let source = self
+            .text_store
+            .get(path)
+            .cloned()
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FileRead {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "text store path is missing".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?
+            .contents;
+        let base = Path::new(OsStr::from_bytes(path))
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .as_os_str()
+            .as_bytes()
+            .to_vec();
+        self.load_and_eval_import_bytes(
+            id,
+            span,
+            argument,
+            argument_span,
+            path,
+            &base,
+            &source,
+            global_scope,
+        )
+    }
+
+    fn load_and_eval_import_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        base: &[u8],
+        source: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Result<Value, TreeWalkError> {
+        let parsed = parse_bytes_with_symbols(source, self.symbols.clone()).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportParse {
                     id: argument,
-                    path: path.clone(),
+                    path: path.to_vec(),
                     message: source.to_string(),
                 },
                 argument_span,
@@ -7780,7 +8081,7 @@ impl TreeWalk {
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportScope {
                     id: argument,
-                    path: path.clone(),
+                    path: path.to_vec(),
                     message: source.to_string(),
                 },
                 argument_span,
@@ -7795,21 +8096,15 @@ impl TreeWalk {
             TreeWalkError::new(
                 TreeWalkErrorKind::ImportLower {
                     id: argument,
-                    path: path.clone(),
+                    path: path.to_vec(),
                     message: source.to_string(),
                 },
                 argument_span,
             )
         })?;
         self.symbols = ir.symbols.clone();
-        let base = realpath
-            .parent()
-            .unwrap_or_else(|| Path::new("/"))
-            .as_os_str()
-            .as_bytes()
-            .to_vec();
         let root = ir.root;
-        let module = self.push_module(id, span, ir, base)?;
+        let module = self.push_module(id, span, ir, base.to_vec())?;
         let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
         let saved_env = std::mem::take(&mut self.env);
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);
@@ -9640,18 +9935,48 @@ impl TreeWalk {
 
         let path_span = self.node(path_id)?.span;
         let path_value = self.eval_node(path_id)?;
-        let path = self.coerce_to_path_bytes(path_id, path_span, path_value, "hashFile")?;
-        self.check_filesystem_path_access(path_id, path_span, &path)?;
-        let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::FileRead {
-                    id: path_id,
-                    path: path.clone(),
-                    message: source.to_string(),
-                },
-                path_span,
-            )
-        })?;
+        self.eval_hash_file_path_value(id, span, path_id, path_span, path_value, algorithm)
+    }
+
+    fn eval_hash_file_path_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path_id: IrId,
+        path_span: Span,
+        path_value: Value,
+        algorithm: HashStringAlgorithm,
+    ) -> Result<Value, TreeWalkError> {
+        let (path, is_text_store) = self.coerce_to_filesystem_or_text_store_path_bytes(
+            path_id, path_span, path_value, "hashFile",
+        )?;
+        let contents = if is_text_store {
+            self.text_store
+                .get(&path)
+                .cloned()
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::FileRead {
+                            id: path_id,
+                            path: path.clone(),
+                            message: "text store path is missing".to_owned(),
+                        },
+                        path_span,
+                    )
+                })?
+                .contents
+        } else {
+            fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FileRead {
+                        id: path_id,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    path_span,
+                )
+            })?
+        };
         let digest = Self::hash_bytes(&contents, algorithm);
         self.alloc_hash_digest(id, span, &digest)
     }
@@ -16643,21 +16968,14 @@ impl TreeWalk {
                 let algorithm =
                     self.eval_hash_algorithm(first.id(), first.span(), left, "hashFile")?;
                 let path_value = self.force_value(second.id(), second.span(), second.value())?;
-                let path =
-                    self.coerce_to_path_bytes(second.id(), second.span(), path_value, "hashFile")?;
-                self.check_filesystem_path_access(second.id(), second.span(), &path)?;
-                let contents = fs::read(Path::new(OsStr::from_bytes(&path))).map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::FileRead {
-                            id: second.id(),
-                            path: path.clone(),
-                            message: source.to_string(),
-                        },
-                        second.span(),
-                    )
-                })?;
-                let digest = Self::hash_bytes(&contents, algorithm);
-                self.alloc_hash_digest(id, span, &digest)
+                self.eval_hash_file_path_value(
+                    id,
+                    span,
+                    second.id(),
+                    second.span(),
+                    path_value,
+                    algorithm,
+                )
             }
             StrictBinaryPrimOp::CompareVersions => {
                 let left = self.force_value(first.id(), first.span(), first.value())?;
@@ -19572,6 +19890,24 @@ impl BuiltinRuntime for BuiltinMetadata {
                 let value = eval.eval_node(argument)?;
                 eval.eval_read_file_type_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::ToFile => {
+                check_builtin_arity(call, 2, args.len())?;
+                let name = args[0];
+                let name_span = eval.node(name)?.span;
+                let name_value = eval.eval_node(name)?;
+                let contents = args[1];
+                let contents_span = eval.node(contents)?.span;
+                eval.eval_to_file_primop(
+                    call.id,
+                    call.span,
+                    name,
+                    name_span,
+                    name_value,
+                    contents,
+                    contents_span,
+                    |eval| eval.eval_node(contents),
+                )
+            }
             BuiltinExecution::Seq => {
                 check_builtin_arity(call, 2, args.len())?;
                 eval.eval_seq_primop(args[0], args[1])
@@ -19772,6 +20108,22 @@ impl BuiltinRuntime for BuiltinMetadata {
                     argument.id(),
                     argument.span(),
                     value,
+                )
+            }
+            BuiltinExecution::ToFile => {
+                check_builtin_arity(call, 2, args.len())?;
+                let name = args[0];
+                let name_value = eval.force_primop_arg(name)?;
+                let contents = args[1];
+                eval.eval_to_file_primop(
+                    call.id,
+                    call.span,
+                    name.id(),
+                    name.span(),
+                    name_value,
+                    contents.id(),
+                    contents.span(),
+                    |eval| eval.force_primop_arg(contents),
                 )
             }
             BuiltinExecution::Seq => {
@@ -20719,6 +21071,32 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The rejected output name bytes.
         output: Vec<u8>,
+    },
+    /// `builtins.toFile` received contents that reference a derivation output.
+    #[error(
+        "toFile contents at node {id:?} for {name:?} may not reference derivation context {reference:?} ({kind:?}, output {output:?})"
+    )]
+    ToFileDerivationReference {
+        /// The string-valued contents node whose context was rejected.
+        id: IrId,
+        /// The requested store path name.
+        name: Vec<u8>,
+        /// The derivation path referenced by the contents context.
+        reference: Vec<u8>,
+        /// The rejected context kind.
+        kind: ContextKind,
+        /// The rejected output name, when the context names a single output.
+        output: Option<Vec<u8>>,
+    },
+    /// `builtins.toFile` could not construct a text store path.
+    #[error("toFile path at node {id:?} for {name:?} is invalid: {message}")]
+    ToFilePath {
+        /// The `toFile` call node id.
+        id: IrId,
+        /// The requested store path name.
+        name: Vec<u8>,
+        /// The path construction diagnostic.
+        message: String,
     },
     /// A JSON string failed to parse.
     #[error("JSON parse failed at node {id:?}: {message}")]
@@ -26515,6 +26893,8 @@ mod tests {
             r#"builtins.placeholder "dev""#,
             r#"let placeholder = builtins.placeholder; in placeholder "out""#,
             r#"builtins.stringLength (builtins.placeholder "out")"#,
+            r#"let p = builtins.toFile "foo" "bar"; in { path = p; ctx = builtins.getContext p; }"#,
+            r#"let p = builtins.toFile "foo" "bar"; nested = builtins.toFile "baz" p; in { nested = nested; nestedCtx = builtins.getContext nested; }"#,
         ] {
             assert_cpp_nix_json_matches_tree_walk(oracle, source);
         }
@@ -26543,6 +26923,7 @@ mod tests {
             r#"builtins.convertHash { hash = builtins.hashString "sha256" "abc"; hashAlgo = null; toHashFormat = "base16"; }"#,
             r#"builtins.placeholder 1"#,
             r#"builtins.placeholder (builtins.appendContext "out" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; })"#,
+            r#"builtins.toFile "bad/name" "x""#,
         ] {
             assert_cpp_nix_and_tree_walk_reject_json(oracle, source);
         }
@@ -31722,6 +32103,202 @@ mod tests {
     }
 
     #[test]
+    fn to_file_primop_builds_text_store_paths_and_context() {
+        let source = r#"let
+            p = builtins.toFile "foo" "bar";
+            nested = builtins.toFile "baz" p;
+            dot = builtins.toFile ".x" "x";
+        in {
+            path = p;
+            ctx = builtins.getContext p;
+            nested = nested;
+            nestedCtx = builtins.getContext nested;
+            dot = dot;
+            firstClass = (builtins.toFile "hello") "abc";
+        }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"ctx":{"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo":{"path":true}},"dot":"/nix/store/1x49d9g8znzikskxdsx7k6kk2qzcdrps-.x","firstClass":"/nix/store/4falznnjmyg7iqca3qlskx9l79bh6hwd-hello","nested":"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz","nestedCtx":{"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz":{"path":true}},"path":"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn to_file_primop_validates_name_before_forcing_contents() {
+        let error = eval_whnf_owned(&lower(r#"builtins.toFile 1 (builtins.throw "contents")"#))
+            .expect_err("toFile validates the name type before forcing contents");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.toFile
+                (builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src")
+                (builtins.throw "contents")"#,
+        ))
+        .expect_err("toFile validates name context before forcing contents");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "toFile", .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.toFile "bad/name" (builtins.throw "contents")"#,
+        ))
+        .expect_err("toFile forces contents before constructing the store path");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+    }
+
+    #[test]
+    fn to_file_text_store_is_visible_to_filesystem_builtins_and_import() {
+        let source = r#"let
+            p = builtins.toFile "x.nix" "1 + 2";
+            scoped = builtins.toFile "scoped.nix" "y + 1";
+        in {
+            exists = builtins.pathExists p;
+            type = builtins.readFileType p;
+            read = builtins.readFile p;
+            imported = import p;
+            scoped = builtins.scopedImport { y = 4; } scoped;
+        }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"exists":true,"imported":3,"read":"1 + 2","scoped":5,"type":"regular"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn to_file_text_store_read_file_preserves_references() {
+        let source = r#"let
+            p = builtins.toFile "foo" "bar";
+            q = builtins.toFile "baz" p;
+            read = builtins.readFile q;
+        in {
+            ctx = builtins.getContext read;
+            sameAgain = builtins.toFile "again" read == builtins.toFile "again" p;
+        }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"ctx":{"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo":{"path":true}},"sameAgain":true}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn to_file_text_store_import_uses_import_cache() {
+        let outcome = eval_owned(
+            r#"let
+                p = builtins.toFile "cached.nix" "builtins.trace \"cached\" 1";
+                values = [ (import p) (import p) ];
+            in builtins.deepSeq values values"#,
+        );
+
+        assert_eq!(outcome.trace_output().len(), 1);
+        assert_trace_output(
+            outcome.trace_output().first().expect("trace output exists"),
+            EvalTraceKind::Trace,
+            b"cached",
+        );
+    }
+
+    #[test]
+    fn to_file_text_store_read_file_rejects_nul_bytes() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.readFile (builtins.toFile "nul" (builtins.fromJSON "\"a\\u0000b\""))"#,
+        ))
+        .expect_err("readFile rejects NUL bytes from text store files");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FileReadContainsNul { .. }
+        ));
+    }
+
+    #[test]
+    fn to_file_primop_rejects_invalid_name_and_types() {
+        for name in ["bad/name", "", ".", "..", ".-x", "..-x"] {
+            let source = format!(r#"builtins.toFile "{name}" "x""#);
+            let error = eval_whnf_owned(&lower(&source))
+                .expect_err("invalid store path names are rejected");
+            assert!(
+                matches!(error.kind(), TreeWalkErrorKind::ToFilePath { .. }),
+                "{name:?} rejected as ToFilePath, got {error:?}"
+            );
+        }
+
+        let error = eval_whnf_owned(&lower(r#"builtins.toFile 1 "x""#))
+            .expect_err("toFile name must be a string");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.toFile "x" 1"#))
+            .expect_err("toFile contents must be a string");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn to_file_primop_rejects_contextual_names_and_derivation_contents() {
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.toFile
+                (builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src")
+                "x""#,
+        ))
+        .expect_err("toFile names cannot carry context");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "toFile", .. }
+        ));
+
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ ];
+             };
+           in builtins.toFile "bad" d.out"#;
+        let error = eval_whnf_owned(&lower(source))
+            .expect_err("toFile contents cannot reference derivation outputs");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::ToFileDerivationReference {
+                kind: ContextKind::SingleOutput,
+                ..
+            }
+        ));
+
+        let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ ];
+             };
+           in builtins.toFile "ok" (builtins.unsafeDiscardOutputDependency d.drvPath)"#;
+        eval_whnf_owned(&lower(source))
+            .expect("toFile allows derivation contexts downgraded to opaque paths");
+    }
+
+    #[test]
     fn add_drv_output_dependencies_primop_upgrades_derivation_context() {
         assert_eq!(
             eval_string_bytes(
@@ -34803,6 +35380,10 @@ mod tests {
                 "builtins.hashFile \"sha256\" {{ outPath = {}; }}",
                 nix_string_literal(&path)
             )),
+            b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            eval_string_bytes(r#"builtins.hashFile "sha256" (builtins.toFile "x" "abc")"#),
             b"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
         assert_eq!(
