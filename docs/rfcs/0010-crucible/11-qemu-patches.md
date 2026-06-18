@@ -1,0 +1,1003 @@
+# 11 — The QEMU patch series
+
+This file specifies the **patch series** that AOS's from-source QEMU package
+([`26-packaging-aos-integration.md`](26-packaging-aos-integration.md)) carries to
+make Crucible's determinism contract ([`04-determinism-contract.md`](04-determinism-contract.md))
+and co-simulation transport ([`13-shmem-abi.md`](13-shmem-abi.md)) realizable.
+The patches are the C-side mechanisms that the entropy-source enumeration of
+[`04-determinism-contract.md`](04-determinism-contract.md) §4.6 marks as **patch**
+class (E2, E3, E9, E14, E18, E19, E20), plus the plugin-API surface the in-VM
+plugin ([`12-qemu-plugin.md`](12-qemu-plugin.md)) calls to own virtual time, and
+the device co-simulation paths that route block / 9p / network I/O through the
+shared-memory rings ([`13-shmem-abi.md`](13-shmem-abi.md)).
+
+The series is **Crucible's own**, named `crucible-*`. It is not a fork of, nor a
+verbatim copy of, any prior internal exploration or third-party patch set
+([CONV-1]). Where a prior exploration proved a mechanism necessary, Crucible
+re-derives it as a focused, inertness-gated, micro-tested patch with its own name.
+
+Requirement IDs in this file use the prefix `PATCH`. Gate names referenced here
+(`gate:qemu-inert`, `gate:patch-microtests`, `gate:layer0-determinism`,
+`gate:layer1-injection`, `gate:abi-conformance`) are defined in
+[`24-determinism-harness-testing.md`](24-determinism-harness-testing.md); the
+packaging that applies, builds, and gates the series is
+[`26-packaging-aos-integration.md`](26-packaging-aos-integration.md); the time
+model the patches enforce is [`09-virtual-time-icount.md`](09-virtual-time-icount.md);
+the plugin that consumes the new API surface is
+[`12-qemu-plugin.md`](12-qemu-plugin.md); the shared-memory ABI the device paths
+read is [`13-shmem-abi.md`](13-shmem-abi.md); the guest↔host channel that the
+doorbell discussion (§11.7) coordinates with is
+[`16-guest-host-channel.md`](16-guest-host-channel.md).
+
+The single most important property of this entire file is **inertness**: every
+mechanism here is dead code unless simulation mode is explicitly activated, so the
+*same* AOS QEMU source built and shipped for production use is behaviorally
+identical to upstream ([INV-7], [DET-36]). The patch series is what makes
+"determinism is opt-in, production QEMU is untouched" true at the source level.
+
+## 11.1 Governing principles
+
+The series is held to four governing principles. Every individual patch satisfies
+all four; the per-patch detail (§11.4–§11.8) states how each one does.
+
+### 11.1.1 Inertness (the load-bearing principle)
+
+- **[PATCH-1]** Every patch in the series MUST be **inert unless simulation mode
+  is active**. "Active" means the plugin (`crucible-qemu-plugin`,
+  [`12-qemu-plugin.md`](12-qemu-plugin.md)) is loaded *and* the sim flags are set
+  (the `sim` TCG accelerator selected via `-accel sim`, or equivalently the
+  plugin acquiring time control via `qemu_plugin_request_time_control`). The same
+  AOS QEMU binary, built from the same patched source but launched without sim
+  mode, MUST be behaviorally identical to upstream QEMU of the pinned version.
+  *Gate:* `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
+
+- **[PATCH-2]** The gate for a patch's non-sim behavior MUST be a *checked*
+  property, not a reviewed claim: `gate:qemu-inert` runs a corpus of
+  upstream-equivalent invocations (boot, run, migrate, QMP introspection) against
+  both the unpatched pinned QEMU and the AOS-patched QEMU *with sim mode off*, and
+  MUST observe byte-identical guest-visible behavior (same instruction streams
+  under plain `-icount`, same device enumeration, same migration streams). A patch
+  that perturbs any of these out of sim mode fails the gate. *Gate:*
+  `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7], [DET-36].
+
+- **[PATCH-3]** Inertness MUST be achieved structurally, by one of three
+  permitted mechanisms, never by a runtime heuristic that "usually" stays off:
+  (a) **new files** compiled into a new accelerator (`tcg-accel-ops-sim.c`) or new
+  device (`block/crucible-shmem.c`) that is only instantiated when the sim
+  accelerator / device is selected; (b) a **branch gated on a sim predicate** —
+  `qemu_plugin_has_time_control()`, `use_icount == ICOUNT_PRECISE`, or a registered
+  plugin callback being non-NULL — whose else-branch is verbatim upstream behavior;
+  or (c) a **new plugin-API export** that does nothing unless a plugin calls it.
+  A patch MUST NOT alter an upstream code path that runs in the non-sim
+  configuration. *Gate:* `gate:qemu-inert`. *Spec:* §11.1.1; satisfies [INV-7].
+
+The three mechanisms map cleanly onto the patch categories: determinism patches
+(§11.4) use (b); the sim-mode accelerator and device patches (§11.5, §11.6) use
+(a); the plugin-API patches (§11.5) use (c). No patch is permitted to use a
+fourth, looser mechanism.
+
+### 11.1.2 Per-patch micro-tests
+
+- **[PATCH-4]** Every patch MUST carry a **focused micro-test** exercising exactly
+  the behavior it adds — neither a broad end-to-end scenario nor a no-op smoke
+  test. A determinism patch's micro-test MUST demonstrate, in isolation, that the
+  entropy source it targets is eliminated when the patch is active (e.g. two runs
+  agree on the affected quantity) and reintroduced when the patch is reverted
+  (the test goes red), per [DET-18]. A capability patch's micro-test MUST exercise
+  the new API or device path and assert its documented contract. *Gate:*
+  `gate:patch-microtests`. *Spec:* §11.1.2; satisfies [DET-37], forward-ref 24.
+
+- **[PATCH-5]** Every patch's micro-test MUST also assert the patch's **inertness**
+  (it is a determinism/capability change in sim mode *and* a no-op out of sim
+  mode), so that the pair "takes effect in sim mode / inert out of sim mode" of
+  [DET-37] is checked by the patch's own test, not only by the aggregate
+  `gate:qemu-inert`. *Gate:* `gate:patch-microtests`, `gate:qemu-inert`. *Spec:*
+  §11.1.2; satisfies [DET-37], [INV-7].
+
+### 11.1.3 Stated invariant per patch
+
+- **[PATCH-6]** Every patch MUST state, in its commit message and in this file's
+  catalog (§11.3), the single **determinism invariant or capability** it enforces,
+  written as a reference to a `DET-*` / `TIME-*` / `SHM-*` / `PLUG-*` requirement.
+  A patch that does not map to a stated requirement MUST NOT be in the series; the
+  series exists to satisfy the contract, not to accumulate convenience changes.
+  *Gate:* `gate:patch-microtests`. *Spec:* §11.1.3.
+
+### 11.1.4 Rebasable series against a pinned QEMU
+
+- **[PATCH-7]** The series MUST be maintained as a **rebasable, ordered series**
+  (a `quilt`-style stack or a tracked branch of single-purpose commits) against a
+  single **pinned upstream QEMU version** ([PATCH-30]). Each patch MUST be a
+  single logical change with a stable name (`crucible-<name>.patch`); the order is
+  significant where one patch depends on a file another creates (e.g. the
+  sim-mode accelerator file must exist before patches that extend it). *Gate:*
+  `gate:patch-microtests`, forward-ref 26. *Spec:* §11.1.4; satisfies [DET-35].
+
+- **[PATCH-8]** CI MUST gate the series on the pinned QEMU: the series MUST
+  **apply cleanly**, the patched tree MUST **build**, and **every per-patch
+  micro-test MUST pass**, on the AOS QEMU version, on every change to the series
+  or the pin. The regeneration pipeline (§11.9) MUST produce the committed patch
+  files reproducibly so a drift between the committed series and the regenerated
+  series fails CI. *Gate:* `gate:patch-microtests`, `gate:qemu-inert`,
+  forward-ref 26. *Spec:* §11.1.4; satisfies [DET-35], [PKG].
+
+## 11.2 Classification: determinism-critical vs feature
+
+Patches fall into two risk classes. The class governs how much scrutiny a patch
+gets and how its inertness is argued.
+
+- **[PATCH-9]** Each patch MUST be classified as **determinism-critical
+  (dangerous)** or **feature/capability**. A *determinism-critical* patch changes
+  how virtual time advances, how the instruction budget is computed, how entropy
+  is drawn, or how an event's timing is decided — a defect in it silently breaks
+  [DET-1] for *every* run, possibly without an obvious failure. A *feature* patch
+  adds an API export or a device/transport path that is only reached in sim mode
+  and whose failure is loud (a missing symbol, a wrong I/O result caught by a
+  micro-test). Determinism-critical patches MUST carry the strongest inertness
+  argument (a precise sim predicate, [PATCH-3](b)) and the most adversarial
+  micro-test (run-twice-and-diff under host perturbation, [DET-38]). *Gate:*
+  `gate:qemu-inert`, `gate:layer0-determinism`. *Spec:* §11.2; satisfies [INV-7],
+  [INV-10].
+
+The **risky** patches for AOS's production QEMU — the ones whose inertness must be
+argued most carefully because they touch shared, always-compiled files — are:
+
+- `crucible-icount-no-realtime` (§11.4) — edits the upstream icount budget
+  function; gated on `use_icount == ICOUNT_PRECISE`.
+- `crucible-no-warp-with-plugin` (§11.4) — edits the upstream warp timer; gated on
+  `qemu_plugin_has_time_control()`.
+- `crucible-det-getrandom` and `crucible-det-glib-prng` (§11.4) — edit QEMU's
+  entropy paths; gated on a `deterministic` predicate set only under sim mode.
+
+Every *other* patch is either a new file (the sim accelerator, the shmem device
+drivers) or a pure additive plugin-API export, both of which are inert by
+construction (the file is not compiled into a used object / the export is never
+called) and therefore lower-risk. The four edits above are the only places a bug
+could leak into production behavior, so they carry the heaviest gating.
+
+## 11.3 The patch catalog
+
+The catalog groups the series by category. Each row gives the patch name, its
+risk class (D = determinism-critical, F = feature), the invariant/capability it
+enforces, and a one-line mechanism. Per-patch detail follows in §11.4–§11.8.
+Diagnostic-only patches (dev-only, **not shipped** in the AOS package) are marked
+*dev*.
+
+```text
+DETERMINISM (source elimination)                       class  enforces
+  crucible-sim-accel ............ sim-mode TCG event loop  D    DET-1, TIME-23, E14
+  crucible-no-warp-with-plugin .. suppress idle warp        D    DET-10, TIME-21, E2
+  crucible-icount-no-realtime ... drop realtime from budget D    DET-9,  TIME-22, E3
+  crucible-block-rtc-read ....... seed/pin guest RTC base   D    DET-8,  E5  (launch+patch)
+  crucible-det-glib-prng ........ deterministic glib GRand  D    DET-21, E9
+  crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, E9
+  crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, E18
+
+PLUGIN TIME CONTROL (API surface)                      class  enforces
+  crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27
+  crucible-plugin-advance-drain . drain BHs after advance   D    DET-1,  INV-10
+  crucible-plugin-drain-mainloop  drain main loop in cb      D    DET-1,  INV-10
+  crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
+  crucible-plugin-icount-raw .... raw icount read           F    DET-29 (fingerprint)
+  crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1  (phase norm)
+  crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
+  crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage (fwd 22)
+
+DEVICE CO-SIM (shmem transport)                        class  enforces
+  crucible-blk-shmem ............ virtio-blk over shmem      F    DET-16, E19, SHM-13
+  crucible-blk-shmem-io-fixes ... blk I/O correctness        F    DET-16, E19
+  crucible-blk-write-sentinel ... write/flush 0-len sentinel F    DET-16 (correctness)
+  crucible-9p-shmem ............. virtio-9p over shmem       F    DET-16, E19
+  crucible-dev-cb-api ........... register blk/9p callbacks  F    PLUG, SHM-17
+  crucible-net-tx-callback ...... intercept guest TX         F    DET-18, E18, SHM-17
+  crucible-net-flush-api ........ lossless RX inject + flush F    DET-18, E18
+
+TCG SIM CORRECTNESS / PERF                             class  enforces
+  crucible-sim-loop-fix ......... single-vCPU loop fixes     D    DET-1, NG-1
+  crucible-sim-first-exit ....... normalize first exit phase D    DET-1,  INV-10
+  crucible-sim-skip-second-events  drop redundant 2nd events D    DET-1  (perf+det)
+  crucible-sim-poll-immediate ... immediate shmem poll        D    DET-13, E19
+  crucible-sim-batch-tcg-exec ... batch TCG exec calls        F    PERF (det-preserving)
+  crucible-sim-idle-callbacks ... idle/resume cb wiring       D    TIME-24, INV-8
+  crucible-sim-shmem-dispatch ... shmem co-sim dispatch glue  F    SHM-1
+
+GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
+  (no new patch required — see §11.7)                   —     GHC reuse
+
+DIAGNOSTIC-ONLY (dev, NOT shipped)                     class  enforces
+  crucible-tcg-exec-diag ........ per-exec icount trace      dev  divergence debug
+  crucible-virtserial-socket .... raw serial socket framing  dev  white-box debug
+```
+
+- **[PATCH-10]** The catalog above is the **authoritative inventory** of the
+  series. A patch present in the AOS QEMU package but absent from this catalog, or
+  vice versa, MUST fail the packaging conformance check (26). Diagnostic-only
+  patches marked *dev* MUST NOT be applied in the shipped AOS QEMU package; they
+  are applied only in a developer build and MUST be inert-by-construction
+  (compiled out, or behind a `diag=` plugin arg) even there. *Gate:*
+  `gate:qemu-inert`, forward-ref 26. *Spec:* §11.3; satisfies [INV-7], [INV-10].
+
+## 11.4 Determinism patches (source elimination)
+
+These patches implement the **patch**-class eliminations of the entropy table
+([`04-determinism-contract.md`](04-determinism-contract.md) §4.6). All are
+determinism-critical.
+
+### crucible-sim-accel — deterministic TCG sim-mode event loop
+
+- **Enforces:** [DET-1], [TIME-23], [INV-8]; eliminates E14 (host thread
+  scheduling of QEMU threads).
+- **Mechanism:** Adds a new TCG accelerator operations file
+  (`accel/tcg/tcg-accel-ops-sim.c`) selectable as `-accel sim`. It implements a
+  **split event loop**: the vCPU thread owns icount accounting, main-AIO-context
+  polling, and CPU execution; the main thread retains QMP / iohandler servicing.
+  The single-vCPU sim loop drives `first_cpu` directly and advances virtual time
+  only by retiring instructions and by plugin-authorized jumps (no wall-clock
+  warp). Because it is a *new file* compiled into a *new accelerator*, none of its
+  code runs unless `-accel sim` is selected.
+- **Micro-test:** boot a tiny guest under `-accel sim` twice; assert identical
+  per-`tcg_cpu_exec` icount-delta traces (via the plugin's icount read) across
+  runs under injected host scheduling jitter; assert `-accel tcg` (non-sim) is
+  unaffected.
+- **Inertness:** [PATCH-3](a) — the file is only linked into a path reached when
+  the `sim` accelerator is selected; with any other accelerator it is never
+  entered.
+- **Risk:** D. This is the foundation patch; everything else in §11.5–§11.8
+  extends the file it creates, so it MUST be first in the series ([PATCH-7]).
+
+- **[PATCH-11]** The series MUST add a deterministic sim-mode TCG accelerator
+  (`-accel sim`) with a split vCPU/main event loop in which virtual time advances
+  only by retired instructions and plugin-authorized jumps, never by host
+  wall-clock, and in which guest progress is independent of host thread scheduling
+  order (E14). The accelerator MUST be a new file inert under any other
+  accelerator. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:*
+  §11.4; satisfies [DET-1], [TIME-23], [INV-8], [DET-18] (E14).
+
+### crucible-no-warp-with-plugin — suppress idle warp when the plugin owns time
+
+- **Enforces:** [DET-10], [TIME-21]; eliminates E2 (wall-clock warp while idle).
+- **Mechanism:** In the upstream warp-timer path (`icount_start_warp_timer`),
+  when a plugin holds time control (`qemu_plugin_has_time_control()` returns
+  true), skip *all* clock advancement (both the `sleep=off` bias warp and the
+  `sleep=on` realtime timer) but **preserve the `qemu_clock_notify(QEMU_CLOCK_VIRTUAL)`
+  wakeup**, so the main loop still wakes when vCPUs idle and plugin timers still
+  fire. Only the plugin may advance `qemu_icount_bias` thereafter.
+- **Micro-test:** with time control held, idle the guest and assert virtual time
+  does not advance until the plugin issues an explicit jump; without time control,
+  assert upstream warp still advances the clock (the notify path is preserved).
+- **Inertness:** [PATCH-3](b) — the new branch is taken *only* when a plugin holds
+  time control; the else-branch is verbatim upstream warp behavior.
+- **Risk:** D (edits an always-compiled upstream file).
+
+- **[PATCH-12]** The series MUST suppress QEMU's idle wall-clock warp whenever a
+  plugin holds time control, while preserving the clock-notify wakeup path so the
+  main loop and plugin timers still progress. The suppression MUST be gated on the
+  time-control predicate so non-sim QEMU warps exactly as upstream. *Gate:*
+  `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-10],
+  [TIME-21], [DET-18] (E2), [INV-7].
+
+### crucible-icount-no-realtime — drop realtime deadlines from the icount budget
+
+- **Enforces:** [DET-9], [TIME-22]; eliminates E3 (realtime deadlines in the
+  icount budget).
+- **Mechanism:** In `icount_get_limit`, the instruction budget is normally the
+  soonest of the `QEMU_CLOCK_VIRTUAL` deadline and the `QEMU_CLOCK_REALTIME`
+  deadline (the latter "helps with input processing"). Adds a **precise icount
+  mode** (`ICOUNT_PRECISE`) in which the realtime deadline is *not* folded in, so
+  the number of guest instructions executed per TB exit depends solely on the
+  virtual clock and is host-speed-independent. Non-precise (adaptive) icount keeps
+  the upstream behavior.
+- **Micro-test:** run a fixed workload under precise mode on an artificially
+  slowed host and a fast host; assert identical instructions-per-TB-exit; assert
+  adaptive mode still consults the realtime deadline.
+- **Inertness:** [PATCH-3](b) — the realtime deadline is dropped only when
+  `use_icount == ICOUNT_PRECISE`; every other mode is unchanged.
+- **Risk:** D (edits an always-compiled upstream file).
+
+- **[PATCH-13]** The series MUST add a precise (fixed-shift) icount mode whose
+  instruction budget is computed from `QEMU_CLOCK_VIRTUAL` deadlines only, never
+  mixing `QEMU_CLOCK_REALTIME` deadlines into the budget; non-precise modes MUST
+  retain upstream behavior. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`.
+  *Spec:* §11.4; satisfies [DET-9], [TIME-22], [DET-18] (E3), [INV-7].
+
+### crucible-block-rtc-read — pin the guest realtime-clock base
+
+- **Enforces:** [DET-8], [TIME-20]; eliminates E5 (wall-clock / RTC reads),
+  patch-side complement to the launch-time fixed epoch.
+- **Mechanism:** ensures the emulated RTC and the value underlying
+  `clock_gettime`/`gettimeofday` resolve to a **fixed configured epoch advanced by
+  the icount-derived virtual clock**, with no path by which a guest read returns
+  host wall-clock. Where an upstream device would consult `QEMU_CLOCK_HOST`, the
+  sim path substitutes the icount-derived `QEMU_CLOCK_VIRTUAL` value plus the
+  configured epoch (and per-node skew, §[TIME-16]). This is primarily a
+  launch-config pin (E5 is `launch + patch`); the patch portion blocks the
+  residual host-time read paths.
+- **Micro-test:** boot two runs with the same fixed epoch; assert the guest's RTC
+  reads and `clock_gettime` results are bit-identical and equal the
+  icount-derived value; assert non-sim QEMU reads host time as upstream.
+- **Inertness:** [PATCH-3](b) — the substitution is gated on the sim/time-control
+  predicate; non-sim RTC reads host time exactly as upstream.
+- **Risk:** D.
+
+- **[PATCH-14]** The series MUST ensure every guest-visible realtime/RTC read
+  resolves, in sim mode, to the icount-derived virtual clock plus the fixed
+  configured epoch (optionally skewed per §[TIME-16]), with no residual path
+  returning host wall-clock; non-sim reads MUST be upstream-identical. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`, `gate:qemu-inert`.
+  *Spec:* §11.4; satisfies [DET-8], [TIME-20], [DET-18] (E5), [INV-7].
+
+### crucible-det-glib-prng — deterministic glib PRNG
+
+- **Enforces:** [DET-21]; eliminates E9 (glib `GRand` drawn from host entropy).
+- **Mechanism:** QEMU device models and helpers draw from glib's `GRand`, which
+  upstream seeds from host entropy when a thread is first used. In deterministic
+  mode the patch seeds every `GRand` from a value derived from the run seed (a
+  per-thread fixed seed; threads never explicitly seeded, e.g. I/O / iohandler
+  contexts, use seed 0) so QEMU-internal draws (device MACs, IDs, internal
+  randomness that lands in device state `T`) are reproducible. This is large
+  because it touches every glib-random call site; the determinism is gated on a
+  `deterministic` flag set only under sim mode.
+- **Micro-test:** in sim mode, two runs produce identical sequences from a probed
+  `GRand` and identical device MACs/IDs; out of sim mode, `GRand` is seeded from
+  host entropy as upstream (probe differs run-to-run).
+- **Inertness:** [PATCH-3](b) — the deterministic seeding is taken only when the
+  `deterministic` predicate (sim mode) is set.
+- **Risk:** D.
+
+- **[PATCH-15]** The series MUST seed QEMU's glib `GRand` deterministically from
+  the run seed in sim mode so QEMU-internal random draws (device MACs/IDs,
+  internal randomness in `T`) are reproducible; out of sim mode the host-entropy
+  seeding MUST be unchanged. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`.
+  *Spec:* §11.4; satisfies [DET-21], [DET-18] (E9), [INV-7].
+
+### crucible-det-getrandom — deterministic guest-random / hardware RNG
+
+- **Enforces:** [DET-21], [DET-19]; eliminates E9 (QEMU's `qemu_guest_getrandom`)
+  and reinforces E1 (no hardware entropy reaches the host).
+- **Mechanism:** routes `qemu_guest_getrandom` (and the path that feeds emulated
+  RNG / `fw_cfg` randomness) through a deterministic stream seeded from the run
+  seed in sim mode, rather than the host CSPRNG. Combined with a fixed `-cpu`
+  model that does not advertise `RDRAND`/`RDSEED`, no true hardware entropy can
+  enter `T`.
+- **Micro-test:** in sim mode, two runs produce identical `qemu_guest_getrandom`
+  output; out of sim mode it draws from host entropy as upstream.
+- **Inertness:** [PATCH-3](b) — gated on the `deterministic` predicate.
+- **Risk:** D.
+
+- **[PATCH-16]** The series MUST route QEMU's guest-random / hardware-RNG entropy
+  through a deterministic, run-seed-derived stream in sim mode, with no path by
+  which the guest obtains true host hardware entropy; out of sim mode the
+  host-entropy path MUST be unchanged. *Gate:* `gate:layer0-determinism`,
+  `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-21], [DET-19], [DET-18] (E9),
+  [INV-7].
+
+### crucible-net-deterministic — icount-timed network delivery
+
+- **Enforces:** [DET-11], [DET-13]; eliminates E18 (network arrival timing)
+  partially on the QEMU side (the rest is the scheduler + transport).
+- **Mechanism:** adds a plugin-callable **frame-injection** entry point
+  (`qemu_plugin_net_inject`) so an inbound frame becomes architecturally visible
+  to the guest at the plugin's chosen virtual-time moment (its `delivery_icount`),
+  not "as it arrives on a socket." The injection is driven by the plugin's idle
+  callback at a virtual-time-determined point, making delivery a pure function of
+  icount.
+- **Micro-test:** inject the same frame at the same delivery icount under skewed
+  producer timing across two runs; assert the guest observes it at the identical
+  icount.
+- **Inertness:** [PATCH-3](c) — a new plugin-API export that does nothing unless
+  the plugin calls it.
+- **Risk:** D (timing-determining, though additive).
+
+- **[PATCH-17]** The series MUST provide a plugin-callable network-frame injection
+  path that makes an inbound frame visible to the guest at a plugin-chosen
+  virtual-time moment (its delivery icount), so RX delivery is a pure function of
+  icount and not of socket-arrival timing. *Gate:* `gate:layer1-injection`,
+  `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-11], [DET-13], [DET-18] (E18),
+  [INV-7].
+
+## 11.5 Plugin time-control patches (the API surface)
+
+These patches export the plugin-API surface that
+[`12-qemu-plugin.md`](12-qemu-plugin.md) calls to own virtual time and to read the
+exact next deadline. They are additive exports ([PATCH-3](c)) except where noted.
+
+### crucible-plugin-time-advance — request time control + advance virtual time
+
+- **Enforces:** [TIME-23], [TIME-27]; the foundation of plugin time ownership.
+- **Mechanism:** wraps QEMU's `qemu_plugin_request_time_control` /
+  `qemu_plugin_update_ns` (QEMU ≥ 9.1) in a Crucible-stable plugin export
+  `qemu_plugin_advance_virtual_time_direct(ns)` that the scheduler-driven plugin
+  uses to advance `qemu_icount_bias` by an explicit delta across an idle gap, and
+  to run due virtual-clock timers inline (`qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)`)
+  so the advance is synchronous. Also exposes `qemu_plugin_has_time_control()` —
+  the predicate the warp patch (§11.4) keys on.
+- **Micro-test:** acquire time control, advance by a known delta, assert the
+  virtual clock moved by exactly the delta and that an armed timer at the delta
+  fired inline.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** D (it is the mechanism every other time patch composes with).
+
+- **[PATCH-18]** The series MUST export a plugin time-control surface that lets the
+  plugin acquire ownership of the virtual clock and advance it by an explicit
+  delta across idle gaps, running due virtual-clock timers inline so the advance
+  is synchronous; and MUST export the `has_time_control` predicate the warp patch
+  keys on. *Gate:* `gate:layer0-determinism`, `gate:qemu-inert`. *Spec:* §11.5;
+  satisfies [TIME-23], [TIME-27], [INV-8].
+
+### crucible-plugin-advance-drain — drain bottom-halves after advance
+
+- **Enforces:** [DET-1], [INV-10]; closes a BH-delivery-drift hole.
+- **Mechanism:** at the end of `qemu_plugin_advance_virtual_time_direct`, drain
+  pending main-loop bottom halves so any BH scheduled by a timer callback that
+  fired during the advance (e.g. interrupt propagation) runs **synchronously**
+  before the plugin returns. Without the drain, such BHs run asynchronously on a
+  later, wall-clock-sensitive sim-loop iteration, propagating an interrupt to
+  `cpu->interrupt_request` at a *different icount* in each run — a divergence.
+- **Micro-test:** arm a timer whose callback schedules a BH; advance past it; in
+  sim mode assert the BH (and the resulting interrupt-request bit) is visible at
+  the identical icount across two runs; the drain is a no-op when no BH is pending.
+- **Inertness:** [PATCH-3](c) — only runs inside the plugin-called advance.
+- **Risk:** D.
+
+- **[PATCH-19]** The plugin time-advance path MUST synchronously drain pending
+  main-loop bottom halves before returning, so a BH scheduled by a timer that
+  fired during the advance propagates at a deterministic icount rather than on a
+  later wall-clock-sensitive iteration. *Gate:* `gate:layer0-determinism`,
+  `gate:divergence-bisect`. *Spec:* §11.5; satisfies [DET-1], [INV-10].
+
+### crucible-plugin-drain-mainloop — drain the main loop inside a callback
+
+- **Enforces:** [DET-1], [INV-10]; closes an I/O-completion-delivery-drift hole.
+- **Mechanism:** exports `qemu_plugin_drain_main_loop()` running one non-blocking
+  pass of the main loop (`main_loop_wait(true)`) so pending BHs, AIO completions,
+  and expired timers are processed synchronously from within a plugin callback.
+  Used by the plugin after waiting for a block/9p response signal so the device's
+  IRQ propagates at a deterministic icount rather than waiting for its own poll
+  timer to fire on a wall-clock-sensitive iteration.
+- **Micro-test:** complete a block I/O whose response is in shmem; call the drain
+  in sim mode; assert the virtio IRQ is on `cpu->interrupt_request` by the time
+  the drain returns, identically across runs.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** D.
+
+- **[PATCH-20]** The series MUST export a plugin call that runs one non-blocking
+  main-loop pass so pending BHs, AIO completions, and expired timers are processed
+  synchronously from a plugin callback, eliminating a wall-clock-sensitive window
+  between an I/O response arriving in shmem and its IRQ propagating to the guest.
+  *Gate:* `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §11.5;
+  satisfies [DET-1], [INV-10], references [DET-18] (E19).
+
+### crucible-clock-deadline — exact next virtual-timer deadline (REQUIRED)
+
+- **Enforces:** [TIME-24], [TIME-25]; the clock-deadline capability.
+- **Mechanism:** exports `qemu_plugin_clock_deadline_ns()` wrapping QEMU's
+  internal `qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL, ...)` so the plugin
+  reports the **exact** virtual time of the node's next armed guest timer deadline
+  to the scheduler. Also exports `icount_adjust_bias()` helper used by the advance
+  path. This is the capability that lets the scheduler jump an idle node directly
+  to its next deadline (zero wasted instructions), and it is **REQUIRED**:
+  Crucible MUST NOT use the inferior overshoot-and-correct fallback ([TIME-25]).
+- **Micro-test:** arm a single virtual timer; idle the guest; assert
+  `qemu_plugin_clock_deadline_ns()` returns exactly the timer's deadline (and a
+  sentinel "no armed timer" when none is armed); assert the value derives from
+  `QEMU_CLOCK_VIRTUAL`, never `QEMU_CLOCK_REALTIME`/`QEMU_CLOCK_HOST`.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** D (a wrong deadline destroys idle-jump determinism).
+
+- **[PATCH-21]** The series MUST export an **exact next-virtual-timer-deadline**
+  query (reading `QEMU_CLOCK_VIRTUAL` only) so the scheduler can compute an exact
+  local horizon and jump an idle node directly to its next deadline. The
+  overshoot-and-correct fallback MUST NOT be the production mechanism; if this
+  capability is unavailable the run MUST fail loudly ([TIME-25]). *Gate:*
+  `gate:layer0-determinism`, `gate:scheduler-liveness`, `gate:qemu-inert`. *Spec:*
+  §11.5; satisfies [TIME-24], [TIME-25], [TIME-26].
+
+### crucible-plugin-icount-raw — raw icount read
+
+- **Enforces:** [DET-29]; feeds the execution fingerprint.
+- **Mechanism:** exports `qemu_plugin_icount_raw()` returning the raw
+  instruction counter *without* the bias offset that the ns clock applies, letting
+  the plugin distinguish instruction-count drift from bias drift and supplying the
+  icount axis the fingerprint and divergence bisection key on.
+- **Micro-test:** assert `qemu_plugin_icount_raw()` increases monotonically by the
+  retired instruction count and is independent of bias adjustments.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** F.
+
+- **[PATCH-22]** The series MUST export a raw-icount read (bias-excluded) so the
+  plugin can supply the icount axis for the execution fingerprint and divergence
+  bisection. *Gate:* `gate:single-vm-fingerprint`, `gate:qemu-inert`. *Spec:*
+  §11.5; satisfies [DET-29], references [INV-10].
+
+### crucible-plugin-vcpu-exit — force vCPU exit (phase normalization)
+
+- **Enforces:** [DET-1], [INV-10]; normalizes the first-exit phase.
+- **Mechanism:** exports `qemu_plugin_force_vcpu_exit()` setting `cpu->exit_request`
+  on the current vCPU. The plugin calls it at vCPU init so the first
+  `tcg_cpu_exec` always starts with `exit_request = 1`, deterministically.
+  Without it, the initial `exit_request` is wall-clock-sensitive on a
+  later-spawned VM, locking two runs into opposite phases of the exit/run
+  alternation — a persistent one-call offset that cascades into guest-visible
+  divergence. (Complemented by `crucible-sim-first-exit`, §11.8, for the
+  first-spawned VM where the CPU may not yet exist at plugin init.)
+- **Micro-test:** spawn a VM under sim mode twice with skewed startup timing;
+  assert the first-`tcg_cpu_exec` `exit_request` phase is identical across runs.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** D.
+
+- **[PATCH-23]** The series MUST export a force-vCPU-exit call the plugin uses to
+  normalize the first-exit phase across runs so the exit/run alternation cannot
+  lock into opposite phases on a later-spawned VM. *Gate:* `gate:layer0-determinism`,
+  `gate:divergence-bisect`. *Spec:* §11.5; satisfies [DET-1], [INV-10].
+
+### crucible-plugin-wake-fd — cross-process wake-fd into the main loop
+
+- **Enforces:** [SHM-26], [INV-8]; integrates the cross-process wake.
+- **Mechanism:** exports `qemu_plugin_register_wake_fd(fd)` (registers an eventfd
+  as a source on QEMU's main AIO context; reads drain it without dispatching) and
+  `qemu_plugin_main_loop_wait()` (drops BQL, runs `aio_poll` blocking, re-acquires
+  BQL). Together they let the plugin's idle callback replace a raw `FUTEX_WAIT` on
+  shmem with a first-class QEMU event-loop wait, so cross-process wakes (the
+  scheduler writing the eventfd) and QEMU's own fd handlers (QMP, chardev)
+  integrate through one mechanism — the single-authority wake of [INV-8].
+- **Micro-test:** register an eventfd, park in `qemu_plugin_main_loop_wait()`,
+  write the eventfd from another process; assert the wait returns; assert QMP
+  remains serviced while parked.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** F (loud failure if broken).
+
+- **[PATCH-24]** The series MUST export a wake-fd registration and a main-loop
+  wait so the plugin's idle wait integrates cross-process wakes and QEMU's own fd
+  handlers through QEMU's event loop rather than a raw futex, keeping the scheduler
+  the single wake authority. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`.
+  *Spec:* §11.5; satisfies [SHM-26], [INV-8].
+
+### crucible-plugin-tcg-exec-cb — TCG-exec callback (coverage)
+
+- **Enforces:** the coverage capability (forward-ref
+  [`22-advanced-features.md`](22-advanced-features.md)).
+- **Mechanism:** exports `qemu_plugin_register_tcg_exec_cb()` — a
+  runtime-toggleable hook fired after every `tcg_cpu_exec()` in the sim-mode
+  accel loop, with **zero overhead when no callback is registered** (a single
+  NULL-check per call). Used to harvest basic-block coverage with no guest
+  instrumentation.
+- **Micro-test:** register a counting callback; assert it fires exactly once per
+  `tcg_cpu_exec`; assert no measurable overhead with no callback registered.
+- **Inertness:** [PATCH-3](c) — the NULL-check is the only always-present cost and
+  is in the sim accelerator (already inert outside sim mode).
+- **Risk:** F.
+
+- **[PATCH-25]** The series MUST export a TCG-exec callback fired after each
+  `tcg_cpu_exec` in the sim accelerator, with zero overhead when unregistered, to
+  harvest coverage without guest instrumentation. *Gate:* `gate:qemu-inert`,
+  forward-ref 22. *Spec:* §11.5; satisfies coverage capability (22), [INV-7].
+
+## 11.6 Device co-simulation patches (shmem transport)
+
+These patches route block, 9p, and network I/O through the shared-memory rings
+([`13-shmem-abi.md`](13-shmem-abi.md)) so I/O completions are first-class
+deterministic events ([DET-16], E19). They are new files or new device paths
+([PATCH-3](a)) plus additive registration exports ([PATCH-3](c)).
+
+### crucible-blk-shmem — virtio-blk over the shmem SPSC queues
+
+- **Enforces:** [DET-16], [SHM-13]; eliminates E19 (block I/O completion timing)
+  on the device side.
+- **Mechanism:** adds an async block driver (`block/crucible-shmem.c`) that
+  forwards each block request to the coordinator via a plugin-registered callback
+  (which enqueues to a shmem SPSC ring) and returns immediately; the coroutine
+  yields, and a poll path resumes it when the response lands in the inbound ring.
+  Completions become visible to the guest at virtual-time-determined points
+  rather than at host-timing-dependent ones.
+- **Micro-test:** issue a read whose response the harness places in shmem; assert
+  the guest receives the exact bytes and the completion is observed at a
+  deterministic icount across two runs.
+- **Inertness:** [PATCH-3](a) — a new block driver only instantiated when the
+  `crucible-shmem` block backend is selected.
+- **Risk:** F.
+
+- **[PATCH-26]** The series MUST add a virtio-blk-over-shmem block driver that
+  forwards requests to the coordinator through a shmem SPSC ring and delivers
+  completions at virtual-time-determined points, so block I/O completion timing is
+  deterministic (E19). It MUST be a new driver inert unless selected. *Gate:*
+  `gate:layer1-injection`, `gate:abi-conformance`, `gate:qemu-inert`. *Spec:*
+  §11.6; satisfies [DET-16], [SHM-13], [DET-18] (E19), [INV-7].
+
+### crucible-blk-shmem-io-fixes — block I/O correctness fixes
+
+- **Enforces:** [DET-16], E19 correctness.
+- **Mechanism:** correctness fixes over `crucible-blk-shmem`: corrects the
+  poll-response state machine and the sim-loop idle sleep cadence so block
+  completions arrive at bounded, reproducible virtual-time offsets and ext4-on-the-
+  -guest does not hang cross-run. Folds into the same new files; no upstream path
+  changes.
+- **Micro-test:** mount an ext4 image over the shmem block driver and run a
+  read/write workload twice; assert identical completion icounts and no hang.
+- **Inertness:** [PATCH-3](a).
+- **Risk:** F (but determinism-adjacent: a regression reintroduces drift).
+
+- **[PATCH-27]** The series MUST include the block-I/O correctness fixes that keep
+  shmem block completions at bounded reproducible virtual-time offsets (no
+  cross-run hangs, correct poll-response handling). *Gate:* `gate:layer1-injection`.
+  *Spec:* §11.6; satisfies [DET-16], [DET-18] (E19).
+
+### crucible-blk-write-sentinel — explicit pending sentinel for writes/flush
+
+- **Enforces:** [DET-16] correctness.
+- **Mechanism:** the block poll callback's return value conflated "success with
+  zero payload" (the normal case for writes and flushes) with "no response yet."
+  Introduces an explicit `-2` *pending* sentinel distinct from `0` (success, zero
+  bytes) and `-1` (error), so a completed write/flush is not mistaken for a
+  not-ready poll — which would otherwise hang or mis-time the completion.
+- **Micro-test:** issue a write and a flush over the shmem driver; assert the
+  zero-length success completes (is not treated as pending) at a deterministic
+  icount.
+- **Inertness:** [PATCH-3](a).
+- **Risk:** F.
+
+- **[PATCH-28]** The series MUST use an explicit pending sentinel in the shmem
+  block poll path distinct from zero-length success, so writes and flushes
+  complete deterministically rather than being mistaken for not-ready polls.
+  *Gate:* `gate:layer1-injection`. *Spec:* §11.6; satisfies [DET-16].
+
+### crucible-9p-shmem — virtio-9p over the shmem queues
+
+- **Enforces:** [DET-16], E19; the 9p file-system transport.
+- **Mechanism:** makes the virtio-9p device a **dumb pipe** in sim mode: a
+  plugin-registered 9p callback receives raw 9p messages from the virtqueue and
+  returns raw responses (no in-QEMU 9p parsing), routing them over a shmem ring to
+  a deterministic 9p I/O sub-node ([`15-io-subnodes.md`](15-io-subnodes.md)). The
+  upstream internal 9p server path is taken when no callback is registered.
+- **Micro-test:** register a callback that echoes a canned 9p response; assert the
+  guest's 9p read returns the exact bytes; assert the completion icount is
+  deterministic; assert the internal server is used when no callback is registered.
+- **Inertness:** [PATCH-3](c) — the forward path is taken only when a 9p callback
+  is registered.
+- **Risk:** F.
+
+- **[PATCH-29]** The series MUST add a virtio-9p forwarding path that, when a
+  plugin 9p callback is registered, treats the device as a dumb pipe routing raw
+  9p messages over a shmem ring to a deterministic 9p sub-node; with no callback
+  registered the upstream internal 9p server MUST be used unchanged. *Gate:*
+  `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.6; satisfies [DET-16],
+  [DET-18] (E19), [INV-7].
+
+### crucible-dev-cb-api — register block / 9p device callbacks
+
+- **Enforces:** [PLUG], [SHM-17]; the registration surface.
+- **Mechanism:** the plugin-API exports
+  (`qemu_plugin_register_blk_cb`, `qemu_plugin_register_9p_cb`) by which the plugin
+  hands the device paths their shmem-routing callbacks. Inert until called.
+- **Micro-test:** register and unregister each callback; assert the device path
+  switches between shmem-forwarding and upstream behavior accordingly.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** F.
+
+- **[PATCH-30]** The series MUST export the plugin-API registration calls for the
+  block and 9p shmem-forwarding callbacks; with no callback registered each device
+  MUST behave as upstream. *Gate:* `gate:qemu-inert`, `gate:abi-conformance`.
+  *Spec:* §11.6; satisfies [PLUG], [SHM-17], [INV-7].
+
+### crucible-net-tx-callback — intercept guest network TX
+
+- **Enforces:** [DET-18], [SHM-17]; the TX side of the network transport.
+- **Mechanism:** exports `qemu_plugin_register_net_tx_cb()`. When registered,
+  every frame the guest sends is delivered to the callback (which routes it to the
+  shmem SPSC ring `(vm -> SLOT_NET_ROUTER)`) instead of the socket backend, so
+  outbound frames enter the deterministic router rather than a host socket.
+- **Micro-test:** register a capturing callback; have the guest send a frame;
+  assert the callback receives the exact frame and the socket backend does not.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** F.
+
+- **[PATCH-31]** The series MUST export a TX-intercept callback that routes every
+  guest-sent frame to the plugin (for shmem-ring delivery) instead of the socket
+  backend when registered; with no callback the socket backend is used as
+  upstream. *Gate:* `gate:layer1-injection`, `gate:qemu-inert`. *Spec:* §11.6;
+  satisfies [DET-18] (E18), [SHM-17], [INV-7].
+
+### crucible-net-flush-api — lossless RX inject + flush
+
+- **Enforces:** [DET-18]; the RX side correctness.
+- **Mechanism:** the naive inject path (`qemu_receive_packet`) silently drops
+  frames when the receiver (virtio-net) is momentarily unready — nondeterministic
+  loss. Exports `qemu_plugin_net_send` (queues losslessly via `qemu_send_packet`),
+  `qemu_plugin_net_flush` (runs `qemu_flush_queued_packets` so queued frames
+  deliver at the plugin's chosen virtual-time moment), and
+  `qemu_plugin_net_can_receive` (diagnostic). The plugin flushes at the start of
+  each idle callback, then injects, so backpressure buffering lives in QEMU's
+  queue and the harness inbox stays focused on virtual-time scheduling.
+- **Micro-test:** inject a frame while the receiver is momentarily unready; assert
+  it is not dropped and is delivered at the chosen icount when flushed; two runs
+  agree.
+- **Inertness:** [PATCH-3](c).
+- **Risk:** D (it determines RX delivery timing; a regression reintroduces
+  nondeterministic loss).
+
+- **[PATCH-32]** The series MUST provide lossless RX injection (queue + flush)
+  so an inbound frame is never silently dropped when the receiver is momentarily
+  unready, and is delivered at the plugin's chosen virtual-time moment; backpressure
+  buffering MUST stay in QEMU's queue. *Gate:* `gate:layer1-injection`,
+  `gate:qemu-inert`. *Spec:* §11.6; satisfies [DET-18] (E18).
+
+## 11.7 Guest↔host channel: no new patch required
+
+The white-box guest↔host channel ([`16-guest-host-channel.md`](16-guest-host-channel.md))
+needs a synchronous **doorbell**: a trapped instruction the guest executes to
+signal the plugin. The question this file answers is whether the patch series must
+add a doorbell mechanism.
+
+- **[PATCH-33]** The guest↔host doorbell ([`16-guest-host-channel.md`](16-guest-host-channel.md))
+  MUST be implemented by **reusing an existing QEMU trap surface** — a reserved
+  port-I/O write or an MMIO write to a fixed address — observed via the plugin's
+  existing memory-access / instrumentation callbacks, plus the plugin's
+  memory-read API to fetch the payload. The series MUST NOT add a bespoke
+  trapped-instruction patch unless a spike proves the existing trap + plugin-read
+  path cannot deliver a *synchronous, deterministic* doorbell. Whether a patch is
+  required at all is therefore **NO** by default; any patch added here is gated on
+  that spike and MUST be inert and white-box-only. *Gate:* `gate:qemu-inert`,
+  forward-ref 16. *Spec:* §11.7; satisfies [INV-7], coordinates with [GHC].
+
+The rationale: a reserved port-I/O write already traps to QEMU deterministically
+at a defined instruction boundary under `-icount`, and the plugin already has the
+memory-access callback and memory-read API to observe it and read the payload.
+Adding a new trapped-instruction patch would be a determinism-critical edit to a
+hot path for no capability gain. The white-box channel is OPT-IN ([G-3], [DET-17])
+and MUST NOT perturb determinism whether enabled or not, so reusing the inert
+plugin-callback surface is strictly preferable to a new patch.
+
+## 11.8 TCG sim correctness / performance patches
+
+These patches refine the sim accelerator (§11.4's `crucible-sim-accel`) for
+correctness and performance. Correctness patches that affect timing are
+determinism-critical; pure performance patches must be **determinism-preserving by
+construction** (fixed iteration counts, never wall-clock-gated). Diagnostic-only
+patches are dev-only and **not shipped**.
+
+### crucible-sim-loop-fix — single-vCPU sim-loop fixes (D)
+
+- **Enforces:** [DET-1], [NG-1]. Operates on `first_cpu` directly (sim mode is
+  `-smp 1`, [NG-1]) instead of the `CPU_NEXT` iteration that returns NULL on the
+  second call for a single CPU and makes `exit_request` bookkeeping fragile;
+  resets pending `exit_request` deterministically each loop iteration.
+- **Micro-test:** run a single-vCPU guest twice; assert identical loop-iteration
+  `exit_request` bookkeeping and identical icount trace.
+
+### crucible-sim-first-exit — normalize first-exit phase (D)
+
+- **Enforces:** [DET-1], [INV-10]. Forces `cpu->exit_request = 1` on the very
+  first sim-loop iteration before `tcg_cpu_exec`, so both runs always have
+  `delta = 0` on call #0 and enter the same exit/run alternation phase.
+  Complements `crucible-plugin-vcpu-exit` (§11.5) for the first-spawned VM where
+  `qemu_get_cpu(idx)` may return NULL too early in CPU setup.
+- **Micro-test:** spawn the first VM twice with skewed startup; assert identical
+  first-call phase.
+
+### crucible-sim-skip-second-events — drop the redundant second events pass (D)
+
+- **Enforces:** [DET-1] (and perf). Removes a redundant `sim_process_events()`
+  call after `sim_wait_io_event()`: the plugin's time-control advance already
+  fires virtual-clock timers inline, so timers are dispatched before control
+  returns to the loop; the AIO/GLib polls the second call would do happen on the
+  next iteration anyway. Halves the fixed per-`tcg_cpu_exec` overhead.
+- **Micro-test:** assert the per-exec timer-dispatch behavior is unchanged
+  (bit-identical icount trace) with the second pass removed.
+
+### crucible-sim-poll-immediate — immediate shmem poll (D)
+
+- **Enforces:** [DET-13], E19. Arms the shmem poll timer for "now + 0" rather than
+  "now + 1 us" so any `main_loop_wait(nonblocking=true)` fires the poll regardless
+  of wall-clock progress, closing the wall-clock-sensitive window in which a
+  device IRQ would otherwise propagate on a later iteration.
+- **Micro-test:** with a response present in shmem, assert the poll fires on the
+  next drain and the IRQ propagates at a deterministic icount across two runs.
+
+### crucible-sim-batch-tcg-exec — batch TCG exec calls (F, perf)
+
+- **Enforces:** PERF, **determinism-preserving**. Batches up to a *fixed* N
+  `tcg_cpu_exec` calls per outer-loop iteration to amortise per-iteration overhead.
+  Determinism is preserved by: a fixed N (not wall-clock gated); breaking on
+  `EXCP_HALTED` (so the plugin idle callback advances virtual time);
+  breaking on `EXCP_DEBUG`/`EXCP_ATOMIC`; a per-iteration shmem TB-sync check
+  (publish `current_ns`, spin at the `max_advance` ceiling); and
+  `qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)` between iterations.
+- **Micro-test:** run a workload with batching on and off; assert **bit-identical**
+  icount traces (perf differs, determinism does not).
+- **Risk:** F — but because it touches the hot loop, its micro-test MUST be the
+  bit-exact cross-run diff, not merely a perf measurement.
+
+### crucible-sim-idle-callbacks — idle / resume callback wiring (D)
+
+- **Enforces:** [TIME-24], [INV-8]. Wires the vCPU idle/resume callbacks so that
+  when all CPUs idle, the plugin's idle callback fires (where it reads the exact
+  next deadline and advances virtual time), then control returns to the main loop
+  so timer callbacks that may unhalt the CPU are processed by the deadline handler.
+  This is the glue that lets a time-controlling plugin own idle advancement
+  ([INV-8]) rather than the upstream warp.
+- **Micro-test:** idle the guest; assert the plugin idle callback fires exactly
+  once per idle transition and that an armed timer wakes the CPU at the
+  deterministic deadline.
+
+### crucible-sim-shmem-dispatch — shmem co-sim dispatch glue (F)
+
+- **Enforces:** [SHM-1]. A small dispatch stub (`tcg-accel-ops-sim-shmem.c`)
+  connecting the sim accelerator to the shmem region's per-node clock publish /
+  ceiling read, so the accelerator participates in the SPSC handshake of
+  [`13-shmem-abi.md`](13-shmem-abi.md) §13.6.
+- **Micro-test:** assert the accelerator publishes `current_icount` and honors
+  `max_advance_icount` exactly as the ABI requires (it stops at the ceiling).
+
+- **[PATCH-34]** The sim-correctness patches (`crucible-sim-loop-fix`,
+  `crucible-sim-first-exit`, `crucible-sim-skip-second-events`,
+  `crucible-sim-poll-immediate`, `crucible-sim-idle-callbacks`,
+  `crucible-sim-shmem-dispatch`) MUST each preserve or repair instruction-level
+  determinism, MUST extend only the sim accelerator files (inert outside sim mode,
+  [PATCH-3](a)), and MUST carry a bit-exact cross-run micro-test. *Gate:*
+  `gate:layer0-determinism`, `gate:layer1-injection`, `gate:qemu-inert`. *Spec:*
+  §11.8; satisfies [DET-1], [TIME-24], [DET-13], [SHM-1], [INV-7], [INV-10].
+
+- **[PATCH-35]** Any pure-performance patch (e.g. `crucible-sim-batch-tcg-exec`)
+  MUST be **determinism-preserving by construction** — fixed iteration bounds,
+  never wall-clock-gated, with the same per-iteration ceiling/timer discipline —
+  and its micro-test MUST be a **bit-identical cross-run icount diff** (with
+  batching on vs off), not a performance measurement. A perf patch that changes
+  any guest-visible icount is a determinism defect. *Gate:* `gate:layer0-determinism`,
+  `gate:single-vm-fingerprint`. *Spec:* §11.8; satisfies [DET-1], [INV-10].
+
+- **[PATCH-36]** Diagnostic-only patches (`crucible-tcg-exec-diag` — per-exec
+  icount tracing; `crucible-virtserial-socket` — raw serial socket framing for
+  white-box debugging) are **dev-only and MUST NOT be applied in the shipped AOS
+  QEMU package** ([PATCH-10]). In a developer build they MUST be inert by default
+  (compiled out or behind an explicit `diag=` plugin arg) and MUST NOT alter
+  guest-visible icount when off. *Gate:* `gate:qemu-inert`, forward-ref 24, 26.
+  *Spec:* §11.8; satisfies [INV-7], [INV-10].
+
+## 11.9 The regeneration / rebase pipeline and CI gates
+
+The series must stay applicable, buildable, and correct against the pinned QEMU,
+and the committed patch files must be reproducible from the development branch.
+
+- **[PATCH-37]** Crucible MUST provide a **regeneration pipeline** that produces
+  the committed `crucible-*.patch` files from the tracked development branch (the
+  ordered single-purpose commits, [PATCH-7]) against the pinned QEMU tag,
+  deterministically (stable author/date/ordering so the bytes are reproducible).
+  CI MUST regenerate the series and fail if the committed files differ from the
+  regenerated ones (drift detection). *Gate:* `gate:patch-microtests`,
+  forward-ref 26. *Spec:* §11.9; satisfies [DET-35], [PKG].
+
+- **[PATCH-38]** CI MUST run, for the pinned QEMU version, the per-patch pipeline:
+  (1) the series **applies cleanly** in order; (2) the patched tree **builds**;
+  (3) **every per-patch micro-test passes** ([PATCH-4]); (4) **`gate:qemu-inert`**
+  proves non-sim behavior is upstream-identical ([PATCH-2]); (5) the
+  **`gate:patch-microtests`** aggregate is green. A change to the series, the
+  pin, or the generated shmem header ([SHM-4]) MUST re-run all five. *Gate:*
+  `gate:patch-microtests`, `gate:qemu-inert`, forward-ref 24, 26. *Spec:* §11.9;
+  satisfies [DET-37], [INV-7], [PKG].
+
+- **[PATCH-39]** A bump of the pinned QEMU version is a **re-gated event**: the
+  series MUST be rebased onto the new tag, every micro-test re-run, every
+  inertness check re-run, and the QEMU build identity re-pinned into the
+  reproduction artifact ([DET-35], [DET-40]). A determinism run reproduces only
+  against the exact QEMU build that produced it; the build identity MUST be part of
+  the artifact. *Gate:* `gate:e2e-determinism`, `gate:qemu-inert`, forward-ref 26.
+  *Spec:* §11.9; satisfies [DET-35], [DET-40].
+
+## 11.10 Minimum QEMU version and plugin-API assumptions
+
+The series depends on a baseline plugin-API surface; older QEMU lacks the
+time-control primitives the whole design rests on.
+
+- **[PATCH-40]** The series MUST target a **pinned minimum QEMU version of 10.0 or
+  later**, which provides the plugin time-control API
+  (`qemu_plugin_request_time_control`, `qemu_plugin_update_ns`; available since
+  QEMU 9.1) plus the mature plugin instrumentation surface (vcpu idle/resume
+  callbacks, memory-access callbacks, the plugin memory-read API) the design
+  assumes. The exact pinned tag MUST be recorded in
+  [`31-decision-register.md`](31-decision-register.md) and in
+  [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md). *Gate:*
+  `gate:patch-microtests`, forward-ref 26. *Spec:* §11.10; satisfies [DET-35].
+
+- **[PATCH-41]** The exact next-virtual-timer-deadline query is **not** in
+  upstream QEMU's plugin API and is supplied by `crucible-clock-deadline`
+  ([PATCH-21]); the design MUST NOT assume an upstream
+  `read_next_virtual_timer_deadline`-style call exists. If a future QEMU lands an
+  equivalent upstream API, `crucible-clock-deadline` SHOULD be reduced to a thin
+  wrapper over it (recorded in the decision register), but the **exact-deadline
+  capability remains REQUIRED** ([TIME-25]); the overshoot-and-correct fallback is
+  never the production mechanism. *Gate:* `gate:layer0-determinism`. *Spec:*
+  §11.10; satisfies [TIME-24], [TIME-25].
+
+- **[PATCH-42]** The series MUST assume the plugin runs `std` blocking I/O on the
+  vCPU/main threads (no async runtime inside QEMU) and MUST NOT require any
+  plugin-API capability beyond those listed in [PATCH-40] plus the
+  Crucible-exported surface enumerated in §11.5–§11.6. A build against a QEMU
+  lacking a required capability MUST fail loudly at configure/build time, never
+  silently degrade to a nondeterministic fallback. *Gate:* `gate:patch-microtests`,
+  `gate:qemu-inert`. *Spec:* §11.10; satisfies [DET-35], [INV-10].
+
+## Implementation checklist
+
+> The authoritative, ordered tasks live in
+> [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
+> whose primary area is the QEMU patch series, copied verbatim per [PLAN-3]. They
+> populate the QEMU-integration slice of Phase 1 (foundation) and feed
+> `gate:qemu-inert` / `gate:patch-microtests`.
+
+- [ ] **T-PATCH-1** Establish the rebasable, ordered series against the pinned
+  QEMU (≥ 10.0): tracked single-purpose commits, stable `crucible-*.patch` names,
+  significant ordering (sim-accel first). — satisfies [PATCH-7], [PATCH-40];
+  spec §11.1.4, §11.10.
+- [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
+  micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
+  series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];
+  spec §11.1.2, §11.9.
+- [ ] **T-PATCH-3** Implement `gate:qemu-inert`: run an upstream-equivalent corpus
+  against unpatched-pinned vs AOS-patched-sim-off and assert byte-identical
+  guest-visible behavior. — satisfies [PATCH-1], [PATCH-2], [PATCH-3]; spec
+  §11.1.1, routes [INV-7], [DET-36].
+- [ ] **T-PATCH-4** Implement `crucible-sim-accel`: the split vCPU/main
+  deterministic TCG sim accelerator (`-accel sim`), inert under other
+  accelerators, with a cross-run icount-trace micro-test. — satisfies [PATCH-11];
+  spec §11.4 (E14).
+- [ ] **T-PATCH-5** Implement the warp/budget determinism patches
+  `crucible-no-warp-with-plugin` and `crucible-icount-no-realtime`, each gated on
+  its sim predicate with reintroduce-to-red micro-tests. — satisfies [PATCH-12],
+  [PATCH-13]; spec §11.4 (E2, E3).
+- [ ] **T-PATCH-6** Implement `crucible-block-rtc-read`: guest RTC/realtime reads
+  resolve to the icount-derived virtual clock + fixed epoch in sim mode only. —
+  satisfies [PATCH-14]; spec §11.4 (E5).
+- [ ] **T-PATCH-7** Implement the entropy patches `crucible-det-glib-prng` and
+  `crucible-det-getrandom`, gated on the `deterministic` predicate, with
+  reintroduce-to-red micro-tests. — satisfies [PATCH-15], [PATCH-16]; spec §11.4
+  (E9, E1).
+- [ ] **T-PATCH-8** Implement `crucible-net-deterministic`: plugin-callable
+  icount-timed RX delivery, with a skewed-producer cross-run micro-test. —
+  satisfies [PATCH-17]; spec §11.4 (E18).
+- [ ] **T-PATCH-9** Implement the plugin time-control surface
+  `crucible-plugin-time-advance` (+ `has_time_control`) and the drains
+  `crucible-plugin-advance-drain` / `crucible-plugin-drain-mainloop` with
+  deterministic-propagation micro-tests. — satisfies [PATCH-18], [PATCH-19],
+  [PATCH-20]; spec §11.5.
+- [ ] **T-PATCH-10** Implement `crucible-clock-deadline` (exact next
+  `QEMU_CLOCK_VIRTUAL` deadline, REQUIRED) and ban the overshoot-and-correct
+  fallback; fail loudly if the capability is unavailable. — satisfies [PATCH-21],
+  [PATCH-41]; spec §11.5, §11.10.
+- [ ] **T-PATCH-11** Implement the plugin reads/exits/wakes
+  `crucible-plugin-icount-raw`, `crucible-plugin-vcpu-exit`,
+  `crucible-plugin-wake-fd`, `crucible-plugin-tcg-exec-cb`, each additive and
+  zero-overhead-when-unused. — satisfies [PATCH-22], [PATCH-23], [PATCH-24],
+  [PATCH-25]; spec §11.5.
+- [ ] **T-PATCH-12** Implement the block co-sim patches `crucible-blk-shmem`,
+  `crucible-blk-shmem-io-fixes`, `crucible-blk-write-sentinel` over shmem with
+  deterministic-completion micro-tests. — satisfies [PATCH-26], [PATCH-27],
+  [PATCH-28]; spec §11.6 (E19).
+- [ ] **T-PATCH-13** Implement the 9p co-sim path `crucible-9p-shmem` and the
+  device registration surface `crucible-dev-cb-api`; upstream server used when no
+  callback is registered. — satisfies [PATCH-29], [PATCH-30]; spec §11.6 (E19).
+- [ ] **T-PATCH-14** Implement the network co-sim patches
+  `crucible-net-tx-callback` (TX intercept) and `crucible-net-flush-api` (lossless
+  RX inject + flush) with no-loss / deterministic-delivery micro-tests. —
+  satisfies [PATCH-31], [PATCH-32]; spec §11.6 (E18).
+- [ ] **T-PATCH-15** Confirm (or spike) that the guest↔host doorbell needs **no
+  new patch**: reuse the existing port-I/O/MMIO trap + plugin mem-read; any patch
+  added is white-box-only, inert, and spike-gated. — satisfies [PATCH-33]; spec
+  §11.7, coordinates with 16.
+- [ ] **T-PATCH-16** Implement the sim-correctness patches
+  (`crucible-sim-loop-fix`, `crucible-sim-first-exit`,
+  `crucible-sim-skip-second-events`, `crucible-sim-poll-immediate`,
+  `crucible-sim-idle-callbacks`, `crucible-sim-shmem-dispatch`) with bit-exact
+  cross-run micro-tests. — satisfies [PATCH-34]; spec §11.8.
+- [ ] **T-PATCH-17** Implement `crucible-sim-batch-tcg-exec` as a
+  determinism-preserving perf patch (fixed N, ceiling/timer discipline) gated by a
+  bit-identical batching-on-vs-off icount diff. — satisfies [PATCH-35]; spec
+  §11.8.
+- [ ] **T-PATCH-18** Keep the diagnostic-only patches (`crucible-tcg-exec-diag`,
+  `crucible-virtserial-socket`) out of the shipped package and inert-by-default in
+  dev builds. — satisfies [PATCH-10], [PATCH-36]; spec §11.3, §11.8.
+- [ ] **T-PATCH-19** Implement the regeneration/drift pipeline (reproducible patch
+  bytes from the tracked branch) and the QEMU-version-bump re-gate (rebase +
+  re-test + re-pin build identity into the artifact). — satisfies [PATCH-37],
+  [PATCH-39]; spec §11.9.
+- [ ] **T-PATCH-20** Pin and document the minimum QEMU version and the plugin-API
+  capability set; fail the build loudly if a required capability is missing. —
+  satisfies [PATCH-40], [PATCH-42]; spec §11.10.
