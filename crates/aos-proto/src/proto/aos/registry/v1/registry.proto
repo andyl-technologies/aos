@@ -688,6 +688,7 @@ service CacheService {
   rpc SearchCache(SearchCacheRequest) returns (SearchCacheResponse);
   rpc GetCacheObject(GetCacheObjectRequest) returns (GetCacheObjectResponse);
   rpc ListCacheGcRuns(ListCacheGcRunsRequest) returns (ListCacheGcRunsResponse);
+  rpc RunCacheGc(RunCacheGcRequest) returns (RunCacheGcResponse);
 }
 
 // A managed cache (distinct from `Cache` above, which is a registry's
@@ -938,4 +939,18 @@ message ListCacheGcRunsRequest {
 
 message ListCacheGcRunsResponse {
   repeated CacheGcRun runs = 1;
+}
+
+message RunCacheGcRequest {
+  string cache_slug = 1;
+  // Compute what would be reclaimed without deleting anything.
+  bool dry_run = 2;
+}
+
+message RunCacheGcResponse {
+  int64 scanned = 1;
+  int64 retained = 2;
+  int64 deleted_objects = 3;
+  int64 freed_bytes = 4;
+  bool dry_run = 5;
 }

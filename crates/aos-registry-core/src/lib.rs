@@ -51,6 +51,7 @@ pub mod dialect;
 pub mod domain;
 pub mod fetch;
 pub mod filter;
+pub mod gc;
 pub mod git;
 pub mod indexer;
 pub mod gitwrite;
