@@ -346,7 +346,7 @@ emit them in this sorted order, not insertion order.
 - [x] `functionArgs` (f) — (also listed under introspection §1) reflects a
       lambda's formal arguments; placed here too because nixpkgs uses it for
       attrset-driven auto-calling (`callPackage`).
-- [ ] `unsafeGetAttrPos` (s set) — return `{ file; line; column; }` of where
+- [x] `unsafeGetAttrPos` (s set) — return `{ file; line; column; }` of where
       attribute `s` was defined in `set`, or `null`. Used by nixpkgs for error
       messages and `meta.position`.
       - The `file`/`line`/`column` values depend on source provenance tracking;
@@ -354,6 +354,9 @@ emit them in this sorted order, not insertion order.
         from a position (rare), but the primop must exist and return the same
         shape. Flag as a provenance-tracking requirement on the frontend
         ([frontend, parser, and IR](04-frontend-parser-and-ir.md)).
+      - Implemented with IR binding spans and module source provenance, including
+        static keys, dynamic keys, `//` propagation, `listToAttrs` propagation,
+        import source paths, and first-class application.
 
 ---
 
