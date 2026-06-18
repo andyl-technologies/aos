@@ -13,7 +13,7 @@ use anyhow::Result;
 use crate::compile::{EffectClass, Ir, IrData, IrKind, lower, resolve};
 use crate::error::NativeEvalError;
 use crate::eval::{TreeWalkError, TreeWalkErrorKind, eval_whnf_owned};
-use crate::runtime::builtins::{BUILTINS, BuiltinEffect, BuiltinExecution};
+use crate::runtime::builtins::lookup_builtin;
 use crate::syntax::{Span, parse_str};
 use crate::value::ValueTag;
 
@@ -196,29 +196,11 @@ fn builtin_requires_cli_fallback(name: &[u8]) -> bool {
         return true;
     }
 
-    let Some(metadata) = BUILTINS.lookup(name) else {
+    let Some(metadata) = lookup_builtin(name) else {
         return false;
     };
 
-    match metadata.execution() {
-        BuiltinExecution::Unsupported
-        | BuiltinExecution::EffectfulUnaryUnsupported
-        | BuiltinExecution::DerivationStrict
-        | BuiltinExecution::CurrentSystemValue
-        | BuiltinExecution::CurrentTimeValue
-        | BuiltinExecution::StoreDirValue
-        | BuiltinExecution::NixPathValue
-        | BuiltinExecution::PathExists
-        | BuiltinExecution::ReadDir
-        | BuiltinExecution::ReadFile
-        | BuiltinExecution::ReadFileType
-        | BuiltinExecution::FindFile
-        | BuiltinExecution::Trace { .. }
-        | BuiltinExecution::Warn => true,
-        BuiltinExecution::StrictUnary { effect, .. }
-        | BuiltinExecution::StrictBinary { effect, .. } => effect == BuiltinEffect::Effectful,
-        _ => false,
-    }
+    metadata.requires_native_cli_fallback()
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {

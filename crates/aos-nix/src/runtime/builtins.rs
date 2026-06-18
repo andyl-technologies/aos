@@ -1175,6 +1175,50 @@ impl BuiltinExecution {
             | Self::NixPathValue => None,
         }
     }
+
+    /// Returns when this builtin is present in the reified `builtins` set.
+    const fn availability(self) -> BuiltinAvailability {
+        match self {
+            Self::CurrentSystemValue => BuiltinAvailability::ImpureCurrentSystem,
+            Self::CurrentTimeValue => BuiltinAvailability::ImpureCurrentTime,
+            _ => BuiltinAvailability::Always,
+        }
+    }
+
+    /// Returns whether native JSON evaluation must fall back to C++ Nix.
+    const fn requires_native_cli_fallback(self) -> bool {
+        match self {
+            Self::Unsupported
+            | Self::EffectfulUnaryUnsupported
+            | Self::DerivationStrict
+            | Self::CurrentSystemValue
+            | Self::CurrentTimeValue
+            | Self::StoreDirValue
+            | Self::NixPathValue
+            | Self::PathExists
+            | Self::ReadDir
+            | Self::ReadFile
+            | Self::ReadFileType
+            | Self::FindFile
+            | Self::Trace { .. }
+            | Self::Warn => true,
+            Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => {
+                matches!(effect, BuiltinEffect::Effectful)
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Contextual availability of a builtin in the reified `builtins` attrset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BuiltinAvailability {
+    /// The builtin is always present.
+    Always,
+    /// The builtin is present only in impure mode when `currentSystem` is set.
+    ImpureCurrentSystem,
+    /// The builtin is present only in impure mode when `currentTime` is set.
+    ImpureCurrentTime,
 }
 
 /// Output mode for trace-like builtins.
@@ -1392,6 +1436,8 @@ pub(crate) struct BuiltinMetadata {
     execution: BuiltinExecution,
     direct: Option<BuiltinDirect>,
     first_class_arity: Option<usize>,
+    availability: BuiltinAvailability,
+    requires_native_cli_fallback: bool,
     docs: &'static BuiltinDocs,
 }
 
@@ -1400,13 +1446,19 @@ impl BuiltinMetadata {
     const fn new(
         name: &'static [u8],
         execution: BuiltinExecution,
+        direct: Option<BuiltinDirect>,
+        first_class_arity: Option<usize>,
+        availability: BuiltinAvailability,
+        requires_native_cli_fallback: bool,
         docs: &'static BuiltinDocs,
     ) -> Self {
         Self {
             name,
             execution,
-            direct: execution.direct(),
-            first_class_arity: execution.first_class_arity(),
+            direct,
+            first_class_arity,
+            availability,
+            requires_native_cli_fallback,
             docs,
         }
     }
@@ -1429,6 +1481,16 @@ impl BuiltinMetadata {
     /// Returns the arity exposed when the builtin is selected as a first-class value.
     pub(crate) const fn first_class_arity(&self) -> Option<usize> {
         self.first_class_arity
+    }
+
+    /// Returns when this builtin is visible through the reified `builtins` attrset.
+    pub(crate) const fn availability(&self) -> BuiltinAvailability {
+        self.availability
+    }
+
+    /// Returns whether native JSON evaluation must fall back for this builtin.
+    pub(crate) const fn requires_native_cli_fallback(&self) -> bool {
+        self.requires_native_cli_fallback
     }
 
     /// Returns the static documentation attached to the builtin.
@@ -1491,13 +1553,38 @@ trait BuiltinDefinition {
     /// Static documentation attached to this builtin.
     const DOCS: &'static BuiltinDocs = &TODO_BUILTIN_DOCS;
 
+    /// Direct-lowering metadata attached to this builtin.
+    const DIRECT: Option<BuiltinDirect> = Self::EXECUTION.direct();
+
+    /// Arity exposed when this builtin is selected as a first-class value.
+    const FIRST_CLASS_ARITY: Option<usize> = Self::EXECUTION.first_class_arity();
+
+    /// Contextual availability of this builtin in the reified `builtins` set.
+    const AVAILABILITY: BuiltinAvailability = Self::EXECUTION.availability();
+
+    /// Whether native JSON evaluation must defer this builtin to C++ Nix.
+    const REQUIRES_NATIVE_CLI_FALLBACK: bool = Self::EXECUTION.requires_native_cli_fallback();
+
     /// Metadata shared by all evaluator tiers for this builtin.
-    const METADATA: BuiltinMetadata = BuiltinMetadata::new(Self::NAME, Self::EXECUTION, Self::DOCS);
+    const METADATA: BuiltinMetadata = BuiltinMetadata::new(
+        Self::NAME,
+        Self::EXECUTION,
+        Self::DIRECT,
+        Self::FIRST_CLASS_ARITY,
+        Self::AVAILABILITY,
+        Self::REQUIRES_NATIVE_CLI_FALLBACK,
+        Self::DOCS,
+    );
 }
 
 /// Returns direct lowering metadata for a builtin name.
 pub(crate) fn direct_builtin(name: &[u8]) -> Option<BuiltinDirect> {
     BUILTINS.direct(name)
+}
+
+/// Returns shared metadata for a builtin name.
+pub(crate) fn lookup_builtin(name: &[u8]) -> Option<BuiltinMetadata> {
+    BUILTINS.lookup(name)
 }
 
 /// Returns whether `name` is a builtin attribute known to this evaluator.
@@ -1553,6 +1640,8 @@ mod tests {
         assert!(is_known_builtin_attr(b"length"));
         assert!(!BUILTINS.is_known_attr(b"__missing"));
         assert!(!is_known_builtin_attr(b"__missing"));
+        assert_eq!(lookup_builtin(b"length"), BUILTINS.lookup(b"length"));
+        assert_eq!(lookup_builtin(b"__missing"), None);
         assert_eq!(direct_builtin(b"length"), BUILTINS.direct(b"length"));
     }
 
@@ -1893,6 +1982,81 @@ mod tests {
             BUILTINS.lookup(b"fromTOML").unwrap().first_class_arity(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn builtin_metadata_records_contextual_availability() {
+        assert_eq!(
+            BUILTINS.lookup(b"length").unwrap().availability(),
+            BuiltinAvailability::Always
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"currentSystem").unwrap().availability(),
+            BuiltinAvailability::ImpureCurrentSystem
+        );
+        assert_eq!(
+            BUILTINS.lookup(b"currentTime").unwrap().availability(),
+            BuiltinAvailability::ImpureCurrentTime
+        );
+    }
+
+    #[test]
+    fn builtin_metadata_records_native_fallback_policy() {
+        for name in [
+            b"derivationStrict".as_slice(),
+            b"getEnv".as_slice(),
+            b"hashFile".as_slice(),
+            b"readFile".as_slice(),
+            b"trace".as_slice(),
+        ] {
+            assert!(
+                BUILTINS
+                    .lookup(name)
+                    .unwrap()
+                    .requires_native_cli_fallback(),
+                "{} should require CLI fallback",
+                String::from_utf8_lossy(name),
+            );
+        }
+
+        for name in [
+            b"length".as_slice(),
+            b"lessThan".as_slice(),
+            b"nixVersion".as_slice(),
+            b"langVersion".as_slice(),
+        ] {
+            assert!(
+                !BUILTINS
+                    .lookup(name)
+                    .unwrap()
+                    .requires_native_cli_fallback(),
+                "{} should stay native-evaluable",
+                String::from_utf8_lossy(name),
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_metadata_stays_derived_from_execution_strategy() {
+        for metadata in BUILTINS.iter() {
+            let execution = metadata.execution();
+            assert_eq!(metadata.direct(), execution.direct(), "{metadata:?}");
+            assert_eq!(
+                metadata.first_class_arity(),
+                execution.first_class_arity(),
+                "{metadata:?}",
+            );
+            assert_eq!(
+                metadata.availability(),
+                execution.availability(),
+                "{metadata:?}",
+            );
+            assert_eq!(
+                metadata.requires_native_cli_fallback(),
+                execution.requires_native_cli_fallback(),
+                "{metadata:?}",
+            );
+        }
     }
 
     #[test]

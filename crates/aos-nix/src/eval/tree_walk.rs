@@ -3746,7 +3746,7 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
-        let Some(builtin) = lookup_builtin_by_name(name) else {
+        let Some(builtin) = lookup_builtin(name) else {
             return Err(TreeWalkError::new(
                 TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
                 node.span,
@@ -15025,7 +15025,7 @@ impl<'ir> TreeWalk<'ir> {
                 node.span,
             )
         })?;
-        let Some(builtin) = lookup_builtin_by_name(name) else {
+        let Some(builtin) = lookup_builtin(name) else {
             return match default {
                 Some(default) => self.eval_node(default).map(Some),
                 None => Err(TreeWalkError::new(
@@ -15162,7 +15162,7 @@ impl<'ir> TreeWalk<'ir> {
         })?;
         Ok(Some(Value::bool(
             path.len() == 1
-                && lookup_builtin_by_name(name).is_some_and(|builtin| builtin.is_available(self)),
+                && lookup_builtin(name).is_some_and(|builtin| builtin.is_available(self)),
         )))
     }
 
@@ -17052,15 +17052,15 @@ trait BuiltinRuntime {
 
 impl BuiltinRuntime for BuiltinMetadata {
     fn is_available(self, eval: &TreeWalk<'_>) -> bool {
-        match self.execution() {
-            BuiltinExecution::CurrentSystemValue => {
+        match self.availability() {
+            BuiltinAvailability::Always => true,
+            BuiltinAvailability::ImpureCurrentSystem => {
                 eval.options.eval_mode() != EvalMode::Pure
                     && eval.options.current_system().is_some()
             }
-            BuiltinExecution::CurrentTimeValue => {
+            BuiltinAvailability::ImpureCurrentTime => {
                 eval.options.eval_mode() != EvalMode::Pure && eval.options.current_time().is_some()
             }
-            _ => true,
         }
     }
 
@@ -17482,12 +17482,8 @@ fn check_builtin_arity(
     ))
 }
 
-fn lookup_builtin_by_name(name: &[u8]) -> Option<BuiltinMetadata> {
-    BUILTINS.lookup(name)
-}
-
 fn lookup_builtin_by_symbol(symbols: &SymbolTable, symbol: Symbol) -> Option<BuiltinMetadata> {
-    symbols.resolve(symbol).and_then(lookup_builtin_by_name)
+    symbols.resolve(symbol).and_then(lookup_builtin)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19804,7 +19800,7 @@ mod tests {
 
         assert_eq!(metadata_names.len(), BUILTINS.len());
         for metadata in BUILTINS.iter().copied() {
-            assert_eq!(lookup_builtin_by_name(metadata.name()), Some(metadata));
+            assert_eq!(lookup_builtin(metadata.name()), Some(metadata));
         }
     }
 
@@ -19868,7 +19864,7 @@ mod tests {
                     effect: BuiltinEffect::Effectful
                 })
             );
-            let builtin = lookup_builtin_by_name(name).expect("builtin is registered");
+            let builtin = lookup_builtin(name).expect("builtin is registered");
 
             assert_eq!(builtin.first_class_arity(), Some(1));
             assert!(!builtin.docs().summary().is_empty());
@@ -20406,11 +20402,11 @@ mod tests {
                 .iter()
                 .filter(|metadata| {
                     include_system
-                        || !matches!(metadata.execution(), BuiltinExecution::CurrentSystemValue)
+                        || metadata.availability() != BuiltinAvailability::ImpureCurrentSystem
                 })
                 .filter(|metadata| {
                     include_time
-                        || !matches!(metadata.execution(), BuiltinExecution::CurrentTimeValue)
+                        || metadata.availability() != BuiltinAvailability::ImpureCurrentTime
                 })
                 .map(|metadata| metadata.name().to_vec())
                 .collect::<Vec<_>>();
