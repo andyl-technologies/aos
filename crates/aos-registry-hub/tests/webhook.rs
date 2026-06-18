@@ -464,6 +464,39 @@ async fn metrics_renders_counters() {
     db.enqueue_delivery(hook, "index.completed", "{}")
         .await
         .unwrap();
+    // A managed cache with one indexed object so the cache gauges are non-zero.
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
+        .await
+        .unwrap();
+    let cache = db
+        .create_cache(Some(org), "acme-cache", "Acme", binding, "p", None, "public", 40, "zstd", true)
+        .await
+        .unwrap();
+    db.upsert_cache_object(&aos_registry_core::db::CacheObject {
+        cache_id: cache,
+        store_hash: "aaaa".into(),
+        store_name: "aaaa-foo-1.0".into(),
+        nar_url: "nar/ff.nar.zst".into(),
+        nar_hash: "sha256:dd".into(),
+        nar_size: 100,
+        file_hash: "ff".into(),
+        file_size: 50,
+        compression: "zstd".into(),
+        deriver: None,
+        refs: vec![],
+        sig: None,
+        ca: None,
+        uploaded_at: now(),
+        last_accessed_at: None,
+    })
+    .await
+    .unwrap();
+    db.refresh_cache_usage(cache).await.unwrap();
+    let run = db.start_cache_gc_run(cache).await.unwrap();
+    db.finish_cache_gc_run(run, "ok", None, 5, 4, 1, 4096)
+        .await
+        .unwrap();
 
     let app = router(app_state(db).await).await;
     let resp = app
@@ -485,6 +518,11 @@ async fn metrics_renders_counters() {
     assert!(text.contains("aos_registry_hub_registries_total 0"));
     assert!(text.contains("aos_registry_hub_registries_by_state{state=\"fresh\"} 0"));
     assert!(text.contains("aos_registry_hub_webhook_deliveries{status=\"pending\"} 1"));
+    assert!(text.contains("aos_registry_hub_caches_total 1"));
+    assert!(text.contains("aos_registry_hub_cache_objects_total 1"));
+    assert!(text.contains("aos_registry_hub_cache_bytes_total 50"));
+    assert!(text.contains("aos_registry_hub_cache_gc_runs{status=\"ok\"} 1"));
+    assert!(text.contains("aos_registry_hub_cache_gc_freed_bytes 4096"));
     assert!(text.contains("aos_registry_hub_build_info{version="));
 }
 

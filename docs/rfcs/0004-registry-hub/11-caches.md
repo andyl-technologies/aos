@@ -646,9 +646,16 @@ the current spec. Phases are orderable; A lands first, E last.
       pass, and the ranged/streamed large-NAR case.
 - [ ] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
       graph in a Leptos render test.
-- [ ] Per-org quota accounting includes cache bytes/objects (`org_usage`);
+- [x] Per-org quota accounting includes cache bytes/objects (`org_usage`);
       `/metrics` + structured logs gain cache + GC counters; soft-delete /
-      purge / export cover caches.
+      purge / export cover caches. Cache uploads reserve `org_usage`
+      (`put_cache_path`); `/metrics` emits `aos_registry_hub_caches_total`,
+      `…_cache_objects_total`, `…_cache_bytes_total`, `…_cache_gc_runs{status}`,
+      `…_cache_gc_freed_bytes` (one aggregate query each via
+      `Database::cache_metrics`); GC runs emit a structured `cache gc
+      completed`/`failed` log; soft-delete tombstones the row + gates serving;
+      org hard-purge cascades to `caches`/`cache_*` via `ON DELETE CASCADE`;
+      and `export_org` carries an `ExportCache` slice.
 - [ ] DEPLOY.md + the [04](04-caching-and-mirroring.md)/[07](07-data-ops-and-testing.md)
       reconciliation documented; `aos-hub cache` `--help` reviewed as
       user-facing porcelain.

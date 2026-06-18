@@ -353,6 +353,27 @@ async fn invite_only_allows_existing_member() {
 async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     let (db, surface) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    // A managed cache so the manifest's cache slice has something to carry.
+    let binding = db
+        .list_storage_bindings(org.id)
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    db.create_cache(
+        Some(org.id),
+        "acme-cache",
+        "Acme Cache",
+        binding.id,
+        "cache",
+        None,
+        "public",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
     // Members and a token (its hash must never appear in the export).
     let alice = db.create_user("alice@acme.com", None).await.unwrap();
     db.grant_membership("user", alice, "acme", "owner")
@@ -400,6 +421,13 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .registries
         .iter()
         .any(|r| r.slug == "acme/infra/prod/cdn"));
+    assert!(
+        manifest
+            .caches
+            .iter()
+            .any(|c| c.slug == "acme-cache" && c.compression == "zstd"),
+        "managed cache missing from export manifest"
+    );
     assert!(manifest
         .memberships
         .iter()

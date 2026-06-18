@@ -5466,6 +5466,80 @@ impl Database {
         }
     }
 
+    /// Instance-wide cache aggregates for the `/metrics` endpoint.
+    ///
+    /// Counts live (non-soft-deleted) caches, sums their objects and bytes
+    /// (objects of soft-deleted caches are excluded by the join), and totals the
+    /// lifetime GC outcomes. See [`CacheMetrics`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_metrics(&self) -> Result<CacheMetrics> {
+        // Exclude both per-cache tombstones and caches under a soft-deleted org,
+        // matching `list_caches`'s servable-surface predicate so the gauges track
+        // what is actually served during an org's offboarding grace window.
+        const LIVE_ORG: &str = "(c.org_id IS NULL OR NOT EXISTS \
+             (SELECT 1 FROM orgs o WHERE o.id = c.org_id AND o.deleted_at IS NOT NULL))";
+        let cache_count = match self
+            .backend
+            .query_opt(
+                &format!("SELECT COUNT(*) FROM caches c WHERE c.deleted_at IS NULL AND {LIVE_ORG}"),
+                &[],
+            )
+            .await?
+        {
+            Some(r) => r.get::<i64>(0)?,
+            None => 0,
+        };
+        let (object_count, used_bytes) = match self
+            .backend
+            .query_opt(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(SUM(co.file_size), 0)
+                     FROM cache_objects co JOIN caches c ON c.id = co.cache_id
+                     WHERE c.deleted_at IS NULL AND {LIVE_ORG}"
+                ),
+                &[],
+            )
+            .await?
+        {
+            Some(r) => (r.get::<i64>(0)?, r.get::<i64>(1)?),
+            None => (0, 0),
+        };
+        let (gc_runs_ok, gc_freed_bytes) = match self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*), COALESCE(SUM(freed_bytes), 0)
+                 FROM cache_gc_runs WHERE status = 'ok'",
+                &[],
+            )
+            .await?
+        {
+            Some(r) => (r.get::<i64>(0)?, r.get::<i64>(1)?),
+            None => (0, 0),
+        };
+        let gc_runs_failed = match self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM cache_gc_runs WHERE status = 'failed'",
+                &[],
+            )
+            .await?
+        {
+            Some(r) => r.get::<i64>(0)?,
+            None => 0,
+        };
+        Ok(CacheMetrics {
+            cache_count,
+            object_count,
+            used_bytes,
+            gc_runs_ok,
+            gc_runs_failed,
+            gc_freed_bytes,
+        })
+    }
+
     /// Recompute and persist a cache's usage from its objects; returns the totals.
     ///
     /// # Errors
@@ -9295,6 +9369,27 @@ pub struct CacheUsage {
     pub updated_at: i64,
 }
 
+/// Instance-wide cache aggregates for the `/metrics` exposition.
+///
+/// Computed across all *non-soft-deleted* caches in a few aggregate queries
+/// (see [`Database::cache_metrics`]) rather than per-cache, so a scrape stays
+/// cheap regardless of cache count.
+#[derive(Debug, Clone, Default)]
+pub struct CacheMetrics {
+    /// Number of live (not soft-deleted) managed caches.
+    pub cache_count: i64,
+    /// Total indexed objects across live caches.
+    pub object_count: i64,
+    /// Total `file_size` bytes across live caches' objects.
+    pub used_bytes: i64,
+    /// Lifetime count of completed GC runs (`status = 'ok'`).
+    pub gc_runs_ok: i64,
+    /// Lifetime count of failed GC runs (`status = 'failed'`).
+    pub gc_runs_failed: i64,
+    /// Lifetime bytes reclaimed by completed GC runs.
+    pub gc_freed_bytes: i64,
+}
+
 /// A past (or in-flight) garbage-collection run over a cache.
 #[derive(Debug, Clone)]
 pub struct CacheGcRun {
@@ -11550,6 +11645,25 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "ok");
         assert_eq!(runs[0].freed_bytes, 2048);
+
+        // Instance-wide metrics aggregate live caches and lifetime GC totals.
+        // (The one object above was deleted, so object/byte counts are zero now.)
+        let m = db.cache_metrics().await.unwrap();
+        assert_eq!(m.cache_count, 1);
+        assert_eq!(m.object_count, 0);
+        assert_eq!(m.used_bytes, 0);
+        assert_eq!(m.gc_runs_ok, 1);
+        assert_eq!(m.gc_runs_failed, 0);
+        assert_eq!(m.gc_freed_bytes, 2048);
+
+        // Soft-deleting the owning org drops its cache from the live gauges
+        // (the row's own `deleted_at` stays NULL until hard purge), matching
+        // `list_caches`'s servable-surface predicate. Lifetime GC counters,
+        // being historical, are unaffected.
+        assert!(db.soft_delete_org(org, 86_400).await.unwrap());
+        let m = db.cache_metrics().await.unwrap();
+        assert_eq!(m.cache_count, 0);
+        assert_eq!(m.gc_runs_ok, 1);
     }
 
     #[tokio::test]

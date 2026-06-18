@@ -2290,6 +2290,15 @@ impl RpcService {
                     )
                     .await
                     .map_err(RpcError::internal)?;
+                tracing::info!(
+                    cache = %cache.slug,
+                    run_id,
+                    scanned = stats.scanned,
+                    retained = stats.retained,
+                    deleted_objects = stats.deleted_objects,
+                    freed_bytes = stats.freed_bytes,
+                    "cache gc completed"
+                );
                 Ok(pb::RunCacheGcResponse {
                     scanned: stats.scanned,
                     retained: stats.retained,
@@ -2299,6 +2308,12 @@ impl RpcService {
                 })
             }
             Err(err) => {
+                tracing::warn!(
+                    cache = %cache.slug,
+                    run_id,
+                    error = %format!("{err:#}"),
+                    "cache gc failed"
+                );
                 let _ = self
                     .db
                     .finish_cache_gc_run(run_id, "failed", Some(format!("{err:#}")), 0, 0, 0, 0)
