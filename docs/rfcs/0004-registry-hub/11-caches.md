@@ -647,8 +647,16 @@ the current spec. Phases are orderable; A lands first, E last.
       cache home + object-list browse pages — the worker half of cache parity,
       under real workerd+miniflare. **Remaining:** NAR-fetch body, a Cron GC
       pass, and the ranged/streamed large-NAR case.
-- [ ] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
-      graph in a Leptos render test.
+- [x] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
+      graph in a Leptos render test. `web.rs::cache_browse_and_nar_explorer_over_plain_http`
+      drives the real router for the cache home, object list, object page,
+      closure page, `nix-cache-info`, and the `?explore` NAR file-tree listing
+      (no JavaScript). The SPA gains a `closure` module — the pure, cycle-safe
+      closure-tree view model (`build_closure_view`) with unit tests for
+      pre-order/depth, shared+cyclic repeats, and missing/dangling leaves — and
+      a wasm-only Leptos `ClosureGraph` component that paints it. (The view-model
+      is what the render test exercises; a DOM render test needs a browser
+      runtime, out of scope for the hermetic native test runner.)
 - [x] Per-org quota accounting includes cache bytes/objects (`org_usage`);
       `/metrics` + structured logs gain cache + GC counters; soft-delete /
       purge / export cover caches. Cache uploads reserve `org_usage`

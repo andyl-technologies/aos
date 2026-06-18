@@ -17,6 +17,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::closure::{build_closure_view, ClosureNode};
 use crate::model::{Config, IndexSnapshot, PackageSnapshot};
 use crate::net::{self, BrowserFetch};
 use crate::verify::{verify_channel, BadgeOutcome};
@@ -320,6 +321,72 @@ fn VerifyBadge() -> impl IntoView {
                 }.into_any(),
             }}
         </p>
+    }
+}
+
+/// The interactive cache closure-graph view.
+///
+/// Progressively enhances the no-JS closure table (`/<cache>/-/closure/<hash>`)
+/// into an indented dependency tree rooted at `root_hash`. The ordering and
+/// cycle-handling are the pure [`build_closure_view`] logic (unit-tested on the
+/// native build); this component only paints its [`ClosureView`]. Present nodes
+/// link to their object page under `slug`; absent references render muted, and a
+/// shared/cyclic node shows once with a repeat marker instead of recursing.
+#[component]
+pub fn ClosureGraph(
+    /// The cache slug, for object-page links.
+    slug: String,
+    /// The closure root's store-path hash.
+    root_hash: String,
+    /// The flat closure node list from `CacheService.CacheClosure`.
+    nodes: Vec<ClosureNode>,
+    /// Total on-disk size of the present closure (bytes).
+    total_size: i64,
+) -> impl IntoView {
+    let view = build_closure_view(&root_hash, &nodes, total_size);
+    let summary = format!(
+        "{} present · {} missing · {} total",
+        view.present_count, view.missing_count, view.total_label,
+    );
+    let truncated = view.truncated;
+    let rows = view.rows.into_iter().map(|row| {
+        // Indent by depth with non-breaking guides; mark repeats and misses.
+        let indent = "\u{a0}\u{a0}".repeat(row.depth);
+        let slug = slug.clone();
+        let name_cell = if row.present && !row.repeat {
+            view! {
+                <a href=format!("/{}/-/objects/{}", slug, row.store_hash)>
+                    <code>{row.store_name.clone()}</code>
+                </a>
+            }
+            .into_any()
+        } else {
+            view! { <code class="dim">{row.store_name.clone()}</code> }.into_any()
+        };
+        let marker = if row.repeat {
+            view! { <span class="dim">" ↺"</span> }.into_any()
+        } else if !row.present {
+            view! { <span class="bad">" (missing)"</span> }.into_any()
+        } else {
+            ().into_any()
+        };
+        view! {
+            <tr>
+                <td>{indent}{name_cell}{marker}</td>
+                <td class="num">{row.size_label}</td>
+            </tr>
+        }
+    });
+    view! {
+        <h2>"Closure of " <code>{root_hash.clone()}</code></h2>
+        <p class="dim">{summary}</p>
+        {truncated.then(|| view! {
+            <p class="bad">"Closure too large to display in full; showing the first paths."</p>
+        })}
+        <table>
+            <tr><th>"Path"</th><th>"Size"</th></tr>
+            {rows.collect::<Vec<_>>()}
+        </table>
     }
 }
 
