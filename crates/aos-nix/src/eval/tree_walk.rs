@@ -15475,20 +15475,12 @@ impl<'ir> TreeWalk<'ir> {
 
     fn eval_numeric_negation(
         &mut self,
-        id: IrId,
-        node: &IrNode,
+        _id: IrId,
+        _node: &IrNode,
         operand: IrId,
     ) -> Result<Value, TreeWalkError> {
         match self.eval_number_node(operand)? {
-            Number::Int(value) => value.checked_neg().map(Value::int).ok_or_else(|| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ArithmeticOverflow {
-                        id,
-                        op: ArithmeticOp::Neg,
-                    },
-                    node.span,
-                )
-            }),
+            Number::Int(value) => Ok(Value::int(value.wrapping_neg())),
             Number::Float(value) => Ok(Value::float(-value)),
         }
     }
@@ -19001,6 +18993,42 @@ mod tests {
         eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
     }
 
+    fn assert_cpp_nix_and_tree_walk_reject_with_final_error(
+        oracle: &str,
+        source: &str,
+        expected_message: &str,
+        matches_kind: impl FnOnce(&TreeWalkErrorKind) -> bool,
+    ) {
+        let output = Command::new(oracle)
+            .args(["--eval", "--strict", "--json", "--expr", source])
+            .output()
+            .expect("C++ Nix oracle evaluates expression");
+        assert!(
+            !output.status.success(),
+            "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let actual_message = stderr.lines().rev().find_map(|line| {
+            line.trim_start()
+                .strip_prefix("error: ")
+                .filter(|message| !message.is_empty())
+        });
+        assert_eq!(
+            actual_message,
+            Some(expected_message),
+            "C++ Nix oracle error for {source:?} did not end with {expected_message:?}: {stderr}"
+        );
+
+        let ir = lower(source);
+        let error = eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+        let kind = error.kind();
+        assert!(
+            matches_kind(&kind),
+            "tree-walk error for {source:?} did not match {expected_message:?}: {error:?}"
+        );
+    }
+
     fn assert_cpp_nix_and_tree_walk_throw_message(
         oracle: &str,
         source: &str,
@@ -20799,6 +20827,30 @@ mod tests {
             "builtins.floor 1.8",
             "builtins.floor (-1.2)",
             "builtins.floor 9223372036854775808.0",
+            "9223372036854775807",
+            "0 + (-9223372036854775807 - 1)",
+            "1 + 2",
+            "5 - 8",
+            "2 * 3",
+            "7 / 2",
+            "7 / (-2)",
+            "(-7) / 2",
+            "1 + 2.5",
+            "1.5 + 2",
+            "5 - 1.5",
+            "5.5 - 2",
+            "2 * 0.5",
+            "2.5 * 2",
+            "7 / 2.0",
+            "7.0 / 2",
+            "builtins.typeOf (7 / 2)",
+            "builtins.typeOf (7 / 2.0)",
+            "9223372036854775807 + 1",
+            "(-9223372036854775807 - 1) - 1",
+            "9223372036854775807 * 2",
+            "let x = -9223372036854775807 - 1; in -x",
+            "let x = 1; in -x",
+            "let x = 1.5; in -x",
             "builtins.lessThan 1 2",
             "let less = builtins.lessThan 1; in less 2",
             "builtins.lessThan 2 1",
@@ -20811,11 +20863,61 @@ mod tests {
             "builtins.toString (-0.0)",
             "builtins.toString (builtins.add 1 2.5)",
             "builtins.toString (builtins.div 7 2.0)",
+            "builtins.toString (0.1 + 0.2)",
+            "builtins.toString (1.0 / 10.0)",
+            "builtins.toString (5.5 - 2.2)",
+            "builtins.toString (0.1 * 0.2)",
             "builtins.toString ((1.0e308 * 1.0e308) - (1.0e308 * 1.0e308))",
             "builtins.toString (1.0e308 * 1.0e308)",
             "builtins.toString (builtins.sub 0.0 (1.0e308 * 1.0e308))",
         ] {
             assert_cpp_nix_json_matches_tree_walk(&oracle, source);
+        }
+
+        for source in ["1 / 0", "1.0 / 0.0", "1.0 / -0.0"] {
+            assert_cpp_nix_and_tree_walk_reject_with_final_error(
+                &oracle,
+                source,
+                "division by zero",
+                |kind| matches!(kind, TreeWalkErrorKind::DivisionByZero { .. }),
+            );
+        }
+
+        for source in [
+            "builtins.tryEval (1 / 0)",
+            "builtins.tryEval (1.0 / 0.0)",
+            "builtins.tryEval (1.0 / -0.0)",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_with_final_error(
+                &oracle,
+                source,
+                "division by zero",
+                |kind| matches!(kind, TreeWalkErrorKind::DivisionByZero { .. }),
+            );
+        }
+
+        for source in [
+            "(-9223372036854775807 - 1) / (-1)",
+            "builtins.tryEval ((-9223372036854775807 - 1) / (-1))",
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_with_final_error(
+                &oracle,
+                source,
+                "overflow in integer division",
+                |kind| {
+                    matches!(
+                        kind,
+                        TreeWalkErrorKind::ArithmeticOverflow {
+                            op: ArithmeticOp::Div,
+                            ..
+                        }
+                    )
+                },
+            );
+        }
+
+        for source in ["let x = true; in -x"] {
+            assert_cpp_nix_and_tree_walk_reject_expression(&oracle, source);
         }
     }
 
@@ -35158,6 +35260,15 @@ mod tests {
     }
 
     #[test]
+    fn integer_literals_cover_i64_boundaries() {
+        assert_eq!(eval("9223372036854775807").as_int(), Ok(i64::MAX));
+        assert_eq!(
+            eval("0 + (-9223372036854775807 - 1)").as_int(),
+            Ok(i64::MIN)
+        );
+    }
+
+    #[test]
     fn addition_rejects_mismatched_operand_kinds() {
         for source in [
             "true + false",
@@ -36246,14 +36357,13 @@ mod tests {
 
         let operand = IrId::new(0);
         let root = IrId::new(1);
-        let root_span = Span::new(0, 2);
         let ir = manual_ir(
             root,
             vec![
                 pure_node(IrKind::Int, Span::new(1, 2), IrData::Int(i64::MIN)),
                 pure_node(
                     IrKind::UnaryOp,
-                    root_span,
+                    Span::new(0, 2),
                     IrData::Unary {
                         op: UnaryOpKind::Neg,
                         operand,
@@ -36262,15 +36372,8 @@ mod tests {
             ],
         );
 
-        let error = eval_whnf(&ir).expect_err("negating i64::MIN overflows");
-        assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::ArithmeticOverflow {
-                id: root,
-                op: ArithmeticOp::Neg,
-            }
-        );
-        assert_eq!(error.span(), root_span);
+        let value = eval_whnf(&ir).expect("pinned Nix 2.24 wraps i64::MIN negation");
+        assert_eq!(value.as_int(), Ok(i64::MIN));
     }
 
     #[test]
@@ -36303,12 +36406,19 @@ mod tests {
         assert_eq!(eval("1 + 2.5").as_float(), Ok(3.5));
         assert_eq!(eval("1.5 + 2.0").as_float(), Ok(3.5));
         assert_eq!(eval("1.5 + 2").as_float(), Ok(3.5));
+        assert_eq!(eval("5 - 1.5").as_float(), Ok(3.5));
+        assert_eq!(eval("5.5 - 2").as_float(), Ok(3.5));
         assert_eq!(eval("2 * 0.5").as_float(), Ok(1.0));
+        assert_eq!(eval("2.5 * 2").as_float(), Ok(5.0));
+        assert_eq!(eval("5 / 2.0").as_float(), Ok(2.5));
+        assert_eq!(eval("5.0 / 2").as_float(), Ok(2.5));
     }
 
     #[test]
     fn integer_division_truncates_toward_zero() {
+        assert_eq!(eval("7 / 2").as_int(), Ok(3));
         assert_eq!(eval("7 / (-2)").as_int(), Ok(-3));
+        assert_eq!(eval("(-7) / 2").as_int(), Ok(-3));
     }
 
     #[test]

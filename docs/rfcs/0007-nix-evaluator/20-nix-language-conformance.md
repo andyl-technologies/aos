@@ -482,8 +482,8 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 7.1 Integer and float arithmetic
 
-- [ ] **Integers are i64** — 64-bit signed.
-- [ ] **i64 overflow behavior** — reproduce C++ Nix's exact overflow semantics.
+- [x] **Integers are i64** — 64-bit signed.
+- [x] **i64 overflow behavior** — reproduce C++ Nix's exact overflow semantics.
       C++ Nix performs signed 64-bit arithmetic. **Modern Nix (≥ 2.25, via
       NixOS/nix#11188, merged Aug 2024) *throws* on signed-64-bit overflow rather
       than wrapping** — `add`/`sub`/`mul` that would overflow raise an evaluation
@@ -492,15 +492,15 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       **version-dependent and observable** — **verify against pinned Nix**: if the
       pinned rev is ≥ 2.25 reproduce the throw-on-overflow (catchable) error; if
       older, reproduce wrapping. Pin the exact error class.
-- [ ] **Float arithmetic** — IEEE-754 double; reproduce rounding exactly.
-- [ ] **int/float mixing & promotion** — any binary arithmetic with one float
+- [x] **Float arithmetic** — IEEE-754 double; reproduce rounding exactly.
+- [x] **int/float mixing & promotion** — any binary arithmetic with one float
       operand promotes to float; int+int stays int. Verify promotion for `+ - * /`.
-- [ ] **Division** — `int / int`: verify whether it is integer (truncating) or
+- [x] **Division** — `int / int`: verify whether it is integer (truncating) or
       float division in the pinned Nix (Nix `int / int` yields an **int** via
       truncation; `/` with a float operand yields a float). **Verify** the
       truncation/rounding direction (toward zero?) against pinned Nix.
-- [ ] **Division by zero** — `x / 0` is a **must-error**; verify the error class.
-- [ ] **Unary negation** — `-x` for int and float (§6 precedence 3).
+- [x] **Division by zero** — `x / 0` is a **must-error**; verify the error class.
+- [x] **Unary negation** — `-x` for int and float (§6 precedence 3).
 
 ### 7.2 Printing/formatting of numbers (observable!)
 
