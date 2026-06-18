@@ -243,6 +243,10 @@ impl NixRunner {
     /// error if `nix-instantiate` cannot be spawned or its output is
     /// not valid JSON.
     pub fn eval_expr_json(&self, expr: &str) -> Result<serde_json::Value> {
+        tracing::info!(
+            evaluator = self.evaluator.name(),
+            "evaluating Nix expression"
+        );
         let stdout = self.evaluator.eval_expr(expr)?;
         let value: serde_json::Value = serde_json::from_str(stdout.trim())
             .context("failed to parse JSON from nix-instantiate expression")?;
@@ -299,7 +303,14 @@ impl NixRunner {
     /// another error if `nix-instantiate` cannot be spawned or prints
     /// no output.
     pub fn instantiate(&self, attr: &str) -> Result<PathBuf> {
-        self.evaluator.instantiate(&self.default_nix(), attr)
+        let file = self.default_nix();
+        tracing::info!(
+            evaluator = self.evaluator.name(),
+            attr,
+            file = %file.display(),
+            "instantiating Nix attribute"
+        );
+        self.evaluator.instantiate(&file, attr)
     }
 
     /// Runs garbage collection via `nix-collect-garbage`, optionally
@@ -555,7 +566,9 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::os::unix::fs as unix_fs;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tracing::field::{Field, Visit};
+    use tracing::{Event, Level, Metadata, Subscriber, span};
 
     const FAKE_NIX_CHILD_ENV: &str = "AOS_RUN_FAKE_NIX_CHILD";
 
@@ -628,6 +641,102 @@ mod tests {
         }
     }
 
+    fn runner_with_evaluator(evaluator: Box<dyn NixEval>) -> NixRunner {
+        NixRunner {
+            root: PathBuf::from("/aos"),
+            evaluator,
+            eval_config: NixEvalConfig::default(),
+            verbose: 0,
+            quiet: true,
+        }
+    }
+
+    struct FakeEval;
+
+    impl NixEval for FakeEval {
+        fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+            Ok(PathBuf::from("/nix/store/fake.drv"))
+        }
+
+        fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+            Ok(PathBuf::from("/nix/store/fake-expr.drv"))
+        }
+
+        fn eval_expr(&self, _expr: &str) -> Result<String> {
+            Ok("1".to_string())
+        }
+
+        fn name(&self) -> &'static str {
+            "fake-eval"
+        }
+    }
+
+    #[derive(Clone)]
+    struct RecordingSubscriber {
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Subscriber for RecordingSubscriber {
+        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+            *metadata.level() <= Level::INFO
+        }
+
+        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+        fn enter(&self, _span: &span::Id) {}
+        fn exit(&self, _span: &span::Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = EventFields::default();
+            event.record(&mut visitor);
+            self.events
+                .lock()
+                .expect("recorded events lock")
+                .push(visitor.render());
+        }
+    }
+
+    #[derive(Default)]
+    struct EventFields {
+        message: String,
+        fields: Vec<String>,
+    }
+
+    impl EventFields {
+        fn render(self) -> String {
+            let mut output = self.message;
+            for field in self.fields {
+                if !output.is_empty() {
+                    output.push(' ');
+                }
+                output.push_str(&field);
+            }
+            output
+        }
+    }
+
+    impl Visit for EventFields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields.push(format!("{}={value:?}", field.name()));
+            }
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                self.message = value.to_string();
+            } else {
+                self.fields.push(format!("{}={value}", field.name()));
+            }
+        }
+    }
+
     fn link_fake_nix_command(dir: &Path, name: &str) -> Result<()> {
         let path = dir.join(name);
         unix_fs::symlink(std::env::current_exe()?, path)?;
@@ -641,6 +750,41 @@ mod tests {
         }
         println!("fake stdout");
         eprintln!("trace: visible");
+    }
+
+    #[test]
+    fn runner_logs_evaluator_name_for_eval_seam_operations() -> Result<()> {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = RecordingSubscriber {
+            events: Arc::clone(&events),
+        };
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let runner = runner_with_evaluator(Box::new(FakeEval));
+
+        tracing::dispatcher::with_default(&dispatch, || -> Result<()> {
+            assert_eq!(runner.eval_expr_json("1")?, serde_json::Value::from(1));
+            assert_eq!(
+                runner.instantiate("pkg")?,
+                PathBuf::from("/nix/store/fake.drv")
+            );
+            Ok(())
+        })?;
+
+        let events = events.lock().expect("recorded events lock");
+        let eval_event = events
+            .iter()
+            .find(|event| event.contains("evaluating Nix expression"))
+            .expect("expression evaluation event recorded");
+        assert!(eval_event.contains("evaluator=fake-eval"));
+
+        let instantiate_event = events
+            .iter()
+            .find(|event| event.contains("instantiating Nix attribute"))
+            .expect("attribute instantiation event recorded");
+        assert!(instantiate_event.contains("evaluator=fake-eval"));
+        assert!(instantiate_event.contains("attr=pkg"));
+        assert!(instantiate_event.contains("file=/aos/default.nix"));
+        Ok(())
     }
 
     #[test]
