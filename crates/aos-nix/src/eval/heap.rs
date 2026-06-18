@@ -7,6 +7,7 @@
 //! [`NixList`], [`FlatAttrs`], [`EvalLambda`], [`EvalPrimOp`], and
 //! [`EvalThunk`] values.
 
+use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
@@ -429,6 +430,8 @@ impl EvalPrimOp {
 pub struct EvalHeap {
     arena: BumpArena,
     records: Vec<HeapRecord>,
+    string_cons: HashMap<u64, Vec<Value>>,
+    path_cons: HashMap<u64, Vec<Value>>,
 }
 
 impl Default for EvalHeap {
@@ -439,10 +442,12 @@ impl Default for EvalHeap {
 
 impl EvalHeap {
     /// Creates an empty evaluator heap.
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             arena: BumpArena::new(),
             records: Vec::new(),
+            string_cons: HashMap::new(),
+            path_cons: HashMap::new(),
         }
     }
 
@@ -457,6 +462,8 @@ impl EvalHeap {
             arena: BumpArena::with_initial_chunk_bytes(chunk_bytes)
                 .map_err(EvalHeapError::Arena)?,
             records: Vec::new(),
+            string_cons: HashMap::new(),
+            path_cons: HashMap::new(),
         })
     }
 
@@ -482,11 +489,16 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a string handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the bump arena cannot reserve a string handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_string(&mut self, string: NixString) -> Result<Value, EvalHeapError> {
+        let hash = string.structural_hash_xxh3();
+        if let Some(value) = self.lookup_string_cons(hash, &string)? {
+            return Ok(value);
+        }
         self.reserve_record_slot()?;
+        self.reserve_cons_slot(ValueTag::String, hash)?;
         let allocation = self
             .arena
             .aos_alloc_string(string.len())
@@ -494,8 +506,10 @@ impl EvalHeap {
         let value = Value::string(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: Some(hash),
             object: HeapObjectValue::String(string),
         });
+        self.push_cons_value(ValueTag::String, hash, value);
         Ok(value)
     }
 
@@ -506,11 +520,16 @@ impl EvalHeap {
     ///
     /// # Errors
     ///
-    /// Returns [`EvalHeapError`] if record storage cannot be reserved, if the
-    /// bump arena cannot reserve a path handle, or if the resulting handle
-    /// violates the runtime value alignment contract.
+    /// Returns [`EvalHeapError`] if record or cons-table storage cannot be
+    /// reserved, if the bump arena cannot reserve a path handle, or if the
+    /// resulting handle violates the runtime value alignment contract.
     pub fn alloc_path(&mut self, path: NixString) -> Result<Value, EvalHeapError> {
+        let hash = path.structural_hash_xxh3();
+        if let Some(value) = self.lookup_path_cons(hash, &path)? {
+            return Ok(value);
+        }
         self.reserve_record_slot()?;
+        self.reserve_cons_slot(ValueTag::Path, hash)?;
         let allocation = self
             .arena
             .aos_alloc_string(path.len())
@@ -518,8 +537,10 @@ impl EvalHeap {
         let value = Value::path(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: Some(hash),
             object: HeapObjectValue::Path(path),
         });
+        self.push_cons_value(ValueTag::Path, hash, value);
         Ok(value)
     }
 
@@ -542,6 +563,7 @@ impl EvalHeap {
         let value = Value::list(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: None,
             object: HeapObjectValue::List(list),
         });
         Ok(value)
@@ -569,6 +591,7 @@ impl EvalHeap {
         let value = Value::attrs(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: None,
             object: HeapObjectValue::Attrs(attrs),
         });
         Ok(value)
@@ -593,6 +616,7 @@ impl EvalHeap {
         let value = Value::lambda(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: None,
             object: HeapObjectValue::Lambda(Rc::new(lambda)),
         });
         Ok(value)
@@ -617,6 +641,7 @@ impl EvalHeap {
         let value = Value::primop(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: None,
             object: HeapObjectValue::Primop(Rc::new(primop)),
         });
         Ok(value)
@@ -638,6 +663,7 @@ impl EvalHeap {
         let value = Value::thunk(allocation.ptr).map_err(EvalHeapError::Value)?;
         self.records.push(HeapRecord {
             ptr: allocation.ptr,
+            structural_hash: None,
             object: HeapObjectValue::Thunk(Rc::new(thunk)),
         });
         Ok(value)
@@ -923,6 +949,93 @@ impl EvalHeap {
             .map_err(|_| EvalHeapError::RecordAllocationFailed { records })
     }
 
+    fn lookup_string_cons(
+        &self,
+        hash: u64,
+        string: &NixString,
+    ) -> Result<Option<Value>, EvalHeapError> {
+        let Some(bucket) = self.string_cons.get(&hash) else {
+            return Ok(None);
+        };
+        for value in bucket.iter().copied() {
+            let ptr = value.as_string_ptr().map_err(EvalHeapError::Value)?;
+            let record = self.record_or_unknown(ValueTag::String, ptr)?;
+            if record.structural_hash == Some(hash)
+                && matches!(&record.object, HeapObjectValue::String(candidate) if candidate == string)
+            {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
+    fn lookup_path_cons(
+        &self,
+        hash: u64,
+        path: &NixString,
+    ) -> Result<Option<Value>, EvalHeapError> {
+        let Some(bucket) = self.path_cons.get(&hash) else {
+            return Ok(None);
+        };
+        for value in bucket.iter().copied() {
+            let ptr = value.as_path_ptr().map_err(EvalHeapError::Value)?;
+            let record = self.record_or_unknown(ValueTag::Path, ptr)?;
+            if record.structural_hash == Some(hash)
+                && matches!(&record.object, HeapObjectValue::Path(candidate) if candidate == path)
+            {
+                return Ok(Some(value));
+            }
+        }
+        Ok(None)
+    }
+
+    fn reserve_cons_slot(&mut self, tag: ValueTag, hash: u64) -> Result<(), EvalHeapError> {
+        let table = match tag {
+            ValueTag::String => &mut self.string_cons,
+            ValueTag::Path => &mut self.path_cons,
+            _ => return Ok(()),
+        };
+
+        if let Some(bucket) = table.get_mut(&hash) {
+            let entries = bucket
+                .len()
+                .checked_add(1)
+                .ok_or(EvalHeapError::ConsTableLengthOverflow)?;
+            bucket
+                .try_reserve_exact(1)
+                .map_err(|_| EvalHeapError::ConsTableAllocationFailed { entries })?;
+            return Ok(());
+        }
+
+        table
+            .try_reserve(1)
+            .map_err(|_| EvalHeapError::ConsTableAllocationFailed {
+                entries: table.len().saturating_add(1),
+            })?;
+        let mut bucket = Vec::new();
+        bucket
+            .try_reserve_exact(1)
+            .map_err(|_| EvalHeapError::ConsTableAllocationFailed { entries: 1 })?;
+        table.insert(hash, bucket);
+        Ok(())
+    }
+
+    fn push_cons_value(&mut self, tag: ValueTag, hash: u64, value: Value) {
+        let table = match tag {
+            ValueTag::String => &mut self.string_cons,
+            ValueTag::Path => &mut self.path_cons,
+            _ => return,
+        };
+        if let Some(bucket) = table.get_mut(&hash) {
+            bucket.push(value);
+        } else {
+            debug_assert!(
+                false,
+                "cons-table slot should be reserved before allocation"
+            );
+        }
+    }
+
     fn record(&self, ptr: NonNull<HeapObject>) -> Option<&HeapRecord> {
         let address = ptr.as_ptr() as usize;
         self.records
@@ -943,6 +1056,7 @@ impl EvalHeap {
 #[derive(Debug)]
 struct HeapRecord {
     ptr: NonNull<HeapObject>,
+    structural_hash: Option<u64>,
     object: HeapObjectValue,
 }
 
@@ -985,6 +1099,15 @@ pub enum EvalHeapError {
     RecordAllocationFailed {
         /// The requested record capacity.
         records: usize,
+    },
+    /// The evaluator heap cons table length overflowed.
+    #[error("evaluator heap cons table length overflow")]
+    ConsTableLengthOverflow,
+    /// The evaluator heap cons table could not reserve space for another entry.
+    #[error("evaluator heap failed to reserve {entries} cons-table entries")]
+    ConsTableAllocationFailed {
+        /// The requested cons-table entry count.
+        entries: usize,
     },
     /// A runtime value failed a checked heap-value operation.
     #[error("heap value operation failed: {0}")]
@@ -1083,6 +1206,62 @@ mod tests {
     }
 
     #[test]
+    fn identical_string_values_reuse_heap_record() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let first = heap
+            .alloc_string(NixString::from_bytes(
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg".to_vec(),
+            ))
+            .expect("first string allocates");
+        let second = heap
+            .alloc_string(NixString::from_bytes(
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg".to_vec(),
+            ))
+            .expect("second string allocates");
+
+        assert!(first.raw_eq(second));
+        assert_eq!(heap.len(), 1);
+        assert_eq!(
+            heap.get_string(second)
+                .expect("second string exists")
+                .bytes(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-pkg"
+        );
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn identical_string_bytes_with_different_contexts_do_not_collapse() {
+        let context = StringContext::singleton(
+            ContextElement::opaque_path(b"/nix/store/source".to_vec()).expect("context builds"),
+        )
+        .expect("singleton context allocates");
+        let mut heap = EvalHeap::with_initial_chunk_bytes(256).expect("heap creates");
+        let context_free = heap
+            .alloc_string(NixString::from_bytes(b"/nix/store/pkg".to_vec()))
+            .expect("context-free string allocates");
+        let context_bearing = heap
+            .alloc_string(NixString::new(b"/nix/store/pkg".to_vec(), context))
+            .expect("context-bearing string allocates");
+
+        assert_eq!(context_free.tag(), ValueTag::String);
+        assert_eq!(context_bearing.tag(), ValueTag::String);
+        assert_ne!(context_free.payload_bits(), context_bearing.payload_bits());
+        assert_eq!(heap.len(), 2);
+        assert!(
+            !heap
+                .get_string(context_free)
+                .expect("context-free string exists")
+                .has_context()
+        );
+        assert!(
+            heap.get_string(context_bearing)
+                .expect("context-bearing string exists")
+                .has_context()
+        );
+    }
+
+    #[test]
     fn allocates_path_values_and_recovers_bytes() {
         let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
         let value = heap
@@ -1096,6 +1275,46 @@ mod tests {
             b"/tmp/source"
         );
         assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn identical_path_values_reuse_heap_record() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let first = heap
+            .alloc_path(NixString::from_bytes(
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec(),
+            ))
+            .expect("first path allocates");
+        let second = heap
+            .alloc_path(NixString::from_bytes(
+                b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec(),
+            ))
+            .expect("second path allocates");
+
+        assert!(first.raw_eq(second));
+        assert_eq!(heap.len(), 1);
+        assert_eq!(
+            heap.get_path(second).expect("second path exists").bytes(),
+            b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source"
+        );
+        assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn string_and_path_cons_tables_are_separate() {
+        let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
+        let bytes = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-source".to_vec();
+        let string = heap
+            .alloc_string(NixString::from_bytes(bytes.clone()))
+            .expect("string allocates");
+        let path = heap
+            .alloc_path(NixString::from_bytes(bytes))
+            .expect("path allocates");
+
+        assert_eq!(string.tag(), ValueTag::String);
+        assert_eq!(path.tag(), ValueTag::Path);
+        assert_ne!(string.payload_bits(), path.payload_bits());
+        assert_eq!(heap.len(), 2);
     }
 
     #[test]

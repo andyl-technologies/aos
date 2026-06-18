@@ -8,8 +8,10 @@
 //! element set and the propagation rules exercised here.
 
 use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 
 use thiserror::Error;
+use xxhash_rust::xxh3::Xxh3;
 
 /// The deriving-path kind carried by a string-context element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -302,6 +304,17 @@ impl NixString {
         !self.context.is_empty()
     }
 
+    /// Returns this string's in-process structural hash.
+    ///
+    /// The hash covers both bytes and context. It is only an accelerator for
+    /// evaluator-local cons tables; callers must still confirm equality because
+    /// xxh3 is not collision-free and is not a Nix-observable hash.
+    pub fn structural_hash_xxh3(&self) -> u64 {
+        let mut hasher = Xxh3::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Concatenates two strings and unions their contexts.
     ///
     /// # Errors
@@ -549,6 +562,34 @@ mod tests {
 
         assert_eq!(with_source.bytes(), with_output.bytes());
         assert_ne!(with_source, with_output);
+    }
+
+    #[test]
+    fn structural_hash_covers_bytes_and_context() {
+        let context = singleton(opaque(b"/nix/store/source"));
+        let first = NixString::new(b"/nix/store/pkg".to_vec(), context.clone());
+        let identical = NixString::new(b"/nix/store/pkg".to_vec(), context);
+        let different_bytes = NixString::new(
+            b"/nix/store/other".to_vec(),
+            singleton(opaque(b"/nix/store/source")),
+        );
+        let different_context = NixString::new(
+            b"/nix/store/pkg".to_vec(),
+            singleton(output(b"/nix/store/pkg.drv", b"out")),
+        );
+
+        assert_eq!(
+            first.structural_hash_xxh3(),
+            identical.structural_hash_xxh3()
+        );
+        assert_ne!(
+            first.structural_hash_xxh3(),
+            different_bytes.structural_hash_xxh3()
+        );
+        assert_ne!(
+            first.structural_hash_xxh3(),
+            different_context.structural_hash_xxh3()
+        );
     }
 
     #[test]
