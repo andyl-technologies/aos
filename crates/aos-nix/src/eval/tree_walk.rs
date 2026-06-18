@@ -1683,6 +1683,12 @@ struct FetchGitArguments {
 }
 
 #[derive(Clone, Debug)]
+struct FetchMercurialArguments {
+    url: Vec<u8>,
+    rev: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
 struct FetchGitResult {
     out_path: Vec<u8>,
     rev: String,
@@ -8307,6 +8313,109 @@ impl TreeWalk {
         let _ = fs::remove_dir_all(&temp_dir);
         let result = result?;
         self.alloc_fetch_git_result(id, span, result)
+    }
+
+    fn eval_fetch_mercurial_primop(
+        &mut self,
+        call: BuiltinCall,
+        argument: IrId,
+        argument_span: Span,
+        value: Option<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        if self.options.eval_mode() == EvalMode::Pure {
+            let value = match value {
+                Some(value) => value,
+                None => self.eval_node(argument)?,
+            };
+            let value = self.force_demanded_value(argument, argument_span, value)?;
+            let args = self.fetch_mercurial_arguments(argument, argument_span, value)?;
+            if args.rev.is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchMercurialRevRequired {
+                        id: argument,
+                        url: args.url,
+                        mode: EvalMode::Pure,
+                    },
+                    argument_span,
+                ));
+            }
+        }
+
+        unsupported_primop(call)
+    }
+
+    fn fetch_mercurial_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchMercurialArguments, TreeWalkError> {
+        if value.tag() == ValueTag::String {
+            let url = self.context_free_string_bytes(id, span, value, "fetchMercurial")?;
+            return Ok(FetchMercurialArguments { url, rev: None });
+        }
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "set or string",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        self.validate_fetch_mercurial_attrs(id, span, value)?;
+
+        let url_value = self.required_attr_value_by_name(id, value, URL_ATTR, span)?;
+        let url_value = self.force_value(id, span, url_value)?;
+        let url = self.context_free_string_bytes(id, span, url_value, "fetchMercurial")?;
+
+        if let Some(name_value) = self.attr_value_by_name(id, value, NAME_ATTR, span)? {
+            let name_value = self.force_value(id, span, name_value)?;
+            let _ = self.context_free_string_bytes(id, span, name_value, "fetchMercurial")?;
+        }
+
+        let rev = if let Some(rev_value) = self.attr_value_by_name(id, value, REV_ATTR, span)? {
+            let rev_value = self.force_value(id, span, rev_value)?;
+            Some(self.context_free_string_bytes(id, span, rev_value, "fetchMercurial")?)
+        } else {
+            None
+        };
+
+        Ok(FetchMercurialArguments { url, rev })
+    }
+
+    fn validate_fetch_mercurial_attrs(
+        &self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<(), TreeWalkError> {
+        let attrs = self
+            .heap
+            .get_attrs(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        for entry in attrs.iter_lexicographic() {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id,
+                        symbol: entry.key,
+                    },
+                    span,
+                )
+            })?;
+            if !matches!(key, URL_ATTR | NAME_ATTR | REV_ATTR) {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedFetchMercurialAttr {
+                        id,
+                        attr: key.to_vec(),
+                    },
+                    span,
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn eval_fetch_git_into_store(
@@ -26477,6 +26586,12 @@ impl BuiltinRuntime for Builtin {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetch_git_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::FetchMercurial => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                eval.eval_fetch_mercurial_primop(call, argument, argument_span, None)
+            }
             BuiltinExecution::FetchTarball => {
                 check_builtin_arity(call, 1, args.len())?;
                 let argument = args[0];
@@ -26772,6 +26887,16 @@ impl BuiltinRuntime for Builtin {
                     argument.id(),
                     argument.span(),
                     argument.value(),
+                )
+            }
+            BuiltinExecution::FetchMercurial => {
+                check_builtin_arity(call, 1, args.len())?;
+                let argument = args[0];
+                eval.eval_fetch_mercurial_primop(
+                    call,
+                    argument.id(),
+                    argument.span(),
+                    Some(argument.value()),
                 )
             }
             BuiltinExecution::FetchTarball => {
@@ -27844,6 +27969,24 @@ pub enum TreeWalkErrorKind {
         expected: Vec<u8>,
         /// The actual SHA-256 digest bytes.
         actual: Vec<u8>,
+    },
+    /// `builtins.fetchMercurial` used an unsupported argument attribute.
+    #[error("unsupported fetchMercurial argument at node {id:?}: {attr:?}")]
+    UnsupportedFetchMercurialAttr {
+        /// The fetchMercurial argument node.
+        id: IrId,
+        /// The unsupported attribute name bytes.
+        attr: Vec<u8>,
+    },
+    /// Pure evaluation rejected an unpinned `builtins.fetchMercurial` request.
+    #[error("{mode:?} evaluation requires a rev for fetchMercurial at node {id:?} url {url:?}")]
+    FetchMercurialRevRequired {
+        /// The fetchMercurial argument node.
+        id: IrId,
+        /// The URL bytes.
+        url: Vec<u8>,
+        /// The evaluation mode that required a revision.
+        mode: EvalMode,
     },
     /// `builtins.fetchTarball` used an unsupported argument attribute.
     #[error("unsupported fetchTarball argument at node {id:?}: {attr:?}")]
@@ -34908,6 +35051,74 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn fetch_mercurial_stub_preflights_pure_mode_pinning() {
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.fetchMercurial "https://example.invalid/repo""#),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure fetchMercurial rejects unpinned input before fallback");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchMercurialRevRequired {
+                mode: EvalMode::Pure,
+                ..
+            }
+        ));
+
+        let ir = lower(
+            r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; rev = "abcdef"; }"#,
+        );
+        let error =
+            eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+                .expect_err("pinned fetchMercurial remains a fallback boundary");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedPrimOp {
+                id: ir.root,
+                symbol: symbol_for(&ir, b"fetchMercurial"),
+            }
+        );
+
+        let error = eval_whnf_owned_with_options(
+            &lower(
+                r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; bogus = 1; }"#,
+            ),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure fetchMercurial rejects unsupported attrs before pinning fallback");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchMercurialAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let error = eval_whnf_owned_with_options(
+            &lower(
+                r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; name = null; }"#,
+            ),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure fetchMercurial validates name before pinning");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned_with_options(
+            &lower(
+                r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; rev = "abcdef"; name = builtins.throw "name"; }"#,
+            ),
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+        )
+        .expect_err("pure fetchMercurial forces name before fallback");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
     }
 
     #[test]

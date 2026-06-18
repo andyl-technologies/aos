@@ -298,7 +298,7 @@ define_builtins! {
     pub(crate) struct FetchMercurialBuiltin;
     impl BuiltinDefinition for FetchMercurialBuiltin {
         const NAME: &'static [u8] = b"fetchMercurial";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::FetchMercurial;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
@@ -1005,6 +1005,8 @@ pub(crate) enum BuiltinExecution {
     Fetchurl,
     /// The builtin evaluates `fetchGit`.
     FetchGit,
+    /// The builtin preflights `fetchMercurial` before deferring execution.
+    FetchMercurial,
     /// The builtin evaluates `fetchTarball`.
     FetchTarball,
     /// The builtin evaluates `fetchTree`.
@@ -1114,6 +1116,9 @@ impl BuiltinExecution {
             | Self::ReadFileType => Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
             }),
+            Self::FetchMercurial => Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful,
+            }),
             Self::FilterSource => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
             }),
@@ -1166,7 +1171,8 @@ impl BuiltinExecution {
             | Self::PathExists
             | Self::ReadDir
             | Self::ReadFile
-            | Self::ReadFileType => Some(1),
+            | Self::ReadFileType
+            | Self::FetchMercurial => Some(1),
             Self::StrictBinary { .. }
             | Self::ScopedImport
             | Self::AddErrorContext
@@ -1229,6 +1235,7 @@ impl BuiltinExecution {
             | Self::ReadFileType
             | Self::ToFile
             | Self::FindFile
+            | Self::FetchMercurial
             | Self::Trace { .. }
             | Self::Warn => true,
             Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => {
