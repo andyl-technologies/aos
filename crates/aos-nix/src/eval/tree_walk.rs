@@ -26820,7 +26820,18 @@ impl BuiltinRuntime for Builtin {
                 )?;
                 eval.eval_lazy_node(args[1])
             }
-            _ => unsupported_primop(call),
+            BuiltinExecution::Derivation
+            | BuiltinExecution::Unsupported { .. }
+            | BuiltinExecution::BuiltinsValue
+            | BuiltinExecution::TrueValue
+            | BuiltinExecution::FalseValue
+            | BuiltinExecution::NullValue
+            | BuiltinExecution::CurrentSystemValue
+            | BuiltinExecution::CurrentTimeValue
+            | BuiltinExecution::StoreDirValue
+            | BuiltinExecution::NixVersionValue
+            | BuiltinExecution::LangVersionValue
+            | BuiltinExecution::NixPathValue => unsupported_primop(call),
         })();
         eval.leave_call();
         result
@@ -27151,7 +27162,17 @@ impl BuiltinRuntime for Builtin {
                 )?;
                 Ok(args[1].value())
             }
-            _ => unsupported_primop(call),
+            BuiltinExecution::Unsupported { .. }
+            | BuiltinExecution::BuiltinsValue
+            | BuiltinExecution::TrueValue
+            | BuiltinExecution::FalseValue
+            | BuiltinExecution::NullValue
+            | BuiltinExecution::CurrentSystemValue
+            | BuiltinExecution::CurrentTimeValue
+            | BuiltinExecution::StoreDirValue
+            | BuiltinExecution::NixVersionValue
+            | BuiltinExecution::LangVersionValue
+            | BuiltinExecution::NixPathValue => unsupported_primop(call),
         }
     }
 }

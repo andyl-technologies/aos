@@ -1243,7 +1243,27 @@ impl BuiltinExecution {
             Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => {
                 matches!(effect, BuiltinEffect::Effectful)
             }
-            _ => false,
+            Self::LazyUnary
+            | Self::DirectBinary(_)
+            | Self::DirectTernary(_)
+            | Self::Sort
+            | Self::TryEval
+            | Self::AddErrorContext
+            | Self::GenericClosure
+            | Self::FetchGit
+            | Self::FetchTarball
+            | Self::FetchTree
+            | Self::Fetchurl
+            | Self::FlakeRefToString
+            | Self::ParseFlakeRef
+            | Self::Seq
+            | Self::DeepSeq
+            | Self::TrueValue
+            | Self::FalseValue
+            | Self::NullValue
+            | Self::BuiltinsValue
+            | Self::NixVersionValue
+            | Self::LangVersionValue => false,
         }
     }
 }
