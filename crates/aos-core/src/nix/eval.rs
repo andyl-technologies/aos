@@ -60,6 +60,7 @@ pub trait NixEval: Send + Sync {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NixEvalConfig {
     current_system: Option<String>,
+    trace_verbose: bool,
 }
 
 impl NixEvalConfig {
@@ -87,6 +88,11 @@ impl NixEvalConfig {
         self.current_system.as_deref()
     }
 
+    /// Returns whether `builtins.traceVerbose` should emit trace output.
+    pub const fn trace_verbose(&self) -> bool {
+        self.trace_verbose
+    }
+
     /// Returns C++ Nix CLI options that reproduce these evaluator settings.
     pub(crate) fn cli_option_args(&self) -> Vec<String> {
         let mut args = Vec::new();
@@ -95,6 +101,13 @@ impl NixEvalConfig {
                 "--option".to_string(),
                 "system".to_string(),
                 current_system.to_string(),
+            ]);
+        }
+        if self.trace_verbose {
+            args.extend([
+                "--option".to_string(),
+                "trace-verbose".to_string(),
+                "true".to_string(),
             ]);
         }
         args
@@ -117,6 +130,11 @@ impl NixEvalConfig {
     /// Clears the configured Nix `system` value.
     pub fn clear_current_system(&mut self) {
         self.current_system = None;
+    }
+
+    /// Configures whether `builtins.traceVerbose` should emit trace output.
+    pub fn set_trace_verbose(&mut self, trace_verbose: bool) {
+        self.trace_verbose = trace_verbose;
     }
 }
 
@@ -352,6 +370,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     if let Some(current_system) = config.current_system() {
         options.set_current_system(current_system.as_bytes().to_vec())?;
     }
+    options.set_trace_verbose(config.trace_verbose());
     Ok(options)
 }
 
@@ -374,6 +393,32 @@ mod tests {
             NixEvalConfig::with_current_system("aos-test-target")?.cli_option_args(),
             ["--option", "system", "aos-test-target"]
         );
+
+        let mut config = NixEvalConfig::with_current_system("aos-test-target")?;
+        config.set_trace_verbose(true);
+        assert_eq!(
+            config.cli_option_args(),
+            [
+                "--option",
+                "system",
+                "aos-test-target",
+                "--option",
+                "trace-verbose",
+                "true"
+            ]
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_trace_verbose_to_native_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_trace_verbose(true);
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert!(options.trace_verbose());
         Ok(())
     }
 

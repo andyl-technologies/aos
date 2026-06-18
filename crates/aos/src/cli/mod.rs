@@ -47,6 +47,10 @@ pub struct Cli {
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Enable builtins.traceVerbose output
+    #[arg(long, global = true)]
+    pub trace_verbose: bool,
 }
 
 #[derive(Subcommand)]

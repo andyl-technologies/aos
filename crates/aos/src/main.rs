@@ -41,7 +41,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use aos_core::error::AosError;
-use aos_core::nix::NixRunner;
+use aos_core::nix::{NixEvalConfig, NixRunner};
 use aos_core::output::Printer;
 use cli::{Cli, Commands};
 
@@ -108,6 +108,8 @@ async fn main() {
 /// directory is not a repo root.
 async fn run(cli: &Cli) -> Result<()> {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
+    let mut eval_config = NixEvalConfig::new();
+    eval_config.set_trace_verbose(cli.trace_verbose);
 
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
@@ -134,10 +136,10 @@ async fn run(cli: &Cli) -> Result<()> {
 
     // Cache commands use NixCli (classic nix commands), not NixRunner.
     if let Commands::Cache { command } = &cli.command {
-        return commands::cache::run(&printer, command).await;
+        return commands::cache::run(&printer, command, &eval_config).await;
     }
 
-    let nix = NixRunner::new(cli.verbose, cli.quiet)?;
+    let nix = NixRunner::with_eval_config(cli.verbose, cli.quiet, eval_config)?;
 
     match &cli.command {
         Commands::Build {

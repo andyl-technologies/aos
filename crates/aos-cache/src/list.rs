@@ -7,7 +7,7 @@
 use anyhow::Result;
 
 use aos_core::nar::info as narinfo;
-use aos_core::nix::NixCli;
+use aos_core::nix::{NixCli, NixEvalConfig};
 use aos_core::output::Printer;
 
 use crate::backend::CacheBackend;
@@ -36,8 +36,9 @@ pub async fn run_list(
     file: Option<&str>,
     attr: Option<&str>,
     expr: Option<&str>,
+    eval_config: &NixEvalConfig,
 ) -> Result<()> {
-    let nix = NixCli::new(0);
+    let nix = NixCli::with_eval_config(0, eval_config.clone());
 
     if installables.is_empty() && attr.is_none() && expr.is_none() {
         printer.warning(

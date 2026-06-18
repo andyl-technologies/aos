@@ -22,7 +22,7 @@ use tokio::sync::Semaphore;
 
 use aos_core::nar::info as narinfo;
 use aos_core::nar::pack::{self, PackPath};
-use aos_core::nix::{NixCli, PathInfo};
+use aos_core::nix::{NixCli, NixEvalConfig, PathInfo};
 use aos_core::output::Printer;
 
 use crate::backend::CacheBackend;
@@ -72,9 +72,10 @@ pub async fn run_push(
     compression: &str,
     compression_level: i32,
     dry_run: bool,
+    eval_config: &NixEvalConfig,
 ) -> Result<()> {
     let start = Instant::now();
-    let nix = NixCli::new(0);
+    let nix = NixCli::with_eval_config(0, eval_config.clone());
     let batch_threshold_bytes = bandwidth::parse_size(batch_threshold)?;
 
     // 1. Resolve installables to store paths.

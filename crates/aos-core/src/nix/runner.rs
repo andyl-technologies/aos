@@ -11,8 +11,10 @@
 //! Verbosity shapes how subprocess output is handled: at `verbose >= 2`
 //! the child's stderr streams live to the terminal, at `verbose >= 3`
 //! the exact command line is echoed, and otherwise stderr is captured
-//! and replayed only on failure (suppressed entirely in quiet mode).
-//! Failures are reported as [`AosError::NixBuild`] /
+//! and replayed only on failure (suppressed entirely in quiet mode). Evaluation
+//! commands also stream stderr when `builtins.traceVerbose` output is explicitly
+//! enabled, so successful trace output remains user-visible. Failures are
+//! reported as [`AosError::NixBuild`] /
 //! [`AosError::NixNotFound`] / [`AosError::RootNotFound`] so callers
 //! can map them to the standard exit codes.
 
@@ -419,15 +421,17 @@ impl NixRunner {
     }
 
     /// Core runner: spawn a Nix subprocess and capture its output.  When
-    /// `verbose >= 2` the child's stderr is streamed to the terminal in
-    /// real-time; otherwise it is captured and only shown on failure.
+    /// `verbose >= 2` or trace-verbose output is enabled for an eval command,
+    /// the child's stderr is streamed to the terminal in real time; otherwise
+    /// it is captured and only shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
         let args = self.args_with_eval_options(cmd, args);
         if self.verbose >= 3 {
             eprintln!("+ {} {}", cmd, args.join(" "));
         }
 
-        let stderr_behavior = if self.verbose >= 2 {
+        let stream_stderr = self.should_stream_stderr(cmd);
+        let stderr_behavior = if stream_stderr {
             Stdio::inherit()
         } else {
             Stdio::piped()
@@ -441,9 +445,9 @@ impl NixRunner {
             .spawn()
             .with_context(|| format!("failed to spawn {cmd}"))?;
 
-        // When verbose >= 2, stderr goes directly to the terminal (Inherit),
-        // so we only need to read stdout.  Otherwise we capture both.
-        if self.verbose >= 2 {
+        // When stderr is inherited, it goes directly to the terminal, so we
+        // only need to read stdout. Otherwise we capture both.
+        if stream_stderr {
             let output = child
                 .wait_with_output()
                 .with_context(|| format!("{cmd} failed"))?;
@@ -490,6 +494,10 @@ impl NixRunner {
             args.extend(self.eval_config.cli_option_args());
         }
         args
+    }
+
+    fn should_stream_stderr(&self, cmd: &str) -> bool {
+        self.verbose >= 2 || (self.eval_config.trace_verbose() && command_accepts_eval_options(cmd))
     }
 
     fn repl_args(&self, nix_file: &Path) -> Vec<OsString> {
@@ -544,11 +552,70 @@ fn command_accepts_eval_options(cmd: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs as unix_fs;
+    use std::sync::{Mutex, OnceLock};
+
+    const FAKE_NIX_CHILD_ENV: &str = "AOS_RUN_FAKE_NIX_CHILD";
+
+    struct EnvVarGuard {
+        key: &'static str,
+        saved_value: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let saved_value = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            Self { key, saved_value }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.saved_value {
+                Some(value) => unsafe { std::env::set_var(self.key, value) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    struct PathEnvGuard {
+        saved_path: Option<OsString>,
+    }
+
+    impl PathEnvGuard {
+        fn prepend(path: &Path) -> Self {
+            let saved_path = std::env::var_os("PATH");
+            let mut paths = vec![path.to_path_buf()];
+            if let Some(saved_path) = &saved_path {
+                paths.extend(std::env::split_paths(saved_path));
+            }
+            let joined = std::env::join_paths(paths).expect("test PATH entries are valid");
+            unsafe { std::env::set_var("PATH", joined) };
+            Self { saved_path }
+        }
+    }
+
+    impl Drop for PathEnvGuard {
+        fn drop(&mut self) {
+            match &self.saved_path {
+                Some(path) => unsafe { std::env::set_var("PATH", path) },
+                None => unsafe { std::env::remove_var("PATH") },
+            }
+        }
+    }
 
     fn os_args_to_strings(args: Vec<OsString>) -> Vec<String> {
         args.into_iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn path_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
     }
 
     fn runner_with_config(eval_config: NixEvalConfig) -> NixRunner {
@@ -559,6 +626,21 @@ mod tests {
             verbose: 0,
             quiet: true,
         }
+    }
+
+    fn link_fake_nix_command(dir: &Path, name: &str) -> Result<()> {
+        let path = dir.join(name);
+        unix_fs::symlink(std::env::current_exe()?, path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn fake_nix_instantiate_child() {
+        if std::env::var_os(FAKE_NIX_CHILD_ENV).is_none() {
+            return;
+        }
+        println!("fake stdout");
+        eprintln!("trace: visible");
     }
 
     #[test]
@@ -590,6 +672,71 @@ mod tests {
     }
 
     #[test]
+    fn runner_appends_trace_verbose_to_eval_commands() {
+        let mut config = NixEvalConfig::new();
+        config.set_trace_verbose(true);
+        let runner = runner_with_config(config);
+        let args = vec!["--eval".to_string(), "default.nix".to_string()];
+
+        assert_eq!(
+            runner.args_with_eval_options("nix-instantiate", &args),
+            ["--eval", "default.nix", "--option", "trace-verbose", "true"]
+        );
+    }
+
+    #[test]
+    fn runner_streams_successful_eval_stderr_when_trace_verbose_is_enabled() {
+        let mut config = NixEvalConfig::new();
+        config.set_trace_verbose(true);
+        let runner = runner_with_config(config);
+
+        assert!(runner.should_stream_stderr("nix-instantiate"));
+        assert!(runner.should_stream_stderr("nix-build"));
+        assert!(!runner.should_stream_stderr("nix-store"));
+    }
+
+    #[test]
+    fn runner_streams_stderr_for_verbose_commands() {
+        let mut runner = runner_with_config(NixEvalConfig::default());
+        runner.verbose = 2;
+
+        assert!(runner.should_stream_stderr("nix-store"));
+    }
+
+    #[test]
+    fn run_nix_inherits_successful_eval_stderr_when_trace_verbose_is_enabled() -> Result<()> {
+        let _lock = path_env_lock().lock().expect("PATH env test lock");
+        let temp = tempfile::tempdir()?;
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir(&bin_dir)?;
+        link_fake_nix_command(&bin_dir, "nix-instantiate")?;
+        let _path_guard = PathEnvGuard::prepend(&bin_dir);
+        let _child_guard = EnvVarGuard::set(FAKE_NIX_CHILD_ENV, "1");
+        let args = vec![
+            "fake_nix_instantiate_child".to_string(),
+            "--nocapture".to_string(),
+            "--".to_string(),
+        ];
+
+        let runner = NixRunner {
+            root: temp.path().to_path_buf(),
+            ..runner_with_config(NixEvalConfig::default())
+        };
+        let output = runner.run_nix("nix-instantiate", &args)?;
+        assert!(String::from_utf8_lossy(&output.stderr).contains("trace: visible\n"));
+
+        let mut config = NixEvalConfig::new();
+        config.set_trace_verbose(true);
+        let runner = NixRunner {
+            root: temp.path().to_path_buf(),
+            ..runner_with_config(config)
+        };
+        let output = runner.run_nix("nix-instantiate", &args)?;
+        assert!(output.stderr.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn runner_leaves_non_eval_commands_unchanged() -> Result<()> {
         let runner = runner_with_config(NixEvalConfig::with_current_system("aos-test-target")?);
         let args = vec!["--query".to_string(), "/nix/store/path".to_string()];
@@ -607,7 +754,9 @@ mod tests {
 
     #[test]
     fn runner_appends_eval_options_to_repl() -> Result<()> {
-        let runner = runner_with_config(NixEvalConfig::with_current_system("aos-test-target")?);
+        let mut config = NixEvalConfig::with_current_system("aos-test-target")?;
+        config.set_trace_verbose(true);
+        let runner = runner_with_config(config);
 
         assert_eq!(
             os_args_to_strings(runner.repl_args(Path::new("default.nix"))),
@@ -616,6 +765,9 @@ mod tests {
                 "--option",
                 "system",
                 "aos-test-target",
+                "--option",
+                "trace-verbose",
+                "true",
                 "--file",
                 "default.nix"
             ]

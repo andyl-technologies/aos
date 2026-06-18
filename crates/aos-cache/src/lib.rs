@@ -46,3 +46,25 @@ pub use list::run_list;
 pub use prefetch::run_prefetch;
 pub use pull::run_pull;
 pub use push::run_push;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cache_operations_use_configured_nix_cli() {
+        for (module, source) in [
+            ("list", include_str!("list.rs")),
+            ("prefetch", include_str!("prefetch.rs")),
+            ("pull", include_str!("pull.rs")),
+            ("push", include_str!("push.rs")),
+        ] {
+            assert!(
+                !source.contains("NixCli::new(0)"),
+                "{module} must not drop evaluator options"
+            );
+            assert!(
+                source.contains("NixCli::with_eval_config(0, eval_config.clone())"),
+                "{module} must construct NixCli with the caller's eval config"
+            );
+        }
+    }
+}

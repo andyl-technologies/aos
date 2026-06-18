@@ -439,6 +439,20 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn eval_config_emits_cpp_nix_trace_verbose_option() {
+        let mut config = NixEvalConfig::new();
+        config.set_trace_verbose(true);
+        let nix = NixCli::with_eval_config(0, config);
+        let mut command = Command::new("nix-instantiate");
+        nix.append_eval_options(&mut command);
+
+        assert_eq!(
+            command_args(&command),
+            ["--option", "trace-verbose", "true"]
+        );
+    }
 }
 
 /// Runs a single `nix-store -q <flag> <path>` query and returns its

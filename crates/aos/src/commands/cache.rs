@@ -9,6 +9,7 @@
 use anyhow::Result;
 
 use aos_cache::backend::{self, AuthOptions};
+use aos_core::nix::NixEvalConfig;
 use aos_core::output::Printer;
 
 use crate::cli::{CacheAuthArgs, CacheCmd};
@@ -20,7 +21,7 @@ use crate::cli::{CacheAuthArgs, CacheCmd};
 /// Returns an error if the cache URL cannot be resolved to a backend or
 /// if the delegated `aos-cache` operation fails (evaluation, transfer,
 /// or authentication).
-pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
+pub async fn run(printer: &Printer, cmd: &CacheCmd, eval_config: &NixEvalConfig) -> Result<()> {
     match cmd {
         CacheCmd::Push {
             installables,
@@ -52,6 +53,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 compression.as_deref().unwrap_or("zstd"),
                 *compression_level,
                 *dry_run,
+                eval_config,
             )
             .await
         }
@@ -79,6 +81,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 *jobs,
                 max_bandwidth.as_deref(),
                 *dry_run,
+                eval_config,
             )
             .await
         }
@@ -104,6 +107,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 expr.as_deref(),
                 *jobs,
                 *dry_run,
+                eval_config,
             )
             .await
         }
@@ -125,6 +129,7 @@ pub async fn run(printer: &Printer, cmd: &CacheCmd) -> Result<()> {
                 file.as_deref(),
                 attr.as_deref(),
                 expr.as_deref(),
+                eval_config,
             )
             .await
         }
