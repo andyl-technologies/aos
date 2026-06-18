@@ -284,35 +284,35 @@ define_builtins! {
     pub(crate) struct FetchGitBuiltin;
     impl BuiltinDefinition for FetchGitBuiltin {
         const NAME: &'static [u8] = b"fetchGit";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
     pub(crate) struct FetchMercurialBuiltin;
     impl BuiltinDefinition for FetchMercurialBuiltin {
         const NAME: &'static [u8] = b"fetchMercurial";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
     pub(crate) struct FetchTarballBuiltin;
     impl BuiltinDefinition for FetchTarballBuiltin {
         const NAME: &'static [u8] = b"fetchTarball";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
     pub(crate) struct FetchTreeBuiltin;
     impl BuiltinDefinition for FetchTreeBuiltin {
         const NAME: &'static [u8] = b"fetchTree";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
 
     pub(crate) struct FetchurlBuiltin;
     impl BuiltinDefinition for FetchurlBuiltin {
         const NAME: &'static [u8] = b"fetchurl";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
     }
 
     pub(crate) struct FilterBuiltin;
@@ -324,7 +324,7 @@ define_builtins! {
     pub(crate) struct FilterSourceBuiltin;
     impl BuiltinDefinition for FilterSourceBuiltin {
         const NAME: &'static [u8] = b"filterSource";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(2);
     }
 
     pub(crate) struct FindFileBuiltin;
@@ -336,7 +336,7 @@ define_builtins! {
     pub(crate) struct FlakeRefToStringBuiltin;
     impl BuiltinDefinition for FlakeRefToStringBuiltin {
         const NAME: &'static [u8] = b"flakeRefToString";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
     }
 
     pub(crate) struct FloorBuiltin;
@@ -410,7 +410,7 @@ define_builtins! {
     pub(crate) struct GetFlakeBuiltin;
     impl BuiltinDefinition for GetFlakeBuiltin {
         const NAME: &'static [u8] = b"getFlake";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
     }
 
     pub(crate) struct GroupByBuiltin;
@@ -608,7 +608,7 @@ define_builtins! {
     pub(crate) struct ParseFlakeRefBuiltin;
     impl BuiltinDefinition for ParseFlakeRefBuiltin {
         const NAME: &'static [u8] = b"parseFlakeRef";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
     }
 
     pub(crate) struct PartitionBuiltin;
@@ -621,7 +621,7 @@ define_builtins! {
     pub(crate) struct PathBuiltin;
     impl BuiltinDefinition for PathBuiltin {
         const NAME: &'static [u8] = b"path";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
     }
 
     pub(crate) struct PathExistsBuiltin;
@@ -902,7 +902,10 @@ pub(crate) enum BuiltinDirect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinExecution {
     /// The builtin is known but not implemented by the tree-walk evaluator.
-    Unsupported,
+    Unsupported {
+        /// The arity exposed when the unimplemented builtin is selected.
+        arity: usize,
+    },
     /// The builtin parses and evaluates another Nix file.
     Import,
     /// The builtin parses another Nix file with an injected global scope.
@@ -985,6 +988,11 @@ pub(crate) enum BuiltinExecution {
 }
 
 impl BuiltinExecution {
+    /// Creates a present-but-unimplemented builtin execution record.
+    pub(crate) const fn unsupported(arity: usize) -> Self {
+        Self::Unsupported { arity }
+    }
+
     /// Creates a pure strict unary builtin execution record.
     pub(crate) const fn strict_unary(primop: StrictUnaryPrimOp) -> Self {
         Self::StrictUnary {
@@ -1069,7 +1077,7 @@ impl BuiltinExecution {
             Self::Trace { .. } | Self::Warn => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Effectful,
             }),
-            Self::Unsupported
+            Self::Unsupported { .. }
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1109,8 +1117,8 @@ impl BuiltinExecution {
             | Self::Trace { .. }
             | Self::Warn => Some(2),
             Self::DirectTernary(_) => Some(3),
-            Self::Unsupported
-            | Self::BuiltinsValue
+            Self::Unsupported { arity } => Some(arity),
+            Self::BuiltinsValue
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1135,7 +1143,7 @@ impl BuiltinExecution {
     /// Returns whether native JSON evaluation must fall back to C++ Nix.
     const fn requires_native_cli_fallback(self) -> bool {
         match self {
-            Self::Unsupported
+            Self::Unsupported { .. }
             | Self::Derivation
             | Self::Import
             | Self::ScopedImport
@@ -1850,6 +1858,31 @@ mod tests {
 
     #[test]
     fn builtin_metadata_records_first_class_arity_by_category() {
+        for name in [
+            b"fetchGit".as_slice(),
+            b"fetchMercurial".as_slice(),
+            b"fetchTarball".as_slice(),
+            b"fetchTree".as_slice(),
+            b"fetchurl".as_slice(),
+            b"flakeRefToString".as_slice(),
+            b"getFlake".as_slice(),
+            b"parseFlakeRef".as_slice(),
+            b"path".as_slice(),
+        ] {
+            assert_eq!(
+                BUILTINS.lookup(name).unwrap().first_class_arity(),
+                Some(1),
+                "{} should expose a unary unsupported stub",
+                String::from_utf8_lossy(name),
+            );
+        }
+        assert_eq!(
+            BUILTINS
+                .lookup(b"filterSource")
+                .unwrap()
+                .first_class_arity(),
+            Some(2),
+        );
         assert_eq!(
             BUILTINS.lookup(b"attrNames").unwrap().first_class_arity(),
             Some(1)
@@ -2046,6 +2079,7 @@ mod tests {
         for name in [
             b"derivation".as_slice(),
             b"derivationStrict".as_slice(),
+            b"fetchMercurial".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),
             b"readFile".as_slice(),

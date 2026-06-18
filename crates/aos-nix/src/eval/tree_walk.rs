@@ -21864,6 +21864,19 @@ mod tests {
         "zipAttrsWith",
     ];
 
+    const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &[
+        "fetchGit",
+        "fetchMercurial",
+        "fetchTarball",
+        "fetchTree",
+        "fetchurl",
+        "filterSource",
+        "flakeRefToString",
+        "getFlake",
+        "parseFlakeRef",
+        "path",
+    ];
+
     const VERSION_GATED_BUILTIN_NAMES: &[&str] = &[
         "addDrvOutputDependencies",
         "convertHash",
@@ -22278,6 +22291,33 @@ mod tests {
 
             let candidate = eval_json_bytes_with_options(&source, options.clone());
             assert_eq!(candidate, reference, "expression diverged: {source}");
+        }
+    }
+
+    fn assert_pinned_present_unimplemented_builtin_stubs_match_registry(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        for name in PRESENT_UNIMPLEMENTED_BUILTIN_STUBS {
+            let type_source = format!("builtins.typeOf (builtins.{name} or 42)");
+            let reference =
+                cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, &type_source);
+            assert_eq!(
+                reference, b"\"lambda\"",
+                "{name} should select as a pinned C++ Nix builtin function",
+            );
+            let candidate = eval_json_bytes(&type_source);
+            assert_eq!(candidate, reference, "expression diverged: {type_source}");
+
+            let args_source =
+                format!("builtins.attrNames (builtins.functionArgs (builtins.{name} or 42))");
+            let reference =
+                cpp_nix_eval_json_with_pinned_builtin_surface_features(oracle, &args_source);
+            assert_eq!(
+                reference, b"[]",
+                "{name} should expose primop-style empty functionArgs",
+            );
+            let candidate = eval_json_bytes(&args_source);
+            assert_eq!(candidate, reference, "expression diverged: {args_source}");
         }
     }
 
@@ -24205,6 +24245,24 @@ mod tests {
             return;
         };
         assert_pinned_cpp_nix_builtin_surface_matches_registry(&oracle);
+    }
+
+    #[test]
+    #[ignore = "requires AOS_NIX_ORACLE to point at pinned nix-instantiate 2.24.12"]
+    fn pinned_present_unimplemented_builtin_stubs_match_registry() {
+        let oracle = cpp_nix_oracle();
+        assert_pinned_present_unimplemented_builtin_stubs_match_registry(&oracle);
+    }
+
+    #[test]
+    fn configured_pinned_present_unimplemented_builtin_stubs_match_registry() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!(
+                "AOS_NIX_ORACLE not set; skipping configured C++ Nix unimplemented builtin stub check"
+            );
+            return;
+        };
+        assert_pinned_present_unimplemented_builtin_stubs_match_registry(&oracle);
     }
 
     fn assert_pinned_absent_experimental_builtin_attrs_match_registry(oracle: &str) {
@@ -27451,17 +27509,40 @@ mod tests {
     }
 
     #[test]
-    fn known_but_unimplemented_builtin_selects_do_not_use_defaults() {
+    fn present_unimplemented_builtin_stubs_select_as_lambdas() {
+        for name in PRESENT_UNIMPLEMENTED_BUILTIN_STUBS {
+            let selected = format!("builtins.{name} or 42");
+
+            assert_eq!(
+                eval_string_bytes(&format!("builtins.typeOf ({selected})")),
+                b"lambda",
+                "{name} should select the builtin stub, not the default",
+            );
+            assert_eq!(
+                eval_list_string_bytes(&format!(
+                    "builtins.attrNames (builtins.functionArgs ({selected}))"
+                )),
+                Vec::<Vec<u8>>::new(),
+                "{name} should expose primop-style empty functionArgs",
+            );
+        }
+    }
+
+    #[test]
+    fn present_unimplemented_builtin_stubs_error_when_called() {
         for (source, name) in [
-            ("builtins.fetchGit or 42", b"fetchGit".as_slice()),
-            ("builtins.getFlake or 42", b"getFlake".as_slice()),
+            ("builtins.fetchMercurial null", b"fetchMercurial".as_slice()),
+            (
+                "builtins.filterSource (path: type: true) /tmp",
+                b"filterSource".as_slice(),
+            ),
         ] {
             let ir = lower(source);
-            let error = eval_whnf_owned(&ir).expect_err("known builtin does not use default");
+            let error = eval_whnf_owned(&ir).expect_err("unimplemented builtin stub errors");
 
             assert_eq!(
                 error.kind(),
-                TreeWalkErrorKind::UnsupportedBuiltinAttr {
+                TreeWalkErrorKind::UnsupportedPrimOp {
                     id: ir.root,
                     symbol: symbol_for(&ir, name),
                 }

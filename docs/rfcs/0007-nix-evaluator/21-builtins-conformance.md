@@ -619,8 +619,9 @@ eval (network access is disabled unless explicitly allowed).
       pinned set uses it (§17).
       - **Pinned status**: absent from the pinned C++ Nix 2.24.12 flakes builtin
         surface; aos-nix keeps it absent, so select-default fallback matches.
-- [ ] `fetchMercurial` (args) — hg analogue of `fetchGit`. Almost never used in
-      AOS; implement to existence, likely **stubbed** beyond presence (§17).
+- [x] `fetchMercurial` (args) — hg analogue of `fetchGit`. Almost never used in
+      AOS; implemented to pinned surface existence with first-class unary arity,
+      empty `functionArgs`, and an unsupported execution boundary (§17).
 - [x] `findFile` (search-path lookup-path) — the engine behind `<nixpkgs>`-style
       angle-bracket lookup: resolve `lookup-path` against `search-path`
       (the `NIX_PATH`/`-I` entries). Returns the resolved path.
@@ -914,7 +915,8 @@ feature disabled:
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§5/§12).
-- [ ] `fetchMercurial` (args) — present-but-likely-unexercised (§11).
+- [x] `fetchMercurial` (args) — present with pinned unary lambda surface and
+      unsupported execution boundary (§11).
 - [x] `scopedImport` (attrs path) — a real primop (it backs nixpkgs' `import`
       shadowing). **In scope**, but called out here because it deliberately
       does **not** memoize (unlike `import`); see

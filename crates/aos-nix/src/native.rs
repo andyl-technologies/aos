@@ -304,6 +304,7 @@ mod tests {
             "builtins.nixPath",
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
+            "builtins.fetchMercurial",
             "<nixpkgs>",
             r#"derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
             r#"builtins.derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
