@@ -685,6 +685,22 @@ enum BindingCommand {
         /// Owning org slug.
         org: String,
     },
+    /// Set a binding's access mode and origin/credential metadata.
+    SetAccess {
+        /// Owning org slug.
+        org: String,
+        /// Binding name.
+        name: String,
+        /// Access mode: public (Direct-eligible) or private (proxied/presigned).
+        #[arg(long)]
+        access: String,
+        /// Public read origin URL for a public binding.
+        #[arg(long)]
+        public_base_url: Option<String>,
+        /// Sealed credential reference for a private binding's signed reads.
+        #[arg(long)]
+        credential_ref: Option<String>,
+    },
 }
 
 /// Manage hosted Nix binary caches — the substituter sibling of registries.
@@ -1445,8 +1461,35 @@ async fn main() -> Result<()> {
                         .await?
                         .with_context(|| format!("no org '{org}'"))?;
                     for binding in db.list_storage_bindings(org_record.id).await? {
-                        println!("{}\t{}\t{}", binding.name, binding.kind, binding.root);
+                        println!(
+                            "{}\t{}\t{}\t{}",
+                            binding.name, binding.kind, binding.access, binding.root
+                        );
                     }
+                }
+                BindingCommand::SetAccess {
+                    org,
+                    name,
+                    access,
+                    public_base_url,
+                    credential_ref,
+                } => {
+                    let org_record = db
+                        .org_by_slug(&org)
+                        .await?
+                        .with_context(|| format!("no org '{org}'"))?;
+                    let binding = db
+                        .storage_binding_by_name(org_record.id, &name)
+                        .await?
+                        .with_context(|| format!("no binding '{org}/{name}'"))?;
+                    db.set_storage_binding_access(
+                        binding.id,
+                        &access,
+                        public_base_url.as_deref(),
+                        credential_ref.as_deref(),
+                    )
+                    .await?;
+                    println!("binding '{org}/{name}' access set to {access}");
                 }
             }
         }

@@ -1171,6 +1171,20 @@ pub const MIGRATIONS: &[&str] = &[
         freed_bytes     INTEGER NOT NULL DEFAULT 0
     );
     ",
+    // v23: storage-binding access mode (RFC-0004 "11-caches", frontend slice).
+    // A binding is `public` (its objects are reachable at a stable origin URL —
+    // a public bucket / CDN, eligible for a Direct frontend) or `private` (only
+    // the hub may read it; reads must be proxied or presigned, never Direct).
+    // `public_base_url` is the origin a Direct frontend rewrites to for a public
+    // binding; `credential_ref` names the sealed credential (in `hosted_keys` /
+    // a secret store) the hub uses to sign authenticated-origin reads for a
+    // private binding. Additive columns with safe defaults — existing bindings
+    // stay `public` (today's behavior), so this migration is backwards-neutral.
+    "
+    ALTER TABLE storage_bindings ADD COLUMN access TEXT NOT NULL DEFAULT 'public';
+    ALTER TABLE storage_bindings ADD COLUMN public_base_url TEXT;
+    ALTER TABLE storage_bindings ADD COLUMN credential_ref TEXT;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1264,6 +1278,15 @@ pub struct StorageBindingRecord {
     pub kind: String,
     /// Backend root: a filesystem path for `local_fs`.
     pub root: String,
+    /// Access mode: `public` (Direct-eligible, served at `public_base_url`) or
+    /// `private` (hub-only; reads must be proxied or presigned).
+    pub access: String,
+    /// For a `public` binding, the stable origin URL a Direct frontend rewrites
+    /// reads to; `None` when unset.
+    pub public_base_url: Option<String>,
+    /// For a `private` binding, the sealed credential reference the hub uses to
+    /// sign authenticated-origin reads; `None` when unset.
+    pub credential_ref: Option<String>,
     /// Unix time the binding was created.
     pub created_at: i64,
 }
@@ -3269,6 +3292,29 @@ impl Database {
     ) -> Result<i64> {
         if !matches!(mode, "direct" | "proxied") {
             bail!("unsupported frontend mode '{mode}' (expected direct or proxied)");
+        }
+        // A Direct frontend hands consumers the binding's own origin URL, so the
+        // binding must be publicly readable. Rooting a Direct frontend over a
+        // private binding would publish unreadable (or, worse, leak-prone) URLs;
+        // such a binding must be served proxied/presigned instead. (RFC-0004
+        // "Backend access mode".)
+        if mode == "direct" {
+            let binding_id = self
+                .registry_by_id(registry_id)
+                .await
+                .context("loading registry for frontend access check")?
+                .and_then(|r| r.storage_binding_id);
+            if let Some(binding_id) = binding_id {
+                if let Some(binding) = self.storage_binding(binding_id).await? {
+                    if binding.access == "private" {
+                        bail!(
+                            "cannot create a Direct frontend over private storage binding \
+                             '{}': private bindings must be served proxied or presigned",
+                            binding.name
+                        );
+                    }
+                }
+            }
         }
         crate::url_guard::is_safe_remote_url(&frontend_probe_url(domain))
             .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
@@ -5723,6 +5769,38 @@ impl Database {
             .await
     }
 
+    /// Set a storage binding's access mode and origin/credential metadata.
+    ///
+    /// `access` must be `public` or `private`. `public_base_url` is the stable
+    /// read origin for a public (Direct-eligible) binding; `credential_ref` is
+    /// the sealed credential a private binding's authenticated-origin reads sign
+    /// with. Returns `false` when no binding has `id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid `access` value or on database failure.
+    pub async fn set_storage_binding_access(
+        &self,
+        id: i64,
+        access: &str,
+        public_base_url: Option<&str>,
+        credential_ref: Option<&str>,
+    ) -> Result<bool> {
+        if !matches!(access, "public" | "private") {
+            bail!("invalid storage-binding access '{access}' (expected public or private)");
+        }
+        let n = self
+            .backend
+            .execute(
+                "UPDATE storage_bindings
+                 SET access = ?2, public_base_url = ?3, credential_ref = ?4
+                 WHERE id = ?1",
+                &vals![id, access, public_base_url, credential_ref],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
     /// Look up a storage binding by id.
     ///
     /// # Errors
@@ -5731,7 +5809,8 @@ impl Database {
     pub async fn storage_binding(&self, id: i64) -> Result<Option<StorageBindingRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, org_id, name, kind, root, created_at
+                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                 credential_ref, created_at
                  FROM storage_bindings WHERE id = ?1",
                 &vals![id],
             )
@@ -5753,7 +5832,8 @@ impl Database {
     ) -> Result<Option<StorageBindingRecord>> {
         self.backend
             .query_opt(
-                "SELECT id, org_id, name, kind, root, created_at
+                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                 credential_ref, created_at
                  FROM storage_bindings WHERE org_id = ?1 AND name = ?2",
                 &vals![org_id, name],
             )
@@ -5772,7 +5852,8 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, org_id, name, kind, root, created_at
+                "SELECT id, org_id, name, kind, root, access, public_base_url,
+                 credential_ref, created_at
              FROM storage_bindings WHERE org_id = ?1 ORDER BY name",
                 &vals![org_id],
             )
@@ -9699,7 +9780,10 @@ fn row_to_storage_binding(row: &Row) -> Result<StorageBindingRecord> {
         name: row.get(2)?,
         kind: row.get(3)?,
         root: row.get(4)?,
-        created_at: row.get(5)?,
+        access: row.get(5)?,
+        public_base_url: row.get(6)?,
+        credential_ref: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 
@@ -11454,6 +11538,61 @@ mod tests {
             .create_storage_binding(org, "r2", "external_r2", "s3://bucket")
             .await
             .is_err());
+
+        // Access mode defaults to public; set-access updates it + metadata.
+        assert_eq!(binding.access, "public");
+        assert_eq!(binding.public_base_url, None);
+        assert!(db
+            .set_storage_binding_access(id, "private", None, Some("sealed:cred-1"))
+            .await
+            .unwrap());
+        let b = db.storage_binding(id).await.unwrap().unwrap();
+        assert_eq!(b.access, "private");
+        assert_eq!(b.credential_ref.as_deref(), Some("sealed:cred-1"));
+        assert!(db
+            .set_storage_binding_access(id, "public", Some("https://cdn.example/"), None)
+            .await
+            .unwrap());
+        let b = db.storage_binding(id).await.unwrap().unwrap();
+        assert_eq!(b.access, "public");
+        assert_eq!(b.public_base_url.as_deref(), Some("https://cdn.example/"));
+        // An invalid access value is rejected.
+        assert!(db
+            .set_storage_binding_access(id, "bogus", None, None)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn direct_frontend_over_private_binding_is_rejected() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "primary", "local_fs", "/srv")
+            .await
+            .unwrap();
+        let reg = db
+            .create_managed_registry(org, "", "cdn", "public", Some(binding), "cdn", &[], false)
+            .await
+            .unwrap();
+        // While the binding is public, a Direct frontend is allowed.
+        assert!(db
+            .create_frontend(reg, "direct.example", "", "direct", true, true, true, 100, true)
+            .await
+            .is_ok());
+        // Make the binding private: a new Direct frontend is now rejected, but a
+        // proxied frontend over the same private binding is allowed.
+        db.set_storage_binding_access(binding, "private", None, Some("c"))
+            .await
+            .unwrap();
+        assert!(db
+            .create_frontend(reg, "direct2.example", "", "direct", true, true, true, 100, true)
+            .await
+            .is_err());
+        assert!(db
+            .create_frontend(reg, "proxied.example", "", "proxied", true, true, true, 100, true)
+            .await
+            .is_ok());
     }
 
     /// Set up an org + binding and return `(db, org_id, binding_id)`.
