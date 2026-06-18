@@ -58,6 +58,15 @@
   CLI-driven — there is **no public init endpoint** on the Worker. See
   `crates/aos-registry-worker/deploy/DEPLOY.md`.
 
+  **Proposed continuation (2026-06-17):** hosting managed Nix binary
+  **caches** as a first-class sibling of registries — turning the hub from a
+  cache *observer* into a cache *host* (GC, size limits, expiring manual pins,
+  full-text search, closure-graph visualization, GC roots pinned to published
+  packages, reclamation when versions are removed, no-JS browse, NAR explorer)
+  — and the consequent `aos-registry-* → aos-hub` rename. Design + full
+  implementation checklist in [`11-caches.md`](11-caches.md); not yet
+  implemented.
+
   Still deferred to RFC-future: the Leptos-CSR WASM SPA web surface (the
   no-JS static tier ships); passkeys/WebAuthn beyond phase 2; mirroring
   (full/derived/pull-through); validation deep depth and HTTP-cache repair;
@@ -89,3 +98,4 @@ is a live proposal and its own file carries its working status.
 | [08-sequencing.md](08-sequencing.md) | Implementation sequencing of the shipped phases |
 | [09-alternatives-and-open-questions.md](09-alternatives-and-open-questions.md) | Alternatives considered and open questions |
 | [10-unified-runtime.md](10-unified-runtime.md) | **Phase 5 (Complete):** one async codebase, full Cloudflare/native parity, sqlx + D1 backends, `aos hub` CLI-over-API, the wasm-feasibility spike + Connect-JSON transport decision, the D1 transaction audit, the workerd+miniflare e2e |
+| [11-caches.md](11-caches.md) | **Proposed:** hosting managed Nix binary **caches** (GC, size limits, expiring pins, search, closure-graph viz, GC roots pinned to packages, NAR explorer, web browse) as a first-class sibling of registries — the org/registry/cache topology, schema (v22+), GC subsystem, and the `aos-registry-* → aos-hub` rename. Carries its own implementation checklist. |

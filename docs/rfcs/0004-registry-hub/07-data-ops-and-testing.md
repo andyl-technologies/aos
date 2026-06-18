@@ -12,7 +12,10 @@ re-index), `storage_bindings`, `frontends`, `cache_stores`,
 `mirror_sources`, `hosted_keys` (encrypted), `publish_jobs` (leases,
 staged releases, pipeline state), `config_changesets`,
 `config_revisions`, `audit_log`, `webhooks` (phase 4; event taxonomy
-and delivery model in a follow-up RFC).
+and delivery model in a follow-up RFC). The `cache_stores` sketched here
+is superseded by the managed-cache `caches` table and its companions
+(`cache_registry_links`, `cache_gc_policy`, `cache_gc_roots`) in
+[11-caches.md](11-caches.md).
 
 Rebuildable index tables (derived from the surface, droppable and
 re-indexable at any time): `registry_index` (per-registry
