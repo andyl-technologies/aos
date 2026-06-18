@@ -1,4 +1,4 @@
-# Security Audit Report: aos-registry-hub
+# Security Audit Report: aos-hub
 
 > Adversarial review (2026-06-14): 10 attack-surface finders → 2 diverse skeptics
 > per finding (refute on reachability + on mitigation) → synthesis. 31 distinct

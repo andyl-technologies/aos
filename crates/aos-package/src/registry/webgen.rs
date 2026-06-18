@@ -726,7 +726,7 @@ fn page(title: &str, body: &str, spa: Option<&SpaAssets>) -> String {
 /// never an off-origin URL — so they satisfy the strict asset policy and a
 /// `default-src 'self'` CSP (the hub additionally allows
 /// `'wasm-unsafe-eval'` on these paths to run the WASM; see
-/// `aos_registry_hub::compat`).
+/// `aos_hub::compat`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SpaAssets {
     /// The `web/app-<hash>.js` wasm-bindgen glue path (relative to root).

@@ -1,7 +1,7 @@
 //! A Connect-JSON client for the AOS registry hub.
 //!
 //! Where [`AosClient`](crate::AosClient) talks to an `aos-server` (cache /
-//! build / GC / auth) over ConnectRPC, this talks to an **`aos-registry-hub`** —
+//! build / GC / auth) over ConnectRPC, this talks to an **`aos-hub`** —
 //! the multi-tenant registry control plane (RFC-0004). It is the client the
 //! `aos hub …` CLI subcommands use so the CLI interacts with a hub purely
 //! through its public API, never by touching the hub's database directly.
@@ -54,7 +54,7 @@ use crate::client::validate_base_url;
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
 
-/// A Connect-JSON client for an `aos-registry-hub`'s services.
+/// A Connect-JSON client for an `aos-hub`'s services.
 ///
 /// Cheap to clone (the inner `reqwest` client is reference counted). Anonymous
 /// instances see only public registries; a token-bearing instance (see
@@ -793,7 +793,7 @@ impl RegistryHubClient {
 /// The Connect-JSON error envelope: a stable error `code` and human `message`.
 ///
 /// Returned with a non-2xx HTTP status on failure; see the hub's
-/// `aos-registry-core` `RpcError`.
+/// `aos-hub-core` `RpcError`.
 #[derive(serde::Deserialize)]
 struct ConnectError {
     /// The Connect error code (e.g. `not_found`, `permission_denied`).

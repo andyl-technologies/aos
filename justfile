@@ -80,22 +80,22 @@ test-fleet suite="":
 # and asserts the live request surface. Built in-sandbox, exec'd outside it
 # (workerd's tcmalloc needs /sys, like fleet VM tests need /dev/kvm).
 test-worker-e2e:
-    bin=`nix-build -A pkgs.aos-registry-worker-e2e --no-out-link`; exec "$bin/bin/aos-registry-worker-e2e"
+    bin=`nix-build -A pkgs.aos-hub-worker-e2e --no-out-link`; exec "$bin/bin/aos-hub-worker-e2e"
 
 # ===========================================================================
 # Worker (serverless) deployment
 # ===========================================================================
 
 # Run the bundled hub installer (wrangler + node + the Worker wasm). Forwards
-# args to `aos-registry-hub`, e.g.:
+# args to `aos-hub`, e.g.:
 #   just hub worker install --external-url https://reg.example.com --root-email a@b.c --root-password-stdin
 #   just hub worker deploy  --external-url https://reg.example.com
-#   just hub init --target d1:aos-registry-hub --root-email a@b.c --root-password-stdin
-#   just hub reset-root --target d1:aos-registry-hub --email a@b.c --password-stdin
+#   just hub init --target d1:aos-hub --root-email a@b.c --root-password-stdin
+#   just hub reset-root --target d1:aos-hub --email a@b.c --password-stdin
 # Requires CLOUDFLARE_API_TOKEN (or `wrangler login`). See
-# crates/aos-registry-worker/deploy/DEPLOY.md.
+# crates/aos-hub-worker/deploy/DEPLOY.md.
 hub *args:
-    `nix-build -A pkgs.aos-registry-hub-cloudflare --no-out-link`/bin/aos-registry-hub {{args}}
+    `nix-build -A pkgs.aos-hub-cloudflare --no-out-link`/bin/aos-hub {{args}}
 
 # ===========================================================================
 # Development

@@ -1,4 +1,4 @@
-# Third-Round Security Audit — aos-registry-hub
+# Third-Round Security Audit — aos-hub
 
 > Round 3 (per-item review of the 7 formerly-deferred RFC-0004 surfaces):
 > 7 attack-surface finders (one per deferred item) → 2 diverse skeptics per
@@ -120,7 +120,7 @@ branch), and is the throughline of this round.
 - **WebAuthn** (`auth/webauthn.rs`): attestation-none verification is sound
   across Ed25519/ES256/RS256; no algorithm confusion; credentials are bound to
   their stored public key; challenges are fresh; the CSP nonce is per-request.
-- **Worker** (`aos-registry-worker`): D1 access uses bound parameters (no
+- **Worker** (`aos-hub-worker`): D1 access uses bound parameters (no
   string-built SQL); the R2 facade key-maps within the registry and does not
   serve private registries unauthenticated; the Cron indexer fails closed and
   preserves the anti-rollback floor; `render.rs` escapes its fields.

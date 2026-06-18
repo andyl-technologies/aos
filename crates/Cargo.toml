@@ -11,11 +11,11 @@ members = [
     "aos-remote",
     "aos-doc",
     "aos-package",
-    "aos-registry-core",
-    "aos-registry-hub",
+    "aos-hub-core",
+    "aos-hub",
     "aos-registry-surface",
     "aos-registry-spa",
-    "aos-registry-worker",
+    "aos-hub-worker",
     "aos-systemd",
 ]
 
@@ -57,11 +57,11 @@ axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 # Async SQL toolkit driving the registry-hub `Backend` over concrete pools
 # (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
-# mysql) are selected by `aos-registry-hub`'s own cargo features; the bundled
+# mysql) are selected by `aos-hub`'s own cargo features; the bundled
 # sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
 # the existing tokio runtime rather than spawning a second reactor.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
-# Still used by aos-package, aos-server, and aos-registry-worker; the registry
+# Still used by aos-package, aos-server, and aos-hub-worker; the registry
 # hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
 rusqlite = { version = "0.32", features = ["bundled"] }
 jsonwebtoken = "9"
@@ -142,7 +142,7 @@ aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
-aos-registry-core = { path = "aos-registry-core" }
-aos-registry-hub = { path = "aos-registry-hub" }
+aos-hub-core = { path = "aos-hub-core" }
+aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-systemd = { path = "aos-systemd" }

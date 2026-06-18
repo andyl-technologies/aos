@@ -195,7 +195,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: CacheCmd,
     },
-    /// Registry hub client (interacts with an aos-registry-hub via its API)
+    /// Registry hub client (interacts with an aos-hub via its API)
     Hub {
         #[command(subcommand)]
         command: HubCmd,

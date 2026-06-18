@@ -25,7 +25,7 @@
 //! The crate deliberately excludes the surface *transport* (the trait that
 //! fetches loose objects over `file://`/HTTP, or `fetch()` in a browser)
 //! and tree-walking that depends on `aos-package`'s committed-file parsers;
-//! those live in the consumer (`aos-registry-hub`'s `surface::load`, or the
+//! those live in the consumer (`aos-hub`'s `surface::load`, or the
 //! SPA's own fetch glue) so this core stays pure.
 
 pub mod manifest;

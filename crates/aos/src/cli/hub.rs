@@ -1,6 +1,6 @@
 //! Arguments for `aos hub` — the registry-hub control-plane client.
 //!
-//! These subcommands interact with a running `aos-registry-hub` purely through
+//! These subcommands interact with a running `aos-hub` purely through
 //! its public ConnectRPC API (RFC-0004), never by touching the hub's database
 //! directly. `login` exchanges a provisioning secret for that JWT. Public browse
 //! reads (registries, releases, packages, channels) run anonymously; tenancy and
