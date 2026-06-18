@@ -33652,6 +33652,27 @@ mod tests {
             nested_error.span(),
             nested.arena.node(nested.root).expect("root exists").span
         );
+
+        let missing_intermediate = lower("({ a = {}; }).a.b.c");
+        let intermediate_symbol = symbol_for(&missing_intermediate, b"b");
+        let intermediate_error = eval_whnf_owned(&missing_intermediate)
+            .expect_err("missing intermediate key without default is invalid");
+
+        assert_eq!(
+            intermediate_error.kind(),
+            TreeWalkErrorKind::MissingAttribute {
+                id: missing_intermediate.root,
+                symbol: intermediate_symbol,
+            }
+        );
+        assert_eq!(
+            intermediate_error.span(),
+            missing_intermediate
+                .arena
+                .node(missing_intermediate.root)
+                .expect("root exists")
+                .span
+        );
     }
 
     #[test]
@@ -33692,6 +33713,10 @@ mod tests {
 
     #[test]
     fn select_evaluates_nested_static_and_dynamic_paths() {
+        assert_eq!(
+            eval("({ a = { b = { c = 1 + 2; }; }; }).a.b.c").as_int(),
+            Ok(3)
+        );
         assert_eq!(eval("({ a = { b = 1 + 2; }; }).a.b").as_int(), Ok(3));
         assert_eq!(eval("({ a = 1; }).${\"a\"}").as_int(), Ok(1));
         assert_eq!(

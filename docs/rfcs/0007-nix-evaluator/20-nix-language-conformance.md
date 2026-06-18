@@ -303,8 +303,9 @@ search paths, and store coercion.
 - [x] **Selection `s.a`** — selects attribute `a` from an attrset; the selected
       value is forced by the surrounding demand. Missing attrs are must-errors,
       and non-attr receivers are type errors.
-- [ ] **Attr-path selection `s.a.b.c`** — dotted path descends multiple levels;
-      a missing intermediate is an error (**must-error**).
+- [x] **Attr-path selection `s.a.b.c`** — dotted path selection descends one
+      component at a time through attrsets. A missing leaf or intermediate
+      component is a must-error without an `or` default.
 - [ ] **Selection with `or` default `s.a.b or d`** — `or` supplies a default if
       *any* component of the attr path is missing; `d` is only evaluated when the
       path is absent (laziness, §10). Verify `or` binds to the *whole* preceding
