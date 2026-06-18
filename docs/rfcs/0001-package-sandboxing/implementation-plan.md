@@ -578,13 +578,19 @@ Full spec: [`enforcement.md`](enforcement.md).
       socket listeners are validated against the socket-capability /
       `tcp-bind` contract before units can be attached.
 - [ ] **Generated MAC profile (D20).** Render a default-deny per-package
-      SELinux/AppArmor profile named `aos-pkg-<name>` from the manifest (AppArmor
-      for MVP unless an SELinux base policy ships); loaded by `apm` at install.
-      The profile name is part of the measured manifest digest (P9). Current
-      coverage renders a deterministic `mac-profile.json` plus an AppArmor
-      default-deny scaffold for confined packages, records the MAC metadata in
-      `manifest.json`, and makes APM reject artifact/profile label mismatches
-      before attaching units; the kernel policy loader remains open.
+      SELinux profile named from the manifest security label and load it before
+      package workload units start. The profile name is part of the measured
+      manifest digest (P9). Current coverage renders deterministic
+      `mac-profile.json` plus SELinux `.te`, `.mod`, and `.pp` artifacts for
+      confined packages with collision-resistant escaped SELinux identifiers;
+      records the MAC metadata and generated `aos-pkg-*-mac.service` in
+      `manifest.json`; makes APM rebuild and byte-compare compiled policy
+      payloads from the validated source, then validate the trusted AOS-built
+      `semodule` helper, target membership, workload `After=`/`Requires=`
+      ordering, and absence of extra loader exec hooks before attaching units;
+      and builds the loader unit under `ConditionSecurity=selinux`. The
+      enforcing VM coverage remains open until the base SELinux policy is
+      enabled in booted systems.
 - [ ] **eBPF-LSM channel (D20, MVP-optional).** Kernel config
       (`CONFIG_BPF_LSM`, `bpf` in `lsm=`, BTF) + a signed-policy channel through
       the registry trust chain for fleet-managed dynamic policy (CVE live-patch).
@@ -832,9 +838,11 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       upstream systemd directive; still verify the built kernel's max Landlock
       ABI in a VM and extend the wrapper/policy to filesystem rules.
       ([`enforcement.md`](enforcement.md))
-- [ ] **MAC backend choice (P8).** SELinux vs AppArmor for the generated
-      per-package profile — depends on whether the kernel ships an SELinux base
-      policy. ([`enforcement.md`](enforcement.md))
+- [x] **MAC backend choice (P8).** The generated per-package profile uses
+      SELinux because the AOS kernel, systemd, dbus, and SELinux policy tools are
+      already built for that backend; base-policy enablement and enforcing VM
+      denial coverage remain under the generated MAC deliverable.
+      ([`enforcement.md`](enforcement.md))
 - [ ] **PCR index for the package set (P9).** Confirm PCR 15 is free / the right
       convention on the AOS measured-boot layout (RFC-0006 uses 11/12); confirm the
       event-log format and the activation point that performs the measurement.
