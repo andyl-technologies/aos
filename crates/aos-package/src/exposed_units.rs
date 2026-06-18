@@ -20,7 +20,7 @@ use crate::registry::store_path_hash;
 use crate::types::{
     CapabilityKind, ConfinementClass, CredentialMeta, ExposeMeta, HostPathMode, InstalledMeta,
     NetworkPermission, PermissionsMeta, ProfileScope, ProvidedCapabilityMeta,
-    RequiredCapabilityMeta,
+    RequiredCapabilityMeta, SysrootImageEntry,
 };
 use crate::unit_diff::{self, Parsed, UnitDiff};
 use aos_core::output::Printer;
@@ -328,6 +328,7 @@ fn exposed_packages_from_expose_dir(
         }
         validate_socket_listener_permissions(&apm.name, &artifact_root, &units, &apm.permissions)?;
         validate_workload_exec_wrappers(&apm.name, &artifact_root, &units, &apm.permissions)?;
+        validate_workload_root_images(&apm.name, &artifact_root, &units, expose)?;
         validate_ebpf_policy_service(
             &apm.name,
             &expose.target,
@@ -1049,6 +1050,166 @@ fn validate_workload_exec_wrappers(
     }
 
     Ok(())
+}
+
+fn validate_workload_root_images(
+    package_name: &str,
+    artifact_root: &Path,
+    units: &BTreeSet<String>,
+    expose: &ExposeMeta,
+) -> Result<()> {
+    let verity_images = expose
+        .images
+        .iter()
+        .filter(|image| is_verity_root_image(image))
+        .collect::<Vec<_>>();
+    if verity_images.len() > 1 {
+        bail!("package '{package_name}' declares multiple verity root images");
+    }
+    let expected = verity_images.first().copied();
+
+    for unit in units {
+        if !unit.ends_with(".service")
+            || is_generated_expose_side_effect_service(package_name, unit)
+        {
+            continue;
+        }
+
+        let path = artifact_root.join(unit);
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading exposed unit {}", path.display()))?;
+        let parsed = Parsed::parse(&text);
+        let Some(service) = parsed.sections.get("Service") else {
+            if expected.is_some() {
+                bail!(
+                    "service unit '{}' for package '{}' is missing [Service] for RootImage validation",
+                    unit,
+                    package_name
+                );
+            }
+            continue;
+        };
+
+        let root_image_keys = ["RootImage", "RootVerity", "RootHash", "RootHashSignature"];
+        if let Some(image) = expected {
+            validate_expected_workload_root_image(package_name, unit, &parsed, service, image)?;
+        } else if root_image_keys.iter().any(|key| service.contains_key(*key)) {
+            bail!(
+                "service unit '{}' for package '{}' declares RootImage dm-verity directives without signed expose.images metadata",
+                unit,
+                package_name
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_expected_workload_root_image(
+    package_name: &str,
+    unit: &str,
+    parsed: &Parsed,
+    service: &BTreeMap<String, Vec<String>>,
+    image: &SysrootImageEntry,
+) -> Result<()> {
+    if service.contains_key("RootDirectory") {
+        bail!(
+            "service unit '{}' for package '{}' must not combine RootDirectory with RootImage",
+            unit,
+            package_name
+        );
+    }
+    require_section_word(
+        package_name,
+        unit,
+        parsed,
+        "Unit",
+        "After",
+        "systemd-udevd.service",
+    )?;
+    require_section_word(
+        package_name,
+        unit,
+        parsed,
+        "Unit",
+        "Requires",
+        "systemd-udevd.service",
+    )?;
+
+    let root_image = required_verity_image_member(package_name, image, "root_image")?;
+    let root_verity = required_verity_image_member(package_name, image, "root_verity")?;
+    let root_hash = image.root_hash.as_deref().with_context(|| {
+        format!(
+            "verity image '{}' for package '{}' is missing root_hash",
+            image.store_path, package_name
+        )
+    })?;
+    let root_hash_sig = required_verity_image_member(package_name, image, "root_hash_sig")?;
+
+    require_service_value(
+        package_name,
+        unit,
+        service,
+        "RootImage",
+        &image_member_path(&image.store_path, root_image),
+    )?;
+    require_service_value(
+        package_name,
+        unit,
+        service,
+        "RootVerity",
+        &image_member_path(&image.store_path, root_verity),
+    )?;
+    require_service_value(
+        package_name,
+        unit,
+        service,
+        "RootHash",
+        root_hash_hex(root_hash),
+    )?;
+    require_service_value(
+        package_name,
+        unit,
+        service,
+        "RootHashSignature",
+        &image_member_path(&image.store_path, root_hash_sig),
+    )?;
+    require_service_value(package_name, unit, service, "PrivateDevices", "false")?;
+
+    Ok(())
+}
+
+fn is_verity_root_image(image: &SysrootImageEntry) -> bool {
+    matches!(image.format.as_str(), "ext4-verity" | "erofs-verity")
+}
+
+fn required_verity_image_member<'a>(
+    package_name: &str,
+    image: &'a SysrootImageEntry,
+    field: &str,
+) -> Result<&'a str> {
+    let value = match field {
+        "root_image" => image.root_image.as_deref(),
+        "root_verity" => image.root_verity.as_deref(),
+        "root_hash_sig" => image.root_hash_sig.as_deref(),
+        _ => None,
+    };
+    value.with_context(|| {
+        format!(
+            "verity image '{}' for package '{}' is missing {field}",
+            image.store_path, package_name
+        )
+    })
+}
+
+fn image_member_path(store_path: &str, member: &str) -> String {
+    Path::new(store_path).join(member).display().to_string()
+}
+
+fn root_hash_hex(hash: &str) -> &str {
+    hash.strip_prefix("sha256:")
+        .or_else(|| hash.strip_prefix("sha256-"))
+        .unwrap_or(hash)
 }
 
 fn validate_ebpf_policy_service(
@@ -3307,6 +3468,50 @@ mod tests {
         .unwrap();
     }
 
+    fn add_verity_image(installed: &mut InstalledMeta, image_path: &Path) {
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .images = vec![SysrootImageEntry {
+            format: "ext4-verity".to_string(),
+            store_path: image_path.display().to_string(),
+            nar_hash: "sha256:root".to_string(),
+            nar_size: 1,
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: Some("root.img".to_string()),
+            root_verity: Some("root.verity".to_string()),
+            root_hash: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+            ),
+            root_hash_sig: Some("root.roothash.p7s".to_string()),
+        }];
+    }
+
+    fn verity_workload_service_text(
+        package_name: &str,
+        image_path: &Path,
+        root_hash: &str,
+        private_devices: &str,
+        root_directory: Option<&str>,
+    ) -> String {
+        let root_directory = root_directory
+            .map(|path| format!("RootDirectory={path}\n"))
+            .unwrap_or_default();
+        format!(
+            "[Unit]\nAfter=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\nRequires=aos-pkg-{package_name}-mac.service aos-pkg-{package_name}-ebpf.service systemd-udevd.service\n[Service]\nRootImage={}/root.img\nRootVerity={}/root.verity\nRootHash={root_hash}\nRootHashSignature={}/root.roothash.p7s\n{root_directory}PrivateDevices={private_devices}\nSlice=aos-pkg-{package_name}.slice\n",
+            image_path.display(),
+            image_path.display(),
+            image_path.display(),
+        )
+    }
+
     fn workload_service_text(package_name: &str, text: &str) -> String {
         if text.contains("[Unit]") {
             text.to_string()
@@ -3470,6 +3675,10 @@ mod tests {
                 sb_signer_cert_sha256: None,
                 sbat: Vec::new(),
                 expected_pcr11: None,
+                root_image: None,
+                root_verity: None,
+                root_hash: None,
+                root_hash_sig: None,
             }];
         }
 
@@ -3481,6 +3690,144 @@ mod tests {
             .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].file_name(), "imagehash111");
+    }
+
+    #[test]
+    fn exposed_packages_accepts_matching_verity_root_image_unit() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_service_unit(
+            &installed,
+            &verity_workload_service_text(
+                "web",
+                &image_path,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "false",
+                None,
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let packages = exposed_packages(&profile, &[installed]).unwrap();
+
+        assert_eq!(packages.len(), 1);
+    }
+
+    #[test]
+    fn exposed_packages_rejects_undeclared_root_image_unit() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        write_service_unit(
+            &installed,
+            &verity_workload_service_text(
+                "web",
+                &image_path,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "false",
+                None,
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("without signed expose.images metadata"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_mismatched_verity_root_hash() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_service_unit(
+            &installed,
+            &verity_workload_service_text(
+                "web",
+                &image_path,
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "false",
+                None,
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid RootHash value"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_verity_root_image_with_private_devices() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        write_service_unit(
+            &installed,
+            &verity_workload_service_text(
+                "web",
+                &image_path,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "true",
+                None,
+            ),
+        );
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid PrivateDevices value"));
+    }
+
+    #[test]
+    fn exposed_packages_rejects_verity_root_image_without_udev_requires() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let image_path = tmp.path().join("imagehash111-rootfs");
+        let mut installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        add_verity_image(&mut installed, &image_path);
+        let unit_text = verity_workload_service_text(
+            "web",
+            &image_path,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "false",
+            None,
+        )
+        .replace(" systemd-udevd.service\n[Service]", "\n[Service]");
+        write_service_unit(&installed, &unit_text);
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("must include systemd-udevd.service in Unit.Requires"));
     }
 
     #[test]

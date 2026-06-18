@@ -2119,6 +2119,10 @@ mod tests {
             sb_signer_cert_sha256: Some(signer.into()),
             sbat: sb_sbat(sbat),
             expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
         }
     }
 
@@ -2236,6 +2240,10 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: vec![],
             expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
         }];
         // No catalog written, no facts on the image: no-op success.
         assert!(

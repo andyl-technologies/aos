@@ -34,6 +34,125 @@
       };
     };
   };
+  verityImageArtifact = pkgs.runCommand "expose-verity-root-image" {} ''
+    mkdir -p "$out"
+    printf image > "$out/root.img"
+    printf verity > "$out/root.verity"
+    printf signature > "$out/root.roothash.p7s"
+  '';
+  verityImageMeta = {
+    format = "ext4-verity";
+    store_path = "${verityImageArtifact}";
+    nar_hash = "sha256:verity";
+    nar_size = 1;
+    root_image = "root.img";
+    root_verity = "root.verity";
+    root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    root_hash_sig = "root.roothash.p7s";
+  };
+  verityRoot = pkgs.mkDerivation {
+    pname = "expose-verity-root";
+    version = "0";
+    src = null;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/expose-verity-root"
+          printf expose-verity-root > "$out/share/expose-verity-root/payload.txt"
+        '';
+      }
+    ];
+
+    expose = {
+      units."expose-verity-root.service" = {
+        description = "RFC-0001 expose verity root service";
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.bash}/bin/bash -c true";
+        };
+      };
+      images = [
+        verityImageMeta
+      ];
+    };
+  };
+  verityTupleMissing = builtins.tryEval (
+    (verityRoot.overrideAttrs (_: {
+      expose = {
+        units."expose-verity-root.service" = {
+          description = "RFC-0001 expose verity root service";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        images = [
+          {
+            format = "ext4-verity";
+            store_path = "${verityImageArtifact}";
+            nar_hash = "sha256:verity";
+            nar_size = 1;
+          }
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  verityTupleMissingRejected =
+    if verityTupleMissing.success
+    then throw "expose renderer must reject verity image formats without RootImage metadata"
+    else "ok";
+  verityAuthoredRootDirectory = builtins.tryEval (
+    (verityRoot.overrideAttrs (_: {
+      expose = {
+        units."expose-verity-root.service" = {
+          description = "RFC-0001 expose verity root service";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+            RootDirectory = "/srv/expose-verity-root";
+          };
+        };
+        images = [
+          verityImageMeta
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  verityAuthoredRootDirectoryRejected =
+    if verityAuthoredRootDirectory.success
+    then throw "expose renderer must reject authored RootDirectory with verity RootImage metadata"
+    else "ok";
+  verityUnconfined = builtins.tryEval (
+    (verityRoot.overrideAttrs (_: {
+      expose = {
+        units."expose-verity-root.service" = {
+          description = "RFC-0001 expose verity root service";
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions = {
+          privileged-users = true;
+        };
+        images = [
+          verityImageMeta
+        ];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  verityUnconfinedRejected =
+    if verityUnconfined.success
+    then throw "expose renderer must reject verity RootImage metadata on unconfined packages"
+    else "ok";
   manualStart = pkgs.mkDerivation {
     pname = "expose-manual-start";
     version = "0";
@@ -1093,6 +1212,8 @@ in
     exposeConfinement = builtins.toJSON pkg.expose.passthru.confinement;
     minimalPayload = minimal;
     minimalExposePath = minimal.expose;
+    verityRootExposePath = verityRoot.expose;
+    inherit verityImageArtifact;
     manualStartExposePath = manualStart.expose;
     configExposePath = configPackage.expose;
     splitConfigExposePath = splitConfigPackage.expose;
@@ -1111,6 +1232,7 @@ in
     k3sCombinedExposePath = k3sCombinedPackage.expose;
     inherit
       reservedCollisionRejected
+      verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
       socketMissingTcpBindRejected
@@ -1135,6 +1257,8 @@ in
       credentialAuthoredImportCollisionRejected
       undeclaredPreparedHostPathDirectoryRejected
       readOnlyPreparedHostPathDirectoryRejected
+      verityAuthoredRootDirectoryRejected
+      verityUnconfinedRejected
       unsupportedHostPathCharactersRejected
       readOnlyTempHostPathRejected
       rootUserWithoutPrivilegeRejected
@@ -1147,6 +1271,7 @@ in
       (builtins.map (pkg: pkg.exposeCheck) (builtins.attrValues packagesWithExpose))
       ++ [
         minimal.exposeCheck
+        verityRoot.exposeCheck
         manualStart.exposeCheck
         configPackage.exposeCheck
         splitConfigPackage.exposeCheck
@@ -1456,6 +1581,23 @@ in
           grep -q '^CapabilityBoundingSet=$' "$minimal_unit"
           grep -q '^AmbientCapabilities=$' "$minimal_unit"
           grep -q 'DevicePolicy=closed' "$minimal_unit"
+
+          verity_unit="$verityRootExposePath/units/expose-verity-root.service"
+          verity_manifest="$verityRootExposePath/manifest.json"
+          test -f "$verity_unit"
+          test -f "$verity_manifest"
+          grep -q 'Description=RFC-0001 expose verity root service' "$verity_unit"
+          grep -q "RootImage=$verityImageArtifact/root.img" "$verity_unit"
+          grep -q "RootVerity=$verityImageArtifact/root.verity" "$verity_unit"
+          grep -q 'RootHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$verity_unit"
+          grep -q "RootHashSignature=$verityImageArtifact/root.roothash.p7s" "$verity_unit"
+          grep -q 'After=.*systemd-udevd.service' "$verity_unit"
+          grep -q 'Requires=.*systemd-udevd.service' "$verity_unit"
+          grep -q 'PrivateDevices=false' "$verity_unit"
+          if grep -q 'RootDirectory=' "$verity_unit"; then
+            echo "verity RootImage service must not also render RootDirectory" >&2
+            exit 1
+          fi
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_modules"
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_sysctl"
           grep -q 'ExecStart=${pkgs.coreutils}/bin/true' "$minimal_firewall"
