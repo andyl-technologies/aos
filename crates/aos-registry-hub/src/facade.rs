@@ -153,6 +153,36 @@ pub async fn head_machine_path(
     render(outcome, path)
 }
 
+/// Serve a managed cache's machine surface (`GET`) via the shared facade.
+///
+/// Caches have no pull-through, so — unlike registry reads, which the hub serves
+/// locally ([`crate::compat`]) — cache reads route through the *same*
+/// [`RpcService::facade_fetch`] the Cloudflare Worker uses, keeping one serving
+/// codepath. Visibility and the soft-delete tombstone are enforced inside the
+/// shared handler.
+pub async fn cache_get(state: &AppState, slug: &str, path: &str, headers: &HeaderMap) -> Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse as _;
+    let auth = auth_value(headers);
+    match write_service(state)
+        .facade_fetch(auth.as_deref(), slug, path)
+        .await
+    {
+        Ok(Some(object)) => (
+            [
+                (header::CONTENT_TYPE, object.content_type),
+                (header::CACHE_CONTROL, object.cache_control),
+            ],
+            object.bytes,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => StatusCode::from_u16(err.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+            .into_response(),
+    }
+}
+
 /// Render a shared-handler [`FacadeWrite`] outcome as the hub's HTTP response.
 ///
 /// Maps each variant to the byte-identical status (and `{"path": …}` JSON body on

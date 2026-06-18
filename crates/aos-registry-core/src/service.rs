@@ -1514,6 +1514,13 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         match org_id {
             Some(id) => {
+                // A tombstoned (soft-deleted) org stops accepting mutations to
+                // its caches, mirroring the registry write path's `resolve_writable`
+                // → `org_is_active` gate. Without this, a cache under a deleted
+                // org would keep accepting uploads and charge its quota.
+                if !self.db.org_is_active(id).await.map_err(RpcError::internal)? {
+                    return Err(RpcError::not_found("cache"));
+                }
                 let org = self
                     .db
                     .org_by_id(id)
@@ -2745,6 +2752,86 @@ impl RpcService {
         }))
     }
 
+    /// Write one object (`<hash>.narinfo` or `nar/<file>`) into a managed cache's
+    /// surface — the cache half of the upload facade, so `nix copy --to
+    /// <hub>/<cache>` works on both shells.
+    ///
+    /// Simpler than the registry write: NARs/narinfo are content-addressed and
+    /// immutable, so there is no publish lease and no re-index. Requires cache
+    /// write authority ([`Self::require_cache_admin`]); charges the org storage
+    /// quota with a TOCTOU-safe reserve-before-write.
+    async fn put_cache_path(
+        &self,
+        auth: Option<&str>,
+        cache: &crate::db::Cache,
+        path: &str,
+        body: &[u8],
+    ) -> FacadeWrite {
+        if cache.deleted_at.is_some() {
+            return FacadeWrite::NotFound;
+        }
+        if let Err(deny) = self.require_cache_admin(auth, cache.org_id).await {
+            return auth_denial_to_facade_write(deny);
+        }
+        if !keymap::is_machine_path(path) {
+            return FacadeWrite::BadPath("not a machine path");
+        }
+        if crate::url_guard::validate_http_surface_path(path).is_err() {
+            return FacadeWrite::BadPath("unsafe surface path");
+        }
+        if body.len() > MAX_UPLOAD_BYTES {
+            return FacadeWrite::TooLarge;
+        }
+        let writer = match self.surface_write.cache_writer(cache).await {
+            Ok(writer) => writer,
+            Err(err) => {
+                tracing::warn!(
+                    slug = %cache.slug,
+                    error = %format!("{err:#}"),
+                    "no writable surface for cache upload"
+                );
+                return FacadeWrite::NotWritable("cache surface is not writable");
+            }
+        };
+        // Overwrite delta for the org quota: read the old size cheaply first.
+        let old_len: Option<i64> = match self.surface.cache_fetcher(cache).await {
+            Ok(fetch) => match fetch.size(path).await {
+                Ok(size) => size.map(|s| s as i64),
+                Err(err) => return internal_write(err),
+            },
+            Err(err) => return internal_write(err),
+        };
+        let existed = old_len.is_some();
+        let delta_bytes = body.len() as i64 - old_len.unwrap_or(0);
+        let delta_objects = i64::from(!existed);
+        if let Some(org_id) = cache.org_id {
+            match self
+                .db
+                .reserve_org_usage(org_id, delta_bytes, delta_objects)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return FacadeWrite::QuotaExceeded,
+                Err(err) => return internal_write(err),
+            }
+        }
+        if let Err(err) = writer.write(path, body).await {
+            // Give the reservation back so a failed upload does not leak quota.
+            if let Some(org_id) = cache.org_id {
+                let _ = self
+                    .db
+                    .reserve_org_usage(org_id, -delta_bytes, -delta_objects)
+                    .await;
+            }
+            return internal_write(err);
+        }
+        if existed {
+            FacadeWrite::Overwritten
+        } else {
+            FacadeWrite::Created
+        }
+    }
+
     /// Resolve a managed registry by slug, requiring it be writable, or return
     /// the denial [`FacadeWrite`].
     ///
@@ -2871,6 +2958,15 @@ impl RpcService {
         path: &str,
         body: &[u8],
     ) -> FacadeWrite {
+        // A managed cache write (content-addressed NARs/narinfo; no publish
+        // lease, no re-index). Caches and registries are separate slug
+        // namespaces, so a registry slug is never a cache. Both shells reach
+        // this one method, so cache writes are at parity automatically.
+        match self.db.cache_by_slug(slug).await {
+            Ok(Some(cache)) => return self.put_cache_path(auth, &cache, path, body).await,
+            Ok(None) => {}
+            Err(err) => return internal_write(err),
+        }
         let registry = match self.resolve_writable(slug).await {
             Ok(registry) => registry,
             Err(deny) => return deny,
@@ -3017,6 +3113,33 @@ impl RpcService {
         slug: &str,
         path: &str,
     ) -> FacadeWrite {
+        // Cache HEAD (e.g. `nix copy` skipping already-pushed objects, or a
+        // substituter probe). Read visibility, not write auth: a public cache's
+        // existence probe is open, unlike a registry HEAD (which reveals an
+        // upload surface and thus needs Publish).
+        match self.db.cache_by_slug(slug).await {
+            Ok(Some(cache)) => {
+                if let Err(deny) = self.require_cache_read(auth, &cache).await {
+                    return auth_denial_to_facade_write(deny);
+                }
+                if !keymap::is_machine_path(path) {
+                    return FacadeWrite::BadPath("not a machine path");
+                }
+                if path == "nix-cache-info" {
+                    return FacadeWrite::Present;
+                }
+                return match self.surface.cache_fetcher(&cache).await {
+                    Ok(fetch) => match fetch.size(path).await {
+                        Ok(Some(_)) => FacadeWrite::Present,
+                        Ok(None) => FacadeWrite::NotFound,
+                        Err(err) => internal_write(err),
+                    },
+                    Err(err) => internal_write(err),
+                };
+            }
+            Ok(None) => {}
+            Err(err) => return internal_write(err),
+        }
         let registry = match self.resolve_writable(slug).await {
             Ok(registry) => registry,
             Err(deny) => return deny,
@@ -3047,6 +3170,17 @@ impl RpcService {
 fn internal_write(err: anyhow::Error) -> FacadeWrite {
     tracing::error!(error = %format!("{err:#}"), "facade write failed");
     FacadeWrite::Internal
+}
+
+/// Map a cache-write auth denial ([`RpcError`]) onto the facade's wire outcome.
+fn auth_denial_to_facade_write(err: RpcError) -> FacadeWrite {
+    match err {
+        RpcError::Unauthenticated(_) => FacadeWrite::Unauthorized("authentication required"),
+        RpcError::PermissionDenied(_) => FacadeWrite::Forbidden,
+        RpcError::NotFound(_) => FacadeWrite::NotFound,
+        // require_cache_admin only yields the three denials above plus Internal.
+        _ => FacadeWrite::Internal,
+    }
 }
 
 /// Apply one revision of a revert draft to its live object.

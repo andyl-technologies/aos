@@ -139,6 +139,16 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
             prefix: registry.prefix.clone(),
         }))
     }
+
+    async fn cache_writer(
+        &self,
+        cache: &aos_registry_core::db::Cache,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        Ok(Box::new(R2Write {
+            bucket: self.bucket.clone(),
+            prefix: cache.prefix.clone(),
+        }))
+    }
 }
 
 /// A [`SurfaceWrite`] writing one registry's prefix into an R2 bucket.

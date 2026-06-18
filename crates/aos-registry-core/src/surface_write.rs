@@ -98,4 +98,20 @@ pub trait SurfaceWriteProvider: BackendBounds {
     /// (e.g. a registration-only registry with no storage binding, or an
     /// unreadable binding).
     async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>>;
+
+    /// Build the surface writer for a managed [`Cache`](crate::db::Cache).
+    ///
+    /// The cache analog of [`writer`](Self::writer): the native hub roots a
+    /// filesystem writer at the cache's binding root + prefix; the Worker scopes
+    /// an R2 writer to the cache's prefix. The provided default errors, so a
+    /// provider that does not host caches need not override it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the provider does not serve caches, or when the
+    /// cache's writable store cannot be resolved.
+    async fn cache_writer(&self, cache: &crate::db::Cache) -> Result<Box<dyn SurfaceWrite>> {
+        let _ = cache;
+        anyhow::bail!("this surface write provider does not serve caches")
+    }
 }
