@@ -175,6 +175,28 @@ enum CloudflareCommand {
         #[arg(long)]
         external_url: String,
     },
+    /// Reset (or create) a root admin's password directly against live D1.
+    ///
+    /// Runs the shared `Database` user/password code over a `WranglerD1Backend`
+    /// — the same path the native hub's `user set-password` runs locally —
+    /// demonstrating one CLI across the native and Cloudflare backends.
+    ResetRoot {
+        /// The root admin email.
+        #[arg(long)]
+        email: String,
+        /// The new password. Prefer --password-stdin.
+        #[arg(long)]
+        password: Option<String>,
+        /// Read the new password from stdin (one line).
+        #[arg(long)]
+        password_stdin: bool,
+        /// The D1 database name.
+        #[arg(long, default_value = "aos-registry-hub")]
+        d1_name: String,
+        /// Target the local miniflare D1 engine instead of remote (testing).
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 /// Shared options for the Cloudflare deployment commands.
@@ -1273,8 +1295,59 @@ async fn run_cloudflare_command(command: CloudflareCommand) -> Result<()> {
             deploy_and_init(&assets, &args).await?;
             println!("install complete: {}", args.external_url);
         }
+        CloudflareCommand::ResetRoot {
+            email,
+            password,
+            password_stdin,
+            d1_name,
+            local,
+        } => {
+            let email = email.trim().to_lowercase();
+            let plaintext = read_password(password, password_stdin)?;
+            if plaintext.is_empty() {
+                anyhow::bail!("password must not be empty");
+            }
+            let assets = cloudflare::Assets::from_env()?;
+            // `--remote` must resolve the real D1 id (wrangler maps the name
+            // through a config entry); `--local` uses a placeholder.
+            let db_id = if local {
+                "local".to_string()
+            } else {
+                cloudflare::resolve_d1_id(&assets, &d1_name).await?
+            };
+            let backend = cloudflare::WranglerD1Backend::create(assets, d1_name, &db_id, !local)?;
+            // `with_backend` applies the shared MIGRATIONS idempotently (a no-op
+            // on an already-initialised deployment), then we run the exact same
+            // user/password path the native `user set-password` uses.
+            let db = Database::with_backend(Box::new(backend)).await?;
+            let user_id = db.find_or_create_user(&email).await?;
+            let hash = aos_registry_hub::auth::password::hash_password(&plaintext)?;
+            db.set_user_password(user_id, &hash).await?;
+            println!("reset root password for '{email}' (user id {user_id})");
+        }
     }
     Ok(())
+}
+
+/// Reads a password from `password`, or stdin when `from_stdin`, trimming a
+/// trailing newline.
+///
+/// # Errors
+///
+/// Returns an error if `from_stdin` is set but stdin cannot be read.
+fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
+    if let Some(p) = password {
+        return Ok(p);
+    }
+    if from_stdin {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading password from stdin")?;
+        return Ok(buf.trim_end_matches(['\n', '\r']).to_string());
+    }
+    anyhow::bail!("provide --password or --password-stdin");
 }
 
 /// Resolves the root password from the `--root-password` flag or stdin.
