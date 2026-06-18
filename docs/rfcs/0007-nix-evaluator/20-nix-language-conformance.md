@@ -451,30 +451,30 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
 
 ### 6.1 `+` operator overloads (precedence 7)
 
-- [ ] **int + int → int** — i64 arithmetic (§7).
-- [ ] **float + float → float**, and **int + float / float + int → float**
+- [x] **int + int → int** — i64 arithmetic (§7).
+- [x] **float + float → float**, and **int + float / float + int → float**
       (promotion, §7).
 - [x] **string + string → string** — concatenation + context union (§2.5, §3).
-- [ ] **path + path → path**.
-- [ ] **path + string → path** (string must lack store-path context; §4).
-- [ ] **string + path → string** (path must exist, copied to store; §4).
+- [x] **path + path → path**.
+- [x] **path + string → path** (string must lack store-path context; §4).
+- [x] **string + path → string** (path must exist, copied to store; §4).
 - [ ] **Mismatched `+` operands error** — e.g. `int + string`, `bool + bool`,
       `list + list` (lists use `++`, not `+`) are **must-error**. Verify the full
       legal/illegal `+` matrix against pinned Nix.
 
 ### 6.2 `//` update operator (precedence 9)
 
-- [ ] **Shallow right-biased merge** — result has all attrs of both; on key
+- [x] **Shallow right-biased merge** — result has all attrs of both; on key
       collision the **right** operand's value wins. **Shallow**: nested sets are
       *replaced*, not deep-merged (`{a={x=1;};} // {a={y=2;};}` → `{a={y=2;};}`).
       Verify the shallow (non-recursive) semantics against pinned Nix.
-- [ ] **Strict to WHNF in both args** — both operands forced to WHNF (to enumerate
+- [x] **Strict to WHNF in both args** — both operands forced to WHNF (to enumerate
       keys); attr *values* are not forced. Verify.
 
 ### 6.3 `++` list concatenation (precedence 5)
 
-- [ ] **`a ++ b`** — concatenates lists; element thunks are shared (not forced).
-- [ ] **Non-list operand errors** (**must-error**).
+- [x] **`a ++ b`** — concatenates lists; element thunks are shared (not forced).
+- [x] **Non-list operand errors** (**must-error**).
 
 ---
 

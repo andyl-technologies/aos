@@ -20707,6 +20707,90 @@ mod tests {
         assert_cpp_nix_numeric_and_ordering_builtins_match_tree_walk(&oracle);
     }
 
+    fn assert_cpp_nix_language_operators_match_tree_walk(oracle: &str) {
+        assert_pinned_cpp_nix_oracle(oracle);
+
+        let dir = unique_temp_dir("cpp-nix-language-operators");
+        let base = dir.join("base");
+        fs::create_dir(&base).expect("base directory creates");
+        let suffix = dir.join("suffix.txt");
+        fs::write(&suffix, b"abc").expect("suffix file writes");
+        let base = path_source(&base);
+        let missing = path_source(&dir.join("missing.txt"));
+        let suffix = path_source(&suffix);
+
+        for source in [
+            "1 + 2".to_owned(),
+            "1.5 + 2.0".to_owned(),
+            "1 + 2.5".to_owned(),
+            "1.5 + 2".to_owned(),
+            r#""a" + "b""#.to_owned(),
+            r#"let
+                 withCtx = text: path: builtins.appendContext text {
+                   ${path} = { path = true; };
+                 };
+               in builtins.getContext
+                 (withCtx "a" "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-a"
+                  + withCtx "b" "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-b")"#
+                .to_owned(),
+            format!("builtins.typeOf ({base} + \"/child\")"),
+            format!("builtins.toString ({base} + \"/child\")"),
+            format!("builtins.toString ({base} + {suffix})"),
+            format!(r#""prefix-" + {suffix}"#),
+            "({ a = 1; } // { b = 2; }).a".to_owned(),
+            "({ a = 1; } // { a = 2; }).a".to_owned(),
+            "({ a = { x = 1; }; } // { a = { y = 2; }; }).a".to_owned(),
+            "builtins.attrNames ({ a = 1 / 0; } // { b = 2; })".to_owned(),
+            "let xs = [ { a = 1; } ]; ys = [ { b = 2; } ]; in ((builtins.elemAt xs 0) // (builtins.elemAt ys 0)).b".to_owned(),
+            "[ 1 ] ++ [ 2 ]".to_owned(),
+            "builtins.length ([ (1 / 0) ] ++ [ 2 ])".to_owned(),
+        ] {
+            assert_cpp_nix_json_matches_tree_walk(oracle, &source);
+        }
+
+        for source in [
+            "1 + \"a\"".to_owned(),
+            "\"a\" + 1".to_owned(),
+            "true + false".to_owned(),
+            "null + null".to_owned(),
+            "[ 1 ] + [ 2 ]".to_owned(),
+            "({ a = 1; } + { b = 2; })".to_owned(),
+            "(x: x) + (x: x)".to_owned(),
+            format!(
+                r#"{base} + (builtins.appendContext "/child" {{
+                    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = {{ path = true; }};
+                }})"#
+            ),
+            "({} // (1 / 0))".to_owned(),
+            "((1 / 0) // {})".to_owned(),
+            "(builtins.break { a = 1; }) // { b = 2; }".to_owned(),
+            "{ a = 1; } // (builtins.break { b = 2; })".to_owned(),
+            format!(r#""prefix-" + {missing}"#),
+            "1 ++ []".to_owned(),
+            "[] ++ 1".to_owned(),
+        ] {
+            assert_cpp_nix_and_tree_walk_reject_expression(oracle, &source);
+        }
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
+    #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
+    fn cpp_nix_language_operators_match_tree_walk() {
+        let oracle = cpp_nix_oracle();
+        assert_cpp_nix_language_operators_match_tree_walk(&oracle);
+    }
+
+    #[test]
+    fn configured_cpp_nix_language_operators_match_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix operator check");
+            return;
+        };
+        assert_cpp_nix_language_operators_match_tree_walk(&oracle);
+    }
+
     fn assert_cpp_nix_sort_and_less_than_builtins_match_tree_walk(oracle: &str) {
         assert_pinned_cpp_nix_oracle(oracle);
         for source in [
@@ -33238,6 +33322,37 @@ mod tests {
     }
 
     #[test]
+    fn attr_update_forces_ordinary_thunk_operands_to_whnf() {
+        assert_eq!(
+            eval(
+                "let xs = [ { a = 1; } ]; ys = [ { b = 2; } ]; \
+                 in ((builtins.elemAt xs 0) // (builtins.elemAt ys 0)).b"
+            )
+            .as_int(),
+            Ok(2)
+        );
+    }
+
+    #[test]
+    fn attr_update_rejects_break_identity_thunk_operands() {
+        for source in [
+            "(builtins.break { a = 1; }) // { b = 2; }",
+            "{ a = 1; } // (builtins.break { b = 2; })",
+        ] {
+            assert!(matches!(
+                eval_whnf_owned(&lower(source))
+                    .expect_err("break identity thunk is not a set update operand")
+                    .kind(),
+                TreeWalkErrorKind::Type {
+                    expected: "attrs",
+                    actual: ValueTag::Thunk,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
     fn evaluates_empty_attrsets_with_owned_heap() {
         let ir = lower("{}");
         let outcome = eval_whnf_owned(&ir).expect("empty attrset evaluates");
@@ -34638,6 +34753,21 @@ mod tests {
     }
 
     #[test]
+    fn string_add_rejects_missing_path_rhs() {
+        let dir = unique_temp_dir("string-add-missing-path");
+        let path = path_source(&dir.join("missing.txt"));
+        let ir = lower(&format!("\"prefix-\" + {path}"));
+        let error = eval_whnf_owned(&ir).expect_err("missing path rhs cannot be copied to store");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::SourcePathArchive { .. }
+        ));
+
+        fs::remove_dir_all(dir).expect("temp directory removes");
+    }
+
+    #[test]
     fn path_add_concatenates_raw_paths_and_context_free_strings() {
         let dir = unique_temp_dir("path-add");
         let base = dir.join("base");
@@ -34880,6 +35010,19 @@ mod tests {
             }
         );
         assert_eq!(error.span(), rhs_span);
+    }
+
+    #[test]
+    fn addition_rejects_mismatched_operand_kinds() {
+        for source in [
+            "true + false",
+            "null + null",
+            "[ 1 ] + [ 2 ]",
+            "{ a = 1; } + { b = 2; }",
+            "(x: x) + (x: x)",
+        ] {
+            eval_whnf_owned(&lower(source)).expect_err("mismatched addition operands are invalid");
+        }
     }
 
     #[test]
@@ -35957,6 +36100,8 @@ mod tests {
         assert_eq!(eval("5 - 8").as_int(), Ok(-3));
         assert_eq!(eval("2 * 3").as_int(), Ok(6));
         assert_eq!(eval("1 + 2.5").as_float(), Ok(3.5));
+        assert_eq!(eval("1.5 + 2.0").as_float(), Ok(3.5));
+        assert_eq!(eval("1.5 + 2").as_float(), Ok(3.5));
         assert_eq!(eval("2 * 0.5").as_float(), Ok(1.0));
     }
 
