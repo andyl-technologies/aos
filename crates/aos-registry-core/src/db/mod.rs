@@ -5572,6 +5572,52 @@ impl Database {
         rows.iter().map(row_to_cache_gc_run).collect()
     }
 
+    /// The store-path hash components of every platform artifact a registry
+    /// currently indexes.
+    ///
+    /// Used to derive a linked cache's GC roots (RFC-0004 "11-caches": pin GC
+    /// roots to AOS packages) — every store path the registry exposes is kept in
+    /// a cache linked with `roots_packages`, so GC never reclaims a NAR a
+    /// published package needs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn registry_store_hashes(&self, registry_id: i64) -> Result<Vec<String>> {
+        // Both the primary platform `store_path` AND each image `store_path` in
+        // the `images` JSON are live artifacts the registry exposes; a linked
+        // cache must root them all, or GC could reclaim a NAR a published image
+        // needs.
+        let rows = self
+            .backend
+            .query(
+                "SELECT vp.store_path, vp.images FROM version_platforms vp
+                 JOIN package_versions pv ON pv.id = vp.version_id
+                 JOIN packages p ON p.id = pv.package_id
+                 WHERE p.registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?;
+        let store_hash = |path: &str| -> String {
+            let base = path.rsplit('/').next().unwrap_or(path);
+            base.split('-').next().unwrap_or(base).to_string()
+        };
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let store_path: String = row.get(0)?;
+            out.push(store_hash(&store_path));
+            let images: String = row.get(1)?;
+            if let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&images) {
+                for image in arr {
+                    if let Some(path) = image.get("store_path").and_then(|v| v.as_str()) {
+                        out.push(store_hash(path));
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     // -- storage bindings ----------------------------------------------------
 
     /// Create a storage binding under an org; returns its new id.

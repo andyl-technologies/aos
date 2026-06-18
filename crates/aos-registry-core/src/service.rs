@@ -2234,6 +2234,76 @@ impl RpcService {
         Ok(pb::ListCacheGcRunsResponse { runs })
     }
 
+    /// `CacheService.RunCacheGc` — garbage-collect a cache (mark/sweep).
+    ///
+    /// Runs the shared [`crate::gc::sweep_cache`] over this service's write port,
+    /// so the native hub and the Worker GC identically. A real run records a
+    /// `cache_gc_runs` row; a `dry_run` only reports what would be reclaimed.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors, and
+    /// [`RpcError::Internal`] on database/surface failure (a failed real run is
+    /// recorded as `failed`).
+    pub async fn run_cache_gc(
+        &self,
+        auth: Option<&str>,
+        req: pb::RunCacheGcRequest,
+    ) -> Result<pb::RunCacheGcResponse, RpcError> {
+        let cache = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, cache.org_id).await?;
+        let now = clock::now_unix_secs();
+        if req.dry_run {
+            let stats =
+                crate::gc::sweep_cache(&self.db, self.surface_write.as_ref(), &cache, true, now)
+                    .await
+                    .map_err(RpcError::internal)?;
+            return Ok(pb::RunCacheGcResponse {
+                scanned: stats.scanned,
+                retained: stats.retained,
+                deleted_objects: stats.deleted_objects,
+                freed_bytes: stats.freed_bytes,
+                dry_run: true,
+            });
+        }
+        let run_id = self
+            .db
+            .start_cache_gc_run(cache.id)
+            .await
+            .map_err(RpcError::internal)?;
+        match crate::gc::sweep_cache(&self.db, self.surface_write.as_ref(), &cache, false, now).await
+        {
+            Ok(stats) => {
+                self.db
+                    .finish_cache_gc_run(
+                        run_id,
+                        "ok",
+                        None,
+                        stats.scanned,
+                        stats.retained,
+                        stats.deleted_objects,
+                        stats.freed_bytes,
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+                Ok(pb::RunCacheGcResponse {
+                    scanned: stats.scanned,
+                    retained: stats.retained,
+                    deleted_objects: stats.deleted_objects,
+                    freed_bytes: stats.freed_bytes,
+                    dry_run: false,
+                })
+            }
+            Err(err) => {
+                let _ = self
+                    .db
+                    .finish_cache_gc_run(run_id, "failed", Some(format!("{err:#}")), 0, 0, 0, 0)
+                    .await;
+                Err(RpcError::internal(err))
+            }
+        }
+    }
+
     /// `ProjectService.CreateProject` — create a project at a materialized path
     /// under an org.
     ///

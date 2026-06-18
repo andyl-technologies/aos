@@ -855,6 +855,15 @@ enum CacheCommand {
         /// Store-path hash component.
         store_hash: String,
     },
+    /// Garbage-collect a cache: sweep objects unreachable from its GC roots,
+    /// subject to its GC policy (local `--target` only).
+    Gc {
+        /// Cache slug.
+        cache: String,
+        /// Report what would be reclaimed without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// List a cache's recent GC runs.
     GcRuns {
         /// Cache slug.
@@ -1435,7 +1444,9 @@ async fn main() -> Result<()> {
             }
         }
         Command::Cache { command } => {
-            let db = open_db(&cli.root, &cli.target).await?;
+            // `Arc` so the GC arm can hand a shared handle to the write provider;
+            // every other arm calls through the `Arc` deref unchanged.
+            let db = std::sync::Arc::new(open_db(&cli.root, &cli.target).await?);
             match command {
                 CacheCommand::Create {
                     slug,
@@ -1748,6 +1759,32 @@ async fn main() -> Result<()> {
                         }
                         None => println!("no object {store_hash} in cache '{cache}'"),
                     }
+                }
+                CacheCommand::Gc { cache, dry_run } => {
+                    // GC deletes surface files, so it needs the local writable
+                    // surface; a d1/worker cache is GC'd by the deployed worker
+                    // (the RunCacheGc RPC / its Cron), not this CLI.
+                    ensure_local_target(&cli.target, "cache gc")?;
+                    let c = db
+                        .cache_by_slug(&cache)
+                        .await?
+                        .with_context(|| format!("no cache '{cache}'"))?;
+                    let writers = aos_registry_hub::coreports::HubSurfaceWriteProvider::new(
+                        std::sync::Arc::clone(&db),
+                    );
+                    let stats = aos_registry_core::gc::sweep_cache(
+                        db.as_ref(), &writers, &c, dry_run, now_secs(),
+                    )
+                    .await?;
+                    println!(
+                        "gc {}: scanned {} retained {} deleted {} freed {}B{}",
+                        cache,
+                        stats.scanned,
+                        stats.retained,
+                        stats.deleted_objects,
+                        stats.freed_bytes,
+                        if dry_run { " (dry-run)" } else { "" }
+                    );
                 }
                 CacheCommand::GcRuns { cache, limit } => {
                     let c = db

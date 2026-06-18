@@ -566,33 +566,39 @@ the current spec. Phases are orderable; A lands first, E last.
 
 ### Phase C — garbage collection & retention
 
-- [ ] Derived-root refresh from linked registries (`roots_packages`): live
-      channel-frontier + `keep_release_versions` closures → `cache_gc_roots`.
-- [ ] Mark/sweep over `cache_objects.refs`; narinfo delete + content-addressed
-      NAR delete at zero refcount; `ttl_unreferenced_secs` grace. (NAR deletion
-      must resolve the on-disk object via `cache_objects.nar_url` — the actual
-      surface key — not by reconstructing a name from `file_hash`, since the
-      stored `file_hash` is the `sha256:…` content address, not the URL stem.)
-- [ ] Manual-pin expiry: `cache_gc_roots.expires_at` (NULL = unlimited
-      default); expired pins skipped at mark and reaped; `cache pin --ttl` /
-      `cache renew` upsert the deadline with no re-upload (`PinCachePath`
-      carries `expires_at`).
-- [ ] Size-limit LRU eviction of **unrooted** objects; quota-breach health +
-      audit event when fully-rooted and over cap (never evict a rooted path).
+- [x] Derived-root refresh from linked registries (`roots_packages`):
+      `registry_store_hashes` roots **every** store path (incl. image
+      `store_path`s) the registry currently indexes, so a published package's
+      closure is never reclaimed. (Narrowing to just live channel-frontier +
+      `keep_release_versions` closures is a future refinement; rooting all
+      indexed paths is the safe superset.)
+- [x] Mark/sweep over `cache_objects.refs` (`gc::sweep_cache`, shared by both
+      shells); narinfo delete + content-addressed NAR delete at zero
+      `nar_refcount`, resolved via `nar_url`; `ttl_unreferenced_secs` grace
+      (no policy ⇒ no age sweep). Cycle-safe; rooted closure never evicted.
+- [x] Manual-pin expiry: expired pins are skipped at mark and reaped;
+      `cache pin --ttl` / `cache renew` upsert the deadline with no re-upload
+      (`expires_at`). Unit-tested.
+- [x] Size-limit LRU eviction of **unrooted** objects (least-recently-accessed
+      first); a fully-rooted over-cap cache logs a quota-breach warning rather
+      than evicting a rooted path (a formal audit-log event is a later add).
+      Unit-tested.
 - [ ] **LRU access signal:** `last_accessed_at` tapped by the proxied facade;
       optional `access_log_source` CDN-log ingestion for direct frontends;
       documented age-based fallback when neither is present (correctness via
       roots is unaffected).
 - [ ] **Cross-visibility enforcement:** reject a registry advertising a cache
       less visible than itself; warn on a private/internal registry rooting a
-      public cache (content-exposure).
-- [ ] Reclamation-on-removal verified: dropping a release / advancing a
-      channel reclaims its now-unreachable NARs on the next sweep.
-- [ ] `cache_gc_runs` history + `cache_usage` maintenance; `RunCacheGc` /
-      `ListCacheGcRuns` RPCs; `aos-hub cache gc [--dry-run]` /
+      public cache (content-exposure). (lands with #21)
+- [x] Reclamation-on-removal: derived roots are recomputed every sweep from the
+      registry's current index, so dropping a release / re-indexing reclaims its
+      now-unreachable NARs on the next sweep (end-to-end VM coverage in #26).
+- [x] `cache_gc_runs` history + `cache_usage` maintenance; `RunCacheGc` /
+      `ListCacheGcRuns` RPCs; `aos-hub cache gc [--dry-run]` (local target) /
       `cache gc-policy` / `cache pin|renew|unpin|roots` CLI.
 - [ ] Worker GC: extend the existing Cron trigger with a cache-GC pass over
-      D1+R2 (no new Worker plumbing).
+      D1+R2 (the `RunCacheGc` RPC is already reachable on the worker; only the
+      scheduled Cron driver is pending).
 
 ### Phase D — discovery, graph, NAR explorer, web
 
