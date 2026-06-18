@@ -38,7 +38,7 @@ use crate::syntax::{
 };
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 4;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 5;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;
@@ -1029,6 +1029,7 @@ fn encode_lowered_ir(ir: &Ir) -> Result<Vec<u8>, ParseCacheError> {
     }
     for binding in ir.bindings.as_ref() {
         encode_ir_attr_path_segment(&mut out, binding.key);
+        encode_option_span(&mut out, binding.position);
         write_u32(&mut out, binding.value.as_u32());
     }
     for shape in ir.shapes.as_ref() {
@@ -1089,8 +1090,13 @@ fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir, String> {
     let mut bindings = Vec::with_capacity(binding_count);
     for _ in 0..binding_count {
         let key = decode_ir_attr_path_segment(&mut reader)?;
+        let position = reader.read_option_span()?;
         let value = IrId::new(reader.read_u32()?);
-        bindings.push(IrBinding { key, value });
+        bindings.push(IrBinding {
+            key,
+            position,
+            value,
+        });
     }
     let mut shapes = Vec::with_capacity(shape_count);
     for _ in 0..shape_count {
@@ -2198,6 +2204,17 @@ fn encode_option_u32(out: &mut Vec<u8>, value: Option<u32>) {
     }
 }
 
+fn encode_option_span(out: &mut Vec<u8>, value: Option<Span>) {
+    match value {
+        Some(value) => {
+            out.push(1);
+            write_u32(out, value.start);
+            write_u32(out, value.end);
+        }
+        None => out.push(0),
+    }
+}
+
 fn write_len(out: &mut Vec<u8>, len: usize, what: &'static str) -> Result<(), ParseCacheError> {
     let len = u32::try_from(len)
         .map_err(|_| ParseCacheError::EncodeArtifact(format!("{what} exceeds u32")))?;
@@ -2465,6 +2482,14 @@ impl<'a> BinaryReader<'a> {
         }
     }
 
+    fn read_option_span(&mut self) -> Result<Option<Span>, String> {
+        match self.read_u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(Span::new(self.read_u32()?, self.read_u32()?))),
+            tag => Err(format!("invalid option tag {tag}")),
+        }
+    }
+
     fn read_bool(&mut self) -> Result<bool, String> {
         match self.read_u8()? {
             0 => Ok(false),
@@ -2619,7 +2644,7 @@ mod tests {
 
         entry.write_meta(&meta).expect("metadata writes");
         let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-        assert!(text.contains("schema_version = 4"));
+        assert!(text.contains("schema_version = 5"));
         assert!(!entry.is_complete());
 
         let _ = fs::remove_dir_all(root);
@@ -3014,6 +3039,7 @@ mod tests {
         let b = symbols.intern(b"b").expect("b interns");
         let static_binding = IrBinding {
             key: IrAttrPathSegment::Static(a),
+            position: None,
             value: IrId::new(0),
         };
         let invalid_shape = Ir {
@@ -3149,6 +3175,19 @@ mod tests {
 
         let loaded = entry.read_ir().expect("lowered IR artifact reads");
         assert!(lowered_ir_matches(&loaded, &expected));
+        let dynamic_binding = loaded
+            .bindings
+            .iter()
+            .find(|binding| matches!(binding.key, IrAttrPathSegment::Dynamic(_)))
+            .expect("dynamic binding round-trips");
+        let dynamic_start = source.find("${name}").expect("dynamic binding exists") as u32;
+        assert_eq!(
+            dynamic_binding.position,
+            Some(Span::new(
+                dynamic_start,
+                dynamic_start + "${name}".len() as u32
+            ))
+        );
 
         let _ = fs::remove_dir_all(root);
     }

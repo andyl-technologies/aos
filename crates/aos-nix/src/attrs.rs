@@ -15,8 +15,24 @@ use std::convert::TryFrom;
 
 use thiserror::Error;
 
-use crate::syntax::{Symbol, SymbolTable};
+use crate::syntax::{Span, Symbol, SymbolTable};
 use crate::value::Value;
+
+/// Source provenance for one attribute binding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AttrPosition {
+    /// The module that owns the binding source bytes.
+    pub module: u32,
+    /// The byte span of the binding key within the owning module.
+    pub span: Span,
+}
+
+impl AttrPosition {
+    /// Creates attribute source provenance.
+    pub const fn new(module: u32, span: Span) -> Self {
+        Self { module, span }
+    }
+}
 
 /// One immutable attribute binding.
 #[derive(Clone, Copy, Debug)]
@@ -25,12 +41,27 @@ pub struct AttrEntry {
     pub key: Symbol,
     /// The already-lowered runtime value for the binding.
     pub value: Value,
+    /// Optional source position for `builtins.unsafeGetAttrPos`.
+    pub position: Option<AttrPosition>,
 }
 
 impl AttrEntry {
     /// Creates an attribute binding.
     pub const fn new(key: Symbol, value: Value) -> Self {
-        Self { key, value }
+        Self {
+            key,
+            value,
+            position: None,
+        }
+    }
+
+    /// Creates an attribute binding with source provenance.
+    pub const fn with_position(key: Symbol, value: Value, position: AttrPosition) -> Self {
+        Self {
+            key,
+            value,
+            position: Some(position),
+        }
     }
 }
 

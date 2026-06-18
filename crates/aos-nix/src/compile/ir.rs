@@ -475,6 +475,8 @@ pub enum IrAttrPathSegment {
 pub struct IrBinding {
     /// The lowered binding key.
     pub key: IrAttrPathSegment,
+    /// The source span of the binding key, when one exists.
+    pub position: Option<Span>,
     /// The lowered value expression, usually a [`IrKind::ThunkAlloc`].
     pub value: IrId,
 }
@@ -1448,7 +1450,7 @@ impl IrLowerer {
                 let NodeData::Binding { path, value } = node.data else {
                     return Err(self.invalid_shape(node, "binding payload"));
                 };
-                let key = self.lower_binding_key(path)?;
+                let (key, position) = self.lower_binding_key(path)?;
                 if matches!(key, IrAttrPathSegment::Dynamic(_)) {
                     *has_dynamic = true;
                 }
@@ -1470,14 +1472,21 @@ impl IrLowerer {
                 } else {
                     self.lower_lazy(value)?
                 };
-                Ok(Some(IrBinding { key, value }))
+                Ok(Some(IrBinding {
+                    key,
+                    position,
+                    value,
+                }))
             }
             NodeKind::Inherit => Ok(None),
             _ => Err(self.invalid_shape(node, "binding node")),
         }
     }
 
-    fn lower_binding_key(&mut self, path: ChildSlice) -> Result<IrAttrPathSegment, IrError> {
+    fn lower_binding_key(
+        &mut self,
+        path: ChildSlice,
+    ) -> Result<(IrAttrPathSegment, Option<Span>), IrError> {
         let segments = self.child_ids(path)?;
         let Some(segment) = segments.first().copied() else {
             return Err(IrError::new(
@@ -1485,13 +1494,13 @@ impl IrLowerer {
                 Span::default(),
             ));
         };
+        let span = self.node(segment)?.span;
         if segments.len() != 1 {
-            return Err(IrError::new(
-                IrErrorKind::InvalidBindingKey,
-                self.node(segment)?.span,
-            ));
+            return Err(IrError::new(IrErrorKind::InvalidBindingKey, span));
         }
-        self.lower_attr_segment(segment)
+        let key = self.lower_attr_segment(segment)?;
+        let position = Some(span);
+        Ok((key, position))
     }
 
     fn lower_attr_path(&mut self, path: ChildSlice) -> Result<IrAttrPathId, IrError> {

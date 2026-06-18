@@ -42,7 +42,7 @@ use super::heap::{
 };
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
-use crate::attrs::{AttrEntry, AttrError, FlatAttrs};
+use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::compile::{
     FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
     IrKind, IrLowerOptions, IrNode, IrShapeId, ResolverOptions, ScopeResolver, lower,
@@ -74,6 +74,9 @@ const PATH_ATTR: &[u8] = b"path";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
 const KEY_ATTR: &[u8] = b"key";
+const FILE_ATTR: &[u8] = b"file";
+const LINE_ATTR: &[u8] = b"line";
+const COLUMN_ATTR: &[u8] = b"column";
 const OPERATOR_ATTR: &[u8] = b"operator";
 const START_SET_ATTR: &[u8] = b"startSet";
 const HASH_ATTR: &[u8] = b"hash";
@@ -1461,6 +1464,13 @@ impl EvalStderr {
 struct TreeWalkModule {
     ir: Ir,
     path_literal_base: Option<Vec<u8>>,
+    source: Option<ModuleSource>,
+}
+
+#[derive(Clone, Debug)]
+struct ModuleSource {
+    name: Vec<u8>,
+    bytes: Vec<u8>,
 }
 
 /// In-process import cache state.
@@ -1588,6 +1598,7 @@ impl TreeWalk {
             modules: vec![TreeWalkModule {
                 ir: ir.clone(),
                 path_literal_base,
+                source: None,
             }],
             current_module: EvalModuleId::ROOT,
             symbols: ir.symbols.clone(),
@@ -1607,6 +1618,26 @@ impl TreeWalk {
             call_depth: 0,
             lazy_identity_thunks: BTreeSet::new(),
         }
+    }
+
+    /// Creates a tree-walk evaluator with source provenance for the root IR.
+    ///
+    /// Use this constructor for file-backed root modules whose attribute
+    /// positions should be visible through `builtins.unsafeGetAttrPos`.
+    /// Source-less expression evaluation should use [`Self::with_options`],
+    /// matching C++ Nix `--expr` behavior where root positions are unavailable.
+    pub fn with_options_and_source(
+        ir: &Ir,
+        options: TreeWalkOptions,
+        source_name: impl Into<Vec<u8>>,
+        source: impl Into<Vec<u8>>,
+    ) -> Self {
+        let mut eval = Self::with_options(ir, options);
+        eval.modules[EvalModuleId::ROOT.index()].source = Some(ModuleSource {
+            name: source_name.into(),
+            bytes: source.into(),
+        });
+        eval
     }
 
     /// Returns the evaluator heap that owns heap-backed values.
@@ -1919,6 +1950,24 @@ impl TreeWalk {
             })
     }
 
+    fn module_source(
+        &self,
+        module: EvalModuleId,
+        span: Span,
+    ) -> Result<Option<&ModuleSource>, TreeWalkError> {
+        self.modules
+            .get(module.index())
+            .map(|module| module.source.as_ref())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidModuleId {
+                        module: module.as_u32(),
+                    },
+                    span,
+                )
+            })
+    }
+
     fn with_current_module<T>(
         &mut self,
         module: EvalModuleId,
@@ -1938,6 +1987,8 @@ impl TreeWalk {
         span: Span,
         ir: Ir,
         path_literal_base: Vec<u8>,
+        source_name: Vec<u8>,
+        source: Vec<u8>,
     ) -> Result<EvalModuleId, TreeWalkError> {
         let raw = u32::try_from(self.modules.len()).map_err(|_| {
             TreeWalkError::new(
@@ -1951,6 +2002,10 @@ impl TreeWalk {
         self.modules.push(TreeWalkModule {
             ir,
             path_literal_base: Some(path_literal_base),
+            source: Some(ModuleSource {
+                name: source_name,
+                bytes: source,
+            }),
         });
         Ok(EvalModuleId::new(raw))
     }
@@ -8104,7 +8159,8 @@ impl TreeWalk {
         })?;
         self.symbols = ir.symbols.clone();
         let root = ir.root;
-        let module = self.push_module(id, span, ir, base.to_vec())?;
+        let module =
+            self.push_module(id, span, ir, base.to_vec(), path.to_vec(), source.to_vec())?;
         let imported_scoped_globals = self.import_scoped_globals(id, span, global_scope)?;
         let saved_env = std::mem::take(&mut self.env);
         let saved_with_scopes = std::mem::take(&mut self.with_scopes);
@@ -12613,7 +12669,7 @@ impl TreeWalk {
                     argument_span,
                 ));
             }
-            let name_value = {
+            let (name_value, name_position) = {
                 let attrs = self.heap.get_attrs(element).map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::Heap {
@@ -12623,7 +12679,7 @@ impl TreeWalk {
                         argument_span,
                     )
                 })?;
-                attrs.get(name_attr).ok_or_else(|| {
+                let name_entry = attrs.get_entry(name_attr).ok_or_else(|| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::MissingAttribute {
                             id: argument,
@@ -12631,7 +12687,8 @@ impl TreeWalk {
                         },
                         argument_span,
                     )
-                })?
+                })?;
+                (name_entry.value, name_entry.position)
             };
             let name_value = self.force_value(argument, argument_span, name_value)?;
             if name_value.tag() != ValueTag::String {
@@ -12669,7 +12726,11 @@ impl TreeWalk {
                     )
                 })?
             };
-            entries.push(AttrEntry::new(key, attr_value));
+            let entry = match name_position {
+                Some(position) => AttrEntry::with_position(key, attr_value, position),
+                None => AttrEntry::new(key, attr_value),
+            };
+            entries.push(entry);
         }
 
         let attrs = FlatAttrs::new(entries, &self.symbols)
@@ -13015,6 +13076,113 @@ impl TreeWalk {
             attrs.contains_key(key)
         };
         Ok(Value::bool(has_attr))
+    }
+
+    fn eval_unsafe_get_attr_pos_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        name_id: IrId,
+        attrs_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let key = self.eval_attr_name_primop_argument(name_id)?;
+        let attrs_span = self.node(attrs_id)?.span;
+        let attrs_value = self.eval_node(attrs_id)?;
+        self.eval_unsafe_get_attr_pos_attrs_value(id, span, key, attrs_id, attrs_span, attrs_value)
+    }
+
+    fn eval_unsafe_get_attr_pos_attrs_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        key: Symbol,
+        attrs_id: IrId,
+        attrs_span: Span,
+        attrs_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: attrs_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                attrs_span,
+            ));
+        }
+
+        let position = {
+            let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            attrs.get_entry(key).and_then(|entry| entry.position)
+        };
+        let Some(position) = position else {
+            return Ok(Value::null());
+        };
+
+        let Some((file, line, column)) = self.attr_position_fields(position, span)? else {
+            return Ok(Value::null());
+        };
+        self.alloc_attr_position_attrs(id, span, &file, line, column)
+    }
+
+    fn attr_position_fields(
+        &self,
+        position: AttrPosition,
+        span: Span,
+    ) -> Result<Option<(Vec<u8>, i64, i64)>, TreeWalkError> {
+        let Some(source) = self.module_source(EvalModuleId::new(position.module), span)? else {
+            return Ok(None);
+        };
+        let start = position.span.start as usize;
+        let end = position.span.end as usize;
+        if start > end || end > source.bytes.len() {
+            return Ok(None);
+        }
+
+        // Pinned C++ Nix reports attribute positions with line fixed at 1 and
+        // column as a one-based byte offset into the file.
+        let column = i64::from(position.span.start) + 1;
+        Ok(Some((source.name.clone(), 1, column)))
+    }
+
+    fn alloc_attr_position_attrs(
+        &mut self,
+        id: IrId,
+        span: Span,
+        file: &[u8],
+        line: i64,
+        column: i64,
+    ) -> Result<Value, TreeWalkError> {
+        let file_key = self.intern_builtin_attr_symbol(id, FILE_ATTR, span)?;
+        let line_key = self.intern_builtin_attr_symbol(id, LINE_ATTR, span)?;
+        let column_key = self.intern_builtin_attr_symbol(id, COLUMN_ATTR, span)?;
+        let file_value = self.alloc_static_string(id, span, file)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(3).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed { entries: 3 },
+                },
+                span,
+            )
+        })?;
+        entries.push(AttrEntry::new(file_key, file_value));
+        entries.push(AttrEntry::new(line_key, Value::int(line)));
+        entries.push(AttrEntry::new(column_key, Value::int(column)));
+        let attrs = FlatAttrs::new(entries, &self.symbols)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     fn eval_attr_name_primop_argument(&mut self, id: IrId) -> Result<Symbol, TreeWalkError> {
@@ -16219,6 +16387,9 @@ impl TreeWalk {
                 self.eval_get_attr_primop(call.id, call.span, first, second)
             }
             DirectBinaryPrimOp::HasAttr => self.eval_has_attr_primop(first, second),
+            DirectBinaryPrimOp::UnsafeGetAttrPos => {
+                self.eval_unsafe_get_attr_pos_primop(call.id, call.span, first, second)
+            }
             DirectBinaryPrimOp::RemoveAttrs => {
                 self.eval_remove_attrs_primop(call.id, call.span, first, second)
             }
@@ -16256,6 +16427,10 @@ impl TreeWalk {
             DirectBinaryPrimOp::HasAttr => {
                 let key = self.eval_attr_name_primop_value(first)?;
                 self.eval_has_attr_primop_value(key, second)
+            }
+            DirectBinaryPrimOp::UnsafeGetAttrPos => {
+                let key = self.eval_attr_name_primop_value(first)?;
+                self.eval_unsafe_get_attr_pos_primop_value(call.id, call.span, key, second)
             }
             DirectBinaryPrimOp::RemoveAttrs => {
                 self.eval_remove_attrs_primop_value(call.id, call.span, first, second)
@@ -16314,6 +16489,24 @@ impl TreeWalk {
                 span,
             )
         })
+    }
+
+    fn eval_unsafe_get_attr_pos_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        key: Symbol,
+        attrs: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let attrs_value = self.force_primop_value(attrs, "attrs", ValueTag::Attrs)?;
+        self.eval_unsafe_get_attr_pos_attrs_value(
+            id,
+            span,
+            key,
+            attrs.id(),
+            attrs.span(),
+            attrs_value,
+        )
     }
 
     fn eval_has_attr_primop_value(
@@ -17428,7 +17621,14 @@ impl TreeWalk {
                         &mut inherit_source_thunks,
                     )?
                 };
-                entries.push(AttrEntry::new(key, value));
+                let position = binding
+                    .position
+                    .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
+                let entry = match position {
+                    Some(position) => AttrEntry::with_position(key, value, position),
+                    None => AttrEntry::new(key, value),
+                };
+                entries.push(entry);
             }
             Ok(entries)
         })();
@@ -21631,6 +21831,32 @@ mod tests {
 
     fn eval_with_options(source: &str, options: TreeWalkOptions) -> Value {
         eval_whnf_with_options(&lower(source), options).expect("source evaluates")
+    }
+
+    fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOutcome {
+        let ir = lower(source);
+        let mut evaluator = TreeWalk::with_options_and_source(
+            &ir,
+            TreeWalkOptions::default(),
+            source_name.to_vec(),
+            source.as_bytes().to_vec(),
+        );
+        let value = evaluator.eval_root().expect("source evaluates");
+        EvalOutcome {
+            value,
+            heap: evaluator.heap,
+            trace_output: evaluator.trace_output,
+            warning_output: evaluator.warning_output,
+        }
+    }
+
+    fn eval_string_bytes_with_source(source_name: &[u8], source: &str) -> Vec<u8> {
+        let outcome = eval_owned_with_source(source_name, source);
+        let string = outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("result is a heap-owned string");
+        string.bytes().to_vec()
     }
 
     fn eval_string_bytes(source: &str) -> Vec<u8> {
@@ -30876,6 +31102,197 @@ mod tests {
         let attrs_span = ir.arena.node(attrs).expect("attrset argument exists").span;
 
         let error = eval_whnf(&ir).expect_err("getAttr requires an attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: attrs,
+                expected: "attrs",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), attrs_span);
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_reports_static_binding_positions() {
+        let source = r#"builtins.toJSON (
+  let p = builtins.unsafeGetAttrPos "a" { a = 1; };
+  in [ p.file p.line p.column ]
+)"#;
+        let column = source.find("a = 1").expect("binding exists") + 1;
+        let expected = format!(r#"["/source.nix",1,{}]"#, column);
+
+        assert_eq!(
+            eval_string_bytes_with_source(b"/source.nix", source),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_reports_dynamic_binding_positions() {
+        let source = r#"builtins.toJSON (
+  let p = builtins.unsafeGetAttrPos "a" { ${"a"} = 1; };
+  in [ p.column ]
+)"#;
+        let column = source.find(r#"${"a"}"#).expect("dynamic binding exists") + 1;
+        let expected = format!("[{}]", column);
+
+        assert_eq!(
+            eval_string_bytes_with_source(b"/source.nix", source),
+            expected.as_bytes()
+        );
+
+        let null_source = r#"builtins.unsafeGetAttrPos "a" { ${null} = 1; } == null"#;
+        assert_eq!(
+            eval_owned_with_source(b"/source.nix", null_source)
+                .value()
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_without_source_or_missing_attr_returns_null() {
+        assert_eq!(
+            eval(r#"builtins.unsafeGetAttrPos "a" { a = 1; } == null"#).as_bool(),
+            Ok(true)
+        );
+
+        let source = r#"builtins.unsafeGetAttrPos "b" { a = 1; } == null"#;
+        assert_eq!(
+            eval_owned_with_source(b"/source.nix", source)
+                .value()
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_preserves_update_winner_positions() {
+        let source = r#"builtins.toJSON (
+  let
+    base = { a = 1; };
+    merged = base // { b = 2; };
+    pa = builtins.unsafeGetAttrPos "a" merged;
+    pb = builtins.unsafeGetAttrPos "b" merged;
+  in [ pa.column pb.column ]
+)"#;
+        let a_column = source.find("a = 1").expect("a binding exists") + 1;
+        let b_column = source.find("b = 2").expect("b binding exists") + 1;
+        let expected = format!("[{},{}]", a_column, b_column);
+
+        assert_eq!(
+            eval_string_bytes_with_source(b"/source.nix", source),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_clears_computed_map_attrs_positions() {
+        let source = r#"builtins.unsafeGetAttrPos "a" (builtins.mapAttrs (name: value: value) { a = 1; }) == null"#;
+
+        assert_eq!(
+            eval_owned_with_source(b"/source.nix", source)
+                .value()
+                .as_bool(),
+            Ok(true)
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_tracks_list_to_attrs_name_binding() {
+        let source = r#"builtins.toJSON (
+  let
+    attrs = builtins.listToAttrs [ { name = "a"; value = 1; } ];
+    p = builtins.unsafeGetAttrPos "a" attrs;
+  in [ p.column ]
+)"#;
+        let name_column = source.find("name =").expect("name binding exists") + 1;
+        let expected = format!("[{}]", name_column);
+
+        assert_eq!(
+            eval_string_bytes_with_source(b"/source.nix", source),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_supports_first_class_application() {
+        let source = r#"builtins.toJSON (
+  let
+    f = builtins.unsafeGetAttrPos;
+    p = f "a" { a = 1; };
+  in [ p.file p.column ]
+)"#;
+        let column = source.find("a = 1").expect("binding exists") + 1;
+        let expected = format!(r#"["/source.nix",{}]"#, column);
+
+        assert_eq!(
+            eval_string_bytes_with_source(b"/source.nix", source),
+            expected.as_bytes()
+        );
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_reports_imported_file_path() {
+        let root = fs::canonicalize(unique_temp_dir("unsafe-get-attr-pos-import"))
+            .expect("temp directory canonicalizes");
+        let imported = root.join("attrs.nix");
+        fs::write(&imported, b"{\n  a = 1;\n}").expect("import writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        let source = r#"builtins.toJSON (
+  let p = builtins.unsafeGetAttrPos "a" (import ./attrs.nix);
+  in [ p.file p.line p.column ]
+)"#;
+        let actual = eval_string_bytes_with_options(source, options);
+        let expected = format!(
+            r#"["{}",1,5]"#,
+            imported.to_str().expect("import path is UTF-8")
+        );
+
+        assert_eq!(actual, expected.as_bytes());
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn unsafe_get_attr_pos_type_checks_arguments_in_order() {
+        let ir = lower("builtins.unsafeGetAttrPos 1 (1 / 0)");
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let name = args[0];
+        let name_span = ir.arena.node(name).expect("name argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("unsafeGetAttrPos checks name before attrset");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: name,
+                expected: "string",
+                actual: ValueTag::Int
+            }
+        );
+        assert_eq!(error.span(), name_span);
+
+        let ir = lower(r#"builtins.unsafeGetAttrPos "a" 1"#);
+        let root = ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let args = ir.arena.child_slice(args).expect("primop args exist");
+        let attrs = args[1];
+        let attrs_span = ir.arena.node(attrs).expect("attrset argument exists").span;
+
+        let error = eval_whnf(&ir).expect_err("unsafeGetAttrPos requires an attrset");
 
         assert_eq!(
             error.kind(),
@@ -42248,6 +42665,7 @@ mod tests {
                 symbols,
                 vec![IrBinding {
                     key: IrAttrPathSegment::Static(a),
+                    position: None,
                     value,
                 }],
                 vec![IrShape::new(vec![a].into_boxed_slice())],
@@ -42329,6 +42747,7 @@ mod tests {
             symbols,
             vec![IrBinding {
                 key: IrAttrPathSegment::Static(a),
+                position: None,
                 value,
             }],
             vec![IrShape::new(Vec::new().into_boxed_slice())],
@@ -42375,6 +42794,7 @@ mod tests {
             symbols,
             vec![IrBinding {
                 key: IrAttrPathSegment::Static(a),
+                position: None,
                 value,
             }],
             vec![IrShape::new(vec![b].into_boxed_slice())],
@@ -42423,6 +42843,7 @@ mod tests {
             symbols,
             vec![IrBinding {
                 key: IrAttrPathSegment::Dynamic(key),
+                position: None,
                 value,
             }],
             vec![IrShape::new(Vec::new().into_boxed_slice())],

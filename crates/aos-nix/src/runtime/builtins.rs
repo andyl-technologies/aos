@@ -843,7 +843,8 @@ define_builtins! {
     pub(crate) struct UnsafeGetAttrPosBuiltin;
     impl BuiltinDefinition for UnsafeGetAttrPosBuiltin {
         const NAME: &'static [u8] = b"unsafeGetAttrPos";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::Unsupported;
+        const EXECUTION: BuiltinExecution =
+            BuiltinExecution::DirectBinary(DirectBinaryPrimOp::UnsafeGetAttrPos);
     }
 
     pub(crate) struct WarnBuiltin;
@@ -1260,6 +1261,7 @@ pub(crate) enum StrictBinaryPrimOp {
 pub(crate) enum DirectBinaryPrimOp {
     GetAttr,
     HasAttr,
+    UnsafeGetAttrPos,
     RemoveAttrs,
     IntersectAttrs,
     CatAttrs,
