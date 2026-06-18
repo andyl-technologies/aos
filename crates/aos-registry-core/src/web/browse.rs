@@ -755,6 +755,180 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
 
 // -- JSON read API ------------------------------------------------------------
 //
+// -- Managed cache browse (RFC-0004 "11-caches") --------------------------
+
+/// Whether `cache` is readable by this caller — visibility-gated exactly like a
+/// registry ([`can_read_registry`]), but scoped on the cache's *owning org*
+/// (caches are not org-pathed) or root for an instance-level cache.
+async fn can_read_cache(svc: &RpcService, cache: &crate::db::Cache, headers: &HeaderMap) -> bool {
+    if cache.deleted_at.is_some() {
+        return false;
+    }
+    if let Some(org_id) = cache.org_id {
+        if !matches!(svc.db.org_is_active(org_id).await, Ok(true)) {
+            return false;
+        }
+    }
+    match cache.visibility.as_str() {
+        "public" => true,
+        "internal" => match cache.org_id {
+            None => true,
+            Some(org_id) => session_is_org_member(svc, headers, org_id).await,
+        },
+        _ => {
+            let scope = match cache.org_id {
+                Some(org_id) => match svc.db.org_by_id(org_id).await.ok().flatten() {
+                    Some(org) => Scope::parse(&org.slug),
+                    None => return false,
+                },
+                None => Scope::root(),
+            };
+            session_allows_read(svc, headers, &scope).await
+                || bearer_allows_read(svc, headers, &scope)
+        }
+    }
+}
+
+/// Load a managed cache by slug iff it is visible to this caller.
+async fn load_visible_cache(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+) -> Option<crate::db::Cache> {
+    let cache = svc.db.cache_by_slug(slug).await.ok().flatten()?;
+    if !can_read_cache(svc, &cache, headers).await {
+        return None;
+    }
+    Some(cache)
+}
+
+/// `GET /{slug}/` for a managed cache: the cache home (HTML; non-HTML clients
+/// get the machine `nix-cache-info`).
+pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
+    if !accepts_html(headers) {
+        if load_visible_cache(svc, headers, slug).await.is_none() {
+            return Rendered::NotFound;
+        }
+        let auth = auth_header(headers);
+        return match svc.facade_fetch(auth.as_deref(), slug, "nix-cache-info").await {
+            Ok(Some(o)) => Rendered::Json(String::from_utf8_lossy(&o.bytes).into_owned()),
+            _ => Rendered::NotAcceptable,
+        };
+    }
+    let started = Instant::now();
+    let Some(cache) = load_visible_cache(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let usage = svc.db.cache_usage(cache.id).await.unwrap_or_default();
+    let policy = svc.db.cache_gc_policy(cache.id).await.ok().flatten();
+    let link_count = svc
+        .db
+        .list_cache_links(cache.id)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let root_count = svc
+        .db
+        .list_cache_roots(cache.id)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let external = svc.external_url.clone();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::cache_home(
+        &cache,
+        &usage,
+        policy.as_ref(),
+        link_count,
+        root_count,
+        &external,
+        started,
+        &session,
+    ))
+}
+
+/// `GET /{slug}/-/objects` for a cache: the object list (HTML; `?q=` search).
+pub async fn cache_objects(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    let started = Instant::now();
+    let Some(cache) = load_visible_cache(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let objects = match query.q.as_deref().filter(|q| !q.is_empty()) {
+        Some(q) => svc.db.search_cache_objects(cache.id, q, 200).await,
+        None => svc.db.list_cache_objects(cache.id, 200).await,
+    }
+    .unwrap_or_default();
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::cache_objects(
+        &cache,
+        &objects,
+        query.q.as_deref(),
+        started,
+        &session,
+    ))
+}
+
+/// `GET /{slug}/-/objects/{hash}` for a cache: one object's narinfo + refs.
+pub async fn cache_object(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    hash: &str,
+) -> Rendered {
+    let started = Instant::now();
+    let Some(cache) = load_visible_cache(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let Some(object) = svc.db.cache_object(cache.id, hash).await.ok().flatten() else {
+        return Rendered::NotFound;
+    };
+    let session = session_indicator(svc, headers).await;
+    Rendered::Html(pages::cache_object(&cache, &object, started, &session))
+}
+
+/// `GET /{slug}/-/api/objects` for a public cache: the object list (JSON).
+pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery) -> Rendered {
+    // Public-only, like the registry `/-/api/…` reads.
+    let Some(cache) = svc.db.cache_by_slug(slug).await.ok().flatten() else {
+        return Rendered::NotFound;
+    };
+    if cache.visibility != "public" || cache.deleted_at.is_some() {
+        return Rendered::NotFound;
+    }
+    // A suspended (soft-deleted) org hides even its public caches, matching the
+    // HTML pages' `can_read_cache` gate.
+    if let Some(org_id) = cache.org_id {
+        if !matches!(svc.db.org_is_active(org_id).await, Ok(true)) {
+            return Rendered::NotFound;
+        }
+    }
+    let objects = match query.q.as_deref().filter(|q| !q.is_empty()) {
+        Some(q) => svc.db.search_cache_objects(cache.id, q, 500).await,
+        None => svc.db.list_cache_objects(cache.id, 500).await,
+    }
+    .unwrap_or_default();
+    let objects: Vec<_> = objects
+        .iter()
+        .map(|o| {
+            serde_json::json!({
+                "storeHash": o.store_hash,
+                "storeName": o.store_name,
+                "narUrl": o.nar_url,
+                "narSize": o.nar_size,
+                "fileSize": o.file_size,
+                "compression": o.compression,
+                "references": o.refs,
+            })
+        })
+        .collect();
+    json(&serde_json::json!({ "objects": objects }))
+}
+
 // The machine `/-/api/…` reads are public-only: each passes `None` auth to the
 // service read methods (no session cookie and no bearer is forwarded), so only
 // `public` registries resolve — the same shape the Worker served before.
