@@ -1670,6 +1670,7 @@ struct FetchTarballArguments {
 #[derive(Clone, Debug)]
 struct FetchGitArguments {
     url: Vec<u8>,
+    transport_url: Option<Vec<u8>>,
     name: String,
     rev: Option<Vec<u8>>,
     reference: Option<Vec<u8>>,
@@ -8379,7 +8380,9 @@ impl TreeWalk {
         if args.rev.is_some() {
             return Ok(None);
         }
-        let Some(local_path) = Self::fetch_git_local_worktree_path(&args.url) else {
+        let Some(local_path) =
+            Self::fetch_git_local_worktree_path(Self::fetch_git_transport_url(args))
+        else {
             return Ok(None);
         };
         let Ok(repo) = git2::Repository::open(&local_path) else {
@@ -8458,6 +8461,7 @@ impl TreeWalk {
             let name = Self::fetch_git_store_name(id, span, &url, b"source")?.to_owned();
             return Ok(FetchGitArguments {
                 url,
+                transport_url: None,
                 name,
                 rev: None,
                 reference: None,
@@ -8512,6 +8516,7 @@ impl TreeWalk {
 
         Ok(FetchGitArguments {
             url,
+            transport_url: None,
             name,
             rev,
             reference,
@@ -8613,7 +8618,11 @@ impl TreeWalk {
         let mut uri = Vec::new();
         uri.extend_from_slice(b"git+");
         uri.extend_from_slice(&args.url);
-        let mut separator = b'?';
+        let mut separator = if Self::fetch_git_url_has_query(&args.url) {
+            b'&'
+        } else {
+            b'?'
+        };
         let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
             uri.push(separator);
             separator = b'&';
@@ -8639,6 +8648,17 @@ impl TreeWalk {
             push_param(&mut uri, b"submodules", Some(b"1"));
         }
         uri
+    }
+
+    fn fetch_git_transport_url(args: &FetchGitArguments) -> &[u8] {
+        args.transport_url.as_deref().unwrap_or(&args.url)
+    }
+
+    fn fetch_git_url_has_query(url: &[u8]) -> bool {
+        let Ok(text) = std::str::from_utf8(url) else {
+            return false;
+        };
+        Url::parse(text).is_ok_and(|url| url.query().is_some())
     }
 
     fn check_fetch_git_access(
@@ -8735,7 +8755,7 @@ impl TreeWalk {
         args: &FetchGitArguments,
         checkout_dir: &Path,
     ) -> Result<git2::Repository, TreeWalkError> {
-        let url = Self::fetch_git_utf8(id, span, &args.url, &args.url)?;
+        let url = Self::fetch_git_utf8(id, span, &args.url, Self::fetch_git_transport_url(args))?;
         let mut builder = git2::build::RepoBuilder::new();
         builder.fetch_options(Self::fetch_git_fetch_options(args.shallow));
         builder.with_checkout(Self::fetch_git_checkout_builder());
@@ -9528,12 +9548,12 @@ impl TreeWalk {
         attrs: &FlakeRefAttrs,
     ) -> Result<FetchTreeArguments, TreeWalkError> {
         let input_type = Self::required_flake_ref_string_attr(id, span, attrs, TYPE_ATTR)?;
-        if attrs.contains_key(DIR_ATTR) {
+        if attrs.contains_key(DIR_ATTR) && !matches!(input_type, b"tarball" | b"git") {
             return Err(Self::fetch_tree_error(
                 id,
                 span,
                 input,
-                "fetchTree string references with dir metadata are not implemented by the native evaluator",
+                "fetchTree string references with dir metadata are supported only for tarball and git inputs",
             ));
         }
         match input_type {
@@ -9642,10 +9662,12 @@ impl TreeWalk {
                 LAST_MODIFIED_ATTR,
                 REV_ATTR,
                 REV_COUNT_ATTR,
+                DIR_ATTR,
             ],
         )?;
+        let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
         Ok(FetchTreeArguments::Tarball {
-            url: Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?.to_vec(),
+            url: url.to_vec(),
             expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
             expected_last_modified: Self::optional_flake_ref_i64_attr(
                 id,
@@ -9687,16 +9709,25 @@ impl TreeWalk {
                 KEYTYPE_ATTR,
                 PUBLIC_KEY_ATTR,
                 PUBLIC_KEYS_ATTR,
+                DIR_ATTR,
             ],
         )?;
         self.validate_fetch_tree_git_flake_ref_verified_fetch_attrs(id, span, attrs)?;
         let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
         Self::reject_fetch_tree_git_flake_ref_url_lock_metadata(id, span, input, url)?;
+        let transport_url = if attrs.contains_key(DIR_ATTR) {
+            Some(Self::fetch_tree_transport_url_from_flake_ref_url(
+                id, span, url,
+            )?)
+        } else {
+            None
+        };
         let submodules =
             Self::optional_flake_ref_bool_attr(id, span, attrs, SUBMODULES_ATTR)?.unwrap_or(false);
         Ok(FetchTreeArguments::Git {
             args: FetchGitArguments {
                 url: url.to_vec(),
+                transport_url,
                 name: "source".to_owned(),
                 rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
                     .map(ToOwned::to_owned),
@@ -9731,6 +9762,30 @@ impl TreeWalk {
             dirty_rev: None,
             dirty_short_rev: None,
         })
+    }
+
+    fn fetch_tree_transport_url_from_flake_ref_url(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let text = std::str::from_utf8(url)
+            .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+        let parsed =
+            Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+        let mut query = Self::decode_flake_ref_query(id, span, url, parsed.query())?;
+        if query.remove(DIR_ATTR).is_none() {
+            return Ok(url.to_vec());
+        }
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            url,
+            &parsed,
+            None,
+            query,
+            BTreeMap::new(),
+        )
     }
 
     fn fetch_tree_path_arguments(
@@ -9932,6 +9987,7 @@ impl TreeWalk {
         Ok(FetchTreeArguments::Git {
             args: FetchGitArguments {
                 url,
+                transport_url: None,
                 name: "source".to_owned(),
                 rev,
                 reference,
@@ -10220,7 +10276,11 @@ impl TreeWalk {
         let mut uri = Vec::new();
         uri.extend_from_slice(b"git+");
         uri.extend_from_slice(&args.url);
-        let mut separator = b'?';
+        let mut separator = if Self::fetch_git_url_has_query(&args.url) {
+            b'&'
+        } else {
+            b'?'
+        };
         let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
             uri.push(separator);
             separator = b'&';
@@ -10473,10 +10533,13 @@ impl TreeWalk {
         self.check_fetch_tree_git_access(id, span, &canonical_uri)?;
 
         let mut checkout_args = args.clone();
-        if args.shallow && Self::fetch_git_local_worktree_path(&args.url).is_some() {
+        if checkout_args.shallow
+            && Self::fetch_git_local_worktree_path(Self::fetch_git_transport_url(&checkout_args))
+                .is_some()
+        {
             checkout_args.shallow = false;
         }
-        let temp_dir = Self::fetch_git_temp_dir(id, span, &args.url)?;
+        let temp_dir = Self::fetch_git_temp_dir(id, span, &checkout_args.url)?;
         let checkout_dir = temp_dir.join("checkout");
         let exported_dir = temp_dir.join("exported");
         let result =
@@ -43874,6 +43937,7 @@ mod tests {
         );
         let all_refs_canonical_uri = TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
             url: url_text.as_bytes().to_vec(),
+            transport_url: None,
             name: "source".to_owned(),
             rev: Some(rev.as_bytes().to_vec()),
             reference: None,
@@ -43886,6 +43950,37 @@ mod tests {
             all_refs_canonical_uri,
             format!("git+{url_text}?exportIgnore=1&rev={rev}").into_bytes()
         );
+        let queried_canonical_uri = TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
+            url: format!("{url_text}?foo=bar").into_bytes(),
+            transport_url: None,
+            name: "source".to_owned(),
+            rev: Some(rev.as_bytes().to_vec()),
+            reference: None,
+            submodules: false,
+            shallow: false,
+            all_refs: false,
+            export_ignore: true,
+        });
+        assert_eq!(
+            queried_canonical_uri,
+            format!("git+{url_text}?foo=bar&exportIgnore=1&rev={rev}").into_bytes()
+        );
+        let path_with_question_canonical_uri =
+            TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
+                url: b"/tmp/repo?literal".to_vec(),
+                transport_url: None,
+                name: "source".to_owned(),
+                rev: Some(rev.as_bytes().to_vec()),
+                reference: None,
+                submodules: false,
+                shallow: false,
+                all_refs: false,
+                export_ignore: true,
+            });
+        assert_eq!(
+            path_with_question_canonical_uri,
+            format!("git+/tmp/repo?literal?exportIgnore=1&rev={rev}").into_bytes()
+        );
 
         let (tagged_repo_dir, tagged_oid) = git_repo_with_tag("fetch-git-mode-tagged");
         let tagged_url_text = format!("file://{}", path_source(&tagged_repo_dir));
@@ -43894,6 +43989,7 @@ mod tests {
         let tagged_rev_bytes = tagged_rev.as_bytes().to_vec();
         let canonical_uri = TreeWalk::fetch_git_canonical_uri(&FetchGitArguments {
             url: tagged_url_text.as_bytes().to_vec(),
+            transport_url: None,
             name: "source".to_owned(),
             rev: Some(tagged_rev_bytes),
             reference: Some(b"refs/tags/v1".to_vec()),
@@ -44173,6 +44269,131 @@ mod tests {
         fs::remove_dir_all(dir).expect("source temp directory removes");
         fs::remove_dir_all(file_dir).expect("file temp directory removes");
         fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_string_refs_accept_dir_metadata_without_rerooting() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-string-dir-tarball");
+        let (repo_dir, _) = git_repo_with_file("fetch-tree-string-dir-git");
+        let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
+        let oid = git_commit_file(&repo, "sub/nested.txt", b"git-subdir", 1_700_000_120);
+        let store_dir = unique_temp_dir("fetch-tree-string-dir-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let tarball_ref =
+            nix_string_literal(&format!("file://{}?dir=sub", path_source(&archive_path)));
+        let raw_git_ref = format!("git+file://{}?dir=sub&rev={}", path_source(&repo_dir), oid);
+        let git_ref = nix_string_literal(&raw_git_ref);
+        let expected_git_url = format!("file://{}?dir=sub", path_source(&repo_dir));
+        let expected_git_transport_url = format!("file://{}", path_source(&repo_dir));
+        let ir = lower("null");
+        let span = ir.arena.node(ir.root).expect("root node exists").span;
+        let evaluator = TreeWalk::new(&ir);
+        let attrs = TreeWalk::parse_flake_ref_attrs(ir.root, span, raw_git_ref.as_bytes())
+            .expect("git dir flake ref parses");
+        let arguments = evaluator
+            .fetch_tree_flake_ref_arguments(ir.root, span, raw_git_ref.as_bytes(), &attrs)
+            .expect("git dir flake ref lowers to fetchTree arguments");
+        let FetchTreeArguments::Git { args, .. } = arguments else {
+            panic!("git dir flake ref lowers to git arguments");
+        };
+        assert_eq!(args.url, expected_git_url.as_bytes());
+        assert_eq!(
+            args.transport_url.as_deref(),
+            Some(expected_git_transport_url.as_bytes())
+        );
+
+        let json = eval_json_bytes_with_options(
+            &format!(
+                r#"
+                let
+                  tarballTree = builtins.fetchTree {tarball_ref};
+                  gitTree = builtins.fetchTree {git_ref};
+                in {{
+                  tarballNested = builtins.readFile "${{tarballTree.outPath}}/sub/nested.txt";
+                  tarballRootFile = builtins.pathExists "${{tarballTree.outPath}}/file.txt";
+                  tarballTopNested = builtins.pathExists "${{tarballTree.outPath}}/nested.txt";
+                  gitNested = builtins.readFile "${{gitTree.outPath}}/sub/nested.txt";
+                  gitRootData = builtins.readFile "${{gitTree.outPath}}/data.txt";
+                  gitTopNested = builtins.pathExists "${{gitTree.outPath}}/nested.txt";
+                  gitRev = gitTree.rev;
+                }}
+                "#
+            ),
+            options.clone(),
+        );
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("fetchTree dir string ref JSON parses");
+        assert_eq!(value["tarballNested"], "inner");
+        assert_eq!(value["tarballRootFile"], true);
+        assert_eq!(value["tarballTopNested"], false);
+        assert_eq!(value["gitNested"], "git-subdir");
+        assert_eq!(value["gitRootData"], "git-data");
+        assert_eq!(value["gitTopNested"], false);
+        assert_eq!(value["gitRev"], oid.to_string());
+
+        let mut stripped_uri_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        stripped_uri_options.set_eval_mode(EvalMode::Restricted);
+        stripped_uri_options
+            .add_allowed_uri(
+                format!(
+                    "git+file://{}?rev={oid}&shallow=1&exportIgnore=1",
+                    path_source(&repo_dir)
+                )
+                .into_bytes(),
+            )
+            .expect("stripped git allowed URI configures");
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {git_ref}"#)),
+            stripped_uri_options,
+        )
+        .expect_err("restricted fetchTree git dir requires original URI");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                mode: EvalMode::Restricted,
+                ..
+            }
+        ));
+
+        let mut original_uri_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        original_uri_options.set_eval_mode(EvalMode::Restricted);
+        original_uri_options
+            .add_allowed_uri(
+                format!(
+                    "git+file://{}?dir=sub&rev={oid}&shallow=1&exportIgnore=1",
+                    path_source(&repo_dir)
+                )
+                .into_bytes(),
+            )
+            .expect("original git allowed URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(r#"let x = builtins.fetchTree {git_ref}; in x.rev"#),
+            original_uri_options,
+        );
+        assert_eq!(
+            restricted_json,
+            serde_json::to_vec(&oid.to_string()).expect("rev JSON serializes")
+        );
+
+        let file_ref = nix_string_literal(&format!(
+            "file+file://{}?dir=sub",
+            path_source(&archive_path)
+        ));
+        let error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {file_ref}"#)),
+            options,
+        )
+        .expect_err("fetchTree file refs reject dir metadata");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 
