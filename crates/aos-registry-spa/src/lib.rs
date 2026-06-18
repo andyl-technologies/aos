@@ -27,6 +27,8 @@
 //! # Module map
 //!
 //! - [`model`] — serde models for the same-origin JSON snapshots.
+//! - [`closure`] — the cache closure-graph view model (pure ordering logic;
+//!   the Leptos `ClosureGraph` component that paints it lives in `app`).
 //! - [`verify`] — the in-browser verification badge: pure outcome logic
 //!   plus the async surface walk, both reusing [`aos_registry_surface`].
 //! - `net` — browser `fetch()` glue and the hub Connect POST (wasm only).
@@ -47,6 +49,7 @@
 //! A plain compile check (no wasm-bindgen, no bundler) is
 //! `cargo build -p aos-registry-spa --target wasm32-unknown-unknown`.
 
+pub mod closure;
 pub mod model;
 pub mod verify;
 
