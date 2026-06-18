@@ -590,6 +590,407 @@ pub async fn init_remote(base_url: &str) -> Result<String> {
     Ok(body)
 }
 
+// ── WranglerD1Backend — the unification seam ────────────────────────────────
+//
+// A `Backend` that runs SQL against a live D1 database through the bundled
+// `wrangler d1 execute`. Attaching it to the shared `aos_registry_core::Database`
+// makes every hub maintenance operation (e.g. resetting the root password) run
+// over Cloudflare D1 with the *same* application code that runs against the
+// native sqlite file — the demonstration that the CLI is one codebase across the
+// native and Cloudflare backends.
+
+use aos_registry_core::backend::{with_returning_id, Backend, Statement};
+use aos_registry_core::dialect::Dialect;
+use aos_registry_core::value::{FromValue, Row, Value};
+
+/// Renders a [`Value`] as a SQLite literal for inlining into a statement.
+///
+/// `wrangler d1 execute` exposes no bound-parameter binding (only a SQL string),
+/// so [`WranglerD1Backend`] substitutes each `?N` placeholder with the escaped
+/// literal of its parameter. Text is single-quoted with `'` doubled; bytes
+/// become an `X'…'` blob literal.
+///
+/// # Errors
+///
+/// Returns an error for a non-finite [`Value::Real`] (NaN/∞ has no SQL literal).
+fn sql_literal(v: &Value) -> Result<String> {
+    Ok(match v {
+        Value::Null => "NULL".to_string(),
+        Value::Int(i) => i.to_string(),
+        Value::Real(f) => {
+            if !f.is_finite() {
+                bail!("cannot render non-finite float {f} as a SQL literal");
+            }
+            format!("{f:?}") // {:?} keeps a decimal point (e.g. 1.0), a valid numeric literal
+        }
+        Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
+        Value::Bytes(b) => format!("X'{}'", hex::encode(b)),
+    })
+}
+
+/// Substitutes `?N` placeholders in `sql` with the SQL literals of `params`.
+///
+/// `?N` is one-based (`?1` → `params[0]`), matching the sqlite numbered
+/// placeholders the `Database` methods write. Placeholders inside `'…'` string
+/// literals are left untouched (a `?` in a default value is data, not a bind
+/// site).
+///
+/// # Errors
+///
+/// Returns an error if a `?` is not followed by a decimal index, an index is out
+/// of range, or a parameter cannot be rendered ([`sql_literal`]).
+fn inline_params(sql: &str, params: &[Value]) -> Result<String> {
+    let mut out = String::with_capacity(sql.len());
+    let mut chars = sql.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\'' {
+                // A doubled '' is two toggles (close then re-open), so the
+                // in-string region is tracked correctly across escapes.
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' => {
+                in_string = true;
+                out.push(c);
+            }
+            '?' => {
+                let mut digits = String::new();
+                while let Some(d) = chars.peek() {
+                    if d.is_ascii_digit() {
+                        digits.push(*d);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                let n: usize = digits
+                    .parse()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .with_context(|| format!("placeholder '?' not followed by a 1-based index in: {sql}"))?;
+                let value = params
+                    .get(n - 1)
+                    .with_context(|| format!("placeholder ?{n} has no parameter ({} bound)", params.len()))?;
+                out.push_str(&sql_literal(value)?);
+            }
+            _ => out.push(c),
+        }
+    }
+    Ok(out)
+}
+
+/// Converts a JSON scalar from a D1 result row into a [`Value`].
+///
+/// Integers map to [`Value::Int`], non-integer numbers to [`Value::Real`], a
+/// JSON array of byte-range integers to [`Value::Bytes`] (D1's BLOB encoding),
+/// and `null` to [`Value::Null`]. Anything else falls back to its JSON text as
+/// [`Value::Text`].
+fn json_to_value(v: &serde_json::Value) -> Value {
+    match v {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Int(i64::from(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(u) = n.as_u64() {
+                Value::Int(i64::try_from(u).unwrap_or(i64::MAX))
+            } else {
+                Value::Real(n.as_f64().unwrap_or(0.0))
+            }
+        }
+        serde_json::Value::String(s) => Value::Text(s.clone()),
+        serde_json::Value::Array(items) => {
+            let bytes: Option<Vec<u8>> = items
+                .iter()
+                .map(|i| i.as_u64().and_then(|u| u8::try_from(u).ok()))
+                .collect();
+            match bytes {
+                Some(b) => Value::Bytes(b),
+                None => Value::Text(v.to_string()),
+            }
+        }
+        serde_json::Value::Object(_) => Value::Text(v.to_string()),
+    }
+}
+
+/// One D1 result row, deserialized preserving column order.
+///
+/// `serde_json`'s default object map sorts keys, which would scramble the
+/// positional [`Row`] the `Database` reads by index. This visits the JSON object
+/// in source order (which `wrangler d1 execute --json` emits in SELECT-list
+/// order) and keeps the values in that order.
+#[derive(Debug)]
+struct D1Row(Vec<Value>);
+
+impl<'de> serde::Deserialize<'de> for D1Row {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<D1Row, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RowVisitor;
+        impl<'de> serde::de::Visitor<'de> for RowVisitor {
+            type Value = D1Row;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a D1 result row object")
+            }
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<D1Row, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some((_key, value)) =
+                    map.next_entry::<String, serde_json::Value>()?
+                {
+                    values.push(json_to_value(&value));
+                }
+                Ok(D1Row(values))
+            }
+        }
+        deserializer.deserialize_map(RowVisitor)
+    }
+}
+
+/// D1 per-statement metadata; `changes`/`last_row_id` are populated on the
+/// remote backend (the `--local` miniflare engine omits them).
+#[derive(Debug, serde::Deserialize, Default)]
+struct D1Meta {
+    #[serde(default)]
+    changes: Option<i64>,
+}
+
+/// One result set from `wrangler d1 execute --json` (one per statement).
+#[derive(Debug, serde::Deserialize)]
+struct D1ResultSet {
+    #[serde(default)]
+    results: Vec<D1Row>,
+    #[serde(default)]
+    meta: D1Meta,
+}
+
+/// The `{ "error": { "text": … } }` envelope `wrangler d1 execute` prints on a
+/// SQL/engine error (in place of the success array).
+#[derive(serde::Deserialize)]
+struct D1ErrorEnvelope {
+    error: D1ErrorBody,
+}
+
+/// The body of a [`D1ErrorEnvelope`].
+#[derive(serde::Deserialize)]
+struct D1ErrorBody {
+    text: String,
+}
+
+/// Parses the first result set from `wrangler d1 execute --json` stdout,
+/// surfacing a D1 error envelope as an error.
+///
+/// # Errors
+///
+/// Returns an error if `stdout` is a D1 error envelope, or cannot be parsed as a
+/// non-empty array of result sets.
+fn parse_first_result_set(stdout: &str) -> Result<D1ResultSet> {
+    match serde_json::from_str::<Vec<D1ResultSet>>(stdout) {
+        Ok(sets) => sets
+            .into_iter()
+            .next()
+            .context("`wrangler d1 execute --json` returned no result set"),
+        Err(parse_err) => {
+            if let Ok(env) = serde_json::from_str::<D1ErrorEnvelope>(stdout) {
+                bail!("D1 error: {}", env.error.text);
+            }
+            Err(parse_err).context("parsing `wrangler d1 execute --json` output")
+        }
+    }
+}
+
+/// `wrangler d1 execute <db> [--remote|--local] --json --file <path>`.
+#[must_use]
+fn d1_file_args(db: &str, remote: bool, file: &Path) -> Vec<String> {
+    vec![
+        "d1".into(),
+        "execute".into(),
+        db.into(),
+        if remote { "--remote" } else { "--local" }.into(),
+        "--json".into(),
+        "--file".into(),
+        file.display().to_string(),
+    ]
+}
+
+/// Renders a minimal `wrangler.toml` declaring just the D1 binding.
+///
+/// `wrangler d1 execute <name>` resolves the database through a configuration
+/// file's `[[d1_databases]]` entry (both `--local` and `--remote`), so the
+/// backend writes this into its working directory. For `--local` the
+/// `database_id` is irrelevant (local state is keyed by name); for `--remote` it
+/// must be the real provisioned id.
+fn d1_only_config(db_name: &str, db_id: &str) -> String {
+    format!(
+        "name = {name}\n\
+         compatibility_date = \"{compat}\"\n\
+         [[d1_databases]]\n\
+         binding = \"{binding}\"\n\
+         database_name = {name}\n\
+         database_id = {id}\n",
+        name = toml_string(db_name),
+        compat = COMPAT_DATE,
+        binding = D1_BINDING,
+        id = toml_string(db_id),
+    )
+}
+
+/// A [`Backend`] over a live Cloudflare D1 database, driven by the bundled
+/// `wrangler d1 execute`.
+///
+/// SQL (with `?N` parameters inlined as literals — D1's CLI has no bind API) is
+/// written to a private temp file and run via `--file` (never `--command`, so no
+/// SQL or embedded literal reaches the process argv). Results are read from the
+/// `--json` output. `wrangler` runs with its working directory set to a private
+/// temp dir holding a minimal `wrangler.toml` (so it can resolve the D1 binding,
+/// and so `--local` state persists across calls). This is operator/bootstrap
+/// tooling, not a request hot path: each call is one `wrangler` process and one
+/// round-trip, which is fine for the low-volume maintenance it backs.
+///
+/// **Maintenance-only:** it implements `execute`/`execute_insert`/`query`/
+/// `execute_batch` (single statements and DDL migrations) but **refuses**
+/// [`batch`](Backend::batch) — the wrangler CLI has no atomic batch primitive,
+/// so batch-using operations (indexing, validation) must run on the deployed
+/// Worker over D1's native binding instead.
+pub struct WranglerD1Backend {
+    /// The bundled `wrangler` launcher + dist locator.
+    assets: Assets,
+    /// The D1 database name passed to `d1 execute`.
+    db_name: String,
+    /// Whether to target the remote database (`--remote`) or the local miniflare
+    /// engine (`--local`, used by the round-trip test).
+    remote: bool,
+    /// The working directory holding the generated `wrangler.toml` (and, for
+    /// `--local`, the `.wrangler` state). Held for its lifetime so wrangler sees
+    /// a stable config + state across calls; removed on drop.
+    workdir: std::sync::Arc<tempfile::TempDir>,
+}
+
+impl WranglerD1Backend {
+    /// Builds a backend over `db_name` (resolved by `db_id`), targeting the
+    /// remote D1 when `remote`.
+    ///
+    /// Writes a minimal `wrangler.toml` into a private temp working directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the working directory or config file cannot be
+    /// created.
+    pub fn create(
+        assets: Assets,
+        db_name: String,
+        db_id: &str,
+        remote: bool,
+    ) -> Result<WranglerD1Backend> {
+        let workdir = tempfile::Builder::new()
+            .prefix("aos-d1-ctx-")
+            .tempdir()
+            .context("creating the wrangler working directory")?;
+        std::fs::write(workdir.path().join("wrangler.toml"), d1_only_config(&db_name, db_id))
+            .context("writing the wrangler.toml for d1 execute")?;
+        Ok(WranglerD1Backend {
+            assets,
+            db_name,
+            remote,
+            workdir: std::sync::Arc::new(workdir),
+        })
+    }
+
+    /// Runs `sql` through `wrangler d1 execute --file` and parses the first
+    /// result set. `sql` may contain multiple statements (used for migrations).
+    async fn run_sql(&self, sql: &str) -> Result<D1ResultSet> {
+        let file = tempfile::Builder::new()
+            .prefix("aos-d1-")
+            .suffix(".sql")
+            .tempfile_in(self.workdir.path())
+            .context("creating a temporary SQL file")?;
+        tokio::fs::write(file.path(), sql)
+            .await
+            .context("writing the SQL to run")?;
+        let args = d1_file_args(&self.db_name, self.remote, file.path());
+        let stdout = run_wrangler(&self.assets, &args, None, Some(self.workdir.path())).await?;
+        parse_first_result_set(&stdout)
+    }
+}
+
+/// Resolves a D1 database's id from its name via `wrangler d1 list --json`.
+///
+/// # Errors
+///
+/// Returns an error if the `d1 list` call fails or no database matches `name`.
+pub async fn resolve_d1_id(assets: &Assets, name: &str) -> Result<String> {
+    let list = run_wrangler(assets, &d1_list_args(), None, None).await?;
+    parse_d1_id(&list, name)
+}
+
+#[async_trait::async_trait]
+impl Backend for WranglerD1Backend {
+    fn dialect(&self) -> Dialect {
+        Dialect::Sqlite
+    }
+
+    async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
+        let set = self.run_sql(&inline_params(sql, params)?).await?;
+        // `meta.changes` is present on the remote backend; the `--local`
+        // engine omits it, so fall back to 0 (no caller in the maintenance
+        // paths depends on the affected-row count).
+        Ok(set.meta.changes.unwrap_or(0).max(0) as u64)
+    }
+
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
+        // Read the id back via RETURNING rather than `meta.last_row_id` (which
+        // the `--local` engine omits), so inserts work on both targets.
+        let set = self
+            .run_sql(&inline_params(&with_returning_id(sql), params)?)
+            .await?;
+        let row = set
+            .results
+            .first()
+            .context("INSERT … RETURNING id returned no row")?;
+        row.0
+            .first()
+            .context("INSERT … RETURNING id returned an empty row")
+            .and_then(|v| i64::from_value(v))
+    }
+
+    async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
+        let set = self.run_sql(&inline_params(sql, params)?).await?;
+        Ok(set.results.into_iter().map(|r| Row::new(r.0)).collect())
+    }
+
+    async fn execute_batch(&self, sql: &str) -> Result<()> {
+        // DDL migrations carry no parameters; run the whole script via --file.
+        self.run_sql(sql).await?;
+        Ok(())
+    }
+
+    async fn batch(&self, stmts: &[Statement]) -> Result<()> {
+        // `Backend::batch` must be atomic (all-or-nothing). D1's only atomic
+        // primitive is its `batch()` *API*, which the `wrangler` CLI does not
+        // expose — a `--file` run is not wrapped in a transaction. Rather than
+        // run a non-atomic batch that could corrupt the index on a mid-batch
+        // failure (e.g. `update_channels` DELETEs then re-INSERTs), this backend
+        // refuses `batch` outright. It backs only single-statement maintenance
+        // (reset-root, schema migration via `execute_batch`); operations needing
+        // an atomic batch (indexing, validation) must run on the deployed Worker
+        // over D1's native binding, not through this CLI backend.
+        let _ = stmts;
+        bail!(
+            "WranglerD1Backend does not support atomic batch(): the wrangler CLI \
+             exposes no transactional batch primitive. Run batch operations \
+             (indexing/validation) on the deployed Worker over its D1 binding."
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,5 +1086,91 @@ mod tests {
     #[test]
     fn toml_string_escapes_quotes_and_backslashes() {
         assert_eq!(toml_string(r#"a"b\c"#), r#""a\"b\\c""#);
+    }
+
+    #[test]
+    fn sql_literals_escape_each_value_kind() {
+        assert_eq!(sql_literal(&Value::Null).unwrap(), "NULL");
+        assert_eq!(sql_literal(&Value::Int(-7)).unwrap(), "-7");
+        assert_eq!(sql_literal(&Value::Real(1.5)).unwrap(), "1.5");
+        assert_eq!(sql_literal(&Value::Real(1.0)).unwrap(), "1.0");
+        assert_eq!(sql_literal(&Value::Text("it's".into())).unwrap(), "'it''s'");
+        assert_eq!(sql_literal(&Value::Bytes(vec![0x27, 0xff])).unwrap(), "X'27ff'");
+        assert!(sql_literal(&Value::Real(f64::NAN)).is_err());
+    }
+
+    #[test]
+    fn inline_substitutes_numbered_placeholders() {
+        let sql = "UPDATE users SET password_hash = ?2 WHERE id = ?1 AND deleted_at IS NULL";
+        let out = inline_params(sql, &[Value::Int(42), Value::Text("phc$x".into())]).unwrap();
+        assert_eq!(
+            out,
+            "UPDATE users SET password_hash = 'phc$x' WHERE id = 42 AND deleted_at IS NULL"
+        );
+    }
+
+    #[test]
+    fn inline_leaves_question_marks_inside_string_literals() {
+        // A '?' inside a quoted literal is data, not a bind site.
+        let out = inline_params("SELECT ?1, 'why?'", &[Value::Int(1)]).unwrap();
+        assert_eq!(out, "SELECT 1, 'why?'");
+    }
+
+    #[test]
+    fn inline_errors_on_out_of_range_or_bare_placeholder() {
+        assert!(inline_params("SELECT ?2", &[Value::Int(1)]).is_err());
+        assert!(inline_params("SELECT ?", &[Value::Int(1)]).is_err());
+    }
+
+    #[test]
+    fn parse_result_set_preserves_select_column_order() {
+        // SELECT order b, a, c — must NOT be re-sorted alphabetically.
+        let json = r#"[{"results":[{"b":2,"a":1,"c":3}],"success":true,"meta":{"duration":0}}]"#;
+        let set = parse_first_result_set(json).unwrap();
+        assert_eq!(set.results.len(), 1);
+        assert_eq!(
+            set.results[0].0,
+            vec![Value::Int(2), Value::Int(1), Value::Int(3)]
+        );
+    }
+
+    #[test]
+    fn parse_result_set_reads_changes_and_typed_columns() {
+        let json = r#"[{"results":[{"id":1,"email":"a@b.c","n":1.5,"x":null}],
+                       "success":true,"meta":{"changes":3,"last_row_id":1}}]"#;
+        let set = parse_first_result_set(json).unwrap();
+        assert_eq!(set.meta.changes, Some(3));
+        assert_eq!(
+            set.results[0].0,
+            vec![
+                Value::Int(1),
+                Value::Text("a@b.c".into()),
+                Value::Real(1.5),
+                Value::Null
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_result_set_surfaces_d1_error_envelope() {
+        let json = r#"{"error":{"text":"near \"FROM\": syntax error"}}"#;
+        let err = parse_first_result_set(json).unwrap_err();
+        assert!(err.to_string().contains("syntax error"));
+    }
+
+    #[test]
+    fn json_array_of_bytes_becomes_blob() {
+        let v: serde_json::Value = serde_json::from_str("[39, 255, 0]").unwrap();
+        assert_eq!(json_to_value(&v), Value::Bytes(vec![39, 255, 0]));
+    }
+
+    #[test]
+    fn d1_file_args_targets_remote_or_local() {
+        let p = Path::new("/tmp/q.sql");
+        assert_eq!(
+            d1_file_args("db", true, p),
+            ["d1", "execute", "db", "--remote", "--json", "--file", "/tmp/q.sql"]
+        );
+        assert_eq!(d1_file_args("db", false, p)[3], "--local");
     }
 }
