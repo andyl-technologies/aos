@@ -421,9 +421,9 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
     let upload_urls = vec![format!("file://{}", uploaded.path().display())];
     let report = static_upload::upload_static_origin_to_all(
         fixture.origin_path(),
-        None,
         &upload_urls,
         &AuthOptions::default(),
+        false,
         &fixture.printer(),
     )
     .await?;
@@ -473,15 +473,21 @@ async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() ->
         init_channel: true,
         count: None,
         partitions: None,
-        cache_output: None,
+        cache_dir: fixture.cache_dir().join("release-cache"),
         cache_key: None,
         cache_url: None,
+        cache_url_explicit: false,
         cache_priority: 40,
+        cache_priority_explicit: false,
+        has_store_roots: false,
+        no_skip: false,
         upload_urls: vec![format!("file://{}", uploaded.path().display())],
         upload_auth: AuthOptions::default(),
         dry_run: false,
         resume: false,
         jobs: None,
+        store_publish: None,
+        cache_max_age_days: 30,
     };
 
     let report = release_registry_tree(

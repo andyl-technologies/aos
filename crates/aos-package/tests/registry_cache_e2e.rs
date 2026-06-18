@@ -56,6 +56,8 @@ async fn static_nix_cache_e2e_generates_serves_and_downloads_real_store_path() -
         Some(&key_file),
         37,
         None,
+        None,
+        false,
         &printer,
     )
     .await?;
@@ -192,6 +194,8 @@ async fn assert_filesystem_upload_array_round_trips(
         output_dir,
         &upload_urls,
         &AuthOptions::default(),
+        &[],
+        false,
         printer,
     )
     .await?;
@@ -237,6 +241,8 @@ async fn assert_generated_cache_external_upload_matrix_round_trips(
         output_dir,
         &upload_urls,
         &AuthOptions::default(),
+        &[],
+        false,
         printer,
     )
     .await?;

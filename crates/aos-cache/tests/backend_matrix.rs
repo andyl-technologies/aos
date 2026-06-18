@@ -38,6 +38,9 @@ async fn backend_write_read_round_trip(url: &str) -> anyhow::Result<()> {
     backend.put_narinfo(STORE_HASH, &narinfo).await?;
     backend.put_nar(NAR_FILE, NAR_BYTES).await?;
 
+    assert!(backend.exists(&format!("{STORE_HASH}.narinfo")).await?);
+    assert!(backend.exists(&format!("nar/{NAR_FILE}")).await?);
+    assert!(!backend.exists(&format!("{MISSING_HASH}.narinfo")).await?);
     assert!(backend.has_narinfo(STORE_HASH).await?);
     assert!(!backend.has_narinfo(MISSING_HASH).await?);
     assert_eq!(
@@ -96,7 +99,10 @@ async fn static_http_backend_reads_standard_cache_layout() -> anyhow::Result<()>
     let backend = from_url(&base_url, &auth).await?;
 
     assert!(backend.has_narinfo(STORE_HASH).await?);
+    assert!(backend.exists(&format!("{STORE_HASH}.narinfo")).await?);
+    assert!(backend.exists(&format!("nar/{NAR_FILE}")).await?);
     assert!(!backend.has_narinfo(MISSING_HASH).await?);
+    assert!(!backend.exists(&format!("{MISSING_HASH}.narinfo")).await?);
     assert_eq!(
         backend.query_missing(&[STORE_HASH, MISSING_HASH]).await?,
         vec![MISSING_HASH.to_string()],

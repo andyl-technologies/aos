@@ -93,7 +93,6 @@ in {
         --license MIT \
         --maintainer anchor@example.invalid \
         --key "$KEY_PATH" \
-        --cache-output /tmp/anchor-cache \
         --cache-url http://127.0.0.1:18095 \
         > /tmp/anchor-release.out 2>&1 || {
         cat /tmp/anchor-release.out
