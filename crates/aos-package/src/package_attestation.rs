@@ -12,10 +12,13 @@
 //! tuple so a verifier can replay the event log without guessing separators.
 
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -25,8 +28,15 @@ use crate::types::{ApmMeta, InstalledMeta, PackageMeta};
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
 const PCR_EXTEND_ENV: &str = "AOS_SYSTEMD_PCREXTEND";
+const TPM2_CREATEEK_ENV: &str = "AOS_TPM2_CREATEEK";
+const TPM2_CREATEAK_ENV: &str = "AOS_TPM2_CREATEAK";
+const TPM2_READPUBLIC_ENV: &str = "AOS_TPM2_READPUBLIC";
+const TPM2_QUOTE_ENV: &str = "AOS_TPM2_QUOTE";
+const TPM2_FLUSHCONTEXT_ENV: &str = "AOS_TPM2_FLUSHCONTEXT";
+const TPM2_TCTI_ENV: &str = "AOS_TPM2_TCTI";
 const PCR_INDEX: u8 = 15;
 const PCR_BANK: &str = "sha256";
+const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 
@@ -110,6 +120,36 @@ pub(crate) struct PackageEventLogVerification {
     pub pcr15: String,
     /// Number of package tuple events validated against the registry catalog.
     pub package_count: usize,
+}
+
+/// Files produced by the local TPM quote agent primitive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PackageQuoteArtifacts {
+    /// Verifier-supplied nonce, normalized to lowercase hex.
+    pub nonce: String,
+    /// PCR bank and selection quoted by the TPM.
+    pub pcr_selection: &'static str,
+    /// Endorsement-key public area file.
+    pub ek_public: String,
+    /// Endorsement-key TPM name file.
+    pub ek_name: String,
+    /// Endorsement-key TPM qualified name file.
+    pub ek_qualified_name: String,
+    /// Attestation-key public area file.
+    pub ak_public: String,
+    /// Attestation-key TPM name file.
+    pub ak_name: String,
+    /// Attestation-key TPM qualified name file.
+    pub ak_qualified_name: String,
+    /// TPM2B_ATTEST quote message file.
+    pub quote_message: String,
+    /// TPM signature over the quote message.
+    pub quote_signature: String,
+    /// Serialized quoted PCR values.
+    pub quote_pcrs: String,
+    /// Non-fatal cleanup warnings from TPM context flushing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flush_warnings: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -355,6 +395,156 @@ pub(crate) fn verify_package_event_log_against_catalog(
     Ok(PackageEventLogVerification {
         pcr15,
         package_count,
+    })
+}
+
+/// Produces a TPM quote over the AOS package-attestation PCR set.
+///
+/// The quote covers PCRs 7, 11, 12, and 15 in the SHA-256 bank and writes the
+/// EK public/name, AK public/name, quote message, quote signature, and quoted
+/// PCR payload into `output_dir`.
+///
+/// # Errors
+///
+/// Returns an error if the nonce is not hex, the wrapper did not provide
+/// trusted AOS-built tpm2-tools paths, the output directory cannot be written,
+/// or any TPM command fails.
+pub(crate) fn produce_package_quote(
+    nonce_hex: &str,
+    output_dir: &Path,
+) -> Result<PackageQuoteArtifacts> {
+    let nonce = parse_quote_nonce_hex(nonce_hex)?;
+    create_private_quote_output_dir(output_dir)?;
+
+    let createek = trusted_tpm2_tool_path(TPM2_CREATEEK_ENV, "tpm2_createek")?;
+    let createak = trusted_tpm2_tool_path(TPM2_CREATEAK_ENV, "tpm2_createak")?;
+    let readpublic = trusted_tpm2_tool_path(TPM2_READPUBLIC_ENV, "tpm2_readpublic")?;
+    let quote = trusted_tpm2_tool_path(TPM2_QUOTE_ENV, "tpm2_quote")?;
+    let flushcontext = trusted_tpm2_tool_path(TPM2_FLUSHCONTEXT_ENV, "tpm2_flushcontext")?;
+    let tcti = tpm2_tcti()?;
+
+    let work_dir = unique_quote_work_dir(output_dir)?;
+    let ek_ctx = work_dir.join("ek.ctx");
+    let ak_ctx = work_dir.join("ak.ctx");
+
+    let ek_public = output_dir.join("ek.pub");
+    let ek_name = output_dir.join("ek.name");
+    let ek_qualified_name = output_dir.join("ek.qname");
+    let ak_public = output_dir.join("ak.pub");
+    let ak_name = output_dir.join("ak.name");
+    let ak_qualified_name = output_dir.join("ak.qname");
+    let quote_message = output_dir.join("quote.msg");
+    let quote_signature = output_dir.join("quote.sig");
+    let quote_pcrs = output_dir.join("quote.pcrs");
+
+    let result = (|| -> Result<()> {
+        run_tpm2_tool(
+            &createek,
+            &[
+                os_arg("-c"),
+                os_arg(&ek_ctx),
+                os_arg("-G"),
+                os_arg("rsa"),
+                os_arg("-u"),
+                os_arg(&ek_public),
+            ],
+            tcti.as_deref(),
+        )
+        .context("creating TPM endorsement key")?;
+        run_tpm2_tool(
+            &readpublic,
+            &[
+                os_arg("-c"),
+                os_arg(&ek_ctx),
+                os_arg("-o"),
+                os_arg(&ek_public),
+                os_arg("-n"),
+                os_arg(&ek_name),
+                os_arg("-q"),
+                os_arg(&ek_qualified_name),
+            ],
+            tcti.as_deref(),
+        )
+        .context("recording endorsement-key public identity")?;
+        run_tpm2_tool(
+            &createak,
+            &[
+                os_arg("-C"),
+                os_arg(&ek_ctx),
+                os_arg("-c"),
+                os_arg(&ak_ctx),
+                os_arg("-G"),
+                os_arg("rsa"),
+                os_arg("-g"),
+                os_arg("sha256"),
+                os_arg("-s"),
+                os_arg("rsassa"),
+                os_arg("-u"),
+                os_arg(&ak_public),
+                os_arg("-n"),
+                os_arg(&ak_name),
+                os_arg("-q"),
+                os_arg(&ak_qualified_name),
+            ],
+            tcti.as_deref(),
+        )
+        .context("creating TPM attestation key below endorsement key")?;
+        run_tpm2_tool(
+            &quote,
+            &[
+                os_arg("-c"),
+                os_arg(&ak_ctx),
+                os_arg("-l"),
+                os_arg(QUOTE_PCR_SELECTION),
+                os_arg("-q"),
+                os_arg(&nonce),
+                os_arg("-m"),
+                os_arg(&quote_message),
+                os_arg("-s"),
+                os_arg(&quote_signature),
+                os_arg("-o"),
+                os_arg(&quote_pcrs),
+                os_arg("-g"),
+                os_arg("sha256"),
+            ],
+            tcti.as_deref(),
+        )
+        .context("producing TPM quote")?;
+        Ok(())
+    })();
+
+    let flush_warnings = if result.is_ok() {
+        flush_quote_contexts(&flushcontext, &ak_ctx, &ek_ctx, tcti.as_deref())
+    } else {
+        let _ = flush_quote_contexts(&flushcontext, &ak_ctx, &ek_ctx, tcti.as_deref());
+        Vec::new()
+    };
+
+    match fs::remove_dir_all(&work_dir) {
+        Ok(()) => {}
+        Err(err) if result.is_err() => {
+            let _ = err;
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("removing {}", work_dir.display()));
+        }
+    }
+
+    result?;
+
+    Ok(PackageQuoteArtifacts {
+        nonce,
+        pcr_selection: QUOTE_PCR_SELECTION,
+        ek_public: display_path(&ek_public),
+        ek_name: display_path(&ek_name),
+        ek_qualified_name: display_path(&ek_qualified_name),
+        ak_public: display_path(&ak_public),
+        ak_name: display_path(&ak_name),
+        ak_qualified_name: display_path(&ak_qualified_name),
+        quote_message: display_path(&quote_message),
+        quote_signature: display_path(&quote_signature),
+        quote_pcrs: display_path(&quote_pcrs),
+        flush_warnings,
     })
 }
 
@@ -677,6 +867,54 @@ fn extend_pcr15(pcrextend: &Path, events: &[MeasurementEvent]) -> Result<()> {
     Ok(())
 }
 
+fn run_tpm2_tool(tool: &Path, args: &[OsString], tcti: Option<&str>) -> Result<()> {
+    let mut command = Command::new(tool);
+    command.args(args);
+    if let Some(tcti) = tcti {
+        command.env("TPM2TOOLS_TCTI", tcti);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("running {}", tool.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let args = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    bail!(
+        "{} {} failed: {}\nstdout:\n{}\nstderr:\n{}",
+        tool.display(),
+        args,
+        output.status,
+        stdout.trim_end(),
+        stderr.trim_end()
+    );
+}
+
+fn flush_quote_contexts(
+    flushcontext: &Path,
+    ak_ctx: &Path,
+    ek_ctx: &Path,
+    tcti: Option<&str>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (label, context) in [("attestation-key", ak_ctx), ("endorsement-key", ek_ctx)] {
+        if !context.exists() {
+            continue;
+        }
+        if let Err(err) = run_tpm2_tool(flushcontext, &[os_arg(context)], tcti) {
+            warnings.push(format!("flushing {label} TPM context: {err:#}"));
+        }
+    }
+    warnings
+}
+
 fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
     let parent = path
@@ -735,6 +973,161 @@ fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
     {
         bail!("{PCR_EXTEND_ENV} is not configured for package-set measurement");
     }
+}
+
+fn trusted_tpm2_tool_path(env_name: &str, bin_name: &str) -> Result<PathBuf> {
+    let path = std::env::var(env_name).with_context(|| {
+        format!("{env_name} is not configured for package attestation quote production")
+    })?;
+    validate_trusted_tpm2_tool_path(env_name, bin_name, &path)
+}
+
+fn tpm2_tcti() -> Result<Option<String>> {
+    match std::env::var(TPM2_TCTI_ENV) {
+        Ok(value) if value.is_empty() => bail!("{TPM2_TCTI_ENV} must not be empty"),
+        Ok(value) => return Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(err) => return Err(err).context("reading TPM2 TCTI override"),
+    }
+
+    for device in ["/dev/tpmrm0", "/dev/tpm0"] {
+        if Path::new(device).exists() {
+            return Ok(Some(format!("device:{device}")));
+        }
+    }
+
+    Ok(None)
+}
+
+fn create_private_quote_output_dir(output_dir: &Path) -> Result<()> {
+    if !output_dir.is_absolute() {
+        bail!(
+            "quote output directory must be an absolute path: {}",
+            output_dir.display()
+        );
+    }
+    match fs::symlink_metadata(output_dir) {
+        Ok(_) => {
+            bail!(
+                "quote output directory must not already exist: {}",
+                output_dir.display()
+            );
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("checking quote output directory {}", output_dir.display())
+            });
+        }
+    }
+
+    let parent = output_dir
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .with_context(|| {
+            format!(
+                "quote output directory has no parent: {}",
+                output_dir.display()
+            )
+        })?;
+    let parent_meta = fs::symlink_metadata(parent).with_context(|| {
+        format!(
+            "checking quote output directory parent {}",
+            parent.display()
+        )
+    })?;
+    if parent_meta.file_type().is_symlink() || !parent_meta.is_dir() {
+        bail!(
+            "quote output directory parent must be a real directory: {}",
+            parent.display()
+        );
+    }
+
+    DirBuilder::new()
+        .mode(0o700)
+        .create(output_dir)
+        .with_context(|| {
+            format!(
+                "creating private quote output directory {}",
+                output_dir.display()
+            )
+        })?;
+    fs::set_permissions(output_dir, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("securing quote output directory {}", output_dir.display()))?;
+    let metadata = fs::symlink_metadata(output_dir).with_context(|| {
+        format!(
+            "checking private quote output directory {}",
+            output_dir.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "quote output directory must be a real directory: {}",
+            output_dir.display()
+        );
+    }
+    if metadata.permissions().mode() & 0o777 != 0o700 {
+        bail!(
+            "quote output directory must have mode 0700: {}",
+            output_dir.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_trusted_tpm2_tool_path(env_name: &str, bin_name: &str, path: &str) -> Result<PathBuf> {
+    if path.is_empty() {
+        bail!("{env_name} must not be empty");
+    }
+    let expected_suffix = format!("/bin/{bin_name}");
+    if !path.starts_with('/') || !path.ends_with(&expected_suffix) {
+        bail!("{env_name} must point to an absolute {bin_name} binary");
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn parse_quote_nonce_hex(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("quote nonce must not be empty");
+    }
+    if value.len() % 2 != 0 {
+        bail!("quote nonce must be an even-length hex string");
+    }
+    if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("quote nonce must contain only hex characters");
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+fn unique_quote_work_dir(parent: &Path) -> Result<PathBuf> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_nanos();
+    for attempt in 0..32u8 {
+        let path = parent.join(format!(
+            ".aos-attest-quote-{}-{nanos}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err).with_context(|| format!("creating {}", path.display())),
+        }
+    }
+    bail!(
+        "could not allocate a unique quote work directory under {}",
+        parent.display()
+    );
+}
+
+fn os_arg<T: AsRef<OsStr>>(value: T) -> OsString {
+    value.as_ref().to_os_string()
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string()
 }
 
 fn rooted_absolute_path(root: &Path, path: &Path) -> Result<PathBuf> {
@@ -1138,5 +1531,75 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, PACKAGE_SET_EVENT_TYPE);
         assert_eq!(events[0].package_count, Some(0));
+    }
+
+    #[test]
+    fn quote_nonce_parser_normalizes_hex() {
+        assert_eq!(parse_quote_nonce_hex("A0b1").expect("nonce"), "a0b1");
+    }
+
+    #[test]
+    fn quote_nonce_parser_rejects_invalid_hex() {
+        let odd = parse_quote_nonce_hex("abc").unwrap_err();
+        assert!(format!("{odd:#}").contains("even-length"));
+
+        let non_hex = parse_quote_nonce_hex("zz").unwrap_err();
+        assert!(format!("{non_hex:#}").contains("only hex"));
+    }
+
+    #[test]
+    fn trusted_tpm2_tool_path_requires_absolute_expected_binary() {
+        let path = validate_trusted_tpm2_tool_path(
+            "AOS_TPM2_QUOTE",
+            "tpm2_quote",
+            "/nix/store/hash-tpm2-tools-5.7/bin/tpm2_quote",
+        )
+        .expect("trusted path");
+        assert_eq!(
+            path,
+            PathBuf::from("/nix/store/hash-tpm2-tools-5.7/bin/tpm2_quote")
+        );
+
+        let relative =
+            validate_trusted_tpm2_tool_path("AOS_TPM2_QUOTE", "tpm2_quote", "bin/tpm2_quote")
+                .unwrap_err();
+        assert!(format!("{relative:#}").contains("absolute tpm2_quote"));
+
+        let wrong = validate_trusted_tpm2_tool_path(
+            "AOS_TPM2_QUOTE",
+            "tpm2_quote",
+            "/usr/bin/tpm2_pcrread",
+        )
+        .unwrap_err();
+        assert!(format!("{wrong:#}").contains("absolute tpm2_quote"));
+    }
+
+    #[test]
+    fn quote_output_dir_must_be_new_absolute_and_private() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let output_dir = parent.path().join("quote");
+
+        create_private_quote_output_dir(&output_dir).expect("private output dir");
+        let metadata = fs::symlink_metadata(&output_dir).expect("metadata");
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+
+        let reused = create_private_quote_output_dir(&output_dir).unwrap_err();
+        assert!(format!("{reused:#}").contains("must not already exist"));
+
+        let relative = create_private_quote_output_dir(Path::new("relative-quote")).unwrap_err();
+        assert!(format!("{relative:#}").contains("absolute path"));
+    }
+
+    #[test]
+    fn quote_output_dir_rejects_symlink_parent() {
+        let parent = tempfile::tempdir().expect("tempdir");
+        let real_parent = parent.path().join("real");
+        let link_parent = parent.path().join("link");
+        fs::create_dir(&real_parent).expect("real parent");
+        std::os::unix::fs::symlink(&real_parent, &link_parent).expect("symlink parent");
+
+        let err = create_private_quote_output_dir(&link_parent.join("quote")).unwrap_err();
+        assert!(format!("{err:#}").contains("parent must be a real directory"));
     }
 }
