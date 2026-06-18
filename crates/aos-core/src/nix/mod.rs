@@ -12,10 +12,12 @@
 //! - [`eval`] -- [`NixEval`], the narrow evaluation seam that defaults to
 //!   [`NixCli`] and can be implemented by the native `aos-nix` crate.
 //! - [`drv`] -- a hand-rolled parser for `.drv` files (ATerm format)
-//!   that extracts fixed-output derivation metadata.
+//!   that extracts fixed-output derivation metadata and input edges.
+//! - [`diff`] -- `.drv` differential comparison over the [`NixEval`] seam.
 //! - [`env`](mod@env) -- [`aos_nix_env`], the `AOS_ROOT`-derived environment
 //!   bindings that point Nix subprocesses at the AOS store layout.
 
+pub mod diff;
 pub mod drv;
 pub mod env;
 pub mod eval;

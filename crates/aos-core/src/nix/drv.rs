@@ -3,11 +3,9 @@
 //!
 //! A `.drv` file is an ATerm term of the shape
 //! `Derive([outputs], [input-drvs], [input-srcs], system, builder,
-//! [args], [env])`. This module implements just enough of a parser to
-//! pull out the pieces needed to recognise fixed-output derivations
-//! (FODs, i.e. fetches with a pinned `outputHash`): the outputs list,
-//! the builder, and the env section. The entry point is
-//! [`parse_drv_for_fod`].
+//! [args], [env])`. This module implements the narrow parser surfaces AOS
+//! needs today: fixed-output derivation discovery and input-derivation
+//! traversal for the native-evaluator diff harness.
 //!
 //! The parser is hand-rolled and position-based rather than a full
 //! ATerm grammar; it relies on the rigid structure Nix itself writes
@@ -15,6 +13,15 @@
 //! escapes).
 
 use anyhow::{Context, Result};
+
+/// An input derivation edge declared by a `.drv` file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrvInput {
+    /// Path to the input `.drv`.
+    pub drv_path: String,
+    /// Output names consumed from the input derivation.
+    pub outputs: Vec<String>,
+}
 
 /// A fixed-output derivation discovered from a .drv file.
 #[derive(Debug, Clone)]
@@ -83,6 +90,33 @@ pub fn parse_drv_for_fod(drv_path: &str) -> Result<Option<FixedOutputDrv>> {
     }))
 }
 
+/// Parses the input derivation edges from a `.drv` file.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read or the `.drv` ATerm does not
+/// contain a parseable input-derivations section.
+pub fn parse_drv_input_drvs(drv_path: &str) -> Result<Vec<DrvInput>> {
+    let content =
+        std::fs::read_to_string(drv_path).with_context(|| format!("reading {drv_path}"))?;
+    parse_drv_input_drvs_from_str(&content)
+}
+
+/// Parses the input derivation edges from `.drv` ATerm text.
+///
+/// # Errors
+///
+/// Returns an error if the ATerm does not contain a parseable
+/// input-derivations section.
+pub fn parse_drv_input_drvs_from_str(content: &str) -> Result<Vec<DrvInput>> {
+    let spans = top_level_list_spans(content)?;
+    let (start, end) = spans
+        .get(1)
+        .copied()
+        .context("could not find input derivations section in .drv")?;
+    parse_drv_input_drvs_section(content, start, end)
+}
+
 /// Parses the env section of a .drv file into a key-value map.
 ///
 /// The env section is the last top-level `[...]` list inside
@@ -94,61 +128,25 @@ fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, Stri
     let mut env = std::collections::HashMap::new();
 
     let bytes = content.as_bytes();
-    let len = bytes.len();
-
-    let mut list_starts = Vec::new();
-
-    let derive_start = content.find("Derive(").map(|i| i + 7).unwrap_or(0);
-    let mut i = derive_start;
-    let mut depth = 0;
-    while i < len {
-        match bytes[i] {
-            b'[' => {
-                if depth == 0 {
-                    list_starts.push(i);
-                }
-                depth += 1;
-            }
-            b']' => {
-                depth -= 1;
-            }
-            b'"' => {
-                i += 1;
-                while i < len {
-                    if bytes[i] == b'\\' {
-                        if i + 1 < len {
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
-                        continue;
-                    }
-                    if bytes[i] == b'"' {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-
-    let env_start = list_starts
+    let spans = top_level_list_spans(content)?;
+    let (env_start, env_end) = spans
         .last()
         .copied()
         .context("could not find env section in .drv")?;
 
     let mut pos = env_start;
-    while pos < len {
+    while pos < env_end {
         match content[pos..].find("(\"") {
             Some(offset) => pos += offset + 1,
             None => break,
         }
+        if pos >= env_end {
+            break;
+        }
 
         let key = parse_aterm_string(content, &mut pos)?;
 
-        while pos < len && bytes[pos] != b'"' {
+        while pos < env_end && bytes[pos] != b'"' {
             pos += 1;
         }
 
@@ -156,10 +154,10 @@ fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, Stri
 
         env.insert(key, value);
 
-        while pos < len && bytes[pos] != b')' {
+        while pos < env_end && bytes[pos] != b')' {
             pos += 1;
         }
-        if pos < len {
+        if pos < env_end {
             pos += 1;
         }
     }
@@ -176,50 +174,165 @@ fn parse_drv_env(content: &str) -> Result<std::collections::HashMap<String, Stri
 fn parse_drv_outputs(content: &str) -> Result<Vec<(String, String)>> {
     let mut outputs = Vec::new();
     let bytes = content.as_bytes();
-    let len = bytes.len();
-
-    let derive_start = content.find("Derive(").map(|i| i + 7).unwrap_or(0);
-    let list_start = match content[derive_start..].find('[') {
-        Some(offset) => derive_start + offset,
-        None => return Ok(outputs),
+    let spans = top_level_list_spans(content)?;
+    let Some((list_start, list_end)) = spans.first().copied() else {
+        return Ok(outputs);
     };
 
     let mut pos = list_start;
-    while pos < len {
+    while pos < list_end {
         match content[pos..].find("(\"") {
             Some(offset) => pos += offset + 1,
             None => break,
         }
-
-        let depth: i32 = content[list_start..pos]
-            .bytes()
-            .map(|b| match b {
-                b'[' => 1,
-                b']' => -1,
-                _ => 0,
-            })
-            .sum();
-        if depth <= 0 {
+        if pos >= list_end {
             break;
         }
 
         let name = parse_aterm_string(content, &mut pos)?;
-        while pos < len && bytes[pos] != b'"' {
+        while pos < list_end && bytes[pos] != b'"' {
             pos += 1;
         }
         let path = parse_aterm_string(content, &mut pos)?;
 
         outputs.push((path, name));
 
-        while pos < len && bytes[pos] != b')' {
+        while pos < list_end && bytes[pos] != b')' {
             pos += 1;
         }
-        if pos < len {
+        if pos < list_end {
             pos += 1;
         }
     }
 
     Ok(outputs)
+}
+
+fn parse_drv_input_drvs_section(content: &str, start: usize, end: usize) -> Result<Vec<DrvInput>> {
+    let bytes = content.as_bytes();
+    let mut inputs = Vec::new();
+    let mut pos = start;
+
+    while pos < end {
+        match content[pos..].find("(\"") {
+            Some(offset) => pos += offset + 1,
+            None => break,
+        }
+        if pos >= end {
+            break;
+        }
+
+        let drv_path = parse_aterm_string(content, &mut pos)?;
+        while pos < end && bytes[pos] != b'[' {
+            pos += 1;
+        }
+        let outputs = parse_aterm_string_list(content, &mut pos, end)?;
+        inputs.push(DrvInput { drv_path, outputs });
+
+        while pos < end && bytes[pos] != b')' {
+            pos += 1;
+        }
+        if pos < end {
+            pos += 1;
+        }
+    }
+
+    Ok(inputs)
+}
+
+fn parse_aterm_string_list(content: &str, pos: &mut usize, end: usize) -> Result<Vec<String>> {
+    let bytes = content.as_bytes();
+    if *pos >= end || bytes[*pos] != b'[' {
+        anyhow::bail!("expected '[' at position {}", *pos);
+    }
+    *pos += 1;
+
+    let mut values = Vec::new();
+    while *pos < end {
+        match bytes[*pos] {
+            b']' => {
+                *pos += 1;
+                return Ok(values);
+            }
+            b'"' => values.push(parse_aterm_string(content, pos)?),
+            b',' | b' ' | b'\n' | b'\t' => *pos += 1,
+            other => {
+                anyhow::bail!(
+                    "unexpected byte '{}' in string list at position {}",
+                    other as char,
+                    *pos
+                );
+            }
+        }
+    }
+
+    anyhow::bail!("unterminated string list at position {}", *pos)
+}
+
+fn top_level_list_spans(content: &str) -> Result<Vec<(usize, usize)>> {
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let derive_start = content
+        .find("Derive(")
+        .map(|index| index + 7)
+        .context("could not find Derive term in .drv")?;
+
+    let mut spans = Vec::new();
+    let mut depth = 0_usize;
+    let mut current_start = None;
+    let mut pos = derive_start;
+
+    while pos < len {
+        match bytes[pos] {
+            b'[' => {
+                if depth == 0 {
+                    current_start = Some(pos);
+                }
+                depth += 1;
+            }
+            b']' => {
+                if depth == 0 {
+                    anyhow::bail!("unmatched ']' at position {pos}");
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start = current_start.context("list end without list start")?;
+                    spans.push((start, pos + 1));
+                    current_start = None;
+                }
+            }
+            b'"' => skip_aterm_string(content, &mut pos)?,
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    if depth != 0 {
+        anyhow::bail!("unterminated list in .drv");
+    }
+
+    Ok(spans)
+}
+
+fn skip_aterm_string(content: &str, pos: &mut usize) -> Result<()> {
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    *pos += 1;
+    while *pos < len {
+        match bytes[*pos] {
+            b'\\' => {
+                *pos += 1;
+                if *pos >= len {
+                    anyhow::bail!("trailing backslash at end of string (position {})", *pos);
+                }
+            }
+            b'"' => return Ok(()),
+            _ => {}
+        }
+        *pos += 1;
+    }
+
+    anyhow::bail!("unterminated string at position {}", *pos)
 }
 
 /// Extracts the builder string from a .drv: the second bare string
@@ -356,6 +469,41 @@ mod tests {
         assert_eq!(env.get("outputHash").unwrap(), "sha256-AAAA");
         assert_eq!(env.get("name").unwrap(), "foo-1.0.tar.gz");
         assert_eq!(env.get("url").unwrap(), "https://example.com/foo.tar.gz");
+    }
+
+    #[test]
+    fn parse_drv_input_drvs_extracts_edges_and_outputs() {
+        let drv = r#"Derive([("out","/nix/store/root-out","","")],[("/nix/store/aaa-input.drv",["out"]),("/nix/store/bbb-input.drv",["dev","out"])],[],"x86_64-linux","/nix/store/bash",[],[("name","root")])"#;
+        let inputs = parse_drv_input_drvs_from_str(drv).unwrap();
+
+        assert_eq!(
+            inputs,
+            vec![
+                DrvInput {
+                    drv_path: "/nix/store/aaa-input.drv".to_string(),
+                    outputs: vec!["out".to_string()],
+                },
+                DrvInput {
+                    drv_path: "/nix/store/bbb-input.drv".to_string(),
+                    outputs: vec!["dev".to_string(), "out".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_drv_sections_skip_brackets_inside_strings() {
+        let drv = r#"Derive([("out","/nix/store/root-[out]","","")],[("/nix/store/input.drv",["out"])],[],"x86_64-linux","/nix/store/bash",[],[("name","root-[x]"),("outputHash","sha256-AAAA")])"#;
+        let env = parse_drv_env(drv).unwrap();
+        let outputs = parse_drv_outputs(drv).unwrap();
+        let inputs = parse_drv_input_drvs_from_str(drv).unwrap();
+
+        assert_eq!(env.get("name").unwrap(), "root-[x]");
+        assert_eq!(
+            outputs,
+            vec![("/nix/store/root-[out]".to_string(), "out".to_string())]
+        );
+        assert_eq!(inputs[0].drv_path, "/nix/store/input.drv");
     }
 
     #[test]
