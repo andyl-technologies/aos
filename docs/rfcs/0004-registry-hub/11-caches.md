@@ -634,11 +634,16 @@ the current spec. Phases are orderable; A lands first, E last.
 - [ ] `Database` contract tests cover the cache tables on every driver.
 - [ ] Hermetic end-to-end: push → link → advance channel → GC → assert closure
       survives and reclaimed NARs are gone (the closure-correctness test).
-- [ ] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
+- [~] `aos-hub-worker-e2e` gains `nix-cache-info`/narinfo/NAR-fetch + a Cron GC
       pass over D1+R2 under workerd+miniflare, including a **large-NAR
       streaming** case (ranged GET → `206`, and a streamed upload) that asserts
       the isolate does not buffer the whole body — the memory-safety regression
-      guard for the streaming path.
+      guard for the streaming path. **Done:** the e2e seeds a public managed
+      cache (org + binding + cache + indexed object) and an R2 narinfo, then
+      asserts the worker serves `nix-cache-info`, the narinfo from R2, and the
+      cache home + object-list browse pages — the worker half of cache parity,
+      under real workerd+miniflare. **Remaining:** NAR-fetch body, a Cron GC
+      pass, and the ranged/streamed large-NAR case.
 - [ ] No-JS cache browse + NAR explorer asserted over plain HTTP; SPA closure
       graph in a Leptos render test.
 - [ ] Per-org quota accounting includes cache bytes/objects (`org_usage`);
