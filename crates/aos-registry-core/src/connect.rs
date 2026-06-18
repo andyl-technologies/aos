@@ -535,6 +535,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCacheGcRuns", list_cache_gc_runs);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
     r = rpc_route!(r, "/aos.registry.v1.CacheService/CacheClosure", cache_closure);
+    r = rpc_route!(
+        r,
+        "/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+        mint_cache_upload_credentials
+    );
     // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
     // eliding the body) for the registry machine path, registered LAST. The
     // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over

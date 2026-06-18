@@ -788,3 +788,53 @@ async fn private_binding_cache_serves_presigned_302() {
         "traversal path must not be presigned"
     );
 }
+
+/// MintCacheUploadCredentials returns a presigned PUT URL for a presign-mode
+/// cache's object, gated on cache-write authority.
+#[tokio::test]
+async fn mint_cache_upload_credentials_returns_presigned_put() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", "/srv")
+        .await
+        .unwrap();
+    let sealer = aos_registry_hub::auth::oidc::dev_sealer();
+    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
+    db.set_storage_binding_access(binding, "private", Some("https://bucket.s3.example.com"), Some(&sealed))
+        .await
+        .unwrap();
+    db.create_cache(Some(org), "ext-cache", "Ext", binding, "pfx", None, "public", 40, "zstd", true)
+        .await
+        .unwrap();
+    let alice = db.create_user("alice@acme.com", None).await.unwrap();
+    db.grant_membership("user", alice, "acme", "owner").await.unwrap();
+    let token = bearer(Principal::user(alice), "acme", &[Permission::RegistryConfigure]);
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let (status, body) = rpc(
+        &app,
+        "CacheService/MintCacheUploadCredentials",
+        serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let url = body.get("uploadUrl").and_then(|v| v.as_str()).unwrap_or_default();
+    assert!(url.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"), "{url}");
+    assert!(url.contains("X-Amz-Signature="), "{url}");
+    assert!(!url.contains("secretkey"), "secret leaked: {url}");
+
+    // Without cache-write authority, the RPC is denied.
+    let (status, _) = rpc(
+        &app,
+        "CacheService/MintCacheUploadCredentials",
+        serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
+        None,
+    )
+    .await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "unauthenticated mint must be denied, got {status}"
+    );
+}

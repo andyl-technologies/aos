@@ -2380,6 +2380,42 @@ impl RpcService {
         }
     }
 
+    /// `CacheService.MintCacheUploadCredentials` — a presigned `PUT` URL for
+    /// uploading one object directly to a cache's private external origin.
+    ///
+    /// Requires cache-write authority. Returns an empty `upload_url` when the
+    /// cache's binding is not a presign-configured private external origin (the
+    /// caller then uploads through the facade `PUT` instead). The URL carries no
+    /// long-lived secret and expires after [`PRESIGN_EXPIRES_SECS`].
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::NotFound`] for an unknown cache, auth errors, and
+    /// [`RpcError::Internal`] on a signing or database failure.
+    pub async fn mint_cache_upload_credentials(
+        &self,
+        auth: Option<&str>,
+        req: pb::MintCacheUploadCredentialsRequest,
+    ) -> Result<pb::MintCacheUploadCredentialsResponse, RpcError> {
+        let cache = self.cache_or_not_found(&req.cache_slug).await?;
+        self.require_cache_admin(auth, cache.org_id).await?;
+        // Only canonical machine paths are mintable — a presigned PUT bypasses the
+        // facade's narinfo signing, so an arbitrary key would land unvalidated.
+        // Mirrors the facade `put_cache_path` machine-path guard.
+        if !keymap::is_machine_path(&req.path) {
+            return Err(RpcError::invalid("not a cache machine path"));
+        }
+        let now = clock::now_unix_secs();
+        let url = self
+            .presign_cache_write(&cache, &req.path, now)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::MintCacheUploadCredentialsResponse {
+            upload_url: url.unwrap_or_default(),
+            expires_at: now + i64::from(PRESIGN_EXPIRES_SECS),
+        })
+    }
+
     /// `CacheService.CacheClosure` — the transitive closure of a store path.
     ///
     /// Breadth-first over `cache_objects.refs` from `store_hash` (root first); a
@@ -3094,6 +3130,35 @@ impl RpcService {
         path: &str,
         now: i64,
     ) -> anyhow::Result<Option<String>> {
+        self.presign_cache(cache, path, now, false).await
+    }
+
+    /// Mint a presigned `PUT` URL for uploading a cache object to a private
+    /// external origin, or `Ok(None)` when the cache is not presign-configured.
+    ///
+    /// The upload sibling of [`Self::presign_cache_read`] (the `mint` purpose).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::presign_cache_read`].
+    pub async fn presign_cache_write(
+        &self,
+        cache: &crate::db::Cache,
+        path: &str,
+        now: i64,
+    ) -> anyhow::Result<Option<String>> {
+        self.presign_cache(cache, path, now, true).await
+    }
+
+    /// Shared presigner behind [`Self::presign_cache_read`]/[`Self::presign_cache_write`].
+    /// `write` selects a `PUT` (upload) over a `GET` (download) URL.
+    async fn presign_cache(
+        &self,
+        cache: &crate::db::Cache,
+        path: &str,
+        now: i64,
+        write: bool,
+    ) -> anyhow::Result<Option<String>> {
         let Some(sealer) = self.sealer.as_ref() else {
             return Ok(None);
         };
@@ -3135,7 +3200,7 @@ impl RpcService {
         // Signed object key: the binding prefix joined with the requested path.
         let object_path = format!("/{}/{}", cache.prefix.trim_matches('/'), path);
 
-        let url = crate::sigv4::presign_get_url(&crate::sigv4::PresignParams {
+        let params = crate::sigv4::PresignParams {
             access_key,
             secret_key,
             region,
@@ -3144,7 +3209,12 @@ impl RpcService {
             path: &object_path,
             expires_secs: PRESIGN_EXPIRES_SECS,
             amz_date: &crate::sigv4::amz_date_from_unix(now),
-        })?;
+        };
+        let url = if write {
+            crate::sigv4::presign_put_url(&params)?
+        } else {
+            crate::sigv4::presign_get_url(&params)?
+        };
         Ok(Some(url))
     }
 

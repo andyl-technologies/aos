@@ -136,6 +136,26 @@ fn uri_encode(input: &str, encode_slash: bool) -> String {
 /// injection into the signed canonical request, since both inputs are caller-
 /// supplied.
 pub fn presign_get_url(p: &PresignParams<'_>) -> Result<String> {
+    presign_url("GET", p)
+}
+
+/// Build a presigned `PUT` URL valid for [`PresignParams::expires_secs`].
+///
+/// The upload sibling of [`presign_get_url`]: a client may `PUT` the object's
+/// bytes directly to this URL (the `mint` purpose — `MintCacheUploadCredentials`)
+/// with no further credentials until it expires. Same signing rules; only the
+/// HTTP method in the canonical request differs.
+///
+/// # Errors
+///
+/// Same as [`presign_get_url`].
+pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
+    presign_url("PUT", p)
+}
+
+/// Build a presigned URL for `method` (`GET`/`PUT`). The shared signer behind
+/// [`presign_get_url`]/[`presign_put_url`].
+fn presign_url(method: &str, p: &PresignParams<'_>) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
@@ -172,7 +192,7 @@ pub fn presign_get_url(p: &PresignParams<'_>) -> Result<String> {
     let canonical_headers = format!("host:{}\n", p.host);
     let signed_headers = "host";
     let canonical_request = format!(
-        "GET\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
+        "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );
 
     let string_to_sign = format!(
@@ -268,6 +288,27 @@ mod tests {
         assert!(validate_amz_date(&amz_date_from_unix(1700000000)).is_ok());
         // Negative clamps to the epoch.
         assert_eq!(amz_date_from_unix(-5), "19700101T000000Z");
+    }
+
+    #[test]
+    fn put_presign_differs_from_get_and_is_well_formed() {
+        let p = PresignParams {
+            access_key: "AKIDEXAMPLE",
+            secret_key: "secret",
+            region: "us-east-1",
+            service: "s3",
+            host: "bucket.s3.amazonaws.com",
+            path: "/upload.nar",
+            expires_secs: 300,
+            amz_date: "20240101T000000Z",
+        };
+        let get = presign_get_url(&p).unwrap();
+        let put = presign_put_url(&p).unwrap();
+        assert!(put.contains("&X-Amz-Signature="));
+        assert!(put.contains("/upload.nar?"));
+        // The method is part of the signed canonical request, so GET and PUT
+        // over the same object produce different signatures.
+        assert_ne!(get, put, "PUT and GET presign to different signatures");
     }
 
     #[test]
