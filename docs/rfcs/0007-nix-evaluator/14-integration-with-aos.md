@@ -209,10 +209,14 @@ top. We deliberately do not, at the `aos-core` boundary, because:
   in-process `Value` would force the harness to compare a representation that
   C++ Nix never exposes, weakening the parity check.
 - It keeps the `aos-core` dependency graph clean. `aos-core` must *not* depend
-  on the heavy `aos-nix` crate (Cranelift, the GC, the `unsafe` core) in its
-  default build. The trait lives in `aos-core`; the `NixNative` impl lives in
-  `aos-nix` and is wired in only when the feature/flag is enabled. `aos-core`
-  thus stays lightweight and `miri`-clean (see [§10](#10-the-unsafe-policy)).
+  on the heavy `aos-nix` umbrella crate — which transitively pulls in the
+  `ratchet-*` engine crates (Cranelift via `ratchet-jit`, the GC `ratchet-gc`,
+  the `unsafe` core; see
+  [generalization and language dialects](28-generalization-and-language-dialects.md)
+  §3) — in its default build. The trait lives in `aos-core`; the `NixNative`
+  impl lives in `aos-nix` and is wired in only when the feature/flag is enabled.
+  `aos-core` thus stays lightweight and `miri`-clean (see
+  [§10](#10-the-unsafe-policy)).
 
 ### 3.2 `eval_expr` is included but is the *easier* half
 
@@ -259,9 +263,11 @@ tree-walker, but maximally trustworthy because it *is* C++ Nix.
 
 ### 4.2 `NixNative` — `aos-nix`
 
-`NixNative` is a thin `aos-core`-facing shim over the `aos-nix` crate's public
-API. It owns the long-lived evaluator context (interned symbol table, parsed-IR
-cache, hash-cons tables, incremental cache handle) so that across many
+`NixNative` is a thin `aos-core`-facing shim over the `aos-nix` umbrella crate's
+public API (the umbrella wires the Nix dialect onto the `ratchet` engine; see
+[generalization and language dialects](28-generalization-and-language-dialects.md)
+§3). It owns the long-lived evaluator context (interned symbol table, parsed-IR
+cache, hash-cons tables in `ratchet-value`, incremental cache handle) so that across many
 `instantiate` calls within one `aos` invocation the parse/compile artifacts and
 the early-cutoff cache persist (see
 [frontend](04-frontend-parser-and-ir.md) and
@@ -676,9 +682,15 @@ returns the typed `Unsupported` error and falls back to `NixCli`
 
 AOS's workspace rule (`CLAUDE.md`) is blunt: **"Avoid `unsafe` at all costs.
 Use it only for an explicit, justified performance need, and document the
-invariants with a `// SAFETY:` comment."** `aos-nix` is the one crate in the
-monorepo that needs a *standing, scoped waiver* of the "at all costs" framing,
-because several of its core mechanisms are irreducibly `unsafe` — and the
+invariants with a `// SAFETY:` comment."** The `aos-nix` evaluator is the one
+part of the monorepo that needs a *standing, scoped waiver* of the "at all costs"
+framing — concretely, the waiver now applies to the `ratchet-*` UNSAFE engine
+crates (`ratchet-value`, `ratchet-gc`, `ratchet-jit`, `ratchet-cache`,
+`ratchet-parallel`; see
+[generalization and language dialects](28-generalization-and-language-dialects.md)
+§3), where these mechanisms live, while the Nix-band `aos-nix-*` dialect/frontend
+crates stay safe — because several of its core mechanisms are irreducibly
+`unsafe` — and the
 unlimited-budget mandate ([roadmap](17-roadmap-and-risks.md) §0), which commits
 the full performance stack rather than a subset, *enlarges* that surface, so the
 waiver is accompanied by commensurately heavier verification (below). The
@@ -931,7 +943,7 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
 
 ### The `unsafe` policy and tooling discipline (§10)
 
-- [ ] Standing, scoped waiver of the workspace "avoid `unsafe` at all costs" rule for `aos-nix` only, covering the six irreducibly-`unsafe` mechanisms (tagged values, JIT fn-ptr calls, raw heap/GC, stackful fibers, lock-free CAS, `mmap`/out-of-core) — *enlarged* by the unlimited-budget mandate, hence heavier verification (§10, §10.0) — `S-17`; this checklist only **references** the §10 policy, it does not restate it.
+- [ ] Standing, scoped waiver of the workspace "avoid `unsafe` at all costs" rule for the `ratchet-*` UNSAFE engine crates only (the Nix-band `aos-nix-*` crates stay safe; see [28](28-generalization-and-language-dialects.md) §3), covering the six irreducibly-`unsafe` mechanisms (tagged values, JIT fn-ptr calls, raw heap/GC, stackful fibers, lock-free CAS, `mmap`/out-of-core) — *enlarged* by the unlimited-budget mandate, hence heavier verification (§10, §10.0) — `S-17`; this checklist only **references** the §10 policy, it does not restate it.
 - [ ] The fence: `#![forbid(unsafe_code)]` on the tree-walk oracle / frontend / `nix-compat` glue / harness; `#![deny(unsafe_op_in_unsafe_fn)]` + per-block `// SAFETY:` on value-repr/jit/gc/runtime-abi modules; the safe oracle is the `miri`-clean trust core (§10.1, §10.2) — **P1** discipline, held every later phase, `S-17`.
 - [ ] Tooling discipline as standing CI controls: `cargo miri` on the conformance suite, ASan/UBSan, `cargo fuzz` (value decode / GC / ATerm), `loom` (CAS protocol, deques — `R-4`), ThreadSanitizer (parallel binary), two-maintainer review of every new `unsafe` block; `.unwrap()`/`.expect()` ban still applies (§10.3) — **P1**→**P8** as each mechanism lands, `S-17`.
 

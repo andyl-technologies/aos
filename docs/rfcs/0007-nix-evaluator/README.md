@@ -66,7 +66,7 @@ sound here.
 
 Full spec: **[27 — engineering standards and code quality](27-engineering-standards.md)**. The non-negotiables an implementor inherits on day one:
 
-- **Workspace of focused crates**, with the safe/unsafe fence made *crate-level*: safe crates (`aos-nix-syntax`/`-ir`/`-oracle`/`-compat`/harness) carry `#![forbid(unsafe_code)]`; the unsafe core (`-value`/`-gc`/`-jit`/`-cache`/`-parallel`) carries `#![deny(unsafe_op_in_unsafe_fn)]` with a `// SAFETY:` on every block. `unsafe` is explicitly, narrowly **waived for this crate for performance** (see [14](14-integration-with-aos.md) §10).
+- **Workspace of focused crates**, with the safe/unsafe fence made *crate-level*: safe crates (`ratchet-core`/`ratchet-oracle`/`ratchet-dialect`/`aos-nix-syntax`/`aos-nix-dialect`/`aos-nix-compat`/`aos-nix-harness`) carry `#![forbid(unsafe_code)]`; the unsafe engine core (`ratchet-value`/`ratchet-gc`/`ratchet-jit`/`ratchet-cache`/`ratchet-parallel`) carries `#![deny(unsafe_op_in_unsafe_fn)]` with a `// SAFETY:` on every block. The `ratchet-*` crates are the language-agnostic engine + Core; the `aos-nix-*` crates are the Nix dialect ([28](28-generalization-and-language-dialects.md)). `unsafe` is explicitly, narrowly **waived for this crate for performance** (see [14](14-integration-with-aos.md) §10).
 - **Errors:** `thiserror` typed errors in the libraries (`anyhow` only at the binary boundary); errors carry source spans and are error-*class*-compatible with C++ Nix. **No `.unwrap()`/`.expect()` in production.**
 - **Logging:** `tracing` only — **no raw stdout/stderr from a library crate**; the sole user-facing output is the deliberate Nix-compatible surface (`builtins.trace`, the final result).
 - **Docs:** docs.rs quality — `//!` crate/module headers, `///` on every public item with `# Errors`/`# Panics`, tagged fences (an untagged fence becomes a failing doctest).
@@ -107,6 +107,7 @@ Full spec: **[27 — engineering standards and code quality](27-engineering-stan
 | [25](25-intermediate-representation.md) | The intermediate representation (IR) contract: node taxonomy, scope-resolved de Bruijn form, thunk/closure/attrset/primop/string-context encoding, effect-class annotation, demand-graph relationship, and serialization for the parse/compile cache |
 | [26](26-optimization-pass-catalog.md) | The optimization pass catalog: the simplifier specified pass-by-pass over the IR (matched node kinds, before→after rewrite, preconditions, fixpoint phase order, committed vs measure-gated) |
 | [27](27-engineering-standards.md) | Engineering standards: crate/dir structure + safe/unsafe fence, error handling (thiserror/anyhow), `tracing` logging, docs, trait abstractions, performance, test coverage, debugging hooks, file-size limits, commit hygiene |
+| [28](28-generalization-and-language-dialects.md) | Generalization & language dialects: the `ratchet` engine, Core IR vs Nix dialect (MLIR-style), CLIF as the low-level universal, the cache-soundness boundary, S-22/S-23, and the Phase 1b re-layering |
 
 ## Decision log
 
@@ -143,6 +144,7 @@ blocks Phase 1.
 | **Pre-JIT GHC-style simplifier** | An IR-to-IR optimizer (inline/beta/constant-fold/case-of-known/DCE/CSE/float + list-fusion RULES) run to a fixpoint, tier-independent; sound by the same effect/error discipline. See [07](07-laziness-and-whole-program-analyses.md) §7.5, [19](19-decision-register.md) C-21. |
 | **Scope & platform boundaries** | Flakes out of scope; restricted/pure-eval + allowed-paths supported; multi-arch (host affects speed not output); `nixVersion` spoofed to the pinned Nix for parity. See [23](23-scope-platform-and-modes.md), [19](19-decision-register.md) C-22–C-25. |
 | **Diagnostics: miette; IFD handoff** | miette for error reporting (presentation ≠ parity); IFD realises builds through the AOS build path with the blocked fiber parked. See [24](24-observability-and-diagnostics.md), [14](14-integration-with-aos.md) §9, [19](19-decision-register.md) C-26/C-27. |
+| **Core + dialect engine (`ratchet`); Nix-only delivery** | The substrate (demand graph, Core IR, tiers, GC) is factored as a language-agnostic engine `ratchet`; Nix is the first dialect; only Nix ships. Effect class is an open dialect-supplied lattice. See [28](28-generalization-and-language-dialects.md), [19](19-decision-register.md) S-22/S-23. |
 
 ## Roadmap
 

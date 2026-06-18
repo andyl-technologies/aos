@@ -49,70 +49,104 @@ SAFE crates carry `#![forbid(unsafe_code)]`. UNSAFE crates carry
 `#![deny(unsafe_op_in_unsafe_fn)]` and the standing `unsafe` waiver of
 [14](14-integration-with-aos.md) §10.
 
+The crate set splits into three *bands* ([28](28-generalization-and-language-dialects.md) §3):
+the language-agnostic ENGINE (the UNSAFE core), the language-agnostic CORE IR +
+DIALECT INFRASTRUCTURE, and the NIX dialect. The `ratchet-*` crates carry no Nix
+knowledge — they are the substrate, potentially extractable; the `aos-nix-*`
+crates are the Nix dialect plus AOS integration. The band boundary coincides with
+the safe/unsafe fence ([28](28-generalization-and-language-dialects.md) §3–§5).
+
 ```text
-   aos-nix/                         workspace root (Cargo.toml [workspace])
+   ratchet/ + aos-nix/               workspace root (Cargo.toml [workspace])
    │
-   ├── aos-nix/                     UMBRELLA crate — the public `Evaluator`
-   │   │                            facade NixNative shims over (14 §4.2);
-   │   │                            re-exports the API, owns no algorithms
-   │   └── src/lib.rs               //! crate overview + module map
+   │  ── ENGINE band (language-agnostic; the UNSAFE core) ──
    │
-   ├── aos-nix-syntax/      SAFE    lexer, parser, arena AST, source spans
-   │   ├── lex/                       (04 frontend) — pure, #![forbid(unsafe_code)]
-   │   ├── parse/
-   │   └── ast/
+   ├── ratchet-value/     UNSAFE    tagged/NaN-boxed value repr, hash-consing
+   │   ├── repr/                      (05) — bit-twiddling under // SAFETY:,
+   │   ├── cons/                      #![deny(unsafe_op_..)]; the Nix
+   │   └── ...                        string-context discriminator is dialect-supplied
    │
-   ├── aos-nix-ir/          SAFE    the one IR all tiers share: NodeKind
-   │   ├── node/                      taxonomy, de-Bruijn resolution, EffectClass
-   │   ├── resolve/                   (25 IR), the simplifier + pass catalog
-   │   ├── simplify/                  (26) — pure IR-to-IR, #![forbid(unsafe_code)]
-   │   └── serialize/                 IR cache wire format (owns a disk format)
-   │
-   ├── aos-nix-oracle/      SAFE    tier-0 tree-walk interpreter — the
-   │   └── walk/                      correctness reference (08, 15 §7); the
-   │                                  miri/sanitizer-clean trusted core
-   │
-   ├── aos-nix-value/     UNSAFE    tagged/NaN-boxed value repr, hash-consing,
-   │   ├── repr/                      string-context bitsets (05) — bit-twiddling
-   │   ├── cons/                      under // SAFETY:, #![deny(unsafe_op_..)]
-   │   └── context/
-   │
-   ├── aos-nix-gc/        UNSAFE    bump arena + precise copying collector,
+   ├── ratchet-gc/        UNSAFE    bump arena + precise copying collector,
    │   ├── arena/                     stack maps, write barriers (06)
    │   └── collector/
    │
-   ├── aos-nix-jit/       UNSAFE    Cranelift tier-1/tier-2 codegen, the
+   ├── ratchet-jit/       UNSAFE    Cranelift tier-1/tier-2 codegen, the
    │   ├── lower/                     runtime ABI, fn-ptr transmute+call (08)
    │   ├── runtime_abi/
    │   └── deopt/
    │
-   ├── aos-nix-cache/     UNSAFE    incremental demand-graph cache + the CA
+   ├── ratchet-cache/     UNSAFE    incremental demand-graph cache + the CA
    │   ├── demand/                    (value) store: mmap, zero-copy reads,
-   │   ├── store/                     madvise, out-of-core spill (12)
-   │   └── castore/
+   │   ├── store/                     madvise, out-of-core spill (12); gates on
+   │   └── castore/                   the open effect lattice (S-23), never interprets it
    │
-   ├── aos-nix-parallel/  UNSAFE    fibers (stack switch), Chase-Lev deques,
+   ├── ratchet-parallel/  UNSAFE    fibers (stack switch), Chase-Lev deques,
    │   ├── fiber/                     the lock-free CAS thunk protocol (13)
    │   ├── deque/
    │   └── thunk/
+   │
+   │  ── CORE IR + DIALECT INFRASTRUCTURE band (language-agnostic) ──
+   │
+   ├── ratchet-core/        SAFE    the generic Core IR: NodeKind taxonomy,
+   │   ├── node/                      de-Bruijn resolution, the simplifier
+   │   ├── resolve/                   *framework* + pass catalog (25, 26) — pure
+   │   ├── simplify/                  IR-to-IR, #![forbid(unsafe_code)]
+   │   └── serialize/                 IR cache wire format (owns a disk format)
+   │
+   ├── ratchet-dialect/     SAFE    the trait a language plugs into (28 §5):
+   │   └── ...                        extra ops, effect members, primop table,
+   │                                  rewrite rules, lowering hooks — registration
+   │                                  -time, never `dyn` on the force path
+   │
+   ├── ratchet-oracle/      SAFE    the generic Core tree-walk interpreter —
+   │   └── walk/                      the correctness reference (08, 15 §7); the
+   │                                  miri/sanitizer-clean trusted core
+   │
+   │  ── NIX dialect band (a per-language band; repeats per future language) ──
+   │
+   ├── aos-nix-syntax/      SAFE    Nix lexer, parser, arena AST, source spans
+   │   ├── lex/                       (04 frontend) — pure, #![forbid(unsafe_code)]
+   │   ├── parse/
+   │   └── ast/
+   │
+   ├── aos-nix-dialect/     SAFE    the Nix dialect: derivationStrict, `with`
+   │   ├── builtins/                  lowering, the builtin table + per-primop
+   │   ├── context/                   strictness, string-context semantics, Nix
+   │   └── rules/                     effects, Nix rewrite RULES (list fusion)
    │
    ├── aos-nix-compat/      SAFE    glue to the pinned `nix-compat` crate:
    │   └── drv/                       Derivation build, ATerm, store-path
    │                                  hashing (11) — orchestration only, no
    │                                  reimplementation, #![forbid(unsafe_code)]
    │
-   └── aos-nix-harness/     SAFE    the differential .drv-diff harness, the
-       ├── diff/                      conformance runner, fuzz/proptest drivers
-       ├── conformance/               (15) — #![forbid(unsafe_code)]
-       └── bench/
+   ├── aos-nix-harness/     SAFE    the differential .drv-diff harness, the
+   │   ├── diff/                      conformance runner, fuzz/proptest drivers
+   │   ├── conformance/               (15) — #![forbid(unsafe_code)]
+   │   └── bench/
+   │
+   └── aos-nix/                     UMBRELLA crate — the public `Evaluator`
+       └── src/lib.rs                 facade NixNative shims over (14 §4.2); wires
+                                      the Nix dialect onto ratchet; re-exports the
+                                      API, owns no algorithms — //! overview + map
 ```
 
-The dependency direction is one-way: SAFE frontend crates
-(`syntax` → `ir` → `oracle`) sit below the UNSAFE engine crates, the umbrella
-crate sits on top, and `aos-nix-compat` and `aos-nix-harness` are leaves the
-harness and the `NixNative` shim consume. No UNSAFE crate is a build-time
-dependency of the oracle or the harness — that is what keeps the trusted core
-analyzable.
+`ratchet-core` owns the generic Core IR + the simplifier framework;
+`aos-nix-dialect` owns the Nix-specific concepts — `DerivationStrict`, `with`,
+the builtin table, string-context semantics, and the Nix rewrite rules.
+
+The dependency direction is one-way: the SAFE frontend/core crates
+(`aos-nix-syntax` → `ratchet-core` → `ratchet-oracle`) sit below the UNSAFE
+engine crates, the umbrella crate sits on top, and `aos-nix-compat` and
+`aos-nix-harness` are leaves the harness and the `NixNative` shim consume. The
+dialect crates are SAFE leaves that *parameterize* the engine — never a build-time
+dependency of it. No UNSAFE crate is a build-time dependency of the oracle or the
+harness — that is what keeps the trusted core analyzable. The `ratchet-*` crates
+carry no Nix knowledge whatsoever ([28](28-generalization-and-language-dialects.md) §3–§5).
+
+This three-band topology is the *target* of the **Phase 1b** re-layering
+([17](17-roadmap-and-risks.md) §6, [28](28-generalization-and-language-dialects.md) §10);
+today's code is still a single `aos-nix` monolith, and the split below is what
+Phase 1b carves it into.
 
 ### 1.2 The module-directory convention
 
@@ -160,8 +194,8 @@ user-facing porcelain as a CLI flag. The binding rules:
   wire format renders that format in a *fenced example block* in its `//!` header.
   In aos-nix this is at least: the **ATerm** serialization
   (`aos-nix-compat::drv`), the **IR serialization** wire format
-  (`aos-nix-ir::serialize`), the **CA store** / value-store packfile layout
-  (`aos-nix-cache::store`/`castore`), and **narinfo** wherever it appears. The
+  (`ratchet-core::serialize`), the **CA store** / value-store packfile layout
+  (`ratchet-cache::store`/`castore`), and **narinfo** wherever it appears. The
   format example is a data contract; it is the first thing a maintainer reads.
 - **Every public item gets `///`.** A one-sentence, third-person summary line,
   then detail paragraphs only where behavior is non-obvious. Frequency: *every*
@@ -367,7 +401,7 @@ it owns.
 
 | Surface | Target | Why |
 |---|---|---|
-| safe oracle (`aos-nix-oracle`) + compat core (`aos-nix-compat`) | near-100% line coverage | correctness-critical: the oracle *is* the internal reference and the compat glue owns `.drv` bytes |
+| safe oracle (`ratchet-oracle`) + compat core (`aos-nix-compat`) | near-100% line coverage | correctness-critical: the oracle *is* the internal reference and the compat glue owns `.drv` bytes |
 | the unsafe core (`value`, `gc`, `jit`, `cache`, `parallel`) | exhaustive unit + fuzz + sanitizer | UB has no second chance; coverage alone is insufficient, so fuzz and ASan/UBSan/TSan join it |
 | every builtin | a conformance test | [21](21-builtins-conformance.md) — no primop ships untested |
 | every optimization pass | a before/after IR test + a `.drv`-parity differential test | [26](26-optimization-pass-catalog.md) — a rewrite is sound only if the IR transforms as specified *and* the `.drv` is unchanged |

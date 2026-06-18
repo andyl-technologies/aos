@@ -57,6 +57,16 @@ This places three hard requirements on the runtime layer:
 The rest of this document specifies these three things and the cross-cutting
 machinery (perfect hashing, `import` caching) that makes them fast.
 
+> **Primops are the dialect escape hatch.** Under the `ratchet` Core/dialect
+> factoring (see [generalization and language dialects](28-generalization-and-language-dialects.md)
+> §5), the `PrimOp` node and the runtime symbol-table mechanism described here are
+> *generic engine machinery* (`ratchet`): an indexed, statically-known escape
+> hatch baked at lowering through which a dialect reaches ops beyond Core. The
+> *concrete* ~120-builtin set in this document is the Nix dialect's, registered
+> into the generic ABI mechanism by `aos-nix-dialect`. `derivationStrict` is, in
+> that lens, a distinguished *effectful* primop of the Nix dialect — the engine
+> sees only an indexed escape-hatch symbol, not anything Nix-specific.
+
 ---
 
 ## 2. The uniform runtime ABI
@@ -192,8 +202,13 @@ surface.
 
 ### 3.1 What lives in it
 
-Compiled code reaches the outside world only through a fixed, named set of
-**runtime symbols**. These fall into four groups:
+The symbol table itself — the ABI surface and its codegen-side registration —
+is part of the `ratchet` engine (`ratchet-jit`; see
+[generalization and language dialects](28-generalization-and-language-dialects.md)
+§3): the *mechanism* for declaring and resolving runtime symbols is generic, while
+the `nix.builtin.*` entries it carries are *dialect-registered* symbols supplied
+by `aos-nix-dialect`. Compiled code reaches the outside world only through a
+fixed, named set of **runtime symbols**. These fall into four groups:
 
 | Group | Examples | Why a symbol (not an inlined address) |
 |-------|----------|----------------------------------------|

@@ -443,6 +443,14 @@ The IR is still a flat arena (same `Vec<Node>` discipline, extended with the
 post-resolve node kinds and side tables for scope frames). It is, in effect, the
 AST with the holes filled in — not a new data structure.
 
+The lowered IR is, more precisely, the generic **Core** IR (`ratchet-core`) plus
+a small set of Nix-dialect ops ([generalization and language dialects](28-generalization-and-language-dialects.md)
+§4): the lazy-functional node kinds (literals, de-Bruijn vars, `Lambda`/`Apply`,
+`Let`, `If`, `BinOp`/`UnaryOp`, `List`, `AttrSet`/`Select`, `ThunkAlloc`) are
+Core, while the Nix-specific forms (`DerivationStrict`, `WithVar`) are supplied by
+the Nix dialect through the indexed `PrimOp` escape hatch. The pipeline below is
+unchanged; this is a naming of which nodes are generic and which are the dialect's.
+
 ### 5.1 Why one IR for all tiers (and why this is unusual)
 
 Most tiered systems (HotSpot, V8) carry *different* IRs per tier (bytecode for
@@ -546,6 +554,14 @@ over `with`**, and **inner `with` wins over outer `with`** — so a name is a
 `WithVar` *only if* no lexical binder shadows it, and the runtime probe walks the
 `with` chain inner-to-outer. We reproduce this resolution order exactly; getting
 it wrong is a parity bug.
+
+This "unresolved name" path is precisely a **dialect hook** under the Core +
+dialect factoring ([generalization and language dialects](28-generalization-and-language-dialects.md)
+§4): emitting `WithVar` is Nix-dialect behavior, not Core behavior. The Nix
+dialect supplies the rule "an unresolved name under an active `with` becomes a
+dynamic `WithVar` probe"; a dialect *without* dynamic scope would instead treat
+the same unresolved name as a static error. The resolver is generic; what it does
+at the unresolved-name site is dialect-parameterized.
 
 We mitigate the runtime cost of `with` with two compile-time facts the resolver
 can still record, even without knowing `e`'s contents:

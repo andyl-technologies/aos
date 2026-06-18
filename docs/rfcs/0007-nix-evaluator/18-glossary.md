@@ -154,6 +154,17 @@ microsecond compile times (CPython 3.13's JIT, OOPSLA 2021). Noted as a *deferre
 measurement-gated* alternative to the Cranelift baseline for tier 1 if tier-1
 compile time (not code quality) proves a bottleneck. See [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md).
 
+**Core IR** — The generic, language-agnostic lazy-functional IR housed in
+`ratchet-core`: the GHC-Core analog (lazy lambda calculus — Int/Float/Bool/Null/Str,
+de-Bruijn vars, Lambda/Apply, Let, If, BinOp, List, ThunkAlloc, data-constructor +
+projection, the `PrimOp` escape hatch) that carries *no* Nix knowledge. It is the
+"generic IR" worth factoring — one layer **above** *CLIF* (the lower-level,
+von-Neumann, LLVM-analog SSA the Core lowers *to*) and the substrate every dialect
+plugs into. Distinct from the Nix-specific *IR* taxonomy (which adds the dialect
+nodes); the Core is its language-agnostic subset. See
+[generalization and language dialects](28-generalization-and-language-dialects.md)
+and [the intermediate representation](25-intermediate-representation.md).
+
 **Cranelift** — The pure-Rust code generator (born in Wasmtime; also
 `rustc_codegen_cranelift`) chosen as the JIT backend for tiers 1 and 2. Picked for
 ~10x-faster compilation than LLVM (warmup-friendly), hermetic pure-Rust builds,
@@ -202,6 +213,18 @@ forced, and change propagates only along edges an observer demands. Graph nodes 
 keyed on `H(expression ⊕ environment)` and carry a value-hash that drives early
 cutoff. See [incremental evaluation cache](12-incremental-evaluation-cache.md).
 
+**Dialect** — A language plugged into the `ratchet` engine on top of the *Core
+IR*. A dialect supplies, at registration time: its **syntax** (a per-language
+front-end crate), its **extra ops** beyond Core (reached through the indexed
+`PrimOp` escape hatch, never new Core variants), its **effect-lattice members**
+(what is speculable and the opaque effect key — see *effect lattice*), its
+**primop table** (the builtin identities and their per-argument strictness), and
+its **rewrite rules** (dialect-specific simplifier RULES, e.g. Nix list fusion).
+It is a registration-time seam (monomorphized, never `dyn` on the force path),
+not a build-time dependency of the engine. **Nix is the first (and, in RFC-0007,
+the only) dialect**; Haskell and TLA+ are recorded only to validate the boundary.
+See [generalization and language dialects](28-generalization-and-language-dialects.md).
+
 **Deoptimization / uncommon trap** — HotSpot's mechanism (and term) for abandoning
 a speculative tier-2 native frame when a guard fails, *reconstructing* the abstract
 evaluation state from deopt metadata, and resuming in the tier-0 oracle.
@@ -244,6 +267,16 @@ reads a per-node effect tag; *speculation and re-execution are sound only for pu
 nodes.* The general form of the speculative-parse error-quarantine rule. See
 [architecture overview](03-architecture-overview.md) §3.4 and
 [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md).
+
+**Effect lattice** — The *open, dialect-supplied* replacement for the closed
+`enum EffectClass { Pure, Effectful }` (decision `S-23`). Rather than a fixed enum
+the engine interprets, the effect class becomes an engine trait — `is_speculable()
+-> bool` plus `effect_key() -> EffectKey` — and the dialect supplies the concrete
+members (for Nix: `import`, IFD, `readFile`, `derivationStrict`). `ratchet-cache`
+gates speculation and re-execution on the per-node effect tag *without
+interpreting* it; this is the one generalization that crosses into an UNSAFE
+engine crate. See [generalization and language dialects](28-generalization-and-language-dialects.md)
+§5 and *Effect class* (the Nix-populated instance of this lattice).
 
 **Error quarantine** — The soundness rule that a *speculative* parse/compile (or
 any ahead-of-demand work on a pure node) **may never surface an error**. In Nix,
@@ -492,6 +525,19 @@ provably strict demand sources. See [primops and runtime ABI](10-primops-and-run
 ---
 
 ## R
+
+**ratchet** — The **language-agnostic evaluation engine** factored out of the
+aos-nix substrate: the unified demand graph, the *Core IR*, the execution tiers,
+the GC, and the value representation — everything that carries no Nix knowledge.
+Nix is the first (and, in RFC-0007, only) *dialect* of it. The engine crates are
+`ratchet-prefixed` and potentially extractable as standalone crates
+(`ratchet-core`, `ratchet-value`, `ratchet-gc`, `ratchet-jit`, `ratchet-cache`,
+`ratchet-parallel`, `ratchet-oracle`, `ratchet-dialect`); the Nix band stays
+`aos-nix-*`. The template is MLIR (one IR infrastructure, many dialects,
+progressive lowering), plus demand-graph memoization MLIR lacks. Adopting it is a
+naming/layering decision (`S-22`) that does not change what aos-nix delivers — a
+byte-identical Nix evaluator. See
+[generalization and language dialects](28-generalization-and-language-dialects.md).
 
 **Region inference** — A static analysis (a measured follow-up) that assigns
 allocations to lexical *regions* freed wholesale when the region exits, reducing

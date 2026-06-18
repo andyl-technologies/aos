@@ -14,8 +14,10 @@
 > (what evaluating IR produces), [laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md)
 > (the simplifier that rewrites IR), [execution tiers and Cranelift](08-execution-tiers-and-cranelift.md)
 > (the three consumers of IR), [attribute sets, hidden classes, and inline caches](09-attribute-sets-hidden-classes-and-inline-caches.md)
-> (attrset construction/select encoding), and [incremental evaluation cache](12-incremental-evaluation-cache.md)
-> (the demand graph that keys compile-nodes by AST hash).
+> (attrset construction/select encoding), [incremental evaluation cache](12-incremental-evaluation-cache.md)
+> (the demand graph that keys compile-nodes by AST hash), and
+> [generalization and language dialects](28-generalization-and-language-dialects.md)
+> (which factors this IR into the generic `ratchet-core` Core plus a Nix dialect).
 
 ## 1. What the IR is, and the one-IR invariant
 
@@ -61,6 +63,17 @@ The IR retains the frontend's arena discipline ([frontend, parser, and IR](04-fr
 position-independent, serializable by near-`memcpy`, and cache-friendly under the
 linear passes of the resolver and the simplifier.
 
+The one IR is the generic **Core IR** — the lazy-functional core that lives in
+the `ratchet-core` crate ([28](28-generalization-and-language-dialects.md)). The
+invariant above is precisely "**one Core IR for all tiers**," and it holds intact:
+the Nix-specific nodes (`DerivationStrict`, `WithVar`, the string-context value
+property, the builtin identities, the concrete effects) are *not* separate IRs —
+they are a *dialect* that extends Core through the indexed escape hatch already
+built into it (§4.5, §2.1). The three consequences below — the oracle as a valid
+correctness reference, deopt as a `NodeId`/slot correspondence, and the optimizer
+as an IR-to-IR pass — are properties of the Core IR and are unchanged by the
+dialect layering, which is orthogonal to the tier axis.
+
 ## 2. The IR node taxonomy
 
 The IR node set is small and total. Every Nix expression lowers to exactly one of
@@ -70,7 +83,7 @@ these node kinds. The taxonomy is fixed; adding a kind is an
 
 ```text
   literals        Int  Float  Bool  Null  Str  Path
-  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(sym)  WithVar(sym, chain)
+  variables       LocalVar(slot)  UpvalVar(depth,slot)  GlobalVar(sym)  WithVar(sym, chain)†
   binders         Lambda(pattern, body)  Let(frame, bindings, body)  With(scrutinee, body)
   construction    AttrSet(shape, entries, rec?, dynamic?)  List(elems)
   access          Select(recv, path, default?)  HasAttr(recv, path)
@@ -79,8 +92,19 @@ these node kinds. The taxonomy is fixed; adding a kind is an
   application     Apply(fn, arg)
   effects         PrimOp(prim, args)  Interp(fragments)
   laziness        ThunkAlloc(inner)
-  boundary        DerivationStrict(arg)        // the .drv emission boundary
+  boundary        DerivationStrict(arg)†       // the .drv emission boundary
 ```
+
+**Core kinds vs dialect ops.** All of the kinds above except the two marked `†`
+are **generic Core** ([28](28-generalization-and-language-dialects.md) §4): a lazy
+lambda calculus that any pure-lazy-functional frontend shares. The two `†` kinds —
+`WithVar` (dynamic `with` scope) and `DerivationStrict` (the `.drv` boundary) — are
+**Nix-dialect** nodes. They are not separate Core variants in the language-agnostic
+sense; they are reached through the *same indexed escape hatch* the IR already uses
+for primops (§2.1, §4.5). The string-context value property and the concrete
+builtin/effect identities are likewise dialect-supplied, not Core. This keeps the
+taxonomy a closed Core set plus a dialect-registered extension, rather than a
+Nix-specific grab bag.
 
 ### 2.1 The Rust enum shape
 
@@ -89,6 +113,15 @@ with O(1) random access; payloads wider than the inline `data` slot spill to sid
 tables (the child pool, the attrset-entry table, the frame table) addressed by
 `u32` offsets — exactly as in the AST (`04` §4.1), so that lowering is a refinement
 of the arena, not a new data structure.
+
+The `NodeKind` enum below is the Core taxonomy; the Nix-dialect kinds
+(`WithVar`, `DerivationStrict`) sit in it as the *indexed escape-hatch* citizens
+they are ([28](28-generalization-and-language-dialects.md) §5). The escape hatch
+is the same mechanism `PrimOp` already uses (§4.5): an indexed, statically-known op
+baked into the IR at lowering, resolved once into a concrete runtime symbol — never
+a per-force `dyn` dispatch. A second dialect would register *its* extra ops through
+the same seam rather than minting new Core variants, which is why the Core enum
+stays closed and small.
 
 ```rust
 /// A handle into the IR arena. Not a pointer: a 32-bit index that survives
@@ -108,7 +141,7 @@ pub struct Symbol(u32);
 pub struct IrNode {
     pub kind: NodeKind,
     pub span: Span,        // (u32, u32) byte offsets; universal diagnostic currency
-    pub effect: EffectClass, // Pure | Effectful (§5)
+    pub effect: EffectTag, // dialect-supplied effect; engine sees `Effect` (§5, S-23)
     pub data: NodeData,    // kind-discriminated payload (§2.2)
 }
 
@@ -122,7 +155,7 @@ pub enum NodeKind {
     LocalVar,   // data: slot                    -> env[slot]
     UpvalVar,   // data: (depth, slot)           -> parent^depth[slot]
     GlobalVar,  // data: Symbol                  -> builtins/global (true, map, ...)
-    WithVar,    // data: (Symbol, WithChainId)   -> dynamic `with` probe (§4.4)
+    WithVar,    // data: (Symbol, WithChainId)   -> dynamic `with` probe (§4.4); Nix-dialect node
 
     // --- binders ---
     Lambda,     // data: LambdaId (pattern, frame, captures) -> §4.2
@@ -155,8 +188,8 @@ pub enum NodeKind {
     // --- explicit laziness ---
     ThunkAlloc, // data: NodeId  -> wrap inner in a suspended thunk (§4.1)
 
-    // --- the derivation boundary ---
-    DerivationStrict, // data: NodeId (the attrset arg)  -> §4.6
+    // --- the derivation boundary (Nix-dialect node; §4.7) ---
+    DerivationStrict, // data: NodeId (the attrset arg)  -> §4.7
 }
 
 /// Binary operator kinds. `+` is overloaded across int/float/string/path; the
@@ -376,6 +409,16 @@ Argument strictness is per-primop and matches C++ Nix exactly: an `args` slot is
 thunked unless the primop is known to force it. The primop's `effect` annotation
 (§5) is what gates whether the simplifier may speculate on it.
 
+The `PrimOp` node *is* the dialect escape hatch
+([28](28-generalization-and-language-dialects.md) §5). Its `prim` index is
+statically known and baked into the IR at lowering, so it carries no per-force
+dynamic dispatch: the node kind is generic Core, while the *builtin set* it indexes
+into is supplied by the dialect (the Nix dialect for RFC-0007). `DerivationStrict`
+(§4.7) is exactly this mechanism viewed at one remove — a distinguished, always-
+effectful primop of the Nix dialect — given its own node kind only so it is
+statically locatable as the `.drv` boundary, not because it needs a different
+dispatch path.
+
 ### 4.6 String contexts
 
 A string carries a **string context** — the set of store paths and derivation
@@ -409,73 +452,106 @@ reasons:
    byte-identical ATerm `.drv`, identical store paths, exact string contexts —
    is observed *at this node*. The differential harness diffs `.drv` output here.
 2. **It is unconditionally effectful and a hard speculation barrier.** Its
-   `effect` is always `Effectful` (§5); the simplifier may never fold across it,
-   speculate it, or reorder it relative to other effects, and the demand graph
-   treats it as a re-execution boundary.
+   `is_speculable()` is always false and it carries its own `effect_key` (§5); the
+   simplifier may never fold across it, speculate it, or reorder it relative to
+   other effects, and the demand graph treats it as a re-execution boundary.
 
 The IR thus makes the `.drv` boundary a first-class, statically locatable node —
 the point every other consumer (harness, store layer, incremental cache) can
 anchor on.
 
+`DerivationStrict` is a **Nix-dialect** node, not Core
+([28](28-generalization-and-language-dialects.md) §4): it lives in `aos-nix-dialect`
+and is reached through the indexed escape hatch (§4.5), the same way the Nix
+builtin table is. A non-Nix dialect simply would not register it. Core remains
+unaware of derivations; the `.drv` boundary is a property the Nix dialect adds.
+
 ## 5. The effect-class annotation
 
-Every IR node carries an `effect` field of type `EffectClass`. This is the
-single most important *semantic* annotation in the IR after de Bruijn resolution,
-because it is what licenses (or forbids) every speculative and rewriting
-transform.
+Every IR node carries an `effect` annotation. This is the single most important
+*semantic* annotation in the IR after de Bruijn resolution, because it is what
+licenses (or forbids) every speculative and rewriting transform.
+
+The effect annotation is an **open, dialect-supplied lattice**, not a closed enum.
+This is decision `S-23` ([28](28-generalization-and-language-dialects.md) §5–§6):
+the closed `enum EffectClass { Pure, Effectful }` was the one place a Nix concept
+leaked into the language-agnostic engine, so the engine instead consumes an
+*effect trait* and the dialect supplies the members. The engine needs exactly two
+facts from a node's effect — whether it may run ahead of demand, and an opaque key
+that delimits re-execution boundaries — and it must never *interpret* the concrete
+members. The Nix dialect populates the lattice with `derivationStrict`, `import`,
+IFD, and the filesystem/environment readers; a dialect with no derivations (e.g. a
+Haskell-Core dialect) would populate it nearly empty.
 
 ```rust
-/// The effect class of an IR node: whether evaluating it can be done freely
-/// (speculatively, eagerly, out of demand order) or must wait for genuine demand.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum EffectClass {
-    /// Pure: total or partial but side-effect-free. Safe to speculate, fold,
-    /// hoist, CSE, and re-execute. Errors are *quarantined* — a pure node that
-    /// fails when evaluated speculatively must stash the error, never surface it,
-    /// until the value is genuinely demanded.
-    Pure,
-    /// Effectful: observes or affects the world in a way that is part of `.drv`
-    /// identity or evaluation order. Never speculated, never reordered, never
-    /// folded across. The runtime effects are `derivationStrict`, `import`
-    /// (file I/O + parse), `import-from-derivation` (IFD: building a `.drv` to
-    /// read its output during evaluation), and the reading builtins
-    /// (`readFile`, `readDir`, `pathExists`, `getEnv`, ...).
-    Effectful,
+/// The effect annotation of an IR node, as the engine sees it: whether the node
+/// may be evaluated freely (speculatively, eagerly, out of demand order) and the
+/// opaque key the cache uses to delimit re-execution boundaries. The engine never
+/// interprets the concrete members — the dialect supplies them (`S-23`).
+pub trait Effect {
+    /// Whether this node may be parsed/compiled/evaluated ahead of genuine demand.
+    /// `true` for pure (total or side-effect-free) nodes; `false` for nodes that
+    /// observe or affect the world in a way that is part of `.drv` identity or
+    /// evaluation order. Even a speculable node runs under *error quarantine* — a
+    /// speculative failure is stashed against the node and re-raised only if and
+    /// when the node is genuinely demanded, never surfaced eagerly.
+    fn is_speculable(&self) -> bool;
+
+    /// An opaque key identifying the effect for the cache's re-execution and
+    /// memoization boundaries. Pure nodes share the speculable key (memoizable,
+    /// early-cutoff-eligible); each distinct effect (e.g. `derivationStrict`,
+    /// `import`, IFD, a filesystem read) carries a distinct key the cache treats
+    /// as a re-execution boundary. The engine compares keys; it does not decode
+    /// what they mean — that meaning lives in the dialect.
+    fn effect_key(&self) -> EffectKey;
 }
 ```
 
-The classification rule:
+The `IrNode.effect` field (§2.1) holds `EffectTag` — the dialect's concrete,
+inline `Effect`-implementing tag (a small `Copy` enum kept inline so the arena
+stays fixed-stride, not a trait object). The engine is generic over it and sees
+only the `Effect` trait above; the Nix dialect's `EffectTag` is the closed
+`{ Pure, Effectful }` pair, but the engine never names those members.
 
-- **Pure** covers the overwhelming majority of nodes: literals, variable
-  references, lambdas, applications, arithmetic, attrset construction, select,
-  `if`, `with`, and every *total* or side-effect-free builtin. A pure node may be
-  speculatively parsed/compiled/evaluated on an idle worker, constant-folded by
-  the simplifier, hoisted, or CSE'd.
-- **Effectful** covers the nodes that touch the world or define `.drv` identity:
-  `DerivationStrict` (always), and the effectful primops — `import` (file read +
-  parse), IFD (import-from-derivation, which *builds* during eval), and the
-  filesystem/environment readers (`readFile`, `readDir`, `pathExists`, `getEnv`).
+The classification rule the **Nix dialect** applies (the engine sees only the
+trait above):
 
-The annotation is consumed in three places, all of which share one discipline:
+- **Speculable (pure)** covers the overwhelming majority of nodes: literals,
+  variable references, lambdas, applications, arithmetic, attrset construction,
+  select, `if`, `with`, and every *total* or side-effect-free builtin. Such a node
+  may be speculatively parsed/compiled/evaluated on an idle worker, constant-folded
+  by the simplifier, hoisted, or CSE'd. All pure nodes share one `effect_key`.
+- **Non-speculable (effectful)** covers the nodes that touch the world or define
+  `.drv` identity: `DerivationStrict` (always), and the effectful primops —
+  `import` (file read + parse), IFD (import-from-derivation, which *builds* during
+  eval), and the filesystem/environment readers (`readFile`, `readDir`,
+  `pathExists`, `getEnv`). Each carries a distinct `effect_key` so the cache can
+  treat it as its own re-execution boundary. These members are the Nix dialect's;
+  the engine learns them only through the trait.
+
+The annotation is consumed in three places, all of which share one discipline and
+all of which read it *only* through `is_speculable` / `effect_key` — never by
+matching a concrete member:
 
 - **Speculation** ([frontend, parser, and IR](04-frontend-parser-and-ir.md)
-  §9.6): only pure nodes may be parsed/compiled/evaluated ahead of demand, and
-  even then under **error quarantine** — a speculative failure is stashed against
-  the node and re-raised *only if and when* the node is genuinely demanded, so a
-  speculatively-discovered syntax or evaluation error never invents a divergence
-  from C++ Nix.
+  §9.6): only nodes whose `is_speculable()` is true may be parsed/compiled/evaluated
+  ahead of demand, and even then under **error quarantine** — a speculative failure
+  is stashed against the node and re-raised *only if and when* the node is genuinely
+  demanded, so a speculatively-discovered syntax or evaluation error never invents a
+  divergence from C++ Nix.
 - **The simplifier** ([laziness and whole-program analyses](07-laziness-and-whole-program-analyses.md)
   §7.5.3): a rewrite may fire only if it is observably transparent. The two sharp
-  edges are both effect-class rules — *never fold a failing subexpression eagerly*
+  edges are both `is_speculable` rules — *never fold a failing subexpression eagerly*
   (folding is restricted to total operations; a folded error is stashed, not
   raised) and *never make a lazy binding strict unless strictness is proven*
-  (speculative eager forcing of an effectful or conditionally-forced node could
+  (speculative eager forcing of a non-speculable or conditionally-forced node could
   change termination/error behavior and thus the `.drv`).
 - **The demand graph** ([incremental evaluation cache](12-incremental-evaluation-cache.md)):
-  the effect class gates re-execution and memoization. A pure node's result is
-  memoizable and early-cutoff-eligible; an effectful node (especially
+  the `effect_key` gates re-execution and memoization. A speculable node's result is
+  memoizable and early-cutoff-eligible; a node with a distinct effect key (especially
   `DerivationStrict`, `import`, IFD) is a re-execution boundary the cache must
-  respect.
+  respect. The cache compares keys; it does not decode them, which is what keeps
+  `ratchet-cache` free of Nix knowledge (`S-23`).
 
 The unifying principle, stated once: **speculative or eager work must never
 surface errors or effects until genuinely demanded** — the error-quarantine rule
@@ -523,7 +599,10 @@ conflated.
 
 The IR is the cached artifact of the frontend's content-addressed parse/compile
 cache ([frontend, parser, and IR](04-frontend-parser-and-ir.md) §9). Its arena
-shape is what makes the cache cheap and sound.
+shape — owned by `ratchet-core`, with the cache itself living in `ratchet-cache`
+([28](28-generalization-and-language-dialects.md) §3) — is what makes the cache
+cheap and sound. The serialized blob is generic Core plus the dialect's effect
+tags; nothing in the on-disk format is Nix-specific beyond the file-local symbols.
 
 ### 7.1 What is serialized
 
@@ -589,10 +668,11 @@ demand graph (§6).
   symbol.
 - **Born resolved.** Names are static `(depth, slot)` accesses (or the dynamic
   `WithVar`); lambdas carry exact capture lists; thunk placement is explicit.
-- **Effect-classed.** Every node is `Pure` or `Effectful`; the annotation gates
-  speculation, the simplifier, and the demand graph under one error-quarantine
-  rule: no speculative or eager work surfaces an error or effect until genuinely
-  demanded.
+- **Effect-classed.** Every node carries a dialect-supplied effect read through
+  `is_speculable` / `effect_key` (an open lattice, not a closed enum — `S-23`); the
+  annotation gates speculation, the simplifier, and the demand graph under one
+  error-quarantine rule: no speculative or eager work surfaces an error or effect
+  until genuinely demanded.
 - **A demand-graph citizen.** A compile-node maps bytes to IR keyed by content
   hash; the simplifier is a compile-node keyed by input-IR hash; native compile
   is a lazier compile-node over the same IR.
@@ -610,6 +690,7 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 
 - [ ] Flat-arena `Vec<IrNode>`: fixed-stride `IrNode { kind, span, effect, data }`, `u32` `NodeId`/`Symbol`, variable-arity children in a `(start, len)` `ChildPool` slice — position-independent, near-`memcpy`-serializable (§2, §2.1) — **P1**, `S-19`.
 - [ ] The closed `NodeKind` taxonomy (literals, de Bruijn variables, binders, construction, access, control, operators, application, primop, interp, `ThunkAlloc`, `DerivationStrict`); adding a kind is a schema-version bump (§2, §2.1) — **P1**, `S-19`.
+- [ ] Core/dialect split: generic Core kinds live in `ratchet-core`; the Nix-dialect nodes (`WithVar`, `DerivationStrict`), the builtin table, string-context, and the effect members are the `aos-nix-dialect`, reached via the indexed `PrimOp` escape hatch — not new Core variants (§1, §2, §4.5) — **Phase 1b** ([28](28-generalization-and-language-dialects.md) §10), `S-22`.
 - [ ] `BinOpKind`/`UnOpKind` enums with `+` overload deferred to evaluation, matching C++ Nix (§2.1) — **P1**; operator conformance ([20](20-nix-language-conformance.md)).
 - [ ] Side tables: `ChildPool`/`ChildSlice`, `FrameInfo`, `Upvalue`, `AttrPathSeg` (static-symbol / dynamic-`${}`); inline literal payloads (`i64`/`f64`/bit/interned `Symbol`) (§2.2) — **P1**, `S-19`.
 
@@ -628,11 +709,11 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 - [ ] `With(scrutinee, body)` + `WithVar(sym, WithChainId)` baking in lexical-beats-`with` / inner-beats-outer probe order; runtime probe on the inline-cache machinery (§4.4) — **P1**; `with`-scope conformance.
 - [ ] `PrimOp(prim, args)` as a *direct* statically-known builtin call (vs `GlobalVar`/`Apply` for indirected builtins), per-primop argument strictness matching C++ Nix (§4.5) — **P1**, `S-12`.
 - [ ] String-context encoding: `Interp` fixes fragment order for deterministic context union; `BinOp(Add)` unions; context builtins are ordinary `PrimOp`s — IR never reorders/drops context-bearing concat (§4.6) — **P1**; string-context parity (`S-13`).
-- [ ] `DerivationStrict(arg)` as the first-class, statically-locatable `.drv` boundary node — always `Effectful`, a hard speculation barrier (§4.7) — **P1**, `S-13`; the differential harness anchors here.
+- [ ] `DerivationStrict(arg)` as the first-class, statically-locatable `.drv` boundary node — a Nix-dialect node (reached via the `PrimOp` escape hatch), never speculable, its own `effect_key`, a hard speculation barrier (§4.7) — **P1**, `S-13`/`S-22`; the differential harness anchors here.
 
 ### Effect-class annotation (§5)
 
-- [ ] `EffectClass { Pure, Effectful }` on every node; classification rule (effectful = `DerivationStrict`, `import`, IFD, fs/env readers; pure = everything else) (§5) — **P1**, `S-19`/`C-20`.
+- [ ] Dialect-supplied effect on every node, read through `is_speculable` / `effect_key` (open lattice, not a closed enum); Nix-dialect classification rule (non-speculable = `DerivationStrict`, `import`, IFD, fs/env readers; speculable = everything else) (§5) — **P1**, `S-19`/`S-23`/`C-20`. The closed `EffectClass` → `Effect` trait conversion lands in **Phase 1b** ([28](28-generalization-and-language-dialects.md) §10) — `S-23`.
 - [ ] The error-quarantine discipline consumed in all three places — speculation, the simplifier, the demand graph — so no speculative/eager work surfaces an error or effect until genuinely demanded (§5) — **P1** contract; enforced by speculation (`C-19`, [04](04-frontend-parser-and-ir.md) §9.6), the simplifier (`C-21`, [07](07-laziness-and-whole-program-analyses.md) §7.5.3), and the cache (`C-20`, [12](12-incremental-evaluation-cache.md)).
 
 ### Demand-graph integration (§6)

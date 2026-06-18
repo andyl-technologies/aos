@@ -301,6 +301,7 @@ in the last column).
 | Phase | Scope (rank) | Exit criterion (falsifiable) | Effort | Gated on |
 |-------|--------------|------------------------------|--------|----------|
 | **P1** | Frontend + tree-walk oracle + `.drv` harness (rank 0); compat core covers **both IA and CA derivations** (C-11); thunk state machine **atomic from day 1** to admit parallelism later (C-12) | Harness runs the *full* AOS closure under the oracle vs `NixCli`; baseline eval-time and `NIX_SHOW_STATS` numbers recorded; parity demonstrated on `mkDerivation`/`ccWrapper`/`evalModules` constructs **and on CA-derivation fixtures + the RFC-0005 graph** (zero divergence on the tested subset). | **L** | — |
+| **P1b** | Re-layer the P1 monolith into the `ratchet` engine + Nix dialect (Core/dialect IR split, open effect lattice, crate split) — behaviorally inert. See [28](28-generalization-and-language-dialects.md) §10. | Differential `.drv` harness byte-green on the same fixtures as before the split; crate boundaries match [27](27-engineering-standards.md) §1.1 / [28](28-generalization-and-language-dialects.md) §3. | **M** | P1 skeleton byte-green |
 | **P1.5** | Measure-first decision | Documented determination, from P1 data, that eval (not build/I/O) is the dominant AOS cost. If not → **STOP/re-scope** ([01](01-motivation-and-goals.md) §5.2). | **S** | P1 |
 | **P2** | Incremental cache + hash-consing (rank 1) | A semantically-irrelevant edit (comment/whitespace/leaf-package) recomputes a *bounded, small* fraction of the closure and emits unchanged `.drv` downstream (C4 in [01](01-motivation-and-goals.md) §6); `AOS_NIX_CACHE=0` and cached runs agree byte-for-byte on the harness. | **L** | P1.5 |
 | **P3** | Bump-arena + precise generational GC (rank 2) | One-shot CLI eval allocates through `aos_alloc_*`, frees nothing, drops at exit; measured allocation/GC time on the oracle is materially below the Boehm baseline from P1; precise GC passes `miri`/ASan on the safe tree. | **M** | P2 |
@@ -313,6 +314,15 @@ in the last column).
 
 A few properties of the table are deliberate and worth stating:
 
+- **P1b overlaps P1's tail and precedes P2.** The re-layering into the `ratchet`
+  engine + the Nix dialect ([28](28-generalization-and-language-dialects.md) §10)
+  is behaviorally inert — it changes no `.drv` output and the harness stays
+  byte-green — so it does not block P1 feature work; it *enters* once the parser →
+  Core IR → oracle skeleton compiles and the first fixtures are byte-green and
+  runs alongside the remainder of P1 and the P1.5 characterization. It **must
+  complete before P2**, because P2 builds `ratchet-cache` and the open effect
+  lattice (`S-23`), which should be born in the new Core/dialect model rather than
+  retrofitted onto the monolith.
 - **P1.5 is a real gate, not a formality.** It is the only phase whose exit can
   *cancel the project*, and it sits immediately after the first phase precisely
   so the existential question is answered before the expensive phases begin. The
@@ -461,6 +471,9 @@ AOS package set. Build it in this order.
 - [x] Add `aos-nix` to the workspace (`crates/Cargo.toml` members) with pinned
       `nix-compat` (git rev) and the `xxhash-rust`/`blake3`/`sha2` deps. No
       Cranelift dependency yet — Phase 1 is tree-walk only.
+      → re-layered in Phase 1b ([28](28-generalization-and-language-dialects.md) §10):
+      the single-crate `aos-nix` layout is split into the `ratchet-*` engine +
+      the `aos-nix-*` dialect band.
 - [x] `lib.rs` `//!` crate overview + module map, to the AOS Rust doc standard.
 - [x] Wire the `NixEval` trait in `aos-core` ([14](14-integration-with-aos.md)):
       define the trait, keep `NixCli` as its first impl, add a stub `NixNative`
@@ -516,6 +529,9 @@ AOS package set. Build it in this order.
       [11](11-derivation-and-store-compatibility.md) §5.4).
 - [ ] `store/context.rs` — string contexts as interned COW bitsets, unioned
       through string ops, read by `derivationStrict`.
+      → re-layered in Phase 1b ([28](28-generalization-and-language-dialects.md) §10):
+      the context bitset + union-on-concat semantics move out of `ratchet-value`
+      into `aos-nix-dialect`.
 
 **The gate ([15](15-differential-testing-and-benchmarking.md)) — the deliverable.**
 
@@ -532,6 +548,55 @@ AOS package set. Build it in this order.
 closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`
 numbers are recorded; `AOS_NIX_NATIVE` still defaults off. Only then do the
 ranked items (cache, arena/GC, analyses, JIT) begin — in the order of §2.
+
+### Phase 1b — re-layering into ratchet + the Nix dialect
+
+The implementation starts as a single monolithic `aos-nix` crate. Phase 1b is a
+**behaviorally inert** structural pass that splits it into the language-agnostic
+`ratchet` engine + the Nix dialect — the MLIR-style Core/dialect factoring of
+[28](28-generalization-and-language-dialects.md) (decisions `S-22`/`S-23`). It
+changes no `.drv` output: the differential harness stays byte-green on the same
+fixtures as before the split. **Entry:** once the parser → Core IR → oracle
+skeleton compiles and the first fixtures are byte-green. **Overlap:** it runs
+alongside the remainder of P1 and the P1.5 characterization; agents continuing P1
+fold its boundaries in as they go, rewriting already-done modules to fit.
+**Ordering:** it **must complete before P2**, because P2 builds `ratchet-cache`
+and the open effect lattice and those should be *born* in the new model, not
+retrofitted. The checklist (condensed from [28](28-generalization-and-language-dialects.md) §10):
+
+- [ ] **Crate split with `ratchet` naming.** Break the `aos-nix` monolith into
+      `ratchet-core` (Core IR, from `compile/ir.rs` + `compile/scope.rs`),
+      `ratchet-oracle` (from `eval/`), `ratchet-value`
+      (from `value.rs`/`list.rs`/`attrs.rs`/`heap/`), `ratchet-dialect` (new), and
+      the Nix band (`aos-nix` umbrella, `aos-nix-syntax` from `syntax/`,
+      `aos-nix-dialect` new, `aos-nix-compat` from the store glue,
+      `aos-nix-harness`). Reserve but do not create `ratchet-gc` (P3),
+      `ratchet-cache` (P2), `ratchet-jit` (P6), `ratchet-parallel` (P3.5).
+- [ ] **Core/dialect IR split.** Generic `IrKind` stays in `ratchet-core`; move
+      `DerivationStrict` and `WithVar` behind the dialect escape hatch, reusing the
+      existing `PrimOp(symbol, args)` indirection. The resolver's "unresolved name"
+      path becomes a dialect hook (Nix emits `WithVar`; other dialects error).
+- [ ] **`EffectClass` → open trait (`S-23`).** Replace the closed
+      `enum EffectClass { Pure, Effectful }` with a `ratchet-core` trait
+      (`is_speculable` + `effect_key`); the Nix dialect supplies the members
+      (`import`/IFD/`readFile`/`derivationStrict`). Delete the hardcoded
+      `effect_for(DerivationStrict) => Effectful`.
+- [ ] **String-context extraction.** `ratchet-value` keeps the generic tagged
+      value + hash-consing; the context bitset + union-on-concat semantics move to
+      `aos-nix-dialect`, with the engine's cons-key hashing taking a
+      dialect-supplied discriminator so identical-bytes / different-context strings
+      still do not collapse.
+- [ ] **`ratchet-dialect` trait definition.** The registration-time interface
+      (extra ops, effect members, primop table, rewrite rules, lowering hooks);
+      monomorphized, never `dyn` on the force path.
+- [ ] **Habit guard (carries through the rest of P1).** No new Nix-specific
+      `IrKind` variants — every new builtin routes through `PrimOp`; keep
+      string-context confined to the dialect.
+
+**Phase-1b exit criterion.** The `.drv`-diff harness is byte-green on the same
+fixtures as before the split (the refactor is behaviorally inert), and the crate
+boundaries match [28](28-generalization-and-language-dialects.md) §3 /
+[27](27-engineering-standards.md) §1.1.
 
 ---
 

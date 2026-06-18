@@ -99,6 +99,13 @@ makes the tiers composable: a value produced by one tier is indistinguishable fr
 a value produced by another, because the value *representation* is tier-invariant
 and all allocation goes through the same [runtime symbols](#7-the-runtime-abi).
 
+All three tiers consume **one Core IR** ([generalization and language dialects](28-generalization-and-language-dialects.md)):
+the oracle (`ratchet-oracle`) and the JITs (`ratchet-jit`) walk and lower the same
+generic Core (`ratchet-core`) nodes, and the Nix-specific ops (`DerivationStrict`,
+`WithVar`) reach them via the same indexed `PrimOp` escape hatch the dialect
+registers — so the one-IR-for-all-tiers invariant is, more precisely, one *Core* IR
+for all tiers, extended by the dialect through that single seam.
+
 ---
 
 ## 2. The three tiers
@@ -447,6 +454,15 @@ entire speculation/deopt contract, made concrete.
 The backend choice is load-bearing and is justified explicitly against the three
 serious alternatives.
 
+One reframe to keep in view ([generalization and language dialects](28-generalization-and-language-dialects.md)
+§2): **CLIF is the low-level universal target — the real LLVM-analog** — while the
+Core IR is the higher-level, lazy-functional generic IR (the GHC-Core-analog). The
+two live at different altitudes: Core unifies the pure lazy-functional language
+family and lowers *to* CLIF, which in turn unifies the von-Neumann backends. The
+question below is therefore narrowly "which low-level codegen do we lower Core to,"
+not "which IR is generic" — that layer is already settled by Core above and CLIF
+here.
+
 ### 5.1 Cranelift: the chosen backend
 
 Cranelift is a pure-Rust code generator developed for Wasmtime
@@ -669,6 +685,13 @@ The core set:
 | `aos_prim_<name>` | `(rt, args...) -> Value` | One symbol per [builtin](10-primops-and-runtime-abi.md) (~120). Dispatched by perfect hashing where indirect. |
 | `aos_deopt` | `(rt, deopt_record) -> Value` | Reconstruct abstract state and re-enter the tier-0 oracle (§3). |
 | `aos_throw` | `(rt, err) -> !` | Raise a Nix-compatible evaluation error (e.g. infinite recursion, type error), matching C++ Nix's message for the [harness](15-differential-testing-and-benchmarking.md). |
+
+The `aos_prim_<name>` symbols (and the distinguished `derivationStrict`) are the
+**dialect escape hatch** ([generalization and language dialects](28-generalization-and-language-dialects.md)
+§5): the builtin identities and their runtime symbols are supplied by the Nix
+dialect, while the ABI *mechanism* — the uniform signature, register-passing, and
+`JITBuilder::symbol` registration — is entirely generic. A dialect registers its
+primops into this table; the engine that calls them knows only the generic shape.
 
 Two properties of this table are essential:
 

@@ -71,12 +71,31 @@ simplify(ir):
   reuses its simplified IR with no work
   ([incremental evaluation cache](12-incremental-evaluation-cache.md)).
 
+Under the Core + dialect factoring ([generalization and language dialects](28-generalization-and-language-dialects.md)
+§4–§5), this catalog splits along the band boundary. The simplifier itself is a
+**framework in `ratchet-core`**: the generic IR-to-IR machinery — inlining/beta
+(§2.1), constant folding (§2.2), case-of-known (§2.3), DCE (§2.4), CSE (§2.5),
+let-floating (§2.7), and the rest of the language-agnostic reductions — operates
+over Core nodes and carries no Nix knowledge. The **dialect-specific rewrite
+RULES** — chiefly Nix list fusion (§2.13) and any rule keyed on Nix builtin
+identities — are supplied by the Nix dialect (`aos-nix-dialect`) and registered
+into the framework, exactly as the dialect supplies its primop table and effect
+members. The driver, phase ordering, and soundness floor are Core; the Nix-specific
+algebraic identities are the dialect's contribution.
+
 Every pass below shares one **soundness floor**, restated once and binding on the
 whole catalog: a rewrite fires only if it is *observably transparent* with respect
 to Nix semantics. Never fold a *failing* or *effectful* node eagerly (folding is
 restricted to total, `Pure` operations; a folded error is *quarantined* — stashed
 against the node and re-raised only on genuine demand); never make a lazy binding
-strict unless strictness is *proven*. The `.drv`-parity gate of
+strict unless strictness is *proven*. The "is this node speculable / movable /
+foldable" test consults the **open, dialect-supplied effect lattice**
+(`is_speculable` + `effect_key`, decision `S-23`,
+[generalization and language dialects](28-generalization-and-language-dialects.md)
+§5) rather than a closed `enum { Pure, Effectful }`: the framework asks the lattice
+whether a node is speculable, and the Nix dialect supplies the members (`import`,
+IFD, `readFile`, `derivationStrict`). Where this catalog writes `Pure` /
+`Effectful` below, read it as "`is_speculable` holds" / "does not." The `.drv`-parity gate of
 [differential testing and benchmarking](15-differential-testing-and-benchmarking.md)
 diffs every rewrite against `nix-instantiate` across the AOS closure, anchored at
 the `DerivationStrict` nodes ([the intermediate representation](25-intermediate-representation.md)

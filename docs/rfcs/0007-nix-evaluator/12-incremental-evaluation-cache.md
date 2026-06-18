@@ -75,6 +75,31 @@ GC'd functional-language implementation *plus* a recomputation/caching layer,
 and Nix's purity is what makes the caching layer dramatically more effective than
 it can be in the systems we are stealing from.
 
+**The soundness boundary, drawn precisely.** Two pieces of machinery must not be
+conflated, because they transfer to other languages on different terms
+([28](28-generalization-and-language-dialects.md) §6). The *demand-graph engine*
+itself — memoization, suspend/resume, parallelism, the node model, all of
+`ratchet-cache` — is **fully generic**: a Salsa/Adapton-style incremental
+computation library that reuses for anything, soundly, because it tracks the
+dependency edges it propagates over. The *persistent content-addressed cache and
+early cutoff* are a stronger claim that rests on **purity *and* closed-world-batch
+nature**, and that pair does not transfer everywhere:
+
+- **Nix** ✓ — pure, immutable, and a closed-world batch over a fixed file set; all
+  three properties above hold, so cross-run persistence is exact.
+- **TLA+ / TLC model-checking** ✓ — a fixed spec plus fixed constants is a closed
+  world, so memoizing pure operator evaluations across a checking run, and
+  early-cutoff re-checking after a spec edit, are sound (a capability TLC lacks
+  today).
+- **A running general-purpose program (e.g. compiled Haskell)** ✗ — its runtime is
+  *open-world* (stdin, sockets, the clock), so a cross-run persistent cache over
+  its execution is unsound. Only its *compile-time* evaluation (CAFs, Template
+  Haskell) qualifies — a much narrower win.
+
+The rule to carry: **the memoization engine is generic; cross-run persistent
+soundness requires pure *and* closed-world-batch.** Nix and TLC have both; a
+running program does not.
+
 ## 2. Evaluation as a demand-driven incremental computation graph
 
 We model an evaluation not as a tree-walk that happens to memoize, but as the
@@ -86,6 +111,10 @@ of this demand graph (each corresponding to a forced thunk or a derivation, §3.
 distinct from the AST/IR nodes of [the frontend](04-frontend-parser-and-ir.md)
 and from the derivation graph (the `.drv` output DAG) of
 [derivation and store compatibility](11-derivation-and-store-compatibility.md).
+This demand-graph engine — memoization, change propagation, the node table, the
+durable CA store — is the **`ratchet-cache`** crate of the language-agnostic
+`ratchet` engine ([28](28-generalization-and-language-dialects.md) §3); nothing
+in it is Nix-specific.
 
 ```text
         inputs (leaves)                 derived nodes (memoized)
@@ -568,6 +597,18 @@ caching purposes: once filesystem reads are reified as content-hashed inputs, th
 entire evaluation is a pure function of `(source files, filesystem-read
 contents)`, and the incremental machinery is exact.
 
+Which nodes are pure (freely memoized and speculated) versus effectful
+(at-most-once, no speculation, effects keyed as explicit inputs) is decided by a
+per-node **effect tag**, and that tag is no longer a closed
+`enum { Pure, Effectful }` baked into the engine. It is an **open, dialect-supplied
+effect lattice** (`S-23`, [28](28-generalization-and-language-dialects.md) §5): the
+engine reads only `is_speculable()` to gate speculation/re-execution and an opaque
+`effect_key()` to fold into the cache key, while the Nix dialect supplies the
+concrete members (`import`, `readFile`, IFD, `derivationStrict`). `ratchet-cache`
+treats the effect key **opaquely** — it never interprets which Nix effect a node
+carries, only whether the node is speculable and what its key contributes to
+re-execution boundaries — so the engine stays language-agnostic.
+
 ### 6.4 Cache poisoning and the trust model
 
 Because the durable cache crosses machines, its trust model matters. Three
@@ -850,6 +891,7 @@ harness, never cut for scope.
 - [ ] Expression identity from source content hash + IR node position; free-variable narrowing reusing the strictness/escape FV set ([§3.2](#32-constructing-the-dependency-key)) — P2, `C-2`; gate: harness.
 - [ ] Memoization granularity policy (always / conditionally / never cache) ([§3.3](#33-granularity-what-we-memoize-and-what-we-do-not)) — P2, `M-11`; gate: AOS hit/overhead traces (start coarse).
 - [ ] Three-layer dedup (compile-time thunk sharing, runtime coarse memoization, post-force value hash-consing); **unforced thunks are never hashed** ([§3.5](#35-the-deduplication-story-three-layers-and-why-thunks-are-not-all-hashed)) — P2/P4, `C-15`/`S-7`.
+- [ ] **Open effect lattice** (`is_speculable` + opaque `effect_key`) replacing the closed `{ Pure, Effectful }` enum; `ratchet-cache` treats the effect key opaquely, the Nix dialect supplies the members ([§6.3](#63-treating-importreadfile-reads-as-hashed-inputs)) — Phase 1b, `S-23` ([28](28-generalization-and-language-dialects.md) §10). The one generalization that lands in this UNSAFE engine crate.
 
 ### Early cutoff
 

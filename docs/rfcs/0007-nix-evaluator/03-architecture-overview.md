@@ -46,6 +46,13 @@ is not a novel algorithm; it is the disciplined assembly of known-good
 algorithms against a workload whose semantic constraints happen to be unusually
 friendly to them.
 
+Because that assembly is language-agnostic — none of its five techniques is
+Nix-specific — the substrate is factored as a standalone engine, **`ratchet`**,
+with Nix as the first *dialect* plugged into it. This is a naming-and-layering
+decision (`S-22`), not a second-frontend commitment: RFC-0007 delivers Nix and
+only Nix, gated by the byte-identical `.drv` harness. See [generalization and
+language dialects](28-generalization-and-language-dialects.md).
+
 ### 1.1 Why purity changes the economics
 
 Consider the optimizations that are *risky, partial, or speculative* in
@@ -221,6 +228,15 @@ disturbing upper ones, and (c) the *correctness oracle* (tree-walk tier) and the
 backend, so they are differentially testable against each other and against C++
 Nix.
 
+The stack below is also the *band* boundary of the `ratchet`/dialect split
+([28](28-generalization-and-language-dialects.md)): the lower, language-agnostic
+machinery (value representation, GC heap, execution tiers, the incremental cache,
+the Core IR) is the `ratchet-*` engine, and L1–L2 plus the Nix-specific runtime
+(`derivationStrict`, `with`, string contexts, the builtin set) are the Nix
+dialect that sits on top. The layer numbering and the band naming are orthogonal:
+a layer names a stage in the pipeline; a band names whether the code is
+engine (`ratchet-*`) or dialect (`aos-nix-*`).
+
 ```text
   ┌───────────────────────────────────────────────────────────────────────┐
   │                          aos CLI / aos-core                             │
@@ -382,6 +398,19 @@ all queries in one incremental graph — and it is the full conclusion of the
 synthesis thesis (§1): *aos-nix is first a general incremental computation engine,
 and Nix evaluation — including its own front-end — is the top layer.*
 
+That general engine is named **`ratchet`**, and the split it implies is an
+explicit architectural layer, not just a framing
+([28](28-generalization-and-language-dialects.md)). The demand graph, the
+execution tiers, the GC, the value representation, and the *generic* lazy-functional
+IR — **Core** (`ratchet-core`), the GHC-Core-analog — carry no Nix knowledge. The
+low-level universal target one layer below Core is **CLIF** (Cranelift), which
+plays LLVM's role (the real LLVM-analog in this stack); Core lowers to CLIF
+([08](08-execution-tiers-and-cranelift.md)). The Nix-specific concepts —
+`derivationStrict`, `with`, string contexts, the builtin set, the concrete effects
+— are a **dialect** layered on top: Nix is the first `ratchet` dialect, and the
+recurring cost of a *second* language would live entirely in its own band, not in
+a rewrite of the engine ([28](28-generalization-and-language-dialects.md) §3).
+
 The payoff is that every cross-cutting concern is a property of **the graph
 engine**, implemented once, and every node kind inherits it:
 
@@ -410,7 +439,11 @@ per-node properties differ by kind:
    keyed into the cache as explicit inputs. The scheduler reads a per-node effect
    tag. This is the general form of the speculative-parse-error-quarantine rule
    ([04](04-frontend-parser-and-ir.md) §9.6): *speculation and re-execution are
-   sound only for pure nodes.*
+   sound only for pure nodes.* The effect class is no longer a closed
+   `{ Pure, Effectful }` enum: it is now an **open, dialect-supplied effect
+   lattice** (the engine reads `is_speculable` plus an opaque `effect_key`; the
+   dialect populates the members), so the engine carries no Nix effect names.
+   This is decision `S-23` ([28](28-generalization-and-language-dialects.md) §5).
 
 2. **Two-tier granularity.** The *coarse* nodes — files (parse/compile),
    whole-program analyses, derivations, heavy library bindings — live in the
