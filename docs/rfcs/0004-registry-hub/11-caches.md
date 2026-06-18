@@ -543,9 +543,12 @@ the current spec. Phases are orderable; A lands first, E last.
       soft-delete (tombstone) enforced before any byte. **Remaining:** client
       `Range:` → `206` streaming (with #19), and the `trusted-public-keys`
       line + public-key endpoint (with signing, #20-step2).
-- [ ] **Backend access mode:** `storage_bindings.access` (public|private) +
-      `public_base_url` + sealed `credential_ref`; reject a Direct frontend over
-      a private binding.
+- [x] **Backend access mode:** v23 adds `storage_bindings.access`
+      (public|private), `public_base_url`, and `credential_ref` (additive, safe
+      default `public`); `set_storage_binding_access` setter + `aos-hub binding
+      set-access` CLI; `create_frontend` rejects a **Direct** frontend over a
+      private binding (must be proxied/presigned). Unit-tested. **Remaining (with
+      the proxy slice):** the SigV4/presigned *use* of `credential_ref`.
 - [ ] **Frontend model for caches + proxy settings:** the `proxy` block
       (timeouts, stream, max_body, retries+failover, range/cache-control
       passthrough) and `primary` flag on `frontends`; proxied facade honors them
