@@ -84,6 +84,7 @@ in
           # /nix/store and overlay tmp/state directories. Precreate common
           # mountpoints so systemd does not depend on payload-owned directories.
           mkdir -p rootfs/nix/store rootfs/tmp rootfs/var/tmp rootfs/run
+          mkdir -p rootfs/run/aos-secure-boot-efivars
           mkdir -p rootfs/dev rootfs/proc rootfs/sys rootfs/var/lib
           chmod 1777 rootfs/tmp rootfs/var/tmp
 
@@ -121,6 +122,7 @@ in
           fi
 
           fakeroot -- mkfs.ext4 -d rootfs -L ${lib.escapeShellArg label} -m 0 -q \
+            -b 4096 \
             -U "$FS_UUID" \
             -E "hash_seed=$FS_UUID,lazy_itable_init=0,lazy_journal_init=0" \
             root.img "''${initial_mib}M"
@@ -137,6 +139,10 @@ in
           final_bytes=$(( final_blocks * blk_size ))
           final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
           truncate -s "$final_bytes" root.img
+
+          # resize2fs rewrites s_lastcheck from the wall clock even with
+          # E2FSPROGS_FAKE_TIME set; normalize it before hashing/signing.
+          debugfs -w -R "set_super_value lastcheck 1" root.img >/dev/null 2>&1
           echo "$final_bytes" > rootfs-size-bytes
         '';
       }

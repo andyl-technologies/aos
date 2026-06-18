@@ -1591,8 +1591,20 @@ in
           grep -q "RootVerity=$verityImageArtifact/root.verity" "$verity_unit"
           grep -q 'RootHash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "$verity_unit"
           grep -q "RootHashSignature=$verityImageArtifact/root.roothash.p7s" "$verity_unit"
+          grep -q 'ExecStartPre=.*/bin/aos-verity-root-guard --signature-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa .*/root.roothash.p7s' "$verity_unit"
+          if grep -q 'ExecStartPre=.*-- .*bin/aos-selinux-run' "$verity_unit"; then
+            echo "verity RootImage precheck must not run workload sandbox wrappers" >&2
+            exit 1
+          fi
+          grep -q 'ExecStart=.*/bin/aos-selinux-run' "$verity_unit"
+          if grep -q 'ExecStart=.*/bin/aos-verity-root-guard' "$verity_unit"; then
+            echo "verity RootImage workload ExecStart must not run the root-only guard" >&2
+            exit 1
+          fi
+          grep -q 'PermissionsStartOnly=true' "$verity_unit"
           grep -q 'After=.*systemd-udevd.service' "$verity_unit"
           grep -q 'Requires=.*systemd-udevd.service' "$verity_unit"
+          grep -q 'BindReadOnlyPaths=/sys/firmware/efi/efivars:/run/aos-secure-boot-efivars' "$verity_unit"
           grep -q 'PrivateDevices=false' "$verity_unit"
           if grep -q 'RootDirectory=' "$verity_unit"; then
             echo "verity RootImage service must not also render RootDirectory" >&2
