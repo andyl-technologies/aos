@@ -807,9 +807,9 @@ Value representation has no observable effect on `.drv` output by construction (
 
 ### Tagged-value baseline (§2)
 
-- [ ] 16-byte tagged `Value` (`tag` word + `payload` union), `Copy`, register-pair-passable; full `i64`/`f64`/`bool` inline, heap forms behind `NonNull` (§2.2) — **P1**, `S-6`/`M-4` default (no NaN-box first).
-- [ ] `ValueTag` taxonomy covering every Nix value form (int/float/bool/null/string/path/list/attrs/lambda/primop/external) plus the non-WHNF `Thunk` (§1, §2.2) — **P1**.
-- [ ] `force` WHNF fast path: single tag-compare, predicted-not-taken branch, no heap load (§2.3) — **P1**.
+- [x] 16-byte tagged `Value` (`tag` word + `payload` word), `Copy`, register-pair-passable; full `i64`/`f64`/`bool` inline, heap forms behind `NonNull` (§2.2) — **P1**, `S-6`/`M-4` default (no NaN-box first). Implemented in `crates/aos-nix/src/value.rs` with `#[repr(C)]`, `Copy`, a private raw `u64` payload word, static size/alignment assertions, inline scalar constructors, and heap constructors requiring `NonNull<HeapObject>`; covered by `value_layout_is_two_machine_words`, `inline_values_roundtrip_through_checked_accessors`, and `heap_values_store_aligned_non_null_pointers`.
+- [x] `ValueTag` taxonomy covering every Nix value form (int/float/bool/null/string/path/list/attrs/lambda/primop/external) plus the non-WHNF `Thunk` (§1, §2.2) — **P1**. Covered by `value_tag_discriminants_match_the_rfc_layout` and `nix_type_names_match_user_visible_types`.
+- [x] `force` WHNF fast path: single tag-compare, predicted-not-taken branch, no heap load (§2.3) — **P1**. Implemented as `Value::is_whnf()` delegating to `ValueTag::is_whnf()` and as `TreeWalk::force_value` returning non-thunks before heap access; covered by `whnf_fast_path_is_a_tag_predicate`.
 - [ ] Safe checked accessors/getters asserting tag-payload agreement in debug builds for the oracle (§11) — **P1**, `S-17`; miri/ASan-clean on the oracle.
 
 ### Pointer tagging and the WHNF bit (§3)

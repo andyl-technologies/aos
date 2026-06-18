@@ -559,11 +559,34 @@ mod tests {
     #[test]
     fn whnf_fast_path_is_a_tag_predicate() {
         let ptr = NonNull::<HeapObject>::dangling();
-        let thunk = Value::thunk(ptr).expect("aligned thunk pointer");
         assert!(Value::int(1).is_whnf());
         assert!(Value::float(1.0).is_whnf());
         assert!(Value::bool(false).is_whnf());
         assert!(Value::null().is_whnf());
+        assert!(
+            Value::string(ptr)
+                .expect("aligned string pointer")
+                .is_whnf()
+        );
+        assert!(Value::path(ptr).expect("aligned path pointer").is_whnf());
+        assert!(Value::list(ptr).expect("aligned list pointer").is_whnf());
+        assert!(Value::attrs(ptr).expect("aligned attrs pointer").is_whnf());
+        assert!(
+            Value::lambda(ptr)
+                .expect("aligned lambda pointer")
+                .is_whnf()
+        );
+        assert!(
+            Value::primop(ptr)
+                .expect("aligned primop pointer")
+                .is_whnf()
+        );
+        assert!(
+            Value::external(ptr)
+                .expect("aligned external pointer")
+                .is_whnf()
+        );
+        let thunk = Value::thunk(ptr).expect("aligned thunk pointer");
         assert!(!thunk.is_whnf());
         assert!(thunk.is_thunk());
     }
