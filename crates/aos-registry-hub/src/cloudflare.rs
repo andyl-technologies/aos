@@ -855,11 +855,10 @@ fn d1_only_config(db_name: &str, db_id: &str) -> String {
 /// tooling, not a request hot path: each call is one `wrangler` process and one
 /// round-trip, which is fine for the low-volume maintenance it backs.
 ///
-/// **Maintenance-only:** it implements `execute`/`execute_insert`/`query`/
-/// `execute_batch` (single statements and DDL migrations) but **refuses**
-/// [`batch`](Backend::batch) — the wrangler CLI has no atomic batch primitive,
-/// so batch-using operations (indexing, validation) must run on the deployed
-/// Worker over D1's native binding instead.
+/// It implements the full [`Backend`] surface — `execute`/`execute_insert`/
+/// `query`/`execute_batch`, and an atomic [`batch`](Backend::batch) via a
+/// multi-statement `--file` run (which the D1 engine executes all-or-nothing) —
+/// so the entire hub admin command tree can run against D1 through it.
 pub struct WranglerD1Backend {
     /// The bundled `wrangler` launcher + dist locator.
     assets: Assets,
@@ -973,21 +972,21 @@ impl Backend for WranglerD1Backend {
     }
 
     async fn batch(&self, stmts: &[Statement]) -> Result<()> {
-        // `Backend::batch` must be atomic (all-or-nothing). D1's only atomic
-        // primitive is its `batch()` *API*, which the `wrangler` CLI does not
-        // expose — a `--file` run is not wrapped in a transaction. Rather than
-        // run a non-atomic batch that could corrupt the index on a mid-batch
-        // failure (e.g. `update_channels` DELETEs then re-INSERTs), this backend
-        // refuses `batch` outright. It backs only single-statement maintenance
-        // (reset-root, schema migration via `execute_batch`); operations needing
-        // an atomic batch (indexing, validation) must run on the deployed Worker
-        // over D1's native binding, not through this CLI backend.
-        let _ = stmts;
-        bail!(
-            "WranglerD1Backend does not support atomic batch(): the wrangler CLI \
-             exposes no transactional batch primitive. Run batch operations \
-             (indexing/validation) on the deployed Worker over its D1 binding."
-        );
+        // `Backend::batch` must be atomic (all-or-nothing). `wrangler d1 execute
+        // --file` runs a multi-statement file as one atomic unit — a mid-file
+        // statement failure rolls back the earlier statements (verified against
+        // the D1 engine: an earlier INSERT is undone when a later one violates a
+        // UNIQUE constraint). So the statements are inlined and concatenated into
+        // one `--file` run. The trait contracts that batch statements are
+        // self-contained (ids assigned client-side, guards in `WHERE`, no
+        // mid-flight `last_insert_rowid`), so literal inlining is sufficient.
+        let mut script = String::new();
+        for stmt in stmts {
+            script.push_str(&inline_params(&stmt.sql, &stmt.params)?);
+            script.push_str(";\n");
+        }
+        self.run_sql(&script).await?;
+        Ok(())
     }
 }
 
