@@ -27,7 +27,10 @@
 //! persists and applies the corresponding preset policy.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::fs::OpenOptions;
+use std::io::{Read as _, Write};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -47,12 +50,13 @@ use super::profile::merge::build_generation_fhs_tree;
 use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
+use super::provenance;
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{ApmMeta, InstalledMeta, PackageMeta};
+use super::types::{ApmMeta, InstalledMeta, PackageMeta, validate_registry_name};
 use super::verify::{verify_downloads, verify_nar_hash};
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
@@ -218,6 +222,7 @@ async fn run_inner(
     } else {
         filter_missing(&store_paths).await?
     };
+    verify_install_provenance_from_cache(&config.cache_path(), &closures)?;
 
     if !reinstall
         && missing.is_empty()
@@ -842,6 +847,129 @@ fn verify_secondary_artifact_downloads(
             .with_context(|| format!("verifying signed NAR for {}", result.store_path))?;
     }
 
+    Ok(())
+}
+
+fn verify_install_provenance_from_cache(
+    registry_cache_root: &Path,
+    closures: &[ResolvedClosure],
+) -> Result<usize> {
+    let mut verified = 0;
+
+    for closure in closures {
+        for meta in &closure.closure {
+            let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
+                continue;
+            };
+            ensure_safe_provenance_ref(provenance_ref)?;
+            let (path, jsonl) = read_provenance_artifact(
+                registry_cache_root,
+                &closure.registry_name,
+                provenance_ref,
+            )?;
+            provenance::verify_package_statement(meta, &jsonl)
+                .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
+            verified += 1;
+        }
+    }
+
+    Ok(verified)
+}
+
+fn read_provenance_artifact(
+    registry_cache_root: &Path,
+    registry_name: &str,
+    provenance_ref: &str,
+) -> Result<(PathBuf, String)> {
+    validate_registry_name(registry_name)?;
+    let registry_root = registry_cache_root.join(registry_name);
+    let registry_meta = std::fs::symlink_metadata(&registry_root)
+        .with_context(|| format!("reading registry cache {}", registry_root.display()))?;
+    if registry_meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "registry cache '{}' must not be a symlink",
+            registry_root.display()
+        );
+    }
+    if !registry_meta.is_dir() {
+        anyhow::bail!(
+            "registry cache '{}' is not a directory",
+            registry_root.display()
+        );
+    }
+    let mut path = registry_root.clone();
+    let mut components = Path::new(provenance_ref).components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(part) = component else {
+            anyhow::bail!(
+                "attestation provenance path '{provenance_ref}' must not contain '.', '..', or prefixes"
+            );
+        };
+        path.push(part);
+        let meta = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("reading provenance artifact {}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            anyhow::bail!(
+                "attestation provenance path '{}' must not contain symlinks: {}",
+                provenance_ref,
+                path.display()
+            );
+        }
+        if components.peek().is_some() {
+            if !meta.is_dir() {
+                anyhow::bail!(
+                    "attestation provenance parent '{}' is not a directory",
+                    path.display()
+                );
+            }
+        } else if !meta.is_file() {
+            anyhow::bail!(
+                "attestation provenance artifact '{}' is not a regular file",
+                path.display()
+            );
+        }
+    }
+
+    let registry_root = registry_root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing registry cache {}", registry_root.display()))?;
+    let canonical_path = path
+        .canonicalize()
+        .with_context(|| format!("canonicalizing provenance artifact {}", path.display()))?;
+    if !canonical_path.starts_with(&registry_root) {
+        anyhow::bail!(
+            "attestation provenance artifact '{}' escapes registry cache '{}'",
+            canonical_path.display(),
+            registry_root.display()
+        );
+    }
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .with_context(|| format!("reading provenance artifact {}", path.display()))?;
+    let mut jsonl = String::new();
+    file.read_to_string(&mut jsonl)
+        .with_context(|| format!("reading provenance artifact {}", path.display()))?;
+    Ok((path, jsonl))
+}
+
+fn ensure_safe_provenance_ref(path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') || !path.ends_with(".jsonl")
+    {
+        anyhow::bail!("attestation provenance path '{path}' must be a relative *.jsonl path");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            Component::Normal(part) if !part.is_empty() => {}
+            _ => {
+                anyhow::bail!(
+                    "attestation provenance path '{path}' must not contain '.', '..', or prefixes"
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1571,7 +1699,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::profile::Generation;
-    use crate::types::{ExposeArtifactMeta, ExposeMeta, SysrootImageEntry};
+    use crate::types::{AttestationMeta, ExposeArtifactMeta, ExposeMeta, SysrootImageEntry};
 
     #[test]
     fn format_size_bytes() {
@@ -1734,6 +1862,87 @@ mod tests {
         }
     }
 
+    fn attested_sample_package() -> PackageMeta {
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "web",
+            "1.0.0",
+            root_hash,
+            manifest_digest,
+        );
+        let measurement_hex = measurement.trim_start_matches("sha256:");
+        let mut meta = sample_package("web", "1.0.0", "/nix/store/abc123-web-1.0.0");
+        meta.nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string();
+        meta.source_drv = "/nix/store/srcdrv-web-1.0.0.drv".to_string();
+        meta.source_nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".to_string();
+        meta.attestation = AttestationMeta {
+            root_hash: Some(root_hash.to_string()),
+            root_hash_sig: Some("root.roothash.p7s".to_string()),
+            provenance: Some(format!(
+                "provenance/w/web/x86_64-linux/{measurement_hex}.intoto.jsonl"
+            )),
+            measurement: Some(measurement),
+        };
+        meta
+    }
+
+    fn provenance_statement(meta: &PackageMeta) -> String {
+        let root_hash = meta.attestation.root_hash.as_deref().unwrap();
+        let root_hash_sig = meta.attestation.root_hash_sig.as_deref().unwrap();
+        let provenance = meta.attestation.provenance.as_deref().unwrap();
+        let measurement = meta.attestation.measurement.as_deref().unwrap();
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let source_uri = format!("nix:{}", meta.source_drv);
+        let statement = serde_json::json!({
+            "_type": "https://in-toto.io/Statement/v1",
+            "subject": [
+                {
+                    "name": meta.store_path.as_str(),
+                    "digest": crate::provenance::digest_map(&meta.nar_hash),
+                },
+                {
+                    "name": format!(
+                        "aos:permissions-manifest:{}:{}:{}",
+                        meta.name, meta.version, meta.platform
+                    ),
+                    "digest": crate::provenance::digest_map(manifest_digest),
+                },
+                {
+                    "name": format!(
+                        "aos:package-measurement:{}:{}:{}",
+                        meta.name, meta.version, meta.platform
+                    ),
+                    "digest": crate::provenance::digest_map(measurement),
+                },
+            ],
+            "predicateType": "https://slsa.dev/provenance/v1",
+            "predicate": {
+                "buildDefinition": {
+                    "buildType": "https://andyl.com/aos/apr-publish/v1",
+                    "externalParameters": {
+                        "package": meta.name.as_str(),
+                        "version": meta.version.as_str(),
+                        "platform": meta.platform.as_str(),
+                        "store_path": meta.store_path.as_str(),
+                        "root_hash": root_hash,
+                        "root_hash_sig": root_hash_sig,
+                        "provenance": provenance,
+                    },
+                    "resolvedDependencies": [
+                        {
+                            "uri": source_uri,
+                            "digest": crate::provenance::digest_map(&meta.source_nar_hash),
+                        },
+                    ],
+                },
+            },
+        });
+        format!("{}\n", serde_json::to_string(&statement).unwrap())
+    }
+
     #[test]
     fn collect_expose_artifacts_includes_expose_images() {
         let mut root = sample_package("web", "1.0.0", "/var/lib/store/root-web");
@@ -1777,6 +1986,95 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_reads_registry_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let meta = attested_sample_package();
+        let provenance = meta.attestation.provenance.as_deref().unwrap();
+        let path = tmp.path().join("test-reg").join(provenance);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, provenance_statement(&meta)).unwrap();
+
+        let count = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap();
+
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_missing_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let meta = attested_sample_package();
+        std::fs::create_dir_all(tmp.path().join("test-reg")).unwrap();
+
+        let err = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("reading provenance artifact"));
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_unsafe_ref() {
+        let tmp = TempDir::new().unwrap();
+        let mut meta = attested_sample_package();
+        meta.attestation.provenance = Some("../evil.jsonl".to_string());
+
+        let err = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must not contain '.', '..', or prefixes")
+        );
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_symlink_parent() {
+        let tmp = TempDir::new().unwrap();
+        let meta = attested_sample_package();
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(tmp.path().join("test-reg")).unwrap();
+        symlink(&outside, tmp.path().join("test-reg").join("provenance")).unwrap();
+
+        let err = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must not contain symlinks"));
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_symlink_file() {
+        let tmp = TempDir::new().unwrap();
+        let meta = attested_sample_package();
+        let provenance = meta.attestation.provenance.as_deref().unwrap();
+        let path = tmp.path().join("test-reg").join(provenance);
+        let outside = tmp.path().join("outside.jsonl");
+        std::fs::write(&outside, provenance_statement(&meta)).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        symlink(&outside, &path).unwrap();
+
+        let err = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("must not contain symlinks"));
     }
 
     #[test]

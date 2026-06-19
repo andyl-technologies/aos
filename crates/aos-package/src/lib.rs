@@ -55,6 +55,7 @@ pub mod install;
 pub(crate) mod package_attestation;
 pub mod policy;
 pub mod profile;
+pub(crate) mod provenance;
 pub mod query;
 pub mod registry;
 pub mod registry_ops;
