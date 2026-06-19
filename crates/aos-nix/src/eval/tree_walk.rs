@@ -1833,6 +1833,8 @@ enum FetchTreeArguments {
     },
     Tarball {
         url: Vec<u8>,
+        transport_url: Vec<u8>,
+        dir: Option<Vec<u8>>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
         last_modified_from_lock: bool,
@@ -1842,6 +1844,7 @@ enum FetchTreeArguments {
     Forge {
         canonical_uri: Vec<u8>,
         archive_url: Vec<u8>,
+        dir: Option<Vec<u8>>,
         check_archive_url_access: bool,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
@@ -1849,6 +1852,7 @@ enum FetchTreeArguments {
     },
     Git {
         args: FetchGitArguments,
+        dir: Option<Vec<u8>>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
         expected_rev_count: Option<usize>,
@@ -10613,16 +10617,19 @@ impl TreeWalk {
             )?,
             FetchTreeArguments::Tarball {
                 url,
+                transport_url,
+                dir,
                 expected_nar_hash,
                 expected_last_modified,
                 last_modified_from_lock,
                 rev,
                 rev_count,
-                ..
             } => self.eval_fetch_tree_tarball(
                 argument,
                 argument_span,
                 url,
+                transport_url,
+                dir,
                 expected_nar_hash,
                 expected_last_modified,
                 last_modified_from_lock,
@@ -10633,6 +10640,7 @@ impl TreeWalk {
             FetchTreeArguments::Forge {
                 canonical_uri,
                 archive_url,
+                dir,
                 check_archive_url_access,
                 expected_nar_hash,
                 expected_last_modified,
@@ -10642,6 +10650,7 @@ impl TreeWalk {
                 argument_span,
                 canonical_uri,
                 archive_url,
+                dir,
                 check_archive_url_access,
                 expected_nar_hash,
                 expected_last_modified,
@@ -10649,6 +10658,7 @@ impl TreeWalk {
             )?,
             FetchTreeArguments::Git {
                 args,
+                dir,
                 expected_nar_hash,
                 expected_last_modified,
                 expected_rev_count,
@@ -10658,6 +10668,7 @@ impl TreeWalk {
                 argument,
                 argument_span,
                 args,
+                dir,
                 expected_nar_hash,
                 expected_last_modified,
                 expected_rev_count,
@@ -10866,8 +10877,13 @@ impl TreeWalk {
             ],
         )?;
         let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
+        let dir =
+            Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)?.map(ToOwned::to_owned);
+        let transport_url = Self::fetch_tree_transport_url_without_dir(id, span, url)?;
         Ok(FetchTreeArguments::Tarball {
             url: url.to_vec(),
+            transport_url,
+            dir,
             expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
             expected_last_modified: Self::optional_flake_ref_i64_attr(
                 id,
@@ -10950,10 +10966,13 @@ impl TreeWalk {
             self.forge_flake_ref_to_string(id, span, attrs, input_type, extra_query)?;
         let archive_url =
             Self::fetch_tree_forge_archive_url(id, span, input_type, owner, repo, host, &rev)?;
+        let dir =
+            Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)?.map(ToOwned::to_owned);
 
         Ok(FetchTreeArguments::Forge {
             canonical_uri,
             archive_url,
+            dir,
             check_archive_url_access,
             expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
             expected_last_modified: Self::optional_flake_ref_i64_attr(
@@ -11005,6 +11024,8 @@ impl TreeWalk {
             url,
             attrs.contains_key(DIR_ATTR),
         )?;
+        let dir =
+            Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)?.map(ToOwned::to_owned);
         let submodules =
             Self::optional_flake_ref_bool_attr(id, span, attrs, SUBMODULES_ATTR)?.unwrap_or(false);
         Ok(FetchTreeArguments::Git {
@@ -11029,6 +11050,7 @@ impl TreeWalk {
                 )?
                 .unwrap_or(!submodules),
             },
+            dir,
             expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
             expected_last_modified: Self::optional_flake_ref_i64_attr(
                 id,
@@ -11214,6 +11236,52 @@ impl TreeWalk {
         .map(Some)
     }
 
+    fn fetch_tree_url_with_dir_metadata(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        dir: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, Vec<u8>), TreeWalkError> {
+        let transport_url = url.to_vec();
+        let Some(dir) = dir else {
+            return Ok((transport_url.clone(), transport_url));
+        };
+        let parsed = Self::parse_fetch_tree_url(id, span, url)?;
+        let mut updates = BTreeMap::new();
+        updates.insert(DIR_ATTR.to_vec(), dir.to_vec());
+        let canonical_url = Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            url,
+            &parsed,
+            None,
+            Self::decode_flake_ref_query(id, span, url, parsed.query())?,
+            updates,
+        )?;
+        Ok((canonical_url, transport_url))
+    }
+
+    fn fetch_tree_transport_url_without_dir(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let parsed = Self::parse_fetch_tree_url(id, span, url)?;
+        let mut query = Self::decode_flake_ref_query(id, span, url, parsed.query())?;
+        if query.remove(DIR_ATTR).is_none() {
+            return Ok(url.to_vec());
+        }
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            url,
+            &parsed,
+            None,
+            query,
+            BTreeMap::new(),
+        )
+    }
+
     fn fetch_tree_file_arguments(
         &mut self,
         id: IrId,
@@ -11268,9 +11336,13 @@ impl TreeWalk {
                 REV_ATTR,
                 REV_COUNT_ATTR,
                 UNPACK_ATTR,
+                DIR_ATTR,
             ],
         )?;
-        let url = self.required_fetch_tree_url(id, span, value)?;
+        let raw_url = self.required_fetch_tree_url(id, span, value)?;
+        let dir = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)?;
+        let (url, transport_url) =
+            Self::fetch_tree_url_with_dir_metadata(id, span, &raw_url, dir.as_deref())?;
         let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
         let expected_last_modified =
             self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
@@ -11279,6 +11351,8 @@ impl TreeWalk {
         let _unpack = self.optional_fetch_tree_bool_attr(id, span, value, UNPACK_ATTR, true)?;
         Ok(FetchTreeArguments::Tarball {
             url,
+            transport_url,
+            dir,
             expected_nar_hash,
             expected_last_modified,
             last_modified_from_lock: false,
@@ -11406,9 +11480,13 @@ impl TreeWalk {
                 KEYTYPE_ATTR,
                 PUBLIC_KEY_ATTR,
                 PUBLIC_KEYS_ATTR,
+                DIR_ATTR,
             ],
         )?;
-        let url = self.required_fetch_tree_url(id, span, value)?;
+        let raw_url = self.required_fetch_tree_url(id, span, value)?;
+        let dir = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)?;
+        let (url, transport_url) =
+            Self::fetch_tree_url_with_dir_metadata(id, span, &raw_url, dir.as_deref())?;
         let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
         let reference = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)?;
         let submodules =
@@ -11441,7 +11519,7 @@ impl TreeWalk {
         Ok(FetchTreeArguments::Git {
             args: FetchGitArguments {
                 url,
-                transport_url: None,
+                transport_url: dir.as_ref().map(|_| transport_url),
                 name: "source".to_owned(),
                 rev,
                 reference,
@@ -11450,6 +11528,7 @@ impl TreeWalk {
                 all_refs,
                 export_ignore,
             },
+            dir,
             expected_nar_hash,
             expected_last_modified,
             expected_rev_count,
@@ -11894,6 +11973,8 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         url: Vec<u8>,
+        transport_url: Vec<u8>,
+        dir: Option<Vec<u8>>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
         last_modified_from_lock: bool,
@@ -11901,11 +11982,11 @@ impl TreeWalk {
         rev_count: Option<usize>,
         check_url_access: bool,
     ) -> Result<FetchTreeResult, TreeWalkError> {
-        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &transport_url)?;
         if check_url_access {
             self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
         }
-        let contents = self.fetch_tree_url_bytes(id, span, &url, &parsed)?;
+        let contents = self.fetch_tree_url_bytes(id, span, &transport_url, &parsed)?;
         let temp_dir = Self::fetch_tarball_temp_dir(id, span, &url)?;
         let unpack_dir = temp_dir.join("unpacked");
         if let Err(source) = fs::create_dir(&unpack_dir) {
@@ -11930,10 +12011,12 @@ impl TreeWalk {
         };
 
         let result = (|| {
-            let digest = self.source_path_nar_sha256(id, span, &unpacked_root, None)?;
+            let source_root =
+                Self::fetch_tree_subdir_root(id, span, &url, &unpacked_root, dir.as_deref())?;
+            let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
             Self::check_fetch_tree_hash(id, span, &url, expected_nar_hash, &digest)?;
             let observed_last_modified =
-                Self::fetch_tree_last_modified(id, span, &url, &unpacked_root)?;
+                Self::fetch_tree_last_modified(id, span, &url, &source_root)?;
             let last_modified = if last_modified_from_lock {
                 expected_last_modified.unwrap_or(observed_last_modified)
             } else {
@@ -11959,7 +12042,7 @@ impl TreeWalk {
                 id,
                 span,
                 &url,
-                &unpacked_root,
+                &source_root,
                 &out_path,
                 &digest,
             )?;
@@ -11985,6 +12068,7 @@ impl TreeWalk {
         span: Span,
         canonical_uri: Vec<u8>,
         archive_url: Vec<u8>,
+        dir: Option<Vec<u8>>,
         check_archive_url_access: bool,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
@@ -11998,7 +12082,9 @@ impl TreeWalk {
         self.eval_fetch_tree_tarball(
             id,
             span,
+            canonical_uri,
             archive_url,
+            dir,
             expected_nar_hash,
             expected_last_modified,
             false,
@@ -12013,6 +12099,7 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         args: FetchGitArguments,
+        dir: Option<Vec<u8>>,
         expected_nar_hash: Option<[u8; 32]>,
         expected_last_modified: Option<i64>,
         expected_rev_count: Option<usize>,
@@ -12036,6 +12123,8 @@ impl TreeWalk {
             self.eval_fetch_git_into_store(id, span, checkout_args, &checkout_dir, &exported_dir);
         let _ = fs::remove_dir_all(&temp_dir);
         let result = result?;
+        let result =
+            self.reroot_fetch_tree_git_result(id, span, &args.url, result, dir.as_deref())?;
 
         if let Some(expected) = expected_nar_hash {
             let actual = self.decode_fetch_tree_nar_hash(id, span, &result.nar_hash)?;
@@ -12074,6 +12163,79 @@ impl TreeWalk {
             rev_count,
             submodules: Some(result.submodules),
         })
+    }
+
+    fn reroot_fetch_tree_git_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        mut result: FetchGitResult,
+        dir: Option<&[u8]>,
+    ) -> Result<FetchGitResult, TreeWalkError> {
+        let Some(dir) = dir.filter(|dir| !dir.is_empty()) else {
+            return Ok(result);
+        };
+        let store_root = Path::new(OsStr::from_bytes(&result.out_path));
+        let source_root = Self::fetch_tree_subdir_root(id, span, input, store_root, Some(dir))?;
+        let digest = self.source_path_nar_sha256(id, span, &source_root, None)?;
+        result.nar_hash = Self::encode_convert_hash_digest(
+            id,
+            span,
+            HashStringAlgorithm::Sha256,
+            ConvertHashFormat::Sri,
+            &digest,
+        )?;
+        result.out_path = self.fetch_tree_store_path_from_digest(id, span, input, &digest)?;
+        self.materialize_fetch_tree_store_path(
+            id,
+            span,
+            input,
+            &source_root,
+            &result.out_path,
+            &digest,
+        )?;
+        Ok(result)
+    }
+
+    fn fetch_tree_subdir_root(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        root: &Path,
+        dir: Option<&[u8]>,
+    ) -> Result<PathBuf, TreeWalkError> {
+        let Some(dir) = dir.filter(|dir| !dir.is_empty()) else {
+            return Ok(root.to_path_buf());
+        };
+        let mut selected = root.to_path_buf();
+        for component in Path::new(OsStr::from_bytes(dir)).components() {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(name) => {
+                    selected.push(name);
+                    let metadata = fs::symlink_metadata(&selected)
+                        .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+                    if !metadata.is_dir() {
+                        return Err(Self::fetch_tree_error(
+                            id,
+                            span,
+                            input,
+                            "fetchTree dir must select a directory",
+                        ));
+                    }
+                }
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(Self::fetch_tree_error(
+                        id,
+                        span,
+                        input,
+                        "fetchTree dir must be a relative path inside the fetched tree",
+                    ));
+                }
+            }
+        }
+        Ok(selected)
     }
 
     fn check_fetch_tree_path_access(
@@ -46503,7 +46665,7 @@ mod tests {
     }
 
     #[test]
-    fn fetch_tree_string_refs_accept_dir_metadata_without_rerooting() {
+    fn fetch_tree_refs_reroot_dir_metadata() {
         let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-string-dir-tarball");
         let (repo_dir, _) = git_repo_with_file("fetch-tree-string-dir-git");
         let repo = git2::Repository::open(&repo_dir).expect("git fixture repo opens");
@@ -46511,10 +46673,12 @@ mod tests {
         let store_dir = unique_temp_dir("fetch-tree-string-dir-store");
         let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
             .expect("temporary store root configures");
+        let tarball_url = nix_string_literal(&format!("file://{}", path_source(&archive_path)));
         let tarball_ref =
             nix_string_literal(&format!("file://{}?dir=sub", path_source(&archive_path)));
         let raw_git_ref = format!("git+file://{}?dir=sub&rev={}", path_source(&repo_dir), oid);
         let git_ref = nix_string_literal(&raw_git_ref);
+        let git_url = nix_string_literal(&format!("file://{}", path_source(&repo_dir)));
         let expected_git_url = format!("file://{}?dir=sub", path_source(&repo_dir));
         let expected_git_transport_url = format!("file://{}", path_source(&repo_dir));
         let ir = lower("null");
@@ -46539,14 +46703,18 @@ mod tests {
                 r#"
                 let
                   tarballTree = builtins.fetchTree {tarball_ref};
+                  directTarballTree = builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; dir = "sub"; }};
                   gitTree = builtins.fetchTree {git_ref};
+                  directGitTree = builtins.fetchTree {{ type = "git"; url = {git_url}; rev = "{oid}"; dir = "sub"; }};
                 in {{
-                  tarballNested = builtins.readFile "${{tarballTree.outPath}}/sub/nested.txt";
+                  tarballNested = builtins.readFile "${{tarballTree.outPath}}/nested.txt";
+                  directTarballNested = builtins.readFile "${{directTarballTree.outPath}}/nested.txt";
                   tarballRootFile = builtins.pathExists "${{tarballTree.outPath}}/file.txt";
-                  tarballTopNested = builtins.pathExists "${{tarballTree.outPath}}/nested.txt";
-                  gitNested = builtins.readFile "${{gitTree.outPath}}/sub/nested.txt";
-                  gitRootData = builtins.readFile "${{gitTree.outPath}}/data.txt";
-                  gitTopNested = builtins.pathExists "${{gitTree.outPath}}/nested.txt";
+                  tarballSubNested = builtins.pathExists "${{tarballTree.outPath}}/sub/nested.txt";
+                  gitNested = builtins.readFile "${{gitTree.outPath}}/nested.txt";
+                  directGitNested = builtins.readFile "${{directGitTree.outPath}}/nested.txt";
+                  gitRootData = builtins.pathExists "${{gitTree.outPath}}/data.txt";
+                  gitSubNested = builtins.pathExists "${{gitTree.outPath}}/sub/nested.txt";
                   gitRev = gitTree.rev;
                 }}
                 "#
@@ -46556,12 +46724,41 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&json).expect("fetchTree dir string ref JSON parses");
         assert_eq!(value["tarballNested"], "inner");
-        assert_eq!(value["tarballRootFile"], true);
-        assert_eq!(value["tarballTopNested"], false);
+        assert_eq!(value["directTarballNested"], "inner");
+        assert_eq!(value["tarballRootFile"], false);
+        assert_eq!(value["tarballSubNested"], false);
         assert_eq!(value["gitNested"], "git-subdir");
-        assert_eq!(value["gitRootData"], "git-data");
-        assert_eq!(value["gitTopNested"], false);
+        assert_eq!(value["directGitNested"], "git-subdir");
+        assert_eq!(value["gitRootData"], false);
+        assert_eq!(value["gitSubNested"], false);
         assert_eq!(value["gitRev"], oid.to_string());
+
+        let escaping_dir_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "tarball"; url = {tarball_url}; dir = "../root"; }}"#
+            )),
+            options.clone(),
+        )
+        .expect_err("fetchTree dir cannot escape the fetched tree");
+        assert!(matches!(
+            escaping_dir_error.kind(),
+            TreeWalkErrorKind::FetchTree { .. }
+        ));
+
+        let missing_dir_ref = nix_string_literal(&format!(
+            "git+file://{}?dir=missing&rev={}",
+            path_source(&repo_dir),
+            oid
+        ));
+        let missing_dir_error = eval_whnf_owned_with_options(
+            &lower(&format!(r#"builtins.fetchTree {missing_dir_ref}"#)),
+            options.clone(),
+        )
+        .expect_err("fetchTree dir must exist");
+        assert!(matches!(
+            missing_dir_error.kind(),
+            TreeWalkErrorKind::FetchTree { .. }
+        ));
 
         let mut stripped_uri_options =
             TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
@@ -46625,6 +46822,35 @@ mod tests {
         fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
         fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_dir_rejects_symlinked_intermediate_components() {
+        let root = unique_temp_dir("fetch-tree-dir-symlink-root");
+        let outside = unique_temp_dir("fetch-tree-dir-symlink-outside");
+        fs::create_dir(root.join("sub")).expect("valid subdir creates");
+        fs::create_dir(outside.join("nested")).expect("outside nested dir creates");
+        std::os::unix::fs::symlink(&outside, root.join("link")).expect("symlink creates");
+
+        let ir = lower("null");
+        let span = ir.arena.node(ir.root).expect("root node exists").span;
+        let valid =
+            TreeWalk::fetch_tree_subdir_root(ir.root, span, b"fetchTree", &root, Some(b"./sub"))
+                .expect("ordinary subdir resolves");
+        assert_eq!(valid, root.join("sub"));
+
+        let error = TreeWalk::fetch_tree_subdir_root(
+            ir.root,
+            span,
+            b"fetchTree",
+            &root,
+            Some(b"link/nested"),
+        )
+        .expect_err("intermediate symlink cannot escape fetched tree");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        fs::remove_dir_all(root).expect("root temp directory removes");
+        fs::remove_dir_all(outside).expect("outside temp directory removes");
     }
 
     #[test]
