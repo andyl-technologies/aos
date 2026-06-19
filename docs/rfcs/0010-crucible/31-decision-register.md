@@ -1197,6 +1197,53 @@ register.
     ceiling before enabling Layer-1 scheduler fast-forward or conservative
     lookahead through this surface.
 
+- **RISK-16 / T-RISK-9 — S9 QEMU build identity and inertness**
+  - **Status:** PASS WITH FALLBACK; the active AOS `qemu-crucible` build is tied
+    to a concrete build identity and S1 result, and reproduction artifacts can
+    reject a changed identity, but the current patch series is not a full
+    upstream-vs-patched inertness proof.
+  - **Check:** `checks.crucible.phase0.s9QemuBuildIdentity`.
+  - **Result:** `qemu_package=qemu-crucible`, `qemu_version=9.2.4`,
+    `qemu_derivation_path=/nix/store/lf1mn770yyh83j3lif4dmvzjk820grdk-qemu-crucible-9.2.4.drv`,
+    `qemu_output_path=/nix/store/dvv5iv1qz2hp6a90i5nffb7ja5avlch5-qemu-crucible-9.2.4`,
+    `qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
+    `qemu_nix_hash=bbdaae2e7c1a5ac000ae311c840e659db2925b1e43f3af877c54a00f456caa5c`,
+    `patch_count=1`,
+    `patch_0001_name=0001-add-crucible-rr-fingerprint-helpers.patch`,
+    `patch_0001_hash=1996b15d86a2e7af293652649ef9c2f204e209ffe38b5ed232dbb5ae389c3a0e`,
+    `patch_series_hash=f2b409e1639b9616d6daa321774131028b6e7ef35185a2d49950ec187aab2653`,
+    `plugins_enabled=true`, `patch_apply_list_matches=true`,
+    `plugin_exports_present=true`, `rr_switch_quantum_default_zero=true`,
+    `non_sim_icount_patch_present=true`, `s1_result_consumed=true`,
+    `s1_result_status=PASS`,
+    `s1_source=checks.crucible.phase0.s1Fingerprint`,
+    `s1_horizon_extended_hash=9d1e61606ac54920`,
+    `s1_horizon_register_hash=a732f3acdae34c85`,
+    `s1_horizon_ram_hash=110f5442638e18ba`,
+    `s1_pause_retired=3200000005`, `s1_pause_overshoot=5`,
+    `artifact_build_id_match=true`,
+    `changed_build_id=0ef981435eda56587842ef79aa7e665ffc03e7798e6e72a9135cf19b4b5c856e`,
+    `artifact_mismatch_regates=true`,
+    `changed_build_negative_control=mutated_build_id_material`,
+    `full_upstream_inertness_comparison=false`,
+    `qemu_inert_gate_status=fallback_pending_upstream_comparison`,
+    `fallback_adopted=pin_build_id_and_regate_on_change`,
+    `s9_complete=true`.
+  - **Scope:** validates the Phase-0 S9 no-silent-drift decision for the current
+    AOS QEMU package. The check records the QEMU derivation path, output path,
+    `qemu.nix` hash, patch hash, patch-series hash, plugin-enabled package
+    setting, and S1 fingerprint tail as build-id material. It also emits a
+    reproduction-artifact-shaped JSON carrying the aggregate `qemu_build_id`,
+    QEMU paths/version, patch-series hash, seed/scenario/schedule labels, and
+    S1 extended-hash tail. The check mutates the build-id material as a negative
+    control and verifies that the artifact would re-gate rather than reproduce
+    against that changed build identity. The current patch includes deliberate
+    icount behavior changes, so this does not claim full sim-off equivalence to
+    upstream QEMU.
+  - **Fallback:** pin `qemu_build_id` in reproduction artifacts and refuse
+    mismatched QEMU builds until the later `gate:qemu-inert` proves full
+    upstream-vs-patched inertness or scopes each intentional non-inert patch.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1396,7 +1443,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=15`, `retired_decision_entries=15`,
+  - **Result:** `checked_risk_tasks=16`, `retired_decision_entries=16`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike

@@ -46,6 +46,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-6
           printf '%s\n' T-RISK-7
           printf '%s\n' T-RISK-8
+          printf '%s\n' T-RISK-9
           printf '%s\n' T-RISK-11
           printf '%s\n' T-RISK-12
           printf '%s\n' T-RISK-13
@@ -65,7 +66,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 15 ] || fail "expected 15 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 16 ] || fail "expected 16 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -92,6 +93,10 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "\`zero_overshoot_all=false\`"
         require_fixed "$risk_doc" "\`fallback_adopted=clock_deadline_export_and_tb_split_required\`"
         require_fixed "$risk_doc" "**RISK-15** is retired by \`T-RISK-8\`"
+        require_fixed "$risk_doc" "**RISK-16** is resolved by \`T-RISK-9\` with the build-identity/re-gate fallback"
+        require_fixed "$risk_doc" "\`artifact_mismatch_regates=true\`"
+        require_fixed "$risk_doc" "\`full_upstream_inertness_comparison=false\`"
+        require_fixed "$risk_doc" "\`fallback_adopted=pin_build_id_and_regate_on_change\`"
         require_fixed "$risk_doc" "**RISK-18** is retired by \`T-RISK-11\`"
         require_fixed "$risk_doc" "**RISK-19** is retired by \`T-RISK-12\`"
         require_fixed "$risk_doc" "**RISK-20** is retired by \`T-RISK-13\`"
@@ -107,6 +112,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-12 / T-RISK-5"
         require_fixed "$decision_doc" "RISK-13 / T-RISK-6"
         require_fixed "$decision_doc" "RISK-14 / T-RISK-7"
+        require_fixed "$decision_doc" "RISK-16 / T-RISK-9"
         require_fixed "$decision_doc" "RISK-15 / T-RISK-8"
         require_fixed "$decision_doc" "RISK-18 / T-RISK-11"
         require_fixed "$decision_doc" "RISK-19 / T-RISK-12"
@@ -134,6 +140,9 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.s7DeadlineCeiling"
         require_fixed "$decision_doc" "deadline_api_available=false"
         require_fixed "$decision_doc" "clock_deadline_export_and_tb_split_required"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s9QemuBuildIdentity"
+        require_fixed "$decision_doc" "artifact_build_id_match=true"
+        require_fixed "$decision_doc" "qemu_inert_gate_status=fallback_pending_upstream_comparison"
         require_fixed "$decision_doc" "checks.crucible.phase0.coverageOverhead"
         require_fixed "$decision_doc" "checks.crucible.phase0.abiDrift"
         require_fixed "$decision_doc" "checks.crucible.phase0.futexStress"
@@ -147,8 +156,8 @@ pkgs.mkDerivation {
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=15
-          echo retired_decision_entries=15
+          echo checked_risk_tasks=16
+          echo retired_decision_entries=16
           echo phase0_foundational_blockers_open=0
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0

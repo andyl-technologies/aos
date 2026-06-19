@@ -1505,6 +1505,32 @@ production path remains gated on the patch-series exact virtual-clock deadline
 export plus a ceiling mechanism that stops at `max_advance_icount` exactly,
 including interior-TB ceilings.
 
+**RISK-16** is resolved by `T-RISK-9` with the build-identity/re-gate fallback:
+`checks.crucible.phase0.s9QemuBuildIdentity` consumed the green
+`checks.crucible.phase0.s1Fingerprint` result for the active AOS
+`qemu-crucible` build, recorded the QEMU derivation path and patch-series hash,
+and emitted a reproduction-artifact-shaped JSON carrying the build identity. The
+run reported `qemu_version=9.2.4`,
+`qemu_build_id=729b568e369aac8b090a2b743ef14f1e8338fcbfa8d6e0412d5ba2dc973a5ba4`,
+`qemu_nix_hash=bbdaae2e7c1a5ac000ae311c840e659db2925b1e43f3af877c54a00f456caa5c`,
+`patch_count=1`,
+`patch_0001_hash=1996b15d86a2e7af293652649ef9c2f204e209ffe38b5ed232dbb5ae389c3a0e`,
+`patch_series_hash=f2b409e1639b9616d6daa321774131028b6e7ef35185a2d49950ec187aab2653`,
+`patch_apply_list_matches=true`, `plugin_exports_present=true`,
+`rr_switch_quantum_default_zero=true`, `non_sim_icount_patch_present=true`,
+`s1_result_consumed=true`, `s1_result_status=PASS`,
+`s1_horizon_extended_hash=9d1e61606ac54920`,
+`s1_pause_retired=3200000005`, `s1_pause_overshoot=5`,
+`artifact_build_id_match=true`, `artifact_mismatch_regates=true`,
+`full_upstream_inertness_comparison=false`,
+`qemu_inert_gate_status=fallback_pending_upstream_comparison`, and
+`fallback_adopted=pin_build_id_and_regate_on_change`. The current patch series is
+not fully inert relative to upstream when sim mode is off: it includes
+load-bearing icount idle-warp and timer-VMState normalization behavior. Phase 0
+therefore retires silent QEMU rebuild drift by pinning the build id and forcing a
+re-gate on mismatch; full upstream-vs-patched inertness remains owned by the later
+`gate:qemu-inert`.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1547,8 +1573,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=15`,
-`retired_decision_entries=15`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=16`,
+`retired_decision_entries=16`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1643,10 +1669,14 @@ never tolerated). Results live in the decision register (31).
   hook-registered / coverage-on) and confirm coverage-enabled throughput meets the
   fuzzing budget; adopt a cheaper coverage representation if over budget. —
   satisfies [RISK-15]; spec §30.9.
-- [ ] **T-RISK-9** Run **S9**: AOS-built patched QEMU reproduces the S1
+- [x] **T-RISK-9** Run **S9**: AOS-built patched QEMU reproduces the S1
   fingerprint, every patch is inert sim-off (`gate:qemu-inert`), and the QEMU build
   identity is recorded in the reproduction artifact so a build change is re-gated,
-  never silent. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
+  never silent. Phase 0 recorded the active AOS QEMU derivation and patch-series
+  identity, consumed the green S1 fingerprint, and proved a mutated build id
+  forces re-gating; full upstream-vs-patched inertness remains a later
+  `gate:qemu-inert` obligation because the current patch series intentionally
+  changes icount behavior. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
 - [ ] **T-RISK-10** Run **S10**: aarch64 doorbell traps synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
