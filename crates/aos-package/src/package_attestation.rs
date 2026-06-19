@@ -36,6 +36,7 @@ const TPM2_PCRREAD_ENV: &str = "AOS_TPM2_PCRREAD";
 const TPM2_CHECKQUOTE_ENV: &str = "AOS_TPM2_CHECKQUOTE";
 const TPM2_FLUSHCONTEXT_ENV: &str = "AOS_TPM2_FLUSHCONTEXT";
 const TPM2_TCTI_ENV: &str = "AOS_TPM2_TCTI";
+const EVENT_LOG_FORMAT: &str = "aos-package-cel-v1";
 const PCR_INDEX: u8 = 15;
 const PCR_BANK: &str = "sha256";
 const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
@@ -93,12 +94,21 @@ struct MeasuredPackage {
 }
 
 #[derive(Serialize)]
+struct EventDigestRecord<'a> {
+    algorithm: &'static str,
+    digest: &'a str,
+}
+
+#[derive(Serialize)]
 struct EventLogRecord<'a> {
     format: &'static str,
     pcr: u8,
+    pcr_index: u8,
     bank: &'static str,
+    digests: &'a [EventDigestRecord<'a>],
     event_type: &'static str,
     digest: &'a str,
+    event_size: usize,
     event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pcr_value: Option<&'a str>,
@@ -115,12 +125,43 @@ struct EventLogRecord<'a> {
 }
 
 #[derive(Deserialize)]
+struct OwnedEventDigestRecord {
+    algorithm: String,
+    digest: String,
+}
+
+#[derive(Default)]
+struct OptionalEventField<T> {
+    present: bool,
+    value: Option<T>,
+}
+
+fn deserialize_optional_event_field<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<OptionalEventField<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(OptionalEventField {
+        present: true,
+        value: Some(T::deserialize(deserializer)?),
+    })
+}
+
+#[derive(Deserialize)]
 struct OwnedEventLogRecord {
     format: String,
     pcr: u8,
+    #[serde(default, deserialize_with = "deserialize_optional_event_field")]
+    pcr_index: OptionalEventField<u8>,
     bank: String,
+    #[serde(default, deserialize_with = "deserialize_optional_event_field")]
+    digests: OptionalEventField<Vec<OwnedEventDigestRecord>>,
     event_type: String,
     digest: String,
+    #[serde(default, deserialize_with = "deserialize_optional_event_field")]
+    event_size: OptionalEventField<usize>,
     event: String,
     pcr_value: Option<String>,
     package: Option<String>,
@@ -984,7 +1025,7 @@ fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
 }
 
 fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Result<()> {
-    if record.format != "aos-package-cel-v1" {
+    if record.format != EVENT_LOG_FORMAT {
         bail!(
             "package event log line {line} has unsupported format '{}'",
             record.format
@@ -1001,6 +1042,56 @@ fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Res
             "package event log line {line} uses bank '{}', expected {PCR_BANK}",
             record.bank
         );
+    }
+    validate_pcr_event_fields(line, record)?;
+    Ok(())
+}
+
+fn validate_pcr_event_fields(line: usize, record: &OwnedEventLogRecord) -> Result<()> {
+    let has_pcr_event_fields =
+        record.pcr_index.present || record.digests.present || record.event_size.present;
+    if !has_pcr_event_fields {
+        return Ok(());
+    }
+    let pcr_index = record
+        .pcr_index
+        .value
+        .with_context(|| format!("package event log line {line} is missing pcr_index"))?;
+    if pcr_index != PCR_INDEX {
+        bail!("package event log line {line} has pcr_index {pcr_index}, expected {PCR_INDEX}");
+    }
+    let event_size = record
+        .event_size
+        .value
+        .with_context(|| format!("package event log line {line} is missing event_size"))?;
+    let actual_event_size = record.event.len();
+    if event_size != actual_event_size {
+        bail!(
+            "package event log line {line} has event_size {event_size}, expected {actual_event_size}"
+        );
+    }
+    let digests = record
+        .digests
+        .value
+        .as_ref()
+        .with_context(|| format!("package event log line {line} is missing digests"))?;
+    if digests.len() != 1 {
+        bail!(
+            "package event log line {line} has {} digest entries, expected 1",
+            digests.len()
+        );
+    }
+    let digest = &digests[0];
+    if digest.algorithm != PCR_BANK {
+        bail!(
+            "package event log line {line} uses digest algorithm '{}', expected {PCR_BANK}",
+            digest.algorithm
+        );
+    }
+    let canonical_digest = parse_prefixed_sha256_hex("event digest", &record.digest)?;
+    let listed_digest = parse_prefixed_sha256_hex("event digest list entry", &digest.digest)?;
+    if listed_digest != canonical_digest {
+        bail!("package event log line {line} digest list does not match digest");
     }
     Ok(())
 }
@@ -1235,12 +1326,19 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
 
 fn event_log_line(event: &MeasurementEvent) -> Result<String> {
     let package = event.package.as_ref();
+    let digests = [EventDigestRecord {
+        algorithm: PCR_BANK,
+        digest: &event.digest,
+    }];
     let record = EventLogRecord {
-        format: "aos-package-cel-v1",
+        format: EVENT_LOG_FORMAT,
         pcr: PCR_INDEX,
+        pcr_index: PCR_INDEX,
         bank: PCR_BANK,
+        digests: &digests,
         event_type: event.event_type,
         digest: &event.digest,
+        event_size: event.word.len(),
         event: &event.word,
         pcr_value: event.pcr_value.as_deref(),
         package: package.map(|package| package.name.as_str()),
@@ -1630,6 +1728,37 @@ mod tests {
         (log, root_hash.into(), measurement)
     }
 
+    fn legacy_event_log_without_pcr_event_fields(log: &str) -> String {
+        let lines = log
+            .lines()
+            .map(|line| {
+                let mut record: serde_json::Value = serde_json::from_str(line).expect("record");
+                let object = record.as_object_mut().expect("record object");
+                object.remove("pcr_index");
+                object.remove("digests");
+                object.remove("event_size");
+                serde_json::to_string(&record).expect("legacy record")
+            })
+            .collect::<Vec<_>>();
+        lines.join("\n") + "\n"
+    }
+
+    fn refresh_json_record_pcr_event_fields(record: &mut serde_json::Value) {
+        let digest = record["digest"].as_str().expect("digest").to_string();
+        let event_size = record["event"].as_str().expect("event").len();
+        if record.get("event_size").is_some() {
+            record["event_size"] = serde_json::Value::from(event_size);
+        }
+        if let Some(digests) = record
+            .get_mut("digests")
+            .and_then(|value| value.as_array_mut())
+        {
+            assert_eq!(digests.len(), 1);
+            digests[0]["algorithm"] = serde_json::Value::String(PCR_BANK.into());
+            digests[0]["digest"] = serde_json::Value::String(digest);
+        }
+    }
+
     #[test]
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
@@ -1745,9 +1874,22 @@ mod tests {
 
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         assert!(log.contains("\"format\":\"aos-package-cel-v1\""));
+        assert!(log.contains("\"pcr_index\":15"));
+        assert!(log.contains("\"digests\":[{\"algorithm\":\"sha256\""));
+        assert!(log.contains("\"event_size\":"));
         assert!(log.contains("\"event_type\":\"aos-package-set\""));
         assert!(log.contains("\"event_type\":\"aos-package\""));
         assert!(log.contains("\"package\":\"web\""));
+
+        let first: serde_json::Value =
+            serde_json::from_str(log.lines().next().expect("first log line")).expect("json");
+        assert_eq!(first["pcr_index"], serde_json::Value::from(PCR_INDEX));
+        assert_eq!(first["digests"][0]["algorithm"], PCR_BANK);
+        assert_eq!(first["digests"][0]["digest"], first["digest"]);
+        assert_eq!(
+            first["event_size"],
+            serde_json::Value::from(first["event"].as_str().expect("event").len())
+        );
     }
 
     #[test]
@@ -1760,6 +1902,22 @@ mod tests {
 
         let verified =
             verify_package_event_log_against_catalog(&log, &pcr15, &catalog).expect("verify log");
+
+        assert_eq!(verified.pcr15, pcr15);
+        assert_eq!(verified.package_count, 1);
+    }
+
+    #[test]
+    fn package_event_log_verifier_accepts_legacy_record_shape() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let legacy_log = legacy_event_log_without_pcr_event_fields(&log);
+        let pcr15 = replay_package_event_log_pcr15(&legacy_log).expect("pcr replay");
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let verified = verify_package_event_log_against_catalog(&legacy_log, &pcr15, &catalog)
+            .expect("verify legacy log");
 
         assert_eq!(verified.pcr15, pcr15);
         assert_eq!(verified.package_count, 1);
@@ -1892,6 +2050,70 @@ mod tests {
     }
 
     #[test]
+    fn package_event_log_verifier_rejects_digest_list_mismatch() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let mut lines = log.lines().collect::<Vec<_>>();
+        let mut package: serde_json::Value = serde_json::from_str(lines[1]).expect("package event");
+        package["digests"][0]["digest"] =
+            serde_json::Value::String(format!("sha256:{}", "bb".repeat(32)));
+        let rewritten_package = serde_json::to_string(&package).expect("package json");
+        lines[1] = &rewritten_package;
+        let tampered = lines.join("\n") + "\n";
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let err =
+            verify_package_event_log_against_catalog(&tampered, &pcr15, &catalog).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest list does not match"));
+    }
+
+    #[test]
+    fn package_event_log_verifier_rejects_partial_pcr_event_shape() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let mut lines = log.lines().collect::<Vec<_>>();
+        let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
+        package_set
+            .as_object_mut()
+            .expect("set event object")
+            .remove("digests");
+        let rewritten_set = serde_json::to_string(&package_set).expect("set json");
+        lines[0] = &rewritten_set;
+        let tampered = lines.join("\n") + "\n";
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let err =
+            verify_package_event_log_against_catalog(&tampered, &pcr15, &catalog).unwrap_err();
+
+        assert!(format!("{err:#}").contains("missing digests"));
+    }
+
+    #[test]
+    fn package_event_log_verifier_rejects_null_pcr_event_field() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let mut lines = log.lines().collect::<Vec<_>>();
+        let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
+        package_set["digests"] = serde_json::Value::Null;
+        let rewritten_set = serde_json::to_string(&package_set).expect("set json");
+        lines[0] = &rewritten_set;
+        let tampered = lines.join("\n") + "\n";
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let err =
+            verify_package_event_log_against_catalog(&tampered, &pcr15, &catalog).unwrap_err();
+
+        assert!(format!("{err:#}").contains("invalid type: null"));
+    }
+
+    #[test]
     fn package_event_log_verifier_rejects_catalog_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, _) =
@@ -1951,6 +2173,7 @@ mod tests {
         package_set["event"] = serde_json::Value::String(wrong_word.clone());
         package_set["digest"] =
             serde_json::Value::String(format!("sha256:{}", digest_for_word(&wrong_word)));
+        refresh_json_record_pcr_event_fields(&mut package_set);
         let rewritten_set = serde_json::to_string(&package_set).expect("set json");
         lines[0] = &rewritten_set;
         let tampered = lines.join("\n") + "\n";
