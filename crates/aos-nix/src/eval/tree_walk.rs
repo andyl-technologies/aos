@@ -292,7 +292,23 @@ pub fn eval_whnf_owned_with_options(
     ir: &Ir,
     options: TreeWalkOptions,
 ) -> Result<EvalOutcome, TreeWalkError> {
+    eval_whnf_owned_with_options_and_realizer(ir, options, None)
+}
+
+/// Evaluates an IR root with explicit options and an optional IFD realizer.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation fails.
+pub fn eval_whnf_owned_with_options_and_realizer(
+    ir: &Ir,
+    options: TreeWalkOptions,
+    ifd_realizer: Option<IfdRealizer>,
+) -> Result<EvalOutcome, TreeWalkError> {
     let mut evaluator = TreeWalk::with_options(ir, options);
+    if let Some(realizer) = ifd_realizer {
+        evaluator.set_ifd_realizer(realizer);
+    }
     let value = evaluator.eval_root()?;
     let derivations = evaluator.derivation_snapshot()?;
     Ok(EvalOutcome {

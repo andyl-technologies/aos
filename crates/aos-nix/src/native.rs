@@ -18,7 +18,8 @@ use crate::compile::{
 };
 use crate::error::NativeEvalError;
 use crate::eval::{
-    EvalMode, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, eval_whnf_owned_with_options,
+    EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
+    eval_whnf_owned_with_options_and_realizer,
 };
 use crate::runtime::builtins::lookup_builtin;
 use crate::syntax::{Span, parse_str};
@@ -29,6 +30,7 @@ use crate::value::{Value, ValueTag};
 pub struct NixNative {
     verbose: u8,
     options: TreeWalkOptions,
+    ifd_realizer: Option<IfdRealizer>,
 }
 
 /// An evaluated derivation closure that has not been registered in the store.
@@ -78,12 +80,32 @@ impl NixNative {
     /// may return errors when opening the persistent cache or validating store
     /// paths.
     pub fn with_options(verbose: u8, options: TreeWalkOptions) -> Result<Self> {
-        Ok(Self { verbose, options })
+        Ok(Self {
+            verbose,
+            options,
+            ifd_realizer: None,
+        })
     }
 
     /// Returns the configured verbosity level.
     pub fn verbose(&self) -> u8 {
         self.verbose
+    }
+
+    /// Installs a callback used to realize derivation outputs for IFD.
+    pub fn set_ifd_realizer(&mut self, realizer: IfdRealizer) {
+        self.ifd_realizer = Some(realizer);
+    }
+
+    /// Returns this evaluator with a callback used to realize derivation outputs for IFD.
+    pub fn with_ifd_realizer(mut self, realizer: IfdRealizer) -> Self {
+        self.set_ifd_realizer(realizer);
+        self
+    }
+
+    /// Clears any configured IFD realizer.
+    pub fn clear_ifd_realizer(&mut self) {
+        self.ifd_realizer = None;
     }
 
     /// Evaluates `attr` from `file` to a derivation path.
@@ -191,7 +213,8 @@ impl NixNative {
             unsupported_frontend_error("lower", source.to_string(), source.span(), Some(source_map))
         })?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
-        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+        let outcome = self
+            .eval_ir(&ir)
             .map_err(|error| native_eval_error(error, Some(source_map)))?;
         let string = outcome
             .heap()
@@ -226,7 +249,8 @@ impl NixNative {
         let ir = lower(resolved).map_err(|source| {
             unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
         })?;
-        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+        let outcome = self
+            .eval_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
         derivation_path_from_value(outcome.value(), outcome.heap())
     }
@@ -245,7 +269,8 @@ impl NixNative {
         let ir = lower(resolved).map_err(|source| {
             unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
         })?;
-        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+        let outcome = self
+            .eval_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
         let root = derivation_path_from_value(outcome.value(), outcome.heap())?;
         let mut drvs = BTreeMap::new();
@@ -272,6 +297,14 @@ impl NixNative {
             .into());
         }
         Ok(NativeDrvClosure { root, drvs })
+    }
+
+    fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
+        eval_whnf_owned_with_options_and_realizer(
+            ir,
+            self.options.clone(),
+            self.ifd_realizer.clone(),
+        )
     }
 }
 
@@ -337,6 +370,7 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
         | TreeWalkErrorKind::UnsupportedAttrPath { .. }
         | TreeWalkErrorKind::UnsupportedNode { .. } => true,
+        TreeWalkErrorKind::ImportFromDerivation { .. } => true,
         TreeWalkErrorKind::Type {
             expected,
             actual: ValueTag::Attrs,
@@ -756,8 +790,10 @@ const fn src_span(span: Span) -> crate::error::SrcSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eval::IfdRealizationError;
     use std::fs;
     use std::process::Command;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -791,6 +827,123 @@ mod tests {
             path,
             PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_uses_configured_ifd_realizer() -> Result<()> {
+        let root = unique_temp_dir("native-ifd");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let store = root.join("store");
+        fs::create_dir(&store)?;
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let import_path = output_path.join("imported.nix");
+        let builder = store.join("cccccccccccccccccccccccccccccccc-builder");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_realizer = Arc::clone(&requests);
+        let drv_path_for_realizer = drv_path.as_os_str().as_bytes().to_vec();
+        let import_path_for_realizer = import_path.clone();
+        let output_path_for_realizer = output_path.clone();
+        let realizer = IfdRealizer::new(move |request| {
+            requests_for_realizer
+                .lock()
+                .expect("request log lock")
+                .push((
+                    request.path().to_vec(),
+                    request.drv_path().to_vec(),
+                    request.output_name().map(<[u8]>::to_vec),
+                    request.context_kind(),
+                    request.op(),
+                ));
+            if request.drv_path() != drv_path_for_realizer.as_slice() {
+                return Err(IfdRealizationError::new("unexpected derivation path"));
+            }
+            fs::create_dir_all(&output_path_for_realizer)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            fs::write(&import_path_for_realizer, br#""from-ifd""#)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            Ok(())
+        });
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+        let native = NixNative::with_options(0, options)?.with_ifd_realizer(realizer);
+        let source = format!(
+            r#"let
+                 imported = builtins.appendContext {imported} {{
+                   {drv} = {{ outputs = [ "out" ]; }};
+                 }};
+                 d = builtins.derivationStrict {{
+                   name = "native-ifd";
+                   system = "x86_64-linux";
+                   builder = {builder};
+                   args = [ (import imported) ];
+                 }};
+               in d.drvPath"#,
+            imported = nix_string_literal(&path_bytes(&import_path)?)?,
+            drv = nix_string_literal(&path_bytes(&drv_path)?)?,
+            builder = nix_string_literal(&path_bytes(&builder)?)?,
+        );
+
+        let path = native.eval_derivation_path_source(&source, None)?;
+        assert!(path.to_string_lossy().ends_with("-native-ifd.drv"));
+        let requests = requests.lock().expect("request log lock");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, import_path.as_os_str().as_bytes());
+        assert_eq!(requests[0].1, drv_path.as_os_str().as_bytes());
+        assert_eq!(requests[0].2.as_deref(), Some(b"out".as_slice()));
+        assert_eq!(requests[0].3, crate::string::ContextKind::SingleOutput);
+        assert_eq!(requests[0].4, "import");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_ifd_realizer_failures_remain_fallback_eligible() -> Result<()> {
+        let root = unique_temp_dir("native-ifd-failure");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let store = root.join("store");
+        fs::create_dir(&store)?;
+        let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+        let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+        let import_path = output_path.join("imported.nix");
+        let builder = store.join("cccccccccccccccccccccccccccccccc-builder");
+        let realizer = IfdRealizer::new(|_| Err(IfdRealizationError::new("missing native drv")));
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+        let native = NixNative::with_options(0, options)?.with_ifd_realizer(realizer);
+        let source = format!(
+            r#"let
+                 imported = builtins.appendContext {imported} {{
+                   {drv} = {{ outputs = [ "out" ]; }};
+                 }};
+                 d = builtins.derivationStrict {{
+                   name = "native-ifd";
+                   system = "x86_64-linux";
+                   builder = {builder};
+                   args = [ (import imported) ];
+                 }};
+               in d.drvPath"#,
+            imported = nix_string_literal(&path_bytes(&import_path)?)?,
+            drv = nix_string_literal(&path_bytes(&drv_path)?)?,
+            builder = nix_string_literal(&path_bytes(&builder)?)?,
+        );
+
+        let error = native
+            .eval_derivation_path_source(&source, None)
+            .expect_err("realizer failure remains fallback eligible");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported { feature, .. })
+                    if feature.contains("IFD realization failed")
+                        && feature.contains("missing native drv")
+            ),
+            "{error:?}"
+        );
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 

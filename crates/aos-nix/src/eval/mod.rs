@@ -18,5 +18,6 @@ pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
 pub use tree_walk::{
     EvalDerivation, EvalMode, EvalOutcome, IfdErrorDetail, IfdRealization, IfdRealizationError,
     IfdRealizer, TreeWalk, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
-    eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options, eval_whnf_with_options,
+    eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options,
+    eval_whnf_owned_with_options_and_realizer, eval_whnf_with_options,
 };

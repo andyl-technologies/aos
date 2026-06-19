@@ -22,7 +22,10 @@ use super::env::aos_nix_env;
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
-use aos_nix::{NativeCliFallbackReason, NativeEvalError, NixNative, eval::TreeWalkOptions};
+use aos_nix::{
+    NativeCliFallbackReason, NativeEvalError, NixNative,
+    eval::{IfdRealizationError, IfdRealizer, TreeWalkOptions},
+};
 
 /// A `.drv` closure produced by an evaluator without requiring filesystem reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,9 +452,14 @@ struct NativeFallbackEval {
 impl NativeFallbackEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
+        let fallback = NixCli::with_eval_config(verbose, config.clone());
         Ok(Self {
-            native: NixNative::with_options(verbose, native_options)?,
-            fallback: NixCli::with_eval_config(verbose, config),
+            native: native_with_ifd_realizer(
+                NixNative::with_options(verbose, native_options)?,
+                verbose,
+                config,
+            ),
+            fallback,
         })
     }
 }
@@ -528,7 +536,11 @@ impl NativeOnlyEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
         Ok(Self {
-            native: NixNative::with_options(verbose, native_options)?,
+            native: native_with_ifd_realizer(
+                NixNative::with_options(verbose, native_options)?,
+                verbose,
+                config,
+            ),
         })
     }
 }
@@ -568,9 +580,14 @@ struct ShadowEval {
 impl ShadowEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
+        let fallback = NixCli::with_eval_config(verbose, config.clone());
         Ok(Self {
-            native: NixNative::with_options(verbose, native_options)?,
-            fallback: NixCli::with_eval_config(verbose, config),
+            native: native_with_ifd_realizer(
+                NixNative::with_options(verbose, native_options)?,
+                verbose,
+                config,
+            ),
+            fallback,
         })
     }
 }
@@ -637,6 +654,20 @@ fn native_cli_fallback_reason(error: &anyhow::Error) -> Option<NativeCliFallback
     error
         .downcast_ref::<NativeEvalError>()
         .and_then(NativeEvalError::cli_fallback_reason)
+}
+
+#[cfg(feature = "native-eval")]
+fn native_with_ifd_realizer(native: NixNative, verbose: u8, config: NixEvalConfig) -> NixNative {
+    let realizer = NixCli::with_eval_config(verbose, config);
+    native.with_ifd_realizer(IfdRealizer::new(move |request| {
+        let drv = std::str::from_utf8(request.drv_path()).map_err(|source| {
+            IfdRealizationError::new(format!("IFD derivation path is not UTF-8: {source}"))
+        })?;
+        realizer
+            .realise(drv)
+            .map(|_| ())
+            .map_err(|source| IfdRealizationError::new(source.to_string()))
+    }))
 }
 
 #[cfg(feature = "native-eval")]
