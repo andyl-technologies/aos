@@ -261,6 +261,8 @@ mod tests {
             storage_binding_id: None,
             prefix: String::new(),
             hosted_key_id: None,
+            crawl_policy: "allow_all".into(),
+            llms_txt_body: None,
         }
     }
 

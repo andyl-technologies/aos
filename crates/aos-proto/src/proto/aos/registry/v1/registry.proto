@@ -17,6 +17,10 @@ service RegistryService {
   // Create an org-owned, storage-bound managed registry (phase 2c). Write
   // path: requires a bearer JWT with registry.configure on the org scope.
   rpc CreateRegistry(CreateRegistryRequest) returns (CreateRegistryResponse);
+  // Set a registry's crawl policy (the generated robots.txt posture). Write
+  // path: requires registry.configure at the registry scope; applied as an
+  // audited change-set.
+  rpc SetCrawlPolicy(SetCrawlPolicyRequest) returns (SetCrawlPolicyResponse);
 }
 
 // Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
@@ -214,6 +218,11 @@ message Registry {
   repeated Cache caches = 10;
   // Committed signing-key roster.
   repeated RosterKey roster = 11;
+  // Crawl posture backing the generated robots.txt:
+  // allow_all | allow_no_ai | deny_all.
+  string crawl_policy = 12;
+  // Operator-authored llms.txt body served verbatim (empty = auto-generated).
+  string llms_txt_body = 13;
 }
 
 message Cache {
@@ -409,6 +418,18 @@ message CreateRegistryRequest {
 
 message CreateRegistryResponse {
   Registry registry = 1;
+}
+
+message SetCrawlPolicyRequest {
+  // Canonical registry path or flat slug.
+  string slug = 1;
+  // New crawl policy: allow_all | allow_no_ai | deny_all.
+  string policy = 2;
+}
+
+message SetCrawlPolicyResponse {
+  // The applied crawl policy (echoed back).
+  string policy = 1;
 }
 
 // -- Audit log (phase 3a) --------------------------------------------------

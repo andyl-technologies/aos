@@ -1240,6 +1240,16 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE frontends ADD COLUMN proxy_config TEXT;
     ALTER TABLE frontends ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;
     ",
+    // v26: per-registry crawl policy and custom llms.txt (RFC-0004 registry
+    // hub, robots/llms slice). `crawl_policy` is the three-valued
+    // allow_all|allow_no_ai|deny_all posture backing the generated robots.txt;
+    // `llms_txt_body`, when non-NULL, is an operator-authored llms.txt served
+    // verbatim instead of the generated document. Additive with a permissive
+    // default, so existing registries keep allow-all crawling.
+    "
+    ALTER TABLE registries ADD COLUMN crawl_policy TEXT NOT NULL DEFAULT 'allow_all';
+    ALTER TABLE registries ADD COLUMN llms_txt_body TEXT;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -1314,6 +1324,12 @@ pub struct RegistryRecord {
     /// BYO-key registry (the default — the channel console only prepares
     /// client-signed operations).
     pub hosted_key_id: Option<i64>,
+    /// Crawl posture for the generated `robots.txt`: one of `allow_all`,
+    /// `allow_no_ai`, or `deny_all` (see [`crate::crawl::CrawlPolicy`]).
+    pub crawl_policy: String,
+    /// Operator-authored `llms.txt` body served verbatim, or `None` to serve
+    /// the document generated from the registry's packages and channels.
+    pub llms_txt_body: Option<String>,
 }
 
 /// A storage binding (system-of-record row): a named backend an org's
@@ -6754,6 +6770,21 @@ impl Database {
         Ok(())
     }
 
+    /// Delete an instance-config value by key (a no-op when the key is unset).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn instance_config_delete(&self, key: &str) -> Result<()> {
+        self.backend
+            .execute(
+                "DELETE FROM instance_config WHERE config_key = ?1",
+                &vals![key],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// The instance-config key the sealed draft-signing seed is stored under.
     const DRAFT_SIGNING_KEY: &'static str = "draft_signing_key";
 
@@ -8898,6 +8929,129 @@ impl Database {
         Ok(())
     }
 
+    /// Set a registry's crawl policy by slug.
+    ///
+    /// Writes the `crawl_policy` column directly (the policy string is validated
+    /// at the CLI / API / console boundary via
+    /// [`CrawlPolicy::parse`](crate::crawl::CrawlPolicy::parse)). The generated
+    /// `robots.txt` reflects the change on the next read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure. A slug that names no registry is a
+    /// silent no-op (zero rows updated), matching SQL `UPDATE` semantics.
+    pub async fn set_registry_crawl_policy(&self, slug: &str, policy: &str) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE registries SET crawl_policy = ?2 WHERE slug = ?1",
+                &vals![slug, policy],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Set or clear a registry's custom `llms.txt` body by slug.
+    ///
+    /// A `Some(body)` stores an operator-authored document served verbatim; a
+    /// `None` clears the override so the hub serves the document generated from
+    /// the registry's packages and channels instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure. A slug that names no registry is a
+    /// silent no-op (zero rows updated).
+    pub async fn set_registry_llms_txt(&self, slug: &str, body: Option<&str>) -> Result<()> {
+        self.backend
+            .execute(
+                "UPDATE registries SET llms_txt_body = ?2 WHERE slug = ?1",
+                &vals![slug, body],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// The instance-root crawl policy (defaulting to allow-all when unset).
+    ///
+    /// Reads the `root_crawl_policy` instance-config key and parses it leniently
+    /// through [`CrawlPolicy::parse_or_default`](crate::crawl::CrawlPolicy::parse_or_default)
+    /// so a malformed stored value never breaks the generated root `robots.txt`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn root_crawl_policy(&self) -> Result<crate::crawl::CrawlPolicy> {
+        Ok(self
+            .instance_config_get("root_crawl_policy")
+            .await?
+            .map(|v| crate::crawl::CrawlPolicy::parse_or_default(&v))
+            .unwrap_or_default())
+    }
+
+    /// Set the instance-root crawl policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_root_crawl_policy(&self, policy: crate::crawl::CrawlPolicy) -> Result<()> {
+        self.instance_config_set("root_crawl_policy", policy.as_str())
+            .await
+    }
+
+    /// The operator-authored instance-root `robots.txt` override, if any.
+    ///
+    /// `None` means the hub serves the document generated from
+    /// [`Self::root_crawl_policy`] instead of a custom body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn root_robots_body(&self) -> Result<Option<String>> {
+        self.instance_config_get("root_robots_body").await
+    }
+
+    /// Set or clear the instance-root `robots.txt` override.
+    ///
+    /// A `Some(body)` is served verbatim; a `None` clears the override (an empty
+    /// `robots.txt` value is stored as the empty string and so still counts as a
+    /// custom override — pass `None` to revert to the generated document).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_root_robots_body(&self, body: Option<&str>) -> Result<()> {
+        match body {
+            Some(value) => self.instance_config_set("root_robots_body", value).await,
+            None => self.instance_config_delete("root_robots_body").await,
+        }
+    }
+
+    /// The operator-authored instance-root `llms.txt` override, if any.
+    ///
+    /// `None` means the hub serves the document generated from the instance's
+    /// public registries instead of a custom body.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn root_llms_body(&self) -> Result<Option<String>> {
+        self.instance_config_get("root_llms_body").await
+    }
+
+    /// Set or clear the instance-root `llms.txt` override.
+    ///
+    /// A `Some(body)` is served verbatim; a `None` clears the override so the
+    /// generated document is served instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_root_llms_body(&self, body: Option<&str>) -> Result<()> {
+        match body {
+            Some(value) => self.instance_config_set("root_llms_body", value).await,
+            None => self.instance_config_delete("root_llms_body").await,
+        }
+    }
+
     // -- audit log ----------------------------------------------------------
 
     /// Append one audit-log row; returns its new id.
@@ -9621,7 +9775,8 @@ fn parse_permission_names(json: &str) -> Vec<crate::domain::Permission> {
 /// The column list every `RegistryRecord` query selects, in the order
 /// [`row_to_registry`] reads.
 const REGISTRY_COLUMNS: &str = "id, slug, source_url, trust_keys, require_signatures, \
-     org_id, project_path, visibility, storage_binding_id, prefix, hosted_key_id";
+     org_id, project_path, visibility, storage_binding_id, prefix, hosted_key_id, \
+     crawl_policy, llms_txt_body";
 
 /// A managed cache (system-of-record row) — a hub-hosted Nix binary cache.
 ///
@@ -9934,6 +10089,8 @@ fn row_to_registry(row: &Row) -> Result<RegistryRecord> {
         storage_binding_id: row.get(8)?,
         prefix: row.get(9)?,
         hosted_key_id: row.get(10)?,
+        crawl_policy: row.get(11)?,
+        llms_txt_body: row.get(12)?,
     })
 }
 
@@ -12535,6 +12692,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(db.signup_policy().await.unwrap(), SignupPolicy::InviteOnly);
+    }
+
+    #[tokio::test]
+    async fn registry_crawl_policy_and_llms_defaults_and_round_trip() {
+        use crate::crawl::CrawlPolicy;
+        let db = Database::open_in_memory().await.unwrap();
+        db.register_registry("demo", "/srv/demo", &[], false)
+            .await
+            .unwrap();
+
+        // The new columns default permissively / null on an existing registry.
+        let reg = db.registry_by_slug("demo").await.unwrap().unwrap();
+        assert_eq!(reg.crawl_policy, "allow_all");
+        assert_eq!(reg.llms_txt_body, None);
+
+        // Crawl policy round-trips by slug.
+        db.set_registry_crawl_policy("demo", CrawlPolicy::DenyAll.as_str())
+            .await
+            .unwrap();
+        let reg = db.registry_by_slug("demo").await.unwrap().unwrap();
+        assert_eq!(reg.crawl_policy, "deny_all");
+
+        // Custom llms.txt sets and clears.
+        db.set_registry_llms_txt("demo", Some("# custom\n"))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_by_slug("demo").await.unwrap().unwrap().llms_txt_body,
+            Some("# custom\n".to_string())
+        );
+        db.set_registry_llms_txt("demo", None).await.unwrap();
+        assert_eq!(
+            db.registry_by_slug("demo").await.unwrap().unwrap().llms_txt_body,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn root_crawl_policy_and_overrides_round_trip() {
+        use crate::crawl::CrawlPolicy;
+        let db = Database::open_in_memory().await.unwrap();
+        // Defaults to allow-all when unset.
+        assert_eq!(db.root_crawl_policy().await.unwrap(), CrawlPolicy::AllowAll);
+        db.set_root_crawl_policy(CrawlPolicy::AllowNoAi).await.unwrap();
+        assert_eq!(db.root_crawl_policy().await.unwrap(), CrawlPolicy::AllowNoAi);
+        // A corrupt stored value reads as the permissive default (lenient read).
+        db.instance_config_set("root_crawl_policy", "garbage")
+            .await
+            .unwrap();
+        assert_eq!(db.root_crawl_policy().await.unwrap(), CrawlPolicy::AllowAll);
+
+        // Root robots/llms overrides set and clear.
+        assert_eq!(db.root_robots_body().await.unwrap(), None);
+        db.set_root_robots_body(Some("User-agent: *\n")).await.unwrap();
+        assert_eq!(
+            db.root_robots_body().await.unwrap(),
+            Some("User-agent: *\n".to_string())
+        );
+        db.set_root_robots_body(None).await.unwrap();
+        assert_eq!(db.root_robots_body().await.unwrap(), None);
+
+        db.set_root_llms_body(Some("# hub\n")).await.unwrap();
+        assert_eq!(db.root_llms_body().await.unwrap(), Some("# hub\n".to_string()));
+        db.set_root_llms_body(None).await.unwrap();
+        assert_eq!(db.root_llms_body().await.unwrap(), None);
     }
 
     #[tokio::test]

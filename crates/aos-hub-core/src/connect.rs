@@ -105,6 +105,19 @@ fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
     SendWrapper::new(fut)
 }
 
+/// Build a `text/plain; charset=utf-8` `200` response with a one-hour public
+/// cache, for the generated `robots.txt` / `llms.txt` documents.
+fn text_plain_response(body: String) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=3600"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 /// Render an [`RpcError`] as the Connect-JSON error envelope plus HTTP status.
 fn error_response(err: &RpcError) -> Response {
     let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -757,6 +770,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/GetRegistry", get_registry);
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/CreateRegistry", create_registry);
+    r = rpc_route!(r, "/aos.registry.v1.RegistryService/SetCrawlPolicy", set_crawl_policy);
     // OrgService
     r = rpc_route!(r, "/aos.registry.v1.OrgService/CreateOrg", create_org);
     r = rpc_route!(r, "/aos.registry.v1.OrgService/GetOrg", get_org);
@@ -832,6 +846,66 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             .route("/_assets/jetbrains-mono-regular.woff2", get(assets::font_regular))
             .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
             .route("/_assets/OFL.txt", get(assets::font_license));
+        // Crawler-control and LLM-summary documents, served from the shared
+        // router so both shells expose identical output. Static-prefixed, so
+        // they outrank the facade wildcard. The per-registry forms gate on
+        // public visibility inside the service (a non-public registry's document
+        // is a `404`). Each is `text/plain` with a one-hour cache.
+        r = r
+            .route(
+                "/robots.txt",
+                get(|State(state): State<SharedState>| {
+                    let svc = from_state(state);
+                    send_bridge(async move {
+                        match svc.serve_root_robots().await {
+                            Ok(body) => text_plain_response(body),
+                            Err(err) => error_response(&err),
+                        }
+                    })
+                }),
+            )
+            .route(
+                "/llms.txt",
+                get(|State(state): State<SharedState>| {
+                    let svc = from_state(state);
+                    send_bridge(async move {
+                        match svc.serve_root_llms().await {
+                            Ok(body) => text_plain_response(body),
+                            Err(err) => error_response(&err),
+                        }
+                    })
+                }),
+            )
+            .route(
+                "/{slug}/robots.txt",
+                get(
+                    |State(state): State<SharedState>, Path(slug): Path<String>| {
+                        let svc = from_state(state);
+                        send_bridge(async move {
+                            match svc.serve_registry_robots(&slug).await {
+                                Ok(Some(body)) => text_plain_response(body),
+                                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                                Err(err) => error_response(&err),
+                            }
+                        })
+                    },
+                ),
+            )
+            .route(
+                "/{slug}/llms.txt",
+                get(
+                    |State(state): State<SharedState>, Path(slug): Path<String>| {
+                        let svc = from_state(state);
+                        send_bridge(async move {
+                            match svc.serve_registry_llms(&slug).await {
+                                Ok(Some(body)) => text_plain_response(body),
+                                Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                                Err(err) => error_response(&err),
+                            }
+                        })
+                    },
+                ),
+            );
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
         // the `/{slug}/-/api/…` JSON read API. These static-prefixed routes win
         // over the facade wildcard below by axum's static-over-dynamic

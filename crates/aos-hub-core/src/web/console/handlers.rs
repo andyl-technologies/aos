@@ -2870,6 +2870,77 @@ async fn registry_visibility_action(
     registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), started).await
 }
 
+/// `POST /{slug}/-/settings/crawl` form: the new crawl policy.
+#[derive(serde::Deserialize)]
+pub(crate) struct CrawlPolicyForm {
+    #[serde(default)]
+    csrf: String,
+    policy: String,
+}
+
+/// `POST /{slug}/-/settings/crawl` — change a registry's crawl policy.
+pub(crate) async fn registry_crawl_policy(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<CrawlPolicyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(reg) => reg,
+        Err(err) => return internal(err),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    registry_crawl_policy_action(&deps, &session, &registry, &form.csrf, &form.policy, started).await
+}
+
+/// The crawl-policy-change action (mirrors [`registry_visibility_action`]).
+async fn registry_crawl_policy_action(
+    deps: &ConsoleDeps,
+    session: &Session,
+    registry: &RegistryRecord,
+    csrf: &str,
+    policy: &str,
+    started: Instant,
+) -> Response {
+    if let Err(resp) = check_csrf(session, csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&registry.slug);
+    if let Some(deny) = require_org_perm(deps, session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let policy = match crate::crawl::CrawlPolicy::parse(policy.trim()) {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid crawl policy").into_response(),
+    };
+    let change_id = match config::change_registry_crawl_policy(
+        &deps.db,
+        &session.principal(),
+        &session.email,
+        registry.id,
+        policy.as_str(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(err) => return internal(err),
+    };
+    let updated = match deps.db.registry_by_slug(&registry.slug).await {
+        Ok(Some(reg)) => reg,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
+    };
+    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), started).await
+}
+
 /// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
 #[derive(serde::Deserialize)]
 pub(crate) struct RegistryDeleteForm {
