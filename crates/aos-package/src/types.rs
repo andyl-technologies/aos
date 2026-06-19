@@ -1512,7 +1512,34 @@ pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
         validate_relative_artifact_path("attestation root_hash_sig", root_hash_sig, ".p7s")?;
     }
     if let Some(provenance) = &meta.provenance {
-        validate_relative_artifact_path("attestation provenance", provenance, ".jsonl")?;
+        validate_attestation_provenance_ref(provenance)?;
+    }
+    Ok(())
+}
+
+/// Validate a registry-hosted attestation provenance JSONL reference.
+///
+/// The package registry cache has reserved top-level trees for package
+/// metadata, store-graph records, transport state, and transparency metadata.
+/// Provenance statements may use the generated `provenance/` tree or a
+/// custom artifact directory, but must not masquerade as those cache-owned
+/// trees.
+///
+/// # Errors
+///
+/// Returns an error when `path` is not a safe relative `.jsonl` artifact path
+/// or targets a cache-owned registry subtree.
+pub fn validate_attestation_provenance_ref(path: &str) -> Result<()> {
+    validate_relative_artifact_path("attestation provenance", path, ".jsonl")?;
+    if matches!(
+        Path::new(path).components().next(),
+        Some(std::path::Component::Normal(part))
+            if matches!(
+                part.to_str(),
+                Some("packages" | "store" | "repo.git" | "transparency")
+            )
+    ) {
+        bail!("attestation provenance path '{path}' must not target a cache-owned subtree");
     }
     Ok(())
 }
@@ -4595,6 +4622,18 @@ last_update = "2026-02-13T10:30:00Z"
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
+    }
+
+    #[test]
+    fn package_meta_rejects_cache_owned_provenance_path() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.provenance = Some("packages/w/web.provenance.jsonl".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
+        );
     }
 
     #[test]

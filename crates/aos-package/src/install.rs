@@ -56,7 +56,10 @@ use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{ApmMeta, InstalledMeta, PackageMeta, validate_registry_name};
+use super::types::{
+    ApmMeta, InstalledMeta, PackageMeta, validate_attestation_provenance_ref,
+    validate_registry_name,
+};
 use super::verify::{verify_downloads, verify_nar_hash};
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
@@ -956,21 +959,7 @@ fn read_provenance_artifact(
 }
 
 fn ensure_safe_provenance_ref(path: &str) -> Result<()> {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || !path.ends_with(".jsonl")
-    {
-        anyhow::bail!("attestation provenance path '{path}' must be a relative *.jsonl path");
-    }
-    for component in Path::new(path).components() {
-        match component {
-            Component::Normal(part) if !part.is_empty() => {}
-            _ => {
-                anyhow::bail!(
-                    "attestation provenance path '{path}' must not contain '.', '..', or prefixes"
-                );
-            }
-        }
-    }
-    Ok(())
+    validate_attestation_provenance_ref(path)
 }
 
 /// Build NAR download requests for missing expose artifacts.
@@ -2037,6 +2026,28 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("must not contain '.', '..', or prefixes")
+        );
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_cache_owned_ref() {
+        let tmp = TempDir::new().unwrap();
+        let mut meta = attested_sample_package();
+        meta.attestation.provenance = Some("packages/w/web.provenance.jsonl".to_string());
+        let provenance = meta.attestation.provenance.as_deref().unwrap();
+        let path = tmp.path().join("test-reg").join(provenance);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, provenance_statement(&meta)).unwrap();
+
+        let err = verify_install_provenance_from_cache(
+            tmp.path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
         );
     }
 
