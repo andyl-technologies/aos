@@ -1067,6 +1067,38 @@ register.
     realization discipline and mitigates RISK-8 by non-use of unverified fat
     snapshots.
 
+- **RISK-12 / T-RISK-5 — S5 guest virtual-memory payload reads**
+  - **Status:** PASS; the virtual pointer+length payload form is retained for
+    the future white-box channel, with no physical/pinned fallback adopted.
+  - **Check:** `checks.crucible.phase0.s5VirtualMemory`.
+  - **Result:** `qemu_plugin_read_memory_vaddr_available=true`,
+    `doorbell_surface=phase0_instruction_marker_double`,
+    `payload_source=register_triplet_kind_ptr_len`,
+    `virtual_address_read_result=pass`, `placements=3`,
+    `resident_read=pass`, `page_spanning_read=pass`,
+    `paged_mmap_read=pass`, `resident_hash=93a22074ef79eb33`,
+    `page_spanning_hash=ecd488b1a020006b`,
+    `paged_mmap_hash=98f3acaccd62e603`,
+    `marker_icounts=3002401208,3002411158,3002477481`,
+    `marker_icounts_reproducible=true`,
+    `read_bytes_match_expected=true`, `read_hashes_reproducible=true`,
+    `side_effect_free_fingerprint_match=true`,
+    `final_state_hash=a44d04105ec7d933`,
+    `final_ram_hash=2e8cb41c2c678a33`,
+    `final_register_hash=00d6dfa86854f13d`,
+    `production_whitebox_channel_implemented=false`,
+    `physical_pinned_fallback_adopted=false`, `s5_complete=true`.
+  - **Scope:** validates QEMU's plugin virtual-memory read API from a synchronous
+    instruction-marker double in one diskless x86_64 Linux guest. The guest
+    supplies `(kind, ptr, len)` through registers at the marker; the plugin reads
+    resident, page-spanning, and normal anonymous-`mmap` payloads at that marker,
+    then compares read-enabled and read-disabled final fingerprints. This does
+    not implement the production white-box doorbell, binary decoder, disabled
+    inertness behavior, app-random write-back, or white-box on/off gate.
+  - **Fallback:** none adopted for the measured virtual-address read path; the
+    physical / pinned identity-mapped page remains a specified fallback if a later
+    production channel path invalidates this spike.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1266,7 +1298,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=12`, `retired_decision_entries=12`,
+  - **Result:** `checked_risk_tasks=13`, `retired_decision_entries=13`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
