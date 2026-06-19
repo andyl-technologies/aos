@@ -1450,6 +1450,37 @@ white-box channel. The production doorbell, binary frame decoder, inertness, and
 white-box on/off fingerprint gates remain owned by the later `T-GHC-*` and
 `T-PLUG-*` implementation tasks.
 
+**RISK-13** is retired by `T-RISK-6`:
+`checks.crucible.phase0.s6KaslrAslr` booted the same stock Linux kernel plus a
+diskless initramfs under the S1 deterministic launch controls, first with the
+conservative `nokaslr norandmaps` command-line control and then with those flags
+removed. Each mode ran twice; the second run injected host scheduling jitter. The
+guest probe mounted `/proc`, confirmed `randomize_va_space=0` for the control and
+`randomize_va_space=2` for the randomized mode, read the resolved kernel text
+symbol from `/proc/kallsyms`, and sampled stack, heap, brk, anonymous-`mmap`, and
+VDSO bases. The plugin used the extended fingerprint without memory-event
+callbacks, sampled every `200000000` retired instructions, and paused through QMP
+at `3400000000` retired instructions after the guest printed `TEST_RESULT:PASS`.
+The run reported `control_fingerprint_match=true`,
+`control_bases_identical=true`, `randomized_fingerprint_match=true`,
+`randomized_sample_count_match=true`, `randomized_bases_identical=true`,
+`control_randomize_va_space=0`, `randomized_randomize_va_space=2`,
+`kernel_text_nonzero=true`, `kernel_base_identical=true`,
+`stack_base_identical=true`, `heap_base_identical=true`,
+`brk_base_identical=true`, `mmap_base_identical=true`,
+`vdso_base_identical=true`, `kernel_base_differs_from_control=true`,
+`stack_base_differs_from_control=true`, `heap_base_differs_from_control=true`,
+`brk_base_differs_from_control=true`, `mmap_base_differs_from_control=true`,
+`vdso_base_differs_from_control=true`, `register_read_failures=0`,
+`first_differing_line=none`, `first_differing_component=none`,
+`randomization_reenabled_capability=true`,
+`default_decision=randomization_may_be_enabled_per_image`, and
+`fallback_adopted=none`. This retires the Phase-0 KASLR/ASLR necessity risk for
+the measured diskless stock-Linux proof path: with deterministic E8/E9 seeding,
+the randomized bases are reproducible across runs and genuinely differ from the
+conservative control. The result permits randomization to be recorded as a
+per-image capability; it is not a global default flip.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1492,8 +1523,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=13`,
-`retired_decision_entries=13`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=14`,
+`retired_decision_entries=14`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1510,7 +1541,7 @@ Phase-0 blockers (run/pass first, in priority order):
 
 Gated-but-not-blocking spikes:
   S5   plugin reads guest VIRTUAL memory via marker double (physical fallback unused)
-  S6   deterministic boot WITH KASLR (else keep nokaslr/norandmaps default)
+  S6   deterministic boot WITH KASLR/ASLR (per-image re-enable capability)
   S7   exact next-deadline + zero ceiling overshoot (else TB-split / conservative)
   S8   TCG-exec coverage cheap enough for fuzzing (else cheaper representation)
   S9   determinism survives AOS QEMU build / version bumps (pin build id; re-gate)
@@ -1570,10 +1601,13 @@ never tolerated). Results live in the decision register (31).
   instruction-marker doorbell double carrying `(kind, ptr, len)` in registers;
   the production white-box channel remains a later implementation task. —
   satisfies [RISK-12], [GHC-33]; spec §30.6.
-- [ ] **T-RISK-6** Run **S6**: KASLR/ASLR-enabled boot fingerprint-identical across
+- [x] **T-RISK-6** Run **S6**: KASLR/ASLR-enabled boot fingerprint-identical across
   runs given fully-seeded E8/E9; decide whether `nokaslr`/`norandmaps` are required
-  or merely conservative; keep the conservative default until green. — satisfies
-  [RISK-13], [DET-33]; spec §30.7.
+  or merely conservative; keep the conservative default until green. Phase 0
+  verified the randomized command-line mode with QMP-stop extended fingerprints
+  and explicit kernel/user base probes; randomization may be recorded as a
+  per-image capability, with no fallback adopted. — satisfies [RISK-13],
+  [DET-33]; spec §30.7.
 - [ ] **T-RISK-7** Run **S7**: plugin reports the exact next virtual-clock deadline
   at idle and advances to exactly `max_advance_icount` with zero overshoot (incl.
   mid-TB ceilings); adopt TB-split-at-ceiling or conservative-ceiling fallback if
