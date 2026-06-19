@@ -123,6 +123,8 @@ const DEFAULT_STORE_DIR: &[u8] = b"/nix/store";
 const DEFAULT_MAX_CALL_DEPTH: usize = 10_000;
 const PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-output:";
 const UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX: &[u8] = b"nix-upstream-output:";
+const DERIVATION_EXTENSION: &str = ".drv";
+const DERIVATION_NAME_MAX_LEN: usize = 211;
 const TRACE_PREFIX: &[u8] = b"trace: ";
 const WARNING_PREFIX: &[u8] = b"evaluation warning:";
 const WARNING_CONTINUATION_INDENT: &[u8] = b"                    ";
@@ -3243,15 +3245,6 @@ impl TreeWalk {
             }
         }
 
-        if name.is_empty() {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::DerivationStrict {
-                    id,
-                    message: "derivation name must not be empty".to_owned(),
-                },
-                span,
-            ));
-        }
         derivation.builder =
             builder.ok_or_else(|| self.missing_derivation_strict_attr(id, span, BUILDER_ATTR))?;
         derivation.system =
@@ -3261,6 +3254,7 @@ impl TreeWalk {
                 .outputs
                 .insert("out".to_owned(), nix_compat::derivation::Output::default());
         }
+        Self::validate_derivation_strict_name_suffix(id, span, &name)?;
         Self::configure_derivation_fixed_output(
             id,
             span,
@@ -3491,10 +3485,108 @@ impl TreeWalk {
             }
             let bytes = Self::copy_bytes_for_node(attrs_id, attrs_span, string.bytes())?;
             let name = Self::derivation_utf8_string(id, span, "derivation name", &bytes)?;
+            Self::validate_derivation_strict_name(id, span, &name)?;
             return Ok(name);
         }
 
         Err(self.missing_derivation_strict_attr(id, span, NAME_ATTR))
+    }
+
+    fn validate_derivation_strict_name(
+        id: IrId,
+        span: Span,
+        name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if let Some(reason) = Self::derivation_strict_name_error_reason(name) {
+            return Err(Self::invalid_derivation_strict_name_error(id, span, reason));
+        }
+
+        Ok(())
+    }
+
+    fn derivation_strict_name_error_reason(name: &str) -> Option<String> {
+        if name.is_empty() {
+            return Some("name must not be empty".to_owned());
+        }
+        if name.len() > DERIVATION_NAME_MAX_LEN {
+            return Some(format!(
+                "name '{name}' must be no longer than {DERIVATION_NAME_MAX_LEN} characters"
+            ));
+        }
+        if name == "." || name == ".." {
+            return Some(format!("name '{name}' is not valid"));
+        }
+        if name.starts_with(".-") {
+            return Some(format!(
+                "name '{name}' is not valid: first dash-separated component must not be '.'"
+            ));
+        }
+        if name.starts_with("..-") {
+            return Some(format!(
+                "name '{name}' is not valid: first dash-separated component must not be '..'"
+            ));
+        }
+        for character in name.chars() {
+            if !Self::is_derivation_name_char(character) {
+                return Some(format!(
+                    "name '{name}' contains illegal character '{}'",
+                    character
+                ));
+            }
+        }
+
+        None
+    }
+
+    fn is_derivation_name_char(character: char) -> bool {
+        character.is_ascii() && Self::is_derivation_name_byte(character as u8)
+    }
+
+    fn is_derivation_name_byte(byte: u8) -> bool {
+        matches!(
+            byte,
+            b'0'..=b'9'
+                | b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'_'
+                | b'?'
+                | b'='
+        )
+    }
+
+    fn validate_derivation_strict_name_suffix(
+        id: IrId,
+        span: Span,
+        name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if name.ends_with(DERIVATION_EXTENSION) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!(
+                        "derivation names are allowed to end in '{DERIVATION_EXTENSION}' only if they produce a single derivation file"
+                    ),
+                },
+                span,
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn invalid_derivation_strict_name_error(id: IrId, span: Span, reason: String) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::DerivationStrict {
+                id,
+                message: format!(
+                    "invalid derivation name: {reason}. Please pass a different 'name'."
+                ),
+            },
+            span,
+        )
     }
 
     fn derivation_ignore_nulls_value(
@@ -3698,7 +3790,7 @@ impl TreeWalk {
             .filter(|output| !output.is_empty())
         {
             let output_name = Self::derivation_utf8_string(id, span, "output name", output)?;
-            Self::validate_derivation_strict_output_name(id, span, &output_name)?;
+            Self::validate_derivation_strict_declared_output_name(id, span, &output_name)?;
             if outputs
                 .insert(
                     output_name.clone(),
@@ -3788,7 +3880,7 @@ impl TreeWalk {
             let bytes =
                 self.derivation_context_free_string_value(id, span, value_id, value_span, value)?;
             let output_name = Self::derivation_utf8_string(id, span, "output name", &bytes)?;
-            Self::validate_derivation_strict_output_name(id, span, &output_name)?;
+            Self::validate_derivation_strict_declared_output_name(id, span, &output_name)?;
             if outputs
                 .insert(
                     output_name.clone(),
@@ -4923,6 +5015,23 @@ impl TreeWalk {
                 TreeWalkErrorKind::DerivationStrict {
                     id,
                     message: format!("invalid input derivation output name {output_name:?}"),
+                },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_derivation_strict_declared_output_name(
+        id: IrId,
+        span: Span,
+        output_name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if output_name == "drvPath" {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("invalid derivation output name {output_name:?}"),
                 },
                 span,
             ));
@@ -52951,6 +53060,154 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn derivation_strict_rejects_invalid_derivation_names_before_later_attrs() {
+        let long_name = "a".repeat(DERIVATION_NAME_MAX_LEN + 1);
+        let cases = [
+            ("", "name must not be empty"),
+            ("bad/name", "contains illegal character '/'"),
+            (".", "name '.' is not valid"),
+            (
+                ".-component",
+                "first dash-separated component must not be '.'",
+            ),
+            ("..", "name '..' is not valid"),
+            (
+                "..-component",
+                "first dash-separated component must not be '..'",
+            ),
+            (long_name.as_str(), "must be no longer than 211 characters"),
+        ];
+        for (name, reason) in cases {
+            let source = format!(
+                r#"derivationStrict {{
+                     name = {name:?};
+                     system = builtins.throw "late";
+                     builder = builtins.throw "late";
+                   }}"#
+            );
+            let error = eval_whnf_owned(&lower(&source))
+                .expect_err("invalid derivation name must be rejected before later attrs");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::DerivationStrict {
+                        message,
+                        ..
+                    } if message.contains("invalid derivation name")
+                        && message.contains(reason)
+                ),
+                "{name:?}: {error:?}"
+            );
+        }
+
+        let error = eval_whnf_owned(&lower(
+            r#"derivationStrict {
+                 name = builtins.fromJSON "\"cafe\\u0301\"";
+                 system = builtins.throw "late";
+                 builder = builtins.throw "late";
+               }"#,
+        ))
+        .expect_err("non-ASCII derivation name must be rejected before later attrs");
+        assert!(
+            matches!(
+                error.kind(),
+                TreeWalkErrorKind::DerivationStrict {
+                    message,
+                    ..
+                } if message.contains("invalid derivation name")
+                    && message.contains("contains illegal character '\u{301}'")
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_supported_names_ending_in_drv() {
+        for source in [
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 __contentAddressed = true;
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 __impure = true;
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 outputs = "bad/name";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 __structuredAttrs = true;
+                 outputs = [ "bad/name" ];
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 outputHash = "not-a-hash";
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 outputHash = "";
+               }"#,
+            r#"derivationStrict {
+                 name = "bad.drv";
+                 system = ":";
+                 builder = ":";
+                 __contentAddressed = true;
+                 __impure = true;
+               }"#,
+        ] {
+            let error = eval_whnf_owned(&lower(source))
+                .expect_err("supported derivation forms reject names ending in .drv");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::DerivationStrict {
+                        message,
+                        ..
+                    } if message.contains("end in '.drv'")
+                ),
+                "{source}: {error:?}"
+            );
+        }
     }
 
     #[test]
