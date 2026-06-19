@@ -59,6 +59,7 @@ test that enforces it, and a back-pointer to the defining section.
 | `IO` | I/O sub-nodes (disk / 9p / net devices) | 15 |
 | `GHC` | Guest↔host channel | 16 |
 | `FAULT` | Fault injection | 17 |
+| `TRIG` | Conditions, triggers, and the event graph | 17a |
 | `ASRT` | Assertions & properties | 18 |
 | `OBS` | Observability / event log | 19 |
 | `SESS` | Session / control plane | 20 |

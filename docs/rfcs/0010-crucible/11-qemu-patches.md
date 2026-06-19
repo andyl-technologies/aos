@@ -169,9 +169,10 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-no-warp-with-plugin .. suppress idle warp        D    DET-10, TIME-21, E2
   crucible-icount-no-realtime ... drop realtime from budget D    DET-9,  TIME-22, E3
   crucible-block-rtc-read ....... seed/pin guest RTC base   D    DET-8,  E5  (launch+patch)
-  crucible-det-glib-prng ........ deterministic glib GRand  D    DET-21, E9
+  crucible-det-glib-prng ........ seed global GRand (1-line) D    DET-21, E9
   crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, E9
   crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, E18
+  (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-time-advance .. request+advance vtime     D    TIME-23, TIME-27
@@ -329,20 +330,24 @@ determinism-critical.
 ### crucible-det-glib-prng — deterministic glib PRNG
 
 - **Enforces:** [DET-21]; eliminates E9 (glib `GRand` drawn from host entropy).
-- **Mechanism:** QEMU device models and helpers draw from glib's `GRand`, which
-  upstream seeds from host entropy when a thread is first used. In deterministic
-  mode the patch seeds every `GRand` from a value derived from the run seed (a
-  per-thread fixed seed; threads never explicitly seeded, e.g. I/O / iohandler
-  contexts, use seed 0) so QEMU-internal draws (device MACs, IDs, internal
-  randomness that lands in device state `T`) are reproducible. This is large
-  because it touches every glib-random call site; the determinism is gated on a
-  `deterministic` flag set only under sim mode.
-- **Micro-test:** in sim mode, two runs produce identical sequences from a probed
-  `GRand` and identical device MACs/IDs; out of sim mode, `GRand` is seeded from
-  host entropy as upstream (probe differs run-to-run).
-- **Inertness:** [PATCH-3](b) — the deterministic seeding is taken only when the
+- **Mechanism:** QEMU device models and helpers draw from glib's *global*
+  `GRand`, which upstream seeds from host entropy on first use. This patch is a
+  **one-line change**: it wires a single `g_random_set_seed(seed)` call — seeded
+  from the run seed — into Crucible's deterministic `-seed` handler, so the global
+  `GRand` QEMU-internal draws consume (device MACs, IDs, internal randomness that
+  lands in device state `T`) is reproducible. It is **not** a broad per-call-site
+  reseed: the per-thread / unseeded-context (e.g. I/O / iohandler threads using
+  seed 0) and the emulated guest-RNG / `getrandom` fallbacks are the job of the
+  separate `crucible-det-getrandom` patch (below), not this one. The seeding is
+  gated on the `deterministic` flag set only under sim mode.
+- **Micro-test:** in sim mode, two runs produce identical sequences from the
+  global `GRand` and identical device MACs/IDs; out of sim mode, `GRand` is seeded
+  from host entropy as upstream (probe differs run-to-run).
+- **Inertness:** [PATCH-3](b) — the `g_random_set_seed` call runs only when the
   `deterministic` predicate (sim mode) is set.
-- **Risk:** D.
+- **Risk:** D in *class* (it touches entropy), but **small in size/blast-radius**:
+  a single seed call in the `-seed` handler, not edits scattered across glib-random
+  call sites.
 
 - **[PATCH-15]** The series MUST seed QEMU's glib `GRand` deterministically from
   the run seed in sim mode so QEMU-internal random draws (device MACs/IDs,
@@ -394,6 +399,37 @@ determinism-critical.
   icount and not of socket-arrival timing. *Gate:* `gate:layer1-injection`,
   `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-11], [DET-13], [DET-18] (E18),
   [INV-7].
+
+### crucible-replay-start — deliberately NOT carried
+
+A QEMU determinism toolkit could include scaffolding to make the upstream
+**record/replay** subsystem (`-icount ...,rr=record|replay`,
+`replay_configure`, the replay event stream) initialize cleanly at `preconfig`
+so a run starts from a reproducible replay state. Call this hypothetical patch
+`crucible-replay-start`. **Crucible does NOT carry it, by design.**
+
+The reason is [NG-6]: Crucible's determinism model is **not** record/replay. A
+run is reproducible because (a) the instruction budget per TB exit is a pure
+function of the fixed-shift virtual clock (`crucible-icount-no-realtime`,
+[PATCH-13]), (b) every entropy source is eliminated at its source in sim mode
+(`crucible-det-glib-prng`/`crucible-det-getrandom`/`crucible-block-rtc-read`,
+[PATCH-14]–[PATCH-16]), and (c) every cross-node input is injected at a
+plugin-chosen icount through the deterministic transport ([PATCH-17], 13). There
+is no recorded event log replayed back into QEMU; reproduction is *re-derivation*
+from `(def, seed, schedule)` ([INV-1], 22 §22.8), not playback of a QEMU replay
+stream. Carrying replay-start scaffolding would add a second, parallel
+determinism mechanism — one that touches the always-compiled `replay/` and
+`icount` init paths and would itself need an inertness argument — for zero
+capability gain, and risks two determinism models disagreeing.
+
+- **[PATCH-43]** The series MUST NOT carry record/replay-start scaffolding (no
+  `crucible-replay-start`-style patch enabling QEMU's `rr=record|replay`
+  subsystem): Crucible's determinism is source-elimination + icount + seeded
+  injection, never QEMU record/replay ([NG-6]). If a future need for replay-stream
+  interop arises it MUST be introduced as a separately-named, sim-gated,
+  inertness-argued, micro-tested patch with its own catalog entry — never folded
+  silently into the determinism path. *Gate:* `gate:qemu-inert`. *Spec:* §11.4;
+  satisfies [NG-6], [INV-7].
 
 ## 11.5 Plugin time-control patches (the API surface)
 

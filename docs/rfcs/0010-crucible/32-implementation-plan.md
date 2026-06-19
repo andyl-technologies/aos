@@ -144,7 +144,8 @@ guest↔host channel (black-box default + optional white-box).
 **Tasks.**
 - Spatial graph (ScenarioDef): `T-SPAT-1 … T-SPAT-21` ([`06`](06-spatial-graph.md)).
 - Temporal graph (CoW, thin/fat, GC, search-reduction): remaining `T-TEMP-*` beyond Phase 1.
-- Faults: `T-FAULT-1 … T-FAULT-16` ([`17`](17-fault-injection.md)).
+- Conditions, triggers, and the event graph (the shared observable-condition predicate vocabulary + trigger graph + validator): `T-TRIG-1 … T-TRIG-20` ([`17a`](17a-conditions-and-triggers.md)).
+- Faults (as trigger actions; the time-scheduled Plan lowers to `At`-triggered events): `T-FAULT-1 … T-FAULT-16` ([`17`](17-fault-injection.md)).
 - Assertions / properties (incl. offline checker): `T-ASRT-1 … T-ASRT-16` ([`18`](18-assertions-properties.md)).
 - Unified event log: `T-OBS-1 … T-OBS-13` ([`19`](19-observability-event-log.md)).
 - Guest↔host channel + optional agent: `T-GHC-1 … T-GHC-15` ([`16`](16-guest-host-channel.md)).

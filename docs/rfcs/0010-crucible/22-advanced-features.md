@@ -214,6 +214,37 @@ with its own mailbox and lifecycle (20 [SESS-19]).
   decisions enter the child's schedule). *Gate:* `gate:control-responsive`,
   `gate:replay-oracle`. *Spec:* §22.3; cross-ref 20 §7, 19 §19.7.
 
+### 22.3.1 Scope note: no detach-to-live-debug VM
+
+> **Non-normative scope note.** A prior exploration could *fork a savepoint into
+> a full-speed, uncontrolled live QEMU* — a bootable VM running on host wall-clock
+> with determinism intentionally abandoned — for interactive human debugging.
+> Crucible's `save`/`fork` deliberately do **not** do this. A Crucible fork or
+> savepoint produces a *controlled checkpoint* in the temporal graph (a
+> `Configuration` realized via `instantiate`, §22.3, §22.4), still inside the
+> deterministic contract (04) and the one execution path (05 [EXEC-14]); it is not
+> a hand-off to a free-running, non-deterministic instance.
+>
+> "Detach this savepoint into a live, full-speed, non-deterministic QEMU for
+> interactive debugging" is therefore **explicitly out of scope for this RFC**: it
+> abandons the determinism contract for that instance and would be a *second
+> execution path* ([ADV-2], 05 [EXEC-14]). If such a capability is wanted later it
+> MUST be a separate, clearly-marked **escape hatch** built on
+> `materialize-to-image` ([`15-io-subnodes.md`](15-io-subnodes.md)) that takes a
+> checkpoint out of the deterministic world entirely — never a mode of `save`/`fork`
+> and never part of the deterministic path.
+
+- **[ADV-33]** Crucible's `save`/`fork` MUST produce only controlled checkpoints
+  in the temporal graph (realized via `instantiate`, [ADV-6], [ADV-13]) and MUST
+  NOT provide a "detach to a live, full-speed, non-deterministic QEMU for
+  interactive debugging" capability: doing so would abandon the determinism
+  contract for that instance and introduce a second execution path forbidden by
+  [ADV-2] / 05 [EXEC-14]. Any future interactive-live-debug capability MUST be a
+  separate, explicitly-marked escape hatch built on `materialize-to-image`
+  ([`15-io-subnodes.md`](15-io-subnodes.md)), outside the deterministic path, never
+  a mode of `save`/`fork`. *Gate:* `gate:e2e-determinism`. *Spec:* §22.3.1;
+  cross-ref 05 [EXEC-14], 15.
+
 ## 22.4 Save and restore: two strategies, one oracle
 
 Save/restore exists in **two strategies**, and the relationship between them is
