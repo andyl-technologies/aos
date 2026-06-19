@@ -35,6 +35,7 @@ in {
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
+    harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     gates = {
       layer0Determinism = redGate {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
