@@ -31,6 +31,7 @@ in {
   };
   phase1 = {
     controlPlaneBoundary = import ./phase1-control-plane-boundary.nix {inherit pkgs lib;};
+    crateArtifactTypes = import ./phase1-crate-artifact-types.nix {inherit pkgs lib;};
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
