@@ -530,7 +530,7 @@ the conditions under which feature code can be trusted to stay deterministic
   every public item and data-contract field, `# Errors`/`# Panics` sections, and
   a warning-free `cargo doc` as part of the build. — satisfies [STD-1], [STD-2],
   [STD-3], [STD-6]; spec §1.1.
-- [ ] **T-STD-2** Enforce tagged-fence doctests (untagged fence = build failure),
+- [x] **T-STD-2** Enforce tagged-fence doctests (untagged fence = build failure),
   apply the clap-derive caveat to the `crucible` CLI, and wire doctests into the
   hermetic AOS doc build. — satisfies [STD-4], [STD-5], [STD-24]; spec §1.1, §4.5.
 - [ ] **T-STD-3** Establish the error/logging conventions: deny

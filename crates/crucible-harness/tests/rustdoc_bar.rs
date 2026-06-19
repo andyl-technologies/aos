@@ -3,7 +3,8 @@
 //! Rustdoc's own lints enforce missing public docs and broken intra-doc links.
 //! This harness lint covers the source-shape rules that rustdoc does not model:
 //! module headers, crate-root module maps, format sketches for format-owning
-//! modules, ASCII comments/docs, and `# Errors`/`# Panics` sections.
+//! modules, tagged rustdoc fences, clap derive help text boundaries, ASCII
+//! comments/docs, and `# Errors`/`# Panics` sections.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +20,9 @@ const FORMAT_OWNING_SOURCES: &[(&str, &str)] = &[
     ("crucible-protocol/src/lib.rs", "wire protocol"),
     ("crucible-harness/src/abi.rs", "ABI golden-vector records"),
 ];
+const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "no_run", "ignore"];
+const DOCTESTED_RUSTDOC_FENCE_TAGS: &[&str] = &["rust", "no_run"];
+const NON_DOCTESTED_PACKAGES: &[&str] = &["crucible-cli", "crucible-qemu-plugin"];
 
 #[test]
 fn crucible_workspace_sources_meet_rustdoc_bar() -> Result<(), Box<dyn Error>> {
@@ -99,6 +103,147 @@ pub fn panics() {
 /// A documented function.
 pub fn documented() {}
 "#;
+    let untagged_fence = r#"
+//! synthetic module
+//!
+//! ```
+//! format example
+//! ```
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let unsupported_fence = r#"
+//! synthetic module
+//!
+//! ```console
+//! command output
+//! ```
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let malformed_closing_fence = r#"
+//! synthetic module
+//!
+//! ```text
+//! format example
+//! ```rust
+//! ```
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let nested_shorter_fence = r#"
+//! synthetic module
+//!
+//! ````text
+//! ```rust
+//! let value = 1;
+//! ```
+//! ````
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let untagged_block_fence = r#"
+/*!
+ * synthetic module
+ *
+ * ```
+ * format example
+ * ```
+ */
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let non_doctested_rust_fence = r#"
+//! synthetic binary
+//!
+//! ```rust
+//! let value = 1;
+//! ```
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let non_doctested_no_run_fence = r#"
+//! synthetic binary
+//!
+//! ```no_run
+//! let value = 1;
+//! ```
+
+/// A documented function.
+pub fn documented() {}
+"#;
+    let documented_clap_container = r#"
+//! synthetic CLI
+
+/// A parser container that should not become help text.
+#[derive(Parser)]
+struct Cli {}
+"#;
+    let documented_clap_container_before_comment = r#"
+//! synthetic CLI
+
+/// A parser container that should not become help text.
+// kept for the CLI parser item
+#[derive(Parser)]
+struct Cli {}
+"#;
+    let documented_clap_container_after_derive = r#"
+//! synthetic CLI
+
+#[derive(Parser)]
+/// A parser container that should not become help text.
+struct Cli {}
+"#;
+    let documented_clap_container_after_comment = r#"
+//! synthetic CLI
+
+#[derive(Parser)]
+// kept for the CLI parser item
+/// A parser container that should not become help text.
+struct Cli {}
+"#;
+    let documented_cfg_attr_clap_container = r#"
+//! synthetic CLI
+
+/// A parser container that should not become help text.
+#[cfg_attr(feature = "cli", derive(Parser))]
+struct Cli {}
+"#;
+    let documented_clap_container_before_multiline_attr = r#"
+//! synthetic CLI
+
+/// A parser container that should not become help text.
+#[cfg_attr(
+    feature = "cli",
+    allow(dead_code)
+)]
+#[derive(Parser)]
+struct Cli {}
+"#;
+    let documented_clap_container_after_multiline_attr = r#"
+//! synthetic CLI
+
+#[derive(Parser)]
+#[cfg_attr(
+    feature = "cli",
+    allow(dead_code)
+)]
+/// A parser container that should not become help text.
+struct Cli {}
+"#;
+    let documented_cfg_attr_clap_container_after_attr = r#"
+//! synthetic CLI
+
+#[cfg_attr(feature = "cli", derive(Parser))]
+/// A parser container that should not become help text.
+struct Cli {}
+"#;
 
     assert_contains(
         &rustdoc_bar_failures(missing_module_doc, "synthetic.rs", false, None),
@@ -128,6 +273,116 @@ pub fn documented() {}
     assert_contains(
         &rustdoc_bar_failures(non_ascii_comment, "synthetic.rs", false, None),
         "contains non-ASCII comment/doc text",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(untagged_fence, "synthetic.rs", false, None),
+        "untagged rustdoc fence",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(unsupported_fence, "synthetic.rs", false, None),
+        "unsupported rustdoc fence tag",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(malformed_closing_fence, "synthetic.rs", false, None),
+        "rustdoc fence closer",
+    );
+    assert_not_contains(
+        &rustdoc_bar_failures(nested_shorter_fence, "synthetic.rs", false, None),
+        "rustdoc fence closer",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(untagged_block_fence, "synthetic.rs", false, None),
+        "untagged rustdoc fence",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            non_doctested_rust_fence,
+            "crucible-cli/src/main.rs",
+            true,
+            None,
+        ),
+        "is not covered by `cargo test --doc`",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            non_doctested_no_run_fence,
+            "crucible-cli/src/main.rs",
+            true,
+            None,
+        ),
+        "is not covered by `cargo test --doc`",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container_before_comment,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container_after_derive,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container_after_comment,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_cfg_attr_clap_container,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container_before_multiline_attr,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_clap_container_after_multiline_attr,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
+    );
+    assert_contains(
+        &rustdoc_bar_failures(
+            documented_cfg_attr_clap_container_after_attr,
+            "crucible-cli/src/main.rs",
+            false,
+            None,
+        ),
+        "clap derive container must not carry `///` docs",
     );
 }
 
@@ -162,6 +417,8 @@ fn rustdoc_bar_failures(
     }
 
     failures.extend(ascii_comment_doc_failures(&lines, display_path));
+    failures.extend(rustdoc_fence_failures(&lines, display_path));
+    failures.extend(clap_derive_doc_failures(&lines, display_path));
     failures.extend(public_result_doc_failures(&lines, display_path));
     failures.extend(public_panic_doc_failures(&lines, display_path));
 
@@ -214,6 +471,366 @@ fn ascii_comment_doc_failures(lines: &[&str], display_path: &str) -> Vec<String>
 
 fn is_comment_or_doc(trimmed: &str) -> bool {
     trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*')
+}
+
+fn rustdoc_fence_failures(lines: &[&str], display_path: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut open_fence: Option<RustdocFence> = None;
+
+    for (line_number, doc) in rustdoc_text_lines(lines) {
+        let doc = doc.trim_start();
+        let Some(fence) = rustdoc_fence_line(doc) else {
+            continue;
+        };
+
+        if let Some(open) = open_fence {
+            if fence.backticks < open.backticks {
+                continue;
+            }
+
+            if fence.info.is_empty() {
+                open_fence = None;
+                continue;
+            }
+
+            failures.push(format!(
+                "{display_path}:{line_number} rustdoc fence closer for fence opened at line {} must not carry an info string",
+                open.line
+            ));
+            continue;
+        }
+
+        let info = fence.info;
+        if info.is_empty() {
+            failures.push(format!(
+                "{display_path}:{line_number} has an untagged rustdoc fence"
+            ));
+        } else {
+            let tag = rustdoc_fence_tag(info);
+            if !RUSTDOC_FENCE_TAGS.contains(&tag) {
+                failures.push(format!(
+                    "{display_path}:{line_number} has unsupported rustdoc fence tag `{tag}`"
+                ));
+            }
+
+            if rustdoc_fence_is_doctested(tag) && !package_is_doctested(display_path) {
+                failures.push(format!(
+                    "{display_path}:{line_number} has a doctested rustdoc fence that is not covered by `cargo test --doc`"
+                ));
+            }
+        }
+
+        open_fence = Some(RustdocFence {
+            line: line_number,
+            backticks: fence.backticks,
+        });
+    }
+
+    if let Some(fence) = open_fence {
+        failures.push(format!(
+            "{display_path}:{} opens an unterminated rustdoc fence",
+            fence.line
+        ));
+    }
+
+    failures
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RustdocFence {
+    line: usize,
+    backticks: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RustdocFenceLine<'a> {
+    backticks: usize,
+    info: &'a str,
+}
+
+fn rustdoc_fence_line(doc: &str) -> Option<RustdocFenceLine<'_>> {
+    let backticks = doc
+        .chars()
+        .take_while(|character| *character == '`')
+        .count();
+    if backticks < 3 {
+        return None;
+    }
+
+    Some(RustdocFenceLine {
+        backticks,
+        info: doc.get(backticks..).unwrap_or("").trim(),
+    })
+}
+
+fn rustdoc_text_lines(lines: &[&str]) -> Vec<(usize, String)> {
+    let mut docs = Vec::new();
+    let mut inside_block = false;
+
+    for (index, line) in lines.iter().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim_start();
+
+        if inside_block {
+            let (text, still_inside_block) = block_rustdoc_line_text(trimmed);
+            docs.push((line_number, text.to_string()));
+            inside_block = still_inside_block;
+            continue;
+        }
+
+        if let Some(doc) = rustdoc_line_text(trimmed) {
+            docs.push((line_number, doc.to_string()));
+            continue;
+        }
+
+        if let Some((text, still_inside_block)) = block_rustdoc_start_text(trimmed) {
+            docs.push((line_number, text.to_string()));
+            inside_block = still_inside_block;
+        }
+    }
+
+    docs
+}
+
+fn rustdoc_line_text(trimmed: &str) -> Option<&str> {
+    trimmed
+        .strip_prefix("//!")
+        .or_else(|| trimmed.strip_prefix("///"))
+}
+
+fn block_rustdoc_start_text(trimmed: &str) -> Option<(&str, bool)> {
+    let text = trimmed
+        .strip_prefix("/*!")
+        .or_else(|| trimmed.strip_prefix("/**"))?;
+    Some(block_rustdoc_text(text))
+}
+
+fn block_rustdoc_line_text(trimmed: &str) -> (&str, bool) {
+    block_rustdoc_text(trimmed)
+}
+
+fn block_rustdoc_text(text: &str) -> (&str, bool) {
+    let (text, closed) = match text.split_once("*/") {
+        Some((before_close, _after_close)) => (before_close, true),
+        None => (text, false),
+    };
+
+    (trim_block_rustdoc_margin(text), !closed)
+}
+
+fn trim_block_rustdoc_margin(text: &str) -> &str {
+    let text = text.trim_start();
+    match text.strip_prefix('*') {
+        Some(after_star) => after_star.strip_prefix(' ').unwrap_or(after_star),
+        None => text,
+    }
+}
+
+fn rustdoc_fence_tag(info: &str) -> &str {
+    info.split(|character: char| character == ',' || character.is_ascii_whitespace())
+        .next()
+        .unwrap_or("")
+}
+
+fn rustdoc_fence_is_doctested(tag: &str) -> bool {
+    DOCTESTED_RUSTDOC_FENCE_TAGS.contains(&tag)
+}
+
+fn package_is_doctested(display_path: &str) -> bool {
+    let Some(package) = display_path.split('/').next() else {
+        return true;
+    };
+    !NON_DOCTESTED_PACKAGES.contains(&package)
+}
+
+fn clap_derive_doc_failures(lines: &[&str], display_path: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    let mut index = 0usize;
+
+    while index < lines.len() {
+        let trimmed = lines[index].trim_start();
+        if !trimmed.starts_with("#[") {
+            index += 1;
+            continue;
+        }
+
+        let start = index;
+        let mut attribute = String::new();
+        while index < lines.len() {
+            attribute.push_str(lines[index]);
+            if lines[index].contains(']') {
+                break;
+            }
+            index += 1;
+        }
+
+        let after_attribute = index.saturating_add(1);
+        if clap_derive_attribute(&attribute)
+            && (has_outer_doc_comment_before(lines, start)
+                || has_outer_doc_comment_after_attributes(lines, after_attribute))
+        {
+            failures.push(format!(
+                "{display_path}:{} clap derive container must not carry `///` docs because they become help text",
+                start + 1
+            ));
+        }
+
+        index += 1;
+    }
+
+    failures
+}
+
+fn clap_derive_attribute(attribute: &str) -> bool {
+    attribute.contains("derive")
+        && (attribute.contains("Parser")
+            || attribute.contains("Subcommand")
+            || attribute.contains("Args"))
+}
+
+fn has_outer_doc_comment_before(lines: &[&str], item_line: usize) -> bool {
+    let mut cursor = item_line;
+
+    while cursor > 0 {
+        let previous = cursor - 1;
+        let trimmed = lines[previous].trim_start();
+
+        if trimmed.is_empty() || is_ordinary_line_comment(trimmed) {
+            cursor = previous;
+            continue;
+        }
+
+        if trimmed.starts_with("///") || trimmed.starts_with("/**") {
+            return true;
+        }
+
+        if trimmed.starts_with("*/") || trimmed.ends_with("*/") {
+            let block = block_comment_before(lines, previous);
+            if block.is_outer_doc {
+                return true;
+            }
+            cursor = block.start;
+            continue;
+        }
+
+        if let Some(attribute_start) = attribute_start_before(lines, cursor) {
+            cursor = attribute_start;
+            continue;
+        }
+
+        return false;
+    }
+
+    false
+}
+
+fn is_ordinary_line_comment(trimmed: &str) -> bool {
+    trimmed.starts_with("//") && !trimmed.starts_with("///") && !trimmed.starts_with("//!")
+}
+
+fn attribute_start_before(lines: &[&str], cursor: usize) -> Option<usize> {
+    let mut candidate = cursor.checked_sub(1)?;
+    let trimmed = lines[candidate].trim_start();
+    if trimmed.starts_with("#[") {
+        return Some(candidate);
+    }
+
+    if !trimmed.contains(']') {
+        return None;
+    }
+
+    while candidate > 0 {
+        candidate -= 1;
+        if lines[candidate].trim_start().starts_with("#[") {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BlockComment {
+    start: usize,
+    is_outer_doc: bool,
+}
+
+fn block_comment_before(lines: &[&str], end_line: usize) -> BlockComment {
+    let mut cursor = end_line;
+
+    loop {
+        let trimmed = lines[cursor].trim_start();
+        if trimmed.starts_with("/**") {
+            return BlockComment {
+                start: cursor,
+                is_outer_doc: true,
+            };
+        }
+        if trimmed.starts_with("/*") {
+            return BlockComment {
+                start: cursor,
+                is_outer_doc: false,
+            };
+        }
+        if cursor == 0 {
+            return BlockComment {
+                start: cursor,
+                is_outer_doc: false,
+            };
+        }
+        cursor -= 1;
+    }
+}
+
+fn has_outer_doc_comment_after_attributes(lines: &[&str], start_line: usize) -> bool {
+    let mut cursor = start_line;
+
+    while cursor < lines.len() {
+        let trimmed = lines[cursor].trim_start();
+
+        if trimmed.is_empty() || is_ordinary_line_comment(trimmed) {
+            cursor += 1;
+            continue;
+        }
+
+        if let Some(after_attribute) = attribute_end_after(lines, cursor) {
+            cursor = after_attribute;
+            continue;
+        }
+
+        if trimmed.starts_with("/*") && !trimmed.starts_with("/**") {
+            cursor = block_comment_end_after(lines, cursor);
+            continue;
+        }
+
+        return trimmed.starts_with("///") || trimmed.starts_with("/**");
+    }
+
+    false
+}
+
+fn attribute_end_after(lines: &[&str], start_line: usize) -> Option<usize> {
+    if !lines[start_line].trim_start().starts_with("#[") {
+        return None;
+    }
+
+    for (offset, line) in lines[start_line..].iter().enumerate() {
+        if line.contains(']') {
+            return Some(start_line + offset + 1);
+        }
+    }
+
+    Some(lines.len())
+}
+
+fn block_comment_end_after(lines: &[&str], start_line: usize) -> usize {
+    for (offset, line) in lines[start_line..].iter().enumerate() {
+        if line.contains("*/") {
+            return start_line + offset + 1;
+        }
+    }
+
+    lines.len()
 }
 
 fn public_result_doc_failures(lines: &[&str], display_path: &str) -> Vec<String> {
@@ -484,5 +1101,12 @@ fn assert_contains(findings: &[String], needle: &str) {
     assert!(
         findings.iter().any(|finding| finding.contains(needle)),
         "expected finding containing `{needle}`, got {findings:?}"
+    );
+}
+
+fn assert_not_contains(findings: &[String], needle: &str) {
+    assert!(
+        findings.iter().all(|finding| !finding.contains(needle)),
+        "expected no finding containing `{needle}`, got {findings:?}"
     );
 }
