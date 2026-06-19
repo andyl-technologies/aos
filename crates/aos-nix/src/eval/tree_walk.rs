@@ -16352,39 +16352,8 @@ impl TreeWalk {
         argument_span: Span,
         value: Value,
     ) -> Result<Value, TreeWalkError> {
-        if value.tag() != ValueTag::String {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: argument,
-                    expected: "string",
-                    actual: value.tag(),
-                },
-                argument_span,
-            ));
-        }
-        let bytes = {
-            let string = self.heap.get_string(value).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::Heap {
-                        id: argument,
-                        source,
-                    },
-                    argument_span,
-                )
-            })?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(string.len()).map_err(|_| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ByteAllocationFailed {
-                        id: argument,
-                        len: string.len(),
-                    },
-                    argument_span,
-                )
-            })?;
-            bytes.extend_from_slice(string.bytes());
-            bytes
-        };
+        let bytes =
+            self.context_free_string_bytes(argument, argument_span, value, "parseDrvName")?;
         let (name_end, version_start) = parse_drv_name_split(&bytes);
         let name = self.alloc_static_string(id, span, &bytes[..name_end])?;
         let version = self.alloc_static_string(id, span, &bytes[version_start..])?;
@@ -33501,6 +33470,7 @@ mod tests {
             r#"builtins.split "\\n" "n""#,
             r#"builtins.split "a*?" "aaa""#,
             r#"builtins.split "a{1,2}?" "aa""#,
+            r#"builtins.parseDrvName (builtins.appendContext "foo-1" { "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src" = { path = true; }; })"#,
             r#"builtins.toPath "relative/path""#,
             r#"builtins.toPath 1"#,
         ] {
@@ -42689,6 +42659,46 @@ mod tests {
                 id: argument,
                 expected: "string",
                 actual: ValueTag::Int,
+            }
+        );
+        assert_eq!(error.span(), argument_span);
+    }
+
+    #[test]
+    fn parse_drv_name_primop_rejects_string_context() {
+        let ir = lower("builtins.parseDrvName \"foo-1\"");
+        let root = *ir.arena.node(ir.root).expect("root exists");
+        let IrData::PrimOp { args, .. } = root.data else {
+            panic!("root is a primop");
+        };
+        let argument = ir
+            .arena
+            .child_slice(args)
+            .expect("primop args exist")
+            .first()
+            .copied()
+            .expect("parseDrvName argument exists");
+        let argument_span = ir.arena.node(argument).expect("argument exists").span;
+        let mut evaluator = TreeWalk::new(&ir);
+        let source = ContextElement::opaque_path(b"/nix/store/source".to_vec())
+            .expect("source context is valid");
+        let value = evaluator
+            .heap
+            .alloc_string(NixString::new(
+                b"foo-1".to_vec(),
+                StringContext::singleton(source).expect("source context allocates"),
+            ))
+            .expect("context-bearing string allocates");
+
+        let error = evaluator
+            .eval_parse_drv_name_primop(ir.root, root.span, argument, argument_span, value)
+            .expect_err("parseDrvName rejects string context");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                id: argument,
+                op: "parseDrvName",
             }
         );
         assert_eq!(error.span(), argument_span);
