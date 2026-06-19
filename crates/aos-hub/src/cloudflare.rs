@@ -299,6 +299,21 @@ pub fn secret_put_args(name: &str, config: &Path) -> Vec<String> {
     ]
 }
 
+/// `wrangler secret list --config <path>` — list the names of the secrets
+/// already attached to the Worker.
+///
+/// Used to make redeploys idempotent: a secret that already exists is preserved
+/// rather than re-minted (see [`deploy`]).
+#[must_use]
+pub fn secret_list_args(config: &Path) -> Vec<String> {
+    vec![
+        "secret".into(),
+        "list".into(),
+        "--config".into(),
+        config.display().to_string(),
+    ]
+}
+
 /// `wrangler deploy --config <path>` — deploy the staged dist.
 #[must_use]
 pub fn deploy_args(config: &Path) -> Vec<String> {
@@ -358,6 +373,28 @@ pub fn parse_kv_id(list_json: &str, title: &str) -> Result<String> {
         }
     }
     bail!("KV namespace titled {title:?} not found in `wrangler kv namespace list` output");
+}
+
+/// Extracts the secret names from `wrangler secret list` output.
+///
+/// Accepts either a bare array (`[{ "name": …, "type": … }]`) or a
+/// `{ "result": [...] }` envelope, and tolerates a non-JSON progress prelude
+/// printed before the payload by skipping to the first `[`/`{`. A Worker with no
+/// secrets yields an empty list.
+///
+/// # Errors
+///
+/// Returns an error if the JSON cannot be parsed or has an unexpected shape.
+pub fn parse_secret_names(list_json: &str) -> Result<Vec<String>> {
+    let start = list_json.find(['[', '{']).unwrap_or(0);
+    let v: serde_json::Value = serde_json::from_str(&list_json[start..])
+        .context("parsing `wrangler secret list` output")?;
+    let arr = json_array(&v).context("unexpected `wrangler secret list` JSON shape")?;
+    Ok(arr
+        .iter()
+        .filter_map(|s| s.get("name").and_then(serde_json::Value::as_str))
+        .map(str::to_string)
+        .collect())
 }
 
 /// Returns the top-level array of a `wrangler … list` response, accepting either
@@ -524,26 +561,31 @@ pub async fn whoami(assets: &Assets) -> Result<()> {
 
 /// The runtime secrets to apply to the Worker.
 ///
-/// `jwt_secret` and `seal_key` are required by the Worker at request time and
-/// are minted randomly when `None`. The others are optional features.
+/// An explicit `jwt_secret`/`seal_key` is always pushed (an intentional
+/// rotation). When `None`, [`deploy`] preserves the value already on the Worker
+/// and mints a fresh one only on a first deploy where the secret is absent. The
+/// others are optional features.
 pub struct Secrets {
-    /// `HUB_JWT_SECRET` — HS256 JWT signing key (minted if `None`).
+    /// `HUB_JWT_SECRET` — HS256 JWT signing key. `None` = preserve-or-mint.
     pub jwt_secret: Option<String>,
-    /// `HUB_SEAL_KEY` — at-rest AES-GCM sealing key (minted if `None`).
+    /// `HUB_SEAL_KEY` — at-rest AES-GCM sealing key. `None` = preserve-or-mint.
     pub seal_key: Option<String>,
     /// `HUB_EMAIL_API_TOKEN` — bearer token for the magic-link email relay.
     pub email_api_token: Option<String>,
 }
 
-/// The outcome of a deploy: the secrets actually applied (so minted ones can be
-/// reported back to the operator to record).
+/// The outcome of a deploy: the secrets *freshly minted* this run, so the
+/// operator can record values that are otherwise unrecoverable.
+///
+/// A field is `Some` only when [`deploy`] generated a new random value (the
+/// operator passed `None` and the Worker had no prior secret of that name). A
+/// secret supplied explicitly or preserved from a previous deploy is reported as
+/// `None` — there is nothing new to record.
 pub struct Applied {
-    /// The `HUB_JWT_SECRET` value applied (possibly freshly minted).
-    pub jwt_secret: String,
-    /// The `HUB_SEAL_KEY` value applied (possibly freshly minted).
-    pub seal_key: String,
-    /// Whether a `HUB_JWT_SECRET`/`HUB_SEAL_KEY` was freshly minted this run.
-    pub minted: bool,
+    /// A freshly minted `HUB_JWT_SECRET`, or `None` if supplied or preserved.
+    pub minted_jwt_secret: Option<String>,
+    /// A freshly minted `HUB_SEAL_KEY`, or `None` if supplied or preserved.
+    pub minted_seal_key: Option<String>,
 }
 
 /// Provisions the D1 database, R2 bucket, and KV namespace, then resolves their
@@ -614,10 +656,18 @@ async fn stage_deploy(assets: &Assets, cfg: &DeployConfig, dir: &Path) -> Result
 /// up on return). Order matters: `wrangler deploy` creates the Worker (and bakes
 /// `[vars]`), then `wrangler secret put` attaches the secrets to the live Worker.
 ///
+/// Secret application is **idempotent across redeploys**: after deploying, the
+/// Worker's existing secrets are listed and any already-present `HUB_JWT_SECRET`
+/// / `HUB_SEAL_KEY` is preserved rather than re-minted. Rotating `HUB_SEAL_KEY`
+/// would orphan at-rest sealed data and rotating `HUB_JWT_SECRET` would
+/// invalidate every active session, so a fresh value is minted only on a first
+/// deploy where the secret is absent (or when the operator passes one explicitly
+/// to force a rotation).
+///
 /// # Errors
 ///
-/// Returns an error if the temp dir, staging, the deploy, or any `secret put`
-/// fails.
+/// Returns an error if the temp dir, staging, the deploy, the secret listing, or
+/// any `secret put` fails.
 pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> Result<Applied> {
     let work = tempfile::Builder::new()
         .prefix("aos-hub-deploy")
@@ -627,27 +677,54 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
     let config = stage_deploy(assets, cfg, work_dir).await?;
     run_wrangler(assets, &deploy_args(&config), None, Some(work_dir)).await?;
 
-    let jwt_secret = secrets
-        .jwt_secret
-        .clone()
-        .unwrap_or_else(|| generate_hex_secret(32));
-    let seal_key = secrets
-        .seal_key
-        .clone()
-        .unwrap_or_else(|| generate_hex_secret(32));
-    let minted = secrets.jwt_secret.is_none() || secrets.seal_key.is_none();
+    let listed = run_wrangler(assets, &secret_list_args(&config), None, None).await?;
+    let existing = parse_secret_names(&listed)?;
 
-    put_secret(assets, "HUB_JWT_SECRET", &jwt_secret, &config).await?;
-    put_secret(assets, "HUB_SEAL_KEY", &seal_key, &config).await?;
+    let minted_jwt_secret =
+        apply_secret(assets, "HUB_JWT_SECRET", secrets.jwt_secret.as_deref(), &existing, &config)
+            .await?;
+    let minted_seal_key =
+        apply_secret(assets, "HUB_SEAL_KEY", secrets.seal_key.as_deref(), &existing, &config)
+            .await?;
     if let Some(tok) = &secrets.email_api_token {
         put_secret(assets, "HUB_EMAIL_API_TOKEN", tok, &config).await?;
     }
 
     Ok(Applied {
-        jwt_secret,
-        seal_key,
-        minted,
+        minted_jwt_secret,
+        minted_seal_key,
     })
+}
+
+/// Resolves and applies one preserve-or-mint secret, returning a freshly minted
+/// value to report (or `None` when supplied or preserved).
+///
+/// Precedence: an explicit `provided` value is always pushed (an intentional
+/// rotation); otherwise a secret already present in `existing` is left untouched;
+/// otherwise a fresh 32-byte hex value is minted and pushed.
+///
+/// # Errors
+///
+/// Returns an error if the `wrangler secret put` invocation fails.
+async fn apply_secret(
+    assets: &Assets,
+    name: &str,
+    provided: Option<&str>,
+    existing: &[String],
+    config: &Path,
+) -> Result<Option<String>> {
+    match provided {
+        Some(value) => {
+            put_secret(assets, name, value, config).await?;
+            Ok(None)
+        }
+        None if existing.iter().any(|n| n == name) => Ok(None),
+        None => {
+            let minted = generate_hex_secret(32);
+            put_secret(assets, name, &minted, config).await?;
+            Ok(Some(minted))
+        }
+    }
 }
 
 /// Sets one Worker secret via `wrangler secret put` (value piped on stdin).
@@ -1097,6 +1174,23 @@ mod tests {
     }
 
     #[test]
+    fn secret_names_parse_bare_envelope_and_prelude() {
+        let bare = r#"[{"name":"HUB_JWT_SECRET","type":"secret_text"},
+                       {"name":"HUB_SEAL_KEY","type":"secret_text"}]"#;
+        assert_eq!(
+            parse_secret_names(bare).unwrap(),
+            ["HUB_JWT_SECRET", "HUB_SEAL_KEY"]
+        );
+
+        let env = r#"{"result":[{"name":"HUB_SEAL_KEY","type":"secret_text"}]}"#;
+        assert_eq!(parse_secret_names(env).unwrap(), ["HUB_SEAL_KEY"]);
+
+        // A progress prelude printed before the JSON payload is skipped.
+        let with_prelude = "⛅️ wrangler 4.20.0\n[]";
+        assert!(parse_secret_names(with_prelude).unwrap().is_empty());
+    }
+
+    #[test]
     fn generated_secret_is_hex_of_expected_length() {
         let s = generate_hex_secret(32);
         assert_eq!(s.len(), 64);
@@ -1121,6 +1215,10 @@ mod tests {
         assert_eq!(
             secret_put_args("HUB_JWT_SECRET", Path::new("/tmp/w.toml")),
             ["secret", "put", "HUB_JWT_SECRET", "--config", "/tmp/w.toml"]
+        );
+        assert_eq!(
+            secret_list_args(Path::new("/tmp/w.toml")),
+            ["secret", "list", "--config", "/tmp/w.toml"]
         );
         assert_eq!(
             deploy_args(Path::new("/tmp/w.toml")),
