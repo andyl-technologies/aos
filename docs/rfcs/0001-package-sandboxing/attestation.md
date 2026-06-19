@@ -93,10 +93,11 @@ new mechanism.
   identity / per-service" measurements; reserve **PCR 15 for the AOS package
   set** — with, for each enabled package: `H(name ‖ version ‖ root-digest ‖
   manifest-digest)`. Record the same tuples in a structured **event log**
-  (`/run/log/aos-packages.cel`, TCG canonical-event-log form) so a verifier can
-  replay them against the quoted PCR. The **manifest digest is measured** — this
-  is the novel bit: the node's *declared and granted privilege* is now part of
-  the attested state, not just its code.
+  (`/run/log/aos-packages.cel`, AOS's JSONL CEL profile with monotonic
+  `sequence_number`, PCR index, SHA-256 digest list, event size, and measured
+  event content) so a verifier can replay them against the quoted PCR. The
+  **manifest digest is measured** — this is the novel bit: the node's *declared
+  and granted privilege* is now part of the attested state, not just its code.
 - **Quote.** A node produces a TPM `TPM2_Quote` over {PCR 7, 11, 12, 15} with a
   verifier-supplied **nonce**, signed by an **Attestation Key (AK)** whose
   credential is bound to the **Endorsement Key (EK)** fused at manufacture. This

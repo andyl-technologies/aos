@@ -102,6 +102,7 @@ struct EventDigestRecord<'a> {
 #[derive(Serialize)]
 struct EventLogRecord<'a> {
     format: &'static str,
+    sequence_number: usize,
     pcr: u8,
     pcr_index: u8,
     bank: &'static str,
@@ -152,6 +153,8 @@ where
 #[derive(Deserialize)]
 struct OwnedEventLogRecord {
     format: String,
+    #[serde(default, deserialize_with = "deserialize_optional_event_field")]
+    sequence_number: OptionalEventField<usize>,
     pcr: u8,
     #[serde(default, deserialize_with = "deserialize_optional_event_field")]
     pcr_index: OptionalEventField<u8>,
@@ -1207,6 +1210,13 @@ fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Res
             record.format
         );
     }
+    if let Some(sequence_number) = record.sequence_number.value
+        && sequence_number != line
+    {
+        bail!(
+            "package event log line {line} has sequence_number {sequence_number}, expected {line}"
+        );
+    }
     if record.pcr != PCR_INDEX {
         bail!(
             "package event log line {line} targets PCR {}, expected {PCR_INDEX}",
@@ -1484,6 +1494,11 @@ fn event_log_has_records(root: &Path) -> Result<bool> {
 
 fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
+    let (existing_lines, needs_separator) = match fs::read_to_string(&path) {
+        Ok(log) => (log.lines().count(), !log.is_empty() && !log.ends_with('\n')),
+        Err(err) if err.kind() == ErrorKind::NotFound => (0, false),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
     let parent = path
         .parent()
         .with_context(|| format!("event log path has no parent: {}", path.display()))?;
@@ -1493,14 +1508,17 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
         .append(true)
         .open(&path)
         .with_context(|| format!("opening {}", path.display()))?;
-    for event in events {
-        let line = event_log_line(event)?;
+    if needs_separator {
+        writeln!(file).with_context(|| format!("writing {}", path.display()))?;
+    }
+    for (index, event) in events.iter().enumerate() {
+        let line = event_log_line(existing_lines + index + 1, event)?;
         writeln!(file, "{line}").with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(())
 }
 
-fn event_log_line(event: &MeasurementEvent) -> Result<String> {
+fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<String> {
     let package = event.package.as_ref();
     let digests = [EventDigestRecord {
         algorithm: PCR_BANK,
@@ -1508,6 +1526,7 @@ fn event_log_line(event: &MeasurementEvent) -> Result<String> {
     }];
     let record = EventLogRecord {
         format: EVENT_LOG_FORMAT,
+        sequence_number,
         pcr: PCR_INDEX,
         pcr_index: PCR_INDEX,
         bank: PCR_BANK,
@@ -1923,6 +1942,7 @@ mod tests {
             .map(|line| {
                 let mut record: serde_json::Value = serde_json::from_str(line).expect("record");
                 let object = record.as_object_mut().expect("record object");
+                object.remove("sequence_number");
                 object.remove("pcr_index");
                 object.remove("digests");
                 object.remove("event_size");
@@ -2070,6 +2090,7 @@ mod tests {
 
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         assert!(log.contains("\"format\":\"aos-package-cel-v1\""));
+        assert!(log.contains("\"sequence_number\":1"));
         assert!(log.contains("\"pcr_index\":15"));
         assert!(log.contains("\"digests\":[{\"algorithm\":\"sha256\""));
         assert!(log.contains("\"event_size\":"));
@@ -2079,6 +2100,7 @@ mod tests {
 
         let first: serde_json::Value =
             serde_json::from_str(log.lines().next().expect("first log line")).expect("json");
+        assert_eq!(first["sequence_number"], serde_json::Value::from(1));
         assert_eq!(first["pcr_index"], serde_json::Value::from(PCR_INDEX));
         assert_eq!(first["digests"][0]["algorithm"], PCR_BANK);
         assert_eq!(first["digests"][0]["digest"], first["digest"]);
@@ -2153,6 +2175,27 @@ mod tests {
             pcr15,
             "0000000000000000000000000000000000000000000000000000000000000000"
         );
+    }
+
+    #[test]
+    fn append_event_log_continues_sequence_numbers() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let installed = installed_fixture(&tmp, manifest);
+        let events = measurement_events(tmp.path(), &[installed]).expect("events");
+
+        append_event_log(tmp.path(), &events[..1]).expect("append first event");
+        append_event_log(tmp.path(), &events[1..]).expect("append remaining events");
+
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
+        let sequence_numbers = log
+            .lines()
+            .map(|line| {
+                let record: serde_json::Value = serde_json::from_str(line).expect("record json");
+                record["sequence_number"].as_u64().expect("sequence number")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sequence_numbers, [1, 2]);
     }
 
     #[test]
@@ -2307,6 +2350,26 @@ mod tests {
             verify_package_event_log_against_catalog(&tampered, &pcr15, &catalog).unwrap_err();
 
         assert!(format!("{err:#}").contains("invalid type: null"));
+    }
+
+    #[test]
+    fn package_event_log_verifier_rejects_sequence_number_mismatch() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let mut lines = log.lines().collect::<Vec<_>>();
+        let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
+        package_set["sequence_number"] = serde_json::Value::from(2);
+        let rewritten_set = serde_json::to_string(&package_set).expect("set json");
+        lines[0] = &rewritten_set;
+        let tampered = lines.join("\n") + "\n";
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let err =
+            verify_package_event_log_against_catalog(&tampered, &pcr15, &catalog).unwrap_err();
+
+        assert!(format!("{err:#}").contains("sequence_number"));
     }
 
     #[test]

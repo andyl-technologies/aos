@@ -504,7 +504,8 @@ in {
           event_log_path = "/tmp/aos-packages-combined.cel"
           target.succeed(f"printf %s {shlex.quote(event_log)} > {event_log_path}")
           records = [json.loads(line) for line in event_log.splitlines() if line.strip()]
-          for record in records:
+          for index, record in enumerate(records, start=1):
+              assert record["sequence_number"] == index
               assert record["pcr_index"] == 15
               assert record["event_size"] == len(record["event"].encode())
               assert record["digests"] == [
