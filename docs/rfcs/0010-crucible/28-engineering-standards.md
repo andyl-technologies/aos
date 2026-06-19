@@ -543,7 +543,7 @@ the conditions under which feature code can be trusted to stay deterministic
   thread/global RNG, `RandomState`, raw `HashMap`/`HashSet`) and the workspace
   deny set (incl. `unwrap_used`/`expect_used` and decision-path float
   arithmetic). — satisfies [STD-10] (1–3, 5), [STD-11], [STD-12]; spec §2.
-- [ ] **T-STD-5** Implement the `gate:harness-lint` custom static-analysis tier:
+- [x] **T-STD-5** Implement the `gate:harness-lint` custom static-analysis tier:
   ordering-significant-path tracking that flags unordered hash-container
   iteration and unordered `select`, plus bare-`unsafe`-without-`// SAFETY:`
   detection; deterministic, file/line/rule findings, zero-tolerance. — satisfies

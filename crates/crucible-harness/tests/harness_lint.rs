@@ -1,5 +1,6 @@
 //! Runs the reduction-path static determinism lint.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -92,6 +93,28 @@ fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>> {
     assert!(
         findings.is_empty(),
         "gate:harness-lint clippy tier findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let mut findings = Vec::new();
+
+    for spec in crate_spec_index() {
+        let package_dir = root.join(spec.package);
+        for source in rust_sources(&package_dir.join("src"))? {
+            let content = fs::read_to_string(&source)?;
+            findings.extend(custom_static_analysis_failures(&source, &content));
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "gate:harness-lint custom static-analysis findings:\n{}",
         findings.join("\n")
     );
 
@@ -318,6 +341,80 @@ fn harness_lint_rejects_missing_typed_error_signal_in_libraries() {
 }
 
 #[test]
+fn harness_lint_rejects_custom_static_analysis_drift() {
+    let findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            use std::collections::HashMap;
+
+            fn bad() {
+                let map: HashMap<u8, u8> = HashMap::new();
+                for item in map.iter() {
+                    consume(item);
+                }
+                let _ = map.keys();
+                let _ = map.values_mut();
+                let _ = map.into_values();
+                tokio::select! { _ = async {} => {} }
+                unsafe {
+                    core::ptr::read_volatile(core::ptr::null::<u8>());
+                }
+            }
+        "#,
+    );
+
+    assert_contains(&findings, "unordered hash-container iteration");
+    assert_contains(&findings, "unordered select");
+    assert_contains(&findings, "bare unsafe block");
+
+    let stale_safety_findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            fn bad() {
+                // SAFETY: stale comment is separated from the unsafe block.
+
+                unsafe {}
+                // SAFETY: this applies only to the next unsafe block.
+                unsafe {}
+                unsafe {}
+            }
+        "#,
+    );
+
+    assert!(
+        stale_safety_findings.len() >= 2,
+        "expected stale and missing SAFETY comments to be rejected, got {stale_safety_findings:?}"
+    );
+
+    let allowed_findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            use std::collections::BTreeMap;
+
+            fn allowed() {
+                let map: BTreeMap<u8, u8> = BTreeMap::new();
+                for item in map.iter() {
+                    consume(item);
+                }
+                tokio::select! {
+                    biased;
+                    _ = async {} => {}
+                }
+                // SAFETY: synthetic volatile read is isolated to test the marker.
+                unsafe {
+                    core::ptr::read_volatile(core::ptr::null::<u8>());
+                }
+            }
+        "#,
+    );
+
+    assert!(
+        allowed_findings.is_empty(),
+        "expected deterministic custom tier sample to pass, got {allowed_findings:?}"
+    );
+}
+
+#[test]
 fn harness_lint_rejects_clippy_tier_drift() {
     let package_manifests = [(
         "crucible-sim",
@@ -379,6 +476,23 @@ const CLIPPY_DENY_LINTS: &[&str] = &[
     "expect_used",
     "float_arithmetic",
     "unwrap_used",
+];
+const HASH_ITERATION_METHODS: &[&str] = &[
+    "iter",
+    "iter_mut",
+    "keys",
+    "values",
+    "values_mut",
+    "drain",
+    "into_iter",
+    "into_keys",
+    "into_values",
+    "extract_if",
+    "retain",
+    "difference",
+    "intersection",
+    "symmetric_difference",
+    "union",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -464,17 +578,278 @@ fn scan_content(path: &Path, content: &str) -> Vec<String> {
             "HashMap" | "HashSet" => {
                 findings.push(finding(path, token.line, "unordered map/set", identifier))
             }
-            "select" if next_is_bang(&tokens, index) => findings.push(finding(
-                path,
-                token.line,
-                "nondeterministic select",
-                "select!",
-            )),
+            "select"
+                if next_is_bang(&tokens, index) && select_macro_is_unordered(&tokens, index) =>
+            {
+                findings.push(finding(
+                    path,
+                    token.line,
+                    "nondeterministic select",
+                    "select!",
+                ))
+            }
             _ => {}
         }
     }
 
     findings
+}
+
+fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec<String> {
+    let scrubbed = scrub_comments_and_strings(content);
+    let tokens = tokenize(&scrubbed);
+    let hash_containers = hash_container_bindings(&tokens);
+
+    let mut findings = hash_container_iteration_failures(path, &tokens, &hash_containers);
+    findings.extend(unordered_select_failures(path, &tokens));
+    findings.extend(bare_unsafe_block_failures(path, content, &tokens));
+    findings
+}
+
+fn hash_container_bindings(tokens: &[Token]) -> BTreeSet<String> {
+    let mut bindings = BTreeSet::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let Some(identifier) = token.kind.as_ident() else {
+            continue;
+        };
+
+        if identifier == "let" {
+            if let Some(binding) = let_binding_with_hash_container(tokens, index) {
+                bindings.insert(binding);
+            }
+            continue;
+        }
+
+        if token_starts_hash_container_type_annotation(tokens, index) {
+            bindings.insert(identifier.to_string());
+        }
+    }
+
+    bindings
+}
+
+fn let_binding_with_hash_container(tokens: &[Token], index: usize) -> Option<String> {
+    let mut cursor = index + 1;
+    if tokens.get(cursor).and_then(|token| token.kind.as_ident()) == Some("mut") {
+        cursor += 1;
+    }
+
+    let binding = tokens.get(cursor)?.kind.as_ident()?.to_string();
+    statement_contains_hash_container(tokens, cursor).then_some(binding)
+}
+
+fn token_starts_hash_container_type_annotation(tokens: &[Token], index: usize) -> bool {
+    let Some(Token {
+        kind: TokenKind::Punct(':'),
+        ..
+    }) = tokens.get(index + 1)
+    else {
+        return false;
+    };
+
+    tokens[index + 2..]
+        .iter()
+        .take_while(|token| {
+            !matches!(
+                token.kind,
+                TokenKind::Punct(',') | TokenKind::Punct(')') | TokenKind::Punct(';')
+            )
+        })
+        .any(token_is_hash_container)
+}
+
+fn statement_contains_hash_container(tokens: &[Token], index: usize) -> bool {
+    tokens[index..]
+        .iter()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct(';')))
+        .any(token_is_hash_container)
+}
+
+fn token_is_hash_container(token: &Token) -> bool {
+    matches!(token.kind.as_ident(), Some("HashMap" | "HashSet"))
+}
+
+fn hash_container_iteration_failures(
+    path: &Path,
+    tokens: &[Token],
+    hash_containers: &BTreeSet<String>,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let Some(identifier) = token.kind.as_ident() else {
+            continue;
+        };
+
+        if HASH_ITERATION_METHODS.contains(&identifier)
+            && previous_is_punct(tokens, index, '.')
+            && method_target_is_hash_container(tokens, index, hash_containers)
+        {
+            findings.push(finding(
+                path,
+                token.line,
+                "unordered hash-container iteration",
+                &format!(".{identifier}()"),
+            ));
+        }
+
+        if identifier == "for" {
+            findings.extend(for_loop_hash_iteration_failure(
+                path,
+                tokens,
+                index,
+                hash_containers,
+            ));
+        }
+    }
+
+    findings
+}
+
+fn method_target_is_hash_container(
+    tokens: &[Token],
+    method_index: usize,
+    hash_containers: &BTreeSet<String>,
+) -> bool {
+    let Some(target_index) = method_index.checked_sub(2) else {
+        return false;
+    };
+
+    tokens
+        .get(target_index)
+        .and_then(|token| token.kind.as_ident())
+        .is_some_and(|target| hash_containers.contains(target))
+}
+
+fn for_loop_hash_iteration_failure(
+    path: &Path,
+    tokens: &[Token],
+    for_index: usize,
+    hash_containers: &BTreeSet<String>,
+) -> Vec<String> {
+    let Some(in_index) = tokens[for_index + 1..]
+        .iter()
+        .position(|token| token.kind.as_ident() == Some("in"))
+        .map(|relative| for_index + 1 + relative)
+    else {
+        return Vec::new();
+    };
+
+    let Some(iterated) = for_loop_iterated_binding(tokens, in_index + 1) else {
+        return Vec::new();
+    };
+
+    if hash_containers.contains(iterated.name) {
+        vec![finding(
+            path,
+            iterated.line,
+            "unordered hash-container iteration",
+            &format!("for ... in {}", iterated.name),
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+fn for_loop_iterated_binding(tokens: &[Token], mut index: usize) -> Option<BindingRef<'_>> {
+    loop {
+        match tokens.get(index) {
+            Some(Token {
+                kind: TokenKind::Punct('&'),
+                ..
+            }) => index += 1,
+            Some(Token {
+                kind: TokenKind::Ident(identifier),
+                ..
+            }) if identifier == "mut" => index += 1,
+            _ => break,
+        }
+    }
+
+    tokens.get(index).and_then(|token| {
+        token.kind.as_ident().map(|name| BindingRef {
+            name,
+            line: token.line,
+        })
+    })
+}
+
+fn unordered_select_failures(path: &Path, tokens: &[Token]) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind.as_ident() == Some("select")
+            && next_is_bang(tokens, index)
+            && select_macro_is_unordered(tokens, index)
+        {
+            findings.push(finding(path, token.line, "unordered select", "select!"));
+        }
+    }
+
+    findings
+}
+
+fn select_macro_is_unordered(tokens: &[Token], index: usize) -> bool {
+    let Some(open_brace) = tokens[index + 1..]
+        .iter()
+        .position(|token| matches!(token.kind, TokenKind::Punct('{')))
+        .map(|relative| index + 1 + relative)
+    else {
+        return true;
+    };
+
+    !matches!(
+        (
+            tokens
+                .get(open_brace + 1)
+                .and_then(|token| token.kind.as_ident()),
+            tokens.get(open_brace + 2),
+        ),
+        (
+            Some("biased"),
+            Some(Token {
+                kind: TokenKind::Punct(';'),
+                ..
+            })
+        )
+    )
+}
+
+fn bare_unsafe_block_failures(path: &Path, content: &str, tokens: &[Token]) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind.as_ident() == Some("unsafe")
+            && unsafe_block_follows(tokens, index)
+            && !has_immediately_preceding_safety_comment(content, token.line)
+        {
+            findings.push(finding(path, token.line, "bare unsafe block", "unsafe"));
+        }
+    }
+
+    findings
+}
+
+fn unsafe_block_follows(tokens: &[Token], index: usize) -> bool {
+    matches!(
+        tokens.get(index + 1),
+        Some(Token {
+            kind: TokenKind::Punct('{'),
+            ..
+        })
+    )
+}
+
+fn has_immediately_preceding_safety_comment(content: &str, line: usize) -> bool {
+    let Some(previous_line) = line.checked_sub(2) else {
+        return false;
+    };
+
+    content
+        .lines()
+        .nth(previous_line)
+        .is_some_and(|candidate| candidate.trim_start().starts_with("// SAFETY:"))
 }
 
 fn clippy_tier_failures(
@@ -867,7 +1242,7 @@ fn tokenize(content: &str) -> Vec<Token> {
         } else {
             if matches!(
                 ch,
-                ':' | '!' | '<' | '>' | '{' | '}' | '(' | ')' | ',' | '.' | '='
+                ':' | '!' | '<' | '>' | '{' | '}' | '(' | ')' | ',' | '.' | '=' | ';' | '&'
             ) {
                 tokens.push(Token {
                     kind: TokenKind::Punct(ch),
@@ -956,6 +1331,12 @@ fn is_identifier_continue(ch: char) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Token {
     kind: TokenKind,
+    line: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BindingRef<'a> {
+    name: &'a str,
     line: usize,
 }
 
