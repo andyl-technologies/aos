@@ -98,7 +98,7 @@ reframes how the phases below are read:
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☑ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☑ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
-| **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☐ |
+| **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☑ |
 | **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☐ |
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
@@ -711,15 +711,15 @@ beyond the single registry signing key. ([`apm-integration.md`](apm-integration.
 
 **Deliverables.**
 
-- [ ] **in-toto/SLSA provenance (D23).** Emit a SLSA v1.2 provenance attestation
+- [x] **in-toto/SLSA provenance (D23).** Emit a SLSA v1.2 provenance attestation
       per build binding the NAR hash **and the manifest hash** to the build
       inputs (`.drv`/source); serve from the registry alongside the narinfo;
       `apm install` verifies it.
-- [ ] **Transparency log (D23).** Append every published binding to a
+- [x] **Transparency log (D23).** Append every published binding to a
       Merkle/append-only log (Trustix-style multi-builder consensus or a
       Rekor-style log) so a compromised registry key cannot silently taint or
       equivocate.
-- [ ] **TUF hardening (D23).** Roles + thresholds + timestamping over the catalog
+- [x] **TUF hardening (D23).** Roles + thresholds + timestamping over the catalog
       (the anti-rollback floor is the TUF rollback defense already; add the rest);
       audit against freeze / mix-and-match / fast-forward / key-rotation.
 
@@ -884,5 +884,7 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [ ] **Verifier hosting (P9).** Whether the fleet attestation verifier is a
       registry-adjacent service or standalone — it is a *separate role* from the
       registry catalog and must not hold the registry key.
-- [ ] **Transparency-log substrate (P10).** Trustix-style multi-builder consensus
-      vs a Rekor-style log; reuse vs build. ([`apm-integration.md`](apm-integration.md))
+- [x] **Transparency-log substrate (P10).** Build the first substrate in-registry as
+      `transparency/package-provenance.jsonl`: an append-only JSONL hash chain
+      committed alongside package provenance, with staged validation rejecting
+      rewrites or unlogged provenance-bearing packages. ([`apm-integration.md`](apm-integration.md))

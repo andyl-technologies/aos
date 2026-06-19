@@ -2364,6 +2364,18 @@ pub struct RegistryState {
     /// ISO 8601 timestamp of the last successful sync.
     #[serde(default)]
     pub last_update: Option<String>,
+    /// Highest accepted TUF root metadata version.
+    #[serde(default)]
+    pub tuf_root_version: Option<u64>,
+    /// Highest accepted TUF targets metadata version.
+    #[serde(default)]
+    pub tuf_targets_version: Option<u64>,
+    /// Highest accepted TUF snapshot metadata version.
+    #[serde(default)]
+    pub tuf_snapshot_version: Option<u64>,
+    /// Highest accepted TUF timestamp metadata version.
+    #[serde(default)]
+    pub tuf_timestamp_version: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------

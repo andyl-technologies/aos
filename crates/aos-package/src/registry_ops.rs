@@ -73,6 +73,7 @@ use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
 use crate::registry::static_upload;
 use crate::registry::store::{self, DepEdge, NarBytes, Realisation, StoreMap, UpsertOutcome};
+use crate::registry::tuf;
 use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::security::{
     KeySource, KeyStore, TrustedKey, key_fingerprint, parse_signing_key, verify_tag_signature,
@@ -9701,6 +9702,8 @@ pub struct ReleaseTreeOptions {
     pub version: semver::Version,
     /// Path to the OpenSSH Ed25519 private key used for tags and commits.
     pub signing_key: String,
+    /// OpenSSH keys available for TUF role signatures.
+    pub tuf_signing_keys: Vec<tuf::MetadataSigningKey>,
     /// Channel to initialize or advance after tagging, if any.
     pub channel: Option<String>,
     /// Initialize all 256 channel partitions instead of advancing a subset.
@@ -9885,6 +9888,8 @@ pub async fn release(
         bail!("registry directory does not exist: {}", dir.display());
     }
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
+    let (_tuf_key_owners, tuf_signing_keys) =
+        resolve_tuf_metadata_signing_keys(config, &dir, &registry_name, &signing_key)?;
 
     let upload_auth =
         auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
@@ -9914,6 +9919,7 @@ pub async fn release(
     let options = ReleaseTreeOptions {
         version,
         signing_key: signing_key.path().to_string(),
+        tuf_signing_keys,
         channel: channel.map(ToString::to_string),
         init_channel,
         count,
@@ -10098,6 +10104,24 @@ pub async fn release_registry_tree(
         cache_report = Some(generated);
     }
 
+    let release_tag_exists = existing_release_tag_commit(dir, &options.version)?.is_some();
+    if !release_tag_exists {
+        let tuf_changed = write_tuf_release_metadata(dir, registry_name, options, printer)?;
+        if tuf_changed {
+            commit_registry_paths(
+                dir,
+                "registry: update TUF release metadata",
+                &[dir.join(tuf::TUF_DIR)],
+                Some(&options.signing_key),
+            )?;
+        }
+    } else if options.resume {
+        printer.info(&format!(
+            "Release tag {} already exists; leaving committed TUF metadata unchanged.",
+            options.version,
+        ));
+    }
+
     let head = git(dir, &["rev-parse", "HEAD"])?;
     let published_before = semver_tag_versions(dir)?
         .into_iter()
@@ -10174,6 +10198,123 @@ pub async fn release_registry_tree(
         warn_on_cache_gc(&cache.output_dir, options.cache_max_age_days, printer);
     }
     Ok(report)
+}
+
+fn write_tuf_release_metadata(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    printer: &Printer,
+) -> Result<bool> {
+    let tuf_signing_keys = if options.tuf_signing_keys.is_empty() {
+        let trust_key = derive_trust_key(registry_name, &options.signing_key)?;
+        vec![tuf::MetadataSigningKey {
+            key_id: tuf_signing_key_id(dir, &trust_key)?,
+            key_path: PathBuf::from(&options.signing_key),
+            key: trust_key,
+            role_key: true,
+        }]
+    } else {
+        options.tuf_signing_keys.clone()
+    };
+    let changed = tuf::write_release_metadata_worktree(
+        dir,
+        registry_name,
+        &options.version,
+        &tuf_signing_keys,
+    )?;
+    if changed {
+        printer.success("Updated TUF release metadata.");
+    }
+    Ok(changed)
+}
+
+fn tuf_signing_key_id(dir: &Path, trust_key: &str) -> Result<String> {
+    if let Some(roster) = keys::load_keys_toml(dir)? {
+        if let Some(entry) = roster.active.iter().find(|entry| entry.key == trust_key) {
+            return Ok(entry.id.clone());
+        }
+    }
+    let (_registry, _algorithm, public_key) = parse_signing_key(trust_key)?;
+    Ok(format!("key-{}", key_fingerprint(&public_key)))
+}
+
+fn resolve_tuf_metadata_signing_keys(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    primary: &ResolvedSigningKey,
+) -> Result<(Vec<ResolvedSigningKey>, Vec<tuf::MetadataSigningKey>)> {
+    let primary_trust_key = derive_trust_key(registry_name, primary.path())?;
+    let primary_key = tuf::MetadataSigningKey {
+        key_id: tuf_signing_key_id(dir, &primary_trust_key)?,
+        key_path: PathBuf::from(primary.path()),
+        key: primary_trust_key.clone(),
+        role_key: true,
+    };
+    let mut metadata_keys = vec![primary_key];
+    let mut owners = Vec::new();
+
+    let Some(roster) = keys::load_keys_toml(dir)? else {
+        return Ok((owners, metadata_keys));
+    };
+    let Some(registry_config) = registry_config_by_name(config, registry_name) else {
+        return Ok((owners, metadata_keys));
+    };
+    let active_key_ids = roster
+        .active
+        .iter()
+        .map(|entry| entry.id.clone())
+        .collect::<HashSet<_>>();
+    for entry in &roster.active {
+        if metadata_keys.iter().any(|key| key.key == entry.key) {
+            continue;
+        }
+        let Some(source) = registry_config.signing_keys.get(&entry.id) else {
+            continue;
+        };
+        let resolved = resolve_signing_key_source(&entry.id, source)?;
+        let trust_key = derive_trust_key(registry_name, resolved.path())?;
+        if trust_key != entry.key {
+            bail!(
+                "configured private key for signing key id '{}' derives '{}', but keys.toml declares '{}'",
+                entry.id,
+                trust_key,
+                entry.key,
+            );
+        }
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id: entry.id.clone(),
+            key_path: PathBuf::from(resolved.path()),
+            key: trust_key,
+            role_key: true,
+        });
+        owners.push(resolved);
+    }
+    for key_id in tuf::worktree_root_role_key_ids(dir)? {
+        if active_key_ids.contains(&key_id) || metadata_keys.iter().any(|key| key.key_id == key_id)
+        {
+            continue;
+        }
+        let Some(source) = registry_config.signing_keys.get(&key_id) else {
+            continue;
+        };
+        let resolved = resolve_signing_key_source(&key_id, source)?;
+        let trust_key = derive_trust_key(registry_name, resolved.path())?;
+        if metadata_keys.iter().any(|key| key.key == trust_key) {
+            owners.push(resolved);
+            continue;
+        }
+        metadata_keys.push(tuf::MetadataSigningKey {
+            key_id,
+            key_path: PathBuf::from(resolved.path()),
+            key: trust_key,
+            role_key: false,
+        });
+        owners.push(resolved);
+    }
+
+    Ok((owners, metadata_keys))
 }
 
 /// Reject invalid `apr release` flag combinations before any work happens.
@@ -11029,6 +11170,7 @@ mod tests {
                 .join("signing.key")
                 .to_string_lossy()
                 .into_owned(),
+            tuf_signing_keys: Vec::new(),
             channel: None,
             init_channel: false,
             count: None,
