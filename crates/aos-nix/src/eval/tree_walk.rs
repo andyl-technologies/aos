@@ -1908,6 +1908,7 @@ struct KnownDerivationInputHashes {
 enum DerivationOutputResolution {
     StaticPaths,
     FloatingCa(FloatingCaOutput),
+    Impure(FloatingCaOutput),
     DeferredPlaceholders,
 }
 
@@ -3024,6 +3025,7 @@ impl TreeWalk {
         let mut output_hash_algo = None;
         let mut output_hash_mode = None;
         let mut content_addressed = false;
+        let mut impure = false;
 
         for entry in entries {
             let key = {
@@ -3062,13 +3064,8 @@ impl TreeWalk {
             }
             if key == IMPURE_ATTR {
                 if self.expect_bool(id, value, span)? {
-                    return Err(TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                            id,
-                            feature: "impure derivations",
-                        },
-                        span,
-                    ));
+                    impure = true;
+                    continue;
                 }
             }
 
@@ -3272,18 +3269,43 @@ impl TreeWalk {
             output_hash_algo.as_deref(),
             output_hash_mode.as_deref(),
         )?;
-        let floating_ca_output = if content_addressed && output_hash.is_none() {
-            Some(Self::configure_derivation_floating_ca_output(
-                id,
-                span,
-                output_hash_algo.as_deref(),
-                output_hash_mode.as_deref(),
-            )?)
+        let deferred_output_resolution = if output_hash.is_none() {
+            if content_addressed && impure {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: "derivation cannot be both content-addressed and impure"
+                            .to_owned(),
+                    },
+                    span,
+                ));
+            }
+            if content_addressed {
+                Some(DerivationOutputResolution::FloatingCa(
+                    Self::configure_derivation_floating_ca_output(
+                        id,
+                        span,
+                        output_hash_algo.as_deref(),
+                        output_hash_mode.as_deref(),
+                    )?,
+                ))
+            } else if impure {
+                Some(DerivationOutputResolution::Impure(
+                    Self::configure_derivation_floating_ca_output(
+                        id,
+                        span,
+                        output_hash_algo.as_deref(),
+                        output_hash_mode.as_deref(),
+                    )?,
+                ))
+            } else {
+                None
+            }
         } else {
             None
         };
         for output_name in derivation.outputs.keys() {
-            let env_value = if floating_ca_output.is_some() {
+            let env_value = if deferred_output_resolution.is_some() {
                 Self::derivation_output_placeholder(id, span, output_name.as_bytes())?
             } else {
                 Vec::new()
@@ -3301,35 +3323,67 @@ impl TreeWalk {
 
         self.validate_derivation_strict_before_paths(id, span, &derivation)?;
         let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
-        let (known_hash, drv_path, output_resolution) = if let Some(floating_ca_output) =
-            floating_ca_output
+        let (known_hash, drv_path, output_resolution) = if let Some(output_resolution) =
+            deferred_output_resolution
         {
-            if self.options.store_dir() != DEFAULT_STORE_DIR {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+            match output_resolution {
+                DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                    if self.options.store_dir() != DEFAULT_STORE_DIR {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                id,
+                                feature: "floating content-addressed derivations with custom store directory",
+                            },
+                            span,
+                        ));
+                    }
+                    let known_hash = Self::hash_floating_ca_derivation_modulo_with_inputs(
+                        &derivation,
+                        floating_ca_output,
+                        &input_hashes.hashes,
+                    );
+                    let drv_path = Self::calculate_floating_ca_derivation_path(
                         id,
-                        feature: "floating content-addressed derivations with custom store directory",
-                    },
-                    span,
-                ));
+                        span,
+                        &name,
+                        &derivation,
+                        floating_ca_output,
+                    )?;
+                    (
+                        known_hash,
+                        drv_path,
+                        DerivationOutputResolution::FloatingCa(floating_ca_output),
+                    )
+                }
+                DerivationOutputResolution::Impure(impure_output) => {
+                    if self.options.store_dir() != DEFAULT_STORE_DIR {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                                id,
+                                feature: "impure derivations with custom store directory",
+                            },
+                            span,
+                        ));
+                    }
+                    let known_hash = Self::impure_derivation_hash_modulo();
+                    let drv_path = Self::calculate_impure_derivation_path(
+                        id,
+                        span,
+                        &name,
+                        &derivation,
+                        impure_output,
+                    )?;
+                    (
+                        known_hash,
+                        drv_path,
+                        DerivationOutputResolution::Impure(impure_output),
+                    )
+                }
+                DerivationOutputResolution::StaticPaths
+                | DerivationOutputResolution::DeferredPlaceholders => unreachable!(
+                    "deferred derivation output setup only produces floating or impure outputs"
+                ),
             }
-            let known_hash = Self::hash_floating_ca_derivation_modulo_with_inputs(
-                &derivation,
-                floating_ca_output,
-                &input_hashes.hashes,
-            );
-            let drv_path = Self::calculate_floating_ca_derivation_path(
-                id,
-                span,
-                &name,
-                &derivation,
-                floating_ca_output,
-            )?;
-            (
-                known_hash,
-                drv_path,
-                DerivationOutputResolution::FloatingCa(floating_ca_output),
-            )
         } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
             if self.options.store_dir() != DEFAULT_STORE_DIR {
                 return Err(TreeWalkError::new(
@@ -4216,6 +4270,10 @@ impl TreeWalk {
         Self::sha256_array(&aterm)
     }
 
+    fn impure_derivation_hash_modulo() -> [u8; 32] {
+        Self::sha256_array(b"impure")
+    }
+
     fn calculate_floating_ca_derivation_path(
         id: IrId,
         span: Span,
@@ -4238,6 +4296,32 @@ impl TreeWalk {
                     message: format!(
                         "invalid floating content-addressed derivation path: {source}"
                     ),
+                },
+                span,
+            )
+        })
+    }
+
+    fn calculate_impure_derivation_path(
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+        impure_output: FloatingCaOutput,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let aterm = Self::impure_derivation_aterm_bytes(derivation, impure_output, None);
+        let references: BTreeSet<String> = derivation
+            .input_sources
+            .iter()
+            .chain(derivation.input_derivations.keys())
+            .map(nix_compat::store_path::StorePath::to_absolute_path)
+            .collect();
+        let drv_name = format!("{name}.drv");
+        nix_compat::store_path::build_text_path(&drv_name, &aterm, references).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("invalid impure derivation path: {source}"),
                 },
                 span,
             )
@@ -4276,6 +4360,30 @@ impl TreeWalk {
         self.write_derivation_input_paths(&mut out, &derivation.input_derivations);
         out.push(b',');
         self.write_derivation_input_sources(&mut out, &derivation.input_sources);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.builder.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_string_array(&mut out, derivation.arguments.iter().map(String::as_bytes));
+        out.push(b',');
+        Self::write_aterm_environment(&mut out, &derivation.environment);
+        out.push(b')');
+        out
+    }
+
+    fn impure_derivation_aterm_bytes(
+        derivation: &nix_compat::derivation::Derivation,
+        impure_output: FloatingCaOutput,
+        input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Derive(");
+        Self::write_impure_outputs(&mut out, derivation, impure_output);
+        out.push(b',');
+        Self::write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
+        out.push(b',');
+        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
         out.push(b',');
         Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
         out.push(b',');
@@ -4530,6 +4638,30 @@ impl TreeWalk {
             Self::write_aterm_field(out, hash_algo.as_bytes(), true);
             out.push(b',');
             Self::write_aterm_field(out, b"", true);
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_impure_outputs(
+        out: &mut Vec<u8>,
+        derivation: &nix_compat::derivation::Derivation,
+        impure_output: FloatingCaOutput,
+    ) {
+        let hash_algo = impure_output.aterm_hash_algo();
+        out.push(b'[');
+        for (index, output_name) in derivation.outputs.keys().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            Self::write_aterm_field(out, output_name.as_bytes(), true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"", true);
+            out.push(b',');
+            Self::write_aterm_field(out, hash_algo.as_bytes(), true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"impure", true);
             out.push(b')');
         }
         out.push(b']');
@@ -5038,6 +5170,9 @@ impl TreeWalk {
                             None,
                         ))
                     }
+                    DerivationOutputResolution::Impure(impure_output) => Some(
+                        Self::impure_derivation_aterm_bytes(&known.derivation, impure_output, None),
+                    ),
                     DerivationOutputResolution::DeferredPlaceholders => {
                         Some(Self::deferred_placeholder_derivation_aterm_bytes(
                             known.id,
@@ -53202,35 +53337,170 @@ mod tests {
     }
 
     #[test]
-    fn derivation_strict_rejects_unsupported_impure_derivations() {
-        for source in [
+    fn derivation_strict_supports_impure_derivations() {
+        let source = r#"let
+             simple = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = true;
+             };
+             flat = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "flat";
+             };
+             structured = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __structuredAttrs = true;
+               __impure = true;
+             };
+             multi = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = true;
+               outputs = [ "out" "dev" ];
+             };
+             fixed = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+             };
+             base = derivationStrict {
+               name = "base";
+               system = ":";
+               builder = ":";
+               __impure = true;
+             };
+             user = derivationStrict {
+               name = "user";
+               system = ":";
+               builder = ":";
+               input = base.out;
+             };
+           in {
+             baseDrv = base.drvPath;
+             baseOut = base.out;
+             fixedDrv = fixed.drvPath;
+             fixedOut = fixed.out;
+             flatDrv = flat.drvPath;
+             flatOut = flat.out;
+             multiDev = multi.dev;
+             multiDrv = multi.drvPath;
+             multiNames = builtins.attrNames multi;
+             multiOut = multi.out;
+             simpleCtx = builtins.getContext simple.out;
+             simpleDrv = simple.drvPath;
+             simpleDrvCtx = builtins.getContext simple.drvPath;
+             simpleNames = builtins.attrNames simple;
+             simpleOut = simple.out;
+             structuredDrv = structured.drvPath;
+             structuredOut = structured.out;
+             userCtx = builtins.getContext user.out;
+             userDrv = user.drvPath;
+             userOut = user.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"baseDrv":"/nix/store/a0by77ssxmlrqwa9dkfaf04pvbdxzqjg-base.drv","baseOut":"/034l5i2lm0zpg5g58qyq6d01rvazw3yqwzmqkqxl9gcq0z56r4m6","fixedDrv":"/nix/store/3yx7944f4sjjnh56pynw9i73mbmavwb9-foo.drv","fixedOut":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo","flatDrv":"/nix/store/5c3xzfl0man0kdk45i398k3avzkk8wvy-foo.drv","flatOut":"/1jw26j2wrfih6x0hh9c6a966sirzvbn4hsnkin2s91s101z48rr7","multiDev":"/04afr1wv95cmfkd5dm12ndybypx7z8dxz06fiwkalm48risqvl10","multiDrv":"/nix/store/9b3swmf9xwz9jv8zh8pn8wplaw3wdqd0-foo.drv","multiNames":["dev","drvPath","out"],"multiOut":"/0c1mqws5832mvaqkx6v4203nf7jz51yn45b5v3pylm5r0j9yfb9m","simpleCtx":{"/nix/store/kxf0wsv4s2sq32qf8babggax9dvv970r-foo.drv":{"outputs":["out"]}},"simpleDrv":"/nix/store/kxf0wsv4s2sq32qf8babggax9dvv970r-foo.drv","simpleDrvCtx":{"/nix/store/kxf0wsv4s2sq32qf8babggax9dvv970r-foo.drv":{"allOutputs":true}},"simpleNames":["drvPath","out"],"simpleOut":"/0fdh6nchbj3w1s0dzdxb44b0cnypwzx7fz5lk4v46603phqkx69y","structuredDrv":"/nix/store/ymkzcxxfrrac7jbyqbxdrkmsic6cykpp-foo.drv","structuredOut":"/1i8lg293jg8xhica7znnava0a639bi5gfj01ymqrsrls5dliiwhf","userCtx":{"/nix/store/d9h67hj8bydbm3lncixzliv1kwl0nw89-user.drv":{"outputs":["out"]}},"userDrv":"/nix/store/d9h67hj8bydbm3lncixzliv1kwl0nw89-user.drv","userOut":"/09jldbl2zzha90yv0zs8jxkj1hm48xh7bxz45qfn45k5n8084k1w"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_impure_derivations_compose_with_other_output_types() {
+        let source = r#"let
+             impureBase = derivationStrict {
+               name = "base";
+               system = ":";
+               builder = ":";
+               __impure = true;
+             };
+             floatingCa = derivationStrict {
+               name = "ca";
+               system = ":";
+               builder = ":";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               input = impureBase.out;
+             };
+             downstream = derivationStrict {
+               name = "user";
+               system = ":";
+               builder = ":";
+               input = floatingCa.out;
+             };
+             fixedFromImpure = derivationStrict {
+               name = "fixed";
+               system = ":";
+               builder = ":";
+               input = impureBase.out;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+             };
+             fixedWithBothMarkers = derivationStrict {
+               name = "foo";
+               system = ":";
+               builder = ":";
+               __impure = true;
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+               outputHash = "sha256-Q3QXOoy+iN4VK2CflvRulYvPZXYgF0dO7FoF7CvWFTA=";
+             };
+           in {
+             baseDrv = impureBase.drvPath;
+             baseOut = impureBase.out;
+             downstreamCtx = builtins.getContext downstream.out;
+             downstreamDrv = downstream.drvPath;
+             downstreamOut = downstream.out;
+             fixedCtx = builtins.getContext fixedFromImpure.out;
+             fixedDrv = fixedFromImpure.drvPath;
+             fixedOut = fixedFromImpure.out;
+             floatingCaDrv = floatingCa.drvPath;
+             floatingCaOut = floatingCa.out;
+             markerFixedDrv = fixedWithBothMarkers.drvPath;
+             markerFixedOut = fixedWithBothMarkers.out;
+           }"#;
+
+        assert_eq!(
+            eval_json_bytes(source),
+            br#"{"baseDrv":"/nix/store/a0by77ssxmlrqwa9dkfaf04pvbdxzqjg-base.drv","baseOut":"/034l5i2lm0zpg5g58qyq6d01rvazw3yqwzmqkqxl9gcq0z56r4m6","downstreamCtx":{"/nix/store/bqab1ykzfz4x076pcp4vq1jfq5c05a8n-user.drv":{"outputs":["out"]}},"downstreamDrv":"/nix/store/bqab1ykzfz4x076pcp4vq1jfq5c05a8n-user.drv","downstreamOut":"/036ba2igq8ix62kw8q0q11blslb8zrymdajg225m7xbampbi081q","fixedCtx":{"/nix/store/i8f1hl9v5jhk4f268acw73w8nymbwkha-fixed.drv":{"outputs":["out"]}},"fixedDrv":"/nix/store/i8f1hl9v5jhk4f268acw73w8nymbwkha-fixed.drv","fixedOut":"/nix/store/y2bmryv6a5lpk1z2k50b7mddffkf13j4-fixed","floatingCaDrv":"/nix/store/p672mcc8435xhc4bqcf4qf1kn88jzv75-ca.drv","floatingCaOut":"/01rrdjiwi1yd7v29i3981h3brdfnfw8y1wmhvs94m9zyjlh67c6b","markerFixedDrv":"/nix/store/3yx7944f4sjjnh56pynw9i73mbmavwb9-foo.drv","markerFixedOut":"/nix/store/17wgs52s7kcamcyin4ja58njkf91ipq8-foo"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_invalid_impure_derivations() {
+        let error = eval_whnf_owned(&lower(
             r#"derivationStrict {
                  name = "foo";
                  system = ":";
                  builder = ":";
+                 __contentAddressed = true;
                  __impure = true;
                }"#,
-            r#"derivationStrict {
-                 name = "foo";
-                 system = ":";
-                 builder = ":";
-                 __structuredAttrs = true;
-                 __impure = true;
-               }"#,
-        ] {
-            let error = eval_whnf_owned(&lower(source))
-                .expect_err("impure derivations are still feature-gated");
-            assert!(
-                matches!(
-                    error.kind(),
-                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                        feature: "impure derivations",
-                        ..
-                    }
-                ),
-                "{source}: {error:?}"
-            );
-        }
+        ))
+        .expect_err("content-addressed impure derivation must be rejected");
+
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::DerivationStrict {
+                message,
+                ..
+            } if message == "derivation cannot be both content-addressed and impure"
+        ));
 
         let error = eval_whnf_owned(&lower(
             r#"derivationStrict {
