@@ -46,6 +46,10 @@
   #   tar           extracting tree subpaths from `git archive` output
   #   which         check_command_exists() preflight in the drain/sysroot path
   #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
+  #   systemd       systemctl: the post-activation reconcile's failed-unit
+  #                 `systemctl status` capture (display-only — the reconcile
+  #                 itself drives systemd over D-Bus); without it on PATH the
+  #                 capture fails ENOENT and masks the real diagnostic
   # These are declared as runtimeDeps below (not just buildDeps) so the
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths

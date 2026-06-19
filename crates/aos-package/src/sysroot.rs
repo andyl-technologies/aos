@@ -50,11 +50,12 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
 use aos_core::output::{OutputMode, Printer};
-use aos_systemd::{FailedUnitsReport, JobResult, SystemdClient};
+use aos_systemd::{FailedUnitsReport, JobResult, SettleOutcome, SystemdClient};
 
 use crate::config::ApmConfig;
 use crate::download::{
@@ -1040,6 +1041,115 @@ fn format_failed_units(report: &FailedUnitsReport) -> String {
     out
 }
 
+/// Hard ceiling on how long the post-activation health gate waits for a single
+/// auto-restarting unit to settle before giving up and reporting it failed.
+///
+/// Caps the per-unit deadline derived from `RestartSec` (see [`settle_budget`])
+/// so a pathological restart policy — a large `RestartSec`, or a unit that
+/// auto-restarts forever without ever reaching terminal `failed` — cannot stall
+/// the upgrade unboundedly.
+const MAX_SETTLE: Duration = Duration::from_secs(90);
+
+/// Floor on the settle deadline: always wait at least this long so a unit with
+/// a sub-second `RestartSec` still gets at least one clean retry observed.
+const MIN_SETTLE: Duration = Duration::from_secs(5);
+
+/// Restarts to budget for when sizing the settle deadline: enough to observe a
+/// fail -> backoff -> retry -> (one more) recovery, which covers the common
+/// "failed first start, recovers on retry" case.
+const SETTLE_RETRY_BUDGET: u32 = 2;
+
+/// Slack added on top of `RestartSec` * [`SETTLE_RETRY_BUDGET`] for the unit's
+/// own start time before it signals ready.
+const SETTLE_START_GRACE: Duration = Duration::from_secs(2);
+
+/// Settle budget for a unit, derived from its `RestartSec` and clamped to
+/// `[MIN_SETTLE, MAX_SETTLE]`.
+fn settle_budget(restart_sec: Duration) -> Duration {
+    (restart_sec * SETTLE_RETRY_BUDGET + SETTLE_START_GRACE).clamp(MIN_SETTLE, MAX_SETTLE)
+}
+
+/// Resolve units the snapshot scan flagged as auto-restarting before the gate
+/// judges them.
+///
+/// [`SystemdClient::failed_units`] is a point-in-time scan: a `.service` caught
+/// in its `RestartSec` backoff appears as `activating (auto-restart)` with a
+/// non-zero `ExecMainStatus`, indistinguishable from a unit that will keep
+/// failing. This partitions those tentative entries out, waits out each one's
+/// backoff (bounded by [`settle_budget`]), and keeps only the ones that end up
+/// genuinely failed — units that recover on retry are dropped. Units already in
+/// terminal `failed` state pass through untouched.
+///
+/// Waits run concurrently, so the added latency is the longest single budget,
+/// not their sum. Each wait is announced through `printer` (with its computed
+/// bound) before blocking, and a unit that never settles within the cap is
+/// reported with a warning, so a long wait is never silent and a flapping unit
+/// is never silently passed.
+async fn settle_auto_restarts(
+    client: &SystemdClient,
+    printer: &Printer,
+    report: FailedUnitsReport,
+) -> FailedUnitsReport {
+    let (tentative, mut failed): (Vec<_>, Vec<_>) = report
+        .failed
+        .into_iter()
+        .partition(|u| u.active_state != "failed" && u.sub_state == "auto-restart");
+
+    if tentative.is_empty() {
+        return FailedUnitsReport { failed };
+    }
+
+    // Size each unit's budget from its restart policy and announce before
+    // blocking, so the operator sees why the upgrade is pausing and for how long.
+    let mut budgets = Vec::with_capacity(tentative.len());
+    for u in &tentative {
+        let budget = match client.restart_policy(&u.name).await {
+            Ok(policy) => settle_budget(policy.restart_sec),
+            Err(_) => MIN_SETTLE,
+        };
+        let status = u
+            .exec_main_status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "n/a".to_string());
+        printer.info(&format!(
+            "{} is auto-restarting (ExecMainStatus={status}); waiting up to {}s for it to settle...",
+            u.name,
+            budget.as_secs(),
+        ));
+        budgets.push(budget);
+    }
+
+    let outcomes = futures_util::future::join_all(
+        tentative
+            .iter()
+            .zip(&budgets)
+            .map(|(u, budget)| client.wait_until_settled(&u.name, *budget)),
+    )
+    .await;
+
+    for ((u, budget), outcome) in tentative.into_iter().zip(budgets).zip(outcomes) {
+        match outcome {
+            SettleOutcome::Recovered { n_restarts } => {
+                printer.info(&format!(
+                    "  {} recovered after {n_restarts} restart(s)",
+                    u.name
+                ));
+            }
+            SettleOutcome::Failed => failed.push(u),
+            SettleOutcome::StillRestarting => {
+                printer.warning(&format!(
+                    "  {} did not settle within {}s (still auto-restarting) — not converging",
+                    u.name,
+                    budget.as_secs(),
+                ));
+                failed.push(u);
+            }
+        }
+    }
+
+    FailedUnitsReport { failed }
+}
+
 // ---------------------------------------------------------------------------
 // Live daemon reconciliation (`apm activate-{pre,post}-etc-swap`)
 // ---------------------------------------------------------------------------
@@ -1240,6 +1350,12 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
         .context("scanning for failed units")?;
 
     let _ = std::fs::remove_file(plan_path);
+
+    // `failed_units` is a point-in-time scan: a unit caught in its RestartSec
+    // backoff shows up as `activating (auto-restart)`, indistinguishable from
+    // one that will keep failing. Wait those out (bounded by MAX_SETTLE) before
+    // the gate judges, so a unit that recovers on retry doesn't fail the upgrade.
+    let report = settle_auto_restarts(&client, printer, report).await;
 
     if !report.is_empty() {
         printer.error(&format_failed_units(&report));
@@ -2443,6 +2559,20 @@ mod tests {
         // A unit with no ExecMainStatus renders as n/a.
         assert!(out.contains("stuck.service"), "{out}");
         assert!(out.contains("ExecMainStatus=n/a"), "{out}");
+    }
+
+    #[test]
+    fn settle_budget_clamps_to_bounds() {
+        // A typical RestartSec=5s yields one-or-two retries plus grace, within
+        // bounds: 5*2 + 2 = 12s.
+        assert_eq!(
+            settle_budget(Duration::from_secs(5)),
+            Duration::from_secs(12)
+        );
+        // A sub-second RestartSec floors at MIN_SETTLE rather than ~2s.
+        assert_eq!(settle_budget(Duration::from_millis(100)), MIN_SETTLE);
+        // A large RestartSec is capped at MAX_SETTLE rather than 2*60+2 = 122s.
+        assert_eq!(settle_budget(Duration::from_secs(60)), MAX_SETTLE);
     }
 
     // --- activate plan helpers -----------------------------------------
