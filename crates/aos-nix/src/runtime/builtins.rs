@@ -5,8 +5,8 @@
 //! strategy provides default direct-lowering and first-class arity, and
 //! custom builtins can override those fields in their definition impl. The
 //! declaration macro publishes those typed definitions as both the ordered
-//! `builtins` attrset inventory and the exact-name lookup used by evaluator
-//! dispatch and frontend passes.
+//! `builtins` attrset inventory and the sorted exact-name lookup used by
+//! evaluator dispatch and frontend passes.
 
 macro_rules! builtin_registry {
     (
@@ -20,19 +20,9 @@ macro_rules! builtin_registry {
             )*
         ];
 
-        fn lookup_builtin_declaration(name: &[u8]) -> Option<Builtin> {
-            $(
-                if name == <$ty as BuiltinDefinition>::NAME {
-                    return Some(<$ty as BuiltinDefinition>::DECLARATION);
-                }
-            )*
-
-            None
-        }
-
         /// Builtin declarations recognized by the resolver and evaluator.
         pub(crate) const BUILTINS: BuiltinRegistry =
-            BuiltinRegistry::new(BUILTIN_DECLARATIONS, lookup_builtin_declaration);
+            BuiltinRegistry::new(BUILTIN_DECLARATIONS);
     };
 }
 
@@ -1778,16 +1768,12 @@ impl Builtin {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BuiltinRegistry {
     declarations: &'static [Builtin],
-    lookup: fn(&[u8]) -> Option<Builtin>,
 }
 
 impl BuiltinRegistry {
     /// Creates a builtin registry from trait-generated declarations.
-    const fn new(declarations: &'static [Builtin], lookup: fn(&[u8]) -> Option<Builtin>) -> Self {
-        Self {
-            declarations,
-            lookup,
-        }
+    const fn new(declarations: &'static [Builtin]) -> Self {
+        Self { declarations }
     }
 
     /// Returns the number of builtin declarations.
@@ -1802,7 +1788,10 @@ impl BuiltinRegistry {
 
     /// Returns the declaration for a builtin name.
     pub(crate) fn lookup(&self, name: &[u8]) -> Option<Builtin> {
-        (self.lookup)(name)
+        self.declarations
+            .binary_search_by(|builtin| builtin.name().cmp(name))
+            .ok()
+            .map(|index| self.declarations[index])
     }
 
     /// Returns direct lowering behavior for a builtin name.
@@ -1882,12 +1871,31 @@ mod tests {
     }
 
     #[test]
+    fn builtin_declarations_are_sorted_for_binary_lookup() {
+        let mut previous = None;
+        for builtin in BUILTINS.iter() {
+            if let Some(previous) = previous {
+                assert!(
+                    previous < builtin.name(),
+                    "{} must sort before {}",
+                    String::from_utf8_lossy(previous),
+                    String::from_utf8_lossy(builtin.name())
+                );
+            }
+            previous = Some(builtin.name());
+        }
+    }
+
+    #[test]
     fn generated_builtin_lookup_covers_declared_builtins() {
         for builtin in BUILTINS.iter().copied() {
             assert_eq!(BUILTINS.lookup(builtin.name()), Some(builtin));
         }
+        assert_eq!(BUILTINS.lookup(b""), None);
+        assert_eq!(BUILTINS.lookup(b"abort\0"), None);
         assert_eq!(BUILTINS.lookup(b"toXML\0"), None);
         assert_eq!(BUILTINS.lookup(b"foldl"), None);
+        assert_eq!(BUILTINS.lookup(b"zzzz"), None);
     }
 
     #[test]
