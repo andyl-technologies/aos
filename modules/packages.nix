@@ -60,11 +60,6 @@
 
   packageTarget = package:
     package.package.expose.passthru.manifest.expose.target;
-  packageHasSignedRoot = package:
-    lib.any
-    (image: ((image.root_hash or "") != "" || (image.root_hash_file or "") != "") && (image.root_hash_sig or "") != "")
-    (package.package.expose.passthru.manifest.expose.images or []);
-
   packageMetaFile = name: package: let
     packageHash = storePathHash package.package;
     packageVersion = package.package.version or "0";
@@ -98,7 +93,7 @@
         esac
         root_digest=$(printf '%s' "$root_digest" | tr 'A-F' 'a-f')
       else
-        root_digest="$package_store_path"
+        root_digest="sha256:$(printf '%s' "$package_store_path" | sha256sum | cut -d ' ' -f 1)"
       fi
       manifest_digest="sha256:$(sha256sum "$manifest" | cut -d ' ' -f 1)"
       word="aos-package-v1|name=''${#package_name}:$package_name|version=''${#package_version}:$package_version|root-digest=''${#root_digest}:$root_digest|manifest-digest=''${#manifest_digest}:$manifest_digest"
@@ -137,31 +132,31 @@
               nar_size: 1
             },
             permissions: $manifest[0].permissions,
-            attestation: (
+            attestation: ({
+              root_digest: $root_digest,
+              measurement: $measurement
+            } + (
               if $root_hash == "" then {}
               else {
                 root_hash: $root_hash,
-                root_hash_sig: $root_hash_sig,
-                measurement: $measurement
+                root_hash_sig: $root_hash_sig
               }
               end
-            )
+            ))
           }
         }' > "$out/${packageHash}.json"
 
-      if [ -n "$root_hash" ]; then
-        jq -n \
-          --arg name "$package_name" \
-          --arg version "$package_version" \
-          --arg root_digest "$root_digest" \
-          --arg measurement "$measurement" \
-          '{
-            name: $name,
-            version: $version,
-            root_digest: $root_digest,
-            measurement: $measurement
-          }' > "$out/${packageHash}.attestation.json"
-      fi
+      jq -n \
+        --arg name "$package_name" \
+        --arg version "$package_version" \
+        --arg root_digest "$root_digest" \
+        --arg measurement "$measurement" \
+        '{
+          name: $name,
+          version: $version,
+          root_digest: $root_digest,
+          measurement: $measurement
+        }' > "$out/${packageHash}.attestation.json"
     '';
 
   packageSeedBundle =
@@ -201,7 +196,7 @@
           metaFile = packageMetaFile name package;
         in "${metaFile}/${packageHash}.attestation.json"
       )
-      (lib.filterAttrs (_: package: packageHasSignedRoot package) exposedBundledPackages);
+      exposedBundledPackages;
   in
     pkgs.runCommand "aos-package-attestation-catalog.json" {
       buildDeps = [pkgs.jq];

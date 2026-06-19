@@ -689,13 +689,24 @@ Full spec: [`attestation.md`](attestation.md).
       {PCR 7,11,12,15} with a verifier nonce, AK←EK. A fleet verifier (Keylime-
       shaped) replays the event log and checks each tuple against the **registry
       golden-measurements catalog**.
-- [ ] **Registry golden catalog (D22).** The registry records the expected
+- [x] **Registry golden catalog (D22).** The registry records the expected
       measurement tuple per package/version and serves the `.roothash.p7s` +
       provenance — the catalog/oracle role, **never a runtime signer**
       ([`apm-integration.md`](apm-integration.md), [`attestation.md`](attestation.md)).
       Key custody: registry key ≠ UEFI-db/verity key ≠ TPM AK/EK.
 
-**Closes.** D5 (verity variant), D6, D21, D22.
+**Implemented so far.** Package activation measures every explicitly exposed
+package, including non-verity `RootDirectory=` packages, by using
+`root_digest` as the measurement input. For verity packages `root_digest` equals
+`root_hash`; otherwise the registry derives it from the package NAR hash and
+seeded bundled metadata derives a stable package-root digest before writing the
+golden catalog. Remaining P9 blockers are the AK/EK trust path, canonical TCG
+CEL compatibility, and verifier hosting.
+
+**Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
+D22 registry golden-catalog coverage gap; D22 itself remains open until the
+unchecked measurement and quote/verify deliverables above satisfy the exit
+criteria.
 
 **EXIT CRITERIA.** A node mounts a tampered package root → kernel refuses
 (verity); an untampered node produces a quote a verifier accepts and whose event
@@ -874,13 +885,17 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       already built for that backend; base-policy enablement and enforcing VM
       denial coverage remain under the generated MAC deliverable.
       ([`enforcement.md`](enforcement.md))
-- [ ] **PCR index for the package set (P9).** Confirm PCR 15 is free / the right
-      convention on the AOS measured-boot layout (RFC-0006 uses 11/12); confirm the
-      event-log format and the activation point that performs the measurement.
+- [ ] **PCR index / event-log convention for the package set (P9).** The
+      implementation extends PCR 15 during package activation; still confirm
+      PCR 15 is free / the right convention on the AOS measured-boot layout
+      (RFC-0006 uses 11/12) and confirm canonical TCG CEL compatibility.
       ([`attestation.md`](attestation.md))
 - [ ] **Consolidated vs per-package verity root (P9).** Whether one composefs/EROFS
       digest per generation or per-package `RootImage=` images; composefs maturity
       in the AOS kernel/userspace. ([`attestation.md`](attestation.md))
+- [ ] **TPM AK/EK trust path (P9).** The quote verifier must validate AK←EK
+      against fleet trust roots; current quote replay is not sufficient unless
+      the attestation key is chained to trusted hardware identity.
 - [ ] **Verifier hosting (P9).** Whether the fleet attestation verifier is a
       registry-adjacent service or standalone — it is a *separate role* from the
       registry catalog and must not hold the registry key.

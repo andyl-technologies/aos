@@ -3629,6 +3629,7 @@ mod tests {
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
+                root_digest: Some(root_digest.into()),
                 root_hash: Some(root_digest.into()),
                 root_hash_sig: Some("root.roothash.p7s".into()),
                 provenance: None,

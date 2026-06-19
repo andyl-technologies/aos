@@ -241,9 +241,7 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
         if !apm.explicit || apm.expose.is_none() {
             continue;
         }
-        if let Some(package) = measured_package(root, apm)? {
-            packages.push(package);
-        }
+        packages.push(measured_package(root, entry, apm)?);
     }
     packages.sort_by(|left, right| {
         left.name
@@ -262,10 +260,8 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
     Ok(events)
 }
 
-fn measured_package(root: &Path, apm: &ApmMeta) -> Result<Option<MeasuredPackage>> {
-    let Some(root_digest) = attested_package_root_digest(apm) else {
-        return Ok(None);
-    };
+fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
+    let root_digest = package_root_digest(entry, apm);
     let manifest_digest = package_manifest_digest(root, apm)?;
     let package = MeasuredPackage {
         name: apm.name.clone(),
@@ -290,12 +286,16 @@ fn measured_package(root: &Path, apm: &ApmMeta) -> Result<Option<MeasuredPackage
         }
     }
 
-    Ok(Some(package))
+    Ok(package)
 }
 
-fn attested_package_root_digest(apm: &ApmMeta) -> Option<String> {
+fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
+    if let Some(root_digest) = &apm.attestation.root_digest {
+        return canonical_digest(root_digest);
+    }
+
     if let Some(root_hash) = &apm.attestation.root_hash {
-        return Some(canonical_digest(root_hash));
+        return canonical_digest(root_hash);
     }
 
     if let Some(expose) = &apm.expose
@@ -305,10 +305,14 @@ fn attested_package_root_digest(apm: &ApmMeta) -> Option<String> {
             .find(|image| image.root_hash_sig.is_some())
             .and_then(|image| image.root_hash.as_deref())
     {
-        return Some(canonical_digest(root_hash));
+        return canonical_digest(root_hash);
     }
 
-    None
+    package_store_path_root_digest(&entry.store_path)
+}
+
+fn package_store_path_root_digest(store_path: &str) -> String {
+    format!("sha256:{}", digest_hex(store_path.as_bytes()))
 }
 
 fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
@@ -929,8 +933,11 @@ pub(crate) fn package_measurement_catalog_from_package_meta(
         .iter()
         .filter_map(|meta| {
             let measurement = meta.attestation.measurement.as_ref()?;
-            let root_digest = meta.attestation.root_hash.as_ref()?;
-            let _root_digest_signature = meta.attestation.root_hash_sig.as_ref()?;
+            let root_digest = meta
+                .attestation
+                .root_digest
+                .as_ref()
+                .or(meta.attestation.root_hash.as_ref())?;
             Some(PackageMeasurementCatalogEntry {
                 name: meta.name.clone(),
                 version: meta.version.clone(),
@@ -1708,6 +1715,7 @@ mod tests {
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
+                root_digest: Some(root_hash.into()),
                 root_hash: Some(root_hash.into()),
                 root_hash_sig: Some("root.roothash.p7s".into()),
                 provenance: None,
@@ -1785,9 +1793,10 @@ mod tests {
     }
 
     #[test]
-    fn package_measurement_skips_packages_without_signed_root() {
+    fn package_measurement_uses_store_path_digest_without_signed_root() {
         let tmp = TempDir::new().expect("tempdir");
         let mut installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let expected_root_digest = package_store_path_root_digest(&installed.store_path);
         let apm = installed.apm.as_mut().expect("apm metadata");
         let image = apm
             .expose
@@ -1801,9 +1810,11 @@ mod tests {
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, PACKAGE_SET_EVENT_TYPE);
-        assert_eq!(events[0].package_count, Some(0));
+        assert_eq!(events[0].package_count, Some(1));
+        let package = events[1].package.as_ref().expect("package event");
+        assert_eq!(package.root_digest, expected_root_digest);
     }
 
     #[test]
@@ -1830,6 +1841,7 @@ mod tests {
         let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let manifest_digest = package_manifest_digest_bytes(manifest);
         apm.attestation = AttestationMeta {
+            root_digest: Some(root_hash.into()),
             root_hash: Some(root_hash.into()),
             root_hash_sig: Some("root.roothash.p7s".into()),
             provenance: None,
@@ -1851,6 +1863,9 @@ mod tests {
         let mut installed = installed_fixture(&tmp, manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         apm.attestation = AttestationMeta {
+            root_digest: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
             root_hash: Some(
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             ),

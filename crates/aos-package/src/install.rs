@@ -1878,6 +1878,7 @@ mod tests {
         meta.source_drv = "/nix/store/srcdrv-web-1.0.0.drv".to_string();
         meta.source_nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=".to_string();
         meta.attestation = AttestationMeta {
+            root_digest: Some(root_hash.to_string()),
             root_hash: Some(root_hash.to_string()),
             root_hash_sig: Some("root.roothash.p7s".to_string()),
             provenance: Some(format!(

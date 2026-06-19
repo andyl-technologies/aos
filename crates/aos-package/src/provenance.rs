@@ -336,6 +336,7 @@ mod tests {
             permissions: Default::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
+                root_digest: Some(ROOT_HASH.to_string()),
                 root_hash: Some(ROOT_HASH.to_string()),
                 root_hash_sig: Some("root.roothash.p7s".to_string()),
                 provenance: Some(format!(
