@@ -639,7 +639,7 @@ Crucible needs and marks the seam.
   and a feature-powerset compile check; verify `default` works and
   `crucible-guest` is never a default core dependency. — satisfies [CRATE-9];
   spec §4.
-- [ ] **T-CRATE-7** Wire `gate:harness-lint` over the reduction-path crates: deny
+- [x] **T-CRATE-7** Wire `gate:harness-lint` over the reduction-path crates: deny
   host wall-clock, thread/global RNG, unordered-map iteration on ordering paths,
   and nondeterministic `select`. — satisfies [CRATE-11]; spec §5.
 - [ ] **T-CRATE-8** Confine nondeterminism to `crucible-daemon`, `crucible-cli`,
