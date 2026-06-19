@@ -1785,12 +1785,19 @@ struct FetchGitArguments {
     shallow: bool,
     all_refs: bool,
     export_ignore: bool,
+    extra_query: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
 struct FetchMercurialArguments {
     url: Vec<u8>,
     rev: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+struct GitPublicKeyEntry {
+    keytype: Vec<u8>,
+    key: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -9644,6 +9651,7 @@ impl TreeWalk {
                 shallow: false,
                 all_refs: false,
                 export_ignore: true,
+                extra_query: BTreeMap::new(),
             });
         }
         if value.tag() != ValueTag::Attrs {
@@ -9699,6 +9707,7 @@ impl TreeWalk {
             shallow,
             all_refs,
             export_ignore,
+            extra_query: BTreeMap::new(),
         })
     }
 
@@ -9798,29 +9807,41 @@ impl TreeWalk {
         } else {
             b'?'
         };
-        let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
-            uri.push(separator);
-            separator = b'&';
-            uri.extend_from_slice(key);
-            if let Some(value) = value {
-                uri.push(b'=');
-                uri.extend_from_slice(value);
-            }
-        };
+        let mut push_param =
+            |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>, percent_encode: bool| {
+                uri.push(separator);
+                separator = b'&';
+                if percent_encode {
+                    uri.extend_from_slice(&Self::percent_encode_flake_ref_query(key));
+                } else {
+                    uri.extend_from_slice(key);
+                }
+                if let Some(value) = value {
+                    uri.push(b'=');
+                    if percent_encode {
+                        uri.extend_from_slice(&Self::percent_encode_flake_ref_query(value));
+                    } else {
+                        uri.extend_from_slice(value);
+                    }
+                }
+            };
         if let Some(reference) = &args.reference {
-            push_param(&mut uri, b"ref", Some(reference));
+            push_param(&mut uri, b"ref", Some(reference), false);
+        }
+        for (key, value) in &args.extra_query {
+            push_param(&mut uri, key, Some(value), true);
         }
         if args.export_ignore {
-            push_param(&mut uri, b"exportIgnore", Some(b"1"));
+            push_param(&mut uri, b"exportIgnore", Some(b"1"), false);
         }
         if let Some(rev) = &args.rev {
-            push_param(&mut uri, b"rev", Some(rev));
+            push_param(&mut uri, b"rev", Some(rev), false);
         }
         if args.shallow {
-            push_param(&mut uri, b"shallow", Some(b"1"));
+            push_param(&mut uri, b"shallow", Some(b"1"), false);
         }
         if args.submodules {
-            push_param(&mut uri, b"submodules", Some(b"1"));
+            push_param(&mut uri, b"submodules", Some(b"1"), false);
         }
         uri
     }
@@ -11015,7 +11036,7 @@ impl TreeWalk {
                 DIR_ATTR,
             ],
         )?;
-        self.validate_fetch_tree_git_flake_ref_verified_fetch_attrs(id, span, attrs)?;
+        let extra_query = self.fetch_tree_git_flake_ref_verified_fetch_query(id, span, attrs)?;
         let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
         let transport_url = Self::fetch_tree_git_flake_ref_transport_url(
             id,
@@ -11049,6 +11070,7 @@ impl TreeWalk {
                     EXPORT_IGNORE_ATTR,
                 )?
                 .unwrap_or(!submodules),
+                extra_query,
             },
             dir,
             expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
@@ -11218,6 +11240,16 @@ impl TreeWalk {
         }
         if strip_dir && query.remove(DIR_ATTR).is_some() {
             stripped = true;
+        }
+        for key in [
+            VERIFY_COMMIT_ATTR,
+            KEYTYPE_ATTR,
+            PUBLIC_KEY_ATTR,
+            PUBLIC_KEYS_ATTR,
+        ] {
+            if query.remove(key).is_some() {
+                stripped = true;
+            }
         }
 
         if !stripped {
@@ -11509,7 +11541,7 @@ impl TreeWalk {
                 span,
             ));
         }
-        self.validate_fetch_tree_git_verified_fetch_attrs(id, span, value)?;
+        let extra_query = self.fetch_tree_git_verified_fetch_query(id, span, value)?;
         let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
         let expected_last_modified =
             self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
@@ -11527,6 +11559,7 @@ impl TreeWalk {
                 shallow,
                 all_refs,
                 export_ignore,
+                extra_query,
             },
             dir,
             expected_nar_hash,
@@ -11571,60 +11604,139 @@ impl TreeWalk {
         Ok(())
     }
 
-    fn validate_fetch_tree_git_verified_fetch_attrs(
+    fn fetch_tree_git_verified_fetch_query(
         &mut self,
         id: IrId,
         span: Span,
         value: Value,
-    ) -> Result<(), TreeWalkError> {
-        if let Some(keytype) = self.attr_value_by_name(id, value, KEYTYPE_ATTR, span)? {
-            let keytype = self.force_value(id, span, keytype)?;
-            self.context_free_string_bytes(id, span, keytype, "fetchTree")?;
-        }
-        if let Some(public_key) = self.attr_value_by_name(id, value, PUBLIC_KEY_ATTR, span)? {
-            let public_key = self.force_value(id, span, public_key)?;
-            let _ = self.context_free_string_bytes(id, span, public_key, "fetchTree")?;
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
-                    id,
-                    input: PUBLIC_KEY_ATTR.to_vec(),
-                    message:
-                        "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
-                },
-                span,
-            ));
-        }
-        if self
-            .attr_value_by_name(id, value, PUBLIC_KEYS_ATTR, span)?
-            .is_some()
+    ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, TreeWalkError> {
+        let keytype = self.optional_fetch_tree_string_attr(id, span, value, KEYTYPE_ATTR)?;
+        let mut query = BTreeMap::new();
+        if let Some(public_keys) = self.attr_value_by_name(id, value, PUBLIC_KEYS_ATTR, span)? {
+            let public_keys = self.force_value(id, span, public_keys)?;
+            let mut keys = self.fetch_tree_public_key_entries_from_value(id, span, public_keys)?;
+            if let Some(public_key) =
+                self.optional_fetch_tree_string_attr(id, span, value, PUBLIC_KEY_ATTR)?
+            {
+                keys.push(GitPublicKeyEntry {
+                    keytype: keytype.unwrap_or_else(|| b"ssh-ed25519".to_vec()),
+                    key: public_key,
+                });
+            }
+            Self::insert_git_public_key_entries_query_update(id, span, &keys, &mut query)?;
+        } else if let Some(public_key) =
+            self.optional_fetch_tree_string_attr(id, span, value, PUBLIC_KEY_ATTR)?
         {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
-                    id,
-                    input: PUBLIC_KEYS_ATTR.to_vec(),
-                    message:
-                        "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
-                },
+            query.insert(
+                KEYTYPE_ATTR.to_vec(),
+                keytype.unwrap_or_else(|| b"ssh-ed25519".to_vec()),
+            );
+            query.insert(PUBLIC_KEY_ATTR.to_vec(), public_key);
+        }
+
+        if self.optional_fetch_tree_bool_attr(id, span, value, VERIFY_COMMIT_ATTR, false)? {
+            return Err(Self::fetch_tree_verified_fetches_unsupported(
+                id,
                 span,
+                VERIFY_COMMIT_ATTR,
             ));
         }
-        if let Some(verify_commit) = self.attr_value_by_name(id, value, VERIFY_COMMIT_ATTR, span)? {
-            let verify_commit = self.force_value(id, span, verify_commit)?;
-            if self.expect_bool(id, verify_commit, span)? {
+
+        Ok(query)
+    }
+
+    fn fetch_tree_public_key_entries_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<GitPublicKeyEntry>, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => {
+                let public_keys = self.context_free_string_bytes(id, span, value, "fetchTree")?;
+                Self::git_public_key_entries_from_json(id, span, &public_keys)
+            }
+            ValueTag::List => self.fetch_tree_public_key_entries(id, span, value),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "list or string",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    fn fetch_tree_public_key_entries(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<GitPublicKeyEntry>, TreeWalkError> {
+        let values = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            list.iter().copied().collect::<Vec<_>>()
+        };
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: values.len(),
+                },
+                span,
+            )
+        })?;
+        for value in values {
+            let value = self.force_value(id, span, value)?;
+            if value.tag() != ValueTag::Attrs {
                 return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchTree {
+                    TreeWalkErrorKind::Type {
                         id,
-                        input: VERIFY_COMMIT_ATTR.to_vec(),
-                        message: "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
+                        expected: "attrs",
+                        actual: value.tag(),
                     },
                     span,
                 ));
             }
+            keys.push(GitPublicKeyEntry {
+                keytype: self.required_fetch_tree_public_key_attr(id, span, value, TYPE_ATTR)?,
+                key: self.required_fetch_tree_public_key_attr(id, span, value, KEY_ATTR)?,
+            });
         }
-        Ok(())
+        Ok(keys)
+    }
+
+    fn required_fetch_tree_public_key_attr(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        name: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let attr = self.required_attr_value_by_name(id, value, name, span)?;
+        let attr = self.force_value(id, span, attr)?;
+        self.context_free_string_bytes(id, span, attr, "fetchTree")
+    }
+
+    fn fetch_tree_verified_fetches_unsupported(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::FetchTree {
+                id,
+                input: input.to_vec(),
+                message:
+                    "fetchTree verified git fetches are not implemented by the native evaluator"
+                        .to_owned(),
+            },
+            span,
+        )
     }
 
     fn fetch_tree_path_argument_bytes(
@@ -11818,29 +11930,41 @@ impl TreeWalk {
         } else {
             b'?'
         };
-        let mut push_param = |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>| {
-            uri.push(separator);
-            separator = b'&';
-            uri.extend_from_slice(key);
-            if let Some(value) = value {
-                uri.push(b'=');
-                uri.extend_from_slice(value);
-            }
-        };
+        let mut push_param =
+            |uri: &mut Vec<u8>, key: &[u8], value: Option<&[u8]>, percent_encode: bool| {
+                uri.push(separator);
+                separator = b'&';
+                if percent_encode {
+                    uri.extend_from_slice(&Self::percent_encode_flake_ref_query(key));
+                } else {
+                    uri.extend_from_slice(key);
+                }
+                if let Some(value) = value {
+                    uri.push(b'=');
+                    if percent_encode {
+                        uri.extend_from_slice(&Self::percent_encode_flake_ref_query(value));
+                    } else {
+                        uri.extend_from_slice(value);
+                    }
+                }
+            };
+        for (key, value) in &args.extra_query {
+            push_param(&mut uri, key, Some(value), true);
+        }
         if let Some(rev) = &args.rev {
-            push_param(&mut uri, b"rev", Some(rev));
+            push_param(&mut uri, b"rev", Some(rev), false);
         }
         if let Some(reference) = &args.reference {
-            push_param(&mut uri, b"ref", Some(reference));
+            push_param(&mut uri, b"ref", Some(reference), false);
         }
         if args.shallow {
-            push_param(&mut uri, b"shallow", Some(b"1"));
+            push_param(&mut uri, b"shallow", Some(b"1"), false);
         }
         if args.submodules {
-            push_param(&mut uri, b"submodules", Some(b"1"));
+            push_param(&mut uri, b"submodules", Some(b"1"), false);
         }
         if args.export_ignore {
-            push_param(&mut uri, b"exportIgnore", Some(b"1"));
+            push_param(&mut uri, b"exportIgnore", Some(b"1"), false);
         }
         uri
     }
@@ -13635,7 +13759,14 @@ impl TreeWalk {
         let public_keys = Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEYS_ATTR)?;
 
         if let Some(public_keys) = public_keys {
-            return Self::insert_git_public_keys_query_update(id, span, public_keys, updates);
+            let mut keys = Self::git_public_key_entries_from_json(id, span, public_keys)?;
+            if let Some(public_key) = public_key {
+                keys.push(GitPublicKeyEntry {
+                    keytype: keytype.unwrap_or(b"ssh-ed25519").to_vec(),
+                    key: public_key.to_vec(),
+                });
+            }
+            return Self::insert_git_public_key_entries_query_update(id, span, &keys, updates);
         }
 
         if let Some(public_key) = public_key {
@@ -13648,12 +13779,11 @@ impl TreeWalk {
         Ok(())
     }
 
-    fn insert_git_public_keys_query_update(
+    fn git_public_key_entries_from_json(
         id: IrId,
         span: Span,
         public_keys: &[u8],
-        updates: &mut BTreeMap<Vec<u8>, Vec<u8>>,
-    ) -> Result<(), TreeWalkError> {
+    ) -> Result<Vec<GitPublicKeyEntry>, TreeWalkError> {
         let value = serde_json::from_slice::<JsonValue>(public_keys).map_err(|source| {
             Self::flake_ref_error(
                 id,
@@ -13670,22 +13800,62 @@ impl TreeWalk {
                 "publicKeys must be a JSON array",
             ));
         };
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(keys.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: keys.len(),
+                },
+                span,
+            )
+        })?;
+        for key in keys {
+            entries.push(GitPublicKeyEntry {
+                keytype: Self::git_public_key_json_string(id, span, public_keys, &key, "type")?
+                    .as_bytes()
+                    .to_vec(),
+                key: Self::git_public_key_json_string(id, span, public_keys, &key, "key")?
+                    .as_bytes()
+                    .to_vec(),
+            });
+        }
+        Ok(entries)
+    }
+
+    fn insert_git_public_key_entries_query_update(
+        id: IrId,
+        span: Span,
+        keys: &[GitPublicKeyEntry],
+        updates: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), TreeWalkError> {
         if keys.is_empty() {
             return Ok(());
         }
         if keys.len() == 1 {
             let key = &keys[0];
-            let keytype = Self::git_public_key_json_string(id, span, public_keys, key, "type")?;
-            let public_key = Self::git_public_key_json_string(id, span, public_keys, key, "key")?;
-            updates.insert(KEYTYPE_ATTR.to_vec(), keytype.as_bytes().to_vec());
-            updates.insert(PUBLIC_KEY_ATTR.to_vec(), public_key.as_bytes().to_vec());
+            updates.insert(KEYTYPE_ATTR.to_vec(), key.keytype.clone());
+            updates.insert(PUBLIC_KEY_ATTR.to_vec(), key.key.clone());
             return Ok(());
         }
-        let json = serde_json::to_vec(&JsonValue::Array(keys)).map_err(|source| {
+        let entries = keys
+            .iter()
+            .map(|key| -> Result<JsonValue, TreeWalkError> {
+                let public_key = std::str::from_utf8(&key.key)
+                    .map_err(|source| Self::fetch_tree_error(id, span, PUBLIC_KEY_ATTR, source))?;
+                let keytype = std::str::from_utf8(&key.keytype)
+                    .map_err(|source| Self::fetch_tree_error(id, span, KEYTYPE_ATTR, source))?;
+                let mut entry = serde_json::Map::new();
+                entry.insert("key".to_owned(), JsonValue::String(public_key.to_owned()));
+                entry.insert("type".to_owned(), JsonValue::String(keytype.to_owned()));
+                Ok(JsonValue::Object(entry))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let json = serde_json::to_vec(&JsonValue::Array(entries)).map_err(|source| {
             Self::flake_ref_error(
                 id,
                 span,
-                public_keys,
+                PUBLIC_KEYS_ATTR,
                 format!("invalid publicKeys JSON: {source}"),
             )
         })?;
@@ -13912,50 +14082,22 @@ impl TreeWalk {
         self.decode_fetch_tree_nar_hash(id, span, hash).map(Some)
     }
 
-    fn validate_fetch_tree_git_flake_ref_verified_fetch_attrs(
+    fn fetch_tree_git_flake_ref_verified_fetch_query(
         &self,
         id: IrId,
         span: Span,
         attrs: &FlakeRefAttrs,
-    ) -> Result<(), TreeWalkError> {
-        let _ = Self::optional_flake_ref_string_attr(id, span, attrs, KEYTYPE_ATTR)?;
-        if Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEY_ATTR)?.is_some() {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
-                    id,
-                    input: PUBLIC_KEY_ATTR.to_vec(),
-                    message:
-                        "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
-                },
-                span,
-            ));
-        }
-        if Self::optional_flake_ref_string_attr(id, span, attrs, PUBLIC_KEYS_ATTR)?.is_some() {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
-                    id,
-                    input: PUBLIC_KEYS_ATTR.to_vec(),
-                    message:
-                        "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
-                },
-                span,
-            ));
-        }
+    ) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, TreeWalkError> {
+        let mut query = BTreeMap::new();
+        self.insert_git_verified_fetch_query_updates(id, span, attrs, &mut query)?;
         if Self::optional_flake_ref_bool_attr(id, span, attrs, VERIFY_COMMIT_ATTR)? == Some(true) {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::FetchTree {
-                    id,
-                    input: VERIFY_COMMIT_ATTR.to_vec(),
-                    message:
-                        "fetchTree verified git fetches are not implemented by the native evaluator"
-                            .to_owned(),
-                },
+            return Err(Self::fetch_tree_verified_fetches_unsupported(
+                id,
                 span,
+                VERIFY_COMMIT_ATTR,
             ));
         }
-        Ok(())
+        Ok(query)
     }
 
     fn flake_ref_attr_query_value(value: &FlakeRefAttrValue) -> Vec<u8> {
@@ -36574,6 +36716,30 @@ mod tests {
             ),
             b"git+https://example.com/repo?keytype=ssh-ed25519&publicKey=abc",
         );
+
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    publicKey = "def";
+                    publicKeys = "[{\"key\":\"abc\",\"type\":\"ssh-ed25519\"}]";
+                    type = "git";
+                    url = "https://example.com/repo";
+                }"#
+            ),
+            b"git+https://example.com/repo?publicKeys=%5B%7B%22key%22:%22abc%22%2C%22type%22:%22ssh-ed25519%22%7D%2C%7B%22key%22:%22def%22%2C%22type%22:%22ssh-ed25519%22%7D%5D",
+        );
+
+        assert_eq!(
+            eval_string_bytes(
+                r#"builtins.flakeRefToString {
+                    publicKey = "abc";
+                    publicKeys = "[]";
+                    type = "git";
+                    url = "https://example.com/repo";
+                }"#
+            ),
+            b"git+https://example.com/repo?keytype=ssh-ed25519&publicKey=abc",
+        );
     }
 
     #[test]
@@ -46314,6 +46480,7 @@ mod tests {
             shallow: false,
             all_refs: true,
             export_ignore: true,
+            extra_query: BTreeMap::new(),
         });
         assert_eq!(
             all_refs_canonical_uri,
@@ -46329,6 +46496,7 @@ mod tests {
             shallow: false,
             all_refs: false,
             export_ignore: true,
+            extra_query: BTreeMap::new(),
         });
         assert_eq!(
             queried_canonical_uri,
@@ -46345,6 +46513,7 @@ mod tests {
                 shallow: false,
                 all_refs: false,
                 export_ignore: true,
+                extra_query: BTreeMap::new(),
             });
         assert_eq!(
             path_with_question_canonical_uri,
@@ -46366,6 +46535,7 @@ mod tests {
             shallow: true,
             all_refs: false,
             export_ignore: false,
+            extra_query: BTreeMap::new(),
         });
         assert_eq!(
             canonical_uri,
@@ -46878,6 +47048,18 @@ mod tests {
         let url_text = format!("file://{}", path_source(&repo_dir));
         let url = nix_string_literal(&url_text);
         let rev = oid.to_string();
+        let public_keys_json =
+            r#"[{"key":"abc","type":"ssh-ed25519"},{"key":"def","type":"ssh-rsa"}]"#;
+        let public_keys_query = String::from_utf8(TreeWalk::percent_encode_flake_ref_query(
+            public_keys_json.as_bytes(),
+        ))
+        .expect("publicKeys query is UTF-8");
+        let combined_public_keys_json =
+            r#"[{"key":"abc","type":"ssh-ed25519"},{"key":"def","type":"ssh-ed25519"}]"#;
+        let combined_public_keys_query = String::from_utf8(
+            TreeWalk::percent_encode_flake_ref_query(combined_public_keys_json.as_bytes()),
+        )
+        .expect("combined publicKeys query is UTF-8");
 
         let json = eval_json_bytes_with_options(
             &format!(
@@ -46904,6 +47086,46 @@ mod tests {
                     shallow = false;
                     revCount = 2;
                   }};
+                  publicKey = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKey = "abc";
+                  }};
+                  publicKeys = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [ {{ type = "ssh-ed25519"; key = "abc"; }} ];
+                  }};
+                  emptyPublicKeys = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [];
+                    publicKey = "abc";
+                  }};
+                  combinedPublicKeys = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [ {{ type = "ssh-ed25519"; key = "abc"; }} ];
+                    publicKey = "def";
+                  }};
+                  multiPublicKeys = builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [
+                      {{ type = "ssh-ed25519"; key = "abc"; }}
+                      {{ type = "ssh-rsa"; key = "def"; }}
+                    ];
+                  }};
                 in {{
                   keys = builtins.attrNames shallow;
                   rev = shallow.rev;
@@ -46918,6 +47140,11 @@ mod tests {
                   dirtyShortRev = dirty.dirtyShortRev;
                   dirtyHasRev = dirty ? rev;
                   fullRevCount = full.revCount;
+                  publicKeyData = builtins.readFile "${{publicKey.outPath}}/data.txt";
+                  publicKeysData = builtins.readFile "${{publicKeys.outPath}}/data.txt";
+                  emptyPublicKeysData = builtins.readFile "${{emptyPublicKeys.outPath}}/data.txt";
+                  combinedPublicKeysData = builtins.readFile "${{combinedPublicKeys.outPath}}/data.txt";
+                  multiPublicKeysData = builtins.readFile "${{multiPublicKeys.outPath}}/data.txt";
                 }}
                 "#
             ),
@@ -46960,6 +47187,11 @@ mod tests {
         assert_eq!(value["dirtyShortRev"], "dirty-lock");
         assert_eq!(value["dirtyHasRev"], false);
         assert_eq!(value["fullRevCount"], 2);
+        assert_eq!(value["publicKeyData"], "git-data");
+        assert_eq!(value["publicKeysData"], "git-data");
+        assert_eq!(value["emptyPublicKeysData"], "git-data");
+        assert_eq!(value["combinedPublicKeysData"], "git-data");
+        assert_eq!(value["multiPublicKeysData"], "git-data");
 
         let mut pure_options = options.clone();
         pure_options.set_eval_mode(EvalMode::Pure);
@@ -47012,6 +47244,136 @@ mod tests {
             serde_json::to_vec(&rev).expect("rev JSON serializes")
         );
 
+        let restricted_keyed_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; verifyCommit = false; publicKey = "abc"; }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted keyed fetchTree git rejects disallowed canonical URI");
+        assert!(matches!(
+            restricted_keyed_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!(
+                "git+{url_text}?keytype=ssh-ed25519&publicKey=abc&rev={rev}&shallow=1&exportIgnore=1"
+            ).as_bytes()
+        ));
+
+        let restricted_empty_keyed_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [];
+                    publicKey = "abc";
+                }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted empty publicKeys fetchTree git uses singular key URI");
+        assert!(matches!(
+            restricted_empty_keyed_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!(
+                "git+{url_text}?keytype=ssh-ed25519&publicKey=abc&rev={rev}&shallow=1&exportIgnore=1"
+            ).as_bytes()
+        ));
+
+        let restricted_combined_keyed_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [ {{ type = "ssh-ed25519"; key = "abc"; }} ];
+                    publicKey = "def";
+                }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted combined publicKeys fetchTree git appends singular key");
+        assert!(matches!(
+            restricted_combined_keyed_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!(
+                "git+{url_text}?publicKeys={combined_public_keys_query}&rev={rev}&shallow=1&exportIgnore=1"
+            ).as_bytes()
+        ));
+
+        let restricted_multi_keyed_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{
+                    type = "git";
+                    url = {url};
+                    rev = "{rev}";
+                    verifyCommit = false;
+                    publicKeys = [
+                      {{ type = "ssh-ed25519"; key = "abc"; }}
+                      {{ type = "ssh-rsa"; key = "def"; }}
+                    ];
+                }}"#
+            )),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted multi-key fetchTree git rejects disallowed canonical URI");
+        assert!(matches!(
+            restricted_multi_keyed_error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!(
+                "git+{url_text}?publicKeys={public_keys_query}&rev={rev}&shallow=1&exportIgnore=1"
+            ).as_bytes()
+        ));
+
+        let mut restricted_keyed_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        restricted_keyed_options.set_eval_mode(EvalMode::Restricted);
+        restricted_keyed_options
+            .add_allowed_uri(
+                format!(
+                    "git+{url_text}?keytype=ssh-ed25519&publicKey=abc&rev={rev}&shallow=1&exportIgnore=1"
+                )
+                .into_bytes(),
+            )
+            .expect("keyed git allowed URI configures");
+        let restricted_keyed_json = eval_json_bytes_with_options(
+            &format!(
+                r#"let x = builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; verifyCommit = false; publicKey = "abc"; }}; in x.rev"#
+            ),
+            restricted_keyed_options,
+        );
+        assert_eq!(
+            restricted_keyed_json,
+            serde_json::to_vec(&rev).expect("rev JSON serializes")
+        );
+
+        let verified_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "git"; url = {url}; rev = "{rev}"; verifyCommit = true; publicKey = "abc"; }}"#
+            )),
+            options,
+        )
+        .expect_err("verified fetchTree git remains unsupported");
+        assert!(matches!(
+            verified_error.kind(),
+            TreeWalkErrorKind::FetchTree { input, .. } if input == VERIFY_COMMIT_ATTR
+        ));
+
         fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
@@ -47029,16 +47391,49 @@ mod tests {
         let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
             .expect("temporary store root configures");
         let rev = oid.to_string();
-        let git_ref =
-            nix_string_literal(&format!("git+file://{}?rev={rev}", path_source(&repo_dir)));
+        let raw_git_ref = format!("git+file://{}?rev={rev}", path_source(&repo_dir));
+        let git_ref = nix_string_literal(&raw_git_ref);
+        let raw_keyed_git_ref = format!(
+            "git+file://{}?rev={rev}&publicKey=abc",
+            path_source(&repo_dir)
+        );
+        let keyed_git_ref = nix_string_literal(&raw_keyed_git_ref);
+
+        let ir = lower("null");
+        let span = ir.arena.node(ir.root).expect("root node exists").span;
+        let evaluator = TreeWalk::new(&ir);
+        let attrs = TreeWalk::parse_flake_ref_attrs(ir.root, span, raw_keyed_git_ref.as_bytes())
+            .expect("keyed git flake ref parses");
+        let arguments = evaluator
+            .fetch_tree_flake_ref_arguments(ir.root, span, raw_keyed_git_ref.as_bytes(), &attrs)
+            .expect("keyed git flake ref lowers to fetchTree arguments");
+        let FetchTreeArguments::Git { args, .. } = arguments else {
+            panic!("keyed git flake ref lowers to git arguments");
+        };
+        assert_eq!(
+            args.url,
+            format!("file://{}", path_source(&repo_dir)).as_bytes()
+        );
+        assert_eq!(args.transport_url, None);
+        assert_eq!(
+            TreeWalk::fetch_tree_git_canonical_uri(&args),
+            format!(
+                "git+file://{}?keytype=ssh-ed25519&publicKey=abc&rev={rev}&shallow=1&exportIgnore=1",
+                path_source(&repo_dir)
+            )
+            .into_bytes()
+        );
 
         let json = eval_json_bytes_with_options(
             &format!(
                 r#"
                 let x = builtins.fetchTree {git_ref};
+                    keyed = builtins.fetchTree {keyed_git_ref};
                 in {{
                   data = builtins.readFile "${{x.outPath}}/data.txt";
+                  keyedData = builtins.readFile "${{keyed.outPath}}/data.txt";
                   rev = x.rev;
+                  keyedRev = keyed.rev;
                   shortRev = x.shortRev;
                   submodules = x.submodules;
                   narHash = x.narHash;
@@ -47051,7 +47446,9 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&json).expect("fetchTree git string JSON parses");
         assert_eq!(value["data"], "git-data");
+        assert_eq!(value["keyedData"], "git-data");
         assert_eq!(value["rev"], rev);
+        assert_eq!(value["keyedRev"], rev);
         assert_eq!(value["shortRev"], &rev[..7]);
         assert_eq!(value["submodules"], false);
         assert_eq!(value["lastModified"], 1_700_000_000);
@@ -47446,6 +47843,32 @@ mod tests {
         ))
         .expect_err("unsupported fetchTree verified git fetch rejects before repo access");
         assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = false; publicKey = 1; }"#,
+        ))
+        .expect_err("fetchTree publicKey must be a string");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = false; publicKeys = [ { key = 1; type = "ssh-ed25519"; } ]; }"#,
+        ))
+        .expect_err("fetchTree publicKeys entries must carry string keys");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
 
         let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs""#))
             .expect_err("unsupported string flake ref type rejects");
