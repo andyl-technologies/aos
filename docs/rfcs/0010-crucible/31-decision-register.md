@@ -1019,6 +1019,41 @@ register.
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
     specified fallback if a future target path commonly busy-polls.
 
+- **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
+  - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
+    makes delivery a function of `delivery_icount` and consumer `current_icount`,
+    not producer-store or consumer-poll wall-clock timing.
+  - **Check:** `checks.crucible.phase0.s4ShmemVisibility`.
+  - **Result:** `model=shmem_scheduler_node_double`,
+    `shared_memory=MAP_SHARED`, `ring_ordering=release_acquire_spsc`,
+    `source_nodes=2`, `consumer_nodes=1`, `rings=2`,
+    `frames_per_source=16`, `total_frames=32`, `delivery_groups=8`,
+    `run_x_skew=producer_publish_path`, `run_y_skew=consumer_poll_path`,
+    `delivery_rule=delivery_icount_lte_current_icount`,
+    `tie_break_key=delivery_icount_src_node_seq`,
+    `consumer_ceiling=delivery_icount_minus_1_until_group_present`,
+    `producer_skew_ceiling_wait_observed=true`,
+    `consumer_skew_early_peek_observed=true`, `arrival_order_differs=true`,
+    `publish_order_unique_nonzero=true`, `visibility_vectors_match=true`,
+    `visibility_icounts_equal_delivery_icount=true`,
+    `injection_order_match=true`,
+    `arrival_order_negative_control_failed=true`,
+    `late_enqueue_negative_control_failed=true`, `late_delivery_failures=0`,
+    `early_delivery_failures=0`, `late_enqueue_failures=0`,
+    `fallback_adopted=false`,
+    `scope=phase0_shmem_visibility_discipline_not_qemu_device_injection`,
+    `s4_complete=true`.
+  - **Scope:** validates the Phase-0 S4 transport invariant with forked
+    producer/consumer node doubles over a real `MAP_SHARED` region and §13-style
+    release/acquire SPSC rings. The run uses two inbound producers so coincident
+    deliveries exercise the `(delivery_icount, src_node, seq)` tie-break, and it
+    includes negative controls proving arrival-order delivery and late enqueue are
+    rejected. This does not claim production QEMU/plugin/device injection is
+    implemented; that remains covered by later `gate:layer1-injection` and QEMU
+    integration gates.
+  - **Fallback:** none adopted for the measured shmem visibility discipline; a
+    future production leak must be localized and removed rather than papered over.
+
 - **RISK-15 / T-RISK-8 — TCG-exec coverage overhead**
   - **Status:** PASS; risk retired for the Phase-0 basic-block coverage
     extraction overhead spike in [GHC-7].
@@ -1183,12 +1218,12 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=10`, `retired_decision_entries=10`,
-    `phase0_foundational_blockers_open=2`, `unexpected_checked_nonrisk_tasks=0`,
+  - **Result:** `checked_risk_tasks=11`, `retired_decision_entries=11`,
+    `phase0_foundational_blockers_open=1`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
     has a retirement record and a decision-register check name, the remaining
-    foundational blockers S4/S3 are still visibly open, and no non-risk
+    foundational blocker S3 is still visibly open, and no non-risk
     checklist item is marked complete while those blockers remain open. The full
     RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this check is
     the narrower RISK-23/RISK-24 guard.
