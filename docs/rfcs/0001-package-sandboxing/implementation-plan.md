@@ -700,8 +700,10 @@ package, including non-verity `RootDirectory=` packages, by using
 `root_digest` as the measurement input. For verity packages `root_digest` equals
 `root_hash`; otherwise the registry derives it from the package NAR hash and
 seeded bundled metadata derives a stable package-root digest before writing the
-golden catalog. Remaining P9 blockers are the AK/EK trust path, canonical TCG
-CEL compatibility, and verifier hosting.
+golden catalog. Quote verification can also require an explicit quote-identity
+pin catalog; without one, quote mode remains explicitly marked as
+self-consistent but untrusted. Remaining P9 blockers are AK/EK enrollment and
+credential activation, canonical TCG CEL compatibility, and verifier hosting.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
 D22 registry golden-catalog coverage gap; D22 itself remains open until the
@@ -893,9 +895,13 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [ ] **Consolidated vs per-package verity root (P9).** Whether one composefs/EROFS
       digest per generation or per-package `RootImage=` images; composefs maturity
       in the AOS kernel/userspace. ([`attestation.md`](attestation.md))
-- [ ] **TPM AK/EK trust path (P9).** The quote verifier must validate AK←EK
-      against fleet trust roots; current quote replay is not sufficient unless
-      the attestation key is chained to trusted hardware identity.
+- [x] **Quote identity pinning (P9).** Quote verification can require an
+      explicit catalog of quote-bundle identity fingerprints; matching quotes
+      report `quote_identity_pinned=true`, while `ak_ek_trusted` remains false
+      until AK/EK enrollment is implemented.
+- [ ] **TPM AK/EK enrollment workflow (P9).** Define and automate how fleet
+      trust catalogs are populated from credential activation, a privacy CA, or
+      equivalent out-of-band TPM enrollment proof.
 - [ ] **Verifier hosting (P9).** Whether the fleet attestation verifier is a
       registry-adjacent service or standalone — it is a *separate role* from the
       registry catalog and must not hold the registry key.

@@ -220,9 +220,60 @@ pub(crate) struct PackageQuoteArtifacts {
     pub quote_pcrs: String,
     /// Quoted PCR 15 value as lowercase SHA-256 hex.
     pub quoted_pcr15: String,
+    /// SHA-256 fingerprints of the AK/EK identity artifacts.
+    pub identity: PackageQuoteIdentityDigests,
     /// Non-fatal cleanup warnings from TPM context flushing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub flush_warnings: Vec<String>,
+}
+
+/// SHA-256 fingerprints of the quote bundle's AK/EK identity artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackageQuoteIdentityDigests {
+    /// Digest of `ek.pub`.
+    pub ek_public_sha256: String,
+    /// Digest of `ek.name`.
+    pub ek_name_sha256: String,
+    /// Digest of `ek.qname`.
+    pub ek_qualified_name_sha256: String,
+    /// Digest of `ak.pub`.
+    pub ak_public_sha256: String,
+    /// Digest of `ak.name`.
+    pub ak_name_sha256: String,
+    /// Digest of `ak.qname`.
+    pub ak_qualified_name_sha256: String,
+}
+
+/// Result of checking a TPM quote bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PackageQuoteVerification {
+    /// Quoted PCR 15 value as lowercase SHA-256 hex.
+    pub quoted_pcr15: String,
+    /// Whether the quote bundle matched an explicit identity pin.
+    pub identity_pinned: bool,
+    /// Matched identity-pin label, when the catalog provided one.
+    pub identity_label: Option<String>,
+}
+
+/// An explicit quote-bundle identity pin.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageQuoteIdentityPin {
+    /// Human-readable fleet node or TPM label.
+    #[serde(default)]
+    label: Option<String>,
+    /// Fingerprints captured for an expected quote bundle identity.
+    identity: PackageQuoteIdentityDigests,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageQuoteIdentityCatalog {
+    /// Trust catalog schema version.
+    version: u32,
+    /// Pinned quote-bundle identities.
+    anchors: Vec<PackageQuoteIdentityPin>,
 }
 
 #[derive(Debug)]
@@ -654,6 +705,7 @@ pub(crate) fn produce_package_quote(
 
     result?;
     let quoted_pcr15 = quoted_pcr15_from_values_file(&quote_pcrs)?;
+    let identity = quote_identity_digests(output_dir)?;
 
     Ok(PackageQuoteArtifacts {
         nonce,
@@ -668,6 +720,7 @@ pub(crate) fn produce_package_quote(
         quote_signature: display_path(&quote_signature),
         quote_pcrs: display_path(&quote_pcrs),
         quoted_pcr15,
+        identity,
         flush_warnings,
     })
 }
@@ -675,18 +728,24 @@ pub(crate) fn produce_package_quote(
 /// Verifies a package attestation quote bundle and returns the quoted PCR 15.
 ///
 /// This checks the quote signature, nonce, PCR selection, and event-log replay
-/// input binding. It does not authenticate the AK/EK against a fleet trust
-/// registry.
+/// input binding. When `trust_catalogs` is non-empty, this also requires the
+/// bundle identity artifacts to match an explicit verifier-provided pin. This
+/// does not replace AK certification or EK credential activation.
 ///
 /// # Errors
 ///
 /// Returns an error if the nonce is malformed, `tpm2_checkquote` is not
 /// available through the trusted wrapper environment, quote verification fails,
-/// or the quote bundle's PCR values file cannot be parsed.
-pub(crate) fn verify_attestation_quote_bundle(quote_dir: &Path, nonce_hex: &str) -> Result<String> {
+/// the quote bundle's PCR values file cannot be parsed, or a requested identity
+/// pin catalog does not match the quote bundle.
+pub(crate) fn verify_attestation_quote_bundle(
+    quote_dir: &Path,
+    nonce_hex: &str,
+    trust_catalogs: &[PathBuf],
+) -> Result<PackageQuoteVerification> {
     let nonce = parse_quote_nonce_hex(nonce_hex)?;
     let checkquote = trusted_tpm2_tool_path(TPM2_CHECKQUOTE_ENV, "tpm2_checkquote")?;
-    let snapshot_dir = private_quote_bundle_snapshot(quote_dir)?;
+    let snapshot_dir = private_quote_bundle_snapshot(quote_dir, !trust_catalogs.is_empty())?;
     let ak_public = snapshot_dir.join("ak.pub");
     let quote_message = snapshot_dir.join("quote.msg");
     let quote_signature = snapshot_dir.join("quote.sig");
@@ -718,7 +777,15 @@ pub(crate) fn verify_attestation_quote_bundle(quote_dir: &Path, nonce_hex: &str)
             quote_dir.display()
         )
     })
-    .and_then(|()| quoted_pcr15_from_values_file(&quote_pcrs));
+    .and_then(|()| {
+        let quoted_pcr15 = quoted_pcr15_from_values_file(&quote_pcrs)?;
+        let identity_label = verify_quote_bundle_trust(&snapshot_dir, trust_catalogs)?;
+        Ok(PackageQuoteVerification {
+            quoted_pcr15,
+            identity_pinned: identity_label.is_some(),
+            identity_label,
+        })
+    });
 
     match fs::remove_dir_all(&snapshot_dir) {
         Ok(()) => {}
@@ -1029,6 +1096,108 @@ fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
     let start = SHA256_SIZE * PCR15_INDEX_IN_SELECTION;
     let end = start + SHA256_SIZE;
     Ok(hex::encode(&bytes[start..end]))
+}
+
+fn verify_quote_bundle_trust(
+    quote_dir: &Path,
+    trust_catalogs: &[PathBuf],
+) -> Result<Option<String>> {
+    if trust_catalogs.is_empty() {
+        return Ok(None);
+    }
+
+    let identity = quote_identity_digests(quote_dir)?;
+    let mut anchors = Vec::new();
+    for catalog_path in trust_catalogs {
+        let catalog = read_quote_identity_catalog(catalog_path)?;
+        for anchor in catalog.anchors {
+            validate_quote_identity_pin(&anchor).with_context(|| {
+                format!(
+                    "validating package quote identity pin from {}",
+                    catalog_path.display()
+                )
+            })?;
+            anchors.push(anchor);
+        }
+    }
+
+    for anchor in anchors {
+        if anchor.identity == identity {
+            return Ok(Some(
+                anchor
+                    .label
+                    .unwrap_or_else(|| format!("ak:{}", identity.ak_public_sha256)),
+            ));
+        }
+    }
+
+    bail!("package attestation quote identity did not match any pinned identity");
+}
+
+fn read_quote_identity_catalog(path: &Path) -> Result<PackageQuoteIdentityCatalog> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package quote identity catalog {}", path.display()))?;
+    let catalog: PackageQuoteIdentityCatalog = serde_json::from_str(&content)
+        .with_context(|| format!("parsing package quote identity catalog {}", path.display()))?;
+    if catalog.version != 1 {
+        bail!(
+            "package quote identity catalog {} has unsupported version {}",
+            path.display(),
+            catalog.version
+        );
+    }
+    if catalog.anchors.is_empty() {
+        bail!(
+            "package quote identity catalog {} does not contain any anchors",
+            path.display()
+        );
+    }
+    Ok(catalog)
+}
+
+fn validate_quote_identity_pin(anchor: &PackageQuoteIdentityPin) -> Result<()> {
+    if let Some(label) = &anchor.label
+        && (label.is_empty() || label.chars().any(char::is_control))
+    {
+        bail!("package quote identity pin label must be non-empty printable text");
+    }
+    validate_quote_identity_digests(&anchor.identity)
+}
+
+fn quote_identity_digests(dir: &Path) -> Result<PackageQuoteIdentityDigests> {
+    Ok(PackageQuoteIdentityDigests {
+        ek_public_sha256: file_sha256_digest(&dir.join("ek.pub"))?,
+        ek_name_sha256: file_sha256_digest(&dir.join("ek.name"))?,
+        ek_qualified_name_sha256: file_sha256_digest(&dir.join("ek.qname"))?,
+        ak_public_sha256: file_sha256_digest(&dir.join("ak.pub"))?,
+        ak_name_sha256: file_sha256_digest(&dir.join("ak.name"))?,
+        ak_qualified_name_sha256: file_sha256_digest(&dir.join("ak.qname"))?,
+    })
+}
+
+fn file_sha256_digest(path: &Path) -> Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(format!("sha256:{}", digest_hex(&bytes)))
+}
+
+fn validate_quote_identity_digests(identity: &PackageQuoteIdentityDigests) -> Result<()> {
+    for (kind, digest) in [
+        ("ek_public_sha256", &identity.ek_public_sha256),
+        ("ek_name_sha256", &identity.ek_name_sha256),
+        (
+            "ek_qualified_name_sha256",
+            &identity.ek_qualified_name_sha256,
+        ),
+        ("ak_public_sha256", &identity.ak_public_sha256),
+        ("ak_name_sha256", &identity.ak_name_sha256),
+        (
+            "ak_qualified_name_sha256",
+            &identity.ak_qualified_name_sha256,
+        ),
+    ] {
+        parse_prefixed_sha256_hex(kind, digest)?;
+    }
+    Ok(())
 }
 
 fn validate_event_record_shape(line: usize, record: &OwnedEventLogRecord) -> Result<()> {
@@ -1506,9 +1675,13 @@ fn parse_quote_nonce_hex(value: &str) -> Result<String> {
     Ok(value.to_ascii_lowercase())
 }
 
-fn private_quote_bundle_snapshot(quote_dir: &Path) -> Result<PathBuf> {
+fn private_quote_bundle_snapshot(quote_dir: &Path, include_identity: bool) -> Result<PathBuf> {
     let snapshot_dir = unique_temp_dir("aos-attest-verify")?;
-    for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+    let mut members = vec!["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"];
+    if include_identity {
+        members.extend(["ek.pub", "ek.name", "ek.qname", "ak.name", "ak.qname"]);
+    }
+    for name in members {
         let source = quote_dir.join(name);
         let target = snapshot_dir.join(name);
         fs::copy(&source, &target)
@@ -1686,6 +1859,14 @@ mod tests {
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
+        }
+    }
+
+    fn write_quote_identity_fixture(dir: &Path, seed: &str) {
+        for name in [
+            "ek.pub", "ek.name", "ek.qname", "ak.pub", "ak.name", "ak.qname",
+        ] {
+            fs::write(dir.join(name), format!("{seed}:{name}")).expect("identity member");
         }
     }
 
@@ -2249,7 +2430,7 @@ mod tests {
     #[test]
     fn quote_bundle_verifier_rejects_invalid_nonce_before_tools() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let err = verify_attestation_quote_bundle(tmp.path(), "zz").unwrap_err();
+        let err = verify_attestation_quote_bundle(tmp.path(), "zz", &[]).unwrap_err();
 
         assert!(format!("{err:#}").contains("only hex"));
     }
@@ -2257,11 +2438,21 @@ mod tests {
     #[test]
     fn quote_bundle_snapshot_copies_members_to_private_dir() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+        for name in [
+            "ak.pub",
+            "quote.msg",
+            "quote.sig",
+            "quote.pcrs",
+            "ek.pub",
+            "ek.name",
+            "ek.qname",
+            "ak.name",
+            "ak.qname",
+        ] {
             fs::write(tmp.path().join(name), name).expect("bundle member");
         }
 
-        let snapshot = private_quote_bundle_snapshot(tmp.path()).expect("snapshot");
+        let snapshot = private_quote_bundle_snapshot(tmp.path(), true).expect("snapshot");
 
         assert_ne!(snapshot.parent(), Some(tmp.path()));
         assert_eq!(
@@ -2272,11 +2463,115 @@ mod tests {
                 & 0o777,
             0o700
         );
-        for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+        for name in [
+            "ak.pub",
+            "quote.msg",
+            "quote.sig",
+            "quote.pcrs",
+            "ek.pub",
+            "ek.name",
+            "ek.qname",
+            "ak.name",
+            "ak.qname",
+        ] {
             let copied = fs::read_to_string(snapshot.join(name)).expect("copied member");
             assert_eq!(copied, name);
         }
         fs::remove_dir_all(snapshot).expect("cleanup snapshot");
+    }
+
+    #[test]
+    fn quote_identity_catalog_accepts_matching_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_quote_identity_fixture(tmp.path(), "node-a");
+        let identity = quote_identity_digests(tmp.path()).expect("identity");
+        let identity_file = tmp.path().join("identity.json");
+        fs::write(
+            &identity_file,
+            serde_json::json!({
+                "version": 1,
+                "anchors": [{
+                    "label": "node-a",
+                    "identity": identity,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("identity catalog");
+
+        let anchor =
+            verify_quote_bundle_trust(tmp.path(), &[identity_file]).expect("pinned identity");
+
+        assert_eq!(anchor.as_deref(), Some("node-a"));
+    }
+
+    #[test]
+    fn quote_identity_catalog_rejects_mismatched_identity() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bundle = tmp.path().join("bundle");
+        let enrolled = tmp.path().join("enrolled");
+        fs::create_dir_all(&bundle).expect("bundle dir");
+        fs::create_dir_all(&enrolled).expect("enrolled dir");
+        write_quote_identity_fixture(&bundle, "node-a");
+        write_quote_identity_fixture(&enrolled, "node-b");
+        let identity = quote_identity_digests(&enrolled).expect("identity");
+        let identity_file = tmp.path().join("identity.json");
+        fs::write(
+            &identity_file,
+            serde_json::json!({
+                "version": 1,
+                "anchors": [{
+                    "label": "node-b",
+                    "identity": identity,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("identity catalog");
+
+        let err = verify_quote_bundle_trust(&bundle, &[identity_file]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("did not match any pinned identity"));
+    }
+
+    #[test]
+    fn quote_identity_catalog_validates_all_requested_files_before_matching() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_quote_identity_fixture(tmp.path(), "node-a");
+        let identity = quote_identity_digests(tmp.path()).expect("identity");
+        let matching_file = tmp.path().join("matching.json");
+        let malformed_file = tmp.path().join("malformed.json");
+        fs::write(
+            &matching_file,
+            serde_json::json!({
+                "version": 1,
+                "anchors": [{
+                    "label": "node-a",
+                    "identity": identity,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("matching identity catalog");
+        let mut malformed_identity = quote_identity_digests(tmp.path()).expect("identity");
+        malformed_identity.ak_public_sha256 = "sha256:not-a-digest".to_string();
+        fs::write(
+            &malformed_file,
+            serde_json::json!({
+                "version": 1,
+                "anchors": [{
+                    "label": "bad",
+                    "identity": malformed_identity,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("malformed identity catalog");
+
+        let err =
+            verify_quote_bundle_trust(tmp.path(), &[matching_file, malformed_file]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("ak_public_sha256"));
     }
 
     #[test]

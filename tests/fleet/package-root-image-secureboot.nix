@@ -446,6 +446,31 @@ in {
           assert service_verified["package_count"] >= 2
           assert service_verified["quote_bundle_verified"] is True
           assert service_verified["ak_ek_trusted"] is False
+          service_identity_file = "/tmp/aos-service-quote-identity.json"
+          service_identity = {
+              "version": 1,
+              "anchors": [{
+                  "label": "service-quote",
+                  "identity": service_quote["identity"],
+              }],
+          }
+          target.succeed(
+              f"printf %s {shlex.quote(json.dumps(service_identity))} > {service_identity_file}"
+          )
+          service_trusted_raw = target.succeed(
+              f"{APM} --json attest verify --system "
+              f"--event-log {event_log_path} "
+              f"--quote-dir /var/lib/aos-attest/quote "
+              f"--nonce {nonce} "
+              f"--quote-identity-file {service_identity_file}{baseline_arg}"
+          )
+          print("=== aos-attest identity-pinned package attestation verification ===")
+          print(service_trusted_raw)
+          service_trusted = json.loads(service_trusted_raw)
+          assert service_trusted["quote_bundle_verified"] is True
+          assert service_trusted["ak_ek_trusted"] is False
+          assert service_trusted["quote_identity_pinned"] is True
+          assert service_trusted["quote_identity_label"] == "service-quote"
 
           raw = target.succeed(
               f"{APM} --json attest quote "
@@ -479,6 +504,31 @@ in {
           assert verified["package_count"] >= 2
           assert verified["quote_bundle_verified"] is True
           assert verified["ak_ek_trusted"] is False
+          identity_file = "/tmp/aos-package-quote-identity.json"
+          identity = {
+              "version": 1,
+              "anchors": [{
+                  "label": "manual-quote",
+                  "identity": quote["identity"],
+              }],
+          }
+          target.succeed(
+              f"printf %s {shlex.quote(json.dumps(identity))} > {identity_file}"
+          )
+          trusted_raw = target.succeed(
+              f"{APM} --json attest verify --system "
+              f"--event-log {event_log_path} "
+              f"--quote-dir {out_dir} --nonce {nonce} "
+              f"--quote-identity-file {identity_file}{baseline_arg}"
+          )
+          print("=== identity-pinned package attestation verification ===")
+          print(trusted_raw)
+          trusted = json.loads(trusted_raw)
+          assert trusted["pcr15"] == quote["quoted_pcr15"]
+          assert trusted["quote_bundle_verified"] is True
+          assert trusted["ak_ek_trusted"] is False
+          assert trusted["quote_identity_pinned"] is True
+          assert trusted["quote_identity_label"] == "manual-quote"
           if baseline_value is not None:
               out = target.fail(
                   f"{APM} --json attest verify --system "
