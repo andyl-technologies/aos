@@ -1046,6 +1046,25 @@ fn d1_file_args(db: &str, remote: bool, file: &Path) -> Vec<String> {
     ]
 }
 
+/// `wrangler d1 execute <db> --remote --json --command <sql>` — run `sql` inline.
+///
+/// Used for remote reads only: unlike `--file` (which wrangler bulk-uploads,
+/// returning only a stats summary), `--command` returns the query's row data.
+/// The SQL is passed as a single argv element (the process is spawned directly,
+/// not via a shell), so no escaping is required.
+#[must_use]
+fn d1_command_args(db: &str, sql: &str) -> Vec<String> {
+    vec![
+        "d1".into(),
+        "execute".into(),
+        db.into(),
+        "--remote".into(),
+        "--json".into(),
+        "--command".into(),
+        sql.into(),
+    ]
+}
+
 /// Renders a minimal `wrangler.toml` declaring just the D1 binding.
 ///
 /// `wrangler d1 execute <name>` resolves the database through a configuration
@@ -1072,8 +1091,13 @@ fn d1_only_config(db_name: &str, db_id: &str) -> String {
 /// `wrangler d1 execute`.
 ///
 /// SQL (with `?N` parameters inlined as literals — D1's CLI has no bind API) is
-/// written to a private temp file and run via `--file` (never `--command`, so no
-/// SQL or embedded literal reaches the process argv). Results are read from the
+/// run via `--file` (SQL in a private temp file, kept out of the process argv)
+/// for writes and batches. Remote *reads* are the exception: wrangler's
+/// `--remote --file` path bulk-uploads the file and returns only a stats summary,
+/// discarding the query's rows, so a remote `SELECT` or `INSERT … RETURNING`
+/// goes through `--command` (the only remote transport that returns row data).
+/// The inlined values that then reach the argv are query keys and ids, never a
+/// secret — password hashes ride a write (`--file`). Results are read from the
 /// `--json` output. `wrangler` runs with its working directory set to a private
 /// temp dir holding a minimal `wrangler.toml` (so it can resolve the D1 binding,
 /// and so `--local` state persists across calls). This is operator/bootstrap
@@ -1128,19 +1152,34 @@ impl WranglerD1Backend {
         })
     }
 
-    /// Runs `sql` through `wrangler d1 execute --file` and parses the first
-    /// result set. `sql` may contain multiple statements (used for migrations).
-    async fn run_sql(&self, sql: &str) -> Result<D1ResultSet> {
-        let file = tempfile::Builder::new()
-            .prefix("aos-d1-")
-            .suffix(".sql")
-            .tempfile_in(self.workdir.path())
-            .context("creating a temporary SQL file")?;
-        tokio::fs::write(file.path(), sql)
-            .await
-            .context("writing the SQL to run")?;
-        let args = d1_file_args(&self.db_name, self.remote, file.path());
-        let stdout = run_wrangler(&self.assets, &args, None, Some(self.workdir.path())).await?;
+    /// Runs `sql` through `wrangler d1 execute` and parses the first result set.
+    /// `sql` may contain multiple statements (used for migrations).
+    ///
+    /// `needs_rows` selects the transport. wrangler's `--remote --file` path
+    /// bulk-uploads the file and returns only a stats summary (`Total queries
+    /// executed`, `Rows read`, …) — **not** the query's rows — so a remote
+    /// statement whose result rows the caller needs (a `SELECT`, or an
+    /// `INSERT … RETURNING`) must go through `--command`, which returns the row
+    /// data. Writes keep `--file` (only `meta` is read), so their SQL — and any
+    /// inlined secret literal such as a password hash — stays out of the process
+    /// argv. The `--local` engine returns rows from `--file`, so it is unaffected
+    /// and always uses the file path.
+    async fn run_sql(&self, sql: &str, needs_rows: bool) -> Result<D1ResultSet> {
+        let stdout = if self.remote && needs_rows {
+            let args = d1_command_args(&self.db_name, sql);
+            run_wrangler(&self.assets, &args, None, Some(self.workdir.path())).await?
+        } else {
+            let file = tempfile::Builder::new()
+                .prefix("aos-d1-")
+                .suffix(".sql")
+                .tempfile_in(self.workdir.path())
+                .context("creating a temporary SQL file")?;
+            tokio::fs::write(file.path(), sql)
+                .await
+                .context("writing the SQL to run")?;
+            let args = d1_file_args(&self.db_name, self.remote, file.path());
+            run_wrangler(&self.assets, &args, None, Some(self.workdir.path())).await?
+        };
         parse_first_result_set(&stdout)
     }
 }
@@ -1162,7 +1201,7 @@ impl Backend for WranglerD1Backend {
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
-        let set = self.run_sql(&inline_params(sql, params)?).await?;
+        let set = self.run_sql(&inline_params(sql, params)?, false).await?;
         // `meta.changes` is present on the remote backend; the `--local`
         // engine omits it, so fall back to 0 (no caller in the maintenance
         // paths depends on the affected-row count).
@@ -1173,7 +1212,7 @@ impl Backend for WranglerD1Backend {
         // Read the id back via RETURNING rather than `meta.last_row_id` (which
         // the `--local` engine omits), so inserts work on both targets.
         let set = self
-            .run_sql(&inline_params(&with_returning_id(sql), params)?)
+            .run_sql(&inline_params(&with_returning_id(sql), params)?, true)
             .await?;
         let row = set
             .results
@@ -1186,13 +1225,14 @@ impl Backend for WranglerD1Backend {
     }
 
     async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
-        let set = self.run_sql(&inline_params(sql, params)?).await?;
+        let set = self.run_sql(&inline_params(sql, params)?, true).await?;
         Ok(set.results.into_iter().map(|r| Row::new(r.0)).collect())
     }
 
     async fn execute_batch(&self, sql: &str) -> Result<()> {
-        // DDL migrations carry no parameters; run the whole script via --file.
-        self.run_sql(sql).await?;
+        // DDL migrations carry no parameters and return no rows; the --file path
+        // (a stats-only summary on --remote) is sufficient.
+        self.run_sql(sql, false).await?;
         Ok(())
     }
 
@@ -1210,7 +1250,9 @@ impl Backend for WranglerD1Backend {
             script.push_str(&inline_params(&stmt.sql, &stmt.params)?);
             script.push_str(";\n");
         }
-        self.run_sql(&script).await?;
+        // Atomic all-or-nothing requires the --file path; callers don't read rows
+        // back from a batch.
+        self.run_sql(&script, false).await?;
         Ok(())
     }
 }
@@ -1450,5 +1492,21 @@ mod tests {
             ["d1", "execute", "db", "--remote", "--json", "--file", "/tmp/q.sql"]
         );
         assert_eq!(d1_file_args("db", false, p)[3], "--local");
+    }
+
+    #[test]
+    fn d1_command_args_inlines_sql_for_remote_reads() {
+        assert_eq!(
+            d1_command_args("db", "SELECT version FROM schema_version"),
+            [
+                "d1",
+                "execute",
+                "db",
+                "--remote",
+                "--json",
+                "--command",
+                "SELECT version FROM schema_version"
+            ]
+        );
     }
 }
