@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use aos_core::error::AosError;
 use aos_core::nix::diff::{DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure};
 use aos_core::nix::{
-    NixCli, NixEval, NixEvalConfig, NixInstantiateStats, NixRunner,
+    NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
     select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
@@ -71,7 +71,7 @@ impl std::error::Error for NixDiffReportedFailure {}
 pub fn run(
     printer: &Printer,
     verbose: u8,
-    eval_config: NixEvalConfig,
+    mut eval_config: NixEvalConfig,
     file: &Path,
     attr: Option<&str>,
     all: bool,
@@ -79,6 +79,9 @@ pub fn run(
     mode: DiffMode,
     oracle_stats: bool,
 ) -> Result<()> {
+    if eval_config.eval_mode() == NixEvalMode::Ambient {
+        eval_config.set_eval_mode(NixEvalMode::Impure);
+    }
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
     NixRunner::ensure_nix_instantiate_available()?;
     let oracle = NixCli::with_eval_config(verbose, eval_config);

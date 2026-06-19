@@ -26,7 +26,7 @@ use crate::nix::NixCli;
 #[cfg(feature = "native-eval")]
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
-    eval::{IfdRealizationError, IfdRealizer, TreeWalkOptions},
+    eval::{EvalMode, IfdRealizationError, IfdRealizer, TreeWalkOptions},
 };
 
 /// A `.drv` closure produced by an evaluator without requiring filesystem reads.
@@ -345,9 +345,26 @@ pub trait NixEval: Send + Sync {
     fn name(&self) -> &'static str;
 }
 
+/// Evaluation impurity mode shared by native and C++ Nix evaluators.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NixEvalMode {
+    /// Leaves C++ Nix to use its ambient configured evaluation policy.
+    #[default]
+    Ambient,
+    /// Forces evaluator-time access using C++ Nix's ordinary impure mode.
+    Impure,
+    /// Enables `restrict-eval` and checks filesystem and URI allowlists.
+    Restricted,
+    /// Enables `pure-eval` semantics for impure builtins and path access.
+    Pure,
+}
+
 /// Evaluator settings that must be shared by native and C++ Nix evaluators.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NixEvalConfig {
+    eval_mode: NixEvalMode,
+    allowed_paths: Vec<String>,
+    allowed_uris: Vec<String>,
     current_system: Option<String>,
     store_dir: Option<String>,
     state_dir: Option<String>,
@@ -405,6 +422,21 @@ impl NixEvalConfig {
         Ok(config)
     }
 
+    /// Returns the configured evaluation impurity mode.
+    pub const fn eval_mode(&self) -> NixEvalMode {
+        self.eval_mode
+    }
+
+    /// Returns filesystem roots allowed during restricted evaluation.
+    pub fn allowed_paths(&self) -> &[String] {
+        &self.allowed_paths
+    }
+
+    /// Returns URI prefixes allowed during restricted evaluation.
+    pub fn allowed_uris(&self) -> &[String] {
+        &self.allowed_uris
+    }
+
     /// Returns the configured Nix `system` value, if one was provided.
     pub fn current_system(&self) -> Option<&str> {
         self.current_system.as_deref()
@@ -431,18 +463,36 @@ impl NixEvalConfig {
     pub(crate) fn cli_option_args(&self) -> Vec<String> {
         let mut args = Vec::new();
         if let Some(current_system) = self.current_system() {
-            args.extend([
-                "--option".to_string(),
-                "system".to_string(),
-                current_system.to_string(),
-            ]);
+            push_cli_option(&mut args, "system", current_system);
+        }
+        if self.eval_mode != NixEvalMode::Ambient {
+            push_cli_option(
+                &mut args,
+                "pure-eval",
+                match self.eval_mode {
+                    NixEvalMode::Pure => "true",
+                    NixEvalMode::Ambient | NixEvalMode::Impure | NixEvalMode::Restricted => "false",
+                },
+            );
+            push_cli_option(
+                &mut args,
+                "restrict-eval",
+                match self.eval_mode {
+                    NixEvalMode::Restricted => "true",
+                    NixEvalMode::Ambient | NixEvalMode::Impure | NixEvalMode::Pure => "false",
+                },
+            );
+        }
+        if self.eval_mode == NixEvalMode::Restricted {
+            push_cli_option(
+                &mut args,
+                "allowed-impure-host-deps",
+                self.allowed_paths.join(" "),
+            );
+            push_cli_option(&mut args, "allowed-uris", self.allowed_uris.join(" "));
         }
         if self.trace_verbose {
-            args.extend([
-                "--option".to_string(),
-                "trace-verbose".to_string(),
-                "true".to_string(),
-            ]);
+            push_cli_option(&mut args, "trace-verbose", "true");
         }
         args
     }
@@ -465,6 +515,79 @@ impl NixEvalConfig {
     /// Applies C++ Nix environment bindings to a command.
     pub(crate) fn apply_cli_env(&self, command: &mut Command) {
         command.envs(self.cli_env_vars());
+    }
+
+    /// Replaces the configured evaluation impurity mode.
+    pub fn set_eval_mode(&mut self, eval_mode: NixEvalMode) {
+        self.eval_mode = eval_mode;
+    }
+
+    /// Adds a filesystem root allowed during restricted evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` is empty or relative.
+    pub fn add_allowed_path(&mut self, path: impl Into<String>) -> Result<()> {
+        let path = validate_allowed_eval_path(path.into())?;
+        self.allowed_paths.push(path);
+        Ok(())
+    }
+
+    /// Replaces filesystem roots allowed during restricted evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any path is empty or relative.
+    pub fn set_allowed_paths<I, P>(&mut self, paths: I) -> Result<()>
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<String>,
+    {
+        let mut allowed_paths = Vec::new();
+        for path in paths {
+            allowed_paths.push(validate_allowed_eval_path(path.into())?);
+        }
+        self.allowed_paths = allowed_paths;
+        Ok(())
+    }
+
+    /// Clears all restricted-evaluation filesystem roots.
+    pub fn clear_allowed_paths(&mut self) {
+        self.allowed_paths.clear();
+    }
+
+    /// Adds a URI prefix allowed during restricted evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `uri` is empty.
+    pub fn add_allowed_uri(&mut self, uri: impl Into<String>) -> Result<()> {
+        let uri = validate_allowed_uri(uri.into())?;
+        self.allowed_uris.push(uri);
+        Ok(())
+    }
+
+    /// Replaces URI prefixes allowed during restricted evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any URI prefix is empty.
+    pub fn set_allowed_uris<I, U>(&mut self, uris: I) -> Result<()>
+    where
+        I: IntoIterator<Item = U>,
+        U: Into<String>,
+    {
+        let mut allowed_uris = Vec::new();
+        for uri in uris {
+            allowed_uris.push(validate_allowed_uri(uri.into())?);
+        }
+        self.allowed_uris = allowed_uris;
+        Ok(())
+    }
+
+    /// Clears all restricted-evaluation URI prefixes.
+    pub fn clear_allowed_uris(&mut self) {
+        self.allowed_uris.clear();
     }
 
     /// Replaces the configured Nix `system` value.
@@ -544,6 +667,9 @@ impl NixEvalConfig {
 
     fn from_env() -> Self {
         let mut config = Self {
+            eval_mode: NixEvalMode::Ambient,
+            allowed_paths: Vec::new(),
+            allowed_uris: Vec::new(),
             current_system: None,
             store_dir: None,
             state_dir: None,
@@ -593,6 +719,10 @@ impl NixEvalConfig {
     }
 }
 
+fn push_cli_option(args: &mut Vec<String>, name: &str, value: impl Into<String>) {
+    args.extend(["--option".to_string(), name.to_string(), value.into()]);
+}
+
 fn native_cache_root_from_env_value(value: &str) -> Option<PathBuf> {
     let trimmed = value.trim();
     if trimmed.is_empty() || trimmed == "0" {
@@ -622,6 +752,21 @@ fn validate_absolute_env_path(name: &str, value: String) -> Result<String> {
     }
     if !Path::new(&value).is_absolute() {
         anyhow::bail!("{name} must be absolute: {value}");
+    }
+    Ok(value)
+}
+
+fn validate_allowed_eval_path(value: String) -> Result<String> {
+    let value = validate_absolute_env_path("allowed evaluation path", value)?;
+    if value.chars().any(char::is_whitespace) {
+        anyhow::bail!("allowed evaluation path must not contain whitespace: {value}");
+    }
+    Ok(value)
+}
+
+fn validate_allowed_uri(value: String) -> Result<String> {
+    if value.is_empty() {
+        anyhow::bail!("allowed evaluation URI must not be empty");
     }
     Ok(value)
 }
@@ -700,6 +845,13 @@ pub fn select_evaluator_with_config(
     match native_mode_from_env() {
         NativeMode::Off => Ok(Box::new(NixCli::with_eval_config(verbose, config))),
         #[cfg(feature = "native-eval")]
+        NativeMode::On | NativeMode::Shadow if config.eval_mode() == NixEvalMode::Ambient => {
+            tracing::warn!(
+                "AOS_NIX_NATIVE requested with ambient Nix eval policy; using nix-cli fallback"
+            );
+            Ok(Box::new(NixCli::with_eval_config(verbose, config)))
+        }
+        #[cfg(feature = "native-eval")]
         NativeMode::On => Ok(Box::new(NativeFallbackEval::new(verbose, config)?)),
         #[cfg(feature = "native-eval")]
         NativeMode::Shadow => Ok(Box::new(ShadowEval::new(verbose, config)?)),
@@ -730,6 +882,11 @@ pub fn select_native_diff_candidate_with_config(
 ) -> Result<Box<dyn NixEval>> {
     #[cfg(feature = "native-eval")]
     {
+        if config.eval_mode() == NixEvalMode::Ambient {
+            anyhow::bail!(
+                "native diff candidate requires an explicit evaluation mode; configure impure, pure, or restricted eval"
+            );
+        }
         Ok(Box::new(NativeOnlyEval::new(verbose, config)?))
     }
 
@@ -1229,6 +1386,22 @@ fn record_native_cli_fallback(reason: NativeCliFallbackReason) -> u64 {
 #[cfg(feature = "native-eval")]
 fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
     let mut options = TreeWalkOptions::new();
+    options.set_eval_mode(match config.eval_mode() {
+        NixEvalMode::Ambient => {
+            anyhow::bail!("native evaluator requires an explicit evaluation mode")
+        }
+        NixEvalMode::Impure => EvalMode::Impure,
+        NixEvalMode::Restricted => EvalMode::Restricted,
+        NixEvalMode::Pure => EvalMode::Pure,
+    });
+    if config.eval_mode() == NixEvalMode::Restricted {
+        for path in config.allowed_paths() {
+            options.add_allowed_path(path.as_bytes().to_vec())?;
+        }
+        for uri in config.allowed_uris() {
+            options.add_allowed_uri(uri.as_bytes().to_vec())?;
+        }
+    }
     if let Some(store_dir) = config.store_dir() {
         options.set_store_dir(store_dir.as_bytes().to_vec())?;
     }
@@ -1273,6 +1446,36 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_rejects_relative_allowed_paths() {
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .add_allowed_path("relative/path")
+            .expect_err("relative allowed path should be invalid");
+
+        assert!(error.to_string().contains("allowed evaluation path"));
+    }
+
+    #[test]
+    fn eval_config_rejects_whitespace_allowed_paths() {
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .add_allowed_path("/aos/source tree")
+            .expect_err("whitespace allowed path should be invalid");
+
+        assert!(error.to_string().contains("whitespace"));
+    }
+
+    #[test]
+    fn eval_config_rejects_empty_allowed_uris() {
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .add_allowed_uri("")
+            .expect_err("empty allowed URI should be invalid");
+
+        assert!(error.to_string().contains("allowed evaluation URI"));
+    }
+
+    #[test]
     fn eval_config_parses_aos_nix_cache_env_values() {
         assert_eq!(native_cache_root_from_env_value("0"), None);
         assert_eq!(native_cache_root_from_env_value(" 0 "), None);
@@ -1314,6 +1517,60 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_renders_cpp_nix_eval_policy_options() -> Result<()> {
+        let mut impure = NixEvalConfig::new();
+        impure.set_eval_mode(NixEvalMode::Impure);
+        assert_eq!(
+            impure.cli_option_args(),
+            [
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "false"
+            ]
+        );
+
+        let mut pure = NixEvalConfig::new();
+        pure.set_eval_mode(NixEvalMode::Pure);
+        assert_eq!(
+            pure.cli_option_args(),
+            [
+                "--option",
+                "pure-eval",
+                "true",
+                "--option",
+                "restrict-eval",
+                "false"
+            ]
+        );
+
+        let mut restricted = NixEvalConfig::new();
+        restricted.set_eval_mode(NixEvalMode::Restricted);
+        restricted.set_allowed_paths(["/aos/src", "/aos/store"])?;
+        restricted.add_allowed_uri("https://cache.example/")?;
+        assert_eq!(
+            restricted.cli_option_args(),
+            [
+                "--option",
+                "pure-eval",
+                "false",
+                "--option",
+                "restrict-eval",
+                "true",
+                "--option",
+                "allowed-impure-host-deps",
+                "/aos/src /aos/store",
+                "--option",
+                "allowed-uris",
+                "https://cache.example/"
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn eval_config_renders_cpp_nix_env_vars() -> Result<()> {
         let config =
             NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
@@ -1333,6 +1590,7 @@ mod tests {
     #[test]
     fn eval_config_maps_trace_verbose_to_native_options() -> Result<()> {
         let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
         config.set_trace_verbose(true);
 
         let options = tree_walk_options_from_config(&config)?;
@@ -1343,9 +1601,45 @@ mod tests {
 
     #[cfg(feature = "native-eval")]
     #[test]
+    fn eval_config_maps_eval_policy_to_native_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.set_allowed_paths(["/aos/src"])?;
+        config.set_allowed_uris(["github:", "https://cache.example/"])?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(options.eval_mode(), EvalMode::Restricted);
+        assert_eq!(options.allowed_paths(), &[b"/aos/src".to_vec()]);
+        assert_eq!(
+            options.allowed_uris(),
+            &[b"github:".to_vec(), b"https://cache.example/".to_vec()]
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_pure_mode_without_restricted_allowlists() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Pure);
+        config.set_allowed_paths(["/aos/src"])?;
+        config.set_allowed_uris(["github:"])?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(options.eval_mode(), EvalMode::Pure);
+        assert!(options.allowed_paths().is_empty());
+        assert!(options.allowed_uris().is_empty());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
     fn eval_config_maps_store_dir_to_native_options() -> Result<()> {
-        let config =
+        let mut config =
             NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+        config.set_eval_mode(NixEvalMode::Impure);
 
         let options = tree_walk_options_from_config(&config)?;
 
@@ -1357,6 +1651,7 @@ mod tests {
     #[test]
     fn eval_config_maps_native_cache_root_to_parse_cache_options() -> Result<()> {
         let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
         config.set_native_cache_root("/aos/cache")?;
 
         let options = tree_walk_options_from_config(&config)?;
@@ -1400,8 +1695,21 @@ mod tests {
 
     #[cfg(feature = "native-eval")]
     #[test]
+    fn native_diff_candidate_rejects_ambient_eval_policy() {
+        let error = match select_native_diff_candidate_with_config(0, NixEvalConfig::new()) {
+            Ok(_) => panic!("raw native candidate should require explicit eval policy"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("explicit evaluation mode"));
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
     fn native_diff_candidate_does_not_fall_back_to_cli() -> Result<()> {
-        let candidate = select_native_diff_candidate_with_config(0, NixEvalConfig::new())?;
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        let candidate = select_native_diff_candidate_with_config(0, config)?;
 
         let error = candidate
             .instantiate_expr("1")
@@ -1417,7 +1725,9 @@ mod tests {
     #[cfg(feature = "native-eval")]
     #[test]
     fn native_only_eval_records_authoritative_successes() -> Result<()> {
-        let evaluator = NativeOnlyEval::new(0, NixEvalConfig::new())?;
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        let evaluator = NativeOnlyEval::new(0, config)?;
         let before = native_success_stats();
 
         assert_eq!(evaluator.eval_expr("1 + 1")?, "2");
@@ -1434,11 +1744,12 @@ mod tests {
         let store = root.path().join("store");
         let state = root.path().join("state");
         let log = root.path().join("log");
-        let config = NixEvalConfig::with_store_dirs(
+        let mut config = NixEvalConfig::with_store_dirs(
             store.to_string_lossy().into_owned(),
             state.to_string_lossy().into_owned(),
             log.to_string_lossy().into_owned(),
         )?;
+        config.set_eval_mode(NixEvalMode::Impure);
         let evaluator = NativeFallbackEval::new(0, config)?;
         let before = native_success_stats();
 

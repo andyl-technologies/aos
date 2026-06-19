@@ -41,7 +41,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use aos_core::error::AosError;
-use aos_core::nix::{NixEvalConfig, NixRunner};
+use aos_core::nix::{NixEvalConfig, NixEvalMode, NixRunner};
 use aos_core::output::Printer;
 use cli::{Cli, Commands};
 
@@ -109,8 +109,19 @@ async fn main() {
 async fn run(cli: &Cli) -> Result<()> {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
     let mut eval_config = NixEvalConfig::new();
+    if cli.pure_eval {
+        eval_config.set_eval_mode(NixEvalMode::Pure);
+    } else if cli.restrict_eval {
+        eval_config.set_eval_mode(NixEvalMode::Restricted);
+    }
     if let Some(system) = &cli.eval_system {
         eval_config.set_current_system(system)?;
+    }
+    for path in &cli.eval_allowed_paths {
+        eval_config.add_allowed_path(path.clone())?;
+    }
+    for uri in &cli.eval_allowed_uris {
+        eval_config.add_allowed_uri(uri.clone())?;
     }
     eval_config.set_trace_verbose(cli.trace_verbose);
 
@@ -316,6 +327,10 @@ mod tests {
             json: true,
             trace_verbose: false,
             eval_system: None,
+            pure_eval: false,
+            restrict_eval: false,
+            eval_allowed_paths: Vec::new(),
+            eval_allowed_uris: Vec::new(),
         };
         let error: anyhow::Error = commands::nix_diff::NixDiffReportedFailure::diverged(1).into();
 

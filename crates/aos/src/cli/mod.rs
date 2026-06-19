@@ -57,6 +57,32 @@ pub struct Cli {
     /// Override builtins.currentSystem for evaluation
     #[arg(long, global = true)]
     pub eval_system: Option<String>,
+
+    /// Evaluate with Nix pure-eval semantics
+    #[arg(long, global = true, conflicts_with = "restrict_eval")]
+    pub pure_eval: bool,
+
+    /// Evaluate with restricted filesystem and URI access
+    #[arg(long, global = true)]
+    pub restrict_eval: bool,
+
+    /// Allow PATH during restricted evaluation
+    #[arg(
+        long = "eval-allow-path",
+        value_name = "PATH",
+        global = true,
+        requires = "restrict_eval"
+    )]
+    pub eval_allowed_paths: Vec<String>,
+
+    /// Allow URI prefix during restricted evaluation
+    #[arg(
+        long = "eval-allow-uri",
+        value_name = "URI",
+        global = true,
+        requires = "restrict_eval"
+    )]
+    pub eval_allowed_uris: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -433,6 +459,54 @@ mod tests {
         ]);
 
         assert_eq!(cli.eval_system.as_deref(), Some("x86_64-linux"));
+    }
+
+    #[test]
+    fn global_eval_policy_flags_are_accepted_after_subcommand() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--restrict-eval",
+            "--eval-allow-path",
+            "/aos/src",
+            "--eval-allow-uri",
+            "https://cache.example/",
+        ]);
+
+        assert!(cli.restrict_eval);
+        assert!(!cli.pure_eval);
+        assert_eq!(cli.eval_allowed_paths, ["/aos/src"]);
+        assert_eq!(cli.eval_allowed_uris, ["https://cache.example/"]);
+    }
+
+    #[test]
+    fn global_pure_eval_conflicts_with_restricted_eval() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--pure-eval",
+            "--restrict-eval",
+        ]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn global_eval_allow_path_requires_restricted_eval() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--eval-allow-path",
+            "/aos/src",
+        ]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Cli {
