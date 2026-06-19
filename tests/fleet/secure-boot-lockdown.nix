@@ -85,7 +85,6 @@ in {
       system = systems.server-secureboot-lockdown;
       bootMode = "image";
       imageDiskMiB = 16384;
-      roles = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;
