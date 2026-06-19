@@ -1344,7 +1344,7 @@ in
           grep -q 'StateDirectory=aos-pkg-expose-smoke' "$unit"
           grep -q 'NoNewPrivileges=true' "$unit"
           grep -q 'DynamicUser=true' "$unit"
-          grep -q 'PrivateUsers=false' "$unit"
+          grep -q 'PrivateUsers=identity' "$unit"
           grep -q 'PrivateNetwork=true' "$unit"
           grep -q 'PrivateDevices=true' "$unit"
           grep -q 'DevicePolicy=closed' "$unit"
