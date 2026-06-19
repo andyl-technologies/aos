@@ -1797,6 +1797,12 @@ in rec {
       };
 
     trueCommand = "${pkgs.coreutils}/bin/true";
+    writeCommandScript = name: commands: let
+      tool = pkgs.writeShellScriptBin name ''
+        set -eu
+        ${builtins.concatStringsSep "\n" commands}
+      '';
+    in "${tool}/bin/${name}";
     moduleCommand =
       if kernelModules == []
       then trueCommand
@@ -1864,11 +1870,11 @@ in rec {
     firewallStart =
       if firewallStartCommands == []
       then trueCommand
-      else firewallStartCommands;
+      else writeCommandScript "aos-pkg-${packageName}-firewall-apply" firewallStartCommands;
     firewallStop =
       if firewallStopCommands == []
       then trueCommand
-      else firewallStopCommands;
+      else writeCommandScript "aos-pkg-${packageName}-firewall-revert" firewallStopCommands;
     firewallActive = firewallStartCommands != [];
     netnsForwardComment = "aos-pkg-${packageName}-netns-forward";
     netnsNatTable = "aos_pkg_${netnsHash}";

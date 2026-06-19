@@ -2250,6 +2250,7 @@ fn write_attached_units(root: &Path, packages: &[ExposedPackage]) -> Result<()> 
             }
         }
         write_capability_route_dropins(&dir, packages)?;
+        write_firewall_reload_dropin(&dir, packages)?;
     }
     Ok(())
 }
@@ -2657,6 +2658,56 @@ fn write_capability_route_dropins(dir: &Path, packages: &[ExposedPackage]) -> Re
     Ok(())
 }
 
+fn write_firewall_reload_dropin(dir: &Path, packages: &[ExposedPackage]) -> Result<()> {
+    let content = firewall_reload_dropin(packages);
+    if content.is_empty() {
+        return Ok(());
+    }
+
+    let dropin_dir = dir.join("nftables.service.d");
+    std::fs::create_dir_all(&dropin_dir)
+        .with_context(|| format!("creating {}", dropin_dir.display()))?;
+    std::fs::write(
+        dropin_dir.join("50-aos-package-firewall-reload.conf"),
+        content,
+    )
+    .context("writing nftables package firewall reload drop-in")?;
+    Ok(())
+}
+
+fn firewall_reload_dropin(packages: &[ExposedPackage]) -> String {
+    let units = firewall_reload_units(packages);
+    if units.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "[Unit]\nX-RestartIfChanged=false\nPropagatesReloadTo={}\n",
+        units.join(" ")
+    )
+}
+
+fn firewall_reload_units(packages: &[ExposedPackage]) -> Vec<String> {
+    let mut units = packages
+        .iter()
+        .flat_map(|package| {
+            package
+                .units
+                .iter()
+                .filter(move |unit| is_package_firewall_reload_unit(&package.name, unit))
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    units.sort();
+    units.dedup();
+    units
+}
+
+fn is_package_firewall_reload_unit(package_name: &str, unit: &str) -> bool {
+    unit == format!("aos-pkg-{package_name}-firewall.service")
+        || unit == format!("aos-pkg-{package_name}-netns.service")
+}
+
 fn capability_route_dropins(packages: &[ExposedPackage]) -> Result<BTreeMap<String, String>> {
     let mut dropins = BTreeMap::<String, DropinSections>::new();
     for package in packages {
@@ -3012,6 +3063,7 @@ fn link_candidate_attached_units(packages: &[ExposedPackage], destination: &Path
         }
     }
     write_capability_route_dropins(destination, packages)?;
+    write_firewall_reload_dropin(destination, packages)?;
     Ok(())
 }
 
@@ -5550,6 +5602,94 @@ mod tests {
         assert!(socket_dropin.contains("Service=consumer.service"));
         assert!(socket_dropin.contains("FileDescriptorName=aos-provider-api"));
         assert!(!socket_dropin.contains("PrivateNetwork=true"));
+    }
+
+    #[test]
+    fn firewall_reload_dropin_propagates_to_package_side_effects() {
+        let packages = vec![
+            ExposedPackage {
+                name: "api".into(),
+                target: "aos-pkg-api.target".into(),
+                units: BTreeSet::from([
+                    "api.service".to_string(),
+                    "aos-pkg-api-firewall.service".to_string(),
+                    "aos-pkg-api-netns.service".to_string(),
+                    "aos-pkg-api-sysctl.service".to_string(),
+                ]),
+                artifact_hash: "artifacthash111".into(),
+                artifact_store_path: "/nix/store/artifacthash111-expose-api".into(),
+                credential_blobs: Vec::new(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            ExposedPackage {
+                name: "worker".into(),
+                target: "aos-pkg-worker.target".into(),
+                units: BTreeSet::from([
+                    "worker.service".to_string(),
+                    "aos-pkg-worker-firewall.service".to_string(),
+                ]),
+                artifact_hash: "artifacthash222".into(),
+                artifact_store_path: "/nix/store/artifacthash222-expose-worker".into(),
+                credential_blobs: Vec::new(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            firewall_reload_dropin(&packages),
+            concat!(
+                "[Unit]\n",
+                "X-RestartIfChanged=false\n",
+                "PropagatesReloadTo=aos-pkg-api-firewall.service ",
+                "aos-pkg-api-netns.service ",
+                "aos-pkg-worker-firewall.service\n",
+            ),
+        );
+    }
+
+    #[test]
+    fn firewall_reload_dropin_change_does_not_restart_nftables() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let live_attached = root.join("etc").join(ATTACHED_REL);
+        std::fs::create_dir_all(live_attached.join("nftables.service.d")).unwrap();
+        std::fs::write(
+            live_attached
+                .join("nftables.service.d")
+                .join("50-aos-package-firewall-reload.conf"),
+            "[Unit]\nX-RestartIfChanged=false\nPropagatesReloadTo=aos-pkg-api-firewall.service\n",
+        )
+        .unwrap();
+
+        let packages = vec![
+            ExposedPackage {
+                name: "api".into(),
+                target: "aos-pkg-api.target".into(),
+                units: BTreeSet::from(["aos-pkg-api-firewall.service".to_string()]),
+                artifact_hash: "artifacthash111".into(),
+                artifact_store_path: "/nix/store/artifacthash111-expose-api".into(),
+                credential_blobs: Vec::new(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            ExposedPackage {
+                name: "worker".into(),
+                target: "aos-pkg-worker.target".into(),
+                units: BTreeSet::from(["aos-pkg-worker-firewall.service".to_string()]),
+                artifact_hash: "artifacthash222".into(),
+                artifact_store_path: "/nix/store/artifacthash222-expose-worker".into(),
+                credential_blobs: Vec::new(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+        ];
+
+        let diff = compute_attached_unit_diff(&root, &packages).unwrap();
+
+        assert!(!diff.to_restart.contains(&"nftables.service".to_string()));
+        assert!(diff.to_reload.is_empty());
     }
 
     #[test]

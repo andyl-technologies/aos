@@ -156,6 +156,9 @@
   packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
     inherit pkgs lib mkSystem testing;
   };
+  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
+    inherit pkgs mkSystem testing;
+  };
   packagePresetCheck = import ./lib/testing/package-preset.nix {
     inherit pkgs mkSystem testing;
   };
@@ -302,6 +305,7 @@ in {
     package-expose = import ./lib/testing/package-expose.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
     };
+    package-firewall-reload = packageFirewallReloadCheck;
     package-expose-lifecycle = packageExposeLifecycleCheck;
     package-preset = packagePresetCheck;
     package-test-http-server = packageTestHttpServerCheck;
