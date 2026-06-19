@@ -2823,10 +2823,7 @@ impl TreeWalk {
             }
         }
         Err(TreeWalkError::new(
-            TreeWalkErrorKind::UnsupportedNode {
-                id,
-                kind: node.kind,
-            },
+            TreeWalkErrorKind::UnresolvedGlobalVar { id, symbol },
             node.span,
         ))
     }
@@ -30409,6 +30406,14 @@ pub enum TreeWalkErrorKind {
         /// The missing symbol.
         symbol: Symbol,
     },
+    /// A bare global lookup found no supported top-level binding.
+    #[error("unresolved global variable {symbol:?} at node {id:?}")]
+    UnresolvedGlobalVar {
+        /// The global-variable node id.
+        id: IrId,
+        /// The missing symbol.
+        symbol: Symbol,
+    },
     /// A boolean-tagged value had an invalid payload.
     ///
     /// Current safe constructors cannot create this state; the check is a
@@ -37872,9 +37877,24 @@ mod tests {
 
         assert_eq!(
             error.kind(),
-            TreeWalkErrorKind::UnsupportedNode {
+            TreeWalkErrorKind::UnresolvedGlobalVar {
                 id: ir.root,
-                kind: IrKind::GlobalVar,
+                symbol: symbol_for(&ir, b"currentTime"),
+            }
+        );
+    }
+
+    #[test]
+    fn bare_builtin_attrs_are_unresolved_globals() {
+        let ir = lower("length");
+        let error =
+            eval_whnf_owned(&ir).expect_err("shadowable builtin attrs are not bare globals");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::UnresolvedGlobalVar {
+                id: ir.root,
+                symbol: symbol_for(&ir, b"length"),
             }
         );
     }

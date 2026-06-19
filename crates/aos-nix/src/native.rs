@@ -22,7 +22,7 @@ use crate::eval::{
     EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
     eval_whnf_owned_with_options_and_realizer,
 };
-use crate::runtime::builtins::lookup_builtin;
+use crate::runtime::builtins::{is_unshadowable_global_name, lookup_builtin};
 use crate::syntax::{Span, parse_str};
 use crate::value::{Value, ValueTag};
 
@@ -509,7 +509,9 @@ fn ensure_native_json_subset(
                 }
                 continue;
             }
-            if let Some(feature) = builtin_native_cli_fallback_feature(name) {
+            if is_unshadowable_global_name(name)
+                && let Some(feature) = builtin_native_cli_fallback_feature(name)
+            {
                 return Err(unsupported_native_node(feature, node.span, expr_len));
             }
         }
@@ -2088,6 +2090,21 @@ mod tests {
             err.downcast_ref::<NativeEvalError>(),
             Some(NativeEvalError::EvalError { message }) if message.contains("type error")
         ));
+
+        for source in ["length", "currentTime"] {
+            let err = native
+                .eval_expr(source)
+                .expect_err("unresolved globals are native evaluation errors");
+
+            assert!(
+                matches!(
+                    err.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::EvalError { message })
+                        if message.contains("unresolved global variable")
+                ),
+                "{source}: {err:?}"
+            );
+        }
         Ok(())
     }
 
