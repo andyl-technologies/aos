@@ -15,6 +15,7 @@ pub mod abi;
 pub mod adversarial;
 pub mod divergence;
 pub mod fingerprint;
+pub mod gate_targets;
 pub mod replay_oracle;
 
 /// A cross-crate harness component hosted by `crucible-harness`.

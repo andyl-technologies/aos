@@ -11,3 +11,23 @@ qemu-backend = []
 
 [dependencies]
 crucible-sim = { path = "../crucible-sim", optional = true }
+
+[[test]]
+name = "gate_layer0_determinism"
+path = "tests/gate_layer0_determinism.rs"
+required-features = ["test-double"]
+
+[[test]]
+name = "gate_replay_oracle"
+path = "tests/gate_replay_oracle.rs"
+required-features = ["test-double"]
+
+[[test]]
+name = "gate_content_address"
+path = "tests/gate_content_address.rs"
+required-features = ["test-double"]
+
+[[test]]
+name = "gate_scheduler_liveness"
+path = "tests/gate_scheduler_liveness.rs"
+required-features = ["test-double"]

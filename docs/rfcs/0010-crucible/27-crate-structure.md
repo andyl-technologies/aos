@@ -657,7 +657,7 @@ Crucible needs and marks the seam.
   cross-crate gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) as a dev-dependency-only
   member. — satisfies [CRATE-15]; spec §7.
-- [ ] **T-CRATE-12** Map each per-layer determinism gate to a named, isolable test
+- [x] **T-CRATE-12** Map each per-layer determinism gate to a named, isolable test
   target in its owning crate(s) per the §7 table; run the engine gates under
   `--features test-double`. — satisfies [CRATE-16], [CRATE-7]; spec §7.
 - [ ] **T-CRATE-13** Author the crate→spec-file index (the §6 table) into each
