@@ -54490,6 +54490,85 @@ mod tests {
     }
 
     #[test]
+    fn derivation_strict_supports_recursive_sha1_fixed_output_derivations() {
+        let bar = r#"derivationStrict {
+             name = "bar";
+             system = ":";
+             builder = ":";
+             outputHash = "0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33";
+             outputHashAlgo = "sha1";
+             outputHashMode = "recursive";
+           }"#;
+        let source = format!("let d = {bar}; in {{ drvPath = d.drvPath; out = d.out; }}");
+
+        assert_eq!(
+            eval_json_bytes(&source),
+            br#"{"drvPath":"/nix/store/ss2p4wmxijn652haqyd7dckxwl4c7hxx-bar.drv","out":"/nix/store/mp57d33657rf34lzvlbpfa1gjfv5gmpg-bar"}"#.to_vec()
+        );
+
+        let outcome = eval_whnf_owned(&lower(&format!("let d = {bar}; in d.drvPath")))
+            .expect("recursive SHA-1 fixed-output derivation evaluates");
+        let recorded = outcome
+            .derivations()
+            .iter()
+            .find(|drv| {
+                drv.absolute_path() == "/nix/store/ss2p4wmxijn652haqyd7dckxwl4c7hxx-bar.drv"
+            })
+            .expect("recursive SHA-1 fixed-output derivation records ATerm bytes");
+
+        assert_eq!(
+            recorded.aterm_bytes(),
+            Some(
+                br#"Derive([("out","/nix/store/mp57d33657rf34lzvlbpfa1gjfv5gmpg-bar","r:sha1","0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33")],[],[],":",":",[],[("builder",":"),("name","bar"),("out","/nix/store/mp57d33657rf34lzvlbpfa1gjfv5gmpg-bar"),("outputHash","0beec7b5ea3f0fdbc95d0dd47f3c5bc275da8a33"),("outputHashAlgo","sha1"),("outputHashMode","recursive"),("system",":")])"#.as_slice()
+            )
+        );
+
+        let downstream = format!(
+            r#"let
+                 bar = {bar};
+                 foo = derivationStrict {{
+                   name = "foo";
+                   system = ":";
+                   builder = ":";
+                   bar = bar.out;
+                 }};
+               in {{ drvPath = foo.drvPath; out = foo.out; }}"#
+        );
+        assert_eq!(
+            eval_json_bytes(&downstream),
+            br#"{"drvPath":"/nix/store/ch49594n9avinrf8ip0aslidkc4lxkqv-foo.drv","out":"/nix/store/fhaj6gmwns62s6ypkcldbaj2ybvkhx3p-foo"}"#.to_vec()
+        );
+
+        let downstream_drv_path = format!(
+            r#"let
+                 bar = {bar};
+                 foo = derivationStrict {{
+                   name = "foo";
+                   system = ":";
+                   builder = ":";
+                   bar = bar.out;
+                 }};
+               in foo.drvPath"#
+        );
+        let outcome = eval_whnf_owned(&lower(&downstream_drv_path))
+            .expect("downstream derivation depending on SHA-1 FOD evaluates");
+        let downstream_recorded = outcome
+            .derivations()
+            .iter()
+            .find(|drv| {
+                drv.absolute_path() == "/nix/store/ch49594n9avinrf8ip0aslidkc4lxkqv-foo.drv"
+            })
+            .expect("downstream derivation records ATerm bytes");
+
+        assert_eq!(
+            downstream_recorded.aterm_bytes(),
+            Some(
+                br#"Derive([("out","/nix/store/fhaj6gmwns62s6ypkcldbaj2ybvkhx3p-foo","","")],[("/nix/store/ss2p4wmxijn652haqyd7dckxwl4c7hxx-bar.drv",["out"])],[],":",":",[],[("bar","/nix/store/mp57d33657rf34lzvlbpfa1gjfv5gmpg-bar"),("builder",":"),("name","foo"),("out","/nix/store/fhaj6gmwns62s6ypkcldbaj2ybvkhx3p-foo"),("system",":")])"#.as_slice()
+            )
+        );
+    }
+
+    #[test]
     fn derivation_strict_supports_disabled_content_addressed_marker() {
         let source = r#"let
              d = derivationStrict {
