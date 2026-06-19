@@ -2649,6 +2649,32 @@ impl TreeWalk {
             .map(|segments| segments.len())
     }
 
+    fn reject_empty_attr_path(
+        &self,
+        id: IrId,
+        path: IrAttrPathId,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let len = self.attr_path_len(id, path, span)?;
+        self.reject_empty_attr_path_len(id, path, span, len)
+    }
+
+    fn reject_empty_attr_path_len(
+        &self,
+        id: IrId,
+        path: IrAttrPathId,
+        span: Span,
+        len: usize,
+    ) -> Result<(), TreeWalkError> {
+        if len == 0 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::InvalidAttrPath { id, path },
+                span,
+            ));
+        }
+        Ok(())
+    }
+
     fn attr_path_segment(
         &self,
         id: IrId,
@@ -26055,6 +26081,7 @@ impl TreeWalk {
         else {
             return Err(self.invalid_payload(id, node, "select payload"));
         };
+        self.reject_empty_attr_path(id, path_id, node.span)?;
         if let Some(value) =
             self.eval_builtin_static_select(id, node, receiver, path_id, default)?
         {
@@ -26074,17 +26101,7 @@ impl TreeWalk {
         force_receiver: bool,
     ) -> Result<Value, TreeWalkError> {
         let segments = self.attr_path_len(id, path_id, span)?;
-        if segments == 0 {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedAttrPath {
-                    id,
-                    path: path_id,
-                    segments,
-                    has_dynamic: false,
-                },
-                span,
-            ));
-        }
+        self.reject_empty_attr_path_len(id, path_id, span, segments)?;
 
         if force_receiver {
             current = self.force_value(id, span, current)?;
@@ -26138,12 +26155,7 @@ impl TreeWalk {
         }
 
         Err(TreeWalkError::new(
-            TreeWalkErrorKind::UnsupportedAttrPath {
-                id,
-                path: path_id,
-                segments,
-                has_dynamic: false,
-            },
+            TreeWalkErrorKind::InvalidAttrPath { id, path: path_id },
             span,
         ))
     }
@@ -26238,22 +26250,13 @@ impl TreeWalk {
         else {
             return Err(self.invalid_payload(id, node, "has-attr payload"));
         };
+        self.reject_empty_attr_path(id, path_id, node.span)?;
         if let Some(value) = self.eval_builtin_static_has_attr(id, node, receiver, path_id)? {
             return Ok(value);
         }
         let segments = self.attr_path_len(id, path_id, node.span)?;
         let mut current = self.eval_node(receiver)?;
-        if segments == 0 {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedAttrPath {
-                    id,
-                    path: path_id,
-                    segments,
-                    has_dynamic: false,
-                },
-                node.span,
-            ));
-        }
+        self.reject_empty_attr_path_len(id, path_id, node.span, segments)?;
 
         for index in 0..segments {
             let segment = self.attr_path_segment(id, path_id, index, node.span)?;
@@ -29258,7 +29261,7 @@ pub enum TreeWalkErrorKind {
         /// The invalid child slice payload.
         slice: IrChildSlice,
     },
-    /// An attribute-path side-table id did not resolve through the IR.
+    /// An attribute-path side-table id did not resolve or carried no segments.
     #[error("invalid attribute path {path:?} at node {id:?}")]
     InvalidAttrPath {
         /// The node id carrying the invalid attribute-path id.
@@ -30462,20 +30465,6 @@ pub enum TreeWalkErrorKind {
         left: ValueTag,
         /// The right operand's runtime value tag.
         right: ValueTag,
-    },
-    /// An attribute path shape is outside the evaluator's supported access forms.
-    #[error(
-        "unsupported tree-walk attribute path {path:?} at {id:?}: segments={segments}, has_dynamic={has_dynamic}"
-    )]
-    UnsupportedAttrPath {
-        /// The access node id.
-        id: IrId,
-        /// The unsupported attribute-path id.
-        path: IrAttrPathId,
-        /// The number of path segments.
-        segments: usize,
-        /// Whether any path segment is dynamic.
-        has_dynamic: bool,
     },
     /// A checked integer arithmetic operation overflowed.
     #[error("arithmetic overflow for {op:?} at node {id:?}")]
@@ -56613,6 +56602,91 @@ mod tests {
             vec![Box::new([IrAttrPathSegment::Static(a)]), Box::new([])],
         );
         let error = eval_whnf_owned(&ir).expect_err("attr-path id must exist");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidAttrPath { id: root, path }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn empty_has_attr_paths_are_invalid_ir() {
+        let receiver = IrId::new(2);
+        let root = IrId::new(3);
+        let path = IrAttrPathId::new(0);
+        let span = Span::new(0, 5);
+        let ir = manual_ir_with_attr_paths(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(IrKind::Int, Span::new(4, 5), IrData::Int(0)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 5),
+                    IrData::Binary {
+                        op: BinOpKind::Div,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+                pure_node(
+                    IrKind::HasAttr,
+                    span,
+                    IrData::HasAttr {
+                        site: IrInlineCacheSiteId::new(0),
+                        receiver,
+                        path,
+                    },
+                ),
+            ],
+            SymbolTable::new(),
+            vec![Box::new([])],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("empty attr paths are malformed IR");
+
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidAttrPath { id: root, path }
+        );
+        assert_eq!(error.span(), span);
+    }
+
+    #[test]
+    fn empty_select_paths_are_invalid_ir() {
+        let receiver = IrId::new(2);
+        let root = IrId::new(3);
+        let path = IrAttrPathId::new(0);
+        let span = Span::new(0, 5);
+        let ir = manual_ir_with_attr_paths(
+            root,
+            vec![
+                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
+                pure_node(IrKind::Int, Span::new(4, 5), IrData::Int(0)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 5),
+                    IrData::Binary {
+                        op: BinOpKind::Div,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+                pure_node(
+                    IrKind::Select,
+                    span,
+                    IrData::Select {
+                        site: IrInlineCacheSiteId::new(0),
+                        receiver,
+                        path,
+                        default: None,
+                    },
+                ),
+            ],
+            SymbolTable::new(),
+            vec![Box::new([])],
+        );
+        let error = eval_whnf_owned(&ir).expect_err("empty attr paths are malformed IR");
 
         assert_eq!(
             error.kind(),

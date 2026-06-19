@@ -447,7 +447,6 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
         | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
-        | TreeWalkErrorKind::UnsupportedAttrPath { .. }
         | TreeWalkErrorKind::UnsupportedNode { .. }
         | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
         TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
@@ -777,6 +776,7 @@ fn builtins_global_native_json_fallback_feature(
     options: &TreeWalkOptions,
 ) -> Option<&'static str> {
     let mut selected_known_native_builtin = false;
+    let mut saw_referencing_attr_path = false;
 
     for node in ir.arena.nodes() {
         let (receiver, path) = match node.data {
@@ -788,9 +788,12 @@ fn builtins_global_native_json_fallback_feature(
         if !select_receiver_references_global(ir, receiver, receiver_index) {
             continue;
         }
+        saw_referencing_attr_path = true;
 
-        let Some(name) = static_single_attr_path(ir, path) else {
-            return Some("CLI-sensitive builtin evaluation");
+        let name = match static_single_attr_path(ir, path) {
+            StaticSingleAttrPath::Single(name) => name,
+            StaticSingleAttrPath::Invalid => continue,
+            StaticSingleAttrPath::NotSingle => return Some("CLI-sensitive builtin evaluation"),
         };
         if name == b"currentSystem"
             && options.eval_mode() != EvalMode::Pure
@@ -813,6 +816,8 @@ fn builtins_global_native_json_fallback_feature(
     }
 
     if selected_known_native_builtin {
+        None
+    } else if saw_referencing_attr_path {
         None
     } else {
         Some("CLI-sensitive builtin evaluation")
@@ -943,14 +948,26 @@ fn select_receiver_references_global(ir: &Ir, mut receiver: IrId, global_index: 
     }
 }
 
-fn static_single_attr_path<'a>(ir: &'a Ir, path: IrAttrPathId) -> Option<&'a [u8]> {
+enum StaticSingleAttrPath<'a> {
+    Single(&'a [u8]),
+    Invalid,
+    NotSingle,
+}
+
+fn static_single_attr_path<'a>(ir: &'a Ir, path: IrAttrPathId) -> StaticSingleAttrPath<'a> {
     let Some(segments) = ir.attr_paths.get(path.index()) else {
-        return None;
+        return StaticSingleAttrPath::Invalid;
     };
+    if segments.is_empty() {
+        return StaticSingleAttrPath::Invalid;
+    }
     let [IrAttrPathSegment::Static(symbol)] = segments.as_ref() else {
-        return None;
+        return StaticSingleAttrPath::NotSingle;
     };
-    ir.symbols.resolve(*symbol)
+    match ir.symbols.resolve(*symbol) {
+        Some(name) => StaticSingleAttrPath::Single(name),
+        None => StaticSingleAttrPath::Invalid,
+    }
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {
@@ -2106,6 +2123,51 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn native_json_preflight_ignores_malformed_empty_builtins_attr_paths() {
+        use crate::compile::{IrArena, IrInlineCacheSiteId, IrNode};
+        use crate::syntax::SymbolTable;
+
+        let mut symbols = SymbolTable::new();
+        let builtins = symbols.intern(b"builtins").expect("symbol interns");
+        let ir = Ir {
+            root: IrId::new(1),
+            arena: IrArena::from_raw_parts(
+                vec![
+                    IrNode::new(
+                        IrKind::GlobalVar,
+                        Span::new(0, 8),
+                        EffectClass::Pure,
+                        IrData::Symbol(builtins),
+                    ),
+                    IrNode::new(
+                        IrKind::Select,
+                        Span::new(0, 8),
+                        EffectClass::Pure,
+                        IrData::Select {
+                            site: IrInlineCacheSiteId::new(0),
+                            receiver: IrId::new(0),
+                            path: IrAttrPathId::new(0),
+                            default: None,
+                        },
+                    ),
+                ],
+                Vec::new(),
+            ),
+            symbols,
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: vec![Vec::<IrAttrPathSegment>::new().into_boxed_slice()].into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        };
+
+        assert_eq!(
+            builtins_global_native_json_fallback_feature(&ir, 0, &TreeWalkOptions::new()),
+            None
+        );
     }
 
     #[test]
