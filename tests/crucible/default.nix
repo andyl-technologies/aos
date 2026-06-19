@@ -1,8 +1,20 @@
 {
   pkgs,
   lib,
-}: {
+}: let
+  redGate = import ./red-gate-placeholder.nix {inherit pkgs;};
+in {
   phase0 = {
+    gates = {
+      harnessLint = redGate {
+        attrPath = "checks.crucible.phase0.gates.harnessLint";
+        gateName = "gate:harness-lint";
+        owner = "crucible-harness";
+        phase = "phase0";
+        taskIds = ["T-ARCH-4"];
+        reason = "full nondeterminism-source lint is intentionally pending";
+      };
+    };
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};
     s3SavevmLoadvm = import ./phase0-s3.nix {inherit pkgs lib;};
@@ -27,5 +39,47 @@
   phase1 = {
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
+    gates = {
+      layer0Determinism = redGate {
+        attrPath = "checks.crucible.phase1.gates.layer0Determinism";
+        gateName = "gate:layer0-determinism";
+        owner = "crucible-sim";
+        phase = "phase1";
+        taskIds = ["T-ARCH-4"];
+        reason = "L0 determinism suite is intentionally pending";
+      };
+      layer1Injection = redGate {
+        attrPath = "checks.crucible.phase1.gates.layer1Injection";
+        gateName = "gate:layer1-injection";
+        owner = "crucible-device";
+        phase = "phase1";
+        taskIds = ["T-ARCH-4"];
+        reason = "L1 injection determinism suite is intentionally pending";
+      };
+    };
+  };
+  phase2 = {
+    gates = {
+      singleVmFingerprint = redGate {
+        attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
+        gateName = "gate:single-vm-fingerprint";
+        owner = "crucible-qemu";
+        phase = "phase2";
+        taskIds = ["T-ARCH-4"];
+        reason = "single-VM fingerprint gate is intentionally pending";
+      };
+    };
+  };
+  phase3 = {
+    gates = {
+      controlResponsive = redGate {
+        attrPath = "checks.crucible.phase3.gates.controlResponsive";
+        gateName = "gate:control-responsive";
+        owner = "crucible-session";
+        phase = "phase3";
+        taskIds = ["T-ARCH-4"];
+        reason = "control-plane responsiveness gate is intentionally pending";
+      };
+    };
   };
 }
