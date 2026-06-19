@@ -36,14 +36,17 @@ struct register_hash_summary {
 static FILE *trace_file;
 static uint64_t cadence = 100000;
 static uint64_t next_sample = 100000;
+static uint64_t stop_at;
 static uint64_t retired;
 static uint64_t stream_hash = FNV1A64_OFFSET;
-static uint64_t device_event_hash = FNV1A64_OFFSET;
+static uint64_t device_event_xor;
+static uint64_t device_event_sum;
 static uint64_t memory_events;
 static uint64_t io_events;
 static uint64_t register_read_failures;
 static bool extended_fingerprint;
 static bool capture_memory_events;
+static bool stop_requested;
 static unsigned int tracked_vcpus = 1;
 static struct register_set register_sets[MAX_TRACKED_VCPUS];
 
@@ -77,28 +80,40 @@ fnv1a_cstr(uint64_t hash, const char *text)
   return fnv1a_u64(hash, 0xffU);
 }
 
-static void
-hash_mem_value(qemu_plugin_mem_value value)
+static uint64_t
+hash_mem_value(uint64_t hash, qemu_plugin_mem_value value)
 {
-  device_event_hash = fnv1a_u64(device_event_hash, (uint64_t)value.type);
+  hash = fnv1a_u64(hash, (uint64_t)value.type);
   switch (value.type) {
   case QEMU_PLUGIN_MEM_VALUE_U8:
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u8);
+    hash = fnv1a_u64(hash, value.data.u8);
     break;
   case QEMU_PLUGIN_MEM_VALUE_U16:
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u16);
+    hash = fnv1a_u64(hash, value.data.u16);
     break;
   case QEMU_PLUGIN_MEM_VALUE_U32:
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u32);
+    hash = fnv1a_u64(hash, value.data.u32);
     break;
   case QEMU_PLUGIN_MEM_VALUE_U64:
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u64);
+    hash = fnv1a_u64(hash, value.data.u64);
     break;
   case QEMU_PLUGIN_MEM_VALUE_U128:
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u128.low);
-    device_event_hash = fnv1a_u64(device_event_hash, value.data.u128.high);
+    hash = fnv1a_u64(hash, value.data.u128.low);
+    hash = fnv1a_u64(hash, value.data.u128.high);
     break;
   }
+  return hash;
+}
+
+static uint64_t
+current_device_event_hash(void)
+{
+  uint64_t hash = FNV1A64_OFFSET;
+
+  hash = fnv1a_u64(hash, device_event_xor);
+  hash = fnv1a_u64(hash, device_event_sum);
+  hash = fnv1a_u64(hash, io_events);
+  return hash;
 }
 
 static bool
@@ -239,7 +254,7 @@ record_sample(unsigned int vcpu_index, bool final)
   const uint64_t rr_cursor_position = qemu_plugin_crucible_rr_cursor_position();
   const uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
   const uint64_t device_component_hash =
-      capture_memory_events ? device_event_hash : 0;
+      capture_memory_events ? current_device_event_hash() : 0;
   uint64_t extended_hash = FNV1A64_OFFSET;
 
   extended_hash = fnv1a_u64(extended_hash, stream_hash);
@@ -251,6 +266,7 @@ record_sample(unsigned int vcpu_index, bool final)
   extended_hash = fnv1a_u64(extended_hash, rr_cursor_position);
   extended_hash = fnv1a_u64(extended_hash, rr_switch_quantum);
   extended_hash = fnv1a_u64(extended_hash, tracked_vcpus);
+  extended_hash = fnv1a_u64(extended_hash, stop_at);
 
   fprintf(
       trace_file,
@@ -258,6 +274,8 @@ record_sample(unsigned int vcpu_index, bool final)
       ",\"vcpu\":%u"
       ",\"final\":%s"
       ",\"tracked_vcpus\":%u"
+      ",\"stop_at\":%" PRIu64
+      ",\"stop_requested\":%s"
       ",\"rr_current_vcpu\":%" PRIu64
       ",\"rr_cursor_position\":%" PRIu64
       ",\"rr_switch_quantum\":%" PRIu64
@@ -268,6 +286,8 @@ record_sample(unsigned int vcpu_index, bool final)
       vcpu_index,
       final ? "true" : "false",
       tracked_vcpus,
+      stop_at,
+      stop_requested ? "true" : "false",
       rr_current_vcpu,
       rr_cursor_position,
       rr_switch_quantum,
@@ -299,7 +319,7 @@ record_sample(unsigned int vcpu_index, bool final)
     fprintf(
         trace_file,
         ",\"device_event_hash\":\"%016" PRIx64 "\"",
-        device_event_hash);
+        device_component_hash);
   } else {
     fprintf(trace_file, ",\"device_event_hash\":null");
   }
@@ -332,27 +352,37 @@ on_mem(unsigned int vcpu_index, qemu_plugin_meminfo_t info, uint64_t vaddr, void
   const struct qemu_plugin_hwaddr *hwaddr = qemu_plugin_get_hwaddr(info, vaddr);
   const bool is_io = hwaddr != NULL && qemu_plugin_hwaddr_is_io(hwaddr);
   const uint64_t phys_addr = hwaddr == NULL ? UINT64_MAX : qemu_plugin_hwaddr_phys_addr(hwaddr);
-  const char *device_name = is_io ? qemu_plugin_hwaddr_device_name(hwaddr) : NULL;
 
   memory_events++;
   if (is_io) {
     io_events++;
+  } else {
+    return;
   }
 
-  device_event_hash = fnv1a_u64(device_event_hash, vcpu_index);
-  device_event_hash = fnv1a_u64(device_event_hash, vaddr);
-  device_event_hash = fnv1a_u64(device_event_hash, phys_addr);
-  device_event_hash = fnv1a_u64(device_event_hash, qemu_plugin_mem_size_shift(info));
-  device_event_hash = fnv1a_u64(device_event_hash, qemu_plugin_mem_is_store(info) ? 1U : 0U);
-  device_event_hash = fnv1a_u64(device_event_hash, is_io ? 1U : 0U);
-  device_event_hash = fnv1a_cstr(device_event_hash, device_name);
-  hash_mem_value(qemu_plugin_mem_get_value(info));
+  uint64_t event_hash = FNV1A64_OFFSET;
+
+  event_hash = fnv1a_u64(event_hash, vcpu_index);
+  event_hash = fnv1a_u64(event_hash, vaddr);
+  event_hash = fnv1a_u64(event_hash, phys_addr);
+  event_hash = fnv1a_u64(event_hash, qemu_plugin_mem_size_shift(info));
+  const bool is_store = qemu_plugin_mem_is_store(info);
+  event_hash = fnv1a_u64(event_hash, is_store ? 1U : 0U);
+  event_hash = fnv1a_u64(event_hash, is_io ? 1U : 0U);
+  if (is_store) {
+    event_hash = hash_mem_value(event_hash, qemu_plugin_mem_get_value(info));
+  } else {
+    event_hash = fnv1a_u64(event_hash, UINT64_MAX);
+  }
+  device_event_xor ^= event_hash;
+  device_event_sum += event_hash;
 }
 
 static void
 on_insn(unsigned int vcpu_index, void *userdata)
 {
   const struct traced_insn *insn = userdata;
+  bool sampled_this_instruction = false;
 
   retired++;
   stream_hash = fnv1a_u64(stream_hash, (uint64_t)vcpu_index);
@@ -362,7 +392,16 @@ on_insn(unsigned int vcpu_index, void *userdata)
 
   if (retired >= next_sample) {
     record_sample(vcpu_index, false);
+    sampled_this_instruction = true;
     next_sample += cadence;
+  }
+  if (stop_at != 0 && retired >= stop_at && !stop_requested) {
+    if (!sampled_this_instruction) {
+      record_sample(vcpu_index, false);
+    }
+    stop_requested = true;
+    qemu_plugin_outs("crucible-qemu-trace-plugin: stop_at reached\n");
+    qemu_plugin_crucible_pause_vm();
   }
 }
 
@@ -465,6 +504,11 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
       extended_fingerprint = parse_bool_flag(argv[i] + 9);
     } else if (strncmp(argv[i], "mem_events=", 11) == 0) {
       capture_memory_events = parse_bool_flag(argv[i] + 11);
+    } else if (strncmp(argv[i], "stop_at=", 8) == 0) {
+      if (!parse_u64(argv[i] + 8, &stop_at)) {
+        qemu_plugin_outs("crucible-qemu-trace-plugin: invalid stop_at\n");
+        return -1;
+      }
     } else if (strncmp(argv[i], "vcpus=", 6) == 0) {
       uint64_t parsed = 0;
       if (!parse_u64(argv[i] + 6, &parsed) || parsed == 0 ||
