@@ -2470,14 +2470,27 @@ pub(crate) async fn org_create_registry(
         v @ ("public" | "internal" | "private") => v,
         _ => return reject(&deps, &org, &session, "Invalid visibility.", started).await,
     };
-    let binding_id = match deps
-        .db
-        .storage_binding_by_name(org.id, form.binding.trim())
-        .await
-    {
-        Ok(Some(b)) => b.id,
-        Ok(None) => return reject(&deps, &org, &session, "Choose a storage binding.", started).await,
-        Err(err) => return internal(err),
+    // An empty binding selection means "default storage" (binding_id None):
+    // the registry roots on the deployment's own storage, addressed by its
+    // prefix. A non-empty name must resolve to one of the org's bindings.
+    let binding_name = form.binding.trim();
+    let binding_id = if binding_name.is_empty() {
+        None
+    } else {
+        match deps.db.storage_binding_by_name(org.id, binding_name).await {
+            Ok(Some(b)) => Some(b.id),
+            Ok(None) => {
+                return reject(
+                    &deps,
+                    &org,
+                    &session,
+                    &format!("No storage binding '{binding_name}' in this org."),
+                    started,
+                )
+                .await
+            }
+            Err(err) => return internal(err),
+        }
     };
     let project_path = form.project_path.trim().trim_matches('/');
     let prefix = form.prefix.trim();
@@ -2497,7 +2510,7 @@ pub(crate) async fn org_create_registry(
             project_path,
             name,
             visibility,
-            Some(binding_id),
+            binding_id,
             prefix,
             &trust_keys,
             require_signatures,

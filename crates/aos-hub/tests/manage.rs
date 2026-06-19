@@ -436,6 +436,52 @@ async fn create_under_org_authz_matrix() {
 }
 
 #[tokio::test]
+async fn create_registry_with_default_storage_needs_no_binding() {
+    // Regression: the new-registry form used to dead-end with "no storage
+    // bindings yet" when the org had none, and the POST rejected an empty
+    // binding with "Choose a storage binding". A managed registry must be
+    // creatable with zero storage configuration (it roots on the deployment's
+    // default storage, with a prefix auto-derived from its slug).
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.create_org("acme", "Acme").await.unwrap();
+    let admin = db.find_or_create_user("admin@acme.com").await.unwrap();
+    db.grant_membership("user", admin, "acme", "admin")
+        .await
+        .unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = login(&app, &db, "admin@acme.com").await;
+    let csrf = csrf_for(&cookie);
+
+    // With no bindings, the form still renders and offers the default option.
+    let resp = send(&app, "GET", "/-/org/acme/registries/new", Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(resp.body.contains("Default storage"), "{}", resp.body);
+
+    // POST with an empty binding and empty prefix succeeds.
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/registries",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&name=cdn&project_path=&binding=&visibility=public&prefix="
+        )),
+    )
+    .await;
+    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.location.as_deref(), Some("/acme/cdn/"));
+
+    let registry = db
+        .registry_by_slug("acme/cdn")
+        .await
+        .unwrap()
+        .expect("registry created");
+    assert_eq!(registry.storage_binding_id, None);
+    // The prefix auto-derived from the slug.
+    assert_eq!(registry.prefix, "acme/cdn");
+}
+
+#[tokio::test]
 async fn binding_root_must_be_absolute() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.create_org("acme", "Acme").await.unwrap();

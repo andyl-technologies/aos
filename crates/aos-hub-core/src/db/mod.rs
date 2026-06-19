@@ -5085,17 +5085,31 @@ impl Database {
     ///
     /// The registry is stored with its full canonical path
     /// (`{org}/{project_path}/{name}`) as its slug, an empty `source_url`
-    /// (its surface is located via the binding), and the given ownership,
-    /// storage binding, prefix, and trust configuration. Canonical
-    /// uniqueness is enforced both by the up-front
+    /// (its surface is located via the binding or the deployment default
+    /// storage), and the given ownership, storage binding, prefix, and trust
+    /// configuration. Canonical uniqueness is enforced both by the up-front
     /// [`Database::registry_by_scope`] check and by the underlying
     /// `UNIQUE(slug)` constraint.
+    ///
+    /// `binding_id` is optional: `None` means the registry roots on the
+    /// deployment's default storage (the single R2 bucket on the Worker, or
+    /// the configured [`Database::default_storage_root`] on the native hub),
+    /// addressed purely by its `prefix`.
+    ///
+    /// When `prefix` is empty it is auto-derived from the registry's slug —
+    /// the canonical path that already uniquely identifies the registry — so
+    /// a zero-config create still gets a stable, unique storage prefix. The
+    /// derived prefix may contain `/` (the slug's path separators); that is a
+    /// valid R2/filesystem key prefix. A non-empty `prefix` must be unique
+    /// across all other registries, since two registries sharing a prefix
+    /// would read and write the same surface objects.
     ///
     /// # Errors
     ///
     /// Returns an error when a registry already exists at the canonical
-    /// path, when `prefix` contains a path-traversal component (`..`, an
-    /// absolute segment), or on database failure.
+    /// path, when the effective `prefix` is already used by another registry,
+    /// when `prefix` contains a path-traversal component (`..`, an absolute
+    /// segment), or on database failure.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_managed_registry(
         &self,
@@ -5108,10 +5122,27 @@ impl Database {
         trust_keys: &[String],
         require_signatures: bool,
     ) -> Result<i64> {
+        let org_slug = self
+            .org_by_id(org_id)
+            .await?
+            .with_context(|| format!("no org with id {org_id}"))?
+            .slug;
+        let slug = canonical_slug(&org_slug, project_path, name);
+        // An empty prefix auto-derives from the slug — the registry's unique
+        // canonical identity — so a zero-config create still lands on a stable,
+        // collision-free storage prefix. The slug's `/` separators are valid
+        // path components and are kept verbatim.
+        let prefix = if prefix.is_empty() {
+            slug.as_str()
+        } else {
+            prefix
+        };
         // Defense in depth: the per-file upload tail is already constrained
         // by `safe_join`, but a `..` in the binding prefix would relocate
-        // the whole surface root, so reject it at creation.
-        if !prefix.is_empty() {
+        // the whole surface root, so reject it at creation. A derived prefix
+        // (the slug) is always a clean relative path, so this only ever
+        // rejects a caller-supplied prefix.
+        {
             let rel = std::path::Path::new(prefix);
             if rel.is_absolute()
                 || rel
@@ -5121,14 +5152,26 @@ impl Database {
                 bail!("registry prefix '{prefix}' must be a relative path with no '..' components");
             }
         }
-        let org_slug = self
-            .org_by_id(org_id)
-            .await?
-            .with_context(|| format!("no org with id {org_id}"))?
-            .slug;
-        let slug = canonical_slug(&org_slug, project_path, name);
         if self.registry_by_slug(&slug).await?.is_some() {
             bail!("a registry already exists at '{slug}'");
+        }
+        // Two registries sharing a storage prefix would read and write the same
+        // surface objects, so reject a collision. A SELECT-count over the
+        // low-volume admin path is sufficient (no concurrent-create race window
+        // worth a unique index here, since slug uniqueness already serializes
+        // the common case and the default prefix equals the unique slug).
+        let prefix_uses: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM registries WHERE prefix = ?1",
+                &vals![prefix],
+            )
+            .await?
+            .map(|row| row.get(0))
+            .transpose()?
+            .unwrap_or(0);
+        if prefix_uses > 0 {
+            bail!("a registry already uses storage prefix '{prefix}'");
         }
         // Slugs are unique across registries and caches (shared facade namespace).
         if self.cache_by_slug(&slug).await?.is_some() {
@@ -6239,8 +6282,16 @@ impl Database {
     /// 1. **Storage-bound** (`storage_binding_id` set) — the binding's
     ///    `root` joined with the registry's `prefix`. This wins even if a
     ///    `source_url` is also present.
-    /// 2. **`file://` (or bare-path) source** — the `source_url` path.
-    /// 3. **`http(s)://` source** — `Ok(None)`; the surface is remote and
+    /// 2. **Default-storage managed** (no binding, empty `source_url`,
+    ///    non-empty `prefix`) — the deployment
+    ///    [`default_storage_root`](Database::default_storage_root) joined with
+    ///    the registry's `prefix`. Resolves to `Ok(None)` when no default root
+    ///    is configured (the native hub has no implicit object store, so such a
+    ///    registry is unservable until one is set). The Worker never reaches
+    ///    this branch — it serves managed registries by `prefix` against its
+    ///    single R2 bucket without calling this method.
+    /// 3. **`file://` (or bare-path) source** — the `source_url` path.
+    /// 4. **`http(s)://` source** — `Ok(None)`; the surface is remote and
     ///    has no local directory (the facade redirects upstream).
     ///
     /// # Errors
@@ -6272,6 +6323,19 @@ impl Database {
             return Ok(Some(path));
         }
         let source = registry.source_url.as_str();
+        // A managed, binding-less registry (empty source, non-empty prefix)
+        // roots on the deployment's default storage. On the native hub that
+        // default must be configured explicitly; when it is, the surface is
+        // `{default_root}/{prefix}`, otherwise the registry is unservable
+        // (`None`). The Worker addresses these by prefix against its single R2
+        // bucket and never calls this method.
+        if source.is_empty() && !registry.prefix.is_empty() {
+            return Ok(self.default_storage_root().await?.map(|root| {
+                let mut path = PathBuf::from(root);
+                path.push(&registry.prefix);
+                path
+            }));
+        }
         if source.is_empty() || source.starts_with("http://") || source.starts_with("https://") {
             return Ok(None);
         }
@@ -6867,6 +6931,39 @@ impl Database {
     pub async fn set_signup_policy(&self, policy: SignupPolicy) -> Result<()> {
         self.instance_config_set("signup_policy", policy.as_str())
             .await
+    }
+
+    /// The deployment's default storage root for binding-less managed
+    /// registries (unset by default).
+    ///
+    /// A managed registry created with no storage binding roots its surface on
+    /// the deployment's default storage, addressed purely by its `prefix`. On
+    /// the Cloudflare Worker that default is the single hub-owned R2 bucket,
+    /// addressed by prefix without consulting this value. On the native hub
+    /// there is no implicit object store, so the default storage root must be
+    /// configured explicitly (e.g. `aos-hub instance set-default-storage-root
+    /// /srv/aos-hub/registries`); until it is set,
+    /// [`Database::registry_surface_root`] resolves a binding-less registry to
+    /// `None` (unservable) rather than guessing a path.
+    ///
+    /// Reads the `default_storage_root` instance-config key; returns `None`
+    /// when unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn default_storage_root(&self) -> Result<Option<String>> {
+        self.instance_config_get("default_storage_root").await
+    }
+
+    /// Set the deployment's default storage root (see
+    /// [`Database::default_storage_root`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn set_default_storage_root(&self, root: &str) -> Result<()> {
+        self.instance_config_set("default_storage_root", root).await
     }
 
     /// The number of active (non-revoked) tokens owned by any principal in an
@@ -12040,6 +12137,73 @@ mod tests {
             .set_storage_binding_access(id, "bogus", None, None)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn managed_registry_without_binding_auto_derives_prefix_from_slug() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        // No binding, empty prefix: the prefix falls back to the canonical slug.
+        let id = db
+            .create_managed_registry(org, "team", "cdn", "public", None, "", &[], false)
+            .await
+            .unwrap();
+        let reg = db.registry_by_slug("acme/team/cdn").await.unwrap().unwrap();
+        assert_eq!(reg.id, id);
+        assert_eq!(reg.storage_binding_id, None);
+        assert_eq!(reg.prefix, "acme/team/cdn");
+    }
+
+    #[tokio::test]
+    async fn managed_registry_rejects_duplicate_prefix() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        db.create_managed_registry(org, "", "first", "public", None, "shared", &[], false)
+            .await
+            .unwrap();
+        // A different registry asking for the same explicit prefix collides.
+        let err = db
+            .create_managed_registry(org, "", "second", "public", None, "shared", &[], false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("storage prefix 'shared'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_storage_root_round_trips() {
+        let db = Database::open_in_memory().await.unwrap();
+        assert_eq!(db.default_storage_root().await.unwrap(), None);
+        db.set_default_storage_root("/srv/aos-hub/registries")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.default_storage_root().await.unwrap().as_deref(),
+            Some("/srv/aos-hub/registries")
+        );
+    }
+
+    #[tokio::test]
+    async fn surface_root_uses_default_storage_for_binding_less_managed_registry() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        let id = db
+            .create_managed_registry(org, "", "cdn", "public", None, "", &[], false)
+            .await
+            .unwrap();
+        // Without a default storage root configured, the surface is unservable.
+        assert_eq!(db.registry_surface_root(id).await.unwrap(), None);
+        // Once configured, it resolves to `{default_root}/{prefix}` (the prefix
+        // having auto-derived to the slug).
+        db.set_default_storage_root("/srv/aos-hub/registries")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.registry_surface_root(id).await.unwrap(),
+            Some(PathBuf::from("/srv/aos-hub/registries/acme/cdn"))
+        );
     }
 
     #[tokio::test]

@@ -482,6 +482,13 @@ enum InstanceCommand {
         #[arg(long)]
         file: Option<String>,
     },
+    /// Set the default storage root for binding-less managed registries.
+    SetDefaultStorageRoot {
+        /// Filesystem path the native hub roots default-storage registries on.
+        path: String,
+    },
+    /// Show the configured default storage root (blank when unset).
+    ShowDefaultStorageRoot,
 }
 
 #[derive(Subcommand)]
@@ -1026,12 +1033,12 @@ enum RegistryCommand {
     Create {
         /// Canonical path: org/project/name (project may be empty: org//name).
         path: String,
-        /// Storage binding name within the org (omit for unbound).
+        /// Storage binding name within the org (omit for default storage).
         #[arg(long)]
         binding: Option<String>,
-        /// Sub-prefix under the binding root.
-        #[arg(long, default_value = "")]
-        prefix: String,
+        /// Sub-prefix under the storage root (omit to derive from the slug).
+        #[arg(long)]
+        prefix: Option<String>,
         /// Visibility: public, internal, or private.
         #[arg(long, default_value = "private")]
         visibility: String,
@@ -1250,7 +1257,7 @@ async fn main() -> Result<()> {
                             name,
                             &visibility,
                             binding_id,
-                            &prefix,
+                            prefix.as_deref().unwrap_or_default(),
                             &trust_keys,
                             true,
                         )
@@ -1529,6 +1536,13 @@ async fn main() -> Result<()> {
                         println!("cleared custom root llms.txt (auto-generated)");
                     }
                 },
+                InstanceCommand::SetDefaultStorageRoot { path } => {
+                    db.set_default_storage_root(&path).await?;
+                    println!("default storage root set to {path:?}");
+                }
+                InstanceCommand::ShowDefaultStorageRoot => {
+                    println!("{}", db.default_storage_root().await?.unwrap_or_default());
+                }
             }
         }
         Command::Validate { command } => {
