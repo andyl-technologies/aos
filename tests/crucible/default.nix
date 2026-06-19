@@ -6,7 +6,21 @@
 in {
   phase0 = {
     gates = {
-      harnessLint = import ./phase1-harness-lint.nix {inherit pkgs lib;};
+      blockers = import ./phase0-blockers.nix {
+        inherit pkgs;
+        attrPath = "checks.crucible.phase0.gates.blockers";
+        blockers = [
+          (import ./phase0-s1.nix {inherit pkgs lib;})
+          (import ./phase0-s2.nix {inherit pkgs lib;})
+          (import ./phase0-s4.nix {inherit pkgs;})
+          (import ./phase0-s3.nix {inherit pkgs lib;})
+          (import ./phase0-s11.nix {inherit pkgs lib;})
+        ];
+      };
+      harnessLint = import ./phase1-harness-lint.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase0.gates.harnessLint";
+      };
     };
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};
@@ -39,48 +53,205 @@ in {
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
+    phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     gates = {
+      harnessLint = import ./phase1-harness-lint.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase1.gates.harnessLint";
+      };
       layer0Determinism = redGate {
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
         gateName = "gate:layer0-determinism";
         owner = "crucible-sim";
         phase = "phase1";
-        taskIds = ["T-ARCH-4"];
+        taskIds = ["T-PLAN-3" "T-HARN-5"];
         reason = "L0 determinism suite is intentionally pending";
       };
-      layer1Injection = redGate {
-        attrPath = "checks.crucible.phase1.gates.layer1Injection";
-        gateName = "gate:layer1-injection";
-        owner = "crucible-device";
+      contentAddress = redGate {
+        attrPath = "checks.crucible.phase1.gates.contentAddress";
+        gateName = "gate:content-address";
+        owner = "crucible";
         phase = "phase1";
-        taskIds = ["T-ARCH-4"];
-        reason = "L1 injection determinism suite is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-11"];
+        reason = "content-address gate is intentionally pending";
+      };
+      replayOracle = redGate {
+        attrPath = "checks.crucible.phase1.gates.replayOracle";
+        gateName = "gate:replay-oracle";
+        owner = "crucible";
+        phase = "phase1";
+        taskIds = ["T-PLAN-3" "T-HARN-12"];
+        reason = "replay oracle over the test double is intentionally pending";
+      };
+      singleVmFingerprint = redGate {
+        attrPath = "checks.crucible.phase1.gates.singleVmFingerprint";
+        gateName = "gate:single-vm-fingerprint";
+        owner = "crucible-qemu";
+        phase = "phase1";
+        taskIds = ["T-PLAN-3" "T-HARN-7"];
+        reason = "single-VM fingerprint gate over the test double is intentionally pending";
+      };
+      divergenceBisect = redGate {
+        attrPath = "checks.crucible.phase1.gates.divergenceBisect";
+        gateName = "gate:divergence-bisect";
+        owner = "crucible-harness";
+        phase = "phase1";
+        taskIds = ["T-PLAN-3" "T-HARN-10"];
+        reason = "divergence bisection gate is intentionally pending";
       };
     };
   };
   phase2 = {
     gates = {
+      abiConformance = redGate {
+        attrPath = "checks.crucible.phase2.gates.abiConformance";
+        gateName = "gate:abi-conformance";
+        owner = "crucible-harness";
+        phase = "phase2";
+        taskIds = ["T-PLAN-3" "T-HARN-17"];
+        reason = "ABI conformance gate is intentionally pending";
+      };
+      qemuInert = redGate {
+        attrPath = "checks.crucible.phase2.gates.qemuInert";
+        gateName = "gate:qemu-inert";
+        owner = "crucible-qemu";
+        phase = "phase2";
+        taskIds = ["T-PLAN-3" "T-HARN-21"];
+        reason = "QEMU inertness gate is intentionally pending";
+      };
+      patchMicrotests = redGate {
+        attrPath = "checks.crucible.phase2.gates.patchMicrotests";
+        gateName = "gate:patch-microtests";
+        owner = "crucible-qemu-plugin";
+        phase = "phase2";
+        taskIds = ["T-PLAN-3" "T-HARN-20"];
+        reason = "QEMU patch micro-test gate is intentionally pending";
+      };
       singleVmFingerprint = redGate {
         attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
         gateName = "gate:single-vm-fingerprint";
         owner = "crucible-qemu";
         phase = "phase2";
-        taskIds = ["T-ARCH-4"];
+        taskIds = ["T-PLAN-3" "T-HARN-7"];
         reason = "single-VM fingerprint gate is intentionally pending";
+      };
+      anyGuest = redGate {
+        attrPath = "checks.crucible.phase2.gates.anyGuest";
+        gateName = "gate:any-guest";
+        owner = "crucible-qemu";
+        phase = "phase2";
+        taskIds = ["T-PLAN-3" "T-HARN-16"];
+        reason = "any-guest gate is intentionally pending";
       };
     };
   };
   phase3 = {
     gates = {
+      layer1Injection = redGate {
+        attrPath = "checks.crucible.phase3.gates.layer1Injection";
+        gateName = "gate:layer1-injection";
+        owner = "crucible-device";
+        phase = "phase3";
+        taskIds = ["T-PLAN-3" "T-HARN-8"];
+        reason = "cross-VM injection determinism gate is intentionally pending";
+      };
+      schedulerLiveness = redGate {
+        attrPath = "checks.crucible.phase3.gates.schedulerLiveness";
+        gateName = "gate:scheduler-liveness";
+        owner = "crucible";
+        phase = "phase3";
+        taskIds = ["T-PLAN-3" "T-HARN-14"];
+        reason = "scheduler liveness gate is intentionally pending";
+      };
+      adversarialDeterminism = redGate {
+        attrPath = "checks.crucible.phase3.gates.adversarialDeterminism";
+        gateName = "gate:adversarial-determinism";
+        owner = "crucible-harness";
+        phase = "phase3";
+        taskIds = ["T-PLAN-3" "T-HARN-22"];
+        reason = "two-VM adversarial determinism gate is intentionally pending";
+      };
+    };
+  };
+  phase4 = {
+    gates = {
+      replayOracle = redGate {
+        attrPath = "checks.crucible.phase4.gates.replayOracle";
+        gateName = "gate:replay-oracle";
+        owner = "crucible";
+        phase = "phase4";
+        taskIds = ["T-PLAN-3" "T-HARN-12"];
+        reason = "full replay oracle gate is intentionally pending";
+      };
+      e2eDeterminism = redGate {
+        attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
+        gateName = "gate:e2e-determinism";
+        owner = "crucible-harness";
+        phase = "phase4";
+        taskIds = ["T-PLAN-3" "T-HARN-23"];
+        reason = "mock-backend end-to-end determinism gate is intentionally pending";
+      };
+    };
+  };
+  phase5 = {
+    gates = {
       controlResponsive = redGate {
-        attrPath = "checks.crucible.phase3.gates.controlResponsive";
+        attrPath = "checks.crucible.phase5.gates.controlResponsive";
         gateName = "gate:control-responsive";
         owner = "crucible-session";
-        phase = "phase3";
-        taskIds = ["T-ARCH-4"];
+        phase = "phase5";
+        taskIds = ["T-PLAN-3" "T-HARN-15"];
         reason = "control-plane responsiveness gate is intentionally pending";
+      };
+    };
+  };
+  phase6 = {
+    gates = {
+      replayOracle = redGate {
+        attrPath = "checks.crucible.phase6.gates.replayOracle";
+        gateName = "gate:replay-oracle";
+        owner = "crucible";
+        phase = "phase6";
+        taskIds = ["T-PLAN-3" "T-HARN-12" "T-HARN-13"];
+        reason = "search-time replay oracle gate is intentionally pending";
+      };
+    };
+  };
+  phase7 = {
+    gates = {
+      perfBench = redGate {
+        attrPath = "checks.crucible.phase7.gates.perfBench";
+        gateName = "gate:perf-bench";
+        owner = "crucible-harness";
+        phase = "phase7";
+        taskIds = ["T-PLAN-3" "T-PERF-1"];
+        reason = "performance benchmark gate is intentionally pending";
+      };
+      e2eDeterminism = redGate {
+        attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
+        gateName = "gate:e2e-determinism";
+        owner = "crucible-harness";
+        phase = "phase7";
+        taskIds = ["T-PLAN-3" "T-HARN-23"];
+        reason = "acceptance end-to-end determinism gate is intentionally pending";
+      };
+      fleetEquivalence = redGate {
+        attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
+        gateName = "gate:fleet-equivalence";
+        owner = "crucible-harness";
+        phase = "phase7";
+        taskIds = ["T-PLAN-3" "T-DCE-7"];
+        reason = "fleet equivalence gate is intentionally pending";
+      };
+      campaignContinuity = redGate {
+        attrPath = "checks.crucible.phase7.gates.campaignContinuity";
+        gateName = "gate:campaign-continuity";
+        owner = "crucible-harness";
+        phase = "phase7";
+        taskIds = ["T-PLAN-3" "T-DCE-9"];
+        reason = "campaign continuity gate is intentionally pending";
       };
     };
   };

@@ -1,6 +1,7 @@
 {
   pkgs,
   lib,
+  attrPath ? "checks.crucible.phase0.gates.harnessLint",
 }: let
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -212,7 +213,7 @@ in
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
-            check=checks.crucible.phase0.gates.harnessLint
+            check=${attrPath}
             gate=gate:harness-lint
             tasks=T-CRATE-7
             rust_test=crucible-harness::harness_lint

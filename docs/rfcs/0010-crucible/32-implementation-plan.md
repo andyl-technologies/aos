@@ -60,7 +60,8 @@ Checklist sync digest: `rfc0010-checklist-v1:5bbdcf3ea008c72c`
                             assertions, event log, guest-host channel
   Phase 5  Control plane    session actor, API, CLI, daemon          gate:control-responsive
   Phase 6  Exploration      fork, save/resume, search, fuzz, coverage gate:replay-oracle (under search)
-  Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance)
+  Phase 7  Package+perf+e2e AOS packaging, performance, acceptance   gate:perf-bench, gate:e2e-determinism (acceptance),
+                                                                            gate:fleet-equivalence, gate:campaign-continuity
 ```
 
 Cross-cutting throughout: `T-STD-*` (engineering standards / harness-lint) apply
@@ -301,5 +302,5 @@ maintained two ways:
   ordering: the doc lint fails if a topic checklist's task order differs from the
   master phase-order projection or if the ordered task-text digest drifts. —
   satisfies [PLAN-3]; spec §"How to use".
-- [ ] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
+- [x] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
   a CI target that blocks the next phase. — satisfies [PLAN-4], [G-5]; spec §"The phase ladder".
