@@ -630,6 +630,24 @@ impl NixEval for ShadowEval {
         Ok(fallback)
     }
 
+    fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
+        let fallback = self.fallback.instantiate_closure(file, attr)?;
+        match self.native.instantiate_closure(file, attr) {
+            Ok(native) => {
+                let (root, drvs) = native.into_parts();
+                let native = DrvClosure::new(root, drvs);
+                let divergences = compare_shadow_drv_closure(&fallback, &native);
+                if divergences == 0 {
+                    tracing::debug!("shadow native eval drv closure matched nix-cli");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "shadow native eval drv closure did not complete");
+            }
+        }
+        Ok(Some(fallback))
+    }
+
     fn eval_expr(&self, expr: &str) -> Result<String> {
         let fallback = self.fallback.eval_expr(expr)?;
         match self.native.eval_expr(expr) {
@@ -647,6 +665,51 @@ impl NixEval for ShadowEval {
     fn name(&self) -> &'static str {
         "shadow(aos-nix,nix-cli)"
     }
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usize {
+    let mut divergences = 0;
+    if fallback.root() != native.root() {
+        divergences += 1;
+        tracing::error!(
+            fallback = %fallback.root().display(),
+            native = %native.root().display(),
+            "shadow native eval drv closure root diverged from nix-cli"
+        );
+    }
+
+    for (path, fallback_bytes) in fallback.drvs() {
+        match native.drvs().get(path) {
+            Some(native_bytes) if native_bytes == fallback_bytes => {}
+            Some(_) => {
+                divergences += 1;
+                tracing::error!(
+                    drv = %path.display(),
+                    "shadow native eval drv bytes diverged from nix-cli"
+                );
+            }
+            None => {
+                divergences += 1;
+                tracing::error!(
+                    drv = %path.display(),
+                    "shadow native eval omitted nix-cli drv from closure"
+                );
+            }
+        }
+    }
+
+    for path in native.drvs().keys() {
+        if !fallback.drvs().contains_key(path) {
+            divergences += 1;
+            tracing::error!(
+                drv = %path.display(),
+                "shadow native eval produced extra drv outside nix-cli closure"
+            );
+        }
+    }
+
+    divergences
 }
 
 #[cfg(feature = "native-eval")]
@@ -890,5 +953,37 @@ mod tests {
         assert!(internal_after > internal_before);
         let internal_count = native_cli_fallback_count(NativeCliFallbackReason::Internal);
         assert!(internal_count >= internal_after);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn shadow_drv_closure_comparison_counts_divergences() {
+        let root = PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root.drv");
+        let shared = PathBuf::from("/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input.drv");
+        let fallback_only = PathBuf::from("/nix/store/cccccccccccccccccccccccccccccccc-old.drv");
+        let native_only = PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-new.drv");
+
+        let fallback = DrvClosure::new(root.clone(), {
+            let mut drvs = BTreeMap::new();
+            drvs.insert(root.clone(), b"root".to_vec());
+            drvs.insert(shared.clone(), b"same".to_vec());
+            drvs.insert(fallback_only, b"fallback".to_vec());
+            drvs
+        });
+        let matching = DrvClosure::new(root.clone(), fallback.drvs().clone());
+        assert_eq!(compare_shadow_drv_closure(&fallback, &matching), 0);
+
+        let native = DrvClosure::new(
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-root.drv"),
+            {
+                let mut drvs = BTreeMap::new();
+                drvs.insert(root, b"different-root-bytes".to_vec());
+                drvs.insert(shared, b"same".to_vec());
+                drvs.insert(native_only, b"native".to_vec());
+                drvs
+            },
+        );
+
+        assert_eq!(compare_shadow_drv_closure(&fallback, &native), 4);
     }
 }

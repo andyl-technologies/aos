@@ -12,6 +12,7 @@
 //! [`aos_nix_env`], so they target the AOS store layout when
 //! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -19,7 +20,8 @@ use std::process::{Child, Command, Output, Stdio};
 use anyhow::{Context, Result};
 
 use super::env::aos_nix_command;
-use super::eval::{NixEval, NixEvalConfig};
+use super::eval::{DrvClosure, NixEval, NixEvalConfig};
+use crate::nix::drv::parse_drv_input_drvs_from_bytes;
 
 /// Metadata for a store path, from nix-store queries or Nix DB.
 #[derive(Debug, Clone)]
@@ -119,6 +121,17 @@ impl NixCli {
             .trim()
             .to_string();
         Ok(PathBuf::from(drv))
+    }
+
+    /// Instantiates an attribute and reads its input-derivation closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if instantiation fails, a `.drv` file cannot be read,
+    /// or a `.drv` input-derivation section cannot be parsed.
+    pub fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<DrvClosure> {
+        let root = self.instantiate(file, attr)?;
+        read_drv_closure(root)
     }
 
     /// Evaluates a raw Nix expression with strict JSON rendering.
@@ -432,6 +445,10 @@ impl NixEval for NixCli {
         Self::instantiate_expr(self, expr)
     }
 
+    fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
+        Self::instantiate_closure(self, file, attr).map(Some)
+    }
+
     fn eval_expr(&self, expr: &str) -> Result<String> {
         Self::eval_expr(self, expr)
     }
@@ -439,6 +456,35 @@ impl NixEval for NixCli {
     fn name(&self) -> &'static str {
         "nix-cli"
     }
+}
+
+fn read_drv_closure(root: PathBuf) -> Result<DrvClosure> {
+    let mut drvs = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    read_drv_closure_at(&root, &mut visiting, &mut drvs)?;
+    Ok(DrvClosure::new(root, drvs))
+}
+
+fn read_drv_closure_at(
+    path: &Path,
+    visiting: &mut BTreeSet<PathBuf>,
+    drvs: &mut BTreeMap<PathBuf, Vec<u8>>,
+) -> Result<()> {
+    if drvs.contains_key(path) || !visiting.insert(path.to_path_buf()) {
+        return Ok(());
+    }
+
+    let bytes = std::fs::read(path).with_context(|| format!("reading drv {}", path.display()))?;
+    let inputs = parse_drv_input_drvs_from_bytes(&bytes)
+        .with_context(|| format!("parsing input derivations from {}", path.display()))?;
+    drvs.insert(path.to_path_buf(), bytes);
+    visiting.remove(path);
+
+    for input in inputs {
+        read_drv_closure_at(Path::new(&input.drv_path), visiting, drvs)?;
+    }
+
+    Ok(())
 }
 
 fn output_with_replayed_stderr(
@@ -534,6 +580,31 @@ mod tests {
             command_env(&command, "NIX_LOG_DIR").as_deref(),
             Some("/aos/var/nix/log/nix")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn read_drv_closure_follows_input_derivations() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().join("root.drv");
+        let input = dir.path().join("input.drv");
+        let input_text = input.to_string_lossy();
+        let root_bytes = format!(
+            r#"Derive([("out","/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root","","")],[("{input_text}",["out"])],[],"x86_64-linux","/nix/store/cccccccccccccccccccccccccccccccc-builder",[],[])"#
+        )
+        .into_bytes();
+        let input_bytes =
+            br#"Derive([("out","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-input","","")],[],[],"x86_64-linux","/nix/store/cccccccccccccccccccccccccccccccc-builder",[],[])"#
+                .to_vec();
+        std::fs::write(&root, &root_bytes)?;
+        std::fs::write(&input, &input_bytes)?;
+
+        let closure = read_drv_closure(root.clone())?;
+
+        assert_eq!(closure.root(), root.as_path());
+        assert_eq!(closure.drvs().len(), 2);
+        assert_eq!(closure.drvs().get(&root), Some(&root_bytes));
+        assert_eq!(closure.drvs().get(&input), Some(&input_bytes));
         Ok(())
     }
 
