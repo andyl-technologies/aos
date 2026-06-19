@@ -11,7 +11,8 @@ normative `MUST` maps to at least one task.
 - The **authoritative text** of each task lives in its topic file's
   "Implementation checklist" section ([PLAN-3]). This plan owns **ordering** and
   groups tasks by area and ID range; follow the link to the topic file for the
-  full task text and its requirement back-references.
+  full task text and its requirement back-references. The checklist sync digest
+  below makes any drift in the ordered task text fail the doc lint.
 - Task IDs are area-scoped and stable (`T-<AREA>-n`, [`00-conventions.md`](00-conventions.md)).
   Re-sequencing a task here never renumbers it.
 - **[PLAN-4] holds**: no task depends on a later-phase task. The ordering is
@@ -41,6 +42,8 @@ EXEC 20  TRIG 20  RISK 20  ASRT 18  CLI 18  GHC 17  FAULT 16  IO 16  QEMU 16
 SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
 TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
+
+Checklist sync digest: `rfc0010-checklist-v1:5bbdcf3ea008c72c`
 
 ## The phase ladder
 
@@ -281,8 +284,9 @@ maintained two ways:
    RFC to be considered internally complete. The same lint enforces the gate-name
    consistency (every `gate:*` referenced is in the [`24`](24-determinism-harness-testing.md)
    catalog), banned-name policy, and task-inventory/file-ownership consistency.
-   The stricter per-file checklist ordering/text-sync lint remains [PLAN-3] /
-   `T-PLAN-2`.
+   The [PLAN-3] sync lint also verifies each topic checklist's order against this
+   plan's phase-order projection and compares the ordered task text to the
+   checklist sync digest above.
 
 ## Implementation checklist (this file's own tasks)
 
@@ -293,8 +297,9 @@ maintained two ways:
   internal exploration / third-party commercial products) appear in the RFC or
   Crucible code/comments/docs. Wire it as a CI doc check. — satisfies [PLAN-1],
   [PLAN-2], [CONV-1]; spec §coverage.
-- [ ] **T-PLAN-2** Keep the per-file checklist copies in sync with this plan's
-  ordering (a follow-on ordering/text lint fails on drift). — satisfies [PLAN-3];
-  spec §"How to use".
+- [x] **T-PLAN-2** Keep the per-file checklist copies in sync with this plan's
+  ordering: the doc lint fails if a topic checklist's task order differs from the
+  master phase-order projection or if the ordered task-text digest drifts. —
+  satisfies [PLAN-3]; spec §"How to use".
 - [ ] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
   a CI target that blocks the next phase. — satisfies [PLAN-4], [G-5]; spec §"The phase ladder".

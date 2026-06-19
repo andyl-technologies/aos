@@ -772,9 +772,9 @@ run ahead on its own core.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is performance, copied verbatim per [PLAN-3]. They are
+> whose primary area is performance, tracked by [PLAN-3]. They are
 > sequenced **after** the determinism gates of their phase ([G-5]): performance is
 > measured only once the correctness it is measured against exists.
 

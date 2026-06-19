@@ -909,38 +909,15 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md). The copies below are
-> the tasks whose primary area is this file ([PLAN-3]); they are kept verbatim in
-> sync with the master plan by the doc lint
+> the tasks whose primary area is this file ([PLAN-3]); they are kept in
+> sync with the master plan's order/digest by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)). They are
 > sequenced after the layers they exercise (06 spatial graph, 17/17a faults &
 > triggers, 18 assertions, 22 advanced features, 23 CLI) — the examples are the
 > end-to-end fixtures those layers' gates run against.
 
-- [ ] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
-  corpus fixture, authored with zero guest-side components; assert `run` PASSES and
-  `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec
-  §A.1.
-- [ ] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
-  observable trigger graph (AllOf readiness + relative-timer heal + observable
-  convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`
-  and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
-  cross-ref 17a §17a.5.1.
-- [ ] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
-  with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
-  `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
-  [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
-- [ ] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
-  `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
-  reduces to a self-contained artifact that `crucible replay` reproduces
-  bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
-  satisfies [EX-1], [EX-2], [EX-3]; spec §A.4; cross-ref 22, 06 §7.
-- [ ] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
-  the divergence-bisection report (A.5): assert all examples are DETERMINISTIC
-  under the hostile host matrix, and golden-test the divergence-report shape on a
-  deliberately seeded divergence. — satisfies [EX-2], [EX-3]; spec §A.5; cross-ref
-  24 §5, §7.
 - [ ] **T-WL-1** Implement and document the in-guest workload model: the supported
   guest workload binaries (httpd, client loop, benchmark) selected by scenario
   parameter, with NO host-side traffic injector; add a lint/test that no
@@ -968,3 +945,26 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   to the guest; assert a parameter change yields a different `ScenarioDef::id` and
   an individually reproducible scenario. — satisfies [WL-10], [WL-11], [WL-12];
   spec §B.4; cross-ref 06 §3.1, §8, §7.1, 15.
+- [ ] **T-EX-1** Ship the happy-path client/server scenario (A.1) as a built-in
+  corpus fixture, authored with zero guest-side components; assert `run` PASSES and
+  `verify --runs N` is byte-identical. — satisfies [EX-1], [EX-2], [EX-3]; spec
+  §A.1.
+- [ ] **T-EX-2** Ship the partition-recovery scenario (A.2) with the full
+  observable trigger graph (AllOf readiness + relative-timer heal + observable
+  convergence) as a corpus fixture; assert `no-split-brain`/`converges-after-heal`
+  and byte-identical reproduction. — satisfies [EX-1], [EX-2], [EX-3]; spec §A.2;
+  cross-ref 17a §17a.5.1.
+- [ ] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
+  with a `FromReadyPoint` restart policy and `StartNode` choreography; assert
+  `data-not-lost`/`reconverges` and reproduction. — satisfies [EX-1], [EX-2],
+  [EX-3]; spec §A.3; cross-ref 17 §17.4.3, 17a §17a.4.1.
+- [ ] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
+  `crucible fuzz` with basic-block coverage; verify a planted/discoverable failure
+  reduces to a self-contained artifact that `crucible replay` reproduces
+  bit-identically, and that `save`/`resume`/`fork` walk the neighborhood. —
+  satisfies [EX-1], [EX-2], [EX-3]; spec §A.4; cross-ref 22, 06 §7.
+- [ ] **T-EX-5** Wire the example corpus into `crucible verify --adversarial` and
+  the divergence-bisection report (A.5): assert all examples are DETERMINISTIC
+  under the hostile host matrix, and golden-test the divergence-report shape on a
+  deliberately seeded divergence. — satisfies [EX-2], [EX-3]; spec §A.5; cross-ref
+  24 §5, §7.

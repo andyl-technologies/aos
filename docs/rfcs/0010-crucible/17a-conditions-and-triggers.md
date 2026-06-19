@@ -1170,9 +1170,9 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is conditions & triggers, copied verbatim per [PLAN-3]. They
+> whose primary area is conditions & triggers, tracked by [PLAN-3]. They
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the L1 scheduler, event log, and fault primitives and shared with the
 > assertion layer (18), before any L3+ feature built on triggers (search/fuzz, 22).

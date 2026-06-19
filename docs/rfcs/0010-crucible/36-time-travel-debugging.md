@@ -885,9 +885,9 @@ touching the canonical run.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks whose
-> primary area is time-travel/source-level debugging, copied verbatim per [PLAN-3].
+> primary area is time-travel/source-level debugging, tracked by [PLAN-3].
 > They are sequenced strictly after the determinism, save/restore-oracle,
 > control-plane, fork, and event-log foundations they depend on ([ADV-1], [G-5],
 > [PLAN-4]).

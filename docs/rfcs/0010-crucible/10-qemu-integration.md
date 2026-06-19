@@ -741,10 +741,10 @@ determinism contract (04).
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is host-side QEMU integration, copied verbatim per
-> [PLAN-3]. They populate Phase 1–2 (the determinism/transport foundation and
+> whose primary area is host-side QEMU integration, tracked by [PLAN-3]. They
+> populate Phase 1–2 (the determinism/transport foundation and
 > the QEMU layer built on it).
 
 - [ ] **T-QEMU-1** Implement the launch-config builder: TCG + fixed

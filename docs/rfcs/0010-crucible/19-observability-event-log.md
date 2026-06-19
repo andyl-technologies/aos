@@ -807,9 +807,9 @@ log, so they cannot disagree about what happened.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the unified event log, copied verbatim per [PLAN-3].
+> whose primary area is the unified event log, tracked by [PLAN-3].
 
 - [ ] **T-OBS-1** Implement the single unified `LogEntry`/`EventLog` with one
   append path, replacing any notion of separate determinism-trace / debug-log /
@@ -860,15 +860,15 @@ log, so they cannot disagree about what happened.
   default, off all ordering-significant paths, with the causal subsequence
   identical under no/capturing/filtering subscribers. — satisfies [OBS-32],
   [OBS-33]; spec §19.6.6.
-- [ ] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
-  observational `assertion_proximity` event-log kind, excluded from the determinism
-  comparison; derive its per-checkpoint **minimum** as a deterministic digest of the
-  projection (analogous to `coverage_fingerprint`) consumed by guided search; forbid
-  any proximity record parallel to the log. — satisfies [OBS-37]; spec §19.6.3,
-  §19.7; cross-ref 18 §18.13, 22.
 - [ ] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
   with each kind's fixed class, as the single source of truth referenced by
   18/20/21/22/24; golden-vector the canonical serialization of each kind; record a
   trigger firing as a causal `trigger_fired` entry (never a `Schedule` `Decision`)
   and evaluate conditions without logging the per-point truth of a standing
   condition. — satisfies [OBS-34], [OBS-35], [OBS-36]; spec §19.7, §19.3.
+- [ ] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
+  observational `assertion_proximity` event-log kind, excluded from the determinism
+  comparison; derive its per-checkpoint **minimum** as a deterministic digest of the
+  projection (analogous to `coverage_fingerprint`) consumed by guided search; forbid
+  any proximity record parallel to the log. — satisfies [OBS-37]; spec §19.6.3,
+  §19.7; cross-ref 18 §18.13, 22.

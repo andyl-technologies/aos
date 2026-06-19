@@ -941,10 +941,10 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is distributed/continuous exploration, copied verbatim per
-> [PLAN-3]. They are sequenced strictly **after** the advanced-features (search,
+> whose primary area is distributed/continuous exploration, tracked by [PLAN-3].
+> They are sequenced strictly **after** the advanced-features (search,
 > fuzzing), replay-oracle, and content-address foundations they depend on
 > ([DCE-1], [G-5], [PLAN-4]).
 

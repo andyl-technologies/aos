@@ -863,9 +863,9 @@ by when the producer's store landed in shared memory.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the shared-memory ABI, copied here per [PLAN-3].
+> whose primary area is the shared-memory ABI, tracked here by [PLAN-3].
 
 - [ ] **T-SHM-1** Define the `#[repr(C)]` `RegionHeader`, `NodeSlot`,
   `RingHeader`, and `FrameEntry` in `crucible-shmem` with the field set, order,

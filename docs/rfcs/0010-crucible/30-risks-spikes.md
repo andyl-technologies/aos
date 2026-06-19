@@ -1732,9 +1732,9 @@ never tolerated). Results live in the decision register (31).
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is risks/spikes, copied verbatim per [PLAN-3]. They are
+> whose primary area is risks/spikes, tracked by [PLAN-3]. They are
 > **Phase 0**: the spikes run before, or at the very start of, the foundation work
 > they validate ([G-5], [RISK-2], [RISK-3]). Each task is a throwaway measurement
 > that retires a risk and is recorded in [`31-decision-register.md`](31-decision-register.md).

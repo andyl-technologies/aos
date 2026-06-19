@@ -107,10 +107,11 @@ Rules:
   one task. A coverage check ([`32-implementation-plan.md`](32-implementation-plan.md)
   §coverage) lists any requirement with no task — that list MUST be empty.
 - **[PLAN-3]** Each topic file MUST end with an **Implementation checklist**
-  section containing exactly the tasks whose primary area is that file, copied
-  verbatim (same IDs, same text) from the master plan. The master plan is the
-  source of truth for ordering; the per-file copies are for locality. They are
-  kept in sync by a doc lint ([`28-engineering-standards.md`](28-engineering-standards.md)).
+  section containing exactly the tasks whose primary area is that file. The topic
+  checklist is the authoritative task text; the master plan is the source of truth
+  for phase ordering and carries a deterministic digest of the ordered task text.
+  They are kept in sync by a doc lint
+  ([`28-engineering-standards.md`](28-engineering-standards.md)).
 - **[PLAN-4]** Tasks are ordered so that determinism, the test harness, the
   transport ABI, and control-plane API correctness come before any feature built
   on top of them (see phase ordering in 32). A task MUST NOT depend on a
