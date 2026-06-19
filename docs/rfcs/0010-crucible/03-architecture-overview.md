@@ -34,7 +34,7 @@ instruction.
                                          ▼
   ┌──────────────────────────────────────────────────────────────────────────┐
   │  CONTROL PLANE  (L4)                                                       │
-  │    crucible (CLI) ─► crucible-api ─► crucible-daemon ─► crucible-session   │
+  │    crucible-cli ─► crucible-api ─► crucible-daemon ─► crucible-session     │
   │    Session is an actor: owns one live run, yields between quanta (INV-8).  │
   └─────────────────────────────────────┬────────────────────────────────────┘
                                          │  instantiate(Configuration)
@@ -223,7 +223,7 @@ dependency rules are in [`27-crate-structure.md`](27-crate-structure.md); this i
 the orientation.
 
 ```text
-  L4  control plane     crucible-session (actor) · crucible-api · crucible-daemon · crucible (CLI)
+  L4  control plane     crucible-session (actor) · crucible-api · crucible-daemon · crucible-cli
        owns: turning user intent into Configurations; live control; reproduction artifacts
        determinism concern: control operations land at well-defined quanta, never mid-quantum
 
@@ -497,12 +497,13 @@ reading order is in the [`README.md`](README.md).
 > the architecture itself (workspace, layers, dependency rules) so the
 > per-subsystem tasks in later files have a frame to land in.
 
-- [ ] **T-ARCH-1** Create the Cargo workspace skeleton with the L0–L4 crates
+- [x] **T-ARCH-1** Create the Cargo workspace skeleton with the L0–L4 crates
   (`crucible-sim`, `crucible-assert`; `crucible-shmem`, `crucible-protocol`,
   `crucible-device`; `crucible-qemu`, `crucible-qemu-plugin`, `crucible-guest`;
-  `crucible`; `crucible-session`, `crucible-api`, `crucible-daemon`, `crucible`
-  CLI) as empty, compiling crates with their `//!` crate docs. — satisfies
-  [ARCH-3]; spec §4, [`27-crate-structure.md`](27-crate-structure.md).
+  `crucible`; `crucible-session`, `crucible-api`, `crucible-daemon`,
+  `crucible-cli`) as empty, compiling crates with their `//!` crate docs. —
+  satisfies [ARCH-3]; spec §4,
+  [`27-crate-structure.md`](27-crate-structure.md).
 - [ ] **T-ARCH-2** Encode the layer dependency rule as an enforced check (a CI
   lint that forbids any upward dependency between layers). — satisfies [ARCH-3];
   spec §4, [`27-crate-structure.md`](27-crate-structure.md).

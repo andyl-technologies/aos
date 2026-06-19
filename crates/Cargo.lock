@@ -1497,6 +1497,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-api"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-assert"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-cli"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-daemon"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-device"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-guest"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-harness"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-qemu"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-qemu-plugin"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-session"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-shmem"
+version = "0.1.0"
+
+[[package]]
+name = "crucible-sim"
+version = "0.1.0"
+
+[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
