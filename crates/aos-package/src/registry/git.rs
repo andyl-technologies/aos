@@ -19,9 +19,11 @@
 //! roster pinned into the writable trusted-key store (in-band key
 //! rotation). See [`sync_git`] for the full sequence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
@@ -30,7 +32,9 @@ use crate::download::join_cache_url;
 use crate::gitcmd;
 use crate::registry::{channel, fetch, keys, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
-use crate::types::{RegistryConfig, RegistryState, TrackingMode};
+use crate::types::{
+    RegistryConfig, RegistryState, TrackingMode, validate_attestation_provenance_ref,
+};
 use aos_core::output::Printer;
 
 // ---------------------------------------------------------------------------
@@ -335,6 +339,7 @@ pub async fn sync_git(
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
     extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
+    extract_provenance(&repo_dir, &new_commit, &packages_dir, &registry_cache_dir).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -1278,6 +1283,347 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
 /// consumer enforcement on against a legacy registry.
 async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
     extract_tree_dir(repo_dir, commit, "store", output_dir, false).await
+}
+
+/// Extract registry-hosted package provenance statements from a git tree.
+///
+/// Generated statements live under the conventional `provenance/` tree, but
+/// older and manually-authored package metadata may point at any safe relative
+/// `*.jsonl` artifact path. Sync materializes both forms under the registry
+/// cache root so install-time verification can read the declared path without
+/// network access.
+async fn extract_provenance(
+    repo_dir: &Path,
+    commit: &str,
+    packages_dir: &Path,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    extract_provenance_tree(repo_dir, commit, &registry_cache_dir.join("provenance")).await?;
+
+    let declared_refs = collect_declared_provenance_refs(packages_dir).await?;
+    prune_cached_extra_provenance_artifacts(registry_cache_dir, &declared_refs).await?;
+    for provenance_ref in &declared_refs {
+        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
+    }
+    for provenance_ref in declared_refs {
+        extract_required_registry_blob(repo_dir, commit, &provenance_ref, registry_cache_dir)
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Extract the generated `provenance/` tree from a registry commit.
+///
+/// Presence semantics match `store/`: a registry without a committed
+/// `provenance/` tree must yield no local directory, and dropping the tree
+/// upstream must remove stale local statements.
+async fn extract_provenance_tree(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "provenance", output_dir, false).await
+}
+
+/// Collect provenance references declared by package TOML files.
+async fn collect_declared_provenance_refs(packages_dir: &Path) -> Result<BTreeSet<String>> {
+    let mut refs = BTreeSet::new();
+    let mut buckets = match tokio::fs::read_dir(packages_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(refs),
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("reading packages directory {}", packages_dir.display()));
+        }
+    };
+
+    while let Some(bucket) = buckets
+        .next_entry()
+        .await
+        .with_context(|| format!("reading packages directory {}", packages_dir.display()))?
+    {
+        let bucket_type = bucket
+            .file_type()
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket.path().display()))?;
+        if !bucket_type.is_dir() {
+            continue;
+        }
+
+        let bucket_path = bucket.path();
+        let mut packages = tokio::fs::read_dir(&bucket_path)
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket_path.display()))?;
+        while let Some(package) = packages
+            .next_entry()
+            .await
+            .with_context(|| format!("reading package bucket {}", bucket_path.display()))?
+        {
+            let path = package.path();
+            let package_type = package
+                .file_type()
+                .await
+                .with_context(|| format!("reading package metadata {}", path.display()))?;
+            if !package_type.is_file()
+                || path.extension().and_then(|ext| ext.to_str()) != Some("toml")
+            {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(&path)
+                .await
+                .with_context(|| format!("reading package metadata {}", path.display()))?;
+            refs.extend(collect_provenance_refs_from_toml(&content, &path)?);
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Collect provenance references from one package TOML document.
+fn collect_provenance_refs_from_toml(content: &str, source: &Path) -> Result<BTreeSet<String>> {
+    let value = content
+        .parse::<toml::Value>()
+        .with_context(|| format!("parsing package metadata {}", source.display()))?;
+    let mut refs = BTreeSet::new();
+
+    let Some(versions) = value.get("versions").and_then(toml::Value::as_array) else {
+        return Ok(refs);
+    };
+
+    for version in versions {
+        let Some(platforms) = version.get("platforms").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        for (platform, entry) in platforms {
+            let Some(provenance) = entry.get("provenance") else {
+                continue;
+            };
+            let Some(provenance_ref) = provenance.as_str() else {
+                bail!(
+                    "attestation provenance in {} for platform '{}' must be a string",
+                    source.display(),
+                    platform,
+                );
+            };
+            validate_attestation_provenance_ref(provenance_ref).with_context(|| {
+                format!(
+                    "validating attestation provenance in {} for platform '{}'",
+                    source.display(),
+                    platform,
+                )
+            })?;
+            refs.insert(provenance_ref.to_string());
+        }
+    }
+
+    Ok(refs)
+}
+
+/// Remove stale non-generated provenance JSONL artifacts from the cache.
+async fn prune_cached_extra_provenance_artifacts(
+    registry_cache_dir: &Path,
+    declared_refs: &BTreeSet<String>,
+) -> Result<()> {
+    let mut stack = vec![registry_cache_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("reading registry cache {}", dir.display()));
+            }
+        };
+
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .with_context(|| format!("reading registry cache {}", dir.display()))?
+        {
+            let path = entry.path();
+            let file_type = entry
+                .file_type()
+                .await
+                .with_context(|| format!("reading cached artifact {}", path.display()))?;
+            let Some(relative_ref) = registry_cache_relative_ref(registry_cache_dir, &path) else {
+                continue;
+            };
+            if cache_tree_is_owned_elsewhere(&relative_ref) {
+                continue;
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if !relative_ref.ends_with(".jsonl") || declared_refs.contains(&relative_ref) {
+                continue;
+            }
+            tokio::fs::remove_file(&path).await.with_context(|| {
+                format!("removing stale provenance artifact {}", path.display())
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Clear one currently-declared artifact path before reading new commit blobs.
+async fn clear_declared_registry_artifact_target(
+    tree_path: &str,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    validate_attestation_provenance_ref(tree_path)?;
+    let output_path = registry_cache_dir.join(Path::new(tree_path));
+    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+    remove_cached_registry_artifact_target(&output_path).await
+}
+
+/// Copy one declared registry artifact blob from `commit` into the cache root.
+async fn extract_required_registry_blob(
+    repo_dir: &Path,
+    commit: &str,
+    tree_path: &str,
+    registry_cache_dir: &Path,
+) -> Result<()> {
+    validate_attestation_provenance_ref(tree_path)?;
+    let output_path = registry_cache_dir.join(Path::new(tree_path));
+    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+    remove_cached_registry_artifact_target(&output_path).await?;
+
+    let object = format!("{commit}:{tree_path}");
+    let object_type = gitcmd::hermetic_async()
+        .args(["cat-file", "-t", &object])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("checking registry artifact {tree_path}"))?;
+    if !object_type.status.success() {
+        bail!(
+            "registry artifact '{}' declared by package metadata is missing from commit {}: {}",
+            tree_path,
+            commit,
+            String::from_utf8_lossy(&object_type.stderr).trim(),
+        );
+    }
+    let object_type = String::from_utf8_lossy(&object_type.stdout);
+    let object_type = object_type.trim();
+    if object_type != "blob" {
+        bail!(
+            "registry artifact '{}' declared by package metadata is a {}, not a file",
+            tree_path,
+            object_type,
+        );
+    }
+
+    let content = gitcmd::hermetic_async()
+        .args(["show", &object])
+        .current_dir(repo_dir)
+        .output()
+        .await
+        .with_context(|| format!("reading registry artifact {tree_path}"))?;
+    if !content.status.success() {
+        bail!(
+            "reading registry artifact '{}' from commit {} failed: {}",
+            tree_path,
+            commit,
+            String::from_utf8_lossy(&content.stderr).trim(),
+        );
+    }
+
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&output_path)
+        .with_context(|| format!("opening registry artifact {}", output_path.display()))?;
+    output
+        .write_all(&content.stdout)
+        .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
+    Ok(())
+}
+
+/// Ensure the parent directories for a cached registry artifact are real dirs.
+async fn ensure_registry_artifact_parent(registry_cache_dir: &Path, tree_path: &str) -> Result<()> {
+    let mut current = registry_cache_dir.to_path_buf();
+    let Some(parent) = Path::new(tree_path).parent() else {
+        return Ok(());
+    };
+    for component in parent.components() {
+        let Component::Normal(part) = component else {
+            bail!("registry artifact path '{tree_path}' must not contain '.', '..', or prefixes");
+        };
+        current.push(part);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                bail!(
+                    "cached registry artifact parent '{}' must not be a symlink",
+                    current.display()
+                );
+            }
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                bail!(
+                    "cached registry artifact parent '{}' must be a directory",
+                    current.display()
+                );
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                tokio::fs::create_dir(&current)
+                    .await
+                    .with_context(|| format!("creating {}", current.display()))?;
+            }
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!("reading cached artifact parent {}", current.display())
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Remove a stale cached artifact target before validating the new commit blob.
+async fn remove_cached_registry_artifact_target(output_path: &Path) -> Result<()> {
+    match tokio::fs::symlink_metadata(output_path).await {
+        Ok(meta) if meta.is_dir() => {
+            bail!(
+                "cached registry artifact '{}' must be a file",
+                output_path.display()
+            );
+        }
+        Ok(_) => {
+            tokio::fs::remove_file(output_path).await.with_context(|| {
+                format!("removing stale registry artifact {}", output_path.display())
+            })?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("reading cached registry artifact {}", output_path.display())
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Convert a cache path back to a slash-separated registry artifact ref.
+fn registry_cache_relative_ref(registry_cache_dir: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(registry_cache_dir).ok()?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            return None;
+        };
+        parts.push(part.to_str()?.to_string());
+    }
+    Some(parts.join("/"))
+}
+
+/// `true` when a cache subtree is managed by another extraction step.
+fn cache_tree_is_owned_elsewhere(relative_ref: &str) -> bool {
+    matches!(
+        relative_ref.split('/').next(),
+        Some("packages" | "store" | "provenance" | "repo.git" | "transparency")
+    )
 }
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
@@ -2352,6 +2698,302 @@ mod tests {
         assert!(
             !store_dir.exists(),
             "dropping store/ upstream must remove the stale local directory"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_preserves_presence_semantics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        // Commit 1: a legacy registry WITHOUT a provenance/ tree.
+        tokio::fs::create_dir_all(work_dir.join("packages").join("w"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("packages").join("w").join("web.toml"),
+            "[package]\nname = \"web\"\n",
+        )
+        .await
+        .unwrap();
+        let legacy_commit = commit_all(&work_dir, "legacy").await;
+
+        // Commit 2: add a generated provenance statement.
+        let statement_dir = work_dir
+            .join("provenance")
+            .join("w")
+            .join("web")
+            .join("x86_64-linux");
+        tokio::fs::create_dir_all(&statement_dir).await.unwrap();
+        tokio::fs::write(statement_dir.join("abc.intoto.jsonl"), "statement v1\n")
+            .await
+            .unwrap();
+        let provenance_commit = commit_all(&work_dir, "add provenance").await;
+
+        // Commit 3: remove the provenance/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("provenance"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "drop provenance").await;
+
+        let provenance_dir = tmp.path().join("out-provenance");
+        let extracted_statement = provenance_dir
+            .join("w")
+            .join("web")
+            .join("x86_64-linux")
+            .join("abc.intoto.jsonl");
+
+        extract_provenance_tree(&work_dir, &legacy_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            !provenance_dir.exists(),
+            "absent provenance/ must leave no directory"
+        );
+
+        extract_provenance_tree(&work_dir, &provenance_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            extracted_statement.exists(),
+            "present provenance/ must be extracted"
+        );
+        let content = tokio::fs::read_to_string(&extracted_statement)
+            .await
+            .unwrap();
+        assert_eq!(content, "statement v1\n");
+
+        extract_provenance_tree(&work_dir, &removed_commit, &provenance_dir)
+            .await
+            .unwrap();
+        assert!(
+            !provenance_dir.exists(),
+            "dropping provenance/ upstream must remove stale local statements"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_materializes_declared_artifacts_at_cache_paths() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let package_toml = |provenance: &str| {
+            format!(
+                r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{provenance}"
+"#
+            )
+        };
+
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        let package_path = package_dir.join("web.toml");
+        let custom_ref = "attestation/web.provenance.jsonl";
+        tokio::fs::write(&package_path, package_toml(custom_ref))
+            .await
+            .unwrap();
+        let custom_path = work_dir.join(custom_ref);
+        tokio::fs::create_dir_all(custom_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&custom_path, "custom statement\n")
+            .await
+            .unwrap();
+        let custom_commit = commit_all(&work_dir, "custom provenance").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        extract_packages(&work_dir, &custom_commit, &packages_dir)
+            .await
+            .unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(registry_cache_dir.join(custom_ref))
+                .await
+                .unwrap(),
+            "custom statement\n",
+        );
+
+        let generated_ref = "provenance/w/web/x86_64-linux/abc.intoto.jsonl";
+        tokio::fs::write(&package_path, package_toml(generated_ref))
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(work_dir.join("attestation"))
+            .await
+            .unwrap();
+        let generated_path = work_dir.join(generated_ref);
+        tokio::fs::create_dir_all(generated_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&generated_path, "generated statement\n")
+            .await
+            .unwrap();
+        let generated_commit = commit_all(&work_dir, "generated provenance").await;
+
+        extract_packages(&work_dir, &generated_commit, &packages_dir)
+            .await
+            .unwrap();
+        extract_provenance(
+            &work_dir,
+            &generated_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !registry_cache_dir.join(custom_ref).exists(),
+            "dropping a custom provenance ref must remove the stale cached artifact"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(registry_cache_dir.join(generated_ref))
+                .await
+                .unwrap(),
+            "generated statement\n",
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_rejects_missing_declared_artifact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let missing_ref = "attestation/a-missing.jsonl";
+        let later_ref = "attestation/z-stale.jsonl";
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        tokio::fs::write(
+            package_dir.join("web.toml"),
+            format!(
+                r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{missing_ref}"
+
+[versions.platforms.aarch64-linux]
+store_path = "/var/lib/store/hash-web-aarch64"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "{later_ref}"
+"#
+            ),
+        )
+        .await
+        .unwrap();
+        let commit = commit_all(&work_dir, "missing provenance").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        let stale_path = registry_cache_dir.join(missing_ref);
+        let later_stale_path = registry_cache_dir.join(later_ref);
+        tokio::fs::create_dir_all(stale_path.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&stale_path, "stale statement\n")
+            .await
+            .unwrap();
+        tokio::fs::write(&later_stale_path, "later stale statement\n")
+            .await
+            .unwrap();
+        extract_packages(&work_dir, &commit, &packages_dir)
+            .await
+            .unwrap();
+        let err = extract_provenance(&work_dir, &commit, &packages_dir, &registry_cache_dir)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("declared by package metadata is missing"),
+            "{err:#}",
+        );
+        assert!(
+            !stale_path.exists(),
+            "missing declared provenance must remove stale bytes at the same cache path"
+        );
+        assert!(
+            !later_stale_path.exists(),
+            "a failed earlier provenance ref must still remove stale bytes for later declared refs"
+        );
+    }
+
+    #[tokio::test]
+    async fn extract_provenance_rejects_cache_owned_declared_artifact() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        let package_dir = work_dir.join("packages").join("w");
+        tokio::fs::create_dir_all(&package_dir).await.unwrap();
+        tokio::fs::write(
+            package_dir.join("web.toml"),
+            r#"[package]
+name = "web"
+description = "web"
+license = "MIT"
+maintainer = "aos-team"
+
+[[versions]]
+version = "1.0.0"
+
+[versions.platforms.x86_64-linux]
+store_path = "/var/lib/store/hash-web"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+provenance = "store/aa/bad.jsonl"
+"#,
+        )
+        .await
+        .unwrap();
+        let commit = commit_all(&work_dir, "owned provenance target").await;
+
+        let registry_cache_dir = tmp.path().join("cache").join("test-reg");
+        let packages_dir = registry_cache_dir.join("packages");
+        extract_packages(&work_dir, &commit, &packages_dir)
+            .await
+            .unwrap();
+        let err = extract_provenance(&work_dir, &commit, &packages_dir, &registry_cache_dir)
+            .await
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
         );
     }
 
