@@ -10988,19 +10988,17 @@ impl TreeWalk {
             ],
         )?;
         if Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?.is_some() {
-            return Err(Self::fetch_tree_error(
+            return Err(Self::unsupported_fetch_tree_feature(
                 id,
                 span,
-                input_type,
-                "fetchTree forge reference resolution is not implemented by the native evaluator",
+                "forge reference resolution",
             ));
         }
         let Some(rev) = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)? else {
-            return Err(Self::fetch_tree_error(
+            return Err(Self::unsupported_fetch_tree_feature(
                 id,
                 span,
-                input_type,
-                "fetchTree forge inputs require a rev in the native evaluator",
+                "forge inputs without a resolved rev",
             ));
         };
         let rev = self.canonical_flake_ref_rev(id, span, rev)?;
@@ -11769,16 +11767,18 @@ impl TreeWalk {
     fn fetch_tree_verified_fetches_unsupported(
         id: IrId,
         span: Span,
-        input: &[u8],
+        _input: &[u8],
+    ) -> TreeWalkError {
+        Self::unsupported_fetch_tree_feature(id, span, "verified git fetches")
+    }
+
+    fn unsupported_fetch_tree_feature(
+        id: IrId,
+        span: Span,
+        feature: &'static str,
     ) -> TreeWalkError {
         TreeWalkError::new(
-            TreeWalkErrorKind::FetchTree {
-                id,
-                input: input.to_vec(),
-                message:
-                    "fetchTree verified git fetches are not implemented by the native evaluator"
-                        .to_owned(),
-            },
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature { id, feature },
             span,
         )
     }
@@ -29798,6 +29798,14 @@ pub enum TreeWalkErrorKind {
         /// The unsupported attribute name bytes.
         attr: Vec<u8>,
     },
+    /// `builtins.fetchTree` reached a feature outside the native implementation.
+    #[error("fetchTree at node {id:?} does not support {feature}")]
+    UnsupportedFetchTreeFeature {
+        /// The fetchTree input node.
+        id: IrId,
+        /// The native implementation gap.
+        feature: &'static str,
+    },
     /// `builtins.fetchTree` could not fetch, copy, or materialize its input.
     #[error("failed to fetch tree at node {id:?} input {input:?}: {message}")]
     FetchTree {
@@ -47639,7 +47647,10 @@ mod tests {
         .expect_err("verified fetchTree git remains unsupported");
         assert!(matches!(
             verified_error.kind(),
-            TreeWalkErrorKind::FetchTree { input, .. } if input == VERIFY_COMMIT_ATTR
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "verified git fetches",
+                ..
+            }
         ));
 
         fs::remove_dir_all(repo_dir).expect("repo temp directory removes");
@@ -48062,7 +48073,13 @@ mod tests {
 
         let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#))
             .expect_err("forge ref resolution stays pending");
-        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "forge reference resolution",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -48103,14 +48120,26 @@ mod tests {
         let error = eval_whnf_owned(&lower(
             r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#,
         ))
-        .expect_err("unsupported fetchTree type rejects");
-        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+        .expect_err("unresolved forge fetchTree rejects");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "forge inputs without a resolved rev",
+                ..
+            }
+        ));
 
         let error = eval_whnf_owned(&lower(
             r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = true; }"#,
         ))
         .expect_err("unsupported fetchTree verified git fetch rejects before repo access");
-        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "verified git fetches",
+                ..
+            }
+        ));
 
         let error = eval_whnf_owned(&lower(
             r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = false; publicKey = 1; }"#,
@@ -48140,7 +48169,13 @@ mod tests {
 
         let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs""#))
             .expect_err("unsupported string flake ref type rejects");
-        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "forge inputs without a resolved rev",
+                ..
+            }
+        ));
 
         fs::remove_dir_all(dir).expect("temp directory removes");
     }

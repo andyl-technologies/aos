@@ -443,6 +443,7 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedSourcePathType { .. }
         | TreeWalkErrorKind::UnsupportedPrimOp { .. }
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
+        | TreeWalkErrorKind::UnsupportedFetchTreeFeature { .. }
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
         | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
@@ -1998,6 +1999,51 @@ mod tests {
             ),
             "{error:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_fetch_tree_gaps_stay_fallback_eligible() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        for (source, expected_feature) in [
+            (
+                r#"derivationStrict {
+                     name = "x";
+                     system = "x86_64-linux";
+                     builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                     src = builtins.fetchTree "github:NixOS/nixpkgs/main";
+                   }"#,
+                "forge reference resolution",
+            ),
+            (
+                r#"derivationStrict {
+                     name = "x";
+                     system = "x86_64-linux";
+                     builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                     src = builtins.fetchTree {
+                       type = "git";
+                       url = "file:///no-such-repo";
+                       verifyCommit = true;
+                     };
+                   }"#,
+                "verified git fetches",
+            ),
+        ] {
+            let error = native
+                .instantiate_expr(source)
+                .expect_err("native fetchTree implementation gaps should fall back");
+
+            assert!(
+                matches!(
+                    error.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                        if feature.contains(expected_feature)
+                ),
+                "{source}: {error:?}"
+            );
+        }
+
         Ok(())
     }
 
