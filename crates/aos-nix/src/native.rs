@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::cache::{ParseCache, ParseCacheError};
 use crate::compile::{
     EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
 };
@@ -198,20 +199,7 @@ impl NixNative {
             prefix_len: JSON_WRAPPER_PREFIX.len(),
             expr_len: expr.len(),
         };
-        let parsed = parse_str(&source).map_err(|source| {
-            unsupported_frontend_error("parse", source.to_string(), source.span(), Some(source_map))
-        })?;
-        let resolved = resolve(parsed).map_err(|source| {
-            unsupported_frontend_error(
-                "resolve",
-                source.to_string(),
-                source.span(),
-                Some(source_map),
-            )
-        })?;
-        let ir = lower(resolved).map_err(|source| {
-            unsupported_frontend_error("lower", source.to_string(), source.span(), Some(source_map))
-        })?;
+        let ir = self.lower_native_source(&source, Some(source_map))?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
         let outcome = self
             .eval_ir(&ir)
@@ -241,15 +229,7 @@ impl NixNative {
         source: &str,
         source_map: Option<WrappedSourceMap>,
     ) -> Result<PathBuf> {
-        let parsed = parse_str(source).map_err(|source| {
-            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
-        })?;
-        let resolved = resolve(parsed).map_err(|source| {
-            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
-        })?;
-        let ir = lower(resolved).map_err(|source| {
-            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
-        })?;
+        let ir = self.lower_native_source(source, source_map)?;
         let outcome = self
             .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
@@ -271,15 +251,7 @@ impl NixNative {
         source: &str,
         source_map: Option<WrappedSourceMap>,
     ) -> Result<NativeDrvClosure> {
-        let parsed = parse_str(source).map_err(|source| {
-            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
-        })?;
-        let resolved = resolve(parsed).map_err(|source| {
-            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
-        })?;
-        let ir = lower(resolved).map_err(|source| {
-            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
-        })?;
+        let ir = self.lower_native_source(source, source_map)?;
         let outcome = self
             .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
@@ -310,6 +282,52 @@ impl NixNative {
         Ok(NativeDrvClosure { root, drvs })
     }
 
+    fn lower_native_source(
+        &self,
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Result<Ir> {
+        if let Some(root) = self.options.parse_cache_root() {
+            let cache = ParseCache::new(root);
+            match cache.load_or_parse_bytes(source.as_bytes(), None) {
+                Ok(cached) => {
+                    return lower(cached.resolved).map_err(|source| {
+                        unsupported_frontend_error(
+                            "lower",
+                            source.to_string(),
+                            source.span(),
+                            source_map,
+                        )
+                        .into()
+                    });
+                }
+                Err(error) => {
+                    if let Some(error) = parse_cache_frontend_error(error, source_map) {
+                        return Err(error.into());
+                    }
+                }
+            }
+        }
+
+        Self::lower_native_source_uncached(source, source_map)
+    }
+
+    fn lower_native_source_uncached(
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Result<Ir> {
+        let parsed = parse_str(source).map_err(|source| {
+            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
+        })?;
+        let resolved = resolve(parsed).map_err(|source| {
+            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
+        })?;
+        lower(resolved).map_err(|source| {
+            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
+                .into()
+        })
+    }
+
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
         eval_whnf_owned_with_options_and_realizer(
             ir,
@@ -322,6 +340,40 @@ impl NixNative {
         let mut options = self.options.clone();
         options.set_reject_ambient_search_path(true);
         eval_whnf_owned_with_options_and_realizer(ir, options, self.ifd_realizer.clone())
+    }
+}
+
+fn parse_cache_frontend_error(
+    error: ParseCacheError,
+    source_map: Option<WrappedSourceMap>,
+) -> Option<NativeEvalError> {
+    match error {
+        ParseCacheError::Parse { source } => Some(unsupported_frontend_error(
+            "parse",
+            source.to_string(),
+            source.span(),
+            source_map,
+        )),
+        ParseCacheError::Scope { source } => Some(unsupported_frontend_error(
+            "resolve",
+            source.to_string(),
+            source.span(),
+            source_map,
+        )),
+        ParseCacheError::LowerIr { source } => Some(unsupported_frontend_error(
+            "lower",
+            source.to_string(),
+            source.span(),
+            source_map,
+        )),
+        ParseCacheError::CanonicalizeSource { .. }
+        | ParseCacheError::ReadSource { .. }
+        | ParseCacheError::CreateDir { .. }
+        | ParseCacheError::WriteMeta { .. }
+        | ParseCacheError::WriteArtifact { .. }
+        | ParseCacheError::ReadArtifact { .. }
+        | ParseCacheError::DecodeArtifact { .. }
+        | ParseCacheError::EncodeArtifact(_) => None,
     }
 }
 
@@ -841,6 +893,60 @@ mod tests {
     }
 
     #[test]
+    fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
+        let root = unique_temp_dir("native-expression-parse-cache");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let cache_root = root.join("parse");
+        let mut options = TreeWalkOptions::new();
+        options.set_parse_cache_root(&cache_root);
+        let native = NixNative::with_options(0, options)?;
+        let expr = "1 + 1";
+
+        assert_eq!(native.eval_expr(expr)?, "2");
+
+        let cache = ParseCache::new(&cache_root);
+        let entry = cache.entry_for_source(json_wrapper_source(expr).as_bytes());
+        assert!(
+            entry.is_complete(),
+            "native expression evaluation should populate the parse-cache entry"
+        );
+
+        assert_eq!(native.eval_expr(expr)?, "2");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> {
+        let root = unique_temp_dir("native-expression-parse-cache-error");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let mut options = TreeWalkOptions::new();
+        options.set_parse_cache_root(root.join("parse"));
+        let native = NixNative::with_options(0, options)?;
+
+        let err = native
+            .eval_expr("let { body = 1; }")
+            .expect_err("frontend gaps should fall back through the cached path");
+
+        assert!(
+            matches!(
+                err.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported {
+                    feature,
+                    span: Some(_),
+                }) if feature.contains("native expression parse failure")
+            ),
+            "{err:?}"
+        );
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn native_instantiation_expr_returns_drv_path() -> Result<()> {
         let (native, root, store) = native_with_temp_store("native-instantiation-expr")?;
 
@@ -856,6 +962,39 @@ mod tests {
         assert!(path.to_string_lossy().ends_with("-base.drv"));
         let bytes = assert_materialized_drv(&path)?;
         assert!(bytes.starts_with(b"Derive("));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_expr_uses_configured_parse_cache() -> Result<()> {
+        let root = unique_temp_dir("native-instantiation-parse-cache");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let store = root.join("store");
+        let cache_root = root.join("parse");
+        let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+        options.set_parse_cache_root(&cache_root);
+        let native = NixNative::with_options(0, options)?;
+        let expr = r#"derivationStrict {
+             name = "base";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+           }"#;
+
+        let path = native.instantiate_expr(expr)?;
+
+        assert!(path.starts_with(&store), "{}", path.display());
+        let cache = ParseCache::new(&cache_root);
+        let entry = cache.entry_for_source(derivation_path_wrapper_source(expr).as_bytes());
+        assert!(
+            entry.is_complete(),
+            "native instantiation should populate the parse-cache entry"
+        );
+
+        let cached_path = native.instantiate_expr(expr)?;
+        assert_eq!(cached_path, path);
 
         fs::remove_dir_all(root)?;
         Ok(())
