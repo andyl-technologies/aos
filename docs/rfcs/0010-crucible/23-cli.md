@@ -899,10 +899,10 @@ branch on the verdict without parsing output:
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md). The copies below are
-> the tasks whose primary area is this file ([PLAN-3]); they are kept verbatim in
-> sync with the master plan by the doc lint
+> the tasks whose primary area is this file ([PLAN-3]); they are kept in
+> sync with the master plan's order/digest by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
 - [ ] **T-CLI-1** Implement the `crucible` binary skeleton: the closed subcommand

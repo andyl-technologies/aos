@@ -1081,9 +1081,9 @@ time-control primitives the whole design rests on.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the QEMU patch series, copied verbatim per [PLAN-3]. They
+> whose primary area is the QEMU patch series, tracked by [PLAN-3]. They
 > populate the QEMU-integration slice of Phase 1 (foundation) and feed
 > `gate:qemu-inert` / `gate:patch-microtests`.
 

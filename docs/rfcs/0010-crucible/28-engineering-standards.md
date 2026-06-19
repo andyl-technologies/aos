@@ -418,10 +418,11 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   appear verbatim in the §1.1 gate catalog of
   [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md), and
   every catalog gate MUST be wired into the phase plan ([HARN-1]); every topic
-  file's **Implementation checklist** MUST match the master plan's tasks for that
-  file verbatim ([PLAN-3]). A referenced-but-undefined gate, a
-  defined-but-unreferenced gate, or a drifted per-file checklist is a doc-lint
-  failure. *Spec:* §1 of 24, [`00-conventions.md`](00-conventions.md).
+  file's **Implementation checklist** MUST match the master plan's task inventory,
+  file ownership, phase-order projection, and ordered-text digest ([PLAN-3]). A
+  referenced-but-undefined gate, a defined-but-unreferenced gate, or a drifted
+  per-file checklist is a doc-lint failure. *Spec:* §1 of 24,
+  [`00-conventions.md`](00-conventions.md).
 
 ---
 
@@ -518,9 +519,9 @@ the conditions under which feature code can be trusted to stay deterministic
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is this file, copied verbatim ([PLAN-3]). They are
+> whose primary area is this file, tracked by [PLAN-3]. They are
 > **Phase-0 foundation tasks** — the engineering standards are in force before
 > feature code is written.
 

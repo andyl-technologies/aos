@@ -948,9 +948,9 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the advanced features, copied verbatim per [PLAN-3]. They
+> whose primary area is the advanced features, tracked by [PLAN-3]. They
 > are sequenced strictly after the determinism, save/restore-oracle, and
 > control-plane foundations they depend on ([ADV-1], [G-5], [PLAN-4]).
 
@@ -995,36 +995,6 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   sound graph-level node-deduplication over the content-addressed DAG (07 §9),
   explicitly not a model checker / spec-language evaluator (NG-3). — satisfies
   [ADV-19], [ADV-20]; spec §22.5.3; cross-ref 07 §9, 08.
-- [ ] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
-  signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
-  deterministically-maintained rarity table; assertion-proximity from the 18
-  distance metric) and fixed-point deterministic composition (content-address
-  tie-break); prove the default (coverage only, no adaptivity) reproduces the
-  existing §22.5.2 behavior and that signals are readers-only (no fingerprint
-  effect). — satisfies [ADV-34], [ADV-35]; spec §22.5.4; cross-ref §22.6, 07 §2, 18.
-- [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
-  (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
-  expansion arms with a deterministic reward model (new coverage, novelty gain,
-  assertion-proximity progress, dominantly a confirmed failure; credited in
-  content-address order) and a breadth-first fairness floor; prove the campaign is
-  reproducible as a unit and that its config is hashed into the campaign identity
-  while the reproduction artifact stays a bare (def, seed, schedule) bundle. —
-  satisfies [ADV-36], [ADV-37], [ADV-38]; spec §22.5.4; cross-ref §22.5.3, §22.8.
-- [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
-  paths (scores, weights, reward accumulation), enforcing fixed-point/integer
-  arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
-  cross-ref [INV-9], `gate:harness-lint`.
-- [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
-  interrupt-timing) within the bounded [deadline, horizon] window — working for
-  single-vCPU guests — with partial-order reduction over commuting preemptions and
-  each preemption-branch child a content-addressed, oracle-validated temporal-graph
-  node. — satisfies [ADV-39]; spec §22.5.5; cross-ref 05 §3, 08, 07 §6/§9.
-- [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
-  randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
-  served values, bounded by the per-scenario draw cap and a per-draw seeded
-  value-sampling budget, recording each alternative as a `Decision`; prove a
-  scenario with no app-random draws explores identically to before. — satisfies
-  [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.
 - [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec
@@ -1057,3 +1027,33 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   one `instantiate`, validated by the single replay-oracle + single-VM-fingerprint
   check, with no abstract spec engine and no second execution path. — satisfies
   [ADV-32]; spec §22.9; cross-ref 05 §9/§11, 07 §10.
+- [ ] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
+  signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
+  deterministically-maintained rarity table; assertion-proximity from the 18
+  distance metric) and fixed-point deterministic composition (content-address
+  tie-break); prove the default (coverage only, no adaptivity) reproduces the
+  existing §22.5.2 behavior and that signals are readers-only (no fingerprint
+  effect). — satisfies [ADV-34], [ADV-35]; spec §22.5.4; cross-ref §22.6, 07 §2, 18.
+- [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
+  (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
+  expansion arms with a deterministic reward model (new coverage, novelty gain,
+  assertion-proximity progress, dominantly a confirmed failure; credited in
+  content-address order) and a breadth-first fairness floor; prove the campaign is
+  reproducible as a unit and that its config is hashed into the campaign identity
+  while the reproduction artifact stays a bare (def, seed, schedule) bundle. —
+  satisfies [ADV-36], [ADV-37], [ADV-38]; spec §22.5.4; cross-ref §22.5.3, §22.8.
+- [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
+  paths (scores, weights, reward accumulation), enforcing fixed-point/integer
+  arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
+  cross-ref [INV-9], `gate:harness-lint`.
+- [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
+  interrupt-timing) within the bounded [deadline, horizon] window — working for
+  single-vCPU guests — with partial-order reduction over commuting preemptions and
+  each preemption-branch child a content-addressed, oracle-validated temporal-graph
+  node. — satisfies [ADV-39]; spec §22.5.5; cross-ref 05 §3, 08, 07 §6/§9.
+- [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
+  randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
+  served values, bounded by the per-scenario draw cap and a per-draw seeded
+  value-sampling budget, recording each alternative as a `Decision`; prove a
+  scenario with no app-random draws explores identically to before. — satisfies
+  [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.

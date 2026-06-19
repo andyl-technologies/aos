@@ -908,9 +908,9 @@ application of explorer-supplied preemption decisions
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is cross-node scheduling, copied verbatim per [PLAN-3].
+> whose primary area is cross-node scheduling, tracked by [PLAN-3].
 > They populate Phase 1 (the determinism / harness / transport foundation),
 > sequenced after the L0/L1 primitives and before any L3+ feature.
 

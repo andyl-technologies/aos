@@ -698,9 +698,9 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is I/O sub-nodes, copied here verbatim per [PLAN-3]. They
+> whose primary area is I/O sub-nodes, tracked here by [PLAN-3]. They
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the L1 shmem ABI and scheduler primitives and before any L3+ feature.
 
@@ -745,18 +745,6 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   duplicate emits a second frame; corrupt flips seeded payload bits — all over
   `SLOT_NET_ROUTER`, applied at RESOLVE per the effective fault table. —
   satisfies [IO-20]; spec §15.4.1; cross-ref 08, 17.
-- [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
-  split (host access decoupled from virtual-time visibility), an in-flight
-  response queue ordered by `delivery_icount` exposed as the sub-node's
-  `next_exact_local_event`, and deterministic full-ring backpressure (block-and-
-  wake, never drop/reorder). — satisfies [IO-31], [IO-32]; spec §15.1.1;
-  cross-ref 08, 13.
-- [ ] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
-  positive latency floor at the link, clamp sub-floor latency faults, trigger the
-  lookahead/horizon recompute on any effective-latency change at the quantum
-  boundary, and clamp/fail-loud reorder shifts that would land in the consumer's
-  past. — satisfies [IO-33], [IO-34]; spec §15.4.2; cross-ref 08 §8.7, §8.11, 13
-  §13.9.
 - [ ] **T-IO-10** Implement per-device seeded RNG forked by name-hash, with every
   probabilistic device choice drawn from it in deterministic order and recorded
   as a `Decision`; route through `gate:harness-lint` (no unordered iteration /
@@ -779,3 +767,15 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
   (completion lands at its exact icount either way) and record the busy-poll
   prevalence/mitigation spike; any mitigation preserves exactness. — satisfies
   [IO-29], [IO-30]; spec §15.8; forward-ref 30.
+- [ ] **T-IO-15** Implement the request/response lifecycle: COMPUTE-then-DELIVER
+  split (host access decoupled from virtual-time visibility), an in-flight
+  response queue ordered by `delivery_icount` exposed as the sub-node's
+  `next_exact_local_event`, and deterministic full-ring backpressure (block-and-
+  wake, never drop/reorder). — satisfies [IO-31], [IO-32]; spec §15.1.1;
+  cross-ref 08, 13.
+- [ ] **T-IO-16** Wire the link into the scheduler's lookahead: enforce the
+  positive latency floor at the link, clamp sub-floor latency faults, trigger the
+  lookahead/horizon recompute on any effective-latency change at the quantum
+  boundary, and clamp/fail-loud reorder shifts that would land in the consumer's
+  past. — satisfies [IO-33], [IO-34]; spec §15.4.2; cross-ref 08 §8.7, §8.11, 13
+  §13.9.

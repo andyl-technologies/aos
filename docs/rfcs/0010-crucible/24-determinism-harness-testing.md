@@ -832,9 +832,9 @@ first ([G-5], [PLAN-4]):
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is this file, copied verbatim ([PLAN-3]). They are
+> whose primary area is this file, tracked by [PLAN-3]. They are
 > **Phase-1-and-earlier foundation tasks**: the harness comes first.
 
 - [ ] **T-HARN-1** Define the canonical gate catalog as CI targets (one target

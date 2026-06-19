@@ -890,9 +890,9 @@ component that makes that purity true *inside* the QEMU process.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the QEMU plugin, copied verbatim per [PLAN-3]. They
+> whose primary area is the QEMU plugin, tracked by [PLAN-3]. They
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the shmem ABI ([`13-shmem-abi.md`](13-shmem-abi.md)) and control protocol
 > ([`14-protocol.md`](14-protocol.md)) primitives the plugin depends on.

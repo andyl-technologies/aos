@@ -430,9 +430,9 @@ The control channel is determinism-neutral by construction.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md). The tasks whose
-> primary area is this file are copied here verbatim ([PLAN-3]); the master plan
+> primary area is this file are tracked here by [PLAN-3]; the master plan
 > is the source of truth for ordering.
 
 - [ ] **T-PROTO-1** Define the frame format (`[u32 BE length][u8 tag][payload]`),

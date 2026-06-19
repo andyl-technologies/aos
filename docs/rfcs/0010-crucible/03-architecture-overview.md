@@ -491,9 +491,9 @@ reading order is in the [`README.md`](README.md).
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
-> [`32-implementation-plan.md`](32-implementation-plan.md); these are copied here
-> per [`00-conventions.md`](00-conventions.md) `[PLAN-3]`. These tasks scaffold
+> The checklist task text below is authoritative for this topic; phase ordering lives in
+> [`32-implementation-plan.md`](32-implementation-plan.md); these are tracked
+> here per [`00-conventions.md`](00-conventions.md) `[PLAN-3]`. These tasks scaffold
 > the architecture itself (workspace, layers, dependency rules) so the
 > per-subsystem tasks in later files have a frame to land in.
 

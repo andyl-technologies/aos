@@ -26,6 +26,7 @@ fn rfc_0010_consistency_lint_is_clean() -> Result<(), Box<dyn Error>> {
         &task_prefix_files,
         &phase_plan_order,
     ));
+    failures.extend(task_sync_failures(&docs, &tasks, &phase_plan_order));
     failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));
     failures.extend(banned_name_failures(&root)?);
 
@@ -124,6 +125,70 @@ fn banned_name_scan_rejects_configured_terms() {
     assert_contains(&findings, "synthetic banned name");
 }
 
+#[test]
+fn checklist_sync_rules_reject_order_and_text_drift() {
+    let tasks = vec![
+        Task {
+            id: "T-DET-1".to_string(),
+            file: "04-determinism-contract.md".to_string(),
+            line: 20,
+            text: "- [ ] **T-DET-1** First task. — satisfies [DET-1]; spec §1.".to_string(),
+            satisfies: BTreeSet::from(["DET-1".to_string()]),
+        },
+        Task {
+            id: "T-DET-2".to_string(),
+            file: "04-determinism-contract.md".to_string(),
+            line: 21,
+            text: "- [x] **T-DET-2** Second task. — satisfies [DET-2]; spec §2.".to_string(),
+            satisfies: BTreeSet::from(["DET-2".to_string()]),
+        },
+    ];
+    let reversed_phase_order = vec!["T-DET-2".to_string(), "T-DET-1".to_string()];
+
+    let order_failures = task_order_failures(&tasks, &reversed_phase_order);
+    assert_contains(&order_failures, "checklist order drift");
+
+    let stale_files = vec![RfcFile {
+        name: "32-implementation-plan.md".to_string(),
+        content: "Checklist sync digest: `rfc0010-checklist-v1:0000000000000000`".to_string(),
+    }];
+    let digest_failures =
+        task_manifest_digest_failures(&stale_files, &tasks, &reversed_phase_order);
+    assert_contains(&digest_failures, "checklist sync digest drifted");
+
+    let digest = checklist_text_digest(&tasks, &reversed_phase_order);
+    let current_files = vec![RfcFile {
+        name: "32-implementation-plan.md".to_string(),
+        content: format!("Checklist sync digest: `{digest}`"),
+    }];
+    assert!(
+        task_manifest_digest_failures(&current_files, &tasks, &reversed_phase_order).is_empty()
+    );
+}
+
+#[test]
+fn phase_plan_parser_expands_main_ranges_without_promoting_subset_mentions() {
+    let docs = vec![RfcFile {
+        name: "32-implementation-plan.md".to_string(),
+        content: [
+            "## Phase 1",
+            "- Determinism mechanisms (incl. late tasks `T-DET-29 ... T-DET-31`): `T-DET-1 ... T-DET-31`.",
+            "- Patterns realized here: `T-PAT-1, T-PAT-4, T-PAT-5`.",
+            "## Requirement coverage",
+        ]
+        .join("\n"),
+    }];
+
+    let order = phase_plan_task_order(&docs).expect("synthetic phase plan parses");
+    assert_eq!(order.first().map(String::as_str), Some("T-DET-1"));
+    assert_eq!(order.get(1).map(String::as_str), Some("T-DET-2"));
+    assert_eq!(order.get(28).map(String::as_str), Some("T-DET-29"));
+    assert_eq!(order.get(30).map(String::as_str), Some("T-DET-31"));
+    assert_eq!(order.get(31).map(String::as_str), Some("T-PAT-1"));
+    assert_eq!(order.get(32).map(String::as_str), Some("T-PAT-4"));
+    assert_eq!(order.get(33).map(String::as_str), Some("T-PAT-5"));
+}
+
 #[derive(Debug)]
 struct RfcFile {
     name: String,
@@ -154,6 +219,15 @@ struct TaskMention {
     end: usize,
 }
 
+#[derive(Clone, Debug)]
+struct TaskRange {
+    prefix: String,
+    first: u32,
+    last: u32,
+    start: usize,
+    end: usize,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct BannedTerm {
     term: &'static str,
@@ -164,6 +238,7 @@ const BANNED_TERMS: &[BannedTerm] = &[BannedTerm {
     term: concat!("anti", "thesis"),
     reason: "third-party commercial product name",
 }];
+const CHECKLIST_DIGEST_PREFIX: &str = "rfc0010-checklist-v1:";
 
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -488,35 +563,91 @@ fn phase_plan_task_order(files: &[RfcFile]) -> Result<Vec<String>, Box<dyn Error
         .next()
         .unwrap_or(&plan.content);
     let mentions = task_mentions(phase_text);
+    let ranges = task_ranges(phase_text, &mentions);
     let mut ids = Vec::new();
     let mut seen = BTreeSet::new();
 
-    for mention in &mentions {
-        push_task_id(&mut ids, &mut seen, mention.id.clone());
-    }
-
-    for window in mentions.windows(2) {
-        let left = &window[0];
-        let right = &window[1];
-        let between = &phase_text[left.end..right.start];
-        if !(between.contains("...") || between.chars().any(|ch| ch == '\u{2026}')) {
+    for range in &ranges {
+        if range_is_explained_by_later_wider_range(phase_text, range, &ranges) {
             continue;
         }
-        let Some((left_prefix, left_number)) = split_task_id(&left.id) else {
-            continue;
-        };
-        let Some((right_prefix, right_number)) = split_task_id(&right.id) else {
-            continue;
-        };
-        if left_prefix != right_prefix || left_number > right_number {
-            continue;
-        }
-        for number in left_number..=right_number {
-            push_task_id(&mut ids, &mut seen, format!("T-{left_prefix}-{number}"));
+        for number in range.first..=range.last {
+            push_task_id(&mut ids, &mut seen, format!("T-{}-{number}", range.prefix));
         }
     }
 
     Ok(ids)
+}
+
+fn task_ranges(text: &str, mentions: &[TaskMention]) -> Vec<TaskRange> {
+    let mut ranges = Vec::new();
+    let mut index = 0;
+
+    while let Some(left) = mentions.get(index) {
+        if let Some(range) = task_range_from_pair(text, left, mentions.get(index + 1)) {
+            ranges.push(range);
+            index += 2;
+            continue;
+        }
+
+        if let Some((prefix, number)) = split_task_id(&left.id) {
+            ranges.push(TaskRange {
+                prefix,
+                first: number,
+                last: number,
+                start: left.start,
+                end: left.end,
+            });
+        }
+        index += 1;
+    }
+
+    ranges
+}
+
+fn task_range_from_pair(
+    text: &str,
+    left: &TaskMention,
+    right: Option<&TaskMention>,
+) -> Option<TaskRange> {
+    let right = right?;
+    let between = &text[left.end..right.start];
+    if !(between.contains("...") || between.chars().any(|ch| ch == '\u{2026}')) {
+        return None;
+    }
+
+    let (left_prefix, left_number) = split_task_id(&left.id)?;
+    let (right_prefix, right_number) = split_task_id(&right.id)?;
+    if left_prefix != right_prefix || left_number > right_number {
+        return None;
+    }
+
+    Some(TaskRange {
+        prefix: left_prefix,
+        first: left_number,
+        last: right_number,
+        start: left.start,
+        end: right.end,
+    })
+}
+
+fn range_is_explained_by_later_wider_range(
+    text: &str,
+    range: &TaskRange,
+    ranges: &[TaskRange],
+) -> bool {
+    ranges.iter().any(|other| {
+        other.start > range.start
+            && range.prefix == other.prefix
+            && other.first <= range.first
+            && range.last <= other.last
+            && same_plan_bullet(text, range.end, other.start)
+    })
+}
+
+fn same_plan_bullet(text: &str, left_end: usize, right_start: usize) -> bool {
+    let between = &text[left_end..right_start];
+    !(between.contains("\n- ") || between.contains("\n## ") || between.contains("\n\n"))
 }
 
 fn push_task_id(ids: &mut Vec<String>, seen: &mut BTreeSet<String>, id: String) {
@@ -631,6 +762,158 @@ fn task_checklist_failures(
     }
 
     failures
+}
+
+fn task_sync_failures(
+    files: &[RfcFile],
+    tasks: &[Task],
+    phase_plan_order: &[String],
+) -> Vec<String> {
+    task_order_failures(tasks, phase_plan_order)
+        .into_iter()
+        .chain(task_manifest_digest_failures(
+            files,
+            tasks,
+            phase_plan_order,
+        ))
+        .collect()
+}
+
+fn task_order_failures(tasks: &[Task], phase_plan_order: &[String]) -> Vec<String> {
+    let task_by_id = tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect::<BTreeMap<_, _>>();
+    let mut actual_by_file = BTreeMap::<String, Vec<String>>::new();
+    let mut expected_by_file = BTreeMap::<String, Vec<String>>::new();
+
+    for task in tasks.iter().filter(|task| !task.id.starts_with("T-PLAN-")) {
+        actual_by_file
+            .entry(task.file.clone())
+            .or_default()
+            .push(task.id.clone());
+    }
+
+    for id in phase_plan_order
+        .iter()
+        .filter(|id| !id.starts_with("T-PLAN-"))
+    {
+        let Some(task) = task_by_id.get(id.as_str()) else {
+            continue;
+        };
+        expected_by_file
+            .entry(task.file.clone())
+            .or_default()
+            .push((*id).clone());
+    }
+
+    actual_by_file
+        .into_iter()
+        .filter_map(|(file, actual)| {
+            let expected = expected_by_file.get(&file).cloned().unwrap_or_default();
+            (actual != expected).then(|| {
+                format!(
+                    "{file}: checklist order drift: {}",
+                    first_order_difference(&actual, &expected)
+                )
+            })
+        })
+        .collect()
+}
+
+fn first_order_difference(actual: &[String], expected: &[String]) -> String {
+    let length = actual.len().max(expected.len());
+    for index in 0..length {
+        let actual_id = actual.get(index).map(String::as_str).unwrap_or("<missing>");
+        let expected_id = expected
+            .get(index)
+            .map(String::as_str)
+            .unwrap_or("<missing>");
+        if actual_id != expected_id {
+            return format!(
+                "position {} is {actual_id}, expected {expected_id}",
+                index + 1
+            );
+        }
+    }
+
+    "order differs".to_string()
+}
+
+fn task_manifest_digest_failures(
+    files: &[RfcFile],
+    tasks: &[Task],
+    phase_plan_order: &[String],
+) -> Vec<String> {
+    let actual_digest = checklist_text_digest(tasks, phase_plan_order);
+    match expected_checklist_digest(files) {
+        Some(expected_digest) if expected_digest == actual_digest => Vec::new(),
+        Some(expected_digest) => vec![format!(
+            "32-implementation-plan.md: checklist sync digest drifted: found `{expected_digest}`, expected `{actual_digest}`"
+        )],
+        None => vec![format!(
+            "32-implementation-plan.md: missing checklist sync digest `{CHECKLIST_DIGEST_PREFIX}<hex>`; expected `{actual_digest}`"
+        )],
+    }
+}
+
+fn expected_checklist_digest(files: &[RfcFile]) -> Option<String> {
+    let plan = files
+        .iter()
+        .find(|file| file.name == "32-implementation-plan.md")?;
+    let start = plan.content.find(CHECKLIST_DIGEST_PREFIX)?;
+    let candidate = &plan.content[start..];
+    let hex_len = candidate[CHECKLIST_DIGEST_PREFIX.len()..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit())
+        .count();
+    (hex_len == 16).then(|| candidate[..CHECKLIST_DIGEST_PREFIX.len() + hex_len].to_string())
+}
+
+fn checklist_text_digest(tasks: &[Task], phase_plan_order: &[String]) -> String {
+    let task_by_id = tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect::<BTreeMap<_, _>>();
+    let mut manifest = String::from("rfc0010-checklist-v1\n");
+
+    for id in phase_plan_order
+        .iter()
+        .filter(|id| !id.starts_with("T-PLAN-"))
+    {
+        let Some(task) = task_by_id.get(id.as_str()) else {
+            continue;
+        };
+        manifest.push_str(id);
+        manifest.push('\n');
+        manifest.push_str(&normalized_task_text(&task.text));
+        manifest.push_str("\n\n");
+    }
+
+    format!("{CHECKLIST_DIGEST_PREFIX}{:016x}", stable_digest(&manifest))
+}
+
+fn normalized_task_text(text: &str) -> String {
+    let normalized = text
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some(rest) = normalized.strip_prefix("- [x] ") {
+        format!("- [ ] {rest}")
+    } else {
+        normalized
+    }
+}
+
+fn stable_digest(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn rfc_file_number(file_name: &str) -> Option<String> {

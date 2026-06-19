@@ -542,9 +542,9 @@ carries findings across an incompatible build.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is packaging / AOS integration, copied verbatim per [PLAN-3].
+> whose primary area is packaging / AOS integration, tracked by [PLAN-3].
 > They populate the packaging slice of the plan and feed `gate:qemu-inert`,
 > `gate:patch-microtests`, `gate:abi-conformance`, and `gate:e2e-determinism`.
 

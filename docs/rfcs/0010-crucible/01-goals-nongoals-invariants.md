@@ -192,7 +192,7 @@ Crucible reaches the target state of this RFC when:
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md). This file's
 > requirements are satisfied transitively by the per-area tasks; there are no
 > tasks whose primary area is "goals." The coverage check in 32 verifies every

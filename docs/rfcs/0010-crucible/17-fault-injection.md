@@ -906,9 +906,9 @@ Seed, Schedule)` exactly like a fault-free run — which is what
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is fault injection, copied here verbatim per [PLAN-3]. They
+> whose primary area is fault injection, tracked here by [PLAN-3]. They
 > populate Phase 1 (the determinism / harness / transport foundation), sequenced
 > after the L1 scheduler and I/O-sub-node primitives and before any L3+ feature
 > built on faults (assertions, search, fuzzing).

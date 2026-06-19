@@ -1089,21 +1089,13 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 
 > These patterns are mostly *realized by the per-area tasks elsewhere* — the
 > sketches here guide *how* those tasks are shaped, not separate deliverables.
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); each item below
 > references the area task(s) that actually build the pattern.
 
 - [ ] **T-PAT-1** Ensure the session/engine driver is built to the §29.1
   enum-of-states + bounded-quantum actor-loop shape. — satisfies [PAT-1],
   [PAT-2]; realized by **T-EXEC-14**, **T-SESS-2** (spec 05 §10, 20 §3).
-- [ ] **T-PAT-2** Ensure the scheduler is built to the §29.2 PICK/RUN/RESOLVE/
-  EMIT/STEP quantum shape with a single ceiling per RUN and total-order
-  RESOLVE. — satisfies [PAT-3]; realized by **T-SCHED-12**, **T-SCHED-13**,
-  **T-SCHED-16** (spec 08 §8.9).
-- [ ] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
-  §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
-  [PAT-4], [PAT-5]; realized by **T-SHM-6**, **T-SHM-8**, **T-SHM-9**,
-  **T-SHM-15** (spec 13 §§13.6, 13.7, 13.9).
 - [ ] **T-PAT-4** Ensure the temporal graph follows the §29.4 content-addressed
   store + thin/fat + CoW-delta shape. — satisfies [PAT-6]; realized by the 07
   temporal-graph tasks and **T-EXEC-10** (spec 07 §§2–5).
@@ -1113,13 +1105,21 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
 - [ ] **T-PAT-6** Ensure the session drives nodes through the §29.6
   `SimulationBackend` trait with an in-process drop-in double. — satisfies
   [PAT-8]; realized by **T-SESS-11**, **T-SESS-12** (spec 20 §10, 24 §3).
-- [ ] **T-PAT-7** Ensure the block sub-node follows the §29.7 CoW-overlay shape
-  (base never written; ordered, deterministic snapshot deltas). — satisfies
-  [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).
-- [ ] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
-  with round-trip + no-panic fuzz properties. — satisfies [PAT-10]; realized by
-  **T-SHM-7**, **T-SHM-14** and the 14 protocol tasks (spec 13 §13.6, 14).
 - [ ] **T-PAT-9** Ensure the runtime realizer follows the §29.9 recursive
   `instantiate` shape with start ≡ resume ≡ fork and the cold boot confined to
   `bake`. — satisfies [PAT-11], [PAT-12]; realized by **T-EXEC-6**,
   **T-EXEC-7**, **T-EXEC-8**, **T-EXEC-17** (spec 05 §§5–6, §11).
+- [ ] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
+  §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
+  [PAT-4], [PAT-5]; realized by **T-SHM-6**, **T-SHM-8**, **T-SHM-9**,
+  **T-SHM-15** (spec 13 §§13.6, 13.7, 13.9).
+- [ ] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
+  with round-trip + no-panic fuzz properties. — satisfies [PAT-10]; realized by
+  **T-SHM-7**, **T-SHM-14** and the 14 protocol tasks (spec 13 §13.6, 14).
+- [ ] **T-PAT-2** Ensure the scheduler is built to the §29.2 PICK/RUN/RESOLVE/
+  EMIT/STEP quantum shape with a single ceiling per RUN and total-order
+  RESOLVE. — satisfies [PAT-3]; realized by **T-SCHED-12**, **T-SCHED-13**,
+  **T-SCHED-16** (spec 08 §8.9).
+- [ ] **T-PAT-7** Ensure the block sub-node follows the §29.7 CoW-overlay shape
+  (base never written; ordered, deterministic snapshot deltas). — satisfies
+  [PAT-9]; realized by the 15 I/O sub-node tasks (spec 15).

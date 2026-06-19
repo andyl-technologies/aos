@@ -607,9 +607,9 @@ Crucible needs and marks the seam.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
-> [`32-implementation-plan.md`](32-implementation-plan.md); these are copied here
-> per [`00-conventions.md`](00-conventions.md) `[PLAN-3]`. They scaffold the
+> The checklist task text below is authoritative for this topic; phase ordering lives in
+> [`32-implementation-plan.md`](32-implementation-plan.md); these are tracked
+> here per [`00-conventions.md`](00-conventions.md) `[PLAN-3]`. They scaffold the
 > workspace shape, the safe/unsafe fence, the backend seam, and the gate↔crate
 > wiring so every later subsystem lands in a fixed frame.
 

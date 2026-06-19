@@ -589,9 +589,9 @@ ran in-process against the double or over the wire against QEMU.
 
 ## Implementation checklist
 
-> The authoritative, ordered tasks live in
+> The checklist task text below is authoritative for this topic; phase ordering lives in
 > [`32-implementation-plan.md`](32-implementation-plan.md); these are the tasks
-> whose primary area is the control API, copied verbatim per [PLAN-3] and kept in
+> whose primary area is the control API, tracked by [PLAN-3] and kept in
 > sync with the master plan by the doc lint
 > ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
