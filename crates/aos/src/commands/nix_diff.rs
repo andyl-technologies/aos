@@ -479,7 +479,7 @@ fn corpus_json(
         .map(|report| report.divergences.len())
         .sum();
 
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "mode": mode_name(mode),
         "oracle": "nix-cli",
         "candidate": candidate_name,
@@ -489,7 +489,13 @@ fn corpus_json(
         "attrs_failed": failed_attrs,
         "divergence_count": divergence_count,
         "reports": reports.iter().map(|report| attr_report_json(report, candidate_name, mode)).collect::<Vec<_>>(),
-    })
+    });
+    if let (serde_json::Value::Object(object), Some(summary)) =
+        (&mut value, corpus_oracle_stats_aggregate(reports))
+    {
+        object.insert("oracle_stats_summary".to_string(), summary.json());
+    }
+    value
 }
 
 fn attr_report_json(
@@ -552,6 +558,11 @@ fn oracle_stats_json(stats: &NixInstantiateStats) -> serde_json::Value {
 
 fn duration_nanos(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn duration_nanos_div(duration: std::time::Duration, divisor: usize) -> u64 {
+    let nanos = duration.as_nanos() / divisor as u128;
+    u64::try_from(nanos).unwrap_or(u64::MAX)
 }
 
 fn pair_json(pair: &DrvDiffPair) -> serde_json::Value {
@@ -676,6 +687,18 @@ fn render_corpus_oracle_stats_summary(printer: &Printer, reports: &[AttrDiffRepo
 }
 
 fn corpus_oracle_stats_summary(reports: &[AttrDiffReport]) -> Option<String> {
+    let summary = corpus_oracle_stats_aggregate(reports)?;
+
+    Some(format!(
+        "  captured nix-cli stats for {} selected derivation(s) \
+         (elapsed_total={:.6}s, elapsed_avg={:.6}s); use --json for raw NIX_SHOW_STATS",
+        summary.captured,
+        summary.elapsed_total.as_secs_f64(),
+        summary.elapsed_avg_secs(),
+    ))
+}
+
+fn corpus_oracle_stats_aggregate(reports: &[AttrDiffReport]) -> Option<CorpusOracleStatsAggregate> {
     let mut captured = 0;
     let mut elapsed_total = std::time::Duration::ZERO;
     for stats in reports
@@ -688,16 +711,34 @@ fn corpus_oracle_stats_summary(reports: &[AttrDiffReport]) -> Option<String> {
             .unwrap_or(std::time::Duration::MAX);
     }
 
-    if captured == 0 {
-        return None;
+    (captured > 0).then_some(CorpusOracleStatsAggregate {
+        captured,
+        elapsed_total,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CorpusOracleStatsAggregate {
+    captured: usize,
+    elapsed_total: std::time::Duration,
+}
+
+impl CorpusOracleStatsAggregate {
+    fn elapsed_avg_secs(self) -> f64 {
+        self.elapsed_total.as_secs_f64() / self.captured as f64
     }
 
-    Some(format!(
-        "  captured nix-cli stats for {captured} selected derivation(s) \
-         (elapsed_total={:.6}s, elapsed_avg={:.6}s); use --json for raw NIX_SHOW_STATS",
-        elapsed_total.as_secs_f64(),
-        elapsed_total.as_secs_f64() / captured as f64,
-    ))
+    fn json(self) -> serde_json::Value {
+        serde_json::json!({
+            "captured": self.captured,
+            "elapsed": {
+                "total_seconds": self.elapsed_total.as_secs_f64(),
+                "total_nanos": duration_nanos(self.elapsed_total),
+                "average_seconds": self.elapsed_avg_secs(),
+                "average_nanos": duration_nanos_div(self.elapsed_total, self.captured),
+            },
+        })
+    }
 }
 
 fn stats_summary_suffix(stats: &NixInstantiateStats) -> String {
@@ -919,6 +960,52 @@ mod tests {
     }
 
     #[test]
+    fn corpus_json_renders_oracle_stats_summary() {
+        let reports = vec![
+            AttrDiffReport {
+                attr: "pkgs.fast".to_string(),
+                report: None,
+                failure: None,
+                oracle_stats: Some(NixInstantiateStats {
+                    drv_path: PathBuf::from("/nix/store/fast.drv"),
+                    stats: serde_json::json!({}),
+                    elapsed: std::time::Duration::from_millis(500),
+                }),
+            },
+            AttrDiffReport {
+                attr: "pkgs.slow".to_string(),
+                report: None,
+                failure: None,
+                oracle_stats: Some(NixInstantiateStats {
+                    drv_path: PathBuf::from("/nix/store/slow.drv"),
+                    stats: serde_json::json!({}),
+                    elapsed: std::time::Duration::from_millis(1500),
+                }),
+            },
+        ];
+
+        let value = corpus_json(&reports, "native-test", DiffMode::Byte, None);
+
+        assert_eq!(value["oracle_stats_summary"]["captured"], 2);
+        assert_eq!(
+            value["oracle_stats_summary"]["elapsed"]["total_seconds"],
+            2.0
+        );
+        assert_eq!(
+            value["oracle_stats_summary"]["elapsed"]["total_nanos"],
+            2_000_000_000
+        );
+        assert_eq!(
+            value["oracle_stats_summary"]["elapsed"]["average_seconds"],
+            1.0
+        );
+        assert_eq!(
+            value["oracle_stats_summary"]["elapsed"]["average_nanos"],
+            1_000_000_000
+        );
+    }
+
+    #[test]
     fn divergence_error_renders_count() {
         let error = NixDiffReportedFailure::diverged(3);
 
@@ -1077,6 +1164,7 @@ mod tests {
         assert_eq!(value["reports"][0]["attr"], "pkgs.hello");
         assert_eq!(value["reports"][0]["candidate"], "native-test");
         assert_eq!(value["reports"][0]["divergences"][0]["kind"], "bytes");
+        assert!(value.get("oracle_stats_summary").is_none());
     }
 
     #[test]
