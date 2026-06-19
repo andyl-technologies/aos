@@ -1630,7 +1630,7 @@ in rec {
               // lib.optionalAttrs (!unconfined) {
                 DynamicUser = generatedDynamicUser;
                 PrivateUsers =
-                  if privilegedUsers || macProfileEnabled
+                  if privilegedUsers || generatedDynamicUser == false
                   then false
                   else "identity";
                 PrivateNetwork = network == "private";
