@@ -78,6 +78,7 @@
       # matter for callers bypassing fleet-spec validation.
       extraClosures = m.extraClosures or [];
       varSizeMiB = m.varSizeMiB or 256;
+      varProvisioning = m.varProvisioning or "baked";
       bootMode = m.bootMode or "kernel";
       imageDiskMiB = m.imageDiskMiB or 40960;
       tpm = m.tpm or false;
@@ -228,6 +229,34 @@
     userMerges = maybeNull (userIgnitionConfig.merge or null) [];
     userFiles = maybeNull (userStorage.files or null) [];
 
+    # Kernel-boot "ignition" var: the base disk ships boot+root-a+swap
+    # only; ignition creates and formats /var (partition 4) on first boot
+    # in the trailing free space the driver makes by growing the per-run
+    # copy. Mirrors production (modules/services/ignition.nix) and lets
+    # machines differing only in /var size share one base image. sizeMiB=0
+    # fills the grown tail; the agent then arrives via the aos-test-agent
+    # role merge rather than a baked /var seed.
+    varStorage =
+      if (m.varProvisioning or "baked") == "ignition"
+      then {
+        disks = [
+          {
+            device = "/dev/vda";
+            wipeTable = false;
+            partitions = [{number = 4; label = "var"; sizeMiB = 0;}];
+          }
+        ];
+        filesystems = [
+          {
+            device = "/dev/disk/by-partlabel/var";
+            format = "ext4";
+            label = "aos-var";
+            wipeFilesystem = false;
+          }
+        ];
+      }
+      else {};
+
     collisions =
       builtins.filter
       (f: builtins.elem f.path reservedPaths)
@@ -260,6 +289,7 @@
           };
         storage =
           userStorage
+          // varStorage
           // {
             files =
               mIdentity.storage.files
@@ -284,7 +314,7 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system roles bootMode tpm;
+          inherit (m) name ip mac debugMac index system roles bootMode tpm varProvisioning varSizeMiB;
         }
         // (
           if m.bootMode == "image"
@@ -308,11 +338,15 @@
             initrd = m.system.config.system.build.initrd;
             disk = vmLib.mkTestDisk {
               system = m.system;
-              inherit (m) extraClosures varSizeMiB;
+              inherit (m) extraClosures varSizeMiB varProvisioning;
             };
+            # "ignition" var provisioning emits storage.disks/filesystems
+            # in composeIgnition, which the restrictive metadata profile
+            # rejects — accept the full profile for those machines.
             metadataISO = metadataLib.mkMetadataIso {
               name = "${name}-${m.name}";
               ignitionConfig = composeIgnition {inherit name identity debug;} m;
+              allowStorageHardware = m.varProvisioning == "ignition";
             };
           }
         )
@@ -369,13 +403,20 @@
                   firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
                   metadata = null;
                 }
-                else {
-                  boot = "kernel";
-                  kernel = builtins.toString mb.kernel;
-                  initrd = "${builtins.toString mb.initrd}/initrd.img";
-                  disk = "${builtins.toString mb.disk}/disk.img";
-                  metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
-                }
+                else
+                  {
+                    boot = "kernel";
+                    kernel = builtins.toString mb.kernel;
+                    initrd = "${builtins.toString mb.initrd}/initrd.img";
+                    disk = "${builtins.toString mb.disk}/disk.img";
+                    metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
+                  }
+                  // (lib.optionalAttrs (mb.varProvisioning == "ignition") {
+                    # Base disk ships no /var; grow the per-run copy by this
+                    # many MiB so ignition has room to create+format /var on
+                    # first boot (driver: aos_test_driver/qemu.py).
+                    var_size_mib = mb.varSizeMiB;
+                  })
               )
           )
           machineBuilds;

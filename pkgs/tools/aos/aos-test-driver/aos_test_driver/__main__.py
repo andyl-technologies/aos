@@ -159,6 +159,7 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
         firmware_vars=entry.get("firmware_vars"),
         fw_cfg=entry.get("fw_cfg"),
         disk_size_mib=entry.get("disk_size_mib"),
+        var_size_mib=entry.get("var_size_mib"),
         tpm=entry.get("tpm", False),
         swtpm_bin=entry.get("swtpm_bin"),
         memory_mib=entry["memory_mib"],
