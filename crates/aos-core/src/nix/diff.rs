@@ -6,13 +6,13 @@
 //! paths, and optionally recurse through input derivations by reading the
 //! `.drv` ATerm graph.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use super::NixEval;
-use super::drv::{DrvInput, parse_drv_input_drvs};
+use super::drv::{DrvInput, parse_drv_input_drvs_from_str};
+use super::{DrvClosure, NixEval};
 
 /// The level of `.drv` comparison to perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,17 +118,23 @@ pub fn diff_closure(
     attr: &str,
     mode: DiffMode,
 ) -> Result<DrvDiffReport> {
-    let oracle_result = oracle.instantiate(file, attr);
-    let candidate_result = candidate.instantiate(file, attr);
+    let oracle_result = instantiate_for_mode(oracle, file, attr, mode);
+    let candidate_result = instantiate_for_mode(candidate, file, attr, mode);
     let mut report = DrvDiffReport {
         mode,
-        oracle_root: oracle_result.as_ref().ok().cloned(),
-        candidate_root: candidate_result.as_ref().ok().cloned(),
+        oracle_root: oracle_result
+            .as_ref()
+            .ok()
+            .map(|result| result.root.clone()),
+        candidate_root: candidate_result
+            .as_ref()
+            .ok()
+            .map(|result| result.root.clone()),
         divergences: Vec::new(),
     };
 
-    let (oracle_root, candidate_root) = match (oracle_result, candidate_result) {
-        (Ok(oracle_root), Ok(candidate_root)) => (oracle_root, candidate_root),
+    let (oracle_result, candidate_result) = match (oracle_result, candidate_result) {
+        (Ok(oracle_result), Ok(candidate_result)) => (oracle_result, candidate_result),
         (Err(error), Ok(_)) => {
             report.divergences.push(DrvDiff::Evaluation {
                 side: DiffSide::Oracle,
@@ -148,20 +154,20 @@ pub fn diff_closure(
 
     match mode {
         DiffMode::Path => {
-            if oracle_root != candidate_root {
+            if oracle_result.root != candidate_result.root {
                 report.divergences.push(DrvDiff::RootPath {
-                    oracle: oracle_root,
-                    candidate: candidate_root,
+                    oracle: oracle_result.root,
+                    candidate: candidate_result.root,
                 });
             }
         }
         DiffMode::Byte => {
             let mut visited = BTreeSet::new();
-            compare_drv_pair(&oracle_root, &candidate_root, &mut visited, &mut report)?;
-            if oracle_root != candidate_root {
+            compare_drv_pair(&oracle_result, &candidate_result, &mut visited, &mut report)?;
+            if oracle_result.root != candidate_result.root {
                 report.divergences.push(DrvDiff::RootPath {
-                    oracle: oracle_root,
-                    candidate: candidate_root,
+                    oracle: oracle_result.root,
+                    candidate: candidate_result.root,
                 });
             }
         }
@@ -170,40 +176,125 @@ pub fn diff_closure(
     Ok(report)
 }
 
+#[derive(Debug)]
+struct DiffInstantiation {
+    root: PathBuf,
+    bytes: DiffByteSource,
+}
+
+#[derive(Debug)]
+enum DiffByteSource {
+    FileSystem,
+    Memory(BTreeMap<PathBuf, Vec<u8>>),
+}
+
+impl DiffInstantiation {
+    fn from_closure(closure: DrvClosure) -> Self {
+        let (root, drvs) = closure.into_parts();
+        Self {
+            root,
+            bytes: DiffByteSource::Memory(drvs),
+        }
+    }
+
+    fn file_backed(root: PathBuf) -> Self {
+        Self {
+            root,
+            bytes: DiffByteSource::FileSystem,
+        }
+    }
+
+    fn read_drv_bytes(&self, path: &Path, label: &str) -> Result<Vec<u8>> {
+        match &self.bytes {
+            DiffByteSource::FileSystem => std::fs::read(path)
+                .with_context(|| format!("reading {label} drv {}", path.display())),
+            DiffByteSource::Memory(drvs) => drvs.get(path).cloned().with_context(|| {
+                format!(
+                    "{label} evaluator did not provide in-memory drv bytes for {}",
+                    path.display()
+                )
+            }),
+        }
+    }
+}
+
+fn instantiate_for_mode(
+    eval: &dyn NixEval,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> Result<DiffInstantiation> {
+    match mode {
+        DiffMode::Path => eval
+            .instantiate(file, attr)
+            .map(DiffInstantiation::file_backed),
+        DiffMode::Byte => match eval.instantiate_closure(file, attr)? {
+            Some(closure) => Ok(DiffInstantiation::from_closure(closure)),
+            None => eval
+                .instantiate(file, attr)
+                .map(DiffInstantiation::file_backed),
+        },
+    }
+}
+
 fn compare_drv_pair(
-    oracle: &Path,
-    candidate: &Path,
+    oracle: &DiffInstantiation,
+    candidate: &DiffInstantiation,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
-    let key = (oracle.to_path_buf(), candidate.to_path_buf());
+    compare_drv_pair_at(
+        oracle,
+        candidate,
+        &oracle.root,
+        &candidate.root,
+        visited,
+        report,
+    )
+}
+
+fn compare_drv_pair_at(
+    oracle: &DiffInstantiation,
+    candidate: &DiffInstantiation,
+    oracle_path: &Path,
+    candidate_path: &Path,
+    visited: &mut BTreeSet<(PathBuf, PathBuf)>,
+    report: &mut DrvDiffReport,
+) -> Result<()> {
+    let key = (oracle_path.to_path_buf(), candidate_path.to_path_buf());
     if !visited.insert(key) {
         return Ok(());
     }
 
-    let oracle_inputs = parse_drv_input_drvs(path_str(oracle)?)?;
-    let candidate_inputs = parse_drv_input_drvs(path_str(candidate)?)?;
+    let oracle_bytes = oracle.read_drv_bytes(oracle_path, "oracle")?;
+    let candidate_bytes = candidate.read_drv_bytes(candidate_path, "candidate")?;
+    let oracle_inputs = parse_drv_inputs_from_bytes(&oracle_bytes, oracle_path, "oracle")?;
+    let candidate_inputs =
+        parse_drv_inputs_from_bytes(&candidate_bytes, candidate_path, "candidate")?;
     if oracle_inputs.len() != candidate_inputs.len() {
         report.divergences.push(DrvDiff::InputCount {
-            oracle: oracle.to_path_buf(),
-            candidate: candidate.to_path_buf(),
+            oracle: oracle_path.to_path_buf(),
+            candidate: candidate_path.to_path_buf(),
             oracle_count: oracle_inputs.len(),
             candidate_count: candidate_inputs.len(),
         });
     }
 
     for (oracle_input, candidate_input) in oracle_inputs.iter().zip(candidate_inputs.iter()) {
-        compare_input_pair(oracle_input, candidate_input, visited, report)?;
+        compare_input_pair(
+            oracle,
+            candidate,
+            oracle_input,
+            candidate_input,
+            visited,
+            report,
+        )?;
     }
 
-    let oracle_bytes = std::fs::read(oracle)
-        .with_context(|| format!("reading oracle drv {}", oracle.display()))?;
-    let candidate_bytes = std::fs::read(candidate)
-        .with_context(|| format!("reading candidate drv {}", candidate.display()))?;
     if oracle_bytes != candidate_bytes {
         report.divergences.push(DrvDiff::Bytes {
-            oracle: oracle.to_path_buf(),
-            candidate: candidate.to_path_buf(),
+            oracle: oracle_path.to_path_buf(),
+            candidate: candidate_path.to_path_buf(),
         });
     }
 
@@ -211,6 +302,8 @@ fn compare_drv_pair(
 }
 
 fn compare_input_pair(
+    oracle_result: &DiffInstantiation,
+    candidate_result: &DiffInstantiation,
     oracle: &DrvInput,
     candidate: &DrvInput,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
@@ -227,9 +320,24 @@ fn compare_input_pair(
         });
     }
 
-    compare_drv_pair(&oracle_path, &candidate_path, visited, report)
+    compare_drv_pair_at(
+        oracle_result,
+        candidate_result,
+        &oracle_path,
+        &candidate_path,
+        visited,
+        report,
+    )
 }
 
+fn parse_drv_inputs_from_bytes(bytes: &[u8], path: &Path, label: &str) -> Result<Vec<DrvInput>> {
+    let content = std::str::from_utf8(bytes)
+        .with_context(|| format!("decoding {label} drv {} as UTF-8", path.display()))?;
+    parse_drv_input_drvs_from_str(content)
+        .with_context(|| format!("parsing {label} drv inputs {}", path.display()))
+}
+
+#[cfg(test)]
 fn path_str(path: &Path) -> Result<&str> {
     path.to_str()
         .with_context(|| format!("drv path is not UTF-8: {}", path.display()))
@@ -238,20 +346,41 @@ fn path_str(path: &Path) -> Result<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
 
     struct FakeEval {
         result: Result<PathBuf>,
+        closure: Option<Result<DrvClosure>>,
     }
 
     impl FakeEval {
         fn path(path: PathBuf) -> Self {
-            Self { result: Ok(path) }
+            Self {
+                result: Ok(path),
+                closure: None,
+            }
+        }
+
+        fn path_with_bytes(path: PathBuf, drv_bytes: BTreeMap<PathBuf, Vec<u8>>) -> Self {
+            let closure = DrvClosure::new(path.clone(), drv_bytes);
+            Self {
+                result: Ok(path),
+                closure: Some(Ok(closure)),
+            }
+        }
+
+        fn path_with_closure_error(path: PathBuf, message: &str) -> Self {
+            Self {
+                result: Ok(path),
+                closure: Some(Err(anyhow::anyhow!(message.to_string()))),
+            }
         }
 
         fn error(message: &str) -> Self {
             Self {
                 result: Err(anyhow::anyhow!(message.to_string())),
+                closure: None,
             }
         }
     }
@@ -266,6 +395,14 @@ mod tests {
 
         fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
             self.instantiate(Path::new("expr"), "")
+        }
+
+        fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+            match &self.closure {
+                Some(Ok(closure)) => Ok(Some(closure.clone())),
+                Some(Err(error)) => Err(anyhow::anyhow!(error.to_string())),
+                None => Ok(None),
+            }
         }
 
         fn eval_expr(&self, _expr: &str) -> Result<String> {
@@ -316,6 +453,25 @@ mod tests {
     }
 
     #[test]
+    fn path_mode_does_not_require_in_memory_closure_support() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("same.drv");
+        let oracle = FakeEval::path(root.clone());
+        let candidate = FakeEval::path_with_closure_error(root, "closure failed");
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Path,
+        )?;
+
+        assert!(report.is_match());
+        Ok(())
+    }
+
+    #[test]
     fn byte_mode_walks_input_derivation_pairs() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let oracle_input = temp.path().join("oracle-input.drv");
@@ -323,17 +479,21 @@ mod tests {
         let oracle_root = temp.path().join("oracle-root.drv");
         let candidate_root = temp.path().join("candidate-root.drv");
         fs::write(&oracle_input, drv(&[], "input"))?;
-        fs::write(&candidate_input, drv(&[], "input-changed"))?;
         fs::write(
             &oracle_root,
             drv(&[(path_str(&oracle_input)?, &["out"])], "root"),
         )?;
-        fs::write(
-            &candidate_root,
-            drv(&[(path_str(&candidate_input)?, &["out"])], "root"),
-        )?;
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            drv(&[], "input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv(&[(path_str(&candidate_input)?, &["out"])], "root").into_bytes(),
+        );
         let oracle = FakeEval::path(oracle_root.clone());
-        let candidate = FakeEval::path(candidate_root.clone());
+        let candidate = FakeEval::path_with_bytes(candidate_root.clone(), candidate_bytes);
 
         let report = diff_closure(
             &oracle,
@@ -361,6 +521,43 @@ mod tests {
                 .iter()
                 .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
                     if oracle == &oracle_input && candidate == &candidate_input))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_requires_complete_in_memory_closure_bytes() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_input = temp.path().join("oracle-input.drv");
+        let candidate_input = temp.path().join("candidate-input.drv");
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(&oracle_input, drv(&[], "input"))?;
+        fs::write(
+            &oracle_root,
+            drv(&[(path_str(&oracle_input)?, &["out"])], "root"),
+        )?;
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv(&[(path_str(&candidate_input)?, &["out"])], "root").into_bytes(),
+        );
+        let oracle = FakeEval::path(oracle_root);
+        let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
+
+        let error = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )
+        .expect_err("in-memory evaluators must provide every traversed drv");
+
+        assert!(
+            error
+                .to_string()
+                .contains("did not provide in-memory drv bytes")
         );
         Ok(())
     }

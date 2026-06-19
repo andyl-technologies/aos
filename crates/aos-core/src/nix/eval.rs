@@ -9,6 +9,7 @@
 //! C++ Nix oracle and fallback. The native implementation lives in the
 //! `aos-nix` crate so `aos-core` stays lightweight.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 #[cfg(feature = "native-eval")]
@@ -20,6 +21,35 @@ use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
 use aos_nix::{NativeCliFallbackReason, NativeEvalError, NixNative, eval::TreeWalkOptions};
+
+/// A `.drv` closure produced by an evaluator without requiring filesystem reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrvClosure {
+    root: PathBuf,
+    drvs: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+impl DrvClosure {
+    /// Creates an in-memory `.drv` closure.
+    pub fn new(root: PathBuf, drvs: BTreeMap<PathBuf, Vec<u8>>) -> Self {
+        Self { root, drvs }
+    }
+
+    /// Returns the top-level `.drv` path selected by the instantiation request.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns in-memory `.drv` ATerm bytes by absolute `.drv` path.
+    pub fn drvs(&self) -> &BTreeMap<PathBuf, Vec<u8>> {
+        &self.drvs
+    }
+
+    /// Consumes the closure into its root path and `.drv` byte map.
+    pub fn into_parts(self) -> (PathBuf, BTreeMap<PathBuf, Vec<u8>>) {
+        (self.root, self.drvs)
+    }
+}
 
 static NATIVE_MODE: OnceLock<NativeMode> = OnceLock::new();
 #[cfg(feature = "native-eval")]
@@ -50,6 +80,23 @@ pub trait NixEval: Send + Sync {
     /// Returns an error when parsing, evaluation, or `.drv` materialization
     /// fails.
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf>;
+
+    /// Evaluates `attr` from `file` to an in-memory `.drv` closure when
+    /// supported by this evaluator.
+    ///
+    /// File-backed evaluators return `Ok(None)`, allowing consumers to call
+    /// [`Self::instantiate`] and read the resulting closure from the filesystem.
+    /// Native diff candidates return `Some` so byte comparison is tied to the
+    /// same native evaluation that selected the root path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when parsing, evaluation, or in-memory `.drv`
+    /// materialization fails.
+    fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
+        let _ = (file, attr);
+        Ok(None)
+    }
 
     /// Evaluates a raw expression with `--strict --json` rendering semantics.
     ///
@@ -360,6 +407,12 @@ impl NixEval for NativeOnlyEval {
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         self.native.instantiate_expr(expr)
+    }
+
+    fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
+        let closure = self.native.instantiate_closure(file, attr)?;
+        let (root, drvs) = closure.into_parts();
+        Ok(Some(DrvClosure::new(root, drvs)))
     }
 
     fn eval_expr(&self, expr: &str) -> Result<String> {

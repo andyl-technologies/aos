@@ -49,4 +49,4 @@ pub mod syntax;
 pub mod value;
 
 pub use error::{NativeCliFallbackReason, NativeEvalError, SrcSpan};
-pub use native::NixNative;
+pub use native::{NativeDrvClosure, NixNative};

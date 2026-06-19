@@ -7,6 +7,7 @@
 //! derivation's `drvPath`, while `.drv` file materialization and JSON
 //! expression evaluation stay limited to the implemented Phase-1 subset.
 
+use std::collections::BTreeMap;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -28,6 +29,33 @@ use crate::value::{Value, ValueTag};
 pub struct NixNative {
     verbose: u8,
     options: TreeWalkOptions,
+}
+
+/// An evaluated derivation closure that has not been registered in the store.
+///
+/// The root path and each key in [`Self::drvs`] are absolute `.drv` paths. The
+/// byte values are the ATerm bytes the native evaluator produced in memory.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NativeDrvClosure {
+    root: PathBuf,
+    drvs: BTreeMap<PathBuf, Vec<u8>>,
+}
+
+impl NativeDrvClosure {
+    /// Returns the top-level `.drv` path selected by the instantiation request.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns in-memory `.drv` ATerm bytes by absolute `.drv` path.
+    pub fn drvs(&self) -> &BTreeMap<PathBuf, Vec<u8>> {
+        &self.drvs
+    }
+
+    /// Consumes the closure into its root path and `.drv` byte map.
+    pub fn into_parts(self) -> (PathBuf, BTreeMap<PathBuf, Vec<u8>>) {
+        (self.root, self.drvs)
+    }
 }
 
 impl NixNative {
@@ -77,6 +105,27 @@ impl NixNative {
         self.eval_derivation_path_source(&source, None)
     }
 
+    /// Evaluates `attr` from `file` to an in-memory derivation closure.
+    ///
+    /// The returned `.drv` bytes are not written to or registered in the Nix
+    /// store. This is intended for differential comparison against the C++ Nix
+    /// oracle until native store registration is implemented.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Unsupported`] when the selected expression
+    /// reaches an evaluator feature that is still outside the native tree-walk
+    /// subset, or when the derivation needs deferred output placeholders that
+    /// this byte materializer cannot serialize yet. Returns
+    /// [`NativeEvalError::EvalError`] when the selected value does not expose a
+    /// string `drvPath`.
+    pub fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<NativeDrvClosure> {
+        let attr_path = attr_path_selector(attr)?;
+        let file = nix_string_literal(&path_bytes(file)?)?;
+        let source = format!("(import {file}){attr_path}.drvPath");
+        self.eval_derivation_closure_source(&source, None)
+    }
+
     /// Evaluates a raw expression to a derivation path.
     ///
     /// # Errors
@@ -88,6 +137,27 @@ impl NixNative {
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let source = derivation_path_wrapper_source(expr);
         self.eval_derivation_path_source(
+            &source,
+            Some(WrappedSourceMap {
+                prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
+                expr_len: expr.len(),
+            }),
+        )
+    }
+
+    /// Evaluates a raw expression to an in-memory derivation closure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Unsupported`] when the expression reaches an
+    /// evaluator feature that is still outside the native tree-walk subset, or
+    /// when the derivation needs deferred output placeholders that this byte
+    /// materializer cannot serialize yet. Returns [`NativeEvalError::EvalError`]
+    /// when the expression does not evaluate to a derivation-like attribute set
+    /// with a string `drvPath`.
+    pub fn instantiate_expr_closure(&self, expr: &str) -> Result<NativeDrvClosure> {
+        let source = derivation_path_wrapper_source(expr);
+        self.eval_derivation_closure_source(
             &source,
             Some(WrappedSourceMap {
                 prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
@@ -163,6 +233,49 @@ impl NixNative {
         let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
             .map_err(|error| native_eval_error(error, source_map))?;
         derivation_path_from_value(outcome.value(), outcome.heap())
+    }
+
+    fn eval_derivation_closure_source(
+        &self,
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Result<NativeDrvClosure> {
+        let parsed = parse_str(source).map_err(|source| {
+            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
+        })?;
+        let resolved = resolve(parsed).map_err(|source| {
+            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
+        })?;
+        let ir = lower(resolved).map_err(|source| {
+            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
+        })?;
+        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+            .map_err(|error| native_eval_error(error, source_map))?;
+        let root = derivation_path_from_value(outcome.value(), outcome.heap())?;
+        let mut drvs = BTreeMap::new();
+        for derivation in outcome.derivations() {
+            let path = PathBuf::from(derivation.absolute_path());
+            let bytes = derivation
+                .aterm_bytes()
+                .ok_or_else(|| NativeEvalError::Unsupported {
+                    feature: format!(
+                        "native drv byte materialization for deferred derivation {}",
+                        derivation.absolute_path()
+                    ),
+                    span: None,
+                })?;
+            drvs.insert(path, bytes.to_vec());
+        }
+        if !drvs.contains_key(&root) {
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "native instantiation did not record root derivation {}",
+                    root.display()
+                ),
+            }
+            .into());
+        }
+        Ok(NativeDrvClosure { root, drvs })
     }
 }
 
@@ -682,6 +795,136 @@ mod tests {
             path,
             PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_expr_returns_drv_closure_bytes() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        let closure = native.instantiate_expr_closure(
+            r#"derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+        )?;
+
+        assert_eq!(
+            closure.root(),
+            Path::new("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
+        );
+        let root_bytes = closure
+            .drvs()
+            .get(closure.root())
+            .expect("root derivation bytes are recorded");
+        assert!(root_bytes.starts_with(b"Derive("));
+        assert!(nix_compat::derivation::Derivation::from_aterm_bytes(root_bytes).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_expr_closure_includes_input_derivation_bytes() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        let closure = native.instantiate_expr_closure(
+            r#"let
+                 base = derivationStrict {
+                   name = "base";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in derivationStrict {
+                 name = "consumer";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+                 input = "${base.out}";
+               }"#,
+        )?;
+
+        let base = Path::new("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv");
+        assert!(closure.drvs().contains_key(base));
+        assert_eq!(closure.drvs().len(), 2);
+        let root_bytes = closure
+            .drvs()
+            .get(closure.root())
+            .expect("root derivation bytes are recorded");
+        let root_text = std::str::from_utf8(root_bytes)?;
+        assert!(root_text.contains("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv"));
+        Ok(())
+    }
+
+    #[test]
+    fn native_path_instantiation_does_not_require_drv_closure_bytes() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let expr = r#"derivationStrict {
+             name = "ca";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             __contentAddressed = true;
+             outputHashAlgo = "sha256";
+             outputHashMode = "recursive";
+           }"#;
+
+        let path = native.instantiate_expr(expr)?;
+        assert_eq!(
+            path,
+            PathBuf::from("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv")
+        );
+
+        let error = native
+            .instantiate_expr_closure(expr)
+            .expect_err("deferred output placeholders cannot be serialized yet");
+        assert!(matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn configured_cpp_nix_native_drv_closure_bytes_match_cli() -> Result<()> {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping native drv byte oracle check");
+            return Ok(());
+        };
+        let native = NixNative::new(0)?;
+
+        for expr in [
+            r#"derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+            r#"let
+                 base = derivationStrict {
+                   name = "base";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 };
+               in derivationStrict {
+                 name = "consumer";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+                 input = "${base.out}";
+               }"#,
+        ] {
+            let closure = native.instantiate_expr_closure(expr)?;
+            let output = Command::new(&oracle).args(["--expr", expr]).output()?;
+            assert!(
+                output.status.success(),
+                "C++ Nix oracle unexpectedly rejected {expr:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let root = String::from_utf8(output.stdout)?.trim().to_string();
+            assert_eq!(closure.root(), Path::new(&root), "{expr}");
+
+            for (path, bytes) in closure.drvs() {
+                let expected = fs::read(path)?;
+                assert_eq!(bytes, &expected, "{}", path.display());
+            }
+        }
+
         Ok(())
     }
 

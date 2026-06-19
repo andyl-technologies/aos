@@ -290,11 +290,13 @@ pub fn eval_whnf_owned_with_options(
 ) -> Result<EvalOutcome, TreeWalkError> {
     let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
+    let derivations = evaluator.derivation_snapshot();
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
+        derivations,
     })
 }
 
@@ -336,6 +338,7 @@ pub struct EvalOutcome {
     heap: EvalHeap,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
+    derivations: Vec<EvalDerivation>,
 }
 
 impl EvalOutcome {
@@ -357,6 +360,11 @@ impl EvalOutcome {
     /// Returns user-facing warning output emitted during evaluation.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    /// Returns derivations observed while evaluating the root expression.
+    pub fn derivations(&self) -> &[EvalDerivation] {
+        &self.derivations
     }
 
     /// Consumes the outcome into its value and heap.
@@ -384,6 +392,36 @@ impl EvalOutcome {
             self.trace_output,
             self.warning_output,
         )
+    }
+}
+
+/// A derivation recorded during tree-walk evaluation.
+///
+/// Static derivations include their ATerm bytes. Derivations whose output paths
+/// depend on deferred placeholders are reported without bytes so callers can
+/// reject byte-level materialization explicitly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EvalDerivation {
+    absolute_path: String,
+    aterm_bytes: Option<Vec<u8>>,
+}
+
+impl EvalDerivation {
+    fn new(absolute_path: String, aterm_bytes: Option<Vec<u8>>) -> Self {
+        Self {
+            absolute_path,
+            aterm_bytes,
+        }
+    }
+
+    /// Returns the absolute `/nix/store` path of the `.drv`.
+    pub fn absolute_path(&self) -> &str {
+        &self.absolute_path
+    }
+
+    /// Returns the serialized `.drv` ATerm bytes when they are statically known.
+    pub fn aterm_bytes(&self) -> Option<&[u8]> {
+        self.aterm_bytes.as_deref()
     }
 }
 
@@ -1800,6 +1838,7 @@ pub struct TreeWalk {
 
 #[derive(Clone, Debug)]
 struct KnownDerivation {
+    derivation: nix_compat::derivation::Derivation,
     hash_derivation_modulo: [u8; 32],
     output_names: BTreeSet<String>,
     output_resolution: DerivationOutputResolution,
@@ -4363,6 +4402,18 @@ impl TreeWalk {
         })
     }
 
+    fn derivation_snapshot(&self) -> Vec<EvalDerivation> {
+        self.known_derivations
+            .iter()
+            .map(|(drv_path, known)| {
+                let aterm_bytes = (known.output_resolution
+                    == DerivationOutputResolution::StaticPaths)
+                    .then(|| known.derivation.to_aterm_bytes());
+                EvalDerivation::new(drv_path.to_absolute_path(), aterm_bytes)
+            })
+            .collect()
+    }
+
     fn hash_derivation_modulo_with_inputs(
         derivation: &nix_compat::derivation::Derivation,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
@@ -4391,6 +4442,7 @@ impl TreeWalk {
         self.known_derivations.insert(
             drv_path,
             KnownDerivation {
+                derivation: derivation.clone(),
                 hash_derivation_modulo,
                 output_names,
                 output_resolution,
@@ -28997,11 +29049,13 @@ mod tests {
             source.as_bytes().to_vec(),
         );
         let value = evaluator.eval_root().expect("source evaluates");
+        let derivations = evaluator.derivation_snapshot();
         EvalOutcome {
             value,
             heap: evaluator.heap,
             trace_output: evaluator.trace_output,
             warning_output: evaluator.warning_output,
+            derivations,
         }
     }
 
