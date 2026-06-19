@@ -1078,6 +1078,21 @@ register.
     scheduler and `gate:perf-bench`.
   - **Fallback:** none adopted.
 
+- **RISK-23 / RISK-24 / T-RISK-16 — risk register and Phase-0 checklist guard**
+  - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
+    blocker checklist rule are now enforced by a hermetic doc check.
+  - **Check:** `checks.crucible.phase0.riskRegisterGate`.
+  - **Result:** `checked_risk_tasks=7`, `retired_decision_entries=7`,
+    `phase0_foundational_blockers_open=4`, `unexpected_checked_nonrisk_tasks=0`,
+    `phase1_plus_checked_tasks=0`.
+  - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
+    has a retirement record and a decision-register check name, the foundational
+    blockers S1/S2/S4/S3 are still visibly open, and no non-risk checklist item is
+    marked complete while those blockers remain open. The full RFC coverage/gate
+    catalog lint remains owned by `T-PLAN-1`; this check is the narrower
+    RISK-23/RISK-24 guard.
+  - **Fallback:** none adopted.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed
