@@ -363,6 +363,53 @@ in {
               "systemctl daemon-reload\n"
           )
 
+      def assert_aos_attest_removes_nonce_on_failure():
+          target.wait_until_succeeds("test -d /run/aos-attest", timeout=60)
+          target.succeed("printf %s not-hex > /run/aos-attest/nonce")
+          target.fail("systemctl start aos-attest.service", timeout=60)
+          target.succeed("test -d /run/aos-attest")
+          target.succeed("test ! -e /run/aos-attest/nonce")
+          target.succeed("systemctl reset-failed aos-attest.service")
+
+      def assert_aos_attest_unit_produces_quote(nonce):
+          quote_dir = "/var/lib/aos-attest/quote"
+          quote_json = "/var/lib/aos-attest/quote.json"
+          target.wait_until_succeeds("test -d /run/aos-attest", timeout=60)
+          target.succeed(f"printf %s {shlex.quote(nonce)} > /run/aos-attest/nonce")
+          target.succeed("systemctl start aos-attest.service", timeout=60)
+          raw = target.succeed(f"cat {quote_json}")
+          print("=== aos-attest service quote ===")
+          print(raw)
+          quote = json.loads(raw)
+          assert quote["nonce"] == nonce
+          assert quote["pcr_selection"] == "sha256:7,11,12,15"
+          assert len(quote["quoted_pcr15"]) == 64
+          for key in (
+              "ek_public",
+              "ek_name",
+              "ek_qualified_name",
+              "ak_public",
+              "ak_name",
+              "ak_qualified_name",
+              "quote_message",
+              "quote_signature",
+              "quote_pcrs",
+          ):
+              path = quote[key]
+              assert path.startswith(f"{quote_dir}/"), path
+              target.succeed(f"test -s {path}")
+          target.succeed(
+              f"{TPM2_CHECKQUOTE} -u {quote['ak_public']} "
+              f"-m {quote['quote_message']} "
+              f"-s {quote['quote_signature']} "
+              f"-f {quote['quote_pcrs']} "
+              f"-l sha256:7,11,12,15 "
+              f"-g sha256 -q {nonce}"
+          )
+          target.succeed("test -d /run/aos-attest")
+          target.succeed("test ! -e /run/aos-attest/nonce")
+          return quote
+
       def assert_quote_verifies_package_event_log(prior_event_log=""):
           nonce = "00112233445566778899aabbccddeeff"
           out_dir = "/tmp/aos-package-quote"
@@ -378,8 +425,21 @@ in {
               baseline_value = records[0]["pcr_value"]
               baseline_arg = f" --pcr15-baseline {shlex.quote(baseline_value)}"
 
+          assert_aos_attest_removes_nonce_on_failure()
+          service_quote = assert_aos_attest_unit_produces_quote(nonce)
+          service_verified_raw = target.succeed(
+              f"{APM} --json attest verify --system "
+              f"--event-log {event_log_path} "
+              f"--pcr15 {service_quote['quoted_pcr15']}{baseline_arg}"
+          )
+          print("=== aos-attest service package attestation verification ===")
+          print(service_verified_raw)
+          service_verified = json.loads(service_verified_raw)
+          assert service_verified["pcr15"] == service_quote["quoted_pcr15"]
+          assert service_verified["package_count"] >= 2
+
           raw = target.succeed(
-              f"{APM} --json _test-produce-package-attestation-quote "
+              f"{APM} --json attest quote "
               f"--nonce {nonce} --output-dir {out_dir}"
           )
           print("=== package attestation quote ===")
@@ -399,7 +459,7 @@ in {
           )
 
           verified_raw = target.succeed(
-              f"{APM} --json _test-verify-package-attestation --system "
+              f"{APM} --json attest verify --system "
               f"--event-log {event_log_path} "
               f"--pcr15 {quote['quoted_pcr15']}{baseline_arg}"
           )
@@ -410,7 +470,7 @@ in {
           assert verified["package_count"] >= 2
           if baseline_value is not None:
               out = target.fail(
-                  f"{APM} --json _test-verify-package-attestation --system "
+                  f"{APM} --json attest verify --system "
                   f"--event-log {event_log_path} "
                   f"--pcr15 {quote['quoted_pcr15']} 2>&1"
               )
@@ -420,7 +480,7 @@ in {
                   "00" * 32 if baseline_hex != "00" * 32 else "11" * 32
               )
               out = target.fail(
-                  f"{APM} --json _test-verify-package-attestation --system "
+                  f"{APM} --json attest verify --system "
                   f"--event-log {event_log_path} "
                   f"--pcr15 {quote['quoted_pcr15']} "
                   f"--pcr15-baseline {shlex.quote(wrong_baseline)} 2>&1"
@@ -498,13 +558,13 @@ in {
               f"printf %s {shlex.quote(tampered_log)} > /tmp/aos-packages-tampered.cel"
           )
           out = target.fail(
-              f"{APM} --json _test-verify-package-attestation --system "
+              f"{APM} --json attest verify --system "
               f"--event-log /tmp/aos-packages-tampered.cel "
               f"--pcr15 {quote['quoted_pcr15']}{baseline_arg} 2>&1"
           )
           assert "no golden measurement" in out or "replayed PCR 15" in out, out
           out = target.fail(
-              f"{APM} --json _test-verify-package-attestation --system "
+              f"{APM} --json attest verify --system "
               f"--event-log /tmp/aos-packages-tampered.cel "
               f"--pcr15 {tampered_pcr15}{baseline_arg} 2>&1"
           )
