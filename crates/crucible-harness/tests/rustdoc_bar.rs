@@ -408,12 +408,12 @@ fn rustdoc_bar_failures(
         ));
     }
 
-    if let Some(owner) = format_owner {
-        if !has_tagged_format_sketch(&module_docs) {
-            failures.push(format!(
-                "{display_path}: {owner} module is missing tagged format sketch"
-            ));
-        }
+    if let Some(owner) = format_owner
+        && !has_tagged_format_sketch(&module_docs)
+    {
+        failures.push(format!(
+            "{display_path}: {owner} module is missing tagged format sketch"
+        ));
     }
 
     failures.extend(ascii_comment_doc_failures(&lines, display_path));

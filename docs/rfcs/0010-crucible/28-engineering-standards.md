@@ -162,10 +162,10 @@ buildable spec, not a slogan.
      wall-clock is permitted only for **observational** logging behind a type
      that cannot feed canonical state ([STD-9]).
 
-  3. **Thread/global RNG or host entropy.** `rand::thread_rng`, `rand::random`,
-     `getrandom`, `/dev/urandom` reads, `RandomState`'s default hasher seeding
-     where the seed escapes into ordering, or any equivalent. All randomness MUST
-     come from the **seeded decision RNG** ([`04-determinism-contract.md`](04-determinism-contract.md),
+  3. **Thread/global RNG or host entropy.** `rand::thread_rng`, `rand::rng`,
+     `rand::random`, `getrandom`, `/dev/urandom` reads, `RandomState`'s default
+     hasher seeding where the seed escapes into ordering, or any equivalent. All
+     randomness MUST come from the **seeded decision RNG** ([`04-determinism-contract.md`](04-determinism-contract.md),
      [`08-scheduling.md`](08-scheduling.md)), whose per-entity streams are forked
      by entity name-hash so adding a node does not perturb others ([HARN-31]).
 
@@ -202,8 +202,8 @@ buildable spec, not a slogan.
      `dylint` lints, denied (not warned), covering the mechanically-detectable
      patterns: `clippy::disallowed_methods` and `clippy::disallowed_types`
      populated with the banned APIs and types (`std::time::Instant::now`,
-     `std::time::SystemTime::now`, `rand::thread_rng`, `rand::random`,
-     `getrandom::getrandom`, `std::collections::hash_map::RandomState`,
+     `std::time::SystemTime::now`, `rand::thread_rng`, `rand::rng`,
+     `rand::random`, `getrandom::getrandom`, `std::collections::hash_map::RandomState`,
      `HashMap`/`HashSet` without an explicit deterministic hasher), plus the
      workspace `#![deny(clippy::all, clippy::unwrap_used, clippy::expect_used,
      clippy::float_arithmetic_on_decision_path)]`-style deny set. The
@@ -538,7 +538,7 @@ the conditions under which feature code can be trusted to stay deterministic
   library crate, `anyhow` only at the binary boundary, and `tracing`-only
   diagnostics from libraries (no `println!`/`eprintln!`). — satisfies [STD-7],
   [STD-8], [STD-9]; spec §1.2.
-- [ ] **T-STD-4** Implement the `gate:harness-lint` clippy/dylint tier: the
+- [x] **T-STD-4** Implement the `gate:harness-lint` clippy/dylint tier: the
   checked-in `disallowed_methods`/`disallowed_types` list (wall-clock,
   thread/global RNG, `RandomState`, raw `HashMap`/`HashSet`) and the workspace
   deny set (incl. `unwrap_used`/`expect_used` and decision-path float

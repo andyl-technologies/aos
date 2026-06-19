@@ -75,16 +75,20 @@ fn component_building_blocks_report_first_mismatch() -> Result<(), Box<dyn Error
         final_fingerprint: vec![9],
     };
 
-    let mismatch = compare_fingerprint_streams(&left_stream, &right_stream)
-        .expect_err("sample mismatch should be reported");
+    let mismatch = must_err(
+        compare_fingerprint_streams(&left_stream, &right_stream),
+        "sample mismatch should be reported",
+    );
     assert!(matches!(
-        mismatch.kind,
+        &mismatch.kind,
         FingerprintMismatchKind::Sample { .. }
     ));
     assert_eq!(mismatch.sample_index, 1);
 
-    let report = locate_first_divergence(&left_stream, &right_stream)
-        .expect("divergence should be localized");
+    let report = must_some(
+        locate_first_divergence(&left_stream, &right_stream),
+        "divergence should be localized",
+    );
     assert_eq!(report.sample_index, 1);
     assert_eq!(report.node.as_deref(), Some("node-a"));
     assert_eq!(report.previous_matching_icount, Some(10));
@@ -93,22 +97,26 @@ fn component_building_blocks_report_first_mismatch() -> Result<(), Box<dyn Error
     let first_diff = bisect_first_different_icount(0, 8, |icount| icount < 5)?;
     assert_eq!(first_diff, 5);
 
-    let replay_mismatch = check_replay_oracle(&[ReplayOracleCase {
-        checkpoint_id: "cp-1".to_string(),
-        fat_hash: vec![1],
-        thin_hash: vec![2],
-    }])
-    .expect_err("hash mismatch should fail replay oracle");
+    let replay_mismatch = must_err(
+        check_replay_oracle(&[ReplayOracleCase {
+            checkpoint_id: "cp-1".to_string(),
+            fat_hash: vec![1],
+            thin_hash: vec![2],
+        }]),
+        "hash mismatch should fail replay oracle",
+    );
     assert_eq!(replay_mismatch.checkpoint_id, "cp-1");
 
-    let vector_mismatch = run_golden_vectors(&[GoldenVectorCase {
-        name: "frame-v1".to_string(),
-        expected_version: 1,
-        actual_version: 2,
-        expected_bytes: vec![1, 2, 3],
-        actual_bytes: vec![1, 2, 3],
-    }])
-    .expect_err("version mismatch should fail ABI conformance");
+    let vector_mismatch = must_err(
+        run_golden_vectors(&[GoldenVectorCase {
+            name: "frame-v1".to_string(),
+            expected_version: 1,
+            actual_version: 2,
+            expected_bytes: vec![1, 2, 3],
+            actual_bytes: vec![1, 2, 3],
+        }]),
+        "version mismatch should fail ABI conformance",
+    );
     assert!(matches!(
         vector_mismatch.kind,
         GoldenVectorMismatchKind::Version {
@@ -117,11 +125,13 @@ fn component_building_blocks_report_first_mismatch() -> Result<(), Box<dyn Error
         }
     ));
 
-    let adversarial_mismatch = compare_adversarial_runs(&[
-        adversarial_run("one-core", &[1], &[9]),
-        adversarial_run("many-core", &[2], &[9]),
-    ])
-    .expect_err("canonical log mismatch should fail adversarial comparison");
+    let adversarial_mismatch = must_err(
+        compare_adversarial_runs(&[
+            adversarial_run("one-core", &[1], &[9]),
+            adversarial_run("many-core", &[2], &[9]),
+        ]),
+        "canonical log mismatch should fail adversarial comparison",
+    );
     assert!(matches!(
         adversarial_mismatch,
         AdversarialComparisonError::Mismatch(mismatch)
@@ -129,6 +139,20 @@ fn component_building_blocks_report_first_mismatch() -> Result<(), Box<dyn Error
     ));
 
     Ok(())
+}
+
+fn must_err<T, E>(result: Result<T, E>, message: &str) -> E {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(error) => error,
+    }
+}
+
+fn must_some<T>(option: Option<T>, message: &str) -> T {
+    match option {
+        Some(value) => value,
+        None => panic!("{message}"),
+    }
 }
 
 #[test]

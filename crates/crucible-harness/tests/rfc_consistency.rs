@@ -179,7 +179,10 @@ fn phase_plan_parser_expands_main_ranges_without_promoting_subset_mentions() {
         .join("\n"),
     }];
 
-    let order = phase_plan_task_order(&docs).expect("synthetic phase plan parses");
+    let order = match phase_plan_task_order(&docs) {
+        Ok(order) => order,
+        Err(error) => panic!("synthetic phase plan should parse: {error}"),
+    };
     assert_eq!(order.first().map(String::as_str), Some("T-DET-1"));
     assert_eq!(order.get(1).map(String::as_str), Some("T-DET-2"));
     assert_eq!(order.get(28).map(String::as_str), Some("T-DET-29"));

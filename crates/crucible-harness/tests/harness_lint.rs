@@ -69,6 +69,36 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
 }
 
 #[test]
+fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let repo = repo_root();
+    let workspace_manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    let clippy_config = fs::read_to_string(root.join("clippy.toml"))?;
+    let crucible_package = fs::read_to_string(repo.join("pkgs/tools/crucible/crucible.nix"))?;
+    let mut package_manifests = Vec::new();
+
+    for spec in crate_spec_index() {
+        let manifest = fs::read_to_string(root.join(spec.package).join("Cargo.toml"))?;
+        package_manifests.push((spec.package, manifest));
+    }
+
+    let findings = clippy_tier_failures(
+        &workspace_manifest,
+        &clippy_config,
+        &package_manifests,
+        &crucible_package,
+    );
+
+    assert!(
+        findings.is_empty(),
+        "gate:harness-lint clippy tier findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn harness_lint_rejects_banned_code_patterns() {
     let findings = scan_content(
         Path::new("synthetic.rs"),
@@ -287,6 +317,37 @@ fn harness_lint_rejects_missing_typed_error_signal_in_libraries() {
     assert!(cli_findings.is_empty(), "{cli_findings:?}");
 }
 
+#[test]
+fn harness_lint_rejects_clippy_tier_drift() {
+    let package_manifests = [(
+        "crucible-sim",
+        r#"
+            [package]
+            name = "crucible-sim"
+        "#
+        .to_owned(),
+    )];
+    let findings = clippy_tier_failures(
+        r#"
+            [workspace.lints.clippy]
+            all = "warn"
+            disallowed_methods = "deny"
+        "#,
+        r#"
+            disallowed-methods = []
+            disallowed-types = []
+        "#,
+        &package_manifests,
+        "",
+    );
+
+    assert_contains(&findings, "workspace clippy deny");
+    assert_contains(&findings, "disallowed method");
+    assert_contains(&findings, "disallowed type");
+    assert_contains(&findings, "workspace lint inheritance");
+    assert_contains(&findings, "clippy gate wiring");
+}
+
 const REDUCTION_PATH_PACKAGES: &[&str] = &[
     "crucible-sim",
     "crucible-assert",
@@ -297,12 +358,42 @@ const REDUCTION_PATH_PACKAGES: &[&str] = &[
 ];
 const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
 const BINARY_BOUNDARY_ROOT: &str = "src/main.rs";
+const CLIPPY_DISALLOWED_METHODS: &[&str] = &[
+    "std::time::Instant::now",
+    "std::time::Instant::elapsed",
+    "std::time::SystemTime::now",
+    "rand::thread_rng",
+    "rand::rng",
+    "rand::random",
+    "getrandom::getrandom",
+];
+const CLIPPY_DISALLOWED_TYPES: &[&str] = &[
+    "std::collections::HashMap",
+    "std::collections::HashSet",
+    "std::collections::hash_map::RandomState",
+];
+const CLIPPY_DENY_LINTS: &[&str] = &[
+    "all",
+    "disallowed_methods",
+    "disallowed_types",
+    "expect_used",
+    "float_arithmetic",
+    "unwrap_used",
+];
 
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     match manifest_dir.parent() {
         Some(root) => root.to_path_buf(),
         None => panic!("crucible-harness manifest is not inside the workspace"),
+    }
+}
+
+fn repo_root() -> PathBuf {
+    let workspace = workspace_root();
+    match workspace.parent() {
+        Some(root) => root.to_path_buf(),
+        None => panic!("crucible workspace root has no repository parent"),
     }
 }
 
@@ -384,6 +475,109 @@ fn scan_content(path: &Path, content: &str) -> Vec<String> {
     }
 
     findings
+}
+
+fn clippy_tier_failures(
+    workspace_manifest: &str,
+    clippy_config: &str,
+    package_manifests: &[(&str, String)],
+    crucible_package: &str,
+) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    if let Some(workspace_doc) = parse_toml("crates/Cargo.toml", workspace_manifest, &mut findings)
+    {
+        for lint in CLIPPY_DENY_LINTS {
+            if toml_string_at(&workspace_doc, &["workspace", "lints", "clippy", lint])
+                != Some("deny")
+            {
+                findings.push(format!(
+                    "crates/Cargo.toml: missing workspace clippy deny `{lint} = \"deny\"`"
+                ));
+            }
+        }
+    }
+
+    if let Some(clippy_doc) = parse_toml("crates/clippy.toml", clippy_config, &mut findings) {
+        for method in CLIPPY_DISALLOWED_METHODS {
+            if !toml_array_has_path(&clippy_doc, "disallowed-methods", method) {
+                findings.push(format!(
+                    "crates/clippy.toml: missing disallowed method `{method}`"
+                ));
+            }
+        }
+
+        for disallowed_type in CLIPPY_DISALLOWED_TYPES {
+            if !toml_array_has_path(&clippy_doc, "disallowed-types", disallowed_type) {
+                findings.push(format!(
+                    "crates/clippy.toml: missing disallowed type `{disallowed_type}`"
+                ));
+            }
+        }
+    }
+
+    for (package, manifest) in package_manifests {
+        match parse_toml(&format!("{package}/Cargo.toml"), manifest, &mut findings) {
+            Some(manifest_doc)
+                if toml_bool_at(&manifest_doc, &["lints", "workspace"]) == Some(true) => {}
+            Some(_) => findings.push(format!(
+                "{package}/Cargo.toml: missing workspace lint inheritance"
+            )),
+            None => {}
+        }
+    }
+
+    for required in [
+        "cargo clippy",
+        "--all-targets",
+        "rust.dev",
+        "-D warnings",
+        "${packageFlags}",
+    ] {
+        if !crucible_package.contains(required) {
+            findings.push(format!(
+                "pkgs/tools/crucible/crucible.nix: missing clippy gate wiring `{required}`"
+            ));
+        }
+    }
+
+    findings
+}
+
+fn parse_toml(label: &str, content: &str, findings: &mut Vec<String>) -> Option<toml::Value> {
+    match content.parse::<toml::Value>() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            findings.push(format!("{label}: invalid TOML: {error}"));
+            None
+        }
+    }
+}
+
+fn toml_string_at<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a str> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_str()
+}
+
+fn toml_bool_at(value: &toml::Value, path: &[&str]) -> Option<bool> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    current.as_bool()
+}
+
+fn toml_array_has_path(value: &toml::Value, key: &str, required_path: &str) -> bool {
+    let Some(entries) = value.get(key).and_then(toml::Value::as_array) else {
+        return false;
+    };
+
+    entries
+        .iter()
+        .any(|entry| entry.get("path").and_then(toml::Value::as_str) == Some(required_path))
 }
 
 fn manifest_error_dependency_failures(

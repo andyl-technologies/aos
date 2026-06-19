@@ -3,6 +3,7 @@
   lib,
   mkCargoPackage,
   fetchCargoDeps,
+  rust,
 }: let
   version = "0.1.0";
   src = import ./_source.nix {inherit lib;};
@@ -26,6 +27,7 @@ in
     cargoFlags = packageFlags;
     cargoTestFlags = packageFlags;
     doCheck = true;
+    buildDeps = [rust.dev];
 
     # The source root includes docs/, pkgs/tools/crucible/, and tests/crucible/
     # so harness lints can read RFC-0010 and AOS check wiring, while Cargo's
@@ -35,6 +37,14 @@ in
     '';
 
     postBuild = ''
+      cargo clippy \
+        --all-targets \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        ${packageFlags} \
+        -- \
+        -D warnings
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
       cargo doc \
         --no-deps \

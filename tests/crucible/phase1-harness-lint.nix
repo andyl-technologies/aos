@@ -4,6 +4,9 @@
   attrPath ? "checks.crucible.phase0.gates.harnessLint",
 }: let
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
+  workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
+  clippyConfig = builtins.readFile ../../crates/clippy.toml;
+  cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -152,6 +155,28 @@
   ];
   binaryPackages = ["crucible-cli"];
   libraryPackages = builtins.filter (package: !(builtins.elem package binaryPackages)) allPackages;
+  requiredClippyMethods = [
+    "std::time::Instant::now"
+    "std::time::Instant::elapsed"
+    "std::time::SystemTime::now"
+    "rand::thread_rng"
+    "rand::rng"
+    "rand::random"
+    "getrandom::getrandom"
+  ];
+  requiredClippyTypes = [
+    "std::collections::HashMap"
+    "std::collections::HashSet"
+    "std::collections::hash_map::RandomState"
+  ];
+  requiredClippyDenyLints = [
+    "all"
+    "disallowed_methods"
+    "disallowed_types"
+    "expect_used"
+    "float_arithmetic"
+    "unwrap_used"
+  ];
 
   denyPatterns = [
     {
@@ -414,6 +439,60 @@
     )
     libraryPackages;
 
+  clippyTierFailures = let
+    normalizedWorkspaceManifest = normalize workspaceManifest;
+    normalizedClippyConfig = normalize clippyConfig;
+    normalizedCruciblePackageNix = normalize cruciblePackageNix;
+    workspaceDenyFailures =
+      lib.concatMap (
+        lint:
+          lib.optionals (!(hasInfix "${lint}=\"deny\"" normalizedWorkspaceManifest)) [
+            "crates/Cargo.toml: missing workspace clippy deny `${lint} = \"deny\"`"
+          ]
+      )
+      requiredClippyDenyLints;
+    methodFailures =
+      lib.concatMap (
+        method:
+          lib.optionals (!(hasInfix "path=\"${method}\"" normalizedClippyConfig)) [
+            "crates/clippy.toml: missing disallowed method `${method}`"
+          ]
+      )
+      requiredClippyMethods;
+    typeFailures =
+      lib.concatMap (
+        disallowedType:
+          lib.optionals (!(hasInfix "path=\"${disallowedType}\"" normalizedClippyConfig)) [
+            "crates/clippy.toml: missing disallowed type `${disallowedType}`"
+          ]
+      )
+      requiredClippyTypes;
+    manifestFailures =
+      lib.concatMap (
+        package: let
+          normalizedManifest = normalize (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+        in
+          lib.optionals (!(hasInfix "[lints]workspace=true" normalizedManifest)) [
+            "${package}/Cargo.toml: missing workspace lint inheritance"
+          ]
+      )
+      allPackages;
+    buildHookFailures =
+      lib.concatMap (
+        required:
+          lib.optionals (!(hasInfix required normalizedCruciblePackageNix)) [
+            "pkgs/tools/crucible/crucible.nix: missing clippy gate wiring `${required}`"
+          ]
+      ) [
+        "cargoclippy"
+        "--all-targets"
+        "rust.dev"
+        "-Dwarnings"
+        "packageFlags"
+      ];
+  in
+    workspaceDenyFailures ++ methodFailures ++ typeFailures ++ manifestFailures ++ buildHookFailures;
+
   regressionFailures = let
     findings = scanContent "regression.rs" ''
       fn bad() {
@@ -529,7 +608,7 @@
       "harness-lint regression failed to reject manifest error policy drift"
     ];
 
-  failures = sourceFailures ++ productionSourceFailures ++ manifestFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures;
+  failures = sourceFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -539,7 +618,7 @@ in
       version = "0";
       src = null;
 
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [pkgs.coreutils pkgs.crucible];
 
       phases = [
         {
@@ -551,10 +630,11 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-CRATE-7,T-STD-3
+            tasks=T-CRATE-7,T-STD-3,T-STD-4
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
+            clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
             RESULT
           '';
         }
