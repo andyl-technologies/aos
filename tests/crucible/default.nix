@@ -10,6 +10,7 @@
     s5VirtualMemory = import ./phase0-s5.nix {inherit pkgs lib;};
     s6KaslrAslr = import ./phase0-s6.nix {inherit pkgs lib;};
     s7DeadlineCeiling = import ./phase0-s7.nix {inherit pkgs lib;};
+    s9QemuBuildIdentity = import ./phase0-s9.nix {inherit pkgs lib;};
     s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
     abiDrift = import ./phase0-abi-drift.nix {inherit pkgs;};
     coverageOverhead = import ./phase0-coverage.nix {inherit pkgs lib;};
