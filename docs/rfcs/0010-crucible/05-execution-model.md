@@ -870,7 +870,7 @@ information that cannot be recomputed.
   baked snapshot. — satisfies [EXEC-15], [EXEC-16], [EXEC-17]; spec §5.
 - [ ] **T-EXEC-7** Wire `start`, `resume`, and `fork` as call sites of
   `instantiate` (genesis / tip / prefix) and delete any separate
-  boot/resume/fork realization paths. — satisfies [EXEC-14]; spec §5, §6.
+  boot/resume/fork realization paths. — satisfies [EXEC-14], [G-4]; spec §5, §6.
 - [ ] **T-EXEC-8** Implement `bake`: cold-boot each node once to its ready point,
   snapshot, content-address as the shared genesis checkpoint; assert it is the
   only cold-boot in the codebase (lint). — satisfies [EXEC-18], [EXEC-19];
@@ -891,7 +891,7 @@ information that cannot be recomputed.
 - [ ] **T-EXEC-13** Express save/replay/search as model operations
   (fat-checkpoint materialization keyed by `config.id()`, on-demand oracle replay,
   frontier `step` enumeration) with content-addressed temporal-graph dedup. —
-  satisfies [EXEC-25], [EXEC-26]; spec §9.
+  satisfies [EXEC-25], [EXEC-26], [G-6]; spec §9.
 - [ ] **T-EXEC-14** Implement the `Engine` async state machine (closed run-states,
   poll-then-step actor loop) inside the `Session` actor with bounded quanta and
   inter-quantum yields. — satisfies [EXEC-27], [EXEC-28]; spec §10.
@@ -912,7 +912,7 @@ information that cannot be recomputed.
   default-recomputable / override-stored discipline: prove the default RR/timer
   preemption sequence is recomputable from `(def, Seed, schedule)` and
   audit-only, and that an explorer-supplied preemption (including `InterruptAt`
-  at N = 1) is stored and replayed. — satisfies [EXEC-33]; spec §12.
+  at N = 1) is stored and replayed. — satisfies [EXEC-33], [G-11]; spec §12.
 - [ ] **T-EXEC-20** Implement the `Decision::AppRandom` variant: record
   `stream`/`request_id`/`width`/`value` for each served app draw; on replay
   re-derive a non-overridden draw from the seeded stream and serve an overridden

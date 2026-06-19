@@ -681,7 +681,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [ ] **T-DET-10** Implement `gate:layer0-determinism`: the aggregate single-VM
   determinism gate across the elimination set, with per-source micro-tests that
   fail if any of E1–E10, E13–E17 is reintroduced. — satisfies [DET-18],
-  [DET-3]; spec §4.6.
+  [DET-3], [NG-6]; spec §4.6.
 - [ ] **T-DET-11** Specify and implement the icount-stamped injection contract in
   the shared-memory ABI: every input carries an in-band delivery icount; the
   consumer is time-driven, not arrival-driven. — satisfies [DET-11], [DET-13],
@@ -708,7 +708,8 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   §4.7.
 - [ ] **T-DET-18** Establish purity of `reduce` as the determinism statement and
   wire `gate:replay-oracle` to enforce [INV-2] continuously (fat ≡ thin;
-  materialize ≡ re-reduce). — satisfies [DET-28], [DET-41]; spec §4.8, §4.11.
+  materialize ≡ re-reduce). — satisfies [DET-28], [DET-41], [INV-2]; spec §4.8,
+  §4.11.
 - [ ] **T-DET-19** Run the snapshot/restore-completeness spike: verify `loadvm`
   preserves icount, bias, TCG/device/timer and time-control state so a restored
   fat checkpoint passes the replay oracle. — satisfies [DET-32], [DET-18] (E20);
@@ -719,7 +720,8 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   [DET-39], routes [INV-10]; spec §4.8, §4.11.
 - [ ] **T-DET-21** Enforce guest non-modification: CoW-only guest writes,
   byte-identical genesis backing state across runs, no Crucible content placed
-  inside the guest for core operation. — satisfies [DET-15], [DET-16]; spec §4.5.
+  inside the guest for core operation. — satisfies [DET-15], [DET-16], [INV-5];
+  spec §4.5.
 - [ ] **T-DET-22** Implement `gate:any-guest`: the determinism contract holds
   black-box on an unmodified stock image with white-box disabled; enabling
   white-box does not perturb fingerprints. — satisfies [DET-15], [DET-17]; spec
@@ -737,8 +739,8 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   [DET-38]; spec §4.11.
 - [ ] **T-DET-26** Implement `gate:e2e-determinism`: a representative multi-VM
   fault-injected scenario runs bit-identically under adversarial conditions and
-  reproduces from its self-contained artifact. — satisfies [DET-40], [DET-4];
-  spec §4.11.
+  reproduces from its self-contained artifact. — satisfies [DET-40], [DET-4],
+  [G-1]; spec §4.11.
 - [ ] **T-DET-27** Add the `gate:replay-oracle` reproduction-artifact round-trip:
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];

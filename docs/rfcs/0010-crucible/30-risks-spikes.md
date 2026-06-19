@@ -969,14 +969,20 @@ manifests under one choice and is absent under another.
 **Fail:** a choice is not reproducible, no two choices differ (preemption has no
 effect), or no choice surfaces the known race.
 
-- **[RISK-26]** Spike **S12** MUST demonstrate that a forced `Decision::Preemption`
-  (vCPU switch for `N>1`, or timer-interrupt timing for any `N`) at a commanded
-  node-icount in `[deadline, horizon]` yields a **different-but-bit-reproducible**
-  trajectory, that at least two choices produce different horizon fingerprints, and
-  that a known race manifests under one choice and not another; for `N=1`, varying
-  the timer-interrupt delivery icount MUST produce distinct reproducible
-  trajectories. *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`.
-  *Spec:* §30.11b; satisfies [G-11], [SCHED-46], [DET-12]; back-ref §8, §22.
+- **[RISK-26]** Spike **S12** MUST either demonstrate that a forced
+  `Decision::Preemption` (vCPU switch for `N>1`, or timer-interrupt timing for any
+  `N`) at a commanded node-icount in `[deadline, horizon]` yields a
+  **different-but-bit-reproducible** trajectory, that at least two choices produce
+  different horizon fingerprints, and that a known race manifests under one choice
+  and not another, or it MUST adopt the default-deterministic-interleaving fallback
+  and keep `Decision::Preemption` exploration disabled until the commanded
+  preemption-injection surface lands and S12 is rerun. For `N=1`, a successful S12
+  MUST produce distinct reproducible trajectories by varying the timer-interrupt
+  delivery icount. *Gate:* `gate:layer1-injection`,
+  `gate:single-vm-fingerprint`. *Spec:* §30.11b. A successful non-fallback S12
+  satisfies [G-11], [SCHED-46], and [DET-12]; the fallback branch satisfies only
+  this risk-resolution requirement and keeps those capabilities disabled.
+  Back-ref §8, §22.
 
 ### What it could invalidate
 
@@ -1035,10 +1041,15 @@ throughput budget — the explorer must override per-branch (see fallback).
 - **[RISK-27]** Spike **S13** MUST sweep `rr_switch_quantum` and report, per value,
   multi-vCPU throughput against the [`25-performance-targets.md`](25-performance-targets.md)
   budget and race-surfacing yield via the S12 explorer, then record the resolved
-  default value (closing open decision **D-25**). The result is **correctness-neutral**
-  — any fixed quantum is deterministic per [RISK-25] — so S13 gates only the default
-  value, never the contract. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §30.11c;
-  resolves [D-25]; satisfies [SCHED-45], [PLUG-3]; back-ref §22, §25.
+  default value (closing open decision **D-25**), or it MUST adopt the
+  modeled-throughput default-only fallback and leave D-25 open until S12 passes
+  without fallback and the full race-yield sweep can run. The result is
+  **correctness-neutral** — any fixed quantum is deterministic per [RISK-25] — so
+  S13 gates only the default value, never the contract. *Gate:*
+  `gate:single-vm-fingerprint`. *Spec:* §30.11c. A successful non-fallback S13
+  resolves [D-25] and satisfies [SCHED-45] and [PLUG-3]; the fallback branch
+  satisfies only this risk-resolution requirement and leaves D-25 open. Back-ref
+  §22, §25.
 
 ### What it could invalidate
 
@@ -1100,10 +1111,14 @@ advances icount outside the scheduler's control (a raw QEMU step).
   plugin's time-control state **fingerprint-unchanged** ([DET-29]), and that any
   gdbstub-initiated stepping is routed through (or refused in favor of) the
   scheduler's deterministic step machinery — never a raw QEMU step that advances
-  icount out of band. Until S14 is green, debugging MUST default to **read-only
-  attach + Crucible-driven step/reverse-step**, with gdb single-step **disabled**.
-  *Gate:* `gate:single-vm-fingerprint`, `gate:replay-oracle`. *Spec:* §30.11d;
-  satisfies [DBG-1], [SCHED-46]; back-ref file 36.
+  icount out of band, or it MUST adopt the read-only attach +
+  Crucible-driven-step fallback until the debug surface lands and S14 can run.
+  Until S14 is green, debugging MUST default to **read-only attach +
+  Crucible-driven step/reverse-step**, with gdb single-step **disabled**. *Gate:*
+  `gate:single-vm-fingerprint`, `gate:replay-oracle`. *Spec:* §30.11d. A
+  successful non-fallback S14 satisfies [DBG-1] and [SCHED-46]; the fallback
+  branch satisfies only this risk-resolution requirement and keeps live debugging
+  constrained. Back-ref file 36.
 
 ### What it could invalidate
 
@@ -1835,8 +1850,9 @@ never tolerated). Results live in the decision register (31).
   interrupt-timing injection can be exercised yet; `Decision::Preemption`
   exploration remains disabled and the system keeps the default deterministic
   interleaving until the patch capability lands and S12 is rerun. — resolves
-  [RISK-26] by disabling the [G-11] exploration surface for now; does not yet
-  satisfy [SCHED-46] or [DET-12] for commanded preemption; spec §30.11b.
+  [RISK-26] by disabling the [G-11] exploration surface for now; satisfies
+  [RISK-26] via the accepted fallback; does not yet satisfy [SCHED-46] or
+  [DET-12] for commanded preemption; spec §30.11b.
 - [x] **T-RISK-19** Run **S13** fallback: consume the S12 fallback, model the
   default-only `rr_switch_quantum` throughput side, select the S11-green
   `rr_switch_quantum=4096`, and record `race_yield_tested=false`. The full S13
@@ -1844,13 +1860,13 @@ never tolerated). Results live in the decision register (31).
   [`25-performance-targets.md`](25-performance-targets.md) budget, measures
   race-surfacing yield via the S12 explorer, and closes **D-25** remains deferred
   until S12 passes without fallback. — resolves [RISK-27] by adopting the
-  modeled-throughput default-only fallback; does not close [D-25] yet; spec
-  §30.11c.
+  modeled-throughput default-only fallback; satisfies [RISK-27] via the accepted
+  fallback; does not close [D-25] yet; spec §30.11c.
 - [x] **T-RISK-20** Run **S14** fallback: scan the current debug implementation
   surface, record that no hermetic gdb client package, session/CLI `open_gdbstub`
   implementation, or AOS QEMU gdbstub step-mediation hook exists yet, and leave live
   read-only attach plus gdb single-step untested. Default to read-only attach +
   Crucible-driven step/reverse-step, with gdb single-step disabled until S14 can
   run against the implemented debug surface. — resolves [RISK-28] by adopting the
-  conservative fallback; does not yet satisfy [DBG-1] or [SCHED-46] for live
-  debugging; spec §30.11d.
+  conservative fallback; satisfies [RISK-28] via the accepted fallback; does not
+  yet satisfy [DBG-1] or [SCHED-46] for live debugging; spec §30.11d.

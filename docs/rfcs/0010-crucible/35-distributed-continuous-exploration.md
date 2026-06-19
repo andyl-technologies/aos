@@ -998,5 +998,5 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   after the search/fuzzing + replay-oracle gates; document the ratchet seam
   (crucible-cas interface, RFC-0007 future home) as text with Crucible standalone;
   wire the fleet store as an AOS from-source VM/fleet check (TCG-only). — satisfies
-  [DCE-28], [DCE-29], [DCE-30], [DCE-31], [DCE-32]; spec §35.6.2, §35.7, §35.8,
-  §35.10; cross-ref 24 §1.1, 25, 26 §26.9.
+  [DCE-1], [DCE-28], [DCE-29], [DCE-30], [DCE-31], [DCE-32]; spec §35.6.2,
+  §35.7, §35.8, §35.10; cross-ref 24 §1.1, 25, 26 §26.9.

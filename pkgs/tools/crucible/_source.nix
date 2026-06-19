@@ -16,5 +16,10 @@ in
         pathString == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || lib.hasPrefix "${repoRootString}/docs" pathString
+        || pathString == "${repoRootString}/pkgs"
+        || pathString == "${repoRootString}/pkgs/tools"
+        || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        || pathString == "${repoRootString}/tests"
+        || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );
   }
