@@ -32,8 +32,10 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{Path, Request, State};
+use axum::http::{header, HeaderMap, StatusCode, Uri};
+#[cfg(not(target_arch = "wasm32"))]
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -444,6 +446,280 @@ macro_rules! rpc_route {
 /// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch). The
 /// returned router carries the service as axum state.
 #[must_use]
+/// Which serving target a frontend domain resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrontendKind {
+    /// A managed binary cache (gated on `serves_cache`).
+    Cache,
+    /// A registry's git/web surface (gated on `serves_git`/`serves_web`).
+    Registry,
+}
+
+/// A request resolved to a serving frontend by its `Host` and path.
+struct ResolvedFrontend {
+    /// The target's URL slug (the instance-internal `/{slug}/…` identity the
+    /// rewritten request is dispatched through).
+    slug: String,
+    /// Whether the target is a cache or a registry.
+    kind: FrontendKind,
+    /// The request path with the frontend's `base_path` stripped (no leading
+    /// slash).
+    surface_path: String,
+    /// The frontend's advertised surface subset.
+    serves_git: bool,
+    serves_cache: bool,
+    serves_web: bool,
+}
+
+impl ResolvedFrontend {
+    /// Whether this frontend serves the surface class of `surface_path`.
+    ///
+    /// A machine path ([`keymap::is_machine_path`](crate::keymap::is_machine_path))
+    /// is the cache (`serves_cache`) or git (`serves_git`) surface; anything else
+    /// is a browse/web page (`serves_web`).
+    ///
+    /// Classification runs on the **percent-decoded** path: a downstream
+    /// extractor decodes the path before serving, so gating on the raw encoded
+    /// form would let an encoded token (e.g. `%6Fbjects` for `objects`) dodge the
+    /// subset gate yet still resolve to the machine surface.
+    fn serves(&self) -> bool {
+        let decoded = percent_decode_path(&self.surface_path);
+        let machine = crate::keymap::is_machine_path(&decoded);
+        match self.kind {
+            FrontendKind::Cache => {
+                if machine {
+                    self.serves_cache
+                } else {
+                    self.serves_web
+                }
+            }
+            FrontendKind::Registry => {
+                if machine {
+                    self.serves_git
+                } else {
+                    self.serves_web
+                }
+            }
+        }
+    }
+}
+
+/// The request `Host`, lowercased and without any `:port`, for frontend
+/// matching.
+///
+/// Prefers the URI authority (HTTP/2 `:authority`) and falls back to the `Host`
+/// header (HTTP/1.1). Returns `None` when neither is present.
+fn request_host(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let raw = uri.host().map(str::to_string).or_else(|| {
+        headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    })?;
+    // Drop any `:port`, then a single FQDN trailing dot, so `cache.example.com`,
+    // `cache.example.com:8443`, and `cache.example.com.` all match one row.
+    let host = raw
+        .split(':')
+        .next()
+        .unwrap_or(&raw)
+        .trim()
+        .trim_end_matches('.');
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Percent-decode the `%XX` escapes in a surface path (lossy on invalid UTF-8).
+///
+/// Used to classify the surface class on the same decoded form a downstream
+/// extractor sees, so an encoded token cannot bypass the `serves_*` gate.
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'a'..=b'f' => Some(b - b'a' + 10),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Resolve an incoming `(host, path)` to the registry/cache a serving frontend
+/// binds, or `None` when the host is not a frontend domain.
+///
+/// Picks the frontend whose `base_path` most specifically prefixes `path`
+/// (longest first), strips that prefix, and resolves the bound target's slug.
+async fn resolve_frontend_route(
+    svc: &RpcService,
+    host: &str,
+    path: &str,
+) -> Option<ResolvedFrontend> {
+    let frontends = svc.db.frontends_by_domain(host).await.ok()?;
+    for fe in frontends {
+        let base = fe.base_path.trim_matches('/');
+        let trimmed = path.trim_start_matches('/');
+        // Match the base path on a *segment* boundary, so base `v1` matches
+        // `/v1` and `/v1/x` but never `/v10/x`.
+        let rest = if base.is_empty() {
+            Some(trimmed)
+        } else {
+            match trimmed.strip_prefix(base) {
+                Some(r) if r.is_empty() => Some(""),
+                Some(r) if r.starts_with('/') => Some(r.trim_start_matches('/')),
+                _ => None,
+            }
+        };
+        let Some(surface_path) = rest else {
+            continue;
+        };
+        let (slug, kind) = if let Some(cache_id) = fe.cache_id {
+            match svc.db.cache_by_id(cache_id).await {
+                Ok(Some(cache)) => (cache.slug, FrontendKind::Cache),
+                _ => continue,
+            }
+        } else if let Some(registry_id) = fe.registry_id {
+            match svc.db.registry_by_id(registry_id).await {
+                Ok(Some(reg)) => (reg.slug, FrontendKind::Registry),
+                _ => continue,
+            }
+        } else {
+            continue;
+        };
+        return Some(ResolvedFrontend {
+            slug,
+            kind,
+            surface_path: surface_path.to_string(),
+            serves_git: fe.serves_git,
+            serves_cache: fe.serves_cache,
+            serves_web: fe.serves_web,
+        });
+    }
+    None
+}
+
+/// Domain-routing middleware: dispatch a request arriving on a frontend domain
+/// to the registry/cache that frontend binds.
+///
+/// When the request `Host` matches a serving frontend (a *proxied* per-registry
+/// or per-cache domain — a Direct frontend CNAMEs straight to the origin and
+/// never reaches the hub), this strips the frontend's `base_path`, enforces its
+/// `serves_git`/`serves_cache`/`serves_web` subset gate (a `404` for a surface
+/// the frontend does not advertise), and rewrites the request to the internal
+/// `/{slug}/{surface_path}` form so every existing handler (the cache/git
+/// facade, the browse pages) serves it unchanged. A request on the instance's
+/// own domain (or any unrecognized host) passes straight through to slug
+/// routing.
+/// Apply frontend domain-routing to `request`, returning the request to
+/// continue with (its URI rewritten to the bound `/{slug}/…` identity when the
+/// `Host` is a serving frontend domain) or an early [`Response`] (a `404` when
+/// the frontend does not serve the requested surface class).
+///
+/// This is the shared decision both shells run: the native hub wraps it in a
+/// [`with_frontend_dispatch`] middleware (its services are `Send`), and the
+/// Worker calls it directly from its request bridge (its services are `!Send`,
+/// which `axum::middleware::from_fn` would reject). A request on the instance's
+/// own domain, or any unrecognized host, is returned unchanged.
+///
+/// # Errors
+///
+/// Returns `Err(response)` with a `404` when a frontend serves the host but not
+/// the requested surface class, or a `400` when the rewritten URI is invalid.
+pub async fn rewrite_for_frontend(
+    svc: &RpcService,
+    mut request: Request,
+) -> Result<Request, Response> {
+    let Some(host) = request_host(request.headers(), request.uri()) else {
+        return Ok(request);
+    };
+    // Fast path: the instance's own domain is never a frontend, so skip the
+    // lookup (and the per-request DB hit) for it.
+    if Some(host.as_str()) == instance_host(&svc.external_url).as_deref() {
+        return Ok(request);
+    }
+    let path = request.uri().path().to_string();
+    let Some(route) = resolve_frontend_route(svc, &host, &path).await else {
+        return Ok(request);
+    };
+    if !route.serves() {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    // Rewrite to the internal `/{slug}/{surface_path}` identity, preserving the
+    // query string, and re-dispatch through the normal routes.
+    let mut rewritten = format!("/{}/{}", route.slug, route.surface_path);
+    if let Some(query) = request.uri().query() {
+        rewritten.push('?');
+        rewritten.push_str(query);
+    }
+    match Uri::try_from(rewritten) {
+        Ok(uri) => *request.uri_mut() = uri,
+        Err(_) => return Err(StatusCode::BAD_REQUEST.into_response()),
+    }
+    Ok(request)
+}
+
+/// The native [`with_frontend_dispatch`] middleware body: run the shared
+/// [`rewrite_for_frontend`] decision, then continue or short-circuit.
+///
+/// Native-only: `axum::middleware::from_fn` requires a `Send` future, which the
+/// Worker's `!Send` services cannot satisfy — the Worker instead calls
+/// [`rewrite_for_frontend`] directly from its request bridge.
+#[cfg(not(target_arch = "wasm32"))]
+async fn dispatch_frontend_domain(svc: Arc<RpcService>, request: Request, next: Next) -> Response {
+    match rewrite_for_frontend(&svc, request).await {
+        Ok(request) => next.run(request).await,
+        Err(response) => response,
+    }
+}
+
+/// The host of the instance's canonical `external_url`, lowercased, or `None`
+/// when it cannot be parsed.
+fn instance_host(external_url: &str) -> Option<String> {
+    url::Url::parse(external_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+}
+
+/// Wrap `router` with the [`dispatch_frontend_domain`] middleware so requests on
+/// a serving frontend's domain resolve to the bound registry/cache.
+///
+/// Both shells apply this to their outermost router: the Worker over the shared
+/// [`router`], the native hub over its merged router (which carries its own
+/// machine facade). The middleware captures `service` directly, so it composes
+/// regardless of the wrapped router's axum state type.
+///
+/// Native-only (see [`dispatch_frontend_domain`]); the Worker bridges
+/// [`rewrite_for_frontend`] directly.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub fn with_frontend_dispatch(router: Router, service: Arc<RpcService>) -> Router {
+    // The middleware must run *before* routing so its URI rewrite changes which
+    // route matches. `Router::layer` runs *after* routing, so instead the inner
+    // router becomes the fallback of a fresh outer router carrying the
+    // middleware: the rewrite lands between the outer pass (always falls through)
+    // and the inner router's routing, which then matches the rewritten path.
+    Router::new()
+        .fallback_service(router)
+        .layer(axum::middleware::from_fn(move |request, next| {
+            let svc = Arc::clone(&service);
+            async move { dispatch_frontend_domain(svc, request, next).await }
+        }))
+}
+
 pub fn router(service: Arc<RpcService>) -> Router {
     build(service, true, true)
 }
