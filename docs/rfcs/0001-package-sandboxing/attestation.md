@@ -99,6 +99,9 @@ new mechanism.
   (`/run/log/aos-packages.cel`, AOS's JSONL CEL profile with monotonic
   `sequence_number`, PCR index, SHA-256 digest list, event size, and measured
   event content) so a verifier can replay them against the quoted PCR. The
+  verifier also accepts the same event payloads wrapped as binary
+  `TCG_PCR_EVENT2` records with SHA-256 digests, so external CEL/TPM log tooling
+  can round-trip the package measurements without changing the measured word. The
   **manifest digest is measured** — this is the novel bit: the node's *declared
   and granted privilege* is now part of the attested state, not just its code.
 - **Quote.** A node produces a TPM `TPM2_Quote` over {PCR 7, 11, 12, 15} with a

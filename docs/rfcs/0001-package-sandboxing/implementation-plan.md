@@ -97,7 +97,7 @@ reframes how the phases below are read:
 | **P6** | Container roots (`RootDirectory=` store path) + the three network modes | P3 | D3, D5, D6 | ☑ |
 | **P7** | Dissolve `modules/roles/` into `pkgs/` `expose`; `modules/` shrinks to policy | P1–P6 green per package | D14; migration.md | ☑ |
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☑ |
-| **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☐ |
+| **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☑ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☑ |
 | **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☐ |
 
@@ -681,14 +681,18 @@ Full spec: [`attestation.md`](attestation.md).
       `CONFIG_DM_VERITY`, `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`,
       `..._PLATFORM_KEYRING` (via `pkgs.linuxWith`). Reconcile the `RootImage=`
       caveats (loop-backed, `After=systemd-udevd.service`, no `PrivateDevices=yes`).
-- [ ] **Measure into the TPM (D22).** At package-set activation, extend **PCR 15**
+- [x] **Measure into the TPM (D22).** At package-set activation, extend **PCR 15**
       with `H(name ‖ version ‖ root-digest ‖ manifest-digest)` per enabled package
-      and record a TCG canonical event log (`/run/log/aos-packages.cel`). The
-      **manifest digest is measured** — privilege becomes attested state.
-- [ ] **Quote + verify (D22).** `aos-attest` unit produces a `TPM2_Quote` over
+      and record a TCG-compatible event log (`/run/log/aos-packages.cel`). The
+      AOS JSONL CEL profile records monotonic sequence numbers, PCR 15, SHA-256
+      digests, event sizes, and measured event content, and the verifier accepts
+      the same payloads as binary `TCG_PCR_EVENT2` records. The **manifest
+      digest is measured** — privilege becomes attested state.
+- [x] **Quote + verify (D22).** `aos-attest` unit produces a `TPM2_Quote` over
       {PCR 7,11,12,15} with a verifier nonce, AK←EK. A fleet verifier (Keylime-
       shaped) replays the event log and checks each tuple against the **registry
-      golden-measurements catalog**.
+      golden-measurements catalog**; `apm attest enroll` separates identity-only
+      quote pins from enrolled AK/EK trust anchors.
 - [x] **Registry golden catalog (D22).** The registry records the expected
       measurement tuple per package/version and serves the `.roothash.p7s` +
       provenance — the catalog/oracle role, **never a runtime signer**
@@ -705,9 +709,11 @@ registry derives it from the package NAR hash and seeded bundled metadata
 derives a stable package-root digest before writing the golden catalog. The
 package event log is an AOS JSONL CEL profile with monotonic `sequence_number`,
 PCR index, SHA-256 digest list, event size, and measured event content; the
-verifier rejects malformed sequence numbers while retaining legacy log
-compatibility. Quote verification can also require an explicit quote-identity
-pin catalog; without one, quote mode remains explicitly marked as
+verifier rejects malformed sequence numbers while retaining legacy JSONL log
+compatibility and accepts a binary `TCG_PCR_EVENT2` projection of the same AOS
+event payloads for external CEL/TPM log tooling. Quote verification can also
+require an explicit quote-identity pin catalog; without one, quote mode remains
+explicitly marked as
 self-consistent but untrusted. `apm attest enroll` now records a quote bundle's
 AK/EK identity plus the SHA-256 digest of credential-activation, privacy-CA, or
 equivalent out-of-band enrollment evidence into that catalog, and quote
@@ -715,13 +721,13 @@ verification reports `ak_ek_trusted=true` only for enrolled anchors. The
 verifier-hosting decision is implemented as the standalone
 `aos.services.attestationVerifier` role, which consumes delivered
 quote/event-log/catalog evidence and writes the verifier result without sharing
-registry signing custody. Remaining P9 blocker: external/binary TCG CEL
-compatibility validation.
+registry signing custody. P9 is closed by the fleet Secure Boot/root-image
+attestation check plus unit coverage for binary CEL decoding and replay.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
-D22 registry golden-catalog coverage gap; D22 itself remains open until the
-unchecked measurement and quote/verify deliverables above satisfy the exit
-criteria.
+remaining D22 event-log compatibility gap; the Secure Boot/root-image fleet
+test exercises measurement, TPM quote verification, enrolled AK/EK trust, and
+standalone verifier hosting.
 
 **EXIT CRITERIA.** A node mounts a tampered package root → kernel refuses
 (verity); an untampered node produces a quote a verifier accepts and whose event
@@ -900,12 +906,14 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       already built for that backend; base-policy enablement and enforcing VM
       denial coverage remain under the generated MAC deliverable.
       ([`enforcement.md`](enforcement.md))
-- [ ] **PCR index / event-log convention for the package set (P9).** The
-      implementation extends PCR 15 during package activation; still confirm
-      PCR 15 is free / the right convention on the AOS measured-boot layout
-      (RFC-0006 uses 11/12). The AOS JSONL CEL profile now records monotonic
-      `sequence_number`, PCR index, SHA-256 digest list, event size, and measured
-      event content; still validate external/binary TCG CEL compatibility.
+- [x] **PCR index / event-log convention for the package set (P9).** The
+      implementation extends PCR 15 during package activation; RFC-0006 uses
+      PCR 11/12 for measured boot, leaving PCR 15 for AOS package-set
+      measurement. The AOS JSONL CEL profile records monotonic
+      `sequence_number`, PCR index, SHA-256 digest list, event size, and
+      measured event content; the verifier also accepts the same AOS payloads
+      wrapped as binary `TCG_PCR_EVENT2` records for external CEL/TPM log
+      tooling compatibility.
       ([`attestation.md`](attestation.md))
 - [x] **Consolidated vs per-package verity root (P9).** AOS uses per-package
       signed ext4 dm-verity `RootImage=` images for the MVP; each exposed image

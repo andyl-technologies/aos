@@ -37,8 +37,13 @@ const TPM2_CHECKQUOTE_ENV: &str = "AOS_TPM2_CHECKQUOTE";
 const TPM2_FLUSHCONTEXT_ENV: &str = "AOS_TPM2_FLUSHCONTEXT";
 const TPM2_TCTI_ENV: &str = "AOS_TPM2_TCTI";
 const EVENT_LOG_FORMAT: &str = "aos-package-cel-v1";
+const SHA256_DIGEST_SIZE: usize = 32;
 const PCR_INDEX: u8 = 15;
 const PCR_BANK: &str = "sha256";
+const TCG_ALG_SHA256: u16 = 0x000b;
+const TCG_EV_NO_ACTION: u32 = 0x00000003;
+#[cfg(test)]
+const TCG_EV_EVENT_TAG: u32 = 0x00000006;
 const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
 const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
@@ -603,6 +608,29 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
         pcr15,
         package_count,
     })
+}
+
+/// Decodes a package event log from either AOS JSONL CEL or binary TCG events.
+///
+/// The binary form is the TCG `TCG_PCR_EVENT2` record layout used by measured
+/// boot event logs. AOS stores its length-prefixed event word as the event
+/// payload, accepts a single SHA-256 digest entry, and reconstructs the JSONL
+/// profile used by the verifier.
+///
+/// # Errors
+///
+/// Returns an error when the bytes are neither UTF-8 JSONL CEL nor a
+/// well-formed sequence of AOS package `TCG_PCR_EVENT2` records.
+pub(crate) fn decode_package_event_log_bytes(bytes: &[u8]) -> Result<String> {
+    match bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+    {
+        Some(b'{') | None => String::from_utf8(bytes.to_vec())
+            .context("decoding package event log as UTF-8 JSONL CEL"),
+        Some(_) => decode_tcg_pcr_event2_log(bytes),
+    }
 }
 
 /// Produces a TPM quote over the AOS package-attestation PCR set.
@@ -1459,6 +1487,203 @@ fn validate_pcr_event_fields(line: usize, record: &OwnedEventLogRecord) -> Resul
     Ok(())
 }
 
+fn decode_tcg_pcr_event2_log(bytes: &[u8]) -> Result<String> {
+    let mut reader = TcgEventReader::new(bytes);
+    let mut lines = Vec::new();
+    let mut sequence_number = 1usize;
+    while !reader.is_empty() {
+        let record_start = reader.position();
+        let pcr_index = reader.read_u32("PCRIndex")?;
+        let event_type = reader.read_u32("EventType")?;
+        let digest_count = reader.read_u32("Digest count")?;
+        if digest_count != 1 {
+            bail!(
+                "TCG package event record {sequence_number} has {digest_count} digest entries, expected 1"
+            );
+        }
+        let algorithm = reader.read_u16("Digest algorithm")?;
+        if algorithm != TCG_ALG_SHA256 {
+            bail!(
+                "TCG package event record {sequence_number} uses digest algorithm 0x{algorithm:04x}, expected SHA-256"
+            );
+        }
+        let digest = reader.read_bytes("Digest", SHA256_DIGEST_SIZE)?;
+        let event_size = reader.read_u32("EventSize")?;
+        let event_size = usize::try_from(event_size)
+            .context("TCG package event size does not fit this platform")?;
+        let event = reader.read_bytes("Event", event_size)?;
+        let word = std::str::from_utf8(event).with_context(|| {
+            format!("TCG package event record {sequence_number} payload is not UTF-8")
+        })?;
+        let pcr_index = u8::try_from(pcr_index).with_context(|| {
+            format!("TCG package event record {sequence_number} PCRIndex does not fit in u8")
+        })?;
+        let digest = format!("sha256:{}", hex::encode(digest));
+        let line = event_log_line_from_tcg_event(
+            sequence_number,
+            pcr_index,
+            event_type,
+            &digest,
+            word,
+        )
+        .with_context(|| {
+            format!(
+                "decoding TCG package event record {sequence_number} at byte offset {record_start}"
+            )
+        })?;
+        lines.push(line);
+        sequence_number += 1;
+    }
+
+    if lines.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(lines.join("\n") + "\n")
+    }
+}
+
+struct TcgEventReader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> TcgEventReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.position == self.bytes.len()
+    }
+
+    fn position(&self) -> usize {
+        self.position
+    }
+
+    fn read_u16(&mut self, field: &str) -> Result<u16> {
+        let bytes = self.read_bytes(field, 2)?;
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32(&mut self, field: &str) -> Result<u32> {
+        let bytes = self.read_bytes(field, 4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_bytes(&mut self, field: &str, len: usize) -> Result<&'a [u8]> {
+        let end = self
+            .position
+            .checked_add(len)
+            .with_context(|| format!("TCG package event {field} length overflows"))?;
+        let bytes = self.bytes.get(self.position..end).with_context(|| {
+            format!(
+                "TCG package event ended while reading {field}: need {len} bytes at offset {}",
+                self.position
+            )
+        })?;
+        self.position = end;
+        Ok(bytes)
+    }
+}
+
+fn event_log_line_from_tcg_event(
+    sequence_number: usize,
+    pcr_index: u8,
+    tcg_event_type: u32,
+    digest: &str,
+    word: &str,
+) -> Result<String> {
+    let event_type = event_type_from_word(word)?;
+    let mut pcr_value = None;
+    let mut package = None;
+    let mut version = None;
+    let mut root_digest = None;
+    let mut manifest_digest = None;
+    let mut package_count = None;
+
+    match event_type {
+        PCR_BASELINE_EVENT_TYPE => {
+            if tcg_event_type != TCG_EV_NO_ACTION {
+                bail!(
+                    "AOS PCR baseline TCG event uses EventType 0x{tcg_event_type:08x}, expected EV_NO_ACTION"
+                );
+            }
+            let fields = parse_length_prefixed_word("aos-pcr-baseline-v1", word)?;
+            pcr_value = Some(required_event_word_field(&fields, "pcr-value")?);
+        }
+        PACKAGE_SET_EVENT_TYPE => {
+            if tcg_event_type == TCG_EV_NO_ACTION {
+                bail!("AOS package-set TCG event must not use EV_NO_ACTION");
+            }
+            let fields = parse_length_prefixed_word("aos-package-set-v1", word)?;
+            let count = required_event_word_field(&fields, "package-count")?;
+            package_count = Some(
+                count
+                    .parse::<usize>()
+                    .context("AOS package-set TCG event has invalid package-count")?,
+            );
+        }
+        PACKAGE_EVENT_TYPE => {
+            if tcg_event_type == TCG_EV_NO_ACTION {
+                bail!("AOS package TCG event must not use EV_NO_ACTION");
+            }
+            let fields = parse_length_prefixed_word("aos-package-v1", word)?;
+            package = Some(required_event_word_field(&fields, "name")?);
+            version = Some(required_event_word_field(&fields, "version")?);
+            root_digest = Some(required_event_word_field(&fields, "root-digest")?);
+            manifest_digest = Some(required_event_word_field(&fields, "manifest-digest")?);
+        }
+        _ => unreachable!("event_type_from_word returned unsupported event type"),
+    }
+
+    let digests = [EventDigestRecord {
+        algorithm: PCR_BANK,
+        digest,
+    }];
+    let record = EventLogRecord {
+        format: EVENT_LOG_FORMAT,
+        sequence_number,
+        pcr: pcr_index,
+        pcr_index,
+        bank: PCR_BANK,
+        digests: &digests,
+        event_type,
+        digest,
+        event_size: word.len(),
+        event: word,
+        pcr_value: pcr_value.as_deref(),
+        package: package.as_deref(),
+        version: version.as_deref(),
+        root_digest: root_digest.as_deref(),
+        manifest_digest: manifest_digest.as_deref(),
+        package_count,
+    };
+    serde_json::to_string(&record).context("serializing decoded TCG package event")
+}
+
+fn event_type_from_word(word: &str) -> Result<&'static str> {
+    if word_has_schema(word, "aos-pcr-baseline-v1") {
+        Ok(PCR_BASELINE_EVENT_TYPE)
+    } else if word_has_schema(word, "aos-package-set-v1") {
+        Ok(PACKAGE_SET_EVENT_TYPE)
+    } else if word_has_schema(word, "aos-package-v1") {
+        Ok(PACKAGE_EVENT_TYPE)
+    } else {
+        bail!("TCG package event payload does not use a supported AOS package schema");
+    }
+}
+
+fn word_has_schema(word: &str, schema: &str) -> bool {
+    word == schema || word.as_bytes().get(schema.len()) == Some(&b'|')
+}
+
+fn required_event_word_field(fields: &BTreeMap<String, String>, field: &str) -> Result<String> {
+    fields
+        .get(field)
+        .cloned()
+        .with_context(|| format!("AOS package TCG event is missing {field}"))
+}
+
 fn parse_pcr_baseline_record(
     line: usize,
     record: &OwnedEventLogRecord,
@@ -2145,6 +2370,34 @@ mod tests {
         }
     }
 
+    fn tcg_pcr_event2_log_from_jsonl(log: &str) -> Vec<u8> {
+        let mut binary = Vec::new();
+        for (index, line) in log.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: OwnedEventLogRecord = serde_json::from_str(line).expect("record");
+            validate_event_record_shape(index + 1, &record).expect("record shape");
+            let event_type = match record.event_type.as_str() {
+                PCR_BASELINE_EVENT_TYPE => TCG_EV_NO_ACTION,
+                PACKAGE_SET_EVENT_TYPE | PACKAGE_EVENT_TYPE => TCG_EV_EVENT_TAG,
+                other => panic!("unsupported event type {other}"),
+            };
+            let pcr_index = record.pcr_index.value.expect("pcr_index");
+            let digest =
+                parse_prefixed_sha256_hex("event digest", &record.digest).expect("event digest");
+            let digest = hex::decode(digest).expect("event digest bytes");
+            binary.extend_from_slice(&u32::from(pcr_index).to_le_bytes());
+            binary.extend_from_slice(&event_type.to_le_bytes());
+            binary.extend_from_slice(&1u32.to_le_bytes());
+            binary.extend_from_slice(&TCG_ALG_SHA256.to_le_bytes());
+            binary.extend_from_slice(&digest);
+            binary.extend_from_slice(&(record.event.len() as u32).to_le_bytes());
+            binary.extend_from_slice(record.event.as_bytes());
+        }
+        binary
+    }
+
     #[test]
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
@@ -2300,6 +2553,46 @@ mod tests {
 
         assert_eq!(verified.pcr15, pcr15);
         assert_eq!(verified.package_count, 1);
+    }
+
+    #[test]
+    fn package_event_log_decoder_accepts_jsonl_bytes() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+
+        let decoded = decode_package_event_log_bytes(log.as_bytes()).expect("jsonl decode");
+
+        assert_eq!(decoded, log);
+    }
+
+    #[test]
+    fn package_event_log_decoder_accepts_tcg_pcr_event2_binary_profile() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, root_hash, measurement) =
+            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+        let binary = tcg_pcr_event2_log_from_jsonl(&log);
+
+        let decoded = decode_package_event_log_bytes(&binary).expect("binary decode");
+        let verified = verify_package_event_log_against_catalog(&decoded, &pcr15, &catalog)
+            .expect("verify binary event log");
+
+        assert_eq!(decoded, log);
+        assert_eq!(verified.pcr15, pcr15);
+        assert_eq!(verified.package_count, 1);
+    }
+
+    #[test]
+    fn package_event_log_decoder_rejects_unsupported_tcg_digest_count() {
+        let tmp = TempDir::new().expect("tempdir");
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let mut binary = tcg_pcr_event2_log_from_jsonl(&log);
+        binary[8..12].copy_from_slice(&2u32.to_le_bytes());
+
+        let err = decode_package_event_log_bytes(&binary).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest entries"));
     }
 
     #[test]
