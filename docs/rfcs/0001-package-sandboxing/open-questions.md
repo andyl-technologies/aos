@@ -568,17 +568,19 @@ host-mounted state; document k3s upgrade as disruptive (drains). Spec in
 
 > **Resolved (hybrid).** The registry TOML (tag-signed, visible pre-fetch)
 > carries what introspection and policy need **before download**:
-> `expose.target`, `expose.requires`, and the full `[permissions]` manifest —
-> so `apm info --permissions` and the host policy check work without fetching
-> the closure. The rendered unit files (+ a manifest copy) ride the closure
-> as the `pkg.expose` store path ([authoring.md](authoring.md)), covered by
-> the NAR hash. Gated on Decision 19's capability-gate field landing first.
+> `expose.target`, `expose.requires`, `expose.config`,
+> `expose.provides`/`expose.uses`, and the full `[permissions]` manifest — so
+> `apm info --permissions` and the host policy check work without fetching the
+> closure. The rendered unit files (+ a manifest copy) ride the closure as the
+> `pkg.expose` store path ([authoring.md](authoring.md)), covered by the NAR
+> hash. Gated on Decision 19's capability-gate field landing first.
 
 **Current implementation.** Phase 0 extends `PackageMeta`
 (`crates/aos-package/src/types.rs`) and the per-platform registry TOML parser
 (`crates/aos-package/src/registry/parse.rs`) with `expose`, the signed
-`permissions` manifest, `min-format`, and `requires-features`. The rendered
-unit payload is still Phase 1.
+`permissions` manifest, `expose_artifact`, `min-format`, and
+`requires-features`. Phase 1 renders the package-owned `pkg.expose` artifact
+and copies the manifest into that eval-free output.
 
 **Why it matters.** This is the schema that everything else keys off (install
 hook, activation, container launch, config). Getting it wrong is expensive to
@@ -596,8 +598,9 @@ and the container-root reference (Decision 5).
 - Hybrid: minimal class/target hints in registry TOML, detailed unit/container
   spec in the closure manifest.
 
-**Next implementation step.** Phase 1 renders the package-owned `pkg.expose`
-artifact and copies the manifest into that eval-free output.
+**Implemented artifact.** The package-owned `pkg.expose` output contains the
+rendered unit files plus `manifest.json`; `apr publish --expose-manifest`
+revalidates that manifest and records the matching `expose_artifact` metadata.
 
 ---
 
@@ -848,18 +851,19 @@ between package targets ([container-model.md](container-model.md)
 `crates/aos-package/src/resolve.rs`; the Phase 5 expose phase emits the
 corresponding target edges.
 
-**Why it matters.** This is new resolver surface (name-level resolution +
-closure merge), and the semantics need pinning: install-time pull-in
-(deb-style `Depends:`) vs. enable-time check vs. both. Favorable ground truth:
-`apm install a b` already shares one profile generation, so cross-package
-edges can be materialized atomically before the generation switch.
+**Why it matters.** This was new resolver surface (name-level resolution +
+closure merge), and the implementation pins it as install-time pull-in
+(deb-style `Depends:`) plus generated target edges. Favorable ground truth:
+`apm install a b` already shares one profile generation, so cross-package edges
+materialize atomically before the generation switch.
 Counter-precedent against over-building: snapd ships *no* cross-snap ordering
 and pushes retry loops onto users — a documented pain point — so flat ordering
 edges are worth having, but nothing more (no version-constraint solver; the
 registry channel model already pins versions).
 
-**Next implementation step.** Phase 5 emits target ordering edges and typed
-capability routing from the already-parsed `requires` field.
+**Current implementation.** `resolve.rs` pulls `expose.requires` packages and
+provider packages named by `expose.uses`; the expose-unit materializer emits the
+target ordering and typed capability route drop-ins from the signed metadata.
 
 ---
 
