@@ -16,6 +16,13 @@ use std::fmt;
 #[cfg(feature = "test-double")]
 mod sim_backend;
 
+pub mod scheduler;
+
+pub use scheduler::{
+    ControlOperation, ControlOperationKind, IoCompletion, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    SchedulerNodeId, SchedulingNodeKind,
+};
 #[cfg(feature = "test-double")]
 pub use sim_backend::{SimBackend, SimBackendState};
 

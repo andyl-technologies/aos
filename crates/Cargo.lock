@@ -1549,6 +1549,9 @@ version = "0.1.0"
 [[package]]
 name = "crucible-session"
 version = "0.1.0"
+dependencies = [
+ "crucible",
+]
 
 [[package]]
 name = "crucible-shmem"
