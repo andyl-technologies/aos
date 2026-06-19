@@ -3195,39 +3195,47 @@ impl TreeWalk {
             })?;
 
             let env_key = Self::derivation_utf8_string(id, span, "environment name", &key)?;
-            let env_value = Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
-            match key.as_slice() {
-                OUTPUT_HASH_ATTR => output_hash = Some(env_value.clone()),
-                OUTPUT_HASH_ALGO_ATTR => output_hash_algo = Some(env_value.clone()),
-                OUTPUT_HASH_MODE_ATTR => output_hash_mode = Some(env_value.clone()),
-                _ => {}
-            }
-
             match key.as_slice() {
                 BUILDER_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
                     derivation
                         .environment
-                        .insert(env_key.clone(), env_value.clone().into());
+                        .insert(env_key, env_value.clone().into());
                     builder = Some(env_value);
                 }
                 SYSTEM_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
                     derivation
                         .environment
-                        .insert(env_key.clone(), env_value.clone().into());
+                        .insert(env_key, env_value.clone().into());
                     system = Some(env_value);
                 }
                 OUTPUTS_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
                     derivation
                         .environment
-                        .insert(env_key.clone(), env_value.clone().into());
+                        .insert(env_key, env_value.clone().into());
                     outputs_seen = true;
                     derivation.outputs =
                         Self::derivation_outputs_value(id, span, &bytes, &env_value)?;
                 }
+                OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                    if key.as_slice() == OUTPUT_HASH_ATTR {
+                        output_hash = Some(env_value.clone());
+                    } else if key.as_slice() == OUTPUT_HASH_ALGO_ATTR {
+                        output_hash_algo = Some(env_value.clone());
+                    } else if key.as_slice() == OUTPUT_HASH_MODE_ATTR {
+                        output_hash_mode = Some(env_value.clone());
+                    }
+                    derivation.environment.insert(env_key, env_value.into());
+                }
                 _ => {
-                    derivation
-                        .environment
-                        .insert(env_key.clone(), env_value.clone().into());
+                    derivation.environment.insert(env_key, bytes.into());
                 }
             }
         }
@@ -29937,7 +29945,7 @@ mod tests {
         BUILTINS, Builtin, BuiltinDirect, BuiltinEffect, direct_builtin,
     };
     use crate::string::{ContextElement, StringContext};
-    use crate::syntax::{ParseErrorKind, Symbol, SymbolTable, parse_str};
+    use crate::syntax::{ParseErrorKind, Symbol, SymbolTable, parse_bytes, parse_str};
     use crate::value::HeapObject;
 
     const PINNED_BUILTIN_SURFACE_EXPERIMENTAL_FEATURES: &str = "flakes";
@@ -30125,6 +30133,11 @@ mod tests {
 
     fn lower(source: &str) -> Ir {
         lower_ir(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
+            .expect("source lowers")
+    }
+
+    fn lower_bytes(source: &[u8]) -> Ir {
+        lower_ir(resolve_ast(parse_bytes(source).expect("source parses")).expect("source resolves"))
             .expect("source lowers")
     }
 
@@ -53052,6 +53065,47 @@ mod tests {
             eval_json_bytes(source),
             br#"{"argsNull":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","capital":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","default":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","explicitFalse":"/nix/store/gbihbhvs2za69fzg3gl91x0f7zcq1ii9-x.drv","ignored":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","structuredFalse":"/nix/store/ch3c4m4ba4r554gq3z26r8v9h80sp119-x.drv","unsupportedNulls":"/nix/store/bw7h8n8czwb6f7gvjl1cpb3al60lfzqy-x.drv","withNull":"/nix/store/gbihbhvs2za69fzg3gl91x0f7zcq1ii9-x.drv"}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_strict_preserves_non_utf8_environment_values() {
+        let source = b"let d = derivationStrict {\n  name = \"x\";\n  system = \"x86_64-linux\";\n  builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder\";\n  raw = \"raw-\xff-byte\";\n}; in d.drvPath";
+        let outcome = eval_whnf_owned(&lower_bytes(source)).expect("raw env bytes evaluate");
+        let aterm = outcome
+            .derivations()
+            .iter()
+            .find_map(EvalDerivation::aterm_bytes)
+            .expect("static derivation has ATerm bytes");
+
+        assert!(
+            aterm
+                .windows(b"raw-\xff-byte".len())
+                .any(|window| window == b"raw-\xff-byte"),
+            "{aterm:?}"
+        );
+    }
+
+    #[test]
+    fn derivation_strict_rejects_non_utf8_structural_fields() {
+        for source in [
+            b"derivationStrict {\n  name = \"x\";\n  system = \"x86_64-linux\";\n  builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-\xff-builder\";\n}"
+                .as_slice(),
+            b"derivationStrict {\n  name = \"x\";\n  system = \"x86_64-\xff-linux\";\n  builder = \"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder\";\n}"
+                .as_slice(),
+        ] {
+            let error = eval_whnf_owned(&lower_bytes(source))
+                .expect_err("structural derivation fields must stay UTF-8");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::DerivationStringUtf8 {
+                        field: "environment value",
+                        ..
+                    }
+                ),
+                "{source:?}: {error:?}"
+            );
+        }
     }
 
     #[test]
