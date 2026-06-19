@@ -36,6 +36,10 @@ mkDerivation {
         pkgs.coreutils
       ];
       testScript = ''
+        abi=$(aos-landlock --print-abi)
+        test "$abi" -ge 4
+        echo "aos-landlock max ABI: $abi"
+
         mkdir -p /tmp/aos-landlock-allow /tmp/aos-landlock-deny
 
         aos-landlock --require-abi 4 \
