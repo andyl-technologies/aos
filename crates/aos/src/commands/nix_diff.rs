@@ -26,6 +26,12 @@ impl NixDiffReportedFailure {
             message: "drv diff produced no derivation output to compare".to_string(),
         }
     }
+
+    fn incomplete_drv_output() -> Self {
+        Self {
+            message: "drv diff produced incomplete derivation output to compare".to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for NixDiffReportedFailure {
@@ -89,7 +95,11 @@ pub fn run(
 }
 
 fn report_failure(report: &DrvDiffReport) -> Option<NixDiffReportedFailure> {
-    if report.is_match() && report.oracle_root.is_some() && report.candidate_root.is_some() {
+    if !report.divergences.is_empty() {
+        return Some(NixDiffReportedFailure::diverged(report.divergences.len()));
+    }
+
+    if report.oracle_root.is_some() && report.candidate_root.is_some() {
         return None;
     }
 
@@ -97,7 +107,7 @@ fn report_failure(report: &DrvDiffReport) -> Option<NixDiffReportedFailure> {
         return Some(NixDiffReportedFailure::no_drv_output());
     }
 
-    Some(NixDiffReportedFailure::diverged(report.divergences.len()))
+    Some(NixDiffReportedFailure::incomplete_drv_output())
 }
 
 fn report_json(
@@ -128,6 +138,14 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
             "kind": "evaluation",
             "side": side_name(*side),
             "error": error,
+        }),
+        DrvDiff::EvaluationMismatch {
+            oracle_error,
+            candidate_error,
+        } => serde_json::json!({
+            "kind": "evaluation_mismatch",
+            "oracle_error": oracle_error,
+            "candidate_error": candidate_error,
         }),
         DrvDiff::Bytes { oracle, candidate } => serde_json::json!({
             "kind": "bytes",
@@ -187,6 +205,12 @@ fn render_diff(diff: &DrvDiff) -> String {
         DrvDiff::Evaluation { side, error } => {
             format!("{} evaluation failed: {error}", side_name(*side))
         }
+        DrvDiff::EvaluationMismatch {
+            oracle_error,
+            candidate_error,
+        } => format!(
+            "evaluation mismatch: oracle error={oracle_error}; candidate error={candidate_error}"
+        ),
         DrvDiff::Bytes { oracle, candidate } => format!(
             "bytes: oracle={} candidate={}",
             oracle.display(),
@@ -324,6 +348,31 @@ mod tests {
     }
 
     #[test]
+    fn report_json_renders_evaluation_mismatch_details() {
+        let report = DrvDiffReport {
+            mode: DiffMode::Path,
+            oracle_root: None,
+            candidate_root: None,
+            divergences: vec![DrvDiff::EvaluationMismatch {
+                oracle_error: "type error".to_string(),
+                candidate_error: "unsupported feature".to_string(),
+            }],
+        };
+
+        let failure = report_failure(&report);
+        let value = report_json(&report, "aos-nix", failure.as_ref());
+
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["error"], "drv diff found 1 divergence(s)");
+        assert_eq!(value["divergences"][0]["kind"], "evaluation_mismatch");
+        assert_eq!(value["divergences"][0]["oracle_error"], "type error");
+        assert_eq!(
+            value["divergences"][0]["candidate_error"],
+            "unsupported feature"
+        );
+    }
+
+    #[test]
     fn report_failure_rejects_empty_comparison() {
         let report = DrvDiffReport {
             mode: DiffMode::Path,
@@ -343,6 +392,23 @@ mod tests {
         assert_eq!(
             value["error"],
             "drv diff produced no derivation output to compare"
+        );
+    }
+
+    #[test]
+    fn report_failure_rejects_incomplete_comparison() {
+        let report = DrvDiffReport {
+            mode: DiffMode::Path,
+            oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
+            candidate_root: None,
+            divergences: Vec::new(),
+        };
+
+        let failure = report_failure(&report).expect("incomplete comparison should fail");
+
+        assert_eq!(
+            failure.to_string(),
+            "drv diff produced incomplete derivation output to compare"
         );
     }
 }

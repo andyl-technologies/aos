@@ -52,6 +52,13 @@ pub enum DrvDiff {
         /// The user-facing error text.
         error: String,
     },
+    /// Both evaluators failed, but with different user-facing errors.
+    EvaluationMismatch {
+        /// Oracle-side error text.
+        oracle_error: String,
+        /// Candidate-side error text.
+        candidate_error: String,
+    },
     /// The ATerm bytes differ for a compared derivation pair.
     Bytes {
         /// Oracle-side `.drv` path.
@@ -170,7 +177,17 @@ pub fn diff_closure(
             });
             return Ok(report);
         }
-        (Err(_oracle_error), Err(_candidate_error)) => return Ok(report),
+        (Err(oracle_error), Err(candidate_error)) => {
+            let oracle_error = oracle_error.to_string();
+            let candidate_error = candidate_error.to_string();
+            if oracle_error != candidate_error {
+                report.divergences.push(DrvDiff::EvaluationMismatch {
+                    oracle_error,
+                    candidate_error,
+                });
+            }
+            return Ok(report);
+        }
     };
 
     match mode {
@@ -1154,9 +1171,34 @@ mod tests {
     }
 
     #[test]
-    fn diff_closure_treats_both_sided_instantiation_errors_as_error_parity() -> Result<()> {
+    fn diff_closure_reports_mismatched_two_sided_instantiation_errors() -> Result<()> {
         let oracle = FakeEval::error("oracle failed");
         let candidate = FakeEval::error("candidate failed");
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Path,
+        )?;
+
+        assert_eq!(report.oracle_root, None);
+        assert_eq!(report.candidate_root, None);
+        assert_eq!(
+            report.divergences,
+            vec![DrvDiff::EvaluationMismatch {
+                oracle_error: "oracle failed".to_string(),
+                candidate_error: "candidate failed".to_string(),
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_closure_accepts_matching_two_sided_instantiation_errors() -> Result<()> {
+        let oracle = FakeEval::error("same failure");
+        let candidate = FakeEval::error("same failure");
 
         let report = diff_closure(
             &oracle,

@@ -53,6 +53,10 @@ pub struct Cli {
     /// Enable builtins.traceVerbose output
     #[arg(long, global = true)]
     pub trace_verbose: bool,
+
+    /// Override builtins.currentSystem for evaluation
+    #[arg(long, global = true)]
+    pub eval_system: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -295,6 +299,20 @@ mod tests {
             }
             _ => panic!("expected nix-diff command"),
         }
+    }
+
+    #[test]
+    fn global_eval_system_is_accepted_after_subcommand() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--eval-system",
+            "x86_64-linux",
+        ]);
+
+        assert_eq!(cli.eval_system.as_deref(), Some("x86_64-linux"));
     }
 
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Cli {

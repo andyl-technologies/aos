@@ -109,6 +109,9 @@ async fn main() {
 async fn run(cli: &Cli) -> Result<()> {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
     let mut eval_config = NixEvalConfig::new();
+    if let Some(system) = &cli.eval_system {
+        eval_config.set_current_system(system)?;
+    }
     eval_config.set_trace_verbose(cli.trace_verbose);
 
     // Shell completions can be generated without a Nix installation or
@@ -298,6 +301,7 @@ mod tests {
             quiet: false,
             json: true,
             trace_verbose: false,
+            eval_system: None,
         };
         let error: anyhow::Error = commands::nix_diff::NixDiffReportedFailure::diverged(1).into();
 

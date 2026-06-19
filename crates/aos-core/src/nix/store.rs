@@ -12,9 +12,9 @@
 //! [`aos_nix_env`], so they target the AOS store layout when
 //! `AOS_ROOT` is set and the canonical `/nix/store` otherwise.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use anyhow::{Context, Result};
 
@@ -67,7 +67,7 @@ impl NixCli {
     /// Instantiates an attribute from a Nix file, returning the `.drv` path.
     ///
     /// Runs `nix-instantiate <file> -A <attr>`; the child's stderr is
-    /// passed through to the terminal.
+    /// replayed to the terminal and included in failure errors.
     ///
     /// # Errors
     ///
@@ -80,12 +80,12 @@ impl NixCli {
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
-        let output = cmd
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-instantiate")?;
+        let output = output_with_replayed_stderr(cmd, "failed to run nix-instantiate")?;
         if !output.status.success() {
-            anyhow::bail!("nix-instantiate failed for {}", attr);
+            return Err(command_status_error(
+                format!("nix-instantiate failed for {attr}"),
+                &output,
+            ));
         }
         let drv = String::from_utf8(output.stdout)
             .context("invalid utf-8 from nix-instantiate")?
@@ -110,12 +110,9 @@ impl NixCli {
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
-        let output = cmd
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-instantiate -E")?;
+        let output = output_with_replayed_stderr(cmd, "failed to run nix-instantiate -E")?;
         if !output.status.success() {
-            anyhow::bail!("nix-instantiate -E failed");
+            return Err(command_status_error("nix-instantiate -E failed", &output));
         }
         let drv = String::from_utf8(output.stdout)
             .context("invalid utf-8 from nix-instantiate")?
@@ -140,12 +137,13 @@ impl NixCli {
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
-        let output = cmd
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-instantiate --eval --json -E")?;
+        let output =
+            output_with_replayed_stderr(cmd, "failed to run nix-instantiate --eval --json -E")?;
         if !output.status.success() {
-            anyhow::bail!("nix-instantiate --eval --json -E failed");
+            return Err(command_status_error(
+                "nix-instantiate --eval --json -E failed",
+                &output,
+            ));
         }
         let value = String::from_utf8(output.stdout)
             .context("invalid utf-8 from nix-instantiate --eval --json")?
@@ -170,12 +168,12 @@ impl NixCli {
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
-        let output = cmd
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-build")?;
+        let output = output_with_replayed_stderr(cmd, "failed to run nix-build")?;
         if !output.status.success() {
-            anyhow::bail!("nix-build failed for {}", attr);
+            return Err(command_status_error(
+                format!("nix-build failed for {attr}"),
+                &output,
+            ));
         }
         let path = String::from_utf8(output.stdout)
             .context("invalid utf-8 from nix-build")?
@@ -192,14 +190,14 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the
     /// realisation fails, or the output is not UTF-8.
     pub fn realise(&self, drv: &str) -> Result<String> {
-        let output = self
-            .nix_command("nix-store")
-            .args(["--realise", drv])
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-store --realise")?;
+        let mut cmd = self.nix_command("nix-store");
+        cmd.args(["--realise", drv]);
+        let output = output_with_replayed_stderr(cmd, "failed to run nix-store --realise")?;
         if !output.status.success() {
-            anyhow::bail!("nix-store --realise failed for {}", drv);
+            return Err(command_status_error(
+                format!("nix-store --realise failed for {drv}"),
+                &output,
+            ));
         }
         let path = String::from_utf8(output.stdout)
             .context("invalid utf-8 from nix-store --realise")?
@@ -228,14 +226,14 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the query
     /// fails (e.g. the path is not valid), or the output is not UTF-8.
     pub fn closure(&self, path: &str) -> Result<Vec<String>> {
-        let output = self
-            .nix_command("nix-store")
-            .args(["-qR", path])
-            .stderr(Stdio::inherit())
-            .output()
-            .context("failed to run nix-store -qR")?;
+        let mut cmd = self.nix_command("nix-store");
+        cmd.args(["-qR", path]);
+        let output = output_with_replayed_stderr(cmd, "failed to run nix-store -qR")?;
         if !output.status.success() {
-            anyhow::bail!("nix-store -qR failed for {}", path);
+            return Err(command_status_error(
+                format!("nix-store -qR failed for {path}"),
+                &output,
+            ));
         }
         let text = String::from_utf8(output.stdout).context("invalid utf-8 from nix-store -qR")?;
         Ok(text
@@ -443,6 +441,34 @@ impl NixEval for NixCli {
     }
 }
 
+fn output_with_replayed_stderr(
+    mut cmd: Command,
+    context: impl std::fmt::Display,
+) -> Result<Output> {
+    let output = cmd
+        .stderr(Stdio::piped())
+        .output()
+        .with_context(|| context.to_string())?;
+    if !output.stderr.is_empty() {
+        let _ = std::io::stderr().write_all(&output.stderr);
+    }
+    Ok(output)
+}
+
+fn command_status_error(summary: impl Into<String>, output: &Output) -> anyhow::Error {
+    anyhow::anyhow!(command_failure_message(summary.into(), &output.stderr))
+}
+
+fn command_failure_message(mut summary: String, stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        summary.push_str(": ");
+        summary.push_str(stderr);
+    }
+    summary
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,5 +535,17 @@ mod tests {
             Some("/aos/var/nix/log/nix")
         );
         Ok(())
+    }
+
+    #[test]
+    fn command_failure_message_includes_stderr() {
+        assert_eq!(
+            command_failure_message("nix-instantiate failed".to_string(), b"error: bad attr\n"),
+            "nix-instantiate failed: error: bad attr"
+        );
+        assert_eq!(
+            command_failure_message("nix-instantiate failed".to_string(), b""),
+            "nix-instantiate failed"
+        );
     }
 }
