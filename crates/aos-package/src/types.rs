@@ -816,13 +816,25 @@ impl AttestationMeta {
 
 /// Returns whether package metadata must be backed by DSSE provenance.
 pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
-    meta.expose.is_some()
-        || meta.expose_artifact.is_some()
-        || !meta.permissions.is_empty()
-        || meta
-            .bpf_lsm
-            .as_ref()
-            .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+    rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    )
+}
+
+/// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
+pub(crate) fn rfc0001_metadata_requires_provenance(
+    expose: Option<&ExposeMeta>,
+    expose_artifact: Option<&ExposeArtifactMeta>,
+    permissions: &PermissionsMeta,
+    bpf_lsm: Option<&BpfLsmPolicyMeta>,
+) -> bool {
+    expose.is_some()
+        || expose_artifact.is_some()
+        || !permissions.is_empty()
+        || bpf_lsm.is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
 }
 
 /// One BPF-LSM policy artifact carried by a signed package.

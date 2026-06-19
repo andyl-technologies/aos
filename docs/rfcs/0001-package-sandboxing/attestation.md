@@ -173,16 +173,17 @@ runtime root of trust.** Concretely, across the three artifacts:
 (runtime integrity, artifact 2, custody per [RFC-0006 key-custody](../0006-secure-boot/key-custody.md))
 and from the **TPM AK/EK** (attestation, artifact 3, per-device, hardware-fused).
 The registry is deliberately **not** a runtime root of trust: a registry
-compromise lets an attacker publish a *new* signed package (caught by policy +
-provenance + transparency log + anti-rollback) but **cannot forge a TPM quote**
-or alter a node's measured state. This is the same blast-radius containment
-RFC-0006 designed for SB, extended to packages.
+compromise lets an attacker publish a *new* signed package, but that package is
+still constrained by policy + provenance checks, recorded in the same-history
+transparency hash chain, and bounded by anti-rollback; the attacker **cannot
+forge a TPM quote** or alter a node's measured state. This is the same
+blast-radius containment RFC-0006 designed for SB, extended to packages.
 
 ```text
 SOURCE ──hermetic build──► .drv ──► NAR (content-addressed)            [reproducible]
                                       │
                           apr publish │  registry: bind + tag-sign (name→ver→nar→manifest→root-digest),
-                                      │            host in-toto/SLSA provenance, append to transparency log,
+                                      │            host in-toto/SLSA provenance, append to registry hash chain,
                                       ▼            record golden measurement tuple
                               REGISTRY CATALOG  ──serves──►  signed root hash (.roothash.p7s), provenance, golden values
                                       │
