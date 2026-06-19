@@ -434,11 +434,20 @@ async fn run_wrangler(
         .await
         .context("waiting for wrangler")?;
     if !output.status.success() {
+        // wrangler prints some failures (notably a D1 `{"error":…}` envelope on
+        // `d1 execute`) to stdout, not stderr — include both so the real cause
+        // isn't swallowed.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" | ");
         bail!(
-            "`wrangler {}` failed ({}): {}",
+            "`wrangler {}` failed ({}): {detail}",
             args.join(" "),
             output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())

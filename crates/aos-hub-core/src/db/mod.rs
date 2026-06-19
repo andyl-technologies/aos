@@ -2390,11 +2390,20 @@ impl Database {
         if current > target {
             bail!("hub database schema {current} is newer than this build supports ({target})");
         }
-        for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
+        // Apply all pending migrations as ONE batch. The Cloudflare D1 remote
+        // backend runs each `execute_batch` as a separate `wrangler d1 execute
+        // --file` round-trip, and a later migration that ALTERs a table created
+        // by an earlier one is not reliably consistent across those separate
+        // remote executions — so a single combined batch (which the local sqlite
+        // and worker-D1 backends run identically) is the portable path.
+        if (current as usize) < MIGRATIONS.len() {
+            let pending = MIGRATIONS[current as usize..].join("\n");
             self.backend
-                .execute_batch(sql)
+                .execute_batch(&pending)
                 .await
-                .with_context(|| format!("applying migration v{}", i + 1))?;
+                .with_context(|| {
+                    format!("applying migrations v{}..=v{}", current + 1, target)
+                })?;
         }
         self.backend
             .execute("DELETE FROM schema_version", &[])
