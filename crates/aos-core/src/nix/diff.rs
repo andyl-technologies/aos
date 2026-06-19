@@ -108,6 +108,24 @@ pub enum DrvDiff {
     },
 }
 
+/// A paired oracle/candidate derivation node in the compared closure graph.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DrvDiffPair {
+    /// Oracle-side `.drv` path.
+    pub oracle: PathBuf,
+    /// Candidate-side `.drv` path.
+    pub candidate: PathBuf,
+}
+
+impl DrvDiffPair {
+    fn new(oracle: impl Into<PathBuf>, candidate: impl Into<PathBuf>) -> Self {
+        Self {
+            oracle: oracle.into(),
+            candidate: candidate.into(),
+        }
+    }
+}
+
 /// Result of comparing two evaluator outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrvDiffReport {
@@ -119,6 +137,18 @@ pub struct DrvDiffReport {
     pub candidate_root: Option<PathBuf>,
     /// Divergences found during comparison.
     pub divergences: Vec<DrvDiff>,
+    /// Divergent `.drv` nodes whose input derivations did not diverge.
+    ///
+    /// This is populated only by closure-complete modes. [`DiffMode::Path`]
+    /// does not inspect input derivations, so it leaves divergence nodes
+    /// unclassified.
+    pub root_divergences: Vec<DrvDiffPair>,
+    /// Divergent `.drv` nodes whose mismatch is downstream of another mismatch.
+    ///
+    /// This is populated only by closure-complete modes. [`DiffMode::Path`]
+    /// does not inspect input derivations, so it leaves divergence nodes
+    /// unclassified.
+    pub contaminated_divergences: Vec<DrvDiffPair>,
 }
 
 impl DrvDiffReport {
@@ -159,6 +189,8 @@ pub fn diff_closure(
             .ok()
             .map(|result| result.root.clone()),
         divergences: Vec::new(),
+        root_divergences: Vec::new(),
+        contaminated_divergences: Vec::new(),
     };
 
     let (oracle_result, candidate_result) = match (oracle_result, candidate_result) {
@@ -201,19 +233,26 @@ pub fn diff_closure(
         }
         DiffMode::Byte | DiffMode::Structural => {
             let mut visited = BTreeSet::new();
+            let mut graph = ClosureDiffGraph::default();
             compare_drv_pair(
                 &oracle_result,
                 &candidate_result,
                 mode == DiffMode::Structural,
                 &mut visited,
+                &mut graph,
                 &mut report,
             )?;
             if oracle_result.root != candidate_result.root {
+                graph.record_divergence(DrvDiffPair::new(
+                    oracle_result.root.clone(),
+                    candidate_result.root.clone(),
+                ));
                 report.divergences.push(DrvDiff::RootPath {
                     oracle: oracle_result.root,
                     candidate: candidate_result.root,
                 });
             }
+            graph.classify(&mut report);
         }
     }
 
@@ -262,6 +301,44 @@ impl DiffInstantiation {
     }
 }
 
+#[derive(Default)]
+struct ClosureDiffGraph {
+    edges: BTreeMap<DrvDiffPair, BTreeSet<DrvDiffPair>>,
+    divergent: BTreeSet<DrvDiffPair>,
+    divergent_order: Vec<DrvDiffPair>,
+}
+
+impl ClosureDiffGraph {
+    fn record_node(&mut self, pair: DrvDiffPair) {
+        self.edges.entry(pair).or_default();
+    }
+
+    fn record_edge(&mut self, parent: DrvDiffPair, input: DrvDiffPair) {
+        self.edges.entry(parent).or_default().insert(input.clone());
+        self.edges.entry(input).or_default();
+    }
+
+    fn record_divergence(&mut self, pair: DrvDiffPair) {
+        if self.divergent.insert(pair.clone()) {
+            self.divergent_order.push(pair);
+        }
+    }
+
+    fn classify(self, report: &mut DrvDiffReport) {
+        for pair in self.divergent_order {
+            let has_divergent_input = self
+                .edges
+                .get(&pair)
+                .is_some_and(|inputs| inputs.iter().any(|input| self.divergent.contains(input)));
+            if has_divergent_input {
+                report.contaminated_divergences.push(pair);
+            } else {
+                report.root_divergences.push(pair);
+            }
+        }
+    }
+}
+
 fn instantiate_for_mode(
     eval: &dyn NixEval,
     file: &Path,
@@ -286,6 +363,7 @@ fn compare_drv_pair(
     candidate: &DiffInstantiation,
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
+    graph: &mut ClosureDiffGraph,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
     compare_drv_pair_at(
@@ -295,6 +373,7 @@ fn compare_drv_pair(
         &candidate.root,
         structural,
         visited,
+        graph,
         report,
     )
 }
@@ -306,10 +385,12 @@ fn compare_drv_pair_at(
     candidate_path: &Path,
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
+    graph: &mut ClosureDiffGraph,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
-    let key = (oracle_path.to_path_buf(), candidate_path.to_path_buf());
-    if !visited.insert(key) {
+    let pair = DrvDiffPair::new(oracle_path.to_path_buf(), candidate_path.to_path_buf());
+    graph.record_node(pair.clone());
+    if !visited.insert((pair.oracle.clone(), pair.candidate.clone())) {
         return Ok(());
     }
 
@@ -317,6 +398,7 @@ fn compare_drv_pair_at(
     let candidate_bytes = candidate.read_drv_bytes(candidate_path, "candidate")?;
     let bytes_differ = oracle_bytes != candidate_bytes;
     if structural && bytes_differ {
+        graph.record_divergence(pair.clone());
         report.divergences.push(DrvDiff::Bytes {
             oracle: oracle_path.to_path_buf(),
             candidate: candidate_path.to_path_buf(),
@@ -334,14 +416,12 @@ fn compare_drv_pair_at(
             return Ok(());
         };
         let field = first_derivation_diff_field(&oracle_drv, &candidate_drv);
+        graph.record_divergence(pair.clone());
         report.divergences.push(DrvDiff::Structural {
             oracle: oracle_path.to_path_buf(),
             candidate: candidate_path.to_path_buf(),
             field: field.to_string(),
         });
-        if oracle_drv.input_derivations != candidate_drv.input_derivations {
-            return Ok(());
-        }
         (
             drv_inputs_from_derivation(&oracle_drv),
             drv_inputs_from_derivation(&candidate_drv),
@@ -353,6 +433,7 @@ fn compare_drv_pair_at(
         )
     };
     if oracle_inputs.len() != candidate_inputs.len() {
+        graph.record_divergence(pair.clone());
         report.divergences.push(DrvDiff::InputCount {
             oracle: oracle_path.to_path_buf(),
             candidate: candidate_path.to_path_buf(),
@@ -365,15 +446,18 @@ fn compare_drv_pair_at(
         compare_input_pair(
             oracle,
             candidate,
+            &pair,
             oracle_input,
             candidate_input,
             structural,
             visited,
+            graph,
             report,
         )?;
     }
 
     if !structural && bytes_differ {
+        graph.record_divergence(pair);
         report.divergences.push(DrvDiff::Bytes {
             oracle: oracle_path.to_path_buf(),
             candidate: candidate_path.to_path_buf(),
@@ -386,15 +470,20 @@ fn compare_drv_pair_at(
 fn compare_input_pair(
     oracle_result: &DiffInstantiation,
     candidate_result: &DiffInstantiation,
+    parent: &DrvDiffPair,
     oracle: &DrvInput,
     candidate: &DrvInput,
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
+    graph: &mut ClosureDiffGraph,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
     let oracle_path = PathBuf::from(&oracle.drv_path);
     let candidate_path = PathBuf::from(&candidate.drv_path);
+    let pair = DrvDiffPair::new(oracle_path.clone(), candidate_path.clone());
+    graph.record_edge(parent.clone(), pair.clone());
     if oracle.outputs != candidate.outputs {
+        graph.record_divergence(parent.clone());
         report.divergences.push(DrvDiff::InputOutputs {
             oracle: oracle_path.clone(),
             candidate: candidate_path.clone(),
@@ -410,6 +499,7 @@ fn compare_input_pair(
         &candidate_path,
         structural,
         visited,
+        graph,
         report,
     )
 }
@@ -668,6 +758,8 @@ mod tests {
         assert!(!report.is_match());
         assert_eq!(report.divergences.len(), 1);
         assert!(matches!(report.divergences[0], DrvDiff::RootPath { .. }));
+        assert!(report.root_divergences.is_empty());
+        assert!(report.contaminated_divergences.is_empty());
         Ok(())
     }
 
@@ -745,6 +837,63 @@ mod tests {
                 .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
                     if oracle == &oracle_input && candidate == &candidate_input))
         );
+        assert_eq!(
+            report.root_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_input,
+                candidate: candidate_input,
+            }]
+        );
+        assert_eq!(
+            report.contaminated_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_root,
+                candidate: candidate_root,
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_classifies_input_output_mismatch_on_parent_drv() -> Result<()> {
+        let input = PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-input.drv");
+        let root = PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-root.drv");
+        let input_bytes = drv(&[], "input").into_bytes();
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(input.clone(), input_bytes.clone());
+        oracle_bytes.insert(
+            root.clone(),
+            drv(&[(path_str(&input)?, &["out"])], "root").into_bytes(),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(input.clone(), input_bytes);
+        candidate_bytes.insert(
+            root.clone(),
+            drv(&[(path_str(&input)?, &["dev"])], "root").into_bytes(),
+        );
+        let oracle = FakeEval::path_with_bytes(root.clone(), oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(root.clone(), candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )?;
+
+        assert!(report.divergences.iter().any(
+            |diff| matches!(diff, DrvDiff::InputOutputs { oracle, candidate, .. }
+                    if oracle == &input && candidate == &input)
+        ));
+        assert_eq!(
+            report.root_divergences,
+            vec![DrvDiffPair {
+                oracle: root.clone(),
+                candidate: root,
+            }]
+        );
+        assert!(report.contaminated_divergences.is_empty());
         Ok(())
     }
 
@@ -971,23 +1120,30 @@ mod tests {
     }
 
     #[test]
-    fn structural_mode_reports_input_derivation_difference_before_descent() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let oracle_root = temp.path().join("oracle-root.drv");
-        let candidate_root = temp.path().join("candidate-root.drv");
-        fs::write(
-            &oracle_root,
-            structural_drv_with_input(
-                "/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv",
-                "root",
-            ),
-        )?;
-        fs::write(
-            &candidate_root,
-            structural_drv_with_input("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv", "root"),
-        )?;
-        let oracle = FakeEval::path(oracle_root.clone());
-        let candidate = FakeEval::path(candidate_root.clone());
+    fn structural_mode_classifies_input_path_contamination() -> Result<()> {
+        let oracle_input = PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv");
+        let candidate_input = PathBuf::from("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), structural_drv("input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            structural_drv_with_input(path_str(&oracle_input)?, "root").into_bytes(),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            structural_drv("input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            structural_drv_with_input(path_str(&candidate_input)?, "root").into_bytes(),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root.clone(), oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root.clone(), candidate_bytes);
 
         let report = diff_closure(
             &oracle,
@@ -1007,10 +1163,24 @@ mod tests {
         assert_eq!(
             report.divergences.get(1),
             Some(&DrvDiff::Structural {
-                oracle: oracle_root,
-                candidate: candidate_root,
+                oracle: oracle_root.clone(),
+                candidate: candidate_root.clone(),
                 field: "input_derivations".to_string(),
             })
+        );
+        assert_eq!(
+            report.root_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_input,
+                candidate: candidate_input,
+            }]
+        );
+        assert_eq!(
+            report.contaminated_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_root,
+                candidate: candidate_root,
+            }]
         );
         assert!(
             !report
@@ -1068,28 +1238,40 @@ mod tests {
     }
 
     #[test]
-    fn structural_mode_skips_descent_when_outputs_and_inputs_differ() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let oracle_root = temp.path().join("oracle-root.drv");
-        let candidate_root = temp.path().join("candidate-root.drv");
-        fs::write(
-            &oracle_root,
+    fn structural_mode_classifies_output_and_input_divergence() -> Result<()> {
+        let oracle_input = PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv");
+        let candidate_input = PathBuf::from("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), structural_drv("input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
             structural_drv_with_input_and_output(
-                "/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv",
+                path_str(&oracle_input)?,
                 "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-shared",
                 "root",
-            ),
-        )?;
-        fs::write(
-            &candidate_root,
+            )
+            .into_bytes(),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            structural_drv("input").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
             structural_drv_with_input_and_output(
-                "/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv",
+                path_str(&candidate_input)?,
                 "/nix/store/c9hhy38jds9ffzzqwkb50vrv2pi8x614-base",
                 "root",
-            ),
-        )?;
-        let oracle = FakeEval::path(oracle_root.clone());
-        let candidate = FakeEval::path(candidate_root.clone());
+            )
+            .into_bytes(),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root.clone(), oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root.clone(), candidate_bytes);
 
         let report = diff_closure(
             &oracle,
@@ -1106,6 +1288,14 @@ mod tests {
                 .any(|diff| matches!(diff, DrvDiff::Structural { field, .. }
                     if field == "outputs"))
         );
+        assert_eq!(
+            report.root_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_root,
+                candidate: candidate_root,
+            }]
+        );
+        assert!(report.contaminated_divergences.is_empty());
         assert!(
             !report
                 .divergences

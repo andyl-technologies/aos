@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use aos_core::nix::diff::{DiffMode, DiffSide, DrvDiff, DrvDiffReport, diff_closure};
+use aos_core::nix::diff::{DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure};
 use aos_core::nix::{NixCli, NixEvalConfig, NixRunner, select_native_diff_candidate_with_config};
 use aos_core::output::{OutputMode, Printer};
 
@@ -90,6 +90,7 @@ pub fn run(
         for divergence in &report.divergences {
             printer.plain(&format!("  - {}", render_diff(divergence)));
         }
+        render_divergence_classes(printer, &report);
     }
     Err(failure.into())
 }
@@ -123,7 +124,16 @@ fn report_json(
         "error": failure.map(ToString::to_string),
         "oracle_root": report.oracle_root.as_ref().map(|path| path.to_string_lossy().to_string()),
         "candidate_root": report.candidate_root.as_ref().map(|path| path.to_string_lossy().to_string()),
+        "root_divergences": report.root_divergences.iter().map(pair_json).collect::<Vec<_>>(),
+        "contaminated_divergences": report.contaminated_divergences.iter().map(pair_json).collect::<Vec<_>>(),
         "divergences": report.divergences.iter().map(diff_json).collect::<Vec<_>>(),
+    })
+}
+
+fn pair_json(pair: &DrvDiffPair) -> serde_json::Value {
+    serde_json::json!({
+        "oracle": pair.oracle.to_string_lossy(),
+        "candidate": pair.candidate.to_string_lossy(),
     })
 }
 
@@ -192,6 +202,29 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
             "oracle_outputs": oracle_outputs,
             "candidate_outputs": candidate_outputs,
         }),
+    }
+}
+
+fn render_divergence_classes(printer: &Printer, report: &DrvDiffReport) {
+    if !report.root_divergences.is_empty() {
+        printer.plain("  root divergence nodes:");
+        for pair in &report.root_divergences {
+            printer.plain(&format!(
+                "    - oracle={} candidate={}",
+                pair.oracle.display(),
+                pair.candidate.display()
+            ));
+        }
+    }
+    if !report.contaminated_divergences.is_empty() {
+        printer.plain("  contaminated divergence nodes:");
+        for pair in &report.contaminated_divergences {
+            printer.plain(&format!(
+                "    - oracle={} candidate={}",
+                pair.oracle.display(),
+                pair.candidate.display()
+            ));
+        }
     }
 }
 
@@ -285,6 +318,11 @@ mod tests {
                 oracle: PathBuf::from("/nix/store/oracle.drv"),
                 candidate: PathBuf::from("/nix/store/candidate.drv"),
             }],
+            root_divergences: vec![DrvDiffPair {
+                oracle: PathBuf::from("/nix/store/oracle.drv"),
+                candidate: PathBuf::from("/nix/store/candidate.drv"),
+            }],
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -296,6 +334,16 @@ mod tests {
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
         assert_eq!(value["divergences"][0]["kind"], "root_path");
+        assert_eq!(
+            value["root_divergences"][0]["oracle"],
+            "/nix/store/oracle.drv"
+        );
+        assert!(
+            value["contaminated_divergences"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -316,6 +364,8 @@ mod tests {
                 candidate: PathBuf::from("/nix/store/candidate.drv"),
                 field: "environment".to_string(),
             }],
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -337,6 +387,8 @@ mod tests {
                 path: PathBuf::from("/nix/store/candidate.drv"),
                 error: "parse failed".to_string(),
             }],
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -357,6 +409,8 @@ mod tests {
                 oracle_error: "type error".to_string(),
                 candidate_error: "unsupported feature".to_string(),
             }],
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -379,6 +433,8 @@ mod tests {
             oracle_root: None,
             candidate_root: None,
             divergences: Vec::new(),
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report).expect("empty comparison should fail");
@@ -402,6 +458,8 @@ mod tests {
             oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
             candidate_root: None,
             divergences: Vec::new(),
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
         };
 
         let failure = report_failure(&report).expect("incomplete comparison should fail");
