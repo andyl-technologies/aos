@@ -422,6 +422,11 @@
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
 
+      qemu-crucible = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible";
+        enablePlugins = true;
+      };
+
       kubelet = callPackage ./kubernetes/kubelet.nix {inherit kubeSource;};
       kubectl = callPackage ./kubernetes/kubectl.nix {inherit kubeSource;};
 
