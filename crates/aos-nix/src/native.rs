@@ -855,7 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn native_path_instantiation_does_not_require_drv_closure_bytes() -> Result<()> {
+    fn native_instantiation_expr_closure_supports_floating_ca_bytes() -> Result<()> {
         let native = NixNative::new(0)?;
         let expr = r#"derivationStrict {
              name = "ca";
@@ -872,9 +872,43 @@ mod tests {
             PathBuf::from("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv")
         );
 
+        let closure = native.instantiate_expr_closure(expr)?;
+        assert_eq!(closure.root(), path);
+        let bytes = closure
+            .drvs()
+            .get(closure.root())
+            .expect("floating CA root derivation bytes are recorded");
+        let text = std::str::from_utf8(bytes)?;
+        assert!(text.contains(r#""r:sha256""#));
+        assert!(text.contains(r#"("out","","r:sha256","")"#));
+        Ok(())
+    }
+
+    #[test]
+    fn native_path_instantiation_still_allows_downstream_deferred_drv_paths() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let expr = r#"let
+             base = derivationStrict {
+               name = "ca";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               __contentAddressed = true;
+               outputHashAlgo = "sha256";
+               outputHashMode = "recursive";
+             };
+           in derivationStrict {
+             name = "consumer";
+             system = "x86_64-linux";
+             builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+             input = "${base.out}";
+           }"#;
+
+        let path = native.instantiate_expr(expr)?;
+        assert!(path.to_string_lossy().ends_with("-consumer.drv"));
+
         let error = native
             .instantiate_expr_closure(expr)
-            .expect_err("deferred output placeholders cannot be serialized yet");
+            .expect_err("downstream deferred output placeholders cannot be serialized yet");
         assert!(matches!(
             error.downcast_ref::<NativeEvalError>(),
             Some(NativeEvalError::Unsupported { .. })
@@ -908,9 +942,23 @@ mod tests {
                  builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
                  input = "${base.out}";
                }"#,
+            r#"derivationStrict {
+                 name = "ca";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                 __contentAddressed = true;
+                 outputHashAlgo = "sha256";
+                 outputHashMode = "recursive";
+               }"#,
         ] {
             let closure = native.instantiate_expr_closure(expr)?;
             let output = Command::new(&oracle).args(["--expr", expr]).output()?;
+            if !output.status.success()
+                && String::from_utf8_lossy(&output.stderr).contains("experimental Nix feature")
+            {
+                eprintln!("configured C++ Nix oracle skipped experimental expression {expr:?}");
+                continue;
+            }
             assert!(
                 output.status.success(),
                 "C++ Nix oracle unexpectedly rejected {expr:?}: {}",

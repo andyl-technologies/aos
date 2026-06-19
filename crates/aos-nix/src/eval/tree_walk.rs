@@ -1853,7 +1853,14 @@ struct KnownDerivationInputHashes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DerivationOutputResolution {
     StaticPaths,
+    FloatingCa(FloatingCaOutput),
     DeferredPlaceholders,
+}
+
+impl DerivationOutputResolution {
+    fn has_deferred_outputs(self) -> bool {
+        !matches!(self, Self::StaticPaths)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3265,7 +3272,7 @@ impl TreeWalk {
             (
                 known_hash,
                 drv_path,
-                DerivationOutputResolution::DeferredPlaceholders,
+                DerivationOutputResolution::FloatingCa(floating_ca_output),
             )
         } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
             let known_hash =
@@ -4393,8 +4400,7 @@ impl TreeWalk {
                 )
             })?;
             hashes.insert(input.clone(), known.hash_derivation_modulo);
-            has_deferred |=
-                known.output_resolution == DerivationOutputResolution::DeferredPlaceholders;
+            has_deferred |= known.output_resolution.has_deferred_outputs();
         }
         Ok(KnownDerivationInputHashes {
             hashes,
@@ -4406,9 +4412,19 @@ impl TreeWalk {
         self.known_derivations
             .iter()
             .map(|(drv_path, known)| {
-                let aterm_bytes = (known.output_resolution
-                    == DerivationOutputResolution::StaticPaths)
-                    .then(|| known.derivation.to_aterm_bytes());
+                let aterm_bytes = match known.output_resolution {
+                    DerivationOutputResolution::StaticPaths => {
+                        Some(known.derivation.to_aterm_bytes())
+                    }
+                    DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                        Some(Self::floating_ca_derivation_aterm_bytes(
+                            &known.derivation,
+                            floating_ca_output,
+                            None,
+                        ))
+                    }
+                    DerivationOutputResolution::DeferredPlaceholders => None,
+                };
                 EvalDerivation::new(drv_path.to_absolute_path(), aterm_bytes)
             })
             .collect()
@@ -4484,7 +4500,7 @@ impl TreeWalk {
         for (output_name, output) in &derivation.outputs {
             let output_path = match output.path.as_ref() {
                 Some(path) => path.to_absolute_path().into_bytes(),
-                None if output_resolution == DerivationOutputResolution::DeferredPlaceholders => {
+                None if output_resolution.has_deferred_outputs() => {
                     Self::downstream_output_placeholder(id, span, drv_path, output_name)?
                 }
                 None => {
