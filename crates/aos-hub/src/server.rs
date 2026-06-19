@@ -55,7 +55,7 @@ use crate::auth::extract::AuthState;
 use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
 use crate::domain::{Permission, Principal, Scope};
-use crate::ui::{pages, APP_JS, STYLESHEET};
+use crate::ui::pages;
 
 /// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`.
 const ACCESS_TOKEN_TTL_SECS: i64 = 900;
@@ -354,9 +354,10 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // G mounts the *shared* session-aware browse via
     // `aos_hub_core::connect::rpc_browse_router` (merged below), so the
     // native hub and the Worker serve the identical browse. The hub keeps only
-    // its serving/static endpoints (`/healthz`, `/metrics`, `/_assets/*`, the
-    // device-authorization POST) and its own richer machine-surface facade
-    // (`/{slug}/{*path}` and the nested-canonical catch-all).
+    // its serving endpoints (`/healthz`, `/metrics`, the device-authorization
+    // POST) and its own richer machine-surface facade (`/{slug}/{*path}` and the
+    // nested-canonical catch-all). The `/_assets/*` static files are served by
+    // the shared browse router (merged below) so both shells expose them.
     let mut router = Router::new()
         .route("/healthz", get(healthz))
         .route("/metrics", get(metrics))
@@ -364,11 +365,6 @@ pub async fn router(state: Arc<AppState>) -> Router {
             "/oauth2/device_authorization",
             axum::routing::post(device_authorization),
         )
-        .route("/_assets/style.css", get(stylesheet))
-        .route("/_assets/app.js", get(app_js))
-        .route("/_assets/jetbrains-mono-regular.woff2", get(font_regular))
-        .route("/_assets/jetbrains-mono-bold.woff2", get(font_bold))
-        .route("/_assets/OFL.txt", get(font_license))
         .route(
             "/{slug}/{*path}",
             get(machine_path)
@@ -855,61 +851,6 @@ async fn render_metrics(state: &AppState) -> Result<String, anyhow::Error> {
     );
     Ok(out)
 }
-
-async fn stylesheet() -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/css"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
-        ],
-        STYLESHEET,
-    )
-        .into_response()
-}
-
-async fn app_js() -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript"),
-            (header::CACHE_CONTROL, "public, max-age=3600"),
-        ],
-        APP_JS,
-    )
-        .into_response()
-}
-
-async fn font_regular() -> Response {
-    font_response(crate::ui::FONT_REGULAR)
-}
-
-async fn font_bold() -> Response {
-    font_response(crate::ui::FONT_BOLD)
-}
-
-async fn font_license() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        crate::ui::FONT_LICENSE,
-    )
-        .into_response()
-}
-
-/// Serve an embedded font.
-///
-/// The font URLs are stable (not content-hashed), so they get a one-day
-/// lifetime rather than `immutable` — a hub upgrade that reships the
-/// fonts must be able to take effect.
-fn font_response(bytes: &'static [u8]) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "font/woff2"),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        bytes,
-    )
-        .into_response()
-}
-
 
 /// Maximum packages loaded for one anonymous browse page view.
 ///
