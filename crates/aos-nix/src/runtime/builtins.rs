@@ -1389,7 +1389,6 @@ impl BuiltinExecution {
             | Self::Fetchurl
             | Self::Trace { .. }
             | Self::Warn => Some(NativeCliFallbackFeature::CliSensitiveBuiltinEvaluation),
-            Self::FlakeRefToString | Self::ParseFlakeRef => Some(NativeCliFallbackFeature::Flakes),
             Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => match effect {
                 BuiltinEffect::Pure => None,
                 BuiltinEffect::Effectful => {
@@ -1397,6 +1396,8 @@ impl BuiltinExecution {
                 }
             },
             Self::LazyUnary
+            | Self::FlakeRefToString
+            | Self::ParseFlakeRef
             | Self::DirectBinary(_)
             | Self::DirectTernary(_)
             | Self::Sort
@@ -2385,10 +2386,8 @@ mod tests {
             b"fetchMercurial".as_slice(),
             b"fetchTree".as_slice(),
             b"fetchurl".as_slice(),
-            b"flakeRefToString".as_slice(),
             b"getEnv".as_slice(),
             b"hashFile".as_slice(),
-            b"parseFlakeRef".as_slice(),
             b"readFile".as_slice(),
             b"trace".as_slice(),
         ] {
@@ -2408,6 +2407,8 @@ mod tests {
             b"lessThan".as_slice(),
             b"nixVersion".as_slice(),
             b"langVersion".as_slice(),
+            b"parseFlakeRef".as_slice(),
+            b"flakeRefToString".as_slice(),
         ] {
             assert!(
                 !BUILTINS
@@ -2420,11 +2421,7 @@ mod tests {
             );
         }
 
-        for name in [
-            b"getFlake".as_slice(),
-            b"parseFlakeRef".as_slice(),
-            b"flakeRefToString".as_slice(),
-        ] {
+        for name in [b"getFlake".as_slice()] {
             assert_eq!(
                 BUILTINS.lookup(name).unwrap().native_cli_fallback_feature(),
                 Some("flakes"),
@@ -2574,10 +2571,7 @@ mod tests {
             })
         );
         assert_eq!(parse_flake_ref.first_class_arity(), Some(1));
-        assert_eq!(
-            parse_flake_ref.native_cli_fallback_feature(),
-            Some("flakes")
-        );
+        assert_eq!(parse_flake_ref.native_cli_fallback_feature(), None);
         assert_eq!(
             parse_flake_ref.docs().summary(),
             "Parses flake-reference URL syntax into attrs."
@@ -2597,10 +2591,7 @@ mod tests {
             })
         );
         assert_eq!(flake_ref_to_string.first_class_arity(), Some(1));
-        assert_eq!(
-            flake_ref_to_string.native_cli_fallback_feature(),
-            Some("flakes")
-        );
+        assert_eq!(flake_ref_to_string.native_cli_fallback_feature(), None);
         assert_eq!(
             flake_ref_to_string.docs().summary(),
             "Converts flake-reference attrs to URL syntax."

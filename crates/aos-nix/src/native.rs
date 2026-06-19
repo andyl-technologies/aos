@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::compile::{
-    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrKind, lower, resolve,
+    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
 };
 use crate::error::NativeEvalError;
 use crate::eval::{
@@ -406,17 +406,12 @@ fn ensure_native_json_subset(
                 continue;
             };
             if name == b"builtins" {
-                if let Some(feature) = builtins_global_cli_fallback_feature(ir, index, options) {
+                if let Some(feature) =
+                    builtins_global_native_json_fallback_feature(ir, index, options)
+                {
                     return Err(unsupported_native_node(feature, node.span, expr_len));
                 }
-                if builtins_global_is_configured_current_system_select(ir, index, options) {
-                    continue;
-                }
-                return Err(unsupported_native_node(
-                    "CLI-sensitive builtin evaluation",
-                    node.span,
-                    expr_len,
-                ));
+                continue;
             }
             if let Some(feature) = builtin_native_cli_fallback_feature(name) {
                 return Err(unsupported_native_node(feature, node.span, expr_len));
@@ -678,50 +673,72 @@ fn nix_string_literal(bytes: &[u8]) -> Result<String> {
     Ok(out)
 }
 
-fn builtins_global_cli_fallback_feature(
+fn builtins_global_native_json_fallback_feature(
     ir: &Ir,
     receiver_index: usize,
     options: &TreeWalkOptions,
 ) -> Option<&'static str> {
-    ir.arena.nodes().iter().find_map(|node| {
+    let mut selected_known_native_builtin = false;
+
+    for node in ir.arena.nodes() {
         let IrData::Select { receiver, path, .. } = node.data else {
-            return None;
+            continue;
         };
-        if receiver.index() != receiver_index {
-            return None;
+        if !select_receiver_references_global(ir, receiver, receiver_index) {
+            continue;
         }
-        let name = static_single_attr_path(ir, path)?;
-        if name == b"currentSystem" && options.eval_mode() != EvalMode::Pure {
-            return None;
+
+        let Some(name) = static_single_attr_path(ir, path) else {
+            return Some("CLI-sensitive builtin evaluation");
+        };
+        if name == b"currentSystem"
+            && options.eval_mode() != EvalMode::Pure
+            && options.current_system().is_some()
+        {
+            selected_known_native_builtin = true;
+            continue;
         }
-        builtin_native_cli_fallback_feature(name)
-    })
+        if name == b"builtins" {
+            return Some("CLI-sensitive builtin evaluation");
+        }
+        let Some(builtin) = lookup_builtin(name) else {
+            return Some("CLI-sensitive builtin evaluation");
+        };
+        if let Some(feature) = builtin.native_cli_fallback_feature() {
+            return Some(feature);
+        }
+
+        selected_known_native_builtin = true;
+    }
+
+    if selected_known_native_builtin {
+        None
+    } else {
+        Some("CLI-sensitive builtin evaluation")
+    }
 }
 
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
     lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
 }
 
-fn builtins_global_is_configured_current_system_select(
-    ir: &Ir,
-    receiver_index: usize,
-    options: &TreeWalkOptions,
-) -> bool {
-    if options.eval_mode() == EvalMode::Pure || options.current_system().is_none() {
-        return false;
-    }
+fn select_receiver_references_global(ir: &Ir, mut receiver: IrId, global_index: usize) -> bool {
+    loop {
+        if receiver.index() == global_index {
+            return true;
+        }
 
-    ir.arena.nodes().iter().any(|node| {
-        let IrData::Select { receiver, path, .. } = node.data else {
+        let Some(node) = ir.arena.node(receiver) else {
             return false;
         };
-
-        receiver.index() == receiver_index && attr_path_is_static_symbol(ir, path, b"currentSystem")
-    })
-}
-
-fn attr_path_is_static_symbol(ir: &Ir, path: IrAttrPathId, expected: &[u8]) -> bool {
-    static_single_attr_path(ir, path) == Some(expected)
+        let (IrKind::ThunkAlloc, IrData::Node(inner)) = (node.kind, node.data) else {
+            return false;
+        };
+        if inner.index() == receiver.index() {
+            return false;
+        }
+        receiver = inner;
+    }
 }
 
 fn static_single_attr_path<'a>(ir: &'a Ir, path: IrAttrPathId) -> Option<&'a [u8]> {
@@ -1318,8 +1335,6 @@ mod tests {
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
             "builtins.fetchMercurial",
-            r#"builtins.parseFlakeRef "nixpkgs""#,
-            r#"builtins.flakeRefToString { type = "indirect"; id = "nixpkgs"; }"#,
             "<nixpkgs>",
             r#"derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
             r#"builtins.derivation { name = "x"; system = "x86_64-linux"; builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder"; }"#,
@@ -1346,8 +1361,6 @@ mod tests {
         for source in [
             r#"builtins.getFlake "github:NixOS/nixpkgs/0000000000000000000000000000000000000000""#,
             "builtins.getFlake or null",
-            r#"builtins.parseFlakeRef "nixpkgs""#,
-            r#"let render = builtins.flakeRefToString; in render { type = "indirect"; id = "nixpkgs"; }"#,
         ] {
             let err = native
                 .eval_expr(source)
@@ -1361,6 +1374,50 @@ mod tests {
                 "{source}: {err:?}"
             );
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn native_expression_eval_supports_pure_flake_ref_helpers() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        assert_eq!(
+            native.eval_expr(r#"builtins.parseFlakeRef "github:NixOS/nixpkgs/23.05?dir=lib""#)?,
+            r#"{"dir":"lib","owner":"NixOS","ref":"23.05","repo":"nixpkgs","type":"github"}"#
+        );
+        assert_eq!(
+            native
+                .eval_expr(r#"let parse = builtins.parseFlakeRef; in parse "nixpkgs/unstable""#)?,
+            r#"{"id":"nixpkgs","ref":"unstable","type":"indirect"}"#
+        );
+        assert_eq!(
+            native.eval_expr(
+                r#"let b = { inherit (builtins) parseFlakeRef; }; in b.parseFlakeRef "nixpkgs/unstable""#
+            )?,
+            r#"{"id":"nixpkgs","ref":"unstable","type":"indirect"}"#
+        );
+        assert_eq!(
+            native.eval_expr(
+                r#"let render = builtins.flakeRefToString; in render {
+                    dir = "lib";
+                    owner = "NixOS";
+                    ref = "23.05";
+                    repo = "nixpkgs";
+                    type = "github";
+                }"#
+            )?,
+            r#""github:NixOS/nixpkgs/23.05?dir=lib""#
+        );
+        assert_eq!(
+            native.eval_expr(
+                r#"let b = { inherit (builtins) flakeRefToString; }; in b.flakeRefToString {
+                    type = "indirect";
+                    id = "nixpkgs";
+                }"#
+            )?,
+            r#""flake:nixpkgs""#
+        );
 
         Ok(())
     }
