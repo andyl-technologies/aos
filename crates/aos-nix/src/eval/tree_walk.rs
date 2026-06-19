@@ -9424,24 +9424,41 @@ impl TreeWalk {
         argument_span: Span,
         value: Option<Value>,
     ) -> Result<Value, TreeWalkError> {
-        if self.options.eval_mode() == EvalMode::Pure {
-            let value = match value {
-                Some(value) => value,
-                None => self.eval_node(argument)?,
-            };
-            let value = self.force_demanded_value(argument, argument_span, value)?;
-            let args = self.fetch_mercurial_arguments(argument, argument_span, value)?;
-            if args.rev.is_none() {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::FetchMercurialRevRequired {
-                        id: argument,
-                        url: args.url,
-                        mode: EvalMode::Pure,
-                    },
-                    argument_span,
-                ));
-            }
+        let value = match value {
+            Some(value) => value,
+            None => self.eval_node(argument)?,
+        };
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let args = self.fetch_mercurial_arguments(argument, argument_span, value)?;
+        if self.options.eval_mode() == EvalMode::Pure && args.rev.is_none() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchMercurialRevRequired {
+                    id: argument,
+                    url: args.url,
+                    mode: EvalMode::Pure,
+                },
+                argument_span,
+            ));
         }
+
+        unsupported_primop(call)
+    }
+
+    fn eval_get_flake_primop(
+        &mut self,
+        call: BuiltinCall,
+        argument: IrId,
+        argument_span: Span,
+        value: Option<Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let value = match value {
+            Some(value) => value,
+            None => self.eval_node(argument)?,
+        };
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        let flake_ref =
+            self.context_free_string_bytes(argument, argument_span, value, "getFlake")?;
+        let _ = Self::parse_flake_ref_attrs(argument, argument_span, &flake_ref)?;
 
         unsupported_primop(call)
     }
@@ -28374,6 +28391,11 @@ impl BuiltinRuntime for Builtin {
                 let value = eval.eval_node(argument)?;
                 eval.eval_fetch_tree_primop(call.id, call.span, argument, argument_span, value)
             }
+            BuiltinExecution::GetFlake => {
+                let argument = args[0];
+                let argument_span = eval.node(argument)?.span;
+                eval.eval_get_flake_primop(call, argument, argument_span, None)
+            }
             BuiltinExecution::FlakeRefToString => {
                 let argument = args[0];
                 let argument_span = eval.node(argument)?.span;
@@ -28558,7 +28580,6 @@ impl BuiltinRuntime for Builtin {
                 eval.eval_lazy_node(args[1])
             }
             BuiltinExecution::Derivation
-            | BuiltinExecution::Unsupported { .. }
             | BuiltinExecution::BuiltinsValue
             | BuiltinExecution::TrueValue
             | BuiltinExecution::FalseValue
@@ -28659,6 +28680,15 @@ impl BuiltinRuntime for Builtin {
                     argument.id(),
                     argument.span(),
                     argument.value(),
+                )
+            }
+            BuiltinExecution::GetFlake => {
+                let argument = args[0];
+                eval.eval_get_flake_primop(
+                    call,
+                    argument.id(),
+                    argument.span(),
+                    Some(argument.value()),
                 )
             }
             BuiltinExecution::FlakeRefToString => {
@@ -28860,8 +28890,7 @@ impl BuiltinRuntime for Builtin {
                 )?;
                 Ok(args[1].value())
             }
-            BuiltinExecution::Unsupported { .. }
-            | BuiltinExecution::BuiltinsValue
+            BuiltinExecution::BuiltinsValue
             | BuiltinExecution::TrueValue
             | BuiltinExecution::FalseValue
             | BuiltinExecution::NullValue
@@ -37144,7 +37173,16 @@ mod tests {
 
     #[test]
     fn present_unimplemented_builtin_stubs_error_when_called() {
-        for (source, name) in [("builtins.fetchMercurial null", b"fetchMercurial".as_slice())] {
+        for (source, name) in [
+            (
+                r#"builtins.fetchMercurial "https://example.invalid/repo""#,
+                b"fetchMercurial".as_slice(),
+            ),
+            (
+                r#"builtins.getFlake "github:NixOS/nixpkgs""#,
+                b"getFlake".as_slice(),
+            ),
+        ] {
             let ir = lower(source);
             let error = eval_whnf_owned(&ir).expect_err("unimplemented builtin stub errors");
 
@@ -37156,6 +37194,108 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn get_flake_stub_preflights_argument_before_fallback() {
+        let error =
+            eval_whnf_owned(&lower("builtins.getFlake 1")).expect_err("getFlake requires string");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Int,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"let get = builtins.getFlake; in get (builtins.throw "flake")"#,
+        ))
+        .expect_err("first-class getFlake forces its argument");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.getFlake (builtins.toFile "flake-ref" "nixpkgs")"#,
+        ))
+        .expect_err("getFlake rejects context-bearing strings");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed { op: "getFlake", .. }
+        ));
+
+        let error = eval_whnf_owned(&lower(r#"builtins.getFlake "unknown+scheme://example""#))
+            .expect_err("getFlake validates flake-reference syntax");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FlakeRef { .. }));
+
+        let ir = lower(r#"let get = builtins.getFlake; in get "nixpkgs""#);
+        let error = eval_whnf_owned(&ir).expect_err("valid first-class getFlake still falls back");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedPrimOp { symbol, .. }
+                if symbol == symbol_for(&ir, b"getFlake")
+        ));
+    }
+
+    #[test]
+    fn fetch_mercurial_stub_preflights_default_mode_arguments() {
+        let error = eval_whnf_owned(&lower("builtins.fetchMercurial null"))
+            .expect_err("fetchMercurial rejects invalid argument type before fallback");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "set or string",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"let fetch = builtins.fetchMercurial; in fetch { url = "https://example.invalid/repo"; bogus = 1; }"#,
+        ))
+        .expect_err("first-class fetchMercurial rejects unsupported attrs before fallback");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchMercurialAttr { attr, .. }
+                if attr.as_slice() == b"bogus"
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; name = null; }"#,
+        ))
+        .expect_err("fetchMercurial validates name before fallback");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                expected: "string",
+                actual: ValueTag::Null,
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchMercurial (builtins.toFile "repo-url" "https://example.invalid/repo")"#,
+        ))
+        .expect_err("fetchMercurial rejects context-bearing URL strings");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "fetchMercurial",
+                ..
+            }
+        ));
+
+        let error = eval_whnf_owned(&lower(
+            r#"builtins.fetchMercurial { url = "https://example.invalid/repo"; rev = builtins.toFile "rev" "abcdef"; }"#,
+        ))
+        .expect_err("fetchMercurial rejects context-bearing revision strings");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::StringContextNotAllowed {
+                op: "fetchMercurial",
+                ..
+            }
+        ));
     }
 
     #[test]

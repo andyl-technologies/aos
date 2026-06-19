@@ -486,11 +486,9 @@ define_builtins! {
     pub(crate) struct GetFlakeBuiltin;
     impl BuiltinDefinition for GetFlakeBuiltin {
         const NAME: &'static [u8] = b"getFlake";
-        const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
+        const EXECUTION: BuiltinExecution = BuiltinExecution::GetFlake;
         const DOCS: &'static BuiltinDocs =
             builtin_docs!("Fetches and evaluates a flake reference when flakes are enabled.");
-        const NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE: Option<NativeCliFallbackFeature> =
-            Some(NativeCliFallbackFeature::Flakes);
     }
 
     pub(crate) struct GroupByBuiltin;
@@ -1077,11 +1075,6 @@ pub(crate) enum BuiltinDirect {
 /// Runtime execution strategy attached to a concrete builtin declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinExecution {
-    /// The builtin is known but not implemented by the tree-walk evaluator.
-    Unsupported {
-        /// The arity exposed when the unimplemented builtin is selected.
-        arity: usize,
-    },
     /// The builtin parses and evaluates another Nix file.
     Import,
     /// The builtin parses another Nix file with an injected global scope.
@@ -1152,6 +1145,8 @@ pub(crate) enum BuiltinExecution {
     FetchTarball,
     /// The builtin evaluates `fetchTree`.
     FetchTree,
+    /// The builtin preflights `getFlake` before deferring execution.
+    GetFlake,
     /// The builtin converts flake-reference attrs to URL syntax.
     FlakeRefToString,
     /// The builtin parses flake-reference URL syntax into attrs.
@@ -1182,11 +1177,6 @@ pub(crate) enum BuiltinExecution {
 }
 
 impl BuiltinExecution {
-    /// Creates a present-but-unimplemented builtin execution record.
-    pub(crate) const fn unsupported(arity: usize) -> Self {
-        Self::Unsupported { arity }
-    }
-
     /// Creates a pure strict unary builtin execution record.
     pub(crate) const fn strict_unary(primop: StrictUnaryPrimOp) -> Self {
         Self::StrictUnary {
@@ -1283,8 +1273,7 @@ impl BuiltinExecution {
             Self::Trace { .. } | Self::Warn => Some(BuiltinDirect::StrictLazyBinary {
                 effect: BuiltinEffect::Effectful,
             }),
-            Self::Unsupported { .. }
-            | Self::TrueValue
+            Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
             | Self::BuiltinsValue
@@ -1293,7 +1282,8 @@ impl BuiltinExecution {
             | Self::StoreDirValue
             | Self::NixVersionValue
             | Self::LangVersionValue
-            | Self::NixPathValue => None,
+            | Self::NixPathValue
+            | Self::GetFlake => None,
         }
     }
 
@@ -1315,6 +1305,7 @@ impl BuiltinExecution {
             | Self::FetchGit
             | Self::FetchTarball
             | Self::FetchTree
+            | Self::GetFlake
             | Self::Fetchurl
             | Self::FlakeRefToString
             | Self::ParseFlakeRef
@@ -1332,7 +1323,6 @@ impl BuiltinExecution {
             | Self::Trace { .. }
             | Self::Warn => Some(2),
             Self::DirectTernary(_) => Some(3),
-            Self::Unsupported { arity } => Some(arity),
             Self::BuiltinsValue
             | Self::TrueValue
             | Self::FalseValue
@@ -1358,8 +1348,7 @@ impl BuiltinExecution {
     /// Returns the native JSON fallback class implied by this execution strategy.
     const fn native_cli_fallback_feature(self) -> Option<NativeCliFallbackFeature> {
         match self {
-            Self::Unsupported { .. }
-            | Self::Derivation
+            Self::Derivation
             | Self::Import
             | Self::ScopedImport
             | Self::DerivationStrict
@@ -1382,6 +1371,7 @@ impl BuiltinExecution {
             | Self::Fetchurl
             | Self::Trace { .. }
             | Self::Warn => Some(NativeCliFallbackFeature::CliSensitiveBuiltinEvaluation),
+            Self::GetFlake => Some(NativeCliFallbackFeature::Flakes),
             Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => match effect {
                 BuiltinEffect::Pure => None,
                 BuiltinEffect::Effectful => {
@@ -2693,14 +2683,6 @@ mod tests {
                 execution.availability(),
                 "{builtin:?}",
             );
-            if matches!(builtin.name(), b"getFlake") {
-                assert_eq!(
-                    builtin.native_cli_fallback_feature_override,
-                    Some(NativeCliFallbackFeature::Flakes),
-                    "{builtin:?}",
-                );
-                continue;
-            }
             assert_eq!(
                 builtin.native_cli_fallback_feature_override, None,
                 "{builtin:?}"
@@ -2799,6 +2781,18 @@ mod tests {
         assert_eq!(
             fetch_tree.docs().summary(),
             "Fetches supported typed tree inputs as fixed-output store paths."
+        );
+
+        let get_flake = BUILTINS
+            .lookup(b"getFlake")
+            .expect("getFlake builtin is registered");
+        assert_eq!(get_flake.execution(), BuiltinExecution::GetFlake);
+        assert_eq!(get_flake.direct(), None);
+        assert_eq!(get_flake.first_class_arity(), Some(1));
+        assert_eq!(get_flake.native_cli_fallback_feature(), Some("flakes"));
+        assert_eq!(
+            get_flake.docs().summary(),
+            "Fetches and evaluates a flake reference when flakes are enabled."
         );
 
         let parse_flake_ref = BUILTINS
