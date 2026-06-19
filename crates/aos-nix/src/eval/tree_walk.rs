@@ -687,6 +687,7 @@ pub struct TreeWalkOptions {
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
     reject_ambient_search_path: bool,
+    reject_unconfigured_impure_builtin_constants: bool,
     parse_cache_root: Option<PathBuf>,
 }
 
@@ -708,6 +709,7 @@ impl Default for TreeWalkOptions {
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
             reject_ambient_search_path: false,
+            reject_unconfigured_impure_builtin_constants: false,
             parse_cache_root: None,
         }
     }
@@ -1201,6 +1203,17 @@ impl TreeWalkOptions {
         self.reject_ambient_search_path = reject;
     }
 
+    /// Enables or disables fallback for unconfigured impure builtin constants.
+    ///
+    /// When enabled, evaluating or testing availability for
+    /// `builtins.currentSystem` or `builtins.currentTime` outside pure mode
+    /// fails before observing that the constants are absent. Native
+    /// instantiation uses this to fall back to C++ Nix, whose CLI populates
+    /// those ambient constants.
+    pub fn set_reject_unconfigured_impure_builtin_constants(&mut self, reject: bool) {
+        self.reject_unconfigured_impure_builtin_constants = reject;
+    }
+
     /// Replaces the parse-cache root directory.
     pub fn set_parse_cache_root(&mut self, parse_cache_root: impl Into<PathBuf>) {
         self.parse_cache_root = Some(parse_cache_root.into());
@@ -1305,6 +1318,11 @@ impl TreeWalkOptions {
     /// Returns whether ambient Nix search-path lookup is disabled.
     pub const fn reject_ambient_search_path(&self) -> bool {
         self.reject_ambient_search_path
+    }
+
+    /// Returns whether unconfigured impure builtin constants are rejected.
+    pub const fn reject_unconfigured_impure_builtin_constants(&self) -> bool {
+        self.reject_unconfigured_impure_builtin_constants
     }
 
     /// Returns the configured parse-cache root directory, if any.
@@ -2830,7 +2848,9 @@ impl TreeWalk {
         })?;
 
         for builtin in BUILTINS.iter().copied() {
-            if !builtin.is_available(self) {
+            if !builtin.is_available(self)
+                && !self.reject_unconfigured_impure_builtin_constant(builtin)
+            {
                 continue;
             }
             let symbol = self.intern_builtin_attr_symbol(id, builtin.name(), span)?;
@@ -2856,6 +2876,10 @@ impl TreeWalk {
             return self.alloc_thunk_for_node(id, id, span);
         }
         if builtin.execution() == BuiltinExecution::NixPathValue {
+            return self.alloc_builtin_attr_thunk(id, span, symbol, builtin);
+        }
+        if self.reject_unconfigured_impure_builtin_constant(builtin) && !builtin.is_available(self)
+        {
             return self.alloc_builtin_attr_thunk(id, span, symbol, builtin);
         }
         builtin.select(self, id, span, symbol)
@@ -26055,6 +26079,9 @@ impl TreeWalk {
             };
         };
         if !builtin.is_available(self) {
+            if self.reject_unconfigured_impure_builtin_constant(builtin) {
+                return Err(self.unsupported_ambient_builtin_constant(id, node.span));
+            }
             return match default {
                 Some(default) => self.eval_node(default).map(Some),
                 None => Err(TreeWalkError::new(
@@ -26180,10 +26207,35 @@ impl TreeWalk {
                 node.span,
             )
         })?;
+        let Some(builtin) = lookup_builtin(name) else {
+            return Ok(Some(Value::bool(false)));
+        };
+        if !builtin.is_available(self) && self.reject_unconfigured_impure_builtin_constant(builtin)
+        {
+            return Err(self.unsupported_ambient_builtin_constant(id, node.span));
+        }
         Ok(Some(Value::bool(
-            path.len() == 1
-                && lookup_builtin(name).is_some_and(|builtin| builtin.is_available(self)),
+            path.len() == 1 && builtin.is_available(self),
         )))
+    }
+
+    fn reject_unconfigured_impure_builtin_constant(&self, builtin: Builtin) -> bool {
+        self.options.reject_unconfigured_impure_builtin_constants()
+            && self.options.eval_mode() != EvalMode::Pure
+            && matches!(
+                builtin.availability(),
+                BuiltinAvailability::ImpureCurrentSystem | BuiltinAvailability::ImpureCurrentTime
+            )
+    }
+
+    fn unsupported_ambient_builtin_constant(&self, id: IrId, span: Span) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedAmbientBuiltinConstant {
+                id,
+                feature: "CLI-sensitive builtin evaluation",
+            },
+            span,
+        )
     }
 
     fn eval_add(
@@ -28111,6 +28163,9 @@ impl BuiltinRuntime for Builtin {
                     .current_system()
                     .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
                 else {
+                    if eval.reject_unconfigured_impure_builtin_constant(self) {
+                        return Err(eval.unsupported_ambient_builtin_constant(id, span));
+                    }
                     return unsupported_builtin_attr(id, span, symbol);
                 };
                 let current_system = current_system.to_vec();
@@ -28122,6 +28177,9 @@ impl BuiltinRuntime for Builtin {
                     .current_time()
                     .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
                 else {
+                    if eval.reject_unconfigured_impure_builtin_constant(self) {
+                        return Err(eval.unsupported_ambient_builtin_constant(id, span));
+                    }
                     return unsupported_builtin_attr(id, span, symbol);
                 };
                 Ok(Value::int(current_time))
@@ -29746,6 +29804,14 @@ pub enum TreeWalkErrorKind {
         /// The search-path-sensitive node id.
         id: IrId,
         /// The rejected search-path-sensitive feature.
+        feature: &'static str,
+    },
+    /// Unconfigured impure builtin constants were disabled by evaluator options.
+    #[error("ambient builtin constant at node {id:?} does not support {feature}")]
+    UnsupportedAmbientBuiltinConstant {
+        /// The builtin-sensitive node id.
+        id: IrId,
+        /// The rejected builtin-sensitive feature.
         feature: &'static str,
     },
     /// A Nix search-path lookup found no existing candidate.

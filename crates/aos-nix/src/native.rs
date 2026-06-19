@@ -252,6 +252,14 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
     ) -> Result<NativeDrvClosure> {
         let ir = self.lower_native_source(source, source_map)?;
+        if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
+        {
+            return Err(NativeEvalError::Unsupported {
+                feature: feature.to_string(),
+                span: source_map.and_then(|source_map| source_span_from_wrapped(span, source_map)),
+            }
+            .into());
+        }
         let outcome = self
             .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
@@ -339,6 +347,7 @@ impl NixNative {
     fn eval_instantiation_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
         let mut options = self.options.clone();
         options.set_reject_ambient_search_path(true);
+        options.set_reject_unconfigured_impure_builtin_constants(true);
         eval_whnf_owned_with_options_and_realizer(ir, options, self.ifd_realizer.clone())
     }
 }
@@ -449,6 +458,9 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedNode { .. }
         | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
         TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
+            Some((*feature).to_string())
+        }
+        TreeWalkErrorKind::UnsupportedAmbientBuiltinConstant { feature, .. } => {
             Some((*feature).to_string())
         }
         TreeWalkErrorKind::SearchPathNotFound { ambient: true, .. } => {
@@ -764,8 +776,11 @@ fn builtins_global_native_json_fallback_feature(
     let mut selected_known_native_builtin = false;
 
     for node in ir.arena.nodes() {
-        let IrData::Select { receiver, path, .. } = node.data else {
-            continue;
+        let (receiver, path) = match node.data {
+            IrData::Select { receiver, path, .. } | IrData::HasAttr { receiver, path, .. } => {
+                (receiver, path)
+            }
+            _ => continue,
         };
         if !select_receiver_references_global(ir, receiver, receiver_index) {
             continue;
@@ -803,6 +818,77 @@ fn builtins_global_native_json_fallback_feature(
 
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
     lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
+}
+
+fn native_instantiation_cli_fallback_feature(
+    ir: &Ir,
+    options: &TreeWalkOptions,
+) -> Option<(&'static str, Span)> {
+    for (index, node) in ir.arena.nodes().iter().enumerate() {
+        let (IrKind::GlobalVar, IrData::Symbol(symbol)) = (node.kind, node.data) else {
+            continue;
+        };
+        let Some(name) = ir.symbols.resolve(symbol) else {
+            continue;
+        };
+        if name != b"builtins" {
+            continue;
+        };
+        if let Some(feature) =
+            builtins_global_native_instantiation_fallback_feature(ir, index, options)
+        {
+            return Some(feature);
+        }
+    }
+    None
+}
+
+fn builtins_global_native_instantiation_fallback_feature(
+    ir: &Ir,
+    receiver_index: usize,
+    options: &TreeWalkOptions,
+) -> Option<(&'static str, Span)> {
+    for node in ir.arena.nodes() {
+        let (receiver, path) = match node.data {
+            IrData::Select { receiver, path, .. } | IrData::HasAttr { receiver, path, .. } => {
+                (receiver, path)
+            }
+            _ => continue,
+        };
+        if !select_receiver_references_global(ir, receiver, receiver_index) {
+            continue;
+        }
+
+        if builtins_instantiation_attr_path_is_cli_sensitive(ir, path, options) {
+            return Some(("CLI-sensitive builtin evaluation", node.span));
+        }
+    }
+    None
+}
+
+fn builtins_instantiation_attr_path_is_cli_sensitive(
+    ir: &Ir,
+    path: IrAttrPathId,
+    options: &TreeWalkOptions,
+) -> bool {
+    let Some(segments) = ir.attr_paths.get(path.index()) else {
+        return true;
+    };
+    let Some(first) = segments.first() else {
+        return false;
+    };
+    let IrAttrPathSegment::Static(symbol) = first else {
+        return true;
+    };
+    match ir.symbols.resolve(*symbol) {
+        Some(b"currentSystem") => {
+            options.eval_mode() != EvalMode::Pure && options.current_system().is_none()
+        }
+        Some(b"currentTime") => {
+            options.eval_mode() != EvalMode::Pure && options.current_time().is_none()
+        }
+        _ => false,
+    }
 }
 
 fn select_receiver_references_global(ir: &Ir, mut receiver: IrId, global_index: usize) -> bool {
@@ -1668,6 +1754,145 @@ mod tests {
                 Some(NativeEvalError::EvalError { .. })
             ),
             "unexpected explicit findFile error: {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_impure_builtin_constants_stay_fallback_eligible() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        for source in [
+            "builtins.currentTime",
+            "builtins.currentTime or 42",
+            "builtins.currentSystem",
+            "builtins ? currentTime",
+            "builtins ? currentSystem",
+            r#"builtins.${"currentTime"}"#,
+        ] {
+            let error = native
+                .instantiate_expr(source)
+                .expect_err("CLI-sensitive impure constants should fall back");
+            assert!(
+                matches!(
+                    error.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                        if feature.contains("CLI-sensitive builtin evaluation")
+                ),
+                "unexpected error for {source:?}: {error:?}"
+            );
+        }
+
+        let configured_system = NixNative::with_options(
+            0,
+            TreeWalkOptions::with_current_system(b"x86_64-linux".to_vec())?,
+        )?;
+        let error = configured_system
+            .instantiate_expr("builtins.currentSystem")
+            .expect_err("configured currentSystem is evaluated natively, then rejected as non-drv");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { .. })
+            ),
+            "unexpected configured currentSystem error: {error:?}"
+        );
+
+        let mut pure_options = TreeWalkOptions::new();
+        pure_options.set_eval_mode(EvalMode::Pure);
+        let pure = NixNative::with_options(0, pure_options)?;
+        let error = pure
+            .instantiate_expr("builtins.currentTime or 42")
+            .expect_err("pure currentTime remains a native semantic result");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { .. })
+            ),
+            "unexpected pure currentTime error: {error:?}"
+        );
+
+        let error = native
+            .instantiate_expr("builtins.length.foo or 42")
+            .expect_err("unrelated static builtins paths should stay semantic");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { .. })
+            ),
+            "unexpected unrelated static builtins path error: {error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_imported_impure_constants_stay_fallback_eligible() -> Result<()> {
+        let dir = unique_temp_dir("native-instantiation-impure-import");
+        fs::create_dir_all(&dir)?;
+        let file = dir.join("default.nix");
+        fs::write(
+            &file,
+            r#"{
+              pkgs.hello = derivationStrict {
+                name = "base";
+                system = builtins.currentSystem;
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+              pkgs.alias = let b = builtins; in derivationStrict {
+                name = "alias";
+                system = b.currentSystem;
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+              pkgs.dynamic = let name = "currentSystem"; in derivationStrict {
+                name = "dynamic";
+                system = builtins.${name};
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+            }"#,
+        )?;
+        let native = NixNative::new(0)?;
+
+        for attr in ["pkgs.hello", "pkgs.alias", "pkgs.dynamic"] {
+            let error = native
+                .instantiate(&file, attr)
+                .expect_err("file-backed impure constants should fall back");
+            assert!(
+                matches!(
+                    error.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::Unsupported { feature, .. })
+                        if feature.contains("CLI-sensitive builtin evaluation")
+                ),
+                "unexpected file-backed error for {attr}: {error:?}"
+            );
+        }
+
+        let file_literal = nix_string_literal(file.as_os_str().as_bytes())?;
+        let error = native
+            .instantiate_expr(&format!("(import {file_literal}).pkgs.hello"))
+            .expect_err("expression import impure constants should fall back");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                    if feature.contains("CLI-sensitive builtin evaluation")
+            ),
+            "unexpected expression import error: {error:?}"
+        );
+
+        let error = native
+            .instantiate_expr(&format!(
+                "(builtins.scopedImport {{ }} {file_literal}).pkgs.hello"
+            ))
+            .expect_err("scoped import impure constants should fall back");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                    if feature.contains("CLI-sensitive builtin evaluation")
+            ),
+            "unexpected scoped import error: {error:?}"
         );
         Ok(())
     }
