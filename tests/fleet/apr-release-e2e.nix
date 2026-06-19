@@ -124,10 +124,16 @@ in {
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('${storePath}', 'sha256:$NAR_HASH', 1000000, $NAR_SIZE, 1, ''', 'fixed:r:sha256:$NAR_HASH');"
 
           # 2.2 Signed registry + a bare gitd origin the consumer clones from.
-          ${pkgs.aos}/bin/apr keys generate release --registry relreg
-          PUBKEY=$(${pkgs.aos}/bin/apr keys list --registry relreg \\
-            | awk '/Ed25519/ {{print $NF; exit}}')
+          # `apr keys generate` writes the maintainer key and prints its
+          # public half; `apr create --trust-key` then initialises the
+          # registry (directory + git repo + keys.toml roster seeded with
+          # that key) so the release below can be published and signed.
+          ${pkgs.aos}/bin/apr keys generate release --registry relreg \\
+            > /tmp/relreg-keygen.out 2>&1
+          cat /tmp/relreg-keygen.out
+          PUBKEY=$(grep -o 'relreg:Ed25519:[A-Za-z0-9+/=]*' /tmp/relreg-keygen.out | head -1)
           KEY=$HOME/.config/apm/keys/relreg-release.key
+          ${pkgs.aos}/bin/apr create relreg --trust-key "$PUBKEY" --key "$KEY"
           REG_DIR=$HOME/.local/share/apm/registries/relreg
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/relreg
@@ -138,6 +144,9 @@ in {
           # 2.3 The single transactional release: publish + cache + advertise +
           # sign. The static cache is staged internally and uploaded to the
           # served directory; --cache-url is the consumer-facing read URL.
+          # apr writes its progress/success lines to stderr (stdout stays
+          # reserved for machine data) and the driver's succeed() returns
+          # stdout, so fold stderr into stdout (2>&1) for the asserts below.
           ${pkgs.aos}/bin/apr release ${pkg.version} \\
             --registry relreg \\
             --store-path ${storePath} \\
@@ -147,7 +156,7 @@ in {
             --maintainer test \\
             --key "$KEY" \\
             --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache
+            --upload-url file:///var/lib/relreg-cache 2>&1
           chmod -R a+rX /var/lib/relreg-cache
 
           # 2.4 Push the released registry (package, pointer, tag) to gitd.
@@ -211,7 +220,7 @@ in {
             --maintainer test \\
             --key "$KEY" \\
             --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache
+            --upload-url file:///var/lib/relreg-cache 2>&1
       """), timeout=300)
       print("=== second apr release output ===\n" + second)
       assert "Generated static cache: 0 narinfos, 0 NARs" in second, second

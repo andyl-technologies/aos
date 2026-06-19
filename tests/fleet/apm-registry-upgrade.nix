@@ -53,10 +53,16 @@ in {
       system = systems.server;
       roles = ["aos-registry-server" "test-http-server"];
       extraClosures = [server2Top];
-      # `apr cache generate` writes a compressed static cache of the FULL
-      # system closure (about 1.6 GB uncompressed, about 540 MiB) under /var/lib;
-      # the default 256 MiB /var fills mid-generation.
-      varSizeMiB = 1536;
+      # `apr cache generate` rewrites the FULL ~1.5 GiB system closure into
+      # the registry store under /var/lib AND writes the compressed static
+      # cache (~540 MiB) alongside it, so /var needs well over 1.5 GiB free.
+      # 1536 MiB (the old baked size) overflowed mid-generation; 3072 MiB
+      # matches install-from-image.nix's headroom for the same workload.
+      # With "ignition" provisioning ignition creates and formats /var at
+      # this size on first boot, so the base disk image stays var-less and
+      # shared — sizing it up no longer forks the (deduplicated) image.
+      varSizeMiB = 3072;
+      varProvisioning = "ignition";
     };
 
     target = {
@@ -65,8 +71,9 @@ in {
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on
-      # the var partition).
-      varSizeMiB = 1536;
+      # the var partition). Sized to match the registry for headroom.
+      varSizeMiB = 3072;
+      varProvisioning = "ignition";
     };
   };
 

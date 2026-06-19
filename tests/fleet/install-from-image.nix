@@ -21,10 +21,11 @@
 #                 the machine REBOOTS through UEFI and must come back on
 #                 the new generation.
 #
-# The target machine is the production server image plus the bundled
-# aos-test-agent role (modules/roles/aos-test-agent.nix) — the boot and
-# provisioning path is fully stock; only the package set carries the
-# test agent that lets the harness drive the machine.
+# The target machine boots the production server image fully stock; only
+# the package set carries the test agent that lets the harness drive the
+# machine. The agent is delivered by the bundled aos-test-agent role
+# (modules/roles/aos-test-agent.nix), which the fleet harness activates
+# automatically on every non-baked machine (lib/testing/fleet.nix).
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=.11):
 #   registry: kernel-boot peer publishing the registry + static cache
@@ -68,7 +69,6 @@ in {
       system = systems.server;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
-      roles = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = {
