@@ -45,9 +45,9 @@ pub enum FingerprintMismatchKind {
     /// A sample at the same index differs.
     Sample {
         /// Sample from the left-hand stream.
-        left: FingerprintSample,
+        left: Box<FingerprintSample>,
         /// Sample from the right-hand stream.
-        right: FingerprintSample,
+        right: Box<FingerprintSample>,
     },
     /// One stream ended before the other.
     Length {
@@ -114,8 +114,8 @@ pub fn compare_fingerprint_streams(
             return Err(FingerprintMismatch {
                 sample_index,
                 kind: FingerprintMismatchKind::Sample {
-                    left: left_sample.clone(),
-                    right: right_sample.clone(),
+                    left: Box::new(left_sample.clone()),
+                    right: Box::new(right_sample.clone()),
                 },
             });
         }

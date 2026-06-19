@@ -8,4 +8,7 @@ publish = false
 name = "crucible"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]

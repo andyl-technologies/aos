@@ -9,6 +9,9 @@ default = []
 test-double = ["dep:crucible-sim"]
 qemu-backend = []
 
+[lints]
+workspace = true
+
 [dependencies]
 crucible-sim = { path = "../crucible-sim", optional = true }
 thiserror = { workspace = true }

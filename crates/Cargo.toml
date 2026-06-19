@@ -118,3 +118,11 @@ aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
 aos-systemd = { path = "aos-systemd" }
+
+[workspace.lints.clippy]
+all = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+expect_used = "deny"
+float_arithmetic = "deny"
+unwrap_used = "deny"
