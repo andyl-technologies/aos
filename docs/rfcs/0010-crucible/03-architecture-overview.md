@@ -512,7 +512,7 @@ reading order is in the [`README.md`](README.md).
   `instantiate` / `bake` signatures in L3 so every later subsystem builds against
   fixed shapes. — satisfies [ARCH-1], [ARCH-2]; spec §1, §3,
   [`05-execution-model.md`](05-execution-model.md).
-- [ ] **T-ARCH-4** Stand up the per-layer determinism-gate harness skeleton
+- [x] **T-ARCH-4** Stand up the per-layer determinism-gate harness skeleton
   (`gate:layer0-determinism`, `gate:single-vm-fingerprint`, `gate:layer1-injection`,
   `gate:harness-lint`, `gate:control-responsive`) as red placeholder gates wired
   into CI, to be turned green by their owning subsystems; make black-box
