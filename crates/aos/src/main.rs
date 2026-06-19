@@ -35,9 +35,10 @@ mod cli;
 mod commands;
 mod logging;
 
+use std::path::PathBuf;
 use std::process;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 use aos_core::error::AosError;
@@ -151,12 +152,12 @@ async fn run(cli: &Cli) -> Result<()> {
             Some(file) => file.clone(),
             None => NixRunner::find_root()?.join("default.nix"),
         };
-        return commands::nix_diff::run(
-            &printer,
+        return run_nix_diff_threaded(
+            printer,
             cli.verbose,
             eval_config,
-            &file,
-            attr.as_deref(),
+            file,
+            attr.clone(),
             *all,
             *systems,
             (*mode).into(),
@@ -256,6 +257,46 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
         Commands::NixDiff { .. } => unreachable!(),
+    }
+}
+
+fn run_nix_diff_threaded(
+    printer: Printer,
+    verbose: u8,
+    eval_config: NixEvalConfig,
+    file: PathBuf,
+    attr: Option<String>,
+    all: bool,
+    systems: bool,
+    mode: aos_core::nix::diff::DiffMode,
+    oracle_stats: bool,
+) -> Result<()> {
+    const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    // `aos` runs under Tokio, while nix-diff is a synchronous harness that may
+    // instantiate libraries owning their own runtimes. Run it on a plain thread
+    // so those runtimes are not dropped from inside Tokio's async context.
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-diff".to_string())
+        .stack_size(NIX_DIFF_STACK_SIZE)
+        .spawn(move || {
+            commands::nix_diff::run(
+                &printer,
+                verbose,
+                eval_config,
+                &file,
+                attr.as_deref(),
+                all,
+                systems,
+                mode,
+                oracle_stats,
+            )
+        })
+        .context("spawning nix-diff worker thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("nix-diff worker thread panicked"),
     }
 }
 

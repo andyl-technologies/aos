@@ -3,6 +3,10 @@ name = "aos"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+native-eval = ["aos-core/native-eval"]
+
 [[bin]]
 name = "aos"
 path = "src/main.rs"
