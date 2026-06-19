@@ -28209,68 +28209,32 @@ enum ConvertHashInputFormat {
     Typed,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BuiltinCall {
-    id: IrId,
-    span: Span,
-    symbol: Symbol,
-}
+impl BuiltinExecutor for TreeWalk {
+    type Value = crate::value::Value;
+    type Error = TreeWalkError;
 
-impl BuiltinCall {
-    const fn new(id: IrId, span: Span, symbol: Symbol) -> Self {
-        Self { id, span, symbol }
-    }
-}
-
-trait BuiltinRuntime {
-    fn is_available(self, eval: &TreeWalk) -> bool;
-
-    fn select(
-        self,
-        eval: &mut TreeWalk,
-        id: IrId,
-        span: Span,
-        symbol: Symbol,
-    ) -> Result<Value, TreeWalkError>;
-
-    fn apply_direct(
-        self,
-        eval: &mut TreeWalk,
-        call: BuiltinCall,
-        node: &IrNode,
-        args: &[IrId],
-    ) -> Result<Value, TreeWalkError>;
-
-    fn apply(
-        self,
-        eval: &mut TreeWalk,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<Value, TreeWalkError>;
-}
-
-impl BuiltinRuntime for Builtin {
-    fn is_available(self, eval: &TreeWalk) -> bool {
-        match self.availability() {
+    fn builtin_is_available(&self, builtin: Builtin) -> bool {
+        match builtin.availability() {
             BuiltinAvailability::Always => true,
             BuiltinAvailability::ImpureCurrentSystem => {
-                eval.options.eval_mode() != EvalMode::Pure
-                    && eval.options.current_system().is_some()
+                self.options.eval_mode() != EvalMode::Pure
+                    && self.options.current_system().is_some()
             }
             BuiltinAvailability::ImpureCurrentTime => {
-                eval.options.eval_mode() != EvalMode::Pure && eval.options.current_time().is_some()
+                self.options.eval_mode() != EvalMode::Pure && self.options.current_time().is_some()
             }
         }
     }
 
-    fn select(
-        self,
-        eval: &mut TreeWalk,
+    fn select_builtin(
+        &mut self,
+        builtin: Builtin,
         id: IrId,
         span: Span,
         symbol: Symbol,
     ) -> Result<Value, TreeWalkError> {
-        match self.execution() {
+        let eval = self;
+        match builtin.execution() {
             BuiltinExecution::BuiltinsValue => eval.eval_builtins_attrset(id, span),
             BuiltinExecution::TrueValue => Ok(Value::bool(true)),
             BuiltinExecution::FalseValue => Ok(Value::bool(false)),
@@ -28281,7 +28245,7 @@ impl BuiltinRuntime for Builtin {
                     .current_system()
                     .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
                 else {
-                    if eval.reject_unconfigured_impure_builtin_constant(self) {
+                    if eval.reject_unconfigured_impure_builtin_constant(builtin) {
                         return Err(eval.unsupported_ambient_builtin_constant(id, span));
                     }
                     return unsupported_builtin_attr(id, span, symbol);
@@ -28295,7 +28259,7 @@ impl BuiltinRuntime for Builtin {
                     .current_time()
                     .filter(|_| eval.options.eval_mode() != EvalMode::Pure)
                 else {
-                    if eval.reject_unconfigured_impure_builtin_constant(self) {
+                    if eval.reject_unconfigured_impure_builtin_constant(builtin) {
                         return Err(eval.unsupported_ambient_builtin_constant(id, span));
                     }
                     return unsupported_builtin_attr(id, span, symbol);
@@ -28312,31 +28276,32 @@ impl BuiltinRuntime for Builtin {
             BuiltinExecution::LangVersionValue => Ok(Value::int(PINNED_NIX_LANG_VERSION)),
             BuiltinExecution::NixPathValue => eval.eval_nix_path_value(id, span),
             BuiltinExecution::Derivation => eval.eval_derivation_wrapper_lambda(id, span),
-            _ if self.first_class_arity().is_some() => eval
+            _ if builtin.first_class_arity().is_some() => eval
                 .heap
-                .alloc_primop(EvalPrimOp::registered(symbol, self))
+                .alloc_primop(EvalPrimOp::registered(symbol, builtin))
                 .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)),
             _ => unsupported_builtin_attr(id, span, symbol),
         }
     }
 
-    fn apply_direct(
-        self,
-        eval: &mut TreeWalk,
+    fn apply_builtin_direct(
+        &mut self,
+        builtin: Builtin,
         call: BuiltinCall,
         node: &IrNode,
         args: &[IrId],
     ) -> Result<Value, TreeWalkError> {
-        check_builtin_apply_arity(call, self, args.len())?;
+        let eval = self;
+        check_builtin_apply_arity(call, builtin, args.len())?;
 
-        if self.execution() == BuiltinExecution::Derivation {
+        if builtin.execution() == BuiltinExecution::Derivation {
             let argument = args[0];
             let argument_value = eval.eval_node(argument)?;
             return eval.eval_derivation_wrapper_call(call.id, call.span, argument, argument_value);
         }
 
         eval.enter_call(call.id, call.span)?;
-        let result = (|| match self.execution() {
+        let result = (|| match builtin.execution() {
             BuiltinExecution::DerivationStrict => {
                 let argument = args[0];
                 let argument_span = eval.node(argument)?.span;
@@ -28594,15 +28559,16 @@ impl BuiltinRuntime for Builtin {
         result
     }
 
-    fn apply(
-        self,
-        eval: &mut TreeWalk,
+    fn apply_builtin(
+        &mut self,
+        builtin: Builtin,
         call: BuiltinCall,
         args: &[EvalPrimOpArg],
     ) -> Result<Value, TreeWalkError> {
-        check_builtin_apply_arity(call, self, args.len())?;
+        let eval = self;
+        check_builtin_apply_arity(call, builtin, args.len())?;
 
-        match self.execution() {
+        match builtin.execution() {
             BuiltinExecution::Derivation => {
                 let argument = args[0];
                 eval.eval_derivation_wrapper_call(

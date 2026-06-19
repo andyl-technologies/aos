@@ -1,12 +1,16 @@
 //! Builtin declarations shared by scope resolution and runtime dispatch.
 //!
 //! Each builtin marker type implements [`BuiltinDefinition`] with its static
-//! execution strategy, documentation, and top-level name policy. The execution
-//! strategy provides default direct-lowering and first-class arity, and
-//! custom builtins can override those fields in their definition impl. The
-//! declaration macro publishes those typed definitions as both the ordered
-//! `builtins` attrset inventory and the generated exact-name lookup used by
-//! evaluator dispatch and frontend passes.
+//! execution strategy, documentation, top-level name policy, and executor
+//! entrypoints. The execution strategy provides default direct-lowering and
+//! first-class arity, and custom builtins can override those fields or runtime
+//! entrypoints in their definition impl. The declaration macro publishes those
+//! typed definitions as both the ordered `builtins` attrset inventory and the
+//! generated exact-name lookup used by evaluator dispatch and frontend passes.
+
+use crate::compile::{IrId, IrNode};
+use crate::eval::heap::EvalPrimOpArg;
+use crate::syntax::{Span, Symbol};
 
 macro_rules! builtin_registry {
     (
@@ -38,12 +42,116 @@ macro_rules! define_builtins {
             }
         )*
     ) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum BuiltinKind {
+            $(
+                $ty,
+            )*
+        }
+
         $(
             pub(crate) struct $ty;
             impl BuiltinDefinition for $impl_ty {
+                const KIND: BuiltinKind = BuiltinKind::$ty;
                 $($body)*
             }
         )*
+
+        impl Builtin {
+            /// Returns whether this builtin is visible in the current evaluator options.
+            pub(crate) fn is_available<E>(self, eval: &E) -> bool
+            where
+                E: BuiltinExecutor,
+            {
+                match self.kind {
+                    $(
+                        BuiltinKind::$ty => <$ty as BuiltinDefinition>::is_available(eval),
+                    )*
+                }
+            }
+
+            /// Selects this builtin as an attribute or top-level global value.
+            ///
+            /// # Errors
+            ///
+            /// Returns an evaluator error when selecting the builtin requires unsupported
+            /// ambient state or heap allocation fails.
+            pub(crate) fn select<E>(
+                self,
+                eval: &mut E,
+                id: IrId,
+                span: Span,
+                symbol: Symbol,
+            ) -> Result<E::Value, E::Error>
+            where
+                E: BuiltinExecutor,
+            {
+                match self.kind {
+                    $(
+                        BuiltinKind::$ty => <$ty as BuiltinDefinition>::select(
+                            eval,
+                            id,
+                            span,
+                            symbol,
+                        ),
+                    )*
+                }
+            }
+
+            /// Applies this builtin at a direct lowered IR call site.
+            ///
+            /// # Errors
+            ///
+            /// Returns an evaluator error when arity validation fails, argument forcing
+            /// fails, or the builtin implementation reports a runtime diagnostic.
+            pub(crate) fn apply_direct<E>(
+                self,
+                eval: &mut E,
+                call: BuiltinCall,
+                node: &IrNode,
+                args: &[IrId],
+            ) -> Result<E::Value, E::Error>
+            where
+                E: BuiltinExecutor,
+            {
+                match self.kind {
+                    $(
+                        BuiltinKind::$ty => <$ty as BuiltinDefinition>::apply_direct(
+                            eval,
+                            call,
+                            node,
+                            args,
+                        ),
+                    )*
+                }
+            }
+
+            /// Applies this builtin after it has been selected as a first-class value.
+            ///
+            /// # Errors
+            ///
+            /// Returns an evaluator error when arity validation fails, argument forcing
+            /// fails, or the builtin implementation reports a runtime diagnostic.
+            pub(crate) fn apply<E>(
+                self,
+                eval: &mut E,
+                call: BuiltinCall,
+                args: &[EvalPrimOpArg],
+            ) -> Result<E::Value, E::Error>
+            where
+                E: BuiltinExecutor,
+            {
+                match self.kind {
+                    $(
+                        BuiltinKind::$ty => <$ty as BuiltinDefinition>::apply(
+                            eval,
+                            call,
+                            args,
+                        ),
+                    )*
+                }
+            }
+        }
 
         builtin_registry! {
             $(
@@ -1667,9 +1775,28 @@ pub(crate) enum BuiltinNameScope {
     UnshadowableGlobal,
 }
 
+/// Source location and symbol metadata for one builtin call site.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BuiltinCall {
+    /// The IR node that performs the call.
+    pub(crate) id: IrId,
+    /// The source span reported for call-level diagnostics.
+    pub(crate) span: Span,
+    /// The source symbol used for builtin diagnostics.
+    pub(crate) symbol: Symbol,
+}
+
+impl BuiltinCall {
+    /// Creates builtin call metadata from a lowered call site.
+    pub(crate) const fn new(id: IrId, span: Span, symbol: Symbol) -> Self {
+        Self { id, span, symbol }
+    }
+}
+
 /// A builtin declaration shared by resolution, lowering, and execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Builtin {
+    kind: BuiltinKind,
     name: &'static [u8],
     execution: BuiltinExecution,
     name_scope: BuiltinNameScope,
@@ -1680,6 +1807,7 @@ pub(crate) struct Builtin {
 impl Builtin {
     /// Creates a builtin declaration.
     const fn new(
+        kind: BuiltinKind,
         name: &'static [u8],
         execution: BuiltinExecution,
         name_scope: BuiltinNameScope,
@@ -1687,6 +1815,7 @@ impl Builtin {
         docs: &'static BuiltinDocs,
     ) -> Self {
         Self {
+            kind,
             name,
             execution,
             name_scope,
@@ -1755,6 +1884,59 @@ impl Builtin {
     pub(crate) const fn docs(&self) -> &'static BuiltinDocs {
         self.docs
     }
+}
+
+/// Adapter implemented by concrete evaluators that execute builtin strategies.
+pub(crate) trait BuiltinExecutor {
+    /// Value type returned by the executor.
+    type Value;
+
+    /// Error type returned by the executor.
+    type Error;
+
+    /// Returns whether `builtin` is visible in the current evaluator options.
+    fn builtin_is_available(&self, builtin: Builtin) -> bool;
+
+    /// Selects `builtin` as an attribute or top-level global value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluator error when selecting the builtin requires unsupported
+    /// ambient state or heap allocation fails.
+    fn select_builtin(
+        &mut self,
+        builtin: Builtin,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+    ) -> Result<Self::Value, Self::Error>;
+
+    /// Applies `builtin` at a direct lowered IR call site.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluator error when arity validation fails, argument forcing
+    /// fails, or the builtin implementation reports a runtime diagnostic.
+    fn apply_builtin_direct(
+        &mut self,
+        builtin: Builtin,
+        call: BuiltinCall,
+        node: &IrNode,
+        args: &[IrId],
+    ) -> Result<Self::Value, Self::Error>;
+
+    /// Applies `builtin` after it has been selected as a first-class value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluator error when arity validation fails, argument forcing
+    /// fails, or the builtin implementation reports a runtime diagnostic.
+    fn apply_builtin(
+        &mut self,
+        builtin: Builtin,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<Self::Value, Self::Error>;
 }
 
 /// Registry of builtin declarations known to the evaluator.
@@ -2016,6 +2198,9 @@ const fn builtin_lookup_hash(name: &[u8], seed: u32) -> usize {
 
 /// Provides the single static declaration for a concrete builtin marker type.
 trait BuiltinDefinition {
+    /// Generated kind tag tying runtime dispatch to this marker type.
+    const KIND: BuiltinKind;
+
     /// Byte-oriented builtin attribute name.
     const NAME: &'static [u8];
 
@@ -2033,12 +2218,54 @@ trait BuiltinDefinition {
 
     /// Declaration shared by all evaluator tiers for this builtin.
     const DECLARATION: Builtin = Builtin::new(
+        Self::KIND,
         Self::NAME,
         Self::EXECUTION,
         Self::NAME_SCOPE,
         Self::NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE,
         Self::DOCS,
     );
+
+    /// Returns whether this builtin is visible in the current evaluator options.
+    fn is_available<E>(eval: &E) -> bool
+    where
+        E: BuiltinExecutor,
+    {
+        eval.builtin_is_available(Self::DECLARATION)
+    }
+
+    /// Selects this builtin as an attribute or top-level global value.
+    fn select<E>(eval: &mut E, id: IrId, span: Span, symbol: Symbol) -> Result<E::Value, E::Error>
+    where
+        E: BuiltinExecutor,
+    {
+        eval.select_builtin(Self::DECLARATION, id, span, symbol)
+    }
+
+    /// Applies this builtin at a direct lowered IR call site.
+    fn apply_direct<E>(
+        eval: &mut E,
+        call: BuiltinCall,
+        node: &IrNode,
+        args: &[IrId],
+    ) -> Result<E::Value, E::Error>
+    where
+        E: BuiltinExecutor,
+    {
+        eval.apply_builtin_direct(Self::DECLARATION, call, node, args)
+    }
+
+    /// Applies this builtin after it has been selected as a first-class value.
+    fn apply<E>(
+        eval: &mut E,
+        call: BuiltinCall,
+        args: &[EvalPrimOpArg],
+    ) -> Result<E::Value, E::Error>
+    where
+        E: BuiltinExecutor,
+    {
+        eval.apply_builtin(Self::DECLARATION, call, args)
+    }
 }
 
 /// Returns direct lowering behavior for a builtin name.
@@ -2707,6 +2934,88 @@ mod tests {
                 "{builtin:?}",
             );
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingExecutor {
+        calls: Vec<(&'static str, Builtin)>,
+    }
+
+    impl BuiltinExecutor for RecordingExecutor {
+        type Value = &'static str;
+        type Error = &'static str;
+
+        fn builtin_is_available(&self, builtin: Builtin) -> bool {
+            builtin.name() == b"length"
+        }
+
+        fn select_builtin(
+            &mut self,
+            builtin: Builtin,
+            _id: IrId,
+            _span: Span,
+            _symbol: Symbol,
+        ) -> Result<Self::Value, Self::Error> {
+            self.calls.push(("select", builtin));
+            Ok("selected")
+        }
+
+        fn apply_builtin_direct(
+            &mut self,
+            builtin: Builtin,
+            _call: BuiltinCall,
+            _node: &IrNode,
+            _args: &[IrId],
+        ) -> Result<Self::Value, Self::Error> {
+            self.calls.push(("direct", builtin));
+            Ok("direct")
+        }
+
+        fn apply_builtin(
+            &mut self,
+            builtin: Builtin,
+            _call: BuiltinCall,
+            _args: &[EvalPrimOpArg],
+        ) -> Result<Self::Value, Self::Error> {
+            self.calls.push(("apply", builtin));
+            Ok("applied")
+        }
+    }
+
+    #[test]
+    fn generated_builtin_dispatch_reaches_generic_executor_with_selected_declaration() {
+        use crate::compile::{EffectClass, IrData, IrKind};
+
+        let length = BUILTINS
+            .lookup(b"length")
+            .expect("length builtin is registered");
+        let fetchurl = BUILTINS
+            .lookup(b"fetchurl")
+            .expect("fetchurl builtin is registered");
+        let mut executor = RecordingExecutor::default();
+
+        assert!(length.is_available(&executor));
+        assert!(!fetchurl.is_available(&executor));
+
+        let id = IrId::new(7);
+        let span = Span::new(11, 17);
+        let symbol = Symbol::new(3);
+        let call = BuiltinCall::new(id, span, symbol);
+        let node = IrNode::new(IrKind::Null, span, EffectClass::Pure, IrData::None);
+
+        assert_eq!(
+            length.select(&mut executor, id, span, symbol),
+            Ok("selected")
+        );
+        assert_eq!(
+            length.apply_direct(&mut executor, call, &node, &[]),
+            Ok("direct"),
+        );
+        assert_eq!(length.apply(&mut executor, call, &[]), Ok("applied"));
+        assert_eq!(
+            executor.calls,
+            vec![("select", length), ("direct", length), ("apply", length),],
+        );
     }
 
     #[test]
