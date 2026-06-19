@@ -333,29 +333,30 @@ impl ParseCache {
         if entry.is_complete() {
             if let Ok(resolved) = entry.read_resolved() {
                 if let Ok(ir) = entry.read_ir() {
-                    if let Ok(expected_ir) = lower(resolved.clone()) {
-                        if lowered_ir_matches(&ir, &expected_ir) {
-                            return Ok(CachedParse {
-                                key,
-                                entry,
-                                resolved,
-                                hit: true,
-                                stored: true,
-                            });
-                        }
-                    }
+                    return Ok(CachedParse {
+                        key,
+                        entry,
+                        resolved,
+                        ir,
+                        hit: true,
+                        stored: true,
+                    });
                 }
             }
         }
 
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
         let resolved = resolve(parsed).map_err(|source| ParseCacheError::Scope { source })?;
+        let cached_resolved = file_local_resolved(&resolved)?;
+        let ir =
+            lower(cached_resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
         let meta = ParseCacheMeta::new(self.schema_version, source_hint, 0, 0);
         let stored = entry.write_resolved(&resolved, &meta).is_ok();
         Ok(CachedParse {
             key,
             entry,
-            resolved,
+            resolved: cached_resolved,
+            ir,
             hit: false,
             stored,
         })
@@ -371,6 +372,8 @@ pub struct CachedParse {
     pub entry: ParseCacheEntry,
     /// The loaded or freshly parsed resolved AST.
     pub resolved: ResolvedAst,
+    /// The loaded or freshly lowered evaluator IR.
+    pub ir: Ir,
     /// Whether the artifact was loaded from cache.
     pub hit: bool,
     /// Whether a valid artifact is present in the cache after this operation.
@@ -1123,6 +1126,7 @@ fn decode_lowered_ir(bytes: &[u8], symbols: SymbolTable) -> Result<Ir, String> {
     Ok(ir)
 }
 
+#[cfg(test)]
 fn lowered_ir_matches(left: &Ir, right: &Ir) -> bool {
     left.root == right.root
         && left.arena.nodes() == right.arena.nodes()
@@ -2673,6 +2677,7 @@ mod tests {
         assert!(hit.stored);
         assert_eq!(hit.key, miss.key);
         assert_eq!(hit.resolved.arena.nodes(), miss.resolved.arena.nodes());
+        assert!(lowered_ir_matches(&hit.ir, &miss.ir));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -2697,12 +2702,13 @@ mod tests {
             recovered.resolved.arena.nodes(),
             first.resolved.arena.nodes()
         );
+        assert!(lowered_ir_matches(&recovered.ir, &first.ir));
 
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn load_or_parse_recovers_from_mismatched_valid_artifacts() {
+    fn load_or_parse_consumes_valid_lowered_ir_artifact() {
         let root = temp_root();
         let cache = ParseCache::new(root.join("parse"));
         let source = b"1";
@@ -2721,14 +2727,15 @@ mod tests {
 
         let recovered = cache
             .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
-            .expect("source reparses after mismatched cache");
-        assert!(!recovered.hit);
+            .expect("source loads valid lowered IR artifact");
+        assert!(recovered.hit);
         assert!(recovered.stored);
         assert!(recovered.entry.is_complete());
         assert_eq!(
             recovered.resolved.arena.nodes(),
             first.resolved.arena.nodes()
         );
+        assert!(lowered_ir_matches(&recovered.ir, &other_ir));
 
         let _ = fs::remove_dir_all(root);
     }

@@ -299,15 +299,7 @@ impl NixNative {
             let cache = ParseCache::new(root);
             match cache.load_or_parse_bytes(source.as_bytes(), None) {
                 Ok(cached) => {
-                    return lower(cached.resolved).map_err(|source| {
-                        unsupported_frontend_error(
-                            "lower",
-                            source.to_string(),
-                            source.span(),
-                            source_map,
-                        )
-                        .into()
-                    });
+                    return Ok(cached.ir);
                 }
                 Err(error) => {
                     if let Some(error) = parse_cache_frontend_error(error, source_map) {

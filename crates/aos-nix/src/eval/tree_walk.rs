@@ -51,18 +51,15 @@ use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
 use crate::cache::{CachedParse, ParseCache, ParseCacheError};
 use crate::compile::{
-    FrameId, InheritResolution, InheritSource, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice,
-    IrChildSlice, IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShapeId, ResolvedAst,
-    ResolverOptions, ScopeResolver, ScopeTables, lower, lower_with_options, resolve,
+    FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
+    IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
+    ScopeResolver, lower, lower_with_options, resolve,
 };
 use crate::drv_materialize::materialize_drv;
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
-use crate::syntax::{
-    AstArena, BinOpKind, Node, NodeData, Span, Symbol, SymbolTable, UnaryOpKind,
-    parse_bytes_with_symbols,
-};
+use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
 use crate::value::{Value, ValueTag};
 
 const TO_STRING_ATTR: &[u8] = b"__toString";
@@ -15863,18 +15860,7 @@ impl TreeWalk {
                 self.import_parse_cache_misses += 1;
             }
 
-            let resolved =
-                self.remap_cached_import_symbols(argument, argument_span, &path, cached.resolved)?;
-            let ir = lower(resolved).map_err(|source| {
-                TreeWalkError::new(
-                    TreeWalkErrorKind::ImportLower {
-                        id: argument,
-                        path: path.clone(),
-                        message: source.to_string(),
-                    },
-                    argument_span,
-                )
-            })?;
+            let ir = self.remap_cached_import_ir(argument, argument_span, &path, cached.ir)?;
             return self.load_and_eval_import_ir(id, span, &path, &base, &source, ir, global_scope);
         }
         self.load_and_eval_import_bytes(
@@ -16077,17 +16063,17 @@ impl TreeWalk {
         result
     }
 
-    fn remap_cached_import_symbols(
+    fn remap_cached_import_ir(
         &mut self,
         argument: IrId,
         argument_span: Span,
         path: &[u8],
-        resolved: ResolvedAst,
-    ) -> Result<ResolvedAst, TreeWalkError> {
+        ir: Ir,
+    ) -> Result<Ir, TreeWalkError> {
         let mut symbols = self.symbols.clone();
         let mut symbol_map = Vec::new();
         symbol_map
-            .try_reserve_exact(resolved.symbols.len())
+            .try_reserve_exact(ir.symbols.len())
             .map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ImportScope {
@@ -16098,7 +16084,7 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
-        for bytes in resolved.symbols.symbols() {
+        for bytes in ir.symbols.symbols() {
             let symbol = symbols.intern(bytes).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ImportScope {
@@ -16114,87 +16100,165 @@ impl TreeWalk {
 
         let mut nodes = Vec::new();
         nodes
-            .try_reserve_exact(resolved.arena.nodes().len())
+            .try_reserve_exact(ir.arena.nodes().len())
             .map_err(|_| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::ImportScope {
                         id: argument,
                         path: path.to_vec(),
-                        message: "failed to allocate cached import nodes".to_owned(),
+                        message: "failed to allocate cached import IR nodes".to_owned(),
                     },
                     argument_span,
                 )
             })?;
-        for node in resolved.arena.nodes() {
-            nodes.push(Node::new(
+        for node in ir.arena.nodes() {
+            nodes.push(IrNode::new(
                 node.kind,
                 node.span,
-                Self::remap_cached_node_data(
+                node.effect,
+                Self::remap_cached_ir_data(argument, argument_span, path, &symbol_map, node.data)?,
+            ));
+        }
+
+        let mut attr_paths = Vec::new();
+        attr_paths
+            .try_reserve_exact(ir.attr_paths.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "failed to allocate cached import attr paths".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+        for attr_path in ir.attr_paths.as_ref() {
+            let mut segments = Vec::new();
+            segments.try_reserve_exact(attr_path.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "failed to allocate cached import attr path".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+            for segment in attr_path.as_ref() {
+                segments.push(Self::remap_cached_ir_attr_path_segment(
                     argument,
                     argument_span,
                     path,
                     &symbol_map,
-                    node.data,
-                )?,
-            ));
+                    *segment,
+                )?);
+            }
+            attr_paths.push(segments.into_boxed_slice());
         }
 
-        let mut inherit_resolutions =
-            Vec::with_capacity(resolved.scopes.inherit_resolutions().len());
-        for inherit in resolved.scopes.inherit_resolutions() {
-            let mut sources = Vec::with_capacity(inherit.sources.len());
-            for source in inherit.sources.as_ref() {
-                sources.push(InheritSource {
-                    target: Self::remap_cached_symbol(
-                        argument,
-                        argument_span,
-                        path,
-                        &symbol_map,
-                        source.target,
-                    )?,
-                    source: source.source,
-                });
-            }
-            inherit_resolutions.push(InheritResolution {
-                from: inherit.from,
-                sources: sources.into_boxed_slice(),
+        let mut bindings = Vec::new();
+        bindings.try_reserve_exact(ir.bindings.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportScope {
+                    id: argument,
+                    path: path.to_vec(),
+                    message: "failed to allocate cached import bindings".to_owned(),
+                },
+                argument_span,
+            )
+        })?;
+        for binding in ir.bindings.as_ref() {
+            bindings.push(IrBinding {
+                key: Self::remap_cached_ir_attr_path_segment(
+                    argument,
+                    argument_span,
+                    path,
+                    &symbol_map,
+                    binding.key,
+                )?,
+                position: binding.position,
+                value: binding.value,
             });
         }
 
-        Ok(ResolvedAst {
-            root: resolved.root,
-            arena: AstArena::from_raw_parts(nodes, resolved.arena.child_pool().to_vec()),
+        let mut shapes = Vec::new();
+        shapes.try_reserve_exact(ir.shapes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ImportScope {
+                    id: argument,
+                    path: path.to_vec(),
+                    message: "failed to allocate cached import shapes".to_owned(),
+                },
+                argument_span,
+            )
+        })?;
+        for shape in ir.shapes.as_ref() {
+            let mut keys = Vec::new();
+            keys.try_reserve_exact(shape.keys.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "failed to allocate cached import shape keys".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+            for key in shape.keys.as_ref() {
+                keys.push(Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    &symbol_map,
+                    *key,
+                )?);
+            }
+            shapes.push(IrShape::new(keys.into_boxed_slice()));
+        }
+
+        Ok(Ir {
+            root: ir.root,
+            arena: IrArena::from_raw_parts(nodes, ir.arena.child_pool().to_vec()),
             symbols,
-            scopes: ScopeTables::from_raw_parts(
-                resolved.scopes.frames().to_vec(),
-                resolved.scopes.node_frames().to_vec(),
-                resolved.scopes.with_chains().to_vec(),
-                inherit_resolutions,
-                resolved.scopes.node_inherits().to_vec(),
-            ),
+            frames: ir.frames,
+            with_chains: ir.with_chains,
+            attr_paths: attr_paths.into_boxed_slice(),
+            bindings: bindings.into_boxed_slice(),
+            shapes: shapes.into_boxed_slice(),
         })
     }
 
-    fn remap_cached_node_data(
+    fn remap_cached_ir_data(
         argument: IrId,
         argument_span: Span,
         path: &[u8],
         symbol_map: &[Symbol],
-        data: NodeData,
-    ) -> Result<NodeData, TreeWalkError> {
+        data: IrData,
+    ) -> Result<IrData, TreeWalkError> {
         match data {
-            NodeData::Symbol(symbol) => Ok(NodeData::Symbol(Self::remap_cached_symbol(
+            IrData::Symbol(symbol) => Ok(IrData::Symbol(Self::remap_cached_symbol(
                 argument,
                 argument_span,
                 path,
                 symbol_map,
                 symbol,
             )?)),
-            NodeData::FormalSet {
+            IrData::PrimOp { symbol, args } => Ok(IrData::PrimOp {
+                symbol: Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    symbol_map,
+                    symbol,
+                )?,
+                args,
+            }),
+            IrData::FormalSet {
                 formals,
                 ellipsis,
                 alias,
-            } => Ok(NodeData::FormalSet {
+            } => Ok(IrData::FormalSet {
                 formals,
                 ellipsis,
                 alias: alias
@@ -16203,11 +16267,11 @@ impl TreeWalk {
                     })
                     .transpose()?,
             }),
-            NodeData::Formal { name, default } => Ok(NodeData::Formal {
+            IrData::Formal { name, default } => Ok(IrData::Formal {
                 name: Self::remap_cached_symbol(argument, argument_span, path, symbol_map, name)?,
                 default,
             }),
-            NodeData::WithVar { symbol, chain } => Ok(NodeData::WithVar {
+            IrData::WithVar { symbol, chain } => Ok(IrData::WithVar {
                 symbol: Self::remap_cached_symbol(
                     argument,
                     argument_span,
@@ -16218,6 +16282,21 @@ impl TreeWalk {
                 chain,
             }),
             other => Ok(other),
+        }
+    }
+
+    fn remap_cached_ir_attr_path_segment(
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        symbol_map: &[Symbol],
+        segment: IrAttrPathSegment,
+    ) -> Result<IrAttrPathSegment, TreeWalkError> {
+        match segment {
+            IrAttrPathSegment::Static(symbol) => Ok(IrAttrPathSegment::Static(
+                Self::remap_cached_symbol(argument, argument_span, path, symbol_map, symbol)?,
+            )),
+            IrAttrPathSegment::Dynamic(node) => Ok(IrAttrPathSegment::Dynamic(node)),
         }
     }
 
@@ -35678,6 +35757,88 @@ mod tests {
                 .as_int()
                 .expect("cached result is int"),
             14
+        );
+        assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn parse_cached_import_remaps_lowered_builtin_symbols() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache-builtins"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        fs::write(
+            root.join("dep.nix"),
+            br#"let f = builtins.length; in builtins.add (f [ 1 2 3 ]) 4"#,
+        )
+        .expect("dep writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+        let ir = lower("import ./dep.nix");
+
+        let mut first = TreeWalk::with_options(&ir, options.clone());
+        assert_eq!(
+            first
+                .eval_root()
+                .expect("first import evaluates")
+                .as_int()
+                .expect("first result is int"),
+            7
+        );
+        assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+        let mut second = TreeWalk::with_options(&ir, options);
+        assert_eq!(
+            second
+                .eval_root()
+                .expect("cached import evaluates")
+                .as_int()
+                .expect("cached result is int"),
+            7
+        );
+        assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn parse_cached_import_remaps_with_var_symbols() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache-with-var"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        fs::write(root.join("dep.nix"), br#"with { x = 41; }; x + 1"#).expect("dep writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+        let ir = lower("import ./dep.nix");
+
+        let mut first = TreeWalk::with_options(&ir, options.clone());
+        assert_eq!(
+            first
+                .eval_root()
+                .expect("first import evaluates")
+                .as_int()
+                .expect("first result is int"),
+            42
+        );
+        assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+        let mut second = TreeWalk::with_options(&ir, options);
+        assert_eq!(
+            second
+                .eval_root()
+                .expect("cached import evaluates")
+                .as_int()
+                .expect("cached result is int"),
+            42
         );
         assert_eq!(second.import_parse_cache_stats(), (1, 0));
 
