@@ -290,7 +290,7 @@ pub fn eval_whnf_owned_with_options(
 ) -> Result<EvalOutcome, TreeWalkError> {
     let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
-    let derivations = evaluator.derivation_snapshot();
+    let derivations = evaluator.derivation_snapshot()?;
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
@@ -397,9 +397,8 @@ impl EvalOutcome {
 
 /// A derivation recorded during tree-walk evaluation.
 ///
-/// Static derivations include their ATerm bytes. Derivations whose output paths
-/// depend on deferred placeholders are reported without bytes so callers can
-/// reject byte-level materialization explicitly.
+/// Recorded derivations include their ATerm bytes when byte materialization is
+/// possible during evaluation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalDerivation {
     absolute_path: String,
@@ -1838,6 +1837,8 @@ pub struct TreeWalk {
 
 #[derive(Clone, Debug)]
 struct KnownDerivation {
+    id: IrId,
+    span: Span,
     derivation: nix_compat::derivation::Derivation,
     hash_derivation_modulo: [u8; 32],
     output_names: BTreeSet<String>,
@@ -3325,7 +3326,14 @@ impl TreeWalk {
                 DerivationOutputResolution::StaticPaths,
             )
         };
-        self.remember_derivation(drv_path.clone(), &derivation, known_hash, output_resolution);
+        self.remember_derivation(
+            id,
+            span,
+            drv_path.clone(),
+            &derivation,
+            known_hash,
+            output_resolution,
+        );
         self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
     }
 
@@ -3949,6 +3957,100 @@ impl TreeWalk {
         out
     }
 
+    fn deferred_placeholder_derivation_aterm_bytes(
+        id: IrId,
+        span: Span,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Derive(");
+        Self::write_deferred_placeholder_outputs(id, span, &mut out, drv_path, derivation)?;
+        out.push(b',');
+        Self::write_floating_ca_input_derivations(&mut out, derivation, None);
+        out.push(b',');
+        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.builder.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_string_array(&mut out, derivation.arguments.iter().map(String::as_bytes));
+        out.push(b',');
+        Self::write_deferred_placeholder_environment(id, span, &mut out, drv_path, derivation)?;
+        out.push(b')');
+        Ok(out)
+    }
+
+    fn write_deferred_placeholder_outputs(
+        id: IrId,
+        span: Span,
+        out: &mut Vec<u8>,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<(), TreeWalkError> {
+        out.push(b'[');
+        for (index, (output_name, output)) in derivation.outputs.iter().enumerate() {
+            if output.ca_hash.is_some() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!(
+                            "deferred output {output_name:?} unexpectedly has a content address"
+                        ),
+                    },
+                    span,
+                ));
+            }
+            if index > 0 {
+                out.push(b',');
+            }
+            let placeholder = Self::downstream_output_placeholder(id, span, drv_path, output_name)?;
+            out.push(b'(');
+            Self::write_aterm_field(out, output_name.as_bytes(), true);
+            out.push(b',');
+            Self::write_aterm_field(out, &placeholder, true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"", true);
+            out.push(b',');
+            Self::write_aterm_field(out, b"", true);
+            out.push(b')');
+        }
+        out.push(b']');
+        Ok(())
+    }
+
+    fn write_deferred_placeholder_environment(
+        id: IrId,
+        span: Span,
+        out: &mut Vec<u8>,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<(), TreeWalkError> {
+        out.push(b'[');
+        for (index, (key, value)) in derivation.environment.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            Self::write_aterm_field(out, key.as_bytes(), false);
+            out.push(b',');
+            if derivation
+                .outputs
+                .get(key)
+                .is_some_and(|output| output.path.is_none() && output.ca_hash.is_none())
+            {
+                let placeholder = Self::downstream_output_placeholder(id, span, drv_path, key)?;
+                Self::write_aterm_field(out, &placeholder, true);
+            } else {
+                Self::write_aterm_field(out, value.as_ref(), true);
+            }
+            out.push(b')');
+        }
+        out.push(b']');
+        Ok(())
+    }
+
     fn write_floating_ca_outputs(
         out: &mut Vec<u8>,
         derivation: &nix_compat::derivation::Derivation,
@@ -4408,7 +4510,7 @@ impl TreeWalk {
         })
     }
 
-    fn derivation_snapshot(&self) -> Vec<EvalDerivation> {
+    fn derivation_snapshot(&self) -> Result<Vec<EvalDerivation>, TreeWalkError> {
         self.known_derivations
             .iter()
             .map(|(drv_path, known)| {
@@ -4423,9 +4525,19 @@ impl TreeWalk {
                             None,
                         ))
                     }
-                    DerivationOutputResolution::DeferredPlaceholders => None,
+                    DerivationOutputResolution::DeferredPlaceholders => {
+                        Some(Self::deferred_placeholder_derivation_aterm_bytes(
+                            known.id,
+                            known.span,
+                            drv_path,
+                            &known.derivation,
+                        )?)
+                    }
                 };
-                EvalDerivation::new(drv_path.to_absolute_path(), aterm_bytes)
+                Ok(EvalDerivation::new(
+                    drv_path.to_absolute_path(),
+                    aterm_bytes,
+                ))
             })
             .collect()
     }
@@ -4449,6 +4561,8 @@ impl TreeWalk {
 
     fn remember_derivation(
         &mut self,
+        id: IrId,
+        span: Span,
         drv_path: nix_compat::store_path::StorePath<String>,
         derivation: &nix_compat::derivation::Derivation,
         hash_derivation_modulo: [u8; 32],
@@ -4458,6 +4572,8 @@ impl TreeWalk {
         self.known_derivations.insert(
             drv_path,
             KnownDerivation {
+                id,
+                span,
                 derivation: derivation.clone(),
                 hash_derivation_modulo,
                 output_names,
@@ -29065,7 +29181,9 @@ mod tests {
             source.as_bytes().to_vec(),
         );
         let value = evaluator.eval_root().expect("source evaluates");
-        let derivations = evaluator.derivation_snapshot();
+        let derivations = evaluator
+            .derivation_snapshot()
+            .expect("derivation snapshot succeeds");
         EvalOutcome {
             value,
             heap: evaluator.heap,

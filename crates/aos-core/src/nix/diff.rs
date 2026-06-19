@@ -306,7 +306,7 @@ fn compare_drv_pair_at(
         });
     }
 
-    let (oracle_inputs, candidate_inputs) = if structural {
+    let (oracle_inputs, candidate_inputs) = if structural && bytes_differ {
         let Some((oracle_drv, candidate_drv)) = parse_structural_pair(
             &oracle_bytes,
             &candidate_bytes,
@@ -316,14 +316,12 @@ fn compare_drv_pair_at(
         ) else {
             return Ok(());
         };
-        if bytes_differ {
-            let field = first_derivation_diff_field(&oracle_drv, &candidate_drv);
-            report.divergences.push(DrvDiff::Structural {
-                oracle: oracle_path.to_path_buf(),
-                candidate: candidate_path.to_path_buf(),
-                field: field.to_string(),
-            });
-        }
+        let field = first_derivation_diff_field(&oracle_drv, &candidate_drv);
+        report.divergences.push(DrvDiff::Structural {
+            oracle: oracle_path.to_path_buf(),
+            candidate: candidate_path.to_path_buf(),
+            field: field.to_string(),
+        });
         if oracle_drv.input_derivations != candidate_drv.input_derivations {
             return Ok(());
         }
@@ -618,6 +616,14 @@ mod tests {
             input,
             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-shared",
             name,
+        )
+    }
+
+    fn structural_placeholder_drv_with_input(input: &str, name: &str) -> String {
+        const BUILDER: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash";
+        const PLACEHOLDER: &str = "/0xxkxgc4srd2mmak361la1ixni9jpyradxq3h9sgjxryvlv12gx4";
+        format!(
+            r#"Derive([("out","{PLACEHOLDER}","","")],[("{input}",["out"])],[],"x86_64-linux","{BUILDER}",[],[("builder","{BUILDER}"),("name","{name}"),("out","{PLACEHOLDER}"),("system","x86_64-linux")])"#
         )
     }
 
@@ -988,6 +994,52 @@ mod tests {
                 candidate: candidate_root,
                 field: "input_derivations".to_string(),
             })
+        );
+        assert!(
+            !report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::StructuralParse { .. }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_mode_walks_equal_placeholder_bytes_without_full_parse() -> Result<()> {
+        let input = PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-input.drv");
+        let root = PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-root.drv");
+        let root_bytes = structural_placeholder_drv_with_input(path_str(&input)?, "root");
+
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(input.clone(), structural_drv("input").into_bytes());
+        oracle_bytes.insert(root.clone(), root_bytes.clone().into_bytes());
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(input.clone(), structural_drv("input-changed").into_bytes());
+        candidate_bytes.insert(root.clone(), root_bytes.into_bytes());
+        let oracle = FakeEval::path_with_bytes(root.clone(), oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(root, candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Structural,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
+                    if oracle == &input && candidate == &input))
+        );
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Structural { field, .. }
+                    if field == "environment"))
         );
         assert!(
             !report

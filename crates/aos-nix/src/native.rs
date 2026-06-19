@@ -115,10 +115,8 @@ impl NixNative {
     ///
     /// Returns [`NativeEvalError::Unsupported`] when the selected expression
     /// reaches an evaluator feature that is still outside the native tree-walk
-    /// subset, or when the derivation needs deferred output placeholders that
-    /// this byte materializer cannot serialize yet. Returns
-    /// [`NativeEvalError::EvalError`] when the selected value does not expose a
-    /// string `drvPath`.
+    /// subset. Returns [`NativeEvalError::EvalError`] when the selected value
+    /// does not expose a string `drvPath`.
     pub fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<NativeDrvClosure> {
         let attr_path = attr_path_selector(attr)?;
         let file = nix_string_literal(&path_bytes(file)?)?;
@@ -150,11 +148,9 @@ impl NixNative {
     /// # Errors
     ///
     /// Returns [`NativeEvalError::Unsupported`] when the expression reaches an
-    /// evaluator feature that is still outside the native tree-walk subset, or
-    /// when the derivation needs deferred output placeholders that this byte
-    /// materializer cannot serialize yet. Returns [`NativeEvalError::EvalError`]
-    /// when the expression does not evaluate to a derivation-like attribute set
-    /// with a string `drvPath`.
+    /// evaluator feature that is still outside the native tree-walk subset.
+    /// Returns [`NativeEvalError::EvalError`] when the expression does not
+    /// evaluate to a derivation-like attribute set with a string `drvPath`.
     pub fn instantiate_expr_closure(&self, expr: &str) -> Result<NativeDrvClosure> {
         let source = derivation_path_wrapper_source(expr);
         self.eval_derivation_closure_source(
@@ -885,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn native_path_instantiation_still_allows_downstream_deferred_drv_paths() -> Result<()> {
+    fn native_path_instantiation_materializes_downstream_deferred_drv_bytes() -> Result<()> {
         let native = NixNative::new(0)?;
         let expr = r#"let
              base = derivationStrict {
@@ -906,13 +902,20 @@ mod tests {
         let path = native.instantiate_expr(expr)?;
         assert!(path.to_string_lossy().ends_with("-consumer.drv"));
 
-        let error = native
-            .instantiate_expr_closure(expr)
-            .expect_err("downstream deferred output placeholders cannot be serialized yet");
-        assert!(matches!(
-            error.downcast_ref::<NativeEvalError>(),
-            Some(NativeEvalError::Unsupported { .. })
-        ));
+        let closure = native.instantiate_expr_closure(expr)?;
+        assert_eq!(closure.root(), path);
+        assert_eq!(closure.drvs().len(), 2);
+
+        let root_bytes = closure
+            .drvs()
+            .get(closure.root())
+            .expect("deferred consumer root derivation bytes are recorded");
+        let root_text = std::str::from_utf8(root_bytes)?;
+        assert!(root_text.contains(r#"("out","/"#));
+        assert!(!root_text.contains(r#"("out","","","")"#));
+        assert!(!root_text.contains(r#"("out","")"#));
+        assert_eq!(root_text.matches(r#"("out","/"#).count(), 2);
+        assert!(root_text.contains("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv"));
         Ok(())
     }
 
@@ -949,6 +952,21 @@ mod tests {
                  __contentAddressed = true;
                  outputHashAlgo = "sha256";
                  outputHashMode = "recursive";
+               }"#,
+            r#"let
+                 base = derivationStrict {
+                   name = "ca";
+                   system = "x86_64-linux";
+                   builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+                   __contentAddressed = true;
+                   outputHashAlgo = "sha256";
+                   outputHashMode = "recursive";
+                 };
+               in derivationStrict {
+                 name = "consumer";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+                 input = "${base.out}";
                }"#,
         ] {
             let closure = native.instantiate_expr_closure(expr)?;
