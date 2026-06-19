@@ -667,6 +667,6 @@ Crucible needs and marks the seam.
   compiling `crucible-qemu-plugin` against the AOS QEMU package's plugin headers,
   with no upstream binary dependency. — satisfies [CRATE-17]; spec §7,
   [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md).
-- [ ] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
+- [x] **T-CRATE-15** Add a lint forbidding any dependency on `ratchet-*` /
   `aos-nix-*`, and locate the content-addressing primitives in `crucible-sim`
   marked as the future-ratchet-integration seam. — satisfies [CRATE-18]; spec §7.

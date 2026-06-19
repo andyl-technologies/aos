@@ -5,10 +5,21 @@
 //! This L0 crate is the future home for seeded decision streams, ordered
 //! collections, deterministic selection, virtual-time arithmetic, and the
 //! content-addressing seam described by the indexed RFC-0010 files.
+//! The current content-addressing primitives are intentionally local to this
+//! crate; [`FUTURE_RATCHET_INTEGRATION_SEAM`] marks the only candidate boundary
+//! for any later RFC-0007 integration.
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
 //! surface.
 
 #![forbid(unsafe_code)]
+
+/// Marks the future RFC-0007 integration boundary for content-addressing code.
+///
+/// Crucible ships standalone today: the stable hashing primitives below are
+/// owned here, and no Crucible crate may depend on `ratchet-*` or `aos-nix-*`.
+/// A later ratchet merge must adapt behind this named seam instead of adding a
+/// direct dependency to the current crate graph.
+pub const FUTURE_RATCHET_INTEGRATION_SEAM: &str = "crucible-sim::content-addressing";
 
 /// A deterministic 256-bit digest produced by [`StableHasher`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
