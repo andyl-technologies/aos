@@ -1493,9 +1493,12 @@ pub fn audit_page(
 /// The full create form for an org admin: a name, a project `<select>` from
 /// the org's projects, a storage-binding `<select>`, a visibility `<select>`,
 /// a trust-anchors textarea (one `name:Ed25519:<base64>` line each), and a
-/// require-signatures checkbox. When the org has no storage bindings yet the
-/// form is replaced by a prompt to create one first (a registry's surface
-/// lives on a binding). `error` renders an inline rejection.
+/// require-signatures checkbox. The storage-binding `<select>` always offers a
+/// **Default storage** first option (the deployment's own storage — the single
+/// R2 bucket on the Worker, the configured default root on the native hub), so
+/// a registry can be created with zero storage configuration; each of the org's
+/// custom bindings follows as an explicit choice. `error` renders an inline
+/// rejection.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn new_registry_page(
@@ -1513,26 +1516,6 @@ pub fn new_registry_page(
         let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
     }
 
-    if bindings.is_empty() {
-        let _ = writeln!(
-            body,
-            "<p class=\"warn\">This organization has no storage bindings yet. A managed registry's \
-             surface lives on a binding, so <a href=\"/-/org/{org}\">create one first</a>.</p>",
-            org = escape(org_slug),
-        );
-        return page_with_session(
-            &format!("{org_slug} · new registry"),
-            &[
-                ("/-/orgs".into(), "organizations".into()),
-                (format!("/-/org/{org_slug}"), org_slug.clone()),
-                (String::new(), "new registry".into()),
-            ],
-            &body,
-            &StateLine::timed(started),
-            &indicator(email),
-        );
-    }
-
     // Project options: an org-root choice plus every materialized-path project.
     let mut project_options = String::from("<option value=\"\">(org root)</option>");
     for p in projects {
@@ -1545,12 +1528,23 @@ pub fn new_registry_page(
             path = escape(&p.path),
         );
     }
-    let mut binding_options = String::new();
+    // The first option is the deployment default (binding-less storage); its
+    // label names the runtime's own store so the operator knows where a
+    // default-storage registry lands.
+    let default_label = match RuntimeKind::current() {
+        RuntimeKind::Worker => "Cloudflare R2 (this deployment)",
+        RuntimeKind::Native => "default storage",
+    };
+    let mut binding_options = format!(
+        "<option value=\"\">Default storage — {}</option>",
+        escape(default_label),
+    );
     for b in bindings {
         let _ = write!(
             binding_options,
-            "<option value=\"{name}\">{name}</option>",
+            "<option value=\"{name}\">{name} ({kind})</option>",
             name = escape(&b.name),
+            kind = escape(&b.kind),
         );
     }
 
@@ -1564,7 +1558,8 @@ pub fn new_registry_page(
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
-         <label>prefix (optional) <input type=\"text\" name=\"prefix\" placeholder=\"cdn\"></label>\n\
+         <label>prefix (optional — defaults to the registry slug) \
+         <input type=\"text\" name=\"prefix\" placeholder=\"optional — defaults to the registry slug\"></label>\n\
          <label>trust anchors\n<textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
          placeholder=\"release:Ed25519:base64...\"></textarea></label>\n\
          <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
@@ -1577,8 +1572,10 @@ pub fn new_registry_page(
     );
     body.push_str(
         "<p class=\"dim\">The registry is created at <code>{org}/{project}/{name}</code> and \
-         indexed lazily from its binding's surface. One trust anchor per line, in \
-         <code>name:Ed25519:&lt;base64&gt;</code> form.</p>\n",
+         indexed lazily from its surface. Leaving the storage binding on \
+         <em>Default storage</em> uses this deployment's own storage; the prefix \
+         auto-derives from the registry name when left blank. One trust anchor per \
+         line, in <code>name:Ed25519:&lt;base64&gt;</code> form.</p>\n",
     );
 
     page_with_session(
