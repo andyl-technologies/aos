@@ -717,8 +717,153 @@ pub fn with_frontend_dispatch(router: Router, service: Arc<RpcService>) -> Route
         }))
 }
 
+/// Resolve the longest registry slug that is a path-segment prefix of `path`,
+/// returning `(slug, tail)` where `tail` is the remaining machine-path tail.
+///
+/// This mirrors the native hub's `resolve_by_prefix`, but stays shell-agnostic:
+/// it returns the resolved slug `String` (not the full registry record) so it
+/// composes with the shared [`browse_dispatch`]/[`facade`] handlers, which
+/// re-resolve the registry and enforce visibility downstream. `exists` is the
+/// "is there a registry with this exact slug" predicate (the wasm shell's
+/// service is `!Send`, so the loop takes the lookup as an `async` closure rather
+/// than borrowing a `Send` future across iterations).
+///
+/// `acme/infra/prod/cdn/objects/ab` resolves to `(acme/infra/prod/cdn,
+/// objects/ab)`; an exact match yields an empty tail (the registry home).
+/// Matching is on `/` boundaries, so `acme/infra/prod/cdn-staging` never
+/// resolves to `acme/infra/prod/cdn`.
+async fn resolve_prefix_with<'a, F, Fut>(path: &'a str, mut exists: F) -> Option<(String, String)>
+where
+    F: FnMut(&'a str) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let mut candidate = path;
+    loop {
+        if exists(candidate).await {
+            let tail = path[candidate.len()..].trim_start_matches('/').to_string();
+            return Some((candidate.to_string(), tail));
+        }
+        match candidate.rsplit_once('/') {
+            Some((head, _)) => candidate = head,
+            None => return None,
+        }
+    }
+}
+
+/// Resolve `path` to the registry it names by longest registry-slug prefix.
+///
+/// Thin wrapper over [`resolve_prefix_with`] that uses the service's
+/// `registry_by_slug` read as the existence predicate. Returns `(slug, tail)`
+/// on a hit; `None` when no slug prefix of `path` names a registry (or on a
+/// database error, which the shared handlers surface as a `404` rather than
+/// leaking the error through the nested fallback).
+async fn resolve_registry_prefix(svc: &RpcService, path: &str) -> Option<(String, String)> {
+    resolve_prefix_with(path, |candidate| async move {
+        matches!(svc.db.registry_by_slug(candidate).await, Ok(Some(_)))
+    })
+    .await
+}
+
+/// The nested-canonical fallback that lets the Cloudflare Worker serve
+/// registries whose slug contains slashes (e.g. `andyl/demo`, `acme/infra/cdn`).
+///
+/// The shared router's browse and facade routes capture only a single leading
+/// path segment as the slug (`/{slug}/…`, `/{slug}/{*path}`), so a nested slug
+/// never matches them. This fallback recovers those requests by longest-prefix
+/// slug resolution, then dispatches to the *same* shared [`browse_dispatch`] and
+/// [`facade`]/facade-write handlers the flat routes use, so a nested registry
+/// serves byte-identically to a flat one.
+///
+/// It is wired into [`router`] only (the Worker entry). The native hub composes
+/// [`rpc_browse_router`] and installs its own richer `nested_catch_all`
+/// (filesystem autoindex, pull-through mirroring, session cookies), so this
+/// fallback never affects native.
+///
+/// Routing rules:
+/// - `GET`/`HEAD` whose path contains the reserved browse marker (`/-/`, or a
+///   trailing `/-`) splits at the *first* marker into the registry slug (left)
+///   and the page/`api/…` tail (right), dispatching through
+///   [`browse_dispatch`] exactly like the `/{slug}/-/{*rest}` route. This marker
+///   split takes precedence over longest-prefix resolution so the reserved `/-/`
+///   namespace can never be shadowed by a machine path.
+/// - Other `GET`/`HEAD` resolves the longest registry-slug prefix: an empty tail
+///   serves the registry home via [`browse_dispatch`]; a non-empty tail serves
+///   the machine path via [`facade`].
+/// - `PUT` resolves the longest registry-slug prefix and dispatches a non-empty
+///   tail to the upload facade (the shared facade-write path); an empty tail or
+///   an unresolved path is a `404`.
+/// - Every other method, and any unresolved path, is a `404`.
+async fn nested_fallback(
+    State(state): State<SharedState>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+    uri: Uri,
+    body: Bytes,
+) -> Response {
+    let svc = from_state(state);
+    send_bridge(async move {
+        let raw = uri.path().trim_start_matches('/');
+        let decoded = percent_decode_path(raw);
+        match method {
+            axum::http::Method::GET | axum::http::Method::HEAD => {
+                // The reserved `/-/` human/browse namespace wins over machine
+                // longest-prefix resolution: split at the FIRST marker so a slug
+                // segment can never be confused for the marker.
+                if let Some((left, rest)) = split_browse_marker(&decoded) {
+                    let slug = left.trim_end_matches('/').to_string();
+                    return browse_dispatch(svc, headers, slug, rest, uri.query().map(str::to_owned))
+                        .await;
+                }
+                let trimmed = decoded.trim_end_matches('/');
+                match resolve_registry_prefix(&svc, trimmed).await {
+                    Some((slug, tail)) if tail.is_empty() => {
+                        browse_dispatch(svc, headers, slug, String::new(), uri.query().map(str::to_owned))
+                            .await
+                    }
+                    Some((slug, tail)) => facade(svc, headers, slug, tail).await,
+                    None => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+            axum::http::Method::PUT => {
+                let trimmed = decoded.trim_end_matches('/');
+                match resolve_registry_prefix(&svc, trimmed).await {
+                    Some((slug, tail)) if !tail.is_empty() => {
+                        facade_put(svc, headers, slug, tail, body).await
+                    }
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+            _ => StatusCode::NOT_FOUND.into_response(),
+        }
+    })
+    .await
+}
+
+/// Split a decoded path at the first browse marker (`/-/`, or a trailing `/-`),
+/// returning `(left, rest)` where `left` is the registry-slug portion and `rest`
+/// is the page/`api/…` tail after the marker (empty for a trailing marker).
+///
+/// Returns `None` when the path does not contain the reserved marker segment.
+fn split_browse_marker(path: &str) -> Option<(String, String)> {
+    let mid = format!("/{BROWSE_MARKER}/");
+    if let Some((left, rest)) = path.split_once(&mid) {
+        return Some((left.to_string(), rest.to_string()));
+    }
+    let end = format!("/{BROWSE_MARKER}");
+    path.strip_suffix(&end)
+        .map(|left| (left.to_string(), String::new()))
+}
+
 pub fn router(service: Arc<RpcService>) -> Router {
-    build(service, true, true)
+    // The nested-canonical fallback is mounted here ONLY (the Worker entry), via
+    // `mount_nested = true`, so a slashed slug that misses the single-segment
+    // browse/facade routes still resolves. The other `build` callers pass
+    // `false`: the native hub composes [`rpc_browse_router`] and installs its own
+    // richer `nested_catch_all`, so this never affects native serving. It must be
+    // mounted *inside* `build` because the fallback handler takes
+    // `State<SharedState>`, which axum can only satisfy before `build`'s closing
+    // `with_state` erases the state type.
+    build(service, true, true, true)
 }
 
 /// Build the shared Connect-JSON router with neither the browse surface nor the
@@ -732,7 +877,7 @@ pub fn router(service: Arc<RpcService>) -> Router {
 /// axum state.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
-    build(service, false, false)
+    build(service, false, false, false)
 }
 
 /// Build the shared Connect-JSON router *with* the session-aware browse surface
@@ -750,7 +895,7 @@ pub fn rpc_router(service: Arc<RpcService>) -> Router {
 /// the service as axum state.
 #[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
-    build(service, true, false)
+    build(service, true, false, false)
 }
 
 /// Build the shared router, optionally mounting the browse surface and/or the
@@ -759,11 +904,17 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
 /// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
 /// pages, and the `/{slug}/-/api/…` JSON read API). `mount_facade` adds the
-/// catch-all `GET`/`HEAD` `/{slug}/{*path}` machine-surface facade. The Worker
-/// takes both ([`router`]); the native hub takes browse only
-/// ([`rpc_browse_router`]) and keeps its own facade; [`rpc_router`] takes
-/// neither.
-fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
+/// catch-all `GET`/`HEAD` `/{slug}/{*path}` machine-surface facade.
+/// `mount_nested` adds the [`nested_fallback`] for slashed slugs. The Worker
+/// takes all three ([`router`]); the native hub takes browse only
+/// ([`rpc_browse_router`]) and keeps its own facade and nested fallback;
+/// [`rpc_router`] takes none.
+fn build(
+    service: Arc<RpcService>,
+    mount_browse: bool,
+    mount_facade: bool,
+    mount_nested: bool,
+) -> Router {
     let mut r = Router::new();
     // RegistryService
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListRegistries", list_registries);
@@ -997,5 +1148,81 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             ),
         );
     }
+    if mount_nested {
+        // The nested-canonical fallback for slashed slugs (Worker entry only).
+        // Added before `with_state` so axum can satisfy its `State<SharedState>`
+        // extractor; see [`router`].
+        r = r.fallback(nested_fallback);
+    }
     r.with_state(into_state(service))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    /// Run [`resolve_prefix_with`] against a fixed set of known slugs.
+    async fn resolve(path: &str, slugs: &[&str]) -> Option<(String, String)> {
+        resolve_prefix_with(path, |candidate| {
+            let hit = slugs.contains(&candidate);
+            async move { hit }
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn longest_prefix_resolves_nested_slug_with_tail() {
+        let slugs = ["andyl/demo", "andyl"];
+        assert_eq!(
+            resolve("andyl/demo/nar/x", &slugs).await,
+            Some(("andyl/demo".to_string(), "nar/x".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_match_resolves_to_empty_tail() {
+        let slugs = ["andyl/demo", "andyl"];
+        assert_eq!(
+            resolve("andyl/demo", &slugs).await,
+            Some(("andyl/demo".to_string(), String::new()))
+        );
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_shorter_slug_prefix() {
+        let slugs = ["andyl/demo", "andyl"];
+        assert_eq!(
+            resolve("andyl/other", &slugs).await,
+            Some(("andyl".to_string(), "other".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_path_resolves_to_none() {
+        let slugs = ["andyl/demo", "andyl"];
+        assert_eq!(resolve("acme/infra/cdn", &slugs).await, None);
+    }
+
+    #[tokio::test]
+    async fn segment_boundary_is_respected() {
+        // `andyl/demo-staging` must not resolve to `andyl/demo`.
+        let slugs = ["andyl/demo", "andyl"];
+        assert_eq!(
+            resolve("andyl/demo-staging", &slugs).await,
+            Some(("andyl".to_string(), "demo-staging".to_string()))
+        );
+    }
+
+    #[test]
+    fn browse_marker_split_mid_and_trailing() {
+        assert_eq!(
+            split_browse_marker("andyl/demo/-/packages"),
+            Some(("andyl/demo".to_string(), "packages".to_string()))
+        );
+        assert_eq!(
+            split_browse_marker("andyl/demo/-"),
+            Some(("andyl/demo".to_string(), String::new()))
+        );
+        assert_eq!(split_browse_marker("andyl/demo/packages"), None);
+    }
 }
