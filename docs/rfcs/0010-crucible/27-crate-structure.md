@@ -27,13 +27,17 @@ that crate.
 
 ## 1. The crate map (L0–L4)
 
-Crucible is **thirteen crates** in one workspace, in five layers. Lower layers
-never depend on higher layers (`ARCH-3`). The engine crate and the CLI binary
-are *both* named `crucible`: the L3 library crate is the package `crucible` (the
-engine), and the L4 binary crate `crucible-cli` produces the binary named
-`crucible`. (The umbrella/library is `crucible`; the shipped executable is
-`crucible` via `[[bin]] name = "crucible"` in `crucible-cli`. See §7 for the
-`[bin]`/`[lib]` split.)
+Crucible is **thirteen runtime crates** plus the test-only `crucible-harness`
+package in the AOS Rust workspace, partitioned into five Crucible layers. The
+`CRATE-*` "exactly" and "only" requirements in this file are scoped to the
+Crucible package set, not to the pre-existing `aos-*` packages that share the
+repository workspace. Lower Crucible layers never depend on higher Crucible
+layers (`ARCH-3`). The engine crate and the CLI binary are *both* named
+`crucible`: the L3 library crate is the package `crucible` (the engine), and the
+L4 binary crate `crucible-cli` produces the binary named `crucible`. (The
+umbrella/library is `crucible`; the shipped executable is `crucible` via
+`[[bin]] name = "crucible"` in `crucible-cli`. See §7 for the `[bin]`/`[lib]`
+split.)
 
 ```text
   L4  CONTROL PLANE
@@ -121,9 +125,10 @@ contract. The host-side `crucible-qemu` depends on L1 and on the engine's
 `Backend` trait, but the engine does not depend on `crucible-qemu` (it depends on
 the trait it itself declares — see `CRATE-6`).
 
-- **[CRATE-1]** The workspace MUST contain exactly the thirteen crates above,
-  partitioned into the five layers L0–L4 as listed. *Gate:* `gate:harness-lint`
-  (workspace-shape lint). *Spec:* §1.
+- **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
+  exactly the thirteen runtime crates above, partitioned into the five layers
+  L0–L4 as listed. Pre-existing non-Crucible `aos-*` workspace members are outside
+  this count. *Gate:* `gate:harness-lint` (workspace-shape lint). *Spec:* §1.
 - **[CRATE-2]** Each crate MUST depend only on crates in its own layer or a lower
   layer; there MUST be no upward dependency and no dependency cycle. The rule is
   enforced by a CI lint that reads each crate's `[dependencies]` and rejects any
@@ -468,8 +473,9 @@ workspace and the AOS QEMU package; engineering standards
 
 ### Workspace root
 
-A single virtual workspace at the Crucible root pins one toolchain, one
-dependency-version set, and the per-layer lints.
+A single AOS Rust workspace pins one toolchain, one dependency-version set, and
+the per-layer lints. The Crucible package set is the subset of workspace members
+listed below.
 
 ```toml
 # Cargo.toml (workspace root) — illustrative
@@ -551,11 +557,12 @@ enters a release build.
 | `gate:adversarial-determinism` | `crucible-harness` (host-hostile driver) | N-run byte-identical logs |
 | `gate:e2e-determinism` | `crucible-harness` + `crucible-cli` (final acceptance) | full multi-VM reproduce |
 
-- **[CRATE-14]** The workspace MUST be a single virtual Cargo workspace pinning
-  one toolchain and one dependency-version set; the only `cdylib` MUST be
-  `crucible-qemu-plugin`, and the only shipped binary MUST be `crucible` (from
-  `crucible-cli`). *Gate:* `gate:harness-lint`. *Satisfies* `G-7`, `G-8`.
-  *Spec:* §7.
+- **[CRATE-14]** The Crucible package set MUST live in the single AOS virtual
+  Cargo workspace that pins one toolchain and one dependency-version set. Within
+  the Crucible package set, the only `cdylib` MUST be `crucible-qemu-plugin`, and
+  the only shipped Crucible binary MUST be `crucible` (from `crucible-cli`).
+  Pre-existing `aos-*` binaries are outside this Crucible binary count. *Gate:*
+  `gate:harness-lint`. *Satisfies* `G-7`, `G-8`. *Spec:* §7.
 - **[CRATE-15]** A test-only crate `crucible-harness` MUST host the cross-crate
   determinism gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) and MUST be a
@@ -600,10 +607,11 @@ Crucible needs and marks the seam.
 > workspace shape, the safe/unsafe fence, the backend seam, and the gate↔crate
 > wiring so every later subsystem lands in a fixed frame.
 
-- [ ] **T-CRATE-1** Create the Cargo virtual workspace skeleton with the thirteen
-  L0–L4 crates plus the test-only `crucible-harness`, each as an empty, compiling
-  crate carrying its `//!` crate doc naming its owning RFC file(s). — satisfies
-  [CRATE-1], [CRATE-13], [CRATE-14]; spec §1, §6, §7.
+- [x] **T-CRATE-1** Create the Crucible package-set skeleton in the AOS Cargo
+  virtual workspace with the thirteen L0–L4 crates plus the test-only
+  `crucible-harness`, each as an empty, compiling crate carrying its `//!` crate
+  doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
+  [CRATE-14]; spec §1, §6, §7.
 - [ ] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
   on the nine SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the four UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
