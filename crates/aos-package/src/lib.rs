@@ -635,6 +635,9 @@ pub enum AttestCommand {
         /// File containing the verifier nonce as hex
         #[arg(long)]
         nonce_file: Option<PathBuf>,
+        /// Pinned quote identity catalog JSON file
+        #[arg(long = "quote-identity-file")]
+        quote_identity_files: Vec<PathBuf>,
         /// Additional golden measurement catalog JSON file
         #[arg(long = "catalog-file")]
         catalog_files: Vec<PathBuf>,
@@ -2054,12 +2057,19 @@ pub async fn run(
                     quote_dir,
                     nonce,
                     nonce_file,
+                    quote_identity_files,
                     catalog_files,
                     pcr15_baseline,
                     ..
                 },
         } => {
-            let measurement = read_attestation_measurement(pcr15, quote_dir, nonce, nonce_file)?;
+            let measurement = read_attestation_measurement(
+                pcr15,
+                quote_dir,
+                nonce,
+                nonce_file,
+                quote_identity_files,
+            )?;
             run_verify_package_attestation(
                 &config,
                 event_log,
@@ -2157,13 +2167,18 @@ pub async fn run(
 #[derive(Debug)]
 enum AttestationMeasurement {
     Pcr15(String),
-    Quote { quote_dir: PathBuf, nonce: String },
+    Quote {
+        quote_dir: PathBuf,
+        nonce: String,
+        identity_files: Vec<PathBuf>,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AttestationQuoteTrust {
     PcrValueOnly,
     BundleSelfConsistent,
+    IdentityPinned { anchor: String },
 }
 
 fn read_attestation_measurement(
@@ -2171,6 +2186,7 @@ fn read_attestation_measurement(
     quote_dir: &Option<PathBuf>,
     nonce: &Option<String>,
     nonce_file: &Option<PathBuf>,
+    quote_identity_files: &[PathBuf],
 ) -> Result<AttestationMeasurement> {
     match (pcr15, quote_dir) {
         (Some(_), Some(_)) => bail!("use either --pcr15 or --quote-dir, not both"),
@@ -2178,11 +2194,15 @@ fn read_attestation_measurement(
             if nonce.is_some() || nonce_file.is_some() {
                 bail!("--nonce and --nonce-file require --quote-dir");
             }
+            if !quote_identity_files.is_empty() {
+                bail!("--quote-identity-file requires --quote-dir");
+            }
             Ok(AttestationMeasurement::Pcr15(pcr15.clone()))
         }
         (None, Some(quote_dir)) => Ok(AttestationMeasurement::Quote {
             quote_dir: quote_dir.clone(),
             nonce: read_attestation_nonce(nonce, nonce_file)?,
+            identity_files: quote_identity_files.to_vec(),
         }),
         (None, None) => bail!("attest verify requires --pcr15 or --quote-dir"),
     }
@@ -2198,10 +2218,27 @@ fn run_verify_package_attestation(
 ) -> Result<()> {
     let (pcr15, trust) = match measurement {
         AttestationMeasurement::Pcr15(pcr15) => (pcr15, AttestationQuoteTrust::PcrValueOnly),
-        AttestationMeasurement::Quote { quote_dir, nonce } => (
-            package_attestation::verify_attestation_quote_bundle(&quote_dir, &nonce)?,
-            AttestationQuoteTrust::BundleSelfConsistent,
-        ),
+        AttestationMeasurement::Quote {
+            quote_dir,
+            nonce,
+            identity_files,
+        } => {
+            let quote = package_attestation::verify_attestation_quote_bundle(
+                &quote_dir,
+                &nonce,
+                &identity_files,
+            )?;
+            let trust = if quote.identity_pinned {
+                AttestationQuoteTrust::IdentityPinned {
+                    anchor: quote
+                        .identity_label
+                        .unwrap_or_else(|| "unlabeled".to_string()),
+                }
+            } else {
+                AttestationQuoteTrust::BundleSelfConsistent
+            };
+            (quote.quoted_pcr15, trust)
+        }
     };
     let log = fs::read_to_string(event_log)
         .with_context(|| format!("reading package event log {}", event_log.display()))?;
@@ -2218,9 +2255,20 @@ fn run_verify_package_attestation(
             "pcr15": verified.pcr15,
             "package_count": verified.package_count,
         });
-        if trust == AttestationQuoteTrust::BundleSelfConsistent {
+        if matches!(
+            trust,
+            AttestationQuoteTrust::BundleSelfConsistent
+                | AttestationQuoteTrust::IdentityPinned { .. }
+        ) {
             output["quote_bundle_verified"] = serde_json::json!(true);
             output["ak_ek_trusted"] = serde_json::json!(false);
+            output["quote_identity_pinned"] = serde_json::json!(matches!(
+                trust,
+                AttestationQuoteTrust::IdentityPinned { .. }
+            ));
+            if let AttestationQuoteTrust::IdentityPinned { anchor } = &trust {
+                output["quote_identity_label"] = serde_json::json!(anchor);
+            }
         }
         printer.json(&output);
     } else {
@@ -2230,6 +2278,10 @@ fn run_verify_package_attestation(
         );
         if trust == AttestationQuoteTrust::BundleSelfConsistent {
             message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
+        } else if let AttestationQuoteTrust::IdentityPinned { anchor } = trust {
+            message.push_str(&format!(
+                " Quote bundle matches pinned identity '{anchor}'; AK/EK trust was not checked."
+            ));
         }
         printer.success(&message);
     }
@@ -3704,6 +3756,7 @@ mod tests {
                     quote_dir: None,
                     nonce: None,
                     nonce_file: None,
+                    quote_identity_files: Vec::new(),
                     catalog_files: Vec::new(),
                     pcr15_baseline: None,
                 },
@@ -3760,25 +3813,32 @@ mod tests {
         let no_nonce = None;
         let no_nonce_file = None;
 
-        let pcr = read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file)
+        let pcr = read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &[])
             .expect("pcr15 source");
         assert!(matches!(pcr, AttestationMeasurement::Pcr15(_)));
 
-        let quote = read_attestation_measurement(&None, &quote_dir, &nonce, &no_nonce_file)
+        let quote = read_attestation_measurement(&None, &quote_dir, &nonce, &no_nonce_file, &[])
             .expect("quote source");
         assert!(matches!(quote, AttestationMeasurement::Quote { .. }));
 
         let conflict =
-            read_attestation_measurement(&pcr15, &quote_dir, &nonce, &no_nonce_file).unwrap_err();
+            read_attestation_measurement(&pcr15, &quote_dir, &nonce, &no_nonce_file, &[])
+                .unwrap_err();
         assert!(format!("{conflict:#}").contains("either --pcr15 or --quote-dir"));
 
         let missing =
-            read_attestation_measurement(&None, &None, &no_nonce, &no_nonce_file).unwrap_err();
+            read_attestation_measurement(&None, &None, &no_nonce, &no_nonce_file, &[]).unwrap_err();
         assert!(format!("{missing:#}").contains("requires --pcr15 or --quote-dir"));
 
         let stray_nonce =
-            read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file).unwrap_err();
+            read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file, &[]).unwrap_err();
         assert!(format!("{stray_nonce:#}").contains("require --quote-dir"));
+
+        let identity_files = vec![PathBuf::from("/etc/aos/attestation-identity.json")];
+        let stray_trust =
+            read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file, &identity_files)
+                .unwrap_err();
+        assert!(format!("{stray_trust:#}").contains("--quote-identity-file"));
     }
 
     #[test]
