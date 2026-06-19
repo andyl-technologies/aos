@@ -1359,6 +1359,38 @@ virtio-block and virtio-9p reads on the target Linux guest: idle fast-forward is
 valid for the measured blocking-read path, and the exactness-preserving busy-poll
 fallback remains specified by [IO-30] but is not adopted for this path.
 
+**RISK-10 / RISK-11** are retired by `T-RISK-3`:
+`checks.crucible.phase0.s4ShmemVisibility` runs a throwaway shared-memory
+scheduler/node double over a real `MAP_SHARED` region. It forks two producer
+processes and one consumer process, uses §13-style SPSC rings with release/acquire
+publication, assigns a fixed frame script with 32 frames across 8 delivery-icount
+groups, and runs the same script twice: once with producer publish-path wall-clock
+skew and once with consumer poll-path wall-clock skew. The consumer holds its
+published `current_icount` at `delivery_icount - 1` until every frame in the due
+group is present, then records visibility at exactly `delivery_icount` in the
+deterministic `(delivery_icount, src_node, seq)` order. The run reported
+`model=shmem_scheduler_node_double`, `shared_memory=MAP_SHARED`,
+`ring_ordering=release_acquire_spsc`, `source_nodes=2`, `consumer_nodes=1`,
+`rings=2`, `frames_per_source=16`, `total_frames=32`, `delivery_groups=8`,
+`run_x_skew=producer_publish_path`, `run_y_skew=consumer_poll_path`,
+`delivery_rule=delivery_icount_lte_current_icount`,
+`tie_break_key=delivery_icount_src_node_seq`,
+`consumer_ceiling=delivery_icount_minus_1_until_group_present`,
+`producer_skew_ceiling_wait_observed=true`,
+`consumer_skew_early_peek_observed=true`, `arrival_order_differs=true`,
+`publish_order_unique_nonzero=true`, `visibility_vectors_match=true`,
+`visibility_icounts_equal_delivery_icount=true`, `injection_order_match=true`,
+`arrival_order_negative_control_failed=true`,
+`late_enqueue_negative_control_failed=true`, `late_delivery_failures=0`,
+`early_delivery_failures=0`, `late_enqueue_failures=0`,
+`fallback_adopted=false`, and
+`scope=phase0_shmem_visibility_discipline_not_qemu_device_injection`. This
+retires the S4 risk for the §13.9 visibility discipline: queue presence and
+host-poll timing do not decide architectural visibility in the measured
+discipline, and delivery order ignores arrival order. Production QEMU/plugin
+device injection remains owned by the later `gate:layer1-injection` and QEMU
+integration gates.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1401,8 +1433,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 remaining foundational Phase-0 blockers stay unchecked until their own
 PASS/fallback evidence exists, and that no non-risk checklist item is marked
 complete while those blockers remain open. The run reported
-`checked_risk_tasks=10`,
-`retired_decision_entries=10`, `phase0_foundational_blockers_open=2`,
+`checked_risk_tasks=11`,
+`retired_decision_entries=11`, `phase0_foundational_blockers_open=1`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1413,7 +1445,7 @@ Foundation-first (G-5): measure the load-bearing bets BEFORE building on them.
 Phase-0 blockers (run/pass first, in priority order):
   S1  ★  icount + entropy elimination => bit-identical single-VM (FATAL if false)
   S2  ★  guest HLTs during blocking I/O (idle fast-forward applies to measured path)
-  S4  ★  producer→consumer visibility is icount-not-wallclock (Contract B)
+  S4  ★  producer→consumer shmem visibility is icount-not-wallclock
   S3  ★  savevm/loadvm complete (else thin/replay checkpoints — clean fallback)
   S11 ★  deterministic multi-vCPU under RR-TCG + icount (G-10; else revert -smp 1)
 
@@ -1457,7 +1489,7 @@ never tolerated). Results live in the decision register (31).
   target guests; determine whether idle fast-forward ([SCHED-28]) applies often
   enough for the perf budget; record the busy-poll mitigation decision. —
   satisfies [RISK-6], [RISK-7], [IO-29], [IO-30]; spec §30.3.
-- [ ] **T-RISK-3** Run **S4** (Phase-0 blocker ★): two-VM fixed-schedule
+- [x] **T-RISK-3** Run **S4** (Phase-0 blocker ★): two-VM fixed-schedule
   run-twice-and-diff under artificially skewed producer/consumer timing, asserting
   identical per-frame consumer-visibility icounts and `(delivery_icount, src_node,
   seq)` injection order ([SHM-33], [SHM-34]); localize any transport-timing leak.
