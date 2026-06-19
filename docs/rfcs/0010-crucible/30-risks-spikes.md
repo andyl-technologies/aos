@@ -1263,6 +1263,22 @@ Phase-0 pre-build bounding risk for the modeled representative search family; th
 row remains listed as a regression risk until the production temporal graph,
 replay oracle, search engine, and scenario corpus land.
 
+**RISK-22** is retired by `T-RISK-15`:
+`checks.crucible.phase0.multiVmParallelism` measured a deterministic
+conservative-lookahead cost model for a uniform full-mesh four-VM scenario on four
+modeled host cores. The spike rejects declared zero/sub-floor base latencies,
+clamps a sub-floor latency fault from `128` to the `512` virtual-time floor, and
+honors a raised latency fault at `2048`. Sweeping link latencies
+`512,1024,2048,4096` produced `sample_0_parallelism_x1000=3605`,
+`sample_1_parallelism_x1000=3792`, `sample_2_parallelism_x1000=3893`, and
+`sample_3_parallelism_x1000=3946` against a `3500` target, with
+`monotonic_parallelism=1` and `halving_sync_frequency=1`. The floor avoided the
+modeled sub-floor collapse from `unfloored_latency_64_parallelism_x1000=2133`
+(`floor_vs_unfloored_subfloor_ratio_x1000=1690`). This retires the Phase-0
+pre-production lookahead-budget risk for the modeled scheduler cost surface; the
+row remains listed as a regression risk until production scheduler liveness,
+real host-core perf measurement, and `gate:perf-bench` land.
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1379,8 +1395,8 @@ never tolerated). Results live in the decision register (31).
   growth on a representative scenario and confirm CAS dedup + bounded frontier +
   coverage-guided prioritization keep memory/frontier within budget. — satisfies
   [RISK-21]; spec §30.12.
-- [ ] **T-RISK-15** Run the **multi-VM-parallelism** spike: vary link latency,
-  report achieved host-core parallelism, and confirm the latency floor + lookahead
+- [x] **T-RISK-15** Run the **multi-VM-parallelism** spike: vary link latency,
+  report modeled host-core parallelism, and confirm the latency floor + lookahead
   budget meet the multi-VM-parallelism target. — satisfies [RISK-22]; spec §30.12.
 - [ ] **T-RISK-16** Maintain the **risk register** ([RISK-23]) and enforce the
   Phase-0 gate ([RISK-24]): record each spike result in the decision register,
