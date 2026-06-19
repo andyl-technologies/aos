@@ -351,7 +351,7 @@ in {
           verifier.succeed(f"mkdir -p {shlex.quote(parent)}")
           verifier.succeed(f"printf %s {shlex.quote(content)} > {shlex.quote(destination)}")
 
-      def assert_standalone_verifier_accepts_quote(event_log_path, nonce, baseline_value, quote, identity):
+      def assert_standalone_verifier_accepts_quote(event_log_path, nonce, baseline_value, quote, identity_catalog):
           assert baseline_value is not None, "standalone verifier test expects PCR baseline"
           verifier.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
           verifier.succeed("test -e /etc/systemd/system/aos-attestation-verifier.service")
@@ -361,13 +361,7 @@ in {
           write_verifier_file(f"{VERIFIER_ROOT}/pcr15-baseline", baseline_value)
           write_verifier_file(
               f"{VERIFIER_ROOT}/quote-identity.json",
-              json.dumps({
-                  "version": 1,
-                  "anchors": [{
-                      "label": "service-quote",
-                      "identity": identity,
-                  }],
-              }),
+              json.dumps(identity_catalog),
           )
           copy_target_file_to_verifier(
               event_log_path,
@@ -401,7 +395,7 @@ in {
           assert verified["pcr15"] == quote["quoted_pcr15"]
           assert verified["package_count"] >= 2
           assert verified["quote_bundle_verified"] is True
-          assert verified["ak_ek_trusted"] is False
+          assert verified["ak_ek_trusted"] is True
           assert verified["quote_identity_pinned"] is True
           assert verified["quote_identity_label"] == "service-quote"
 
@@ -542,16 +536,26 @@ in {
           assert service_verified["quote_bundle_verified"] is True
           assert service_verified["ak_ek_trusted"] is False
           service_identity_file = "/tmp/aos-service-quote-identity.json"
-          service_identity = {
-              "version": 1,
-              "anchors": [{
-                  "label": "service-quote",
-                  "identity": service_quote["identity"],
-              }],
-          }
+          service_evidence_file = "/tmp/aos-service-quote-enrollment.evidence"
           target.succeed(
-              f"printf %s {shlex.quote(json.dumps(service_identity))} > {service_identity_file}"
+              f"printf %s {shlex.quote('credential activation transcript for service-quote')} "
+              f"> {service_evidence_file}"
           )
+          enrolled_raw = target.succeed(
+              f"{APM} --json attest enroll "
+              f"--quote-dir /var/lib/aos-attest/quote "
+              f"--label service-quote "
+              f"--method credential-activation "
+              f"--evidence-file {service_evidence_file} "
+              f"--catalog-file {service_identity_file}"
+          )
+          print("=== aos-attest service quote enrollment ===")
+          print(enrolled_raw)
+          enrolled = json.loads(enrolled_raw)
+          assert enrolled["label"] == "service-quote"
+          assert enrolled["method"] == "credential-activation"
+          assert enrolled["evidence_sha256"].startswith("sha256:")
+          service_identity = json.loads(target.succeed(f"cat {service_identity_file}"))
           service_trusted_raw = target.succeed(
               f"{APM} --json attest verify --system "
               f"--event-log {event_log_path} "
@@ -563,7 +567,7 @@ in {
           print(service_trusted_raw)
           service_trusted = json.loads(service_trusted_raw)
           assert service_trusted["quote_bundle_verified"] is True
-          assert service_trusted["ak_ek_trusted"] is False
+          assert service_trusted["ak_ek_trusted"] is True
           assert service_trusted["quote_identity_pinned"] is True
           assert service_trusted["quote_identity_label"] == "service-quote"
           assert_standalone_verifier_accepts_quote(
@@ -571,7 +575,7 @@ in {
               nonce,
               baseline_value,
               service_quote,
-              service_quote["identity"],
+              service_identity,
           )
 
           raw = target.succeed(

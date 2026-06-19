@@ -253,14 +253,29 @@ pub(crate) struct PackageQuoteIdentityDigests {
 pub(crate) struct PackageQuoteVerification {
     /// Quoted PCR 15 value as lowercase SHA-256 hex.
     pub quoted_pcr15: String,
+    /// Whether the matched identity has recorded enrollment evidence.
+    pub ak_ek_trusted: bool,
     /// Whether the quote bundle matched an explicit identity pin.
     pub identity_pinned: bool,
     /// Matched identity-pin label, when the catalog provided one.
     pub identity_label: Option<String>,
 }
 
+/// Result of adding a quote identity to a verifier enrollment catalog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PackageQuoteEnrollmentResult {
+    /// Human-readable fleet node or TPM label.
+    pub label: String,
+    /// Enrollment proof workflow used to authorize the identity.
+    pub method: String,
+    /// SHA-256 digest of the operator-supplied enrollment evidence.
+    pub evidence_sha256: String,
+    /// SHA-256 fingerprints of the enrolled AK/EK identity artifacts.
+    pub identity: PackageQuoteIdentityDigests,
+}
+
 /// An explicit quote-bundle identity pin.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackageQuoteIdentityPin {
     /// Human-readable fleet node or TPM label.
@@ -268,15 +283,33 @@ struct PackageQuoteIdentityPin {
     label: Option<String>,
     /// Fingerprints captured for an expected quote bundle identity.
     identity: PackageQuoteIdentityDigests,
+    /// Evidence that the identity was enrolled through an AK/EK proof workflow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enrollment: Option<PackageQuoteEnrollment>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageQuoteEnrollment {
+    /// Enrollment proof workflow.
+    method: String,
+    /// SHA-256 digest of the enrollment evidence transcript or certificate.
+    evidence_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackageQuoteIdentityCatalog {
     /// Trust catalog schema version.
     version: u32,
     /// Pinned quote-bundle identities.
     anchors: Vec<PackageQuoteIdentityPin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackageQuoteTrustMatch {
+    label: String,
+    ak_ek_trusted: bool,
 }
 
 #[derive(Debug)]
@@ -782,11 +815,12 @@ pub(crate) fn verify_attestation_quote_bundle(
     })
     .and_then(|()| {
         let quoted_pcr15 = quoted_pcr15_from_values_file(&quote_pcrs)?;
-        let identity_label = verify_quote_bundle_trust(&snapshot_dir, trust_catalogs)?;
+        let trust = verify_quote_bundle_trust(&snapshot_dir, trust_catalogs)?;
         Ok(PackageQuoteVerification {
             quoted_pcr15,
-            identity_pinned: identity_label.is_some(),
-            identity_label,
+            ak_ek_trusted: trust.as_ref().is_some_and(|anchor| anchor.ak_ek_trusted),
+            identity_pinned: trust.is_some(),
+            identity_label: trust.map(|anchor| anchor.label),
         })
     });
 
@@ -1104,7 +1138,7 @@ fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
 fn verify_quote_bundle_trust(
     quote_dir: &Path,
     trust_catalogs: &[PathBuf],
-) -> Result<Option<String>> {
+) -> Result<Option<PackageQuoteTrustMatch>> {
     if trust_catalogs.is_empty() {
         return Ok(None);
     }
@@ -1124,31 +1158,118 @@ fn verify_quote_bundle_trust(
         }
     }
 
+    let mut pinned_match = None;
     for anchor in anchors {
         if anchor.identity == identity {
-            return Ok(Some(
-                anchor
-                    .label
-                    .unwrap_or_else(|| format!("ak:{}", identity.ak_public_sha256)),
-            ));
+            let label = anchor
+                .label
+                .unwrap_or_else(|| format!("ak:{}", identity.ak_public_sha256));
+            if anchor.enrollment.is_some() {
+                return Ok(Some(PackageQuoteTrustMatch {
+                    label,
+                    ak_ek_trusted: true,
+                }));
+            }
+            pinned_match.get_or_insert(label);
         }
+    }
+
+    if let Some(label) = pinned_match {
+        return Ok(Some(PackageQuoteTrustMatch {
+            label,
+            ak_ek_trusted: false,
+        }));
     }
 
     bail!("package attestation quote identity did not match any pinned identity");
 }
 
+/// Enrolls a quote bundle identity in a verifier trust catalog.
+///
+/// The supplied evidence file is an operator- or privacy-CA-produced proof that
+/// the AK/EK identity is acceptable for the fleet. AOS records its digest in
+/// the catalog so later quote verification can distinguish enrolled identities
+/// from simple identity pins.
+///
+/// # Errors
+///
+/// Returns an error if the quote identity files cannot be read, the enrollment
+/// method is unsupported, the evidence file is not a regular file, the catalog
+/// is malformed, or the label or identity is already enrolled.
+pub(crate) fn enroll_quote_identity(
+    quote_dir: &Path,
+    catalog_path: &Path,
+    label: &str,
+    method: &str,
+    evidence_file: &Path,
+) -> Result<PackageQuoteEnrollmentResult> {
+    let identity = quote_identity_digests(quote_dir)?;
+    let method = validate_quote_enrollment_method(method)?.to_string();
+    let anchor = PackageQuoteIdentityPin {
+        label: Some(label.to_string()),
+        identity: identity.clone(),
+        enrollment: Some(PackageQuoteEnrollment {
+            method: method.clone(),
+            evidence_sha256: enrollment_evidence_digest(evidence_file)?,
+        }),
+    };
+    validate_quote_identity_pin(&anchor)?;
+
+    let mut catalog = read_or_create_quote_identity_catalog(catalog_path)?;
+    for existing in &catalog.anchors {
+        validate_quote_identity_pin(existing).with_context(|| {
+            format!(
+                "validating existing package quote identity pin from {}",
+                catalog_path.display()
+            )
+        })?;
+    }
+    if catalog
+        .anchors
+        .iter()
+        .any(|existing| existing.label.as_deref() == Some(label))
+    {
+        bail!("package quote identity catalog already contains label '{label}'");
+    }
+    if catalog
+        .anchors
+        .iter()
+        .any(|existing| existing.identity == identity)
+    {
+        bail!("package quote identity catalog already contains this AK/EK identity");
+    }
+
+    let enrollment = anchor
+        .enrollment
+        .as_ref()
+        .context("enrollment missing after construction")?;
+    let result = PackageQuoteEnrollmentResult {
+        label: label.to_string(),
+        method,
+        evidence_sha256: enrollment.evidence_sha256.clone(),
+        identity,
+    };
+    catalog.anchors.push(anchor);
+    write_quote_identity_catalog(catalog_path, &catalog)?;
+    Ok(result)
+}
+
+fn read_or_create_quote_identity_catalog(path: &Path) -> Result<PackageQuoteIdentityCatalog> {
+    match fs::read_to_string(path) {
+        Ok(content) => parse_quote_identity_catalog(path, &content),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(PackageQuoteIdentityCatalog {
+            version: 1,
+            anchors: Vec::new(),
+        }),
+        Err(err) => Err(err)
+            .with_context(|| format!("reading package quote identity catalog {}", path.display())),
+    }
+}
+
 fn read_quote_identity_catalog(path: &Path) -> Result<PackageQuoteIdentityCatalog> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("reading package quote identity catalog {}", path.display()))?;
-    let catalog: PackageQuoteIdentityCatalog = serde_json::from_str(&content)
-        .with_context(|| format!("parsing package quote identity catalog {}", path.display()))?;
-    if catalog.version != 1 {
-        bail!(
-            "package quote identity catalog {} has unsupported version {}",
-            path.display(),
-            catalog.version
-        );
-    }
+    let catalog = parse_quote_identity_catalog(path, &content)?;
     if catalog.anchors.is_empty() {
         bail!(
             "package quote identity catalog {} does not contain any anchors",
@@ -1158,13 +1279,69 @@ fn read_quote_identity_catalog(path: &Path) -> Result<PackageQuoteIdentityCatalo
     Ok(catalog)
 }
 
+fn parse_quote_identity_catalog(path: &Path, content: &str) -> Result<PackageQuoteIdentityCatalog> {
+    let catalog: PackageQuoteIdentityCatalog = serde_json::from_str(content)
+        .with_context(|| format!("parsing package quote identity catalog {}", path.display()))?;
+    if catalog.version != 1 {
+        bail!(
+            "package quote identity catalog {} has unsupported version {}",
+            path.display(),
+            catalog.version
+        );
+    }
+    Ok(catalog)
+}
+
+fn write_quote_identity_catalog(path: &Path, catalog: &PackageQuoteIdentityCatalog) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let content = serde_json::to_string_pretty(catalog)
+        .context("serializing package quote identity catalog")?;
+    fs::write(path, format!("{content}\n"))
+        .with_context(|| format!("writing package quote identity catalog {}", path.display()))
+}
+
 fn validate_quote_identity_pin(anchor: &PackageQuoteIdentityPin) -> Result<()> {
     if let Some(label) = &anchor.label
         && (label.is_empty() || label.chars().any(char::is_control))
     {
         bail!("package quote identity pin label must be non-empty printable text");
     }
+    if let Some(enrollment) = &anchor.enrollment {
+        validate_quote_enrollment_method(&enrollment.method)?;
+        parse_prefixed_sha256_hex(
+            "quote enrollment evidence_sha256",
+            &enrollment.evidence_sha256,
+        )?;
+    }
     validate_quote_identity_digests(&anchor.identity)
+}
+
+fn validate_quote_enrollment_method(method: &str) -> Result<&'static str> {
+    match method {
+        "credential-activation" => Ok("credential-activation"),
+        "privacy-ca" => Ok("privacy-ca"),
+        "out-of-band" => Ok("out-of-band"),
+        _ => bail!(
+            "package quote enrollment method must be credential-activation, privacy-ca, or out-of-band"
+        ),
+    }
+}
+
+fn enrollment_evidence_digest(path: &Path) -> Result<String> {
+    let meta = fs::symlink_metadata(path)
+        .with_context(|| format!("reading enrollment evidence metadata {}", path.display()))?;
+    if !meta.file_type().is_file() {
+        bail!(
+            "enrollment evidence {} must be a regular file",
+            path.display()
+        );
+    }
+    file_sha256_digest(path)
 }
 
 fn quote_identity_digests(dir: &Path) -> Result<PackageQuoteIdentityDigests> {
@@ -2565,7 +2742,115 @@ mod tests {
         let anchor =
             verify_quote_bundle_trust(tmp.path(), &[identity_file]).expect("pinned identity");
 
-        assert_eq!(anchor.as_deref(), Some("node-a"));
+        assert_eq!(
+            anchor,
+            Some(PackageQuoteTrustMatch {
+                label: "node-a".into(),
+                ak_ek_trusted: false,
+            })
+        );
+    }
+
+    #[test]
+    fn quote_identity_enrollment_writes_catalog_and_marks_trusted() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_quote_identity_fixture(tmp.path(), "node-a");
+        let catalog = tmp.path().join("quote-identity.json");
+        let evidence = tmp.path().join("credential-activation.txt");
+        fs::write(&evidence, "credential activation transcript").expect("evidence");
+
+        let enrolled = enroll_quote_identity(
+            tmp.path(),
+            &catalog,
+            "node-a",
+            "credential-activation",
+            &evidence,
+        )
+        .expect("enroll identity");
+
+        assert_eq!(enrolled.label, "node-a");
+        assert_eq!(enrolled.method, "credential-activation");
+        assert!(enrolled.evidence_sha256.starts_with("sha256:"));
+
+        let trust =
+            verify_quote_bundle_trust(tmp.path(), &[catalog.clone()]).expect("enrolled identity");
+        assert_eq!(
+            trust,
+            Some(PackageQuoteTrustMatch {
+                label: "node-a".into(),
+                ak_ek_trusted: true,
+            })
+        );
+        let duplicate = enroll_quote_identity(
+            tmp.path(),
+            &catalog,
+            "node-a-again",
+            "credential-activation",
+            &evidence,
+        )
+        .unwrap_err();
+        assert!(format!("{duplicate:#}").contains("already contains this AK/EK identity"));
+    }
+
+    #[test]
+    fn quote_identity_enrollment_wins_over_duplicate_legacy_pin() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_quote_identity_fixture(tmp.path(), "node-a");
+        let identity = quote_identity_digests(tmp.path()).expect("identity");
+        let legacy_pin = tmp.path().join("legacy-pin.json");
+        fs::write(
+            &legacy_pin,
+            serde_json::json!({
+                "version": 1,
+                "anchors": [{
+                    "label": "legacy-node-a",
+                    "identity": identity,
+                }],
+            })
+            .to_string(),
+        )
+        .expect("legacy pin catalog");
+        let enrolled_catalog = tmp.path().join("enrolled.json");
+        let evidence = tmp.path().join("credential-activation.txt");
+        fs::write(&evidence, "credential activation transcript").expect("evidence");
+        enroll_quote_identity(
+            tmp.path(),
+            &enrolled_catalog,
+            "enrolled-node-a",
+            "credential-activation",
+            &evidence,
+        )
+        .expect("enroll identity");
+
+        let trust = verify_quote_bundle_trust(tmp.path(), &[legacy_pin, enrolled_catalog])
+            .expect("enrolled identity");
+
+        assert_eq!(
+            trust,
+            Some(PackageQuoteTrustMatch {
+                label: "enrolled-node-a".into(),
+                ak_ek_trusted: true,
+            })
+        );
+    }
+
+    #[test]
+    fn quote_identity_enrollment_rejects_unknown_method() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_quote_identity_fixture(tmp.path(), "node-a");
+        let evidence = tmp.path().join("evidence.txt");
+        fs::write(&evidence, "proof").expect("evidence");
+
+        let err = enroll_quote_identity(
+            tmp.path(),
+            &tmp.path().join("quote-identity.json"),
+            "node-a",
+            "web-of-trust",
+            &evidence,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("credential-activation"));
     }
 
     #[test]
