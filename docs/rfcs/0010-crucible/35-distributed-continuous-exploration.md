@@ -952,7 +952,7 @@ NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity 
   remote/durable implementation of the unchanged 07 §7 `put`/`get`/`exists`
   interface behind `crucible-cas`), proving location-independent identity (same
   node/finding is the same object on any host) and idempotent, convergent
-  concurrent `put`. — satisfies [DCE-3], [DCE-4], [DCE-22], [DCE-28]; spec §35.2.1,
+  concurrent `put`. — satisfies [DCE-2], [DCE-3], [DCE-4], [DCE-22], [DCE-28]; spec §35.2.1,
   §35.5.1; cross-ref 07 §7, [TEMP-22].
 - [ ] **T-DCE-2** Implement content-addressed CLAIM/LEASE work-stealing over the
   shared frontier (TTL leases, not static partitioning; lost/expired claim

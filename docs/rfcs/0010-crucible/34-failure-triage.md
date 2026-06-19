@@ -851,7 +851,7 @@ recomputable byte-for-byte from what was already stored.
   recorded run alone (ScenarioDef + Schedule + causal subsequence) with the
   `failure_kind`/property/`first_failing_point`/`coverage_class`/`causal_slice_hash`
   fields read from the violation record (18) and the causal projection / bisection
-  (19, 24), never from re-execution. — satisfies [TRI-3], [TRI-4]; spec §34.2,
+  (19, 24), never from re-execution. — satisfies [TRI-1], [TRI-2], [TRI-3], [TRI-4]; spec §34.2,
   §34.2.1, §34.2.4.
 - [ ] **T-TRI-2** Implement the three critical normalizations — absolute icount
   report-only, `faulting_node` under the symmetry-canonical relabeling (07 §9),

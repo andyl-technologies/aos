@@ -172,6 +172,42 @@ pub enum Decision {
     /// default resolution at a scheduling point (file 22). Carries the
     /// same shape as the choice it replaces so replay is uniform.
     Override { point: SchedulingPoint, choice: ChoiceTag },
+
+    /// A vCPU-switch or interrupt-injection point chosen by the scheduler
+    /// (file 08). The DEFAULT sequence is deterministic engine behavior —
+    /// recomputable from `rr_switch_quantum` plus armed deadlines, hence
+    /// audit-only (EXEC-8). A NON-DEFAULT, explorer-supplied preemption
+    /// carries information that cannot be recomputed and therefore MUST be
+    /// stored (EXEC-33). For a single-vCPU node, `InterruptAt` varies
+    /// *when* the periodic timer/external interrupt preempts the one vCPU.
+    Preemption { node: NodeId, at: Icount, kind: PreemptionKind },
+
+    /// A served app-requested random draw (white-box, optional). Reproducible:
+    /// on canonical replay it is re-derived from the seeded `stream`; an
+    /// OVERRIDDEN `AppRandom` MUST be served from the recorded `value`, never
+    /// re-rolled (mirrors how `FaultFires` replays). Forkable per stream so
+    /// adding a node does not perturb unrelated streams. See EXEC-34.
+    AppRandom {
+        node: NodeId,
+        stream: RngStreamId,
+        request_id: u64,
+        width: u8,
+        value: u64,
+    },
+}
+
+/// The kind of a `Decision::Preemption` point.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum PreemptionKind {
+    /// A multi-vCPU round-robin switch from one vCPU to another. The default
+    /// is round-robin at `rr_switch_quantum` (file 08); an explorer may move
+    /// the switch point to vary interleavings.
+    VcpuSwitch { from_vcpu: VcpuId, to_vcpu: VcpuId },
+
+    /// A timer or external interrupt taken at a chosen `at: Icount` on the
+    /// target vCPU. Works for N = 1 to vary *when* the periodic timer
+    /// preempts the single vCPU.
+    InterruptAt { target_vcpu: VcpuId, irq: IrqVector },
 }
 
 /// A totally-ordered list of decisions. The thing that varies between
@@ -200,7 +236,8 @@ impl Schedule {
 - **[EXEC-6]** A `Decision` MUST capture exactly one resolved nondeterministic
   choice at a scheduling point and MUST be one of the closed taxonomy in §3
   (delivery order on a tie, whether a probabilistic fault fires, a decision-RNG
-  draw, or a search/fuzz override). Intra-VM execution between two consecutive
+  draw, a search/fuzz override, a vCPU-switch/interrupt preemption, or a served
+  app-requested random draw). Intra-VM execution between two consecutive
   decisions MUST contain no recorded nondeterminism, because Contract A (file 04)
   has eliminated it at the source. *Gate:* `gate:single-vm-fingerprint`.
   *Spec:* §3.
@@ -769,6 +806,40 @@ operations, *precisely because the model collapsed them into one*.
   nondeterminism. *Gate:* `gate:single-vm-fingerprint`, `gate:harness-lint`.
   *Spec:* §11; forward-ref file 24.
 
+## 12. Preemption and app-requested randomness as decisions
+
+The two `Decision` variants added in §3 — `Preemption` and `AppRandom` —
+extend the closed taxonomy to cover *when a vCPU is preempted* and *which
+random value an in-guest workload is served*, while preserving the
+default-recomputable / override-stored discipline of [EXEC-8]. Trigger and
+default preemptions are deterministic engine behavior (file 08), not a search
+`Decision`, until an explorer overrides them; only the override carries
+information that cannot be recomputed.
+
+- **[EXEC-33]** A `Decision::Preemption { node, at, kind }` MUST follow the
+  default-recomputable / override-stored discipline ([EXEC-8]): the DEFAULT
+  preemption sequence (round-robin vCPU switches at `rr_switch_quantum` and
+  interrupts taken at armed deadlines, file 08) MUST be a pure function of
+  `(ScenarioDef, Seed, Schedule)` and is therefore audit-only — recomputable
+  from the def and preceding schedule, recorded only as a witness. A
+  NON-DEFAULT, explorer-supplied preemption (a `VcpuSwitch` or `InterruptAt`
+  at a chosen `at: Icount`) carries information that is not recomputable and
+  MUST be stored in the `Schedule`. For a single-vCPU node (N = 1), an
+  `InterruptAt` MUST be able to vary *when* the periodic timer or external
+  interrupt preempts the one vCPU. Trigger/default preemptions MUST NOT be
+  recorded as search decisions. *Gate:* `gate:scheduler-liveness`,
+  `gate:single-vm-fingerprint`. *Spec:* §3, §12; forward-ref file 08, file 22.
+
+- **[EXEC-34]** A `Decision::AppRandom { node, stream, request_id, width, value }`
+  MUST record the serving `RngStreamId`, the per-stream `request_id`, the draw
+  `width`, and the served `value` for every app-requested random draw served
+  through the optional white-box path. On canonical replay an `AppRandom` that
+  was *not* overridden MUST be re-derived from the seeded `stream` (so adding a
+  node does not perturb unrelated streams, per [EXEC-9]); an OVERRIDDEN
+  `AppRandom` MUST be served from the recorded `value`, never re-rolled
+  (mirroring `FaultFires`, [INV-2]). *Gate:* `gate:replay-oracle`,
+  `gate:single-vm-fingerprint`. *Spec:* §3, §12; cross-ref file 04 (Decision RNG).
+
 ## Implementation checklist
 
 > The authoritative, ordered tasks live in
@@ -836,3 +907,14 @@ operations, *precisely because the model collapsed them into one*.
 - [ ] **T-EXEC-18** Run the model determinism tests under adversarial host
   conditions (load, task reordering, varied core counts) and assert identical
   fingerprints. — satisfies [EXEC-32]; spec §11.
+- [ ] **T-EXEC-19** Implement the `Decision::Preemption` variant
+  (`VcpuSwitch` / `InterruptAt`, `PreemptionKind`) with the
+  default-recomputable / override-stored discipline: prove the default RR/timer
+  preemption sequence is recomputable from `(def, Seed, schedule)` and
+  audit-only, and that an explorer-supplied preemption (including `InterruptAt`
+  at N = 1) is stored and replayed. — satisfies [EXEC-33]; spec §12.
+- [ ] **T-EXEC-20** Implement the `Decision::AppRandom` variant: record
+  `stream`/`request_id`/`width`/`value` for each served app draw; on replay
+  re-derive a non-overridden draw from the seeded stream and serve an overridden
+  draw from the recorded value (never re-roll); test stream isolation under
+  unrelated `World` edits. — satisfies [EXEC-34]; spec §12.

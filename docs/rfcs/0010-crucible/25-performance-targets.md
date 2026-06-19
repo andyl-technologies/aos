@@ -435,6 +435,55 @@ throughput, and its *absence* when disabled must be near-total.
   merely a performance one. *Gate:* `gate:single-vm-fingerprint`,
   `gate:perf-bench`. *Spec:* §25.5.2; routes [DET-1], [G-6], references [HARN-7].
 
+### 25.5.3 Distributed exploration: fleet throughput scales near-linearly
+
+A guided/distributed exploration campaign ([`35-distributed-exploration.md`](35-distributed-exploration.md))
+spreads the fork-and-explore work of §25.5 across **multiple explorer hosts** that
+share one content-addressed store (07, [INV-6]). The single-host throughput unit
+of [PERF-13] — scenarios per core per hour — is then a *per-host* contract that
+the fleet sums: total parallelism is approximately **`hosts × per-host lookahead
+P`**, so aggregate throughput MUST grow near-linearly with explorer-host count
+until the shared store's bandwidth saturates (the point at which adding hosts no
+longer adds throughput because store I/O — fetching ancestors, publishing new
+checkpoints — becomes the bottleneck).
+
+- **[PERF-27]** The fleet's exploration throughput contract — the per-host
+  scenarios/core/hour figure of [PERF-13] — MUST scale **near-linearly with
+  explorer-host count up to shared-store bandwidth saturation**: aggregate
+  throughput ≈ `Σ over hosts of (cores × per-core rate)`, with total parallelism
+  ≈ `hosts × per-host lookahead P` (§25.2), until store I/O saturates. The
+  perf-bench gate MUST add a **fleet sweep** (1..N explorer hosts) reporting
+  aggregate throughput and per-host store-I/O overhead (the distributed analogue
+  of the [PERF-3] core-count sweep), and MUST flag a deviation from the
+  near-linear-to-saturation curve. This binds `gate:perf-bench` and the new
+  `gate:campaign-continuity` (added by 24 per §25.11). *Gate:* `gate:perf-bench`,
+  `gate:campaign-continuity`. *Spec:* §25.5.3; routes [G-9], [G-6], references
+  [PERF-3], [PERF-13], [`35-distributed-exploration.md`](35-distributed-exploration.md).
+
+### 25.5.4 Continuous coverage: the cumulative-coverage ratchet
+
+A continuous campaign accumulates coverage across many CI runs. Coverage is a
+*monotone* quantity by construction — a basic block once exercised stays
+exercised in the campaign's accumulated corpus — so a *drop* in cumulative
+coverage across CI runs is never legitimate progress; it is a regression (a lost
+corpus, a broken seed, a coverage-extraction defect). The contract makes this
+monotonicity a gated property, the coverage analogue of the throughput ratchet of
+[PERF-13].
+
+- **[PERF-28]** A campaign's **accumulated coverage MUST be monotone
+  non-decreasing across cumulative CI runs**: the union of basic blocks (and any
+  other tracked coverage signal, §25.5.2) exercised by the campaign's corpus MUST
+  never shrink from one cumulative run to the next. The perf-bench gate MUST track
+  cumulative coverage versus run count and **flag a regression** when cumulative
+  coverage decreases (distinguishing it from a flat run, which is legitimate). A
+  legitimate reset (a fresh campaign lineage, e.g. after a QEMU/ABI bump,
+  [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md) [PKG-44])
+  MUST be an explicit, recorded baseline event in
+  [`31-decision-register.md`](31-decision-register.md), never a silent decrease.
+  This binds `gate:perf-bench` and the new `gate:campaign-continuity` (added by 24
+  per §25.11). *Gate:* `gate:perf-bench`, `gate:campaign-continuity`. *Spec:*
+  §25.5.4; routes [G-9], [G-6], references [PERF-13].
+
 ---
 
 ## 25.6 Snapshot, fork, and replay cost
@@ -806,3 +855,14 @@ run ahead on its own core.
 - [ ] **T-PERF-26** Add `gate:perf-bench` to the canonical gate catalog (24 §1.1)
   verbatim and wire it into the phase plan after the same-phase determinism gates;
   satisfy the referenced-gate doc-lint. — satisfies [PERF-26]; spec §25.11.
+- [ ] **T-PERF-27** Implement the fleet throughput sweep (1..N explorer hosts):
+  report aggregate scenarios/core/hour and per-host store-I/O overhead, assert
+  near-linear scaling to shared-store-bandwidth saturation (total parallelism ≈
+  hosts × per-host P), binding `gate:perf-bench` + `gate:campaign-continuity`. —
+  satisfies [PERF-27]; spec §25.5.3; cross-ref
+  [`35-distributed-exploration.md`](35-distributed-exploration.md).
+- [ ] **T-PERF-28** Implement the cumulative-coverage ratchet: track campaign
+  coverage vs run count, flag a decrease as a regression (flat is legitimate),
+  require an explicit recorded baseline event for a fresh campaign lineage,
+  binding `gate:perf-bench` + `gate:campaign-continuity`. — satisfies [PERF-28];
+  spec §25.5.4.

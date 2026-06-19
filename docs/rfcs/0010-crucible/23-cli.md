@@ -97,6 +97,8 @@ subcommand that runs or talks to a session.
     replay     Replay a reproduction artifact, bit-identically.
     search     Drive state-space search over the schedule space (22).
     fuzz       Coverage-guided fuzzing over a scenario family (22).
+    triage     Cluster, dedup, and minimize discovered failures (34).
+    debug      Open the time-travel debugger at a coordinate (36).
     serve      Run the daemon hosting the API (21).
     completions  Generate shell completions.
 
@@ -120,10 +122,12 @@ discovery (`--qemu`, `--plugin`, `--store`), and rendering (`--format`,
 `--trace`, `--artifact-dir`, `-v`/`-q`). Everything else is per-subcommand.
 
 - **[CLI-3]** The CLI MUST expose exactly the subcommand set `run`, `verify`,
-  `selftest`, `save`, `resume`, `fork`, `replay`, `search`, `fuzz`, `serve`, and
-  `completions`. Each subcommand MUST map to a defined session/API operation
-  (§3–§13) and MUST NOT introduce a control-plane capability absent from 20/21.
-  *Gate:* `gate:control-responsive`. *Spec:* §2; cross-ref 20 §4, 21, 22.
+  `selftest`, `save`, `resume`, `fork`, `replay`, `search`, `fuzz`, `triage`,
+  `debug`, `serve`, and `completions`. Each subcommand MUST map to a defined
+  session/API operation (§3–§16) or, for `triage`/`debug`, a thin driver over the
+  triage engine (34) / debugger (36), and MUST NOT introduce a control-plane
+  capability absent from 20/21/34/36.
+  *Gate:* `gate:control-responsive`. *Spec:* §2; cross-ref 20 §4, 21, 22, 34, 36.
 
 - **[CLI-4]** The global flags `--seed`, `--backend`, `--daemon`, `--qemu`,
   `--plugin`, `--store`, `--format`, `--trace`, `--artifact-dir`, and
@@ -232,6 +236,8 @@ and reproduces the failure on any machine ([HARN-28]).
   crucible: wrote reproduction artifact ./.crucible/repro-2c26b4.crucible (4.1 KiB)
   crucible: reproduce with:
       crucible replay ./.crucible/repro-2c26b4.crucible
+  crucible: debug at the failure with:
+      crucible debug ./.crucible/repro-2c26b4.crucible --at-failure
   crucible: bisect against a passing run with:
       crucible verify cluster.scn --seed 0x9f86d081884c7d65 --runs 2
 ```
@@ -256,10 +262,12 @@ only how they are printed.
   20 §2), the CLI MUST write a self-contained reproduction artifact `(seed,
   ScenarioDef, Schedule)` (06 §7.1, 24 §12) to `--artifact-dir` and MUST print a
   copy-pasteable `crucible replay <artifact>` command that reproduces the run
-  bit-identically. The printed command and the artifact together MUST be
-  sufficient to reproduce with no other input ([HARN-27]). *Gate:*
-  `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §4; cross-ref 06 §7.1,
-  24 §12.
+  bit-identically. The failure footer MUST additionally print a copy-pasteable
+  `crucible debug <artifact> --at-failure` command (§16) that opens the
+  time-travel debugger positioned at the violation. The printed commands and the
+  artifact together MUST be sufficient to reproduce and debug with no other input
+  ([HARN-27]). *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §4,
+  §16; cross-ref 06 §7.1, 24 §12.
 
 - **[CLI-11]** `--format` MUST support `jsonl` (one canonical event-log entry
   per line; the default and the streaming format), `json` (a single array), and
@@ -720,6 +728,128 @@ shutdown signal.
 
 ---
 
+## 16. `triage` — cluster, dedup, and minimize discovered failures
+
+**Purpose.** Turn a pile of discovered failures (the counterexamples a `search`
+or `fuzz` campaign emits, §13) into a deduplicated, minimized, reportable set.
+`triage` is a **thin driver over the triage engine of
+[`34-triage-clustering.md`](34-triage-clustering.md)**: it clusters failures by
+signature, picks a representative per cluster, minimizes each representative to a
+smaller still-failing artifact, and emits reports. It holds no triage policy of
+its own ([CLI-1]); the clustering/minimization policy lives in 34.
+
+```text
+  crucible triage <FINDINGS> [FLAGS]
+
+  ARGS
+    <FINDINGS>   A findings directory / corpus of reproduction artifacts (06 §7.1, 34).
+
+  FLAGS (subcommand-local; global flags from §2 also apply)
+    --policy <name>           Clustering/signature policy to apply (34). Default: the corpus default.
+    --minimize                Minimize each cluster representative to a smaller still-failing artifact (34).
+    --report <path>           Write the triage report here. Default: --artifact-dir.
+    --format <jsonl|json|table>   Report render format (as §4). Default: table.
+    --recompute-signatures    Recompute failure signatures rather than reuse cached ones (34).
+    --compare <other>         Diff this triage against a prior triage report (regression/dedup view, 34).
+```
+
+`triage` reads the findings, computes a failure signature per artifact and
+clusters by it (34), elects a representative per cluster, optionally minimizes
+each representative (34) — each minimized result remaining a self-contained
+reproduction artifact (06 §7.1) that reproduces bit-identically ([CLI-22]) — and
+emits a per-cluster report. Because every representative is an ordinary artifact,
+each is replayable (§12) and debuggable (§16's sibling, §17) exactly like a
+hand-found failure.
+
+**Exit codes.** `0` = triage completed (report written); `1` = at least one
+finding still reproduces as a failure after minimization (the normal case for a
+non-empty corpus; the report enumerates clusters); `4` = discovery/config;
+`5` = malformed/unresolvable findings corpus; `64` = usage.
+
+- **[CLI-26]** `crucible triage <findings>` MUST be a thin driver over the
+  triage engine of [`34-triage-clustering.md`](34-triage-clustering.md): it MUST
+  cluster the findings by failure signature, elect a representative per cluster,
+  optionally minimize each representative (`--minimize`) to a smaller artifact
+  that still reproduces the failure bit-identically (06 §7.1, [CLI-22]), and emit
+  a per-cluster report (`--report`, `--format`). `--policy` MUST select the
+  clustering/signature policy (34); `--recompute-signatures` MUST recompute rather
+  than reuse cached signatures; `--compare <other>` MUST diff against a prior
+  triage report. The CLI MUST NOT implement clustering or minimization policy
+  itself — it MUST delegate to 34 ([CLI-1]). Every cluster representative MUST be
+  an ordinary reproduction artifact, replayable (§12) and debuggable (§17).
+  *Gate:* `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §16; cross-ref 34,
+  13, 06 §7.1.
+
+---
+
+## 17. `debug` — open the time-travel debugger at a coordinate
+
+**Purpose.** Open the **gdb-protocol time-travel debugger** at a chosen
+coordinate of a run. `debug` is a **thin wrapper over the debugger of
+[`36-debugging-time-travel.md`](36-debugging-time-travel.md)** and the session's
+read-only debugging command set (20 §4.4): it instantiates the run from an
+artifact, savepoint, or a live `--session`, positions it at the requested
+coordinate (restore-nearest-checkpoint + deterministic replay, [SESS-33]), opens
+QEMU's gdbstub as an out-of-band channel ([SESS-32]), and accepts interactive
+reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
+
+```text
+  crucible debug <ARTIFACT|SAVEPOINT> [FLAGS]
+  crucible debug --session <addr>      [FLAGS]
+
+  ARGS
+    <ARTIFACT|SAVEPOINT>   A reproduction artifact (06 §7.1) or savepoint handle (07).
+
+  FLAGS (subcommand-local; global flags from §2 also apply)
+    --session <addr>          Attach to a live daemon session (21) instead of an artifact.
+    --at <virtual-time|icount>   Open at this coordinate (20 §4.4 DebugCoordinate).
+    --at-event <seq>          Open at this event-log sequence position (19).
+    --at-failure              Open at the run's first property violation (the failure footer's verb, §4).
+    --at-checkpoint <id>      Open at this checkpoint id (07).
+    --node <id>               Which node's gdbstub to open. Default: the failing node.
+    --gdb-listen <addr>       Address QEMU's gdbstub listens on. Default: a local port.
+    --read-only               Read-only debugging (the default): no mutation, fully canonical.
+    --allow-mutate            Permit continuing/mutating from the attach — forks a NON-CANONICAL debug branch.
+    --checkpoint-stride <n>   Checkpoint density for reverse stepping (replay-suffix bound, 36).
+```
+
+`debug` instantiates the run, issues `goto` to the requested coordinate
+(`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`; default `--at-failure` for
+a failing artifact), opens the gdbstub on `--node` at `--gdb-listen`
+([SESS-33], [SESS-32]), and then reads interactive verbs — `attach-gdb`,
+`goto`, `reverse-step`, `reverse-continue` — mapping each to the session's
+read-only debugging command (20 §4.4). It is **read-only by default**
+([SESS-33]): the run stays fully canonical and the gdbstub is observation-only.
+`--allow-mutate` permits continuing or mutating from the attach, which forks a
+**clearly-marked NON-CANONICAL debug branch** (excluded from the replay oracle,
+not artifact-reproducible, [SESS-33]); the CLI MUST label this prominently.
+`--checkpoint-stride` tunes checkpoint density so reverse stepping stays cheap
+(bounded replay suffix, 36, [HARN-9]).
+
+**Exit codes.** `0` = clean debugger exit; `3` = backend error or
+pinned-identity mismatch ([HARN-28]); `4` = discovery/config (e.g. a backend
+without `open_gdbstub`, [SESS-32]); `5` = malformed/unresolvable
+artifact/savepoint; `64` = usage error (e.g. conflicting `--at*` flags).
+
+- **[CLI-27]** `crucible debug <artifact|savepoint|--session>` MUST be a thin
+  wrapper over the debugger of [`36-debugging-time-travel.md`](36-debugging-time-travel.md)
+  and the session read-only debugging command set (20 §4.4): it MUST instantiate
+  the run, position it at the coordinate selected by `--at` / `--at-event` /
+  `--at-failure` / `--at-checkpoint` via restore-nearest-checkpoint + deterministic
+  replay ([SESS-33]), open the gdbstub on `--node` at `--gdb-listen` ([SESS-32]),
+  and accept the interactive reverse verbs `attach-gdb`/`goto`/`reverse-step`/
+  `reverse-continue`. It MUST be **read-only by default** (`--read-only`,
+  canonical); `--allow-mutate` MUST fork a clearly-marked NON-CANONICAL debug
+  branch (excluded from the replay oracle, not artifact-reproducible, [SESS-33])
+  and the CLI MUST label it as such. `--checkpoint-stride` MUST tune reverse-step
+  cost (bounded replay suffix, 36). The CLI MUST NOT implement any debugging or
+  time-travel mechanism of its own ([CLI-1]); a backend without `open_gdbstub`
+  ([SESS-32]) MUST fail clearly (exit 4), never fake a stub. *Gate:*
+  `gate:replay-oracle`, `gate:control-responsive`. *Spec:* §17; cross-ref 36,
+  20 §4.4, [SESS-33], [SESS-32].
+
+---
+
 ## 15. Exit codes and machine-readable output (summary)
 
 The exit-code mapping is uniform across run-capable subcommands, so a script can
@@ -832,5 +962,20 @@ branch on the verdict without parsing output:
 - [ ] **T-CLI-16** Implement `completions` (generate shell completions) and the
   `--help`/`--version` surface, verifying help text matches the normative copy in
   §6–§14 and stays in sync with flag behavior. — satisfies [CLI-6]; spec §2.1.
+- [ ] **T-CLI-17** Implement `triage` as a thin driver over the triage engine (34):
+  cluster findings by signature, elect + optionally minimize a representative per
+  cluster (each a self-contained, replayable/debuggable artifact), emit a report
+  (`--policy`/`--minimize`/`--report`/`--format`/`--recompute-signatures`/`--compare`),
+  with no clustering/minimization policy in the CLI. — satisfies [CLI-26]; spec
+  §16; cross-ref 34.
+- [ ] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
+  the session read-only debugging commands (20 §4.4): instantiate +
+  restore-nearest-checkpoint-replay to the coordinate
+  (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
+  (`--node`/`--gdb-listen`, [SESS-32]), interactive reverse verbs, read-only
+  default with `--allow-mutate` forking a labelled NON-CANONICAL branch,
+  `--checkpoint-stride`; print the `crucible debug <artifact> --at-failure` footer
+  line on a non-passing run. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
+  20 §4.4.
 </content>
 </invoke>

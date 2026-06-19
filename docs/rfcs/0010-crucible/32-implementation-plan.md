@@ -17,22 +17,29 @@ normative `MUST` maps to at least one task.
 - **[PLAN-4] holds**: no task depends on a later-phase task. The ordering is
   *foundation-first* — determinism, the harness, the transport ABI, and
   control-plane correctness precede everything built on them (G-5).
+- **Multi-vCPU determinism (G-10)** is part of the determinism foundation: it
+  lands in Phases 2–3 (single-threaded RR-TCG + icount, then RR sub-division in
+  the scheduler), so `gate:single-vm-fingerprint` covers N-vCPU before anything
+  exploratory runs. **Interleaving, guided/adaptive, distributed, triage, and
+  time-travel debugging exploration (Phases 6–7)** are built strictly on the
+  green determinism + oracle-validated save/restore foundation (G-5 and the
+  dependency ladder in [`22`](22-advanced-features.md)).
 - A phase is **done** when all its tasks are checked and its **exit gate** (24)
   is green. Do not start a phase before the prior phase's gate is green.
 
 ## Inventory
 
-The plan covers **497 tasks** across 33 areas, satisfying **952 numbered
+The plan covers **566 tasks** across 36 areas, satisfying **1079 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
 Task counts by area:
 
 ```text
-SCHED 30  DET 28  PERF 26  HARN 26  EXEC 25  PLUG 23  SPAT 21  SHM 21  TRIG 20
-PKG 20  PATCH 20  ASRT 17  RISK 16  IO 16  FAULT 16  CLI 16  ADV 16  SESS 15
-GHC 15  CRATE 15  QEMU 14  API 14  STD 13  OBS 13  TEMP 11  PROTO 11  PAT 9
-TIME 8  WL 6  EX 5  ARCH 5  PLAN 3  D 3
+SCHED 30  DET 31  PERF 28  PLUG 27  PATCH 24  PKG 23  HARN 26  SPAT 21  ADV 21
+EXEC 20  TRIG 20  RISK 20  ASRT 18  CLI 18  GHC 17  FAULT 16  IO 16  QEMU 16
+SHM 16  CRATE 15  API 14  OBS 14  SESS 13  STD 13  TEMP 11  PROTO 11  DCE 10
+TIME 9  PAT 9  TRI 8  DBG 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
 ## The phase ladder
@@ -65,13 +72,19 @@ very start of Phase 1.
 **Goal.** Resolve the assumptions that can invalidate or reshape the design
 *before* committing to it (G-5). These are cheap experiments, not production code.
 
-**Tasks.** `T-RISK-1 … T-RISK-16` ([`30-risks-spikes.md`](30-risks-spikes.md)).
+**Tasks.** `T-RISK-1 … T-RISK-20` ([`30-risks-spikes.md`](30-risks-spikes.md)). The
+later set `T-RISK-17 … T-RISK-20` de-risks the multi-vCPU goal: single-threaded
+RR-TCG + icount determinism, `Decision::Preemption` interleaving, the RR quantum
+boundary, and the gdbstub seam for time-travel debugging.
 
 **Blockers (must pass to leave Phase 0):** the four foundational spikes —
 S1 single-VM bit-identical execution under `-icount` + entropy elimination;
 S2 guest HLTs during blocking I/O (else fast-forward is perf-only);
 S4 producer→consumer shmem visibility is icount-not-wall-clock (Contract B);
 S3 `savevm`/`loadvm` completeness (else fat checkpoints fall back to thin/replay).
+**S11 (single-threaded RR-TCG + icount is bit-identical for multi-vCPU) is a
+blocker for the multi-vCPU goal G-10**; if it fails with no path, G-10 falls back
+to single-vCPU per VM.
 
 **Exit gate.** All Phase-0 blocker spikes report PASS (or a documented fallback
 adopted and the affected requirements amended). S1 failing with no path is a
@@ -89,9 +102,11 @@ all land and are gated. Everything later is built on this.
 **Tasks.**
 - Workspace + layer skeleton: `T-ARCH-1 … T-ARCH-5` ([`03`](03-architecture-overview.md)), `T-CRATE-1 … T-CRATE-15` ([`27`](27-crate-structure.md)).
 - Engineering standards + harness-lint: `T-STD-1 … T-STD-13` ([`28`](28-engineering-standards.md)).
-- Determinism contract mechanisms: `T-DET-1 … T-DET-28` ([`04`](04-determinism-contract.md)).
-- Time / icount model: `T-TIME-1 … T-TIME-8` ([`09`](09-virtual-time-icount.md)).
-- Execution model (Configuration/step/instantiate, decision RNG): `T-EXEC-1 … T-EXEC-25` ([`05`](05-execution-model.md)).
+- Determinism contract mechanisms (incl. the pure multi-vCPU and app-random
+  determinism tasks `T-DET-29 … T-DET-31`): `T-DET-1 … T-DET-31` ([`04`](04-determinism-contract.md)).
+- Time / icount model: `T-TIME-1 … T-TIME-9` ([`09`](09-virtual-time-icount.md)).
+- Execution model (Configuration/step/instantiate, decision RNG; the `Decision`
+  taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` `AppRandom`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
 - Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-26` ([`24`](24-determinism-harness-testing.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9` ([`29`](29-patterns-and-sketches.md)).
@@ -106,29 +121,37 @@ all land and are gated. Everything later is built on this.
 
 **Goal.** Stand up the co-simulation transport as a versioned ABI, the QEMU patch
 series (inert-by-default), and the host+plugin integration, and prove **Contract
-A** (one real VM, bit-identical) on real QEMU.
+A** (one real VM, bit-identical) on real QEMU — including **deterministic
+multi-vCPU (RR-TCG)**, where a single-threaded round-robin TCG core under icount
+makes an N-vCPU guest bit-identical (G-10).
 
 **Tasks.**
-- Shmem ABI: `T-SHM-1 … T-SHM-21` ([`13`](13-shmem-abi.md)).
+- Shmem ABI (incl. the multi-vCPU ABI task `T-SHM-16`): `T-SHM-1 … T-SHM-16` ([`13`](13-shmem-abi.md)).
 - Protocol: `T-PROTO-1 … T-PROTO-11` ([`14`](14-protocol.md)).
-- QEMU patch series + rebase pipeline + inertness: `T-PATCH-1 … T-PATCH-20` ([`11`](11-qemu-patches.md)).
-- Host QEMU integration: `T-QEMU-1 … T-QEMU-14` ([`10`](10-qemu-integration.md)).
-- In-VM plugin: `T-PLUG-1 … T-PLUG-23` ([`12`](12-qemu-plugin.md)).
+- QEMU patch series + rebase pipeline + inertness (incl. the RR-TCG/multi-vCPU
+  patches `T-PATCH-21 … T-PATCH-24`): `T-PATCH-1 … T-PATCH-24` ([`11`](11-qemu-patches.md)).
+- Host QEMU integration (incl. the multi-vCPU tasks `T-QEMU-15, T-QEMU-16`): `T-QEMU-1 … T-QEMU-16` ([`10`](10-qemu-integration.md)).
+- In-VM plugin (incl. the per-vCPU plugin tasks `T-PLUG-24 … T-PLUG-27`): `T-PLUG-1 … T-PLUG-27` ([`12`](12-qemu-plugin.md)).
 - Patterns realized here: `T-PAT-3, T-PAT-8` ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:abi-conformance`, `gate:qemu-inert`, `gate:patch-microtests`,
-`gate:single-vm-fingerprint` (real QEMU — Contract A proven), `gate:any-guest`
-(an unmodified guest boots deterministically, no image mutation).
+`gate:single-vm-fingerprint` (real QEMU — Contract A proven, now covering an
+N-vCPU guest), `gate:any-guest` (an unmodified guest boots deterministically, no
+image mutation).
 
 ---
 
 ## Phase 3 — Scheduling, I/O sub-nodes, and cross-VM determinism
 
 **Goal.** The single authoritative scheduler and the I/O sub-nodes, proving
-**Contract B** (cross-node injection is icount-deterministic) and liveness.
+**Contract B** (cross-node injection is icount-deterministic) and liveness. This
+is also where **concurrency-interleaving determinism** is proven: the scheduler's
+RR sub-division and the applied `Decision::Preemption` make a chosen vCPU
+interleaving exactly reproducible.
 
 **Tasks.**
-- Scheduler: `T-SCHED-1 … T-SCHED-30` ([`08`](08-scheduling.md)).
+- Scheduler (incl. RR sub-division, applying `Decision::Preemption`, and the
+  all-vCPUs-idle handling `T-SCHED-28 … T-SCHED-30`): `T-SCHED-1 … T-SCHED-30` ([`08`](08-scheduling.md)).
 - I/O sub-nodes (disk/9p/net as scheduled completion events): `T-IO-1 … T-IO-16` ([`15`](15-io-subnodes.md)).
 - Patterns realized here: `T-PAT-2` ([`29`](29-patterns-and-sketches.md)).
 
@@ -149,9 +172,11 @@ guest↔host channel (black-box default + optional white-box).
 - Temporal graph (CoW, thin/fat, GC, search-reduction): remaining `T-TEMP-*` beyond Phase 1.
 - Conditions, triggers, and the event graph (the shared observable-condition predicate vocabulary + trigger graph + validator): `T-TRIG-1 … T-TRIG-20` ([`17a`](17a-conditions-and-triggers.md)).
 - Faults (as trigger actions; the time-scheduled Plan lowers to `At`-triggered events): `T-FAULT-1 … T-FAULT-16` ([`17`](17-fault-injection.md)).
-- Assertions / properties (incl. offline checker): `T-ASRT-1 … T-ASRT-16` ([`18`](18-assertions-properties.md)).
-- Unified event log: `T-OBS-1 … T-OBS-13` ([`19`](19-observability-event-log.md)).
-- Guest↔host channel + optional agent: `T-GHC-1 … T-GHC-15` ([`16`](16-guest-host-channel.md)).
+- Assertions / properties (incl. offline checker and assertion-proximity `T-ASRT-18`): `T-ASRT-1 … T-ASRT-18` ([`18`](18-assertions-properties.md)).
+- Unified event log (incl. the proximity projection `T-OBS-14`): `T-OBS-1 … T-OBS-14` ([`19`](19-observability-event-log.md)).
+- Guest↔host channel + optional agent (incl. the app-controlled randomness
+  channel `T-GHC-16, T-GHC-17` — the optional white-box `Decision::AppRandom`
+  source): `T-GHC-1 … T-GHC-17` ([`16`](16-guest-host-channel.md)).
 - Workload / traffic-generation story (in-guest, seeded via the entropy boundary): `T-WL-1 … T-WL-6` ([`33`](33-examples-and-workloads.md)).
 - Patterns realized here: `T-PAT-4, T-PAT-7` ([`29`](29-patterns-and-sketches.md)).
 
@@ -166,9 +191,10 @@ guest↔host channel (black-box default + optional white-box).
 long-held locks.
 
 **Tasks.**
-- Session actor + backend trait + breakpoints: `T-SESS-1 … T-SESS-15` ([`20`](20-session-control-plane.md)).
+- Session actor + backend trait + breakpoints (incl. the debug/time-travel
+  control commands `T-SESS-13`): `T-SESS-1 … T-SESS-13` ([`20`](20-session-control-plane.md)).
 - API (RPC + in-process client + conformance suite): `T-API-1 … T-API-14` ([`21`](21-api.md)).
-- CLI: `T-CLI-1 … T-CLI-16` ([`23`](23-cli.md)).
+- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-18` ([`23`](23-cli.md)).
 - Patterns realized here: `T-PAT-1, T-PAT-6` (state machine + backend, finalized).
 
 **Exit gate.** `gate:control-responsive` (a control op is acknowledged within a
@@ -179,9 +205,18 @@ bounded number of quanta, under a long-running step).
 ## Phase 6 — Advanced exploration
 
 **Goal.** Fork, save/resume, state-space search, coverage-guided fuzzing — built
-strictly on the now-green determinism + oracle-validated snapshot/restore (G-6).
+strictly on the now-green determinism + oracle-validated snapshot/restore (G-6),
+extended with guided/adaptive search, concurrency-interleaving exploration via
+`Decision::Preemption` (G-11), app-random search, time-travel debugging, and
+failure triage. Every capability here rides the green determinism + save/restore
+foundation (the dependency ladder in [`22`](22-advanced-features.md)).
 
-**Tasks.** `T-ADV-1 … T-ADV-16` ([`22`](22-advanced-features.md)).
+**Tasks.**
+- Advanced features — fork/save/resume/search/fuzz plus guided/adaptive
+  (pluggable signals + bandit), interleaving, and app-random search
+  (`T-ADV-17 … T-ADV-21`): `T-ADV-1 … T-ADV-21` ([`22`](22-advanced-features.md)).
+- Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-8` ([`36`](36-time-travel-debugging.md)).
+- Failure triage: `T-TRI-1 … T-TRI-8` ([`34`](34-failure-triage.md)).
 
 **Exit gate.** `gate:replay-oracle` continues to hold under active search (forks
 and restores validated continuously), and reproduction artifacts replay
@@ -195,15 +230,20 @@ bit-identically.
 acceptance gate.
 
 **Tasks.**
-- AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam): `T-PKG-1 … T-PKG-20` ([`26`](26-packaging-aos-integration.md)).
-- Performance: `T-PERF-1 … T-PERF-26` ([`25`](25-performance-targets.md)).
+- AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
+  incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
+- Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28`): `T-PERF-1 … T-PERF-28` ([`25`](25-performance-targets.md)).
+- Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
 - Open-decision spikes that gate release: `T-D-1 … T-D-3` ([`31`](31-decision-register.md)).
 
 **Exit gates.** `gate:perf-bench` (cost-model metrics meet baselines, no
 regression), `gate:e2e-determinism` (final acceptance: a representative multi-VM,
 fault-injected scenario runs bit-identically across adversarial host conditions
-and reproduces from its self-contained artifact). When this is green and the
+and reproduces from its self-contained artifact), `gate:fleet-equivalence` (a
+distributed campaign across workers reproduces a finding bit-identically off any
+worker), `gate:campaign-continuity` (a continuous campaign resumes from its
+persisted frontier without losing or re-deriving coverage). When this is green and the
 coverage check below is empty, Crucible is at the target state of this RFC
 ([`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md) §Acceptance).
 
@@ -220,16 +260,18 @@ maintained two ways:
 
    ```text
    area   reqs  tasks    area   reqs  tasks    area   reqs  tasks
-   PLUG    49    23      OBS    35    13       SESS   29    15
-   SCHED   43    30      GHC    35    15       ASRT   29    16
-   QEMU    42    14      IO     34    16       PERF   26    26
-   PATCH   42    20      HARN   34    26       CLI    25    16
-   DET     42    28      TIME   33     8       RISK   24    16
-   PKG     38    20      STD    33    13       PROTO  24    11
-   SHM     35    21      SPAT   33    21       CRATE  18    15
-   SPAT*   ...                                  PAT    12     9
-   ADV     32    16      FAULT  32    16       ARCH    9     5
-   EXEC    32    25      API    31    14       TEMP   30    11
+   PLUG    52    27      OBS    37    14       PERF   28    28
+   SCHED   47    30      GHC    38    17       CLI    27    18
+   QEMU    43    16      IO     34    16       RISK   28    20
+   PATCH   47    24      HARN   34    26       PROTO  24    11
+   DET     44    31      TIME   35     9       CRATE  18    15
+   PKG     45    23      STD    33    13       PAT    12     9
+   SHM     37    16      SPAT   33    21       ARCH    9     5
+   ADV     40    21      FAULT  34    16       TEMP   30    11
+   EXEC    34    20      API    31    14       TRIG   32    20
+   DBG     40     8      ASRT   33    18       TRI    19     8
+   DCE     33    10      SESS   33    13       WL     12     6
+                                               EX      3     5
    ```
 
 2. **By an automated coverage check** (`T-DOC-cov`, below): a doc lint parses

@@ -98,10 +98,33 @@ the requirements):
   `gate:layer0-determinism`. *Spec:* §10.2; satisfies [DET-8], [DET-10],
   [TIME-21], references [DET-9].
 
-- **[QEMU-5]** **Single vCPU.** `-smp 1`. Multi-vCPU / MTTCG instruction
-  interleaving is excluded by [NG-1] / [DET-23]; the host MUST refuse a node
-  configured with more than one vCPU. *Gate:* `gate:layer0-determinism`. *Spec:*
-  §10.2; satisfies [DET-23], [NG-1].
+- **[QEMU-5]** **vCPUs under single-threaded round-robin TCG.** `-smp N` is
+  permitted (N ≥ 1); the accelerator MUST be single-threaded round-robin TCG
+  (`-accel tcg,thread=single`). Multi-threaded TCG (`thread=multi`, MTTCG) MUST
+  be rejected at launch-configuration time, because parallel host threads make
+  instruction interleaving a function of host scheduling and defeat [DET-1].
+  Under single-threaded round-robin all N vCPUs are driven serially on one host
+  thread, so guest progress and the vCPU-switch interleaving remain a pure
+  function of icount. The round-robin switch boundary MUST be pinned to a fixed,
+  content-addressed `rr_switch_quantum` expressed in node-icount and MUST NOT use
+  QEMU's adaptive / realtime round-robin default ([QEMU-43]); the host MUST refuse
+  a configuration that selects `thread=multi` or leaves `rr_switch_quantum`
+  unpinned. *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
+  *Spec:* §10.2; satisfies [DET-1], references [NG-1], [DET-23], [QEMU-43].
+
+- **[QEMU-43]** **Round-robin single-thread launch validation.** The host MUST
+  validate, at launch-configuration time before spawning any child, that the
+  accelerator is single-threaded round-robin TCG: it MUST reject `thread=multi`
+  (MTTCG) loudly and MUST accept `-smp N` only in conjunction with
+  `-accel tcg,thread=single`. The host MUST set the round-robin switch boundary
+  to the scenario's content-addressed `rr_switch_quantum` (in node-icount) via
+  the patch-series flag (`crucible-rr-quantum-icount`, 11/[PATCH-44]), MUST
+  reject a configuration that leaves the quantum at QEMU's adaptive/realtime
+  default, and MUST fold N and the pinned `rr_switch_quantum` into the scenario
+  content hash so two builds launch byte-identical vCPU/round-robin
+  configurations ([DET-35], [TIME-6]). *Gate:* `gate:layer0-determinism`,
+  `gate:single-vm-fingerprint`. *Spec:* §10.2; satisfies [DET-1], [DET-23],
+  [DET-35], [TIME-6], references [NG-1], [PATCH-44].
 
 - **[QEMU-6]** **Fixed CPU model.** `-cpu <model>` naming a concrete model that
   does **not** advertise `RDRAND`/`RDSEED` (or, equivalently, the patch series
@@ -175,8 +198,11 @@ the requirements):
 # Illustrative launch sketch (CONV-1; the prose requirements are authoritative).
 # The host builds this command line from the node's World entry + scenario pins.
 qemu-system-x86_64 \
-  -accel tcg -icount shift=N            # QEMU-4  fixed shift, precise mode, no warp
-  -smp 1                                # QEMU-5  single vCPU (NG-1)
+  -accel tcg,thread=single -icount shift=N  # QEMU-4/5 fixed shift, precise mode, no warp,
+                                            #          single-threaded RR-TCG (NOT thread=multi)
+  -smp N                               # QEMU-5  N vCPUs under single-threaded RR
+  # rr_switch_quantum pinned to node-icount via the patch-series flag (QEMU-43,
+  # crucible-rr-quantum-icount, 11), NEVER QEMU's adaptive/realtime rr_quantum
   -cpu <model-no-rdrand>               # QEMU-6  fixed model, no host entropy
   -machine <fixed>  -m <fixed>         # QEMU-7  fixed machine/reset/memory
   -rtc base=<fixed-epoch>,clock=vm     # QEMU-8  icount-derived RTC, no host time
@@ -533,9 +559,14 @@ guest cooperation ([DET-17]).
   assert identical fingerprint sequences; a mismatch MUST localize to the first
   differing icount window for bisection ([DET-30], [INV-10]), never be tolerated.
   The fingerprint cadence and the included state set MUST be fixed and
-  content-addressed with the scenario ([DET-31]). *Gate:*
-  `gate:single-vm-fingerprint`, `gate:divergence-bisect`. *Spec:* §10.7;
-  satisfies [DET-29], [DET-30], [DET-31], references 24.
+  content-addressed with the scenario ([DET-31]). For an `-smp N` node the
+  black-box fingerprint MUST read **all N vCPUs' register files** plus the
+  round-robin cursor (which vCPU is current and the position within the pinned
+  `rr_switch_quantum`) via the plugin's per-vCPU introspection capability
+  (12/[PLUG-50]) and QMP, so the interleaving state is part of the digest;
+  reading only `first_cpu` is a defect. *Gate:* `gate:single-vm-fingerprint`,
+  `gate:divergence-bisect`. *Spec:* §10.7; satisfies [DET-29], [DET-30],
+  [DET-31], references 24, [PLUG-50].
 
 - **[QEMU-35]** Each host-controlled entropy elimination in §10.2 MUST have a
   micro-test that fails if the elimination is removed (e.g. dropping the `-cpu`
@@ -717,16 +748,18 @@ determinism contract (04).
 > the QEMU layer built on it).
 
 - [ ] **T-QEMU-1** Implement the launch-config builder: TCG + fixed
-  `-icount shift=N`, `-smp 1`, fixed `-cpu` (no RDRAND/RDSEED, never `host`),
-  fixed `-machine`/`-m`/reset, icount-derived RTC, seeded `fw_cfg`/virtio-rng,
-  seeded internal PRNG, CoW disks, `nokaslr`/`norandmaps`, plugin load + sim
-  activation; fold the whole command line into the scenario content hash. —
-  satisfies [QEMU-3], [QEMU-4], [QEMU-5], [QEMU-6], [QEMU-7], [QEMU-8],
-  [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13], [QEMU-14]; spec §10.2.
+  `-icount shift=N`, `-accel tcg,thread=single` with `-smp N`, fixed `-cpu` (no
+  RDRAND/RDSEED, never `host`), fixed `-machine`/`-m`/reset, icount-derived RTC,
+  seeded `fw_cfg`/virtio-rng, seeded internal PRNG, CoW disks,
+  `nokaslr`/`norandmaps`, plugin load + sim activation; fold the whole command
+  line into the scenario content hash. — satisfies [QEMU-3], [QEMU-4], [QEMU-5],
+  [QEMU-6], [QEMU-7], [QEMU-8], [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13],
+  [QEMU-14]; spec §10.2.
 - [ ] **T-QEMU-2** Implement launch-config validation that rejects KVM /
-  non-TCG / `shift=auto` / missing-`-icount` / `-smp > 1` / `-cpu host` /
-  host-timing-or-entropy flags, loudly and before spawning. — satisfies
-  [QEMU-1], [QEMU-2], [QEMU-11], [QEMU-15]; spec §10.1, §10.2.
+  non-TCG / `shift=auto` / missing-`-icount` / `thread=multi` (MTTCG) /
+  unpinned `rr_switch_quantum` / `-cpu host` / host-timing-or-entropy flags,
+  loudly and before spawning. — satisfies [QEMU-1], [QEMU-2], [QEMU-5],
+  [QEMU-43], [QEMU-11], [QEMU-15]; spec §10.1, §10.2.
 - [ ] **T-QEMU-3** Implement the `QemuNode` host wrapper owning one child and its
   three channels (plugin-IPC control, shmem hot path, QMP), exposing the
   synchronous scheduler node interface with the strict control/data split. —
@@ -782,3 +815,15 @@ determinism contract (04).
   per-await timeouts → crash/escalate, and no host-timing influence on any
   ordering-significant decision. — satisfies [QEMU-39], [QEMU-40], [QEMU-41],
   [QEMU-42]; spec §10.9.
+- [ ] **T-QEMU-15** Extend the launch-config builder and validator for
+  multi-vCPU single-threaded round-robin: emit `-accel tcg,thread=single` with
+  `-smp N`, set the round-robin switch boundary to the scenario's
+  content-addressed `rr_switch_quantum` (node-icount) via the patch-series flag
+  (`crucible-rr-quantum-icount`, 11), reject `thread=multi` and an unpinned
+  quantum loudly, and fold N + the pinned `rr_switch_quantum` into the scenario
+  content hash. — satisfies [QEMU-5], [QEMU-43]; spec §10.2.
+- [ ] **T-QEMU-16** Extend the single-VM fingerprint hook to N-vCPU nodes: read
+  all N vCPUs' register files plus the round-robin cursor (current vCPU +
+  position within `rr_switch_quantum`) via the plugin's per-vCPU introspection
+  capability (12) and QMP, include them in the digest, and localize a mismatch
+  to the first differing icount window. — satisfies [QEMU-34]; spec §10.7.

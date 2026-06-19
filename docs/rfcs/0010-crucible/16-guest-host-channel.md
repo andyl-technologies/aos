@@ -381,6 +381,11 @@ evaluation.
   - **Coverage markers**, an in-guest-named coverage point (distinct from, and
     additive to, the black-box basic-block coverage of [GHC-7] item 7), letting a
     guest name a semantic coverage target the block-coverage signal cannot express.
+  - **Random-request markers** (`random_request`), the OPTIONAL app-controlled
+    randomness request of [GHC-37] (body: `request_id:u32`, `width:u8` ≤8,
+    `stream_tag:lp_str`), on the guest→host path only. This is the **one** marker
+    kind whose servicing produces a `Decision` (in-band, part of `reduce`) and
+    elicits a host→guest reply; all other kinds are purely observational (§16.5.3).
   *Gate:* `gate:abi-conformance`. *Spec:* §16.5.1, forward-ref
   [`18-assertions-properties.md`](18-assertions-properties.md),
   [`19-observability-event-log.md`](19-observability-event-log.md).
@@ -419,11 +424,16 @@ Illustrative kind table (closed, versioned set; numbers are sketches):
    2    lifecycle         event:u16 (setup_complete | test_done)
    3    event             lp_str name, lp_kv[] details
    4    coverage          lp_str point
+   5    random_request    request_id:u32, width:u8 (<=8), lp_str stream_tag
 
   flavor (kind=assert): 0=always  1=sometimes  2=reachable  3=unreachable
   must_hit (kind=assert): 0=not catalog-declared  1=declared (finalize never-reached)
   lp_str: u16 LE length-prefix + that many UTF-8 bytes
   lp_kv: u16 LE count, then that many (lp_str key, lp_str value) pairs
+
+  Adding random_request (kind=5) BUMPS the doorbell protocol version ([GHC-21])
+  and is golden-vectored ([GHC-37]). Unlike kinds 1-4 it is guest->host only,
+  produces a Decision::AppRandom (05), and elicits a host->guest reply (§16.5.3).
 ```
 
 ### 16.5.2 Markers are observational, not part of the determinism comparison
@@ -454,6 +464,49 @@ observational entry and **excluded from the determinism fingerprint comparison**
   observations. *Gate:* `gate:any-guest`. *Spec:* §16.5.2, forward-ref
   [`18-assertions-properties.md`](18-assertions-properties.md).
 
+### 16.5.3 App-controlled randomness — the one in-band, reply-bearing kind
+
+Every marker kind above is **observational**: it describes the run and never feeds
+`reduce`. The `random_request` kind ([GHC-22]) is the single exception, and it is
+also the **first sanctioned use of the host→guest direction** ([GHC-31]). It lets a
+guest that opts into white-box mode ask the host for a value drawn from the *same
+single seeded decision source* that drives every other `Decision`, so that
+app-level randomness is reproducible on exactly the terms as scheduling, fault, and
+delivery decisions — and is replayable from the schedule like any other `Decision`.
+Unlike an observational marker, servicing a `random_request` produces a `Decision`
+(it is part of `reduce`) and writes a value back into the guest; it is therefore the
+one marker kind that is *in-band* rather than purely descriptive.
+
+- **[GHC-37]** When a node opts into white-box mode, the guest MAY ring the
+  doorbell with a `random_request` marker ([GHC-22], body `request_id:u32`,
+  `width:u8` ≤8, `stream_tag:lp_str`). The plugin MUST serve the requested value
+  from the **single seeded decision source** of the contract
+  ([`04-determinism-contract.md`](04-determinism-contract.md)), **forked per
+  `(node, stream)` by name-hash of `stream_tag`** so distinct streams are
+  independent and reproducible, MUST record it as a `Decision::AppRandom` (decision
+  kind 05) in the schedule, and MUST write the value back **at the doorbell trap
+  icount** as a host→guest reply that obeys the injection contract ([GHC-31],
+  [DET-11]): delivered at an explicit delivery icount, never "as soon as computed,"
+  so the reply cannot become a producer→consumer race ([DET-13], [DET-34]). The
+  reply read MUST be **side-effect-free with respect to `T` except for the requested
+  value** (it perturbs only the bytes the guest asked for, exactly as the doorbell
+  payload read is side-effect-free, [GHC-30], [GHC-32]); `width` MUST be
+  **bounds-checked** (≤8) and a malformed or over-wide request MUST be recorded as a
+  decode diagnostic and dropped ([GHC-35]). This is the first sanctioned host→guest
+  channel use. *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`,
+  `gate:abi-conformance`. *Spec:* §16.5.3, §16.7; cross-ref
+  [`04-determinism-contract.md`](04-determinism-contract.md) §4.4.
+
+- **[GHC-38]** The number of app-random draws per run MUST be bounded by a
+  **per-scenario configured cap** that is part of the scenario content hash
+  ([GHC-5], [INV-6]); exceeding the cap MUST **fail loud** (a typed run error, not a
+  silently-clamped draw). The engine MUST function with **zero** app-random requests
+  ([G-3], [GHC-1], [GHC-28]): a scenario that never rings a `random_request` behaves
+  identically (to the fingerprint) whether or not app-random is compiled in, exactly
+  as for the rest of the white-box channel ([GHC-2]). *Gate:*
+  `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:content-address`. *Spec:*
+  §16.5.3.
+
 ## 16.6 The optional guest emitter (`crucible-guest`)
 
 When a scenario wants white-box markers, the guest needs something that can ring
@@ -470,10 +523,15 @@ its complete absence changes nothing about [GHC-1].
 
 - **[GHC-27]** `crucible-guest` MUST expose a CLI marker vocabulary mirroring
   §16.5.1 — at least `always`, `sometimes`, `reachable` (and its never-reached
-  dual), `setup-complete`, `test-done`, an `event` form, and a `coverage` form —
-  each producing the corresponding §16.5 binary frame and ringing the doorbell.
-  The CLI surface mirrors the wire kinds so a guest author has one obvious tool.
-  *Gate:* `gate:abi-conformance`. *Spec:* §16.6, §16.5.1.
+  dual), `setup-complete`, `test-done`, an `event` form, a `coverage` form, and a
+  `get-random <width> [tag]` verb (the `random_request` kind of [GHC-37],
+  generated from the single-source channel ABI like every other verb, [GHC-18],
+  [GHC-29]) — each producing the corresponding §16.5 binary frame and ringing the
+  doorbell. Unlike the observational verbs, `get-random` rings the doorbell and then
+  **reads the host→guest reply** at the injected delivery icount and returns the
+  drawn value to its caller. The CLI surface mirrors the wire kinds so a guest author
+  has one obvious tool. *Gate:* `gate:abi-conformance`. *Spec:* §16.6, §16.5.1,
+  §16.5.3.
 
 - **[GHC-28]** The **absence** of `crucible-guest` (or of any white-box emitter)
   MUST NOT affect core function ([GHC-1], [G-3]): a scenario that does not place
@@ -500,9 +558,12 @@ crucible-guest CLI sketch (mirrors §16.5.1; emits §16.5 binary frames):
   crucible-guest test-done
   crucible-guest event      <name> [k=v ...]
   crucible-guest coverage   <point>
+  crucible-guest get-random <width> [tag]   # rings doorbell, reads host reply
 
   Each invocation encodes one binary frame and executes the per-arch
   doorbell instruction (§16.4). No /dev node, no driver, no dynamic linker.
+  get-random additionally reads the host->guest reply at the injected delivery
+  icount (§16.5.3) and returns the drawn value; all other verbs are fire-and-forget.
 ```
 
 ## 16.7 Determinism and safety of the channel
@@ -551,8 +612,10 @@ enable.
   shared page) to read safely. Until resolved, the channel MUST default to the
   conservative option (a pre-agreed physical/identity-mapped shared page) and the
   spike MUST establish whether virtual-address reads are sound and reproducible.
-  *Gate:* `gate:single-vm-fingerprint`. *Spec:* §16.7, forward-ref
-  [`30-risks-spikes.md`](30-risks-spikes.md).
+  The app-random host→guest reply write-back ([GHC-37]) is a **second client of
+  this same guest-memory path** (it writes the drawn value where the doorbell read
+  the request) and introduces no new spike. *Gate:* `gate:single-vm-fingerprint`.
+  *Spec:* §16.7, forward-ref [`30-risks-spikes.md`](30-risks-spikes.md).
 
 - **[GHC-34]** The reserved doorbell port/instruction ([GHC-15], [GHC-16]) MUST be
   validated at channel setup to not collide with the guest's real device map or
@@ -661,3 +724,15 @@ the transport layer by construction.
 - [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
   with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30]; spec §16.1, §16.7.
+- [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
+  doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
+  the single seeded decision source forked per `(node, stream_tag)` by name-hash,
+  record a `Decision::AppRandom` (05), and write the value back at the trap icount
+  as a host→guest reply obeying the injection contract; bounds-check `width` ≤8;
+  malformed → decode diagnostic + drop. Reuse the spike-S5 guest-memory path (second
+  client, no new spike). — satisfies [GHC-37]; spec §16.5.3, §16.7.
+- [ ] **T-GHC-17** Enforce the app-random per-scenario draw cap (part of the scenario
+  hash; exceeding fails loud) and prove the engine functions with zero app-random
+  requests (fingerprint-identical with app-random compiled in vs out); add the
+  `get-random <width> [tag]` verb to `crucible-guest` from the single-source ABI. —
+  satisfies [GHC-38], [GHC-27]; spec §16.5.3, §16.6.

@@ -761,6 +761,39 @@ insufficient.
   `gate:any-guest`, `gate:replay-oracle`. *Spec:* §18.12.3; cross-ref §18.5, §18.8,
   16 §16.5.
 
+## 18.13 The assertion-proximity gradient (OPTIONAL, steering-only)
+
+An unsatisfied existential or liveness obligation — an unsatisfied **Sometimes**, an
+armed-but-undischarged **Eventually**, the existential **Reachable** — is, at the end
+of a run, a bare boolean: it did not happen. For *grading* that is the whole story
+([ASRT-23]). For *guided search* ([`22-advanced-features.md`](22-advanced-features.md))
+a bare boolean is a flat fitness landscape: every run that misses the obligation
+looks equally bad, and the search has nothing to climb. The proximity gradient is an
+OPTIONAL, **steering-only** scalar that says *how close* a run came to satisfying such
+an obligation, so guided search has a gradient to follow. It is **never** part of any
+verdict; it only shapes the next schedule the search tries.
+
+- **[ASRT-33]** The assertion engine MAY compute, for an unsatisfied **Sometimes**,
+  an armed-but-undischarged **Eventually**, and the existential **Reachable**, an
+  OPTIONAL **distance-to-satisfaction**: a deterministic, non-negative, monotone
+  scalar that is **0 exactly when satisfied**, defined **structurally** over the
+  predicate's [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md)
+  §17a.2 `Condition` tree — numeric-comparison leaves contribute the **threshold
+  gap** (how far the observed value is from satisfying the comparison), `And`
+  contributes the **sum** of child distances, `Or`/`AnyOf` the **minimum**, and
+  boolean-only leaves (no numeric quantity to measure) **degrade to `{0, UNIT}`** (0
+  if satisfied, a fixed unit penalty otherwise). The per-run distance MUST be folded
+  over the recorded observed state as the **minimum achieved along the run's
+  trajectory** (the closest the run ever came). It MUST be a **pure function of the
+  event log** ([ASRT-4], [ASRT-7]) — online evaluation MUST equal offline ([ASRT-15])
+  — and it MUST **NOT** change any property verdict, the run verdict ([ASRT-23]), or
+  any fingerprint ([ASRT-25], [DET-29]); it is **consumed only by the guidance signal
+  of [`22-advanced-features.md`](22-advanced-features.md)** and is recorded as an
+  observational projection of the event log
+  ([`19-observability-event-log.md`](19-observability-event-log.md), [OBS-37]).
+  *Gate:* `gate:single-vm-fingerprint`, `gate:replay-oracle`. *Spec:* §18.13;
+  cross-ref 17a §17a.2, 19 [OBS-37], 22.
+
 ## Implementation checklist
 
 > The authoritative, ordered tasks live in
@@ -836,3 +869,12 @@ insufficient.
   usable as both assertion predicates and triggers, build-time-resolved against
   the `World`/`Plan`, strictly additive to host closures. — satisfies [ASRT-31];
   spec §18.12.2.
+- [ ] **T-ASRT-18** Implement the OPTIONAL assertion-proximity gradient: a
+  deterministic, non-negative, monotone distance-to-satisfaction (0 iff satisfied)
+  defined structurally over the 17a `Condition` tree (numeric leaf → threshold gap,
+  `And` → sum, `Or`/`AnyOf` → min, boolean-only → `{0, UNIT}`), folded as the
+  minimum along the trajectory, for unsatisfied Sometimes / armed Eventually /
+  existential Reachable; pure function of the log, online == offline, never moving a
+  verdict or fingerprint, consumed only by file-22 guided search and recorded as the
+  observational projection of [OBS-37]. — satisfies [ASRT-33]; spec §18.13;
+  cross-ref 19 [OBS-37], 22.

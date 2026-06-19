@@ -565,6 +565,21 @@ deterministic digest derived from this projection.
   observational, they MUST NOT affect the determinism comparison ([OBS-22]). *Gate:*
   `gate:e2e-determinism`. *Spec:* §19.6.3; forward-ref 22.
 
+- **[OBS-37]** The assertion-proximity **distance-to-satisfaction** of
+  [`18-assertions-properties.md`](18-assertions-properties.md) §18.13 ([ASRT-33])
+  MUST be recorded in the **one** log as an **observational** projection — a distinct
+  observational `assertion_proximity` kind (§19.7) — and MUST be **excluded** from the
+  determinism comparison ([OBS-22], like every other observational entry). Its
+  **per-checkpoint minimum** (the closest the run came, [ASRT-33]) MUST be a
+  **deterministic digest derived from the projection** — analogous to the
+  `coverage_fingerprint` of [`07-temporal-graph.md`](07-temporal-graph.md) §2
+  ([OBS-29]) — and is **consumed by guided search**
+  ([`22-advanced-features.md`](22-advanced-features.md)) as a steering signal only.
+  No consumer or feature MAY maintain a proximity record **parallel to the log**
+  ([OBS-1], [OBS-4]); the proximity projection MUST be read from the one log like any
+  other projection. *Gate:* `gate:e2e-determinism`, `gate:content-address`. *Spec:*
+  §19.6.3, §19.7; cross-ref 18 §18.13, 22.
+
 ### 19.6.4 Reproduction artifacts (23)
 
 A reproduction artifact ([`23-cli.md`](23-cli.md), [`06-spatial-graph.md`](06-spatial-graph.md))
@@ -685,7 +700,8 @@ the per-point truth of every standing condition is not itself a log entry.
 | `tick` | Causal | Engine | `virtual_time`, per-node `icount` (one scheduler quantum, 08) |
 | `diagnostic` | Observational | Engine, Node, Command | `name`, typed key/value `details` (the escape hatch, §19.2.2) |
 | `coverage` | Observational | Engine, Guest | `kind` (basic_block / named), `id`/`block`, `node` (22, [GHC-7]/[GHC-22]) |
-| `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage), typed body (16 §16.5) |
+| `assertion_proximity` | Observational | Engine | `id`, `distance` (non-negative, 0=satisfied), `node` (18 §18.13, [ASRT-33]; steering-only, excluded from the comparison) |
+| `guest_marker` | Observational | Guest | `marker_kind` (assert/lifecycle/event/coverage/random_request), typed body (16 §16.5) |
 
 ```rust,illustrative
 /// The open-set payload (§19.2.2). The catalog (§19.7) fixes each variant's
@@ -718,6 +734,7 @@ pub enum EventPayload {
     // ── Observational: descriptive, excluded from the comparison (§19.3) ──
     Diagnostic { name: Str, details: Attrs },
     Coverage { kind: CoverageKind, id: CoverageId, node: NodeId },
+    AssertionProximity { id: AssertionId, distance: u64, node: Option<NodeId> }, // 18 §18.13, steering-only
     GuestMarker { node: NodeId, marker_kind: MarkerKind, body: Attrs }, // from 16 §16.5
 }
 ```
@@ -727,7 +744,8 @@ pub enum EventPayload {
   firing (`trigger_fired`); node lifecycle (started/crashed/completed); timers
   (armed/fired/cancelled); message delivered/dropped; assertion evaluated and
   state-changed; savepoint and fork structural markers; scheduler tick/quantum;
-  and the observational `diagnostic`, `coverage`, and `guest_marker` kinds — with
+  and the observational `diagnostic`, `coverage`, `assertion_proximity`, and
+  `guest_marker` kinds — with
   each kind's `EventClass` fixed as in the table ([OBS-13], [OBS-14], [OBS-15]).
   The catalog is open and versioned ([OBS-10]). *Gate:* `gate:harness-lint`,
   `gate:content-address`. *Spec:* §19.7.
@@ -842,6 +860,12 @@ log, so they cannot disagree about what happened.
   default, off all ordering-significant paths, with the causal subsequence
   identical under no/capturing/filtering subscribers. — satisfies [OBS-32],
   [OBS-33]; spec §19.6.6.
+- [ ] **T-OBS-14** Record the assertion-proximity distance (18 §18.13) as a distinct
+  observational `assertion_proximity` event-log kind, excluded from the determinism
+  comparison; derive its per-checkpoint **minimum** as a deterministic digest of the
+  projection (analogous to `coverage_fingerprint`) consumed by guided search; forbid
+  any proximity record parallel to the log. — satisfies [OBS-37]; spec §19.6.3,
+  §19.7; cross-ref 18 §18.13, 22.
 - [ ] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
   with each kind's fixed class, as the single source of truth referenced by
   18/20/21/22/24; golden-vector the canonical serialization of each kind; record a

@@ -835,6 +835,288 @@ only** (full determinism, faults, coverage, observable-I/O properties via S1) wi
 white-box deferred — a fidelity reduction confined to one optional channel on one
 architecture.
 
+## 30.11a S11 — deterministic multi-vCPU under single-threaded RR-TCG + icount
+
+This is the Phase-0 blocker that gates the multi-vCPU goal ([G-10]). The bet is
+that single-threaded round-robin TCG (`-accel tcg,thread=single`), where the
+vCPU-switch boundary is itself an icount-commandable quantum, makes an SMP guest
+as deterministic as a single-vCPU one — the same source-elimination contract,
+extended over N vCPUs and the round-robin cursor. If it does not, the multi-vCPU
+restatement of Contract A is false and [G-10]/[G-11] cannot be built.
+
+### Assumption under test
+
+An SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount shift=K`, a
+fixed content-addressed `rr_switch_quantum` in node-icount, the full §4.6 entropy
+elimination set applied to **all** vCPUs (including deterministic IPI/SIPI
+delivery), and the plugin holding time control, produces a **bit-identical
+aggregate-icount instruction stream AND extended fingerprint** — the existing
+[DET-29] fingerprint extended to cover all N vCPUs' register files plus the
+round-robin cursor — across runs and across adversarial host conditions. Because
+round-robin TCG pins every vCPU onto a single host thread, host-core variation is
+irrelevant to the interleaving *by construction*; the switch boundary is decided
+by virtual time, not by host scheduling.
+
+### What to build / measure
+
+Boot a stock `-smp 4` image twice to a fixed icount horizon under the launch
+configuration above, capturing the **extended fingerprint** (all N vCPUs'
+register hashes + the RR cursor + the [DET-29] memory/device hash) at a fixed
+icount cadence and at the horizon. Drive an SMP-contended microworkload (shared
+counter / spinlock ping-pong across vCPUs). Diff the two extended-fingerprint
+sequences. Then repeat under adversarial host conditions ([DET-38]): vary host
+core count and inject host scheduling jitter/load — which, because RR pins all
+vCPUs to one host thread, should be irrelevant by construction.
+
+```text
+S11 procedure (throwaway; no engine, no scheduler):
+  launch: -accel tcg,thread=single -smp 4 -icount shift=K
+          rr_switch_quantum=Q (fixed, content-addressed), §4.6 on all vCPUs,
+          deterministic IPI/SIPI, plugin time control active
+  run A: boot to horizon H; extended fingerprint at cadence C and at H -> EFP_A[]
+         (extended FP = per-vCPU reg hashes + RR cursor + mem/device hash)
+  run B: identical config, adversarial host (different cores, injected jitter)
+         boot to H; extended fingerprint -> EFP_B[]
+  compare: EFP_A == EFP_B  (element-by-element, all vCPUs + RR cursor)
+```
+
+### Pass / fail criterion
+
+**Pass:** `EFP_A[i] == EFP_B[i]` for every cadence point `i` and at the horizon,
+across all adversarial conditions, where each extended fingerprint covers all N
+vCPUs' register files, the RR cursor, and the [DET-29] memory/device hash.
+
+**Fail:** any extended-fingerprint element differs. The harness MUST localize the
+first differing node-icount **and the component** — which vCPU's registers, or the
+RR cursor — so the leaking source is identified.
+
+- **[RISK-25]** Spike **S11** (Phase-0 blocker ★ for [G-10]) MUST demonstrate
+  that an SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount`, a fixed
+  content-addressed `rr_switch_quantum`, the §4.6 elimination set applied to all
+  vCPUs (incl. deterministic IPI/SIPI), and plugin time control produces a
+  **bit-identical aggregate-icount stream and extended fingerprint** (all N vCPUs'
+  register files + the RR cursor) across runs and adversarial host conditions
+  ([DET-38]). S11 MUST pass before any multi-vCPU foundation code is built; a
+  mismatch MUST be localized to the first differing node-icount and component
+  (which vCPU / the RR cursor) and treated as a leaking source to eliminate, never
+  a tolerance to accept. *Gate:* `gate:single-vm-fingerprint`,
+  `gate:layer0-determinism`. *Spec:* §30.11a; satisfies [G-10], [DET-23],
+  [SCHED-45], [PLUG-3]; back-ref §4.6, §8.
+
+### What it could invalidate
+
+[G-10], the multi-vCPU restatement of Contract A, and `Decision::Preemption`
+interleaving exploration ([G-11]). If a specific path leaks irrecoverably, the
+multi-vCPU story collapses.
+
+### Fallback
+
+If a specific path leaks, patch it (pin the RR quantum / make IPI delivery
+deterministic) and re-run. If the leak is irrecoverable, revert to `-smp 1`
+([NG-1] behavior): the rest of the RFC was designed single-vCPU, so [G-10] and
+[G-11] withdraw cleanly without disturbing the single-vCPU foundation.
+
+## 30.11b S12 — `Decision::Preemption` is reproducible and discriminating
+
+The vCPU-switch / interrupt-timing choice is a first-class `Decision::Preemption`
+([G-11], D-24): forced at a commanded node-icount, it must yield a
+*different-but-bit-reproducible* trajectory, so the explorer can branch on
+interleavings. The single-vCPU case (`N=1`) still matters: varying the timer
+interrupt's delivery icount explores intra-thread races even without a second
+vCPU.
+
+### Assumption under test
+
+Forcing a preemption — a vCPU switch (for `N>1`), or a timer interrupt delivered
+at a commanded node-icount in `[deadline, horizon]` — yields a trajectory that is
+**different** from the default but **bit-reproducible** across runs of that same
+choice. For `N=1`, varying the timer-interrupt delivery icount produces
+**distinct** reproducible trajectories (intra-thread race exploration).
+
+### What to build / measure
+
+Take a scenario with a known intra-VM race (two paths whose outcome depends on
+when a preemption lands). For each of several commanded preemption icounts in
+`[deadline, horizon]`, run the configuration **twice** and capture the horizon
+fingerprint. Compare each choice against its own second run (reproducibility) and
+across choices (discrimination). Confirm the known race manifests under one
+choice and is absent under another.
+
+```text
+S12 procedure:
+  for each commanded preemption icount p in [deadline, horizon]:
+    run twice with the same p -> FP_p_A, FP_p_B
+    reproducible(p) := (FP_p_A == FP_p_B)
+  discriminating := exists p1,p2 : FP_p1 != FP_p2
+  race-sensitive := race manifests under some p, absent under another
+  pass iff every p reproducible AND discriminating AND race-sensitive
+```
+
+### Pass / fail criterion
+
+**Pass:** each commanded choice is reproducible across its own two runs, **and**
+at least two choices yield different horizon fingerprints, **and** a known race
+manifests under one choice and is absent under another.
+
+**Fail:** a choice is not reproducible, no two choices differ (preemption has no
+effect), or no choice surfaces the known race.
+
+- **[RISK-26]** Spike **S12** MUST demonstrate that a forced `Decision::Preemption`
+  (vCPU switch for `N>1`, or timer-interrupt timing for any `N`) at a commanded
+  node-icount in `[deadline, horizon]` yields a **different-but-bit-reproducible**
+  trajectory, that at least two choices produce different horizon fingerprints, and
+  that a known race manifests under one choice and not another; for `N=1`, varying
+  the timer-interrupt delivery icount MUST produce distinct reproducible
+  trajectories. *Gate:* `gate:layer1-injection`, `gate:single-vm-fingerprint`.
+  *Spec:* §30.11b; satisfies [G-11], [SCHED-46], [DET-12]; back-ref §8, §22.
+
+### What it could invalidate
+
+The `Decision::Preemption` exploration dimension ([G-11], D-24): if preemption is
+not reproducible it cannot be a Decision; if it is not discriminating it explores
+nothing.
+
+### Fallback
+
+If vCPU-switch injection is unreliable but interrupt-timing is reproducible and
+discriminating, ship **interrupt-timing exploration only** — which still covers
+the single-vCPU intra-thread race dimension. If neither is reliable, withdraw
+`Decision::Preemption` and keep the default deterministic interleaving only.
+
+## 30.11c S13 — `rr_switch_quantum` granularity vs throughput
+
+The round-robin switch quantum is correctness-neutral — *any* fixed quantum is
+deterministic ([RISK-25]) — but it trades race-surfacing power against throughput,
+so its default value is a tuning question (open decision D-25), not a determinism
+question. This spike measures the trade and resolves D-25.
+
+### Assumption under test
+
+There exists an `rr_switch_quantum` value (in node-icount) small enough to surface
+realistic intra-VM races yet large enough not to crater multi-vCPU throughput
+below the [`25-performance-targets.md`](25-performance-targets.md) budget. The
+choice is **correctness-neutral**: every fixed quantum is deterministic, so this
+is a perf/sensitivity sweep, not a determinism gate.
+
+### What to build / measure
+
+Sweep `rr_switch_quantum` across a range. For each value, on a race-bearing
+SMP microworkload, measure (a) instructions-per-second (throughput) and (b)
+whether/how often the known race is surfaced by the `Decision::Preemption`
+explorer (S12). Plot race-surfacing yield against throughput cost and pick the
+knee.
+
+```text
+S13 procedure:
+  for each candidate quantum Q in sweep:
+    throughput(Q)   = ips on SMP race microworkload
+    race_yield(Q)   = fraction of known races surfaced by S12 explorer at Q
+  pass iff exists Q : race_yield(Q) adequate AND throughput(Q) within 25 budget
+  resolved default := the knee Q (records D-25)
+```
+
+### Pass / fail criterion
+
+**Pass (perf):** a quantum exists whose race-surfacing yield is adequate while
+multi-vCPU throughput stays within the [`25-performance-targets.md`](25-performance-targets.md)
+budget; that value is recorded as the resolved default for D-25.
+
+**Fail:** no quantum simultaneously surfaces realistic races and meets the
+throughput budget — the explorer must override per-branch (see fallback).
+
+- **[RISK-27]** Spike **S13** MUST sweep `rr_switch_quantum` and report, per value,
+  multi-vCPU throughput against the [`25-performance-targets.md`](25-performance-targets.md)
+  budget and race-surfacing yield via the S12 explorer, then record the resolved
+  default value (closing open decision **D-25**). The result is **correctness-neutral**
+  — any fixed quantum is deterministic per [RISK-25] — so S13 gates only the default
+  value, never the contract. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §30.11c;
+  resolves [D-25]; satisfies [SCHED-45], [PLUG-3]; back-ref §22, §25.
+
+### What it could invalidate
+
+The chosen *default* quantum only (open decision D-25), and the practicality of a
+single global quantum. It does not affect determinism — any fixed quantum is
+deterministic.
+
+### Fallback
+
+A coarser default quantum (favoring throughput), with the explorer **overriding
+the quantum per-branch** for targeted race-hunting — fine-grained where a race is
+suspected, coarse elsewhere. Each fixed per-branch quantum remains deterministic.
+
+## 30.11d S14 — gdbstub attach/step does not disturb icount or plugin time control
+
+Time-travel and gdb debugging (D-30, file 36) attach QEMU's gdbstub to a running
+node. The bet is that *read-only* gdbstub use leaves icount and the plugin's time
+control untouched, and that any gdbstub-initiated stepping is routed through (or
+refused in favor of) the scheduler's deterministic step machinery — so debugging
+cannot silently perturb the determinism contract.
+
+### Assumption under test
+
+A read-only gdbstub attach (register/memory reads, breakpoint set without
+continue) leaves the node's icount and the plugin's time-control state **exactly**
+as they were — fingerprint-unchanged — and any gdbstub-initiated single-step is
+either routed through the scheduler's deterministic `step` or refused, never
+executed as a raw QEMU step that advances icount outside the scheduler's control.
+
+### What to build / measure
+
+Attach the gdbstub to a node at a known icount. (a) Perform read-only operations
+(read registers, read memory, set/clear a breakpoint without continuing) and
+confirm the [DET-29] fingerprint and the reported icount are unchanged. (b)
+Attempt a gdb single-step and confirm it is either serviced by the scheduler's
+deterministic step machinery (icount advances exactly as a scheduler step would)
+or refused — never a raw QEMU step that advances icount out of band.
+
+```text
+S14 procedure:
+  attach gdbstub at icount X
+  (a) read-only ops (regs, mem, breakpoint set/clear, no continue)
+      pass iff fingerprint unchanged AND reported icount == X
+  (b) gdb single-step attempt
+      pass iff routed through scheduler step (icount advances == scheduler step)
+           OR refused (icount still X); NEVER a raw out-of-band advance
+```
+
+### Pass / fail criterion
+
+**Pass:** read-only gdbstub use is fingerprint- and icount-neutral, and any
+gdbstub step is routed through the deterministic scheduler step or refused.
+
+**Fail:** a read-only operation perturbs icount/fingerprint, or a gdb step
+advances icount outside the scheduler's control (a raw QEMU step).
+
+- **[RISK-28]** Spike **S14** MUST verify that read-only gdbstub use (register /
+  memory reads, breakpoint set without continue) leaves a node's icount and the
+  plugin's time-control state **fingerprint-unchanged** ([DET-29]), and that any
+  gdbstub-initiated stepping is routed through (or refused in favor of) the
+  scheduler's deterministic step machinery — never a raw QEMU step that advances
+  icount out of band. Until S14 is green, debugging MUST default to **read-only
+  attach + Crucible-driven step/reverse-step**, with gdb single-step **disabled**.
+  *Gate:* `gate:single-vm-fingerprint`, `gate:replay-oracle`. *Spec:* §30.11d;
+  satisfies [DBG-1], [SCHED-46]; back-ref file 36.
+
+### What it could invalidate
+
+Safe interactive gdb debugging on a live node (file 36, [DBG-*]). It does not
+affect the determinism contract, which is defined over the scheduler's `step`, not
+over gdbstub operations.
+
+### Fallback
+
+Default to **read-only gdbstub attach** plus **Crucible-driven step / reverse-step**
+through the deterministic scheduler, with gdb single-step disabled — the debugger
+observes but never advances time itself. This is the conservative posture until
+S14 confirms gdbstub stepping can be safely routed.
+
+> **App-controlled randomness (file 16) reuses the existing S5 guest-memory-read
+> spike.** The `Decision::AppRandom` reply write-back (D-26) is simply a *second
+> client* of the same plugin guest-memory path S5 validates (the doorbell reads a
+> request, the reply writes a value back); it introduces **no new physical
+> assumption and therefore no new spike** — S5's virtual-read soundness and the
+> existing injection contract cover it.
+
 ## 30.12 Secondary spikes and standing risks
 
 Beyond the ten headline spikes, the following are smaller validations or standing
@@ -907,6 +1189,11 @@ RISK                                            LIKE  IMPACT  MITIGATION        
   TCG-exec coverage too expensive               M     M(perf) edge bitmap / once-per-block / sampling     S8  (RISK-15)
   determinism breaks on QEMU rebuild/bump       M     H       pin build id in artifact; re-gate (DET-35)  S9  (RISK-16)
   aarch64 doorbell can't trap synchronously     L     L       black-box-only aarch64; defer white-box     S10 (RISK-17)
+★ multi-vCPU RR-TCG NOT bit-identical            M     H       patch leak / IPI; else revert to -smp 1     S11 (RISK-25)
+  (Phase-0 blocker for G-10) [G-10]
+  Decision::Preemption not reproducible/discrim  L     M       interrupt-timing-only exploration           S12 (RISK-26)
+  rr_switch_quantum default (perf vs races)      M     M(perf) coarser default + per-branch override       S13 (RISK-27)
+  gdbstub attach/step disturbs icount            L     M       read-only attach + Crucible-driven step      S14 (RISK-28)
   shmem ABI drift passes silently               L     H       gen header + bilateral asserts + golden     RISK-18
   cross-process futex lost/spurious wake        L     H       race-free idiom; jitter stress spike        RISK-19
   leaked QEMU child distorts determinism         M     H       pdeathsig+kill_on_drop+unconditional reap   RISK-20
@@ -936,10 +1223,11 @@ RISK                                            LIKE  IMPACT  MITIGATION        
 Foundation-first (G-5): measure the load-bearing bets BEFORE building on them.
 
 Phase-0 blockers (run/pass first, in priority order):
-  S1 ★  icount + entropy elimination => bit-identical single-VM (FATAL if false)
-  S2 ★  guest HLTs during blocking I/O (perf: fast-forward; correct either way)
-  S4 ★  producer→consumer visibility is icount-not-wallclock (Contract B)
-  S3 ★  savevm/loadvm complete (else thin/replay checkpoints — clean fallback)
+  S1  ★  icount + entropy elimination => bit-identical single-VM (FATAL if false)
+  S2  ★  guest HLTs during blocking I/O (perf: fast-forward; correct either way)
+  S4  ★  producer→consumer visibility is icount-not-wallclock (Contract B)
+  S3  ★  savevm/loadvm complete (else thin/replay checkpoints — clean fallback)
+  S11 ★  deterministic multi-vCPU under RR-TCG + icount (G-10; else revert -smp 1)
 
 Gated-but-not-blocking spikes:
   S5   plugin reads guest VIRTUAL memory at trap (else physical/pinned page)
@@ -948,6 +1236,9 @@ Gated-but-not-blocking spikes:
   S8   TCG-exec coverage cheap enough for fuzzing (else cheaper representation)
   S9   determinism survives AOS QEMU build / version bumps (pin build id; re-gate)
   S10  multi-arch doorbell on aarch64 (else aarch64 black-box only)
+  S12  Decision::Preemption reproducible + discriminating (else interrupt-only)
+  S13  rr_switch_quantum default: perf vs races (D-25; coarser + per-branch o/r)
+  S14  gdbstub attach/step doesn't disturb icount (else read-only + Crucible step)
 
 Secondary validations / standing risks:
   ABI drift can't pass silently · cross-process futex no lost-wake · no leaked
@@ -1034,3 +1325,32 @@ never tolerated). Results live in the decision register (31).
   block dependent Phase-1 work on the four ★ blockers, and add a new `RISK-n` row
   with an owning spike for any newly-discovered load-bearing assumption. —
   satisfies [RISK-1], [RISK-2], [RISK-3], [RISK-23], [RISK-24]; spec §30.1, §30.13.
+- [ ] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
+  `-smp 4` image twice under `-accel tcg,thread=single` with a fixed
+  `rr_switch_quantum`, the §4.6 elimination set on all vCPUs (incl. deterministic
+  IPI/SIPI), and plugin time control; capture the **extended fingerprint** (all N
+  vCPUs' registers + RR cursor + [DET-29] mem/device hash) at a cadence and at the
+  horizon under an SMP-contended microworkload and adversarial host conditions, and
+  diff; localize any mismatch to the first differing node-icount + component. Block
+  multi-vCPU foundation work until green; fall back to `-smp 1` if irrecoverable. —
+  satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.
+- [ ] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for
+  `N>1`, timer-interrupt timing for any `N`) at several commanded node-icounts in
+  `[deadline, horizon]`, run each twice, and confirm each choice is reproducible,
+  that ≥2 choices yield different horizon fingerprints, and that a known race
+  manifests under one choice and not another; for `N=1` confirm interrupt-timing
+  variation gives distinct reproducible trajectories. Fall back to
+  interrupt-timing-only exploration if vCPU-switch injection is unreliable. —
+  satisfies [RISK-26], [G-11], [SCHED-46], [DET-12]; spec §30.11b.
+- [ ] **T-RISK-19** Run **S13**: sweep `rr_switch_quantum`, reporting per value the
+  multi-vCPU throughput against the [`25-performance-targets.md`](25-performance-targets.md)
+  budget and the race-surfacing yield via the S12 explorer; record the resolved
+  default (closing **D-25**). Correctness-neutral; fall back to a coarser default
+  with per-branch explorer overrides. — satisfies [RISK-27], [D-25], [SCHED-45],
+  [PLUG-3]; spec §30.11c.
+- [ ] **T-RISK-20** Run **S14**: attach the gdbstub at a known icount, confirm
+  read-only operations leave the [DET-29] fingerprint and icount unchanged, and
+  confirm any gdb single-step is routed through the scheduler's deterministic step
+  or refused — never a raw out-of-band icount advance. Default to read-only attach
+  + Crucible-driven step/reverse-step (gdb single-step disabled) until green. —
+  satisfies [RISK-28], [DBG-1], [SCHED-46]; spec §30.11d.
