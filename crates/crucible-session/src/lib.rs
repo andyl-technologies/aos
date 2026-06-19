@@ -5,8 +5,14 @@
 //! This L4 crate will drive one live runtime state, accept control requests at
 //! quantum boundaries, and expose the session semantics specified by RFC-0010
 //! file 20. It contains no raw QEMU or shared-memory access.
+//!
+//! Module map: the crate root owns [`SessionDriver`], the thin L4 adapter over
+//! the engine [`QuantumLoop`]; future modules will split control messages from
+//! session lifecycle state.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 use crucible::{QuantumLoop, QuantumOutcome, QuantumRequest, SchedulerError};
 

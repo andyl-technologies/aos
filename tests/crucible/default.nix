@@ -55,6 +55,7 @@ in {
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
+    rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};
     singleSchedulerBoundary = import ./phase1-single-scheduler-boundary.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     gates = {

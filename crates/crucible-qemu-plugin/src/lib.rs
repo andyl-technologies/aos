@@ -6,5 +6,11 @@
 //! QEMU TCG plugin entry points, time-control hooks, and device callbacks
 //! specified by its indexed RFC-0010 files. It is an unsafe-boundary crate
 //! because the plugin speaks QEMU's C ABI and may read guest memory.
+//!
+//! Module map: the crate root currently reserves the plugin ABI boundary;
+//! future modules will split entry points, time control, device callbacks, and
+//! QEMU-facing helpers.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]

@@ -525,7 +525,7 @@ the conditions under which feature code can be trusted to stay deterministic
 > **Phase-0 foundation tasks** — the engineering standards are in force before
 > feature code is written.
 
-- [ ] **T-STD-1** Establish the workspace rustdoc bar: crate `//!` overviews,
+- [x] **T-STD-1** Establish the workspace rustdoc bar: crate `//!` overviews,
   module `//!` headers (format blocks for ABI/wire/on-disk modules), `///` on
   every public item and data-contract field, `# Errors`/`# Panics` sections, and
   a warning-free `cargo doc` as part of the build. — satisfies [STD-1], [STD-2],
