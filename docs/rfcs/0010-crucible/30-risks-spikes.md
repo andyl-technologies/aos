@@ -1201,7 +1201,22 @@ RISK                                            LIKE  IMPACT  MITIGATION        
   multi-VM parallelism < target (lookahead)     M     M(perf) latency floor + lookahead budget tuning     RISK-22
 ```
 
-Recorded retirements: **RISK-19** is retired by `T-RISK-12`:
+Recorded retirements: **RISK-15** is retired by `T-RISK-8`:
+`checks.crucible.phase0.coverageOverhead` ran the same deterministic
+boot-and-workload scenario in three interleaved repetitions across no-plugin
+baseline, plugin-loaded/no-callback disabled mode, hook-registered count mode,
+and coverage-on translated-TB-id set mode. Because the no-plugin run deliberately
+has no instruction counter, its IPS is normalized with the paired hook-count
+retired-instruction count after identical workload output and tight
+hook-vs-coverage equal-work assertions. The run reported
+`coverage_unique_entries_min=113515`, `coverage_on_vs_baseline_min=1.0211`,
+`coverage_on_vs_hook_off_min=0.9136`,
+`max_retired_instruction_delta=0.000044`, and `max_tb_exec_delta=0.000023`,
+clearing the `0.7000` budget floor. No cheaper coverage representation is
+adopted for Phase 0; the row remains listed as a regression risk for future
+production coverage work and the full `gate:perf-bench` baseline.
+
+**RISK-19** is retired by `T-RISK-12`:
 `checks.crucible.phase0.futexStress` completed 2,000,000 actionable
 cross-process non-private futex wake cycles and 2,000,000 wake-without-action
 cycles under yield-based host jitter. The run required at least 1,000,000
@@ -1308,7 +1323,7 @@ never tolerated). Results live in the decision register (31).
   at idle and advances to exactly `max_advance_icount` with zero overshoot (incl.
   mid-TB ceilings); adopt TB-split-at-ceiling or conservative-ceiling fallback if
   not. — satisfies [RISK-14], [DET-12]; spec §30.8.
-- [ ] **T-RISK-8** Run **S8**: measure TCG-exec coverage overhead (no-plugin /
+- [x] **T-RISK-8** Run **S8**: measure TCG-exec coverage overhead (no-plugin /
   hook-registered / coverage-on) and confirm coverage-enabled throughput meets the
   fuzzing budget; adopt a cheaper coverage representation if over budget. —
   satisfies [RISK-15]; spec §30.9.
