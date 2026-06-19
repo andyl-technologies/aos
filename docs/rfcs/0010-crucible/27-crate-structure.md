@@ -634,7 +634,7 @@ Crucible needs and marks the seam.
   `test-double` feature in SAFE Rust, deterministic via `crucible-sim`, sufficient
   to run the engine determinism gates with no QEMU. — satisfies [CRATE-7];
   spec §4.
-- [ ] **T-CRATE-6** Establish the additive feature-flag layout (`test-double`,
+- [x] **T-CRATE-6** Establish the additive feature-flag layout (`test-double`,
   `qemu-backend`; `crucible-device` sub-node features; optional `crucible-guest`)
   and a feature-powerset compile check; verify `default` works and
   `crucible-guest` is never a default core dependency. — satisfies [CRATE-9];

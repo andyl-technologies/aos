@@ -37,6 +37,7 @@ in {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     gates = {
