@@ -1175,7 +1175,7 @@ impl IrLowerer {
                 )
             }
             NodeKind::FormalSet => self.lower_formal_set(node),
-            _ => self.lower_expr(id),
+            _ => Err(self.invalid_shape(node, "lambda pattern")),
         }
     }
 
@@ -1833,6 +1833,39 @@ mod tests {
         };
         assert_eq!(node(&ir, first).kind, IrKind::LocalVar);
         assert_eq!(node(&ir, second).kind, IrKind::Int);
+    }
+
+    #[test]
+    fn invalid_lambda_pattern_shapes_are_rejected_before_ir() {
+        let pattern = NodeId::new(0);
+        let body = NodeId::new(1);
+        let root = NodeId::new(2);
+        let pattern_span = Span::new(0, 1);
+        let error = lower(manual_resolved_ast(
+            root,
+            vec![
+                Node::new(NodeKind::Int, pattern_span, NodeData::Int(1)),
+                Node::new(NodeKind::Int, Span::new(4, 5), NodeData::Int(2)),
+                Node::new(
+                    NodeKind::Lambda,
+                    Span::new(0, 5),
+                    NodeData::Pair {
+                        first: pattern,
+                        second: body,
+                    },
+                ),
+            ],
+        ))
+        .expect_err("non-pattern lambda heads are malformed AST");
+
+        assert_eq!(
+            error.kind(),
+            &IrErrorKind::InvalidNodeShape {
+                kind: NodeKind::Int,
+                expected: "lambda pattern",
+            }
+        );
+        assert_eq!(error.span(), pattern_span);
     }
 
     #[test]
