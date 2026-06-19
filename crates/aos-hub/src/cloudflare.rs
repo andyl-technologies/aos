@@ -856,13 +856,20 @@ struct D1ErrorBody {
 /// Returns an error if `stdout` is a D1 error envelope, or cannot be parsed as a
 /// non-empty array of result sets.
 fn parse_first_result_set(stdout: &str) -> Result<D1ResultSet> {
-    match serde_json::from_str::<Vec<D1ResultSet>>(stdout) {
+    // On a `--file`/`--remote` run, wrangler 4.x prints file-upload progress
+    // lines (`├ Checking if file needs uploading`, `🌀 Uploading…`) to stdout
+    // *before* the JSON payload, so parse from the first `[`/`{` rather than the
+    // start of the buffer. The progress prelude contains no brackets.
+    let json = stdout
+        .find(['[', '{'])
+        .map_or(stdout, |start| &stdout[start..]);
+    match serde_json::from_str::<Vec<D1ResultSet>>(json) {
         Ok(sets) => sets
             .into_iter()
             .next()
             .context("`wrangler d1 execute --json` returned no result set"),
         Err(parse_err) => {
-            if let Ok(env) = serde_json::from_str::<D1ErrorEnvelope>(stdout) {
+            if let Ok(env) = serde_json::from_str::<D1ErrorEnvelope>(json) {
                 bail!("D1 error: {}", env.error.text);
             }
             Err(parse_err).context("parsing `wrangler d1 execute --json` output")
@@ -1217,6 +1224,16 @@ mod tests {
         let json = r#"{"error":{"text":"near \"FROM\": syntax error"}}"#;
         let err = parse_first_result_set(json).unwrap_err();
         assert!(err.to_string().contains("syntax error"));
+    }
+
+    #[test]
+    fn parse_result_set_skips_wrangler_file_upload_prelude() {
+        // A `--file`/`--remote` run prefixes the JSON with upload-progress lines;
+        // the parser must skip them rather than choke at line 1.
+        let stdout = "├ Checking if file needs uploading\n│\n├ 🌀 Uploading abc.sql\n│ 🌀 Uploading complete.\n│\n[{\"results\":[{\"n\":2}],\"success\":true,\"meta\":{\"changes\":1}}]\n";
+        let set = parse_first_result_set(stdout).unwrap();
+        assert_eq!(set.meta.changes, Some(1));
+        assert_eq!(set.results[0].0, vec![Value::Int(2)]);
     }
 
     #[test]
