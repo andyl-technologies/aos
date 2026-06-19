@@ -911,8 +911,10 @@ makes `reduce` ([INV-1]) pure across nodes.
   `(ScenarioDef, Seed, Schedule)`. — satisfies [SCHED-24], [SCHED-33]; spec §8.9,
   §8.9.7.
 - [ ] **T-SCHED-13** Implement PICK (global-minimum horizon, ties by node_id) and
-  RUN (advance under `-icount` to horizon; never past it). — satisfies
-  [SCHED-25], [SCHED-26]; spec §8.9.1, §8.9.2.
+  RUN (advance under `-icount` to horizon; never past it), taking the argmin over a
+  single unified `effective_horizon(node)` projection (DONE/Halted → +∞, IDLE →
+  idle wake icount, else running horizon). — satisfies
+  [SCHED-25], [SCHED-26], [SCHED-44]; spec §8.9.1, §8.9.2.
 - [ ] **T-SCHED-14** Drive RUN through a single per-node max-advance ceiling
   published once per quantum (no intermediate ceiling), via the shmem ABI. —
   satisfies [SCHED-27], [SCHED-35]; spec §8.9.2, §8.10.

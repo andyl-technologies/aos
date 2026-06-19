@@ -770,8 +770,10 @@ insufficient.
 - [ ] **T-ASRT-1** Define the closed, versioned five-quantifier property
   vocabulary (Always, Sometimes, Eventually-with-deadline, AfterQuiescence,
   Reachable + unreachable dual) with precise temporal semantics, and forbid a
-  model checker / spec-language evaluator in the assertion layer. — satisfies
-  [ASRT-1], [ASRT-3], [NG-3]; spec §18.1, §18.2.
+  model checker / spec-language evaluator in the assertion layer; make an
+  assertion's predicate the single shared 17a `Condition` vocabulary (one
+  predicate type, two consumers: assertion vs trigger). — satisfies
+  [ASRT-1], [ASRT-3], [ASRT-30], [NG-3]; spec §18.1, §18.2, §18.12.1.
 - [ ] **T-ASRT-2** Make `Properties` part of the `ScenarioDef` content hash and
   prove property declaration/removal/amendment never changes the run (fingerprint
   unchanged). — satisfies [ASRT-2], [ASRT-25]; spec §18.1, §18.9.
@@ -789,8 +791,10 @@ insufficient.
   [ASRT-10]; spec §18.4.
 - [ ] **T-ASRT-6** Implement guest-side marker assertions over the white-box
   channel with the same five-quantifier semantics; fold them into the same
-  evaluation pass; keep them observational and fingerprint-neutral. — satisfies
-  [ASRT-11], [ASRT-12], [ASRT-13]; spec §18.5.
+  evaluation pass; keep them observational and fingerprint-neutral; require the
+  white-box marker payload to carry id/kind/`must_hit`/details/location so a
+  never-reached marker still finalizes Always/Reachable. — satisfies
+  [ASRT-11], [ASRT-12], [ASRT-13], [ASRT-32]; spec §18.5, §18.12.3.
 - [ ] **T-ASRT-7** Implement the offline assertion checker: grade a recorded run's
   log against the original or a new/amended property set with no guest
   re-execution, producing the identical online outcome set. — satisfies [ASRT-14],
@@ -826,3 +830,9 @@ insufficient.
   assertions: identical outcome sets online vs offline, idempotent re-grading of a
   recorded corpus, and bit-identical violation reproduction. — satisfies [ASRT-4],
   [ASRT-16], [ASRT-23]; spec §18.6, §18.10.
+- [ ] **T-ASRT-17** Implement the predicate DSL: a set of named, TOML-authorable
+  conditions (at least `no_crashed_nodes`, `quiescent`, `no_active_faults`,
+  `node_alive:<n>`, `node_crashed:<n>`) that desugar to 17a leaf `Condition`s,
+  usable as both assertion predicates and triggers, build-time-resolved against
+  the `World`/`Plan`, strictly additive to host closures. — satisfies [ASRT-31];
+  spec §18.12.2.

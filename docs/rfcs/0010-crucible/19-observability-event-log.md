@@ -844,5 +844,7 @@ log, so they cannot disagree about what happened.
   [OBS-33]; spec §19.6.6.
 - [ ] **T-OBS-13** Implement and freeze the open, versioned event-kind catalog
   with each kind's fixed class, as the single source of truth referenced by
-  18/20/21/22/24; golden-vector the canonical serialization of each kind. —
-  satisfies [OBS-34], [OBS-35]; spec §19.7.
+  18/20/21/22/24; golden-vector the canonical serialization of each kind; record a
+  trigger firing as a causal `trigger_fired` entry (never a `Schedule` `Decision`)
+  and evaluate conditions without logging the per-point truth of a standing
+  condition. — satisfies [OBS-34], [OBS-35], [OBS-36]; spec §19.7, §19.3.

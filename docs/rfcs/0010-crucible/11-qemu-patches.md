@@ -961,8 +961,11 @@ time-control primitives the whole design rests on.
 
 - [ ] **T-PATCH-1** Establish the rebasable, ordered series against the pinned
   QEMU (≥ 10.0): tracked single-purpose commits, stable `crucible-*.patch` names,
-  significant ordering (sim-accel first). — satisfies [PATCH-7], [PATCH-40];
-  spec §11.1.4, §11.10.
+  significant ordering (sim-accel first); require each patch to state its
+  determinism invariant/capability in its commit message and the §11.3 catalog,
+  classified determinism-critical vs feature; forbid any record/replay-start
+  scaffolding in the series. — satisfies [PATCH-6], [PATCH-7], [PATCH-9],
+  [PATCH-40], [PATCH-43]; spec §11.1.3, §11.1.4, §11.4, §11.10.
 - [ ] **T-PATCH-2** Wire the per-patch CI: apply-clean + build + per-patch
   micro-test + `gate:qemu-inert` + `gate:patch-microtests` aggregate, on every
   series/pin change. — satisfies [PATCH-4], [PATCH-5], [PATCH-8], [PATCH-38];

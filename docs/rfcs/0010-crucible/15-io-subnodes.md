@@ -706,8 +706,11 @@ spike:  guest HLT vs busy-poll during I/O — busy-poll stays correct but defeat
 
 - [ ] **T-IO-1** Define the uniform I/O sub-node trait (icount-derived clock,
   request inbox / response outbox over shmem, `advance_to(limit_icount)` draining
-  due responses, snapshot/restore) shared by disk, 9p, and net-link nodes. —
-  satisfies [IO-1], [IO-2], [IO-3]; spec §15.1.
+  due responses, snapshot/restore) shared by disk, 9p, and net-link nodes; make
+  every completion time and probabilistic device choice a deterministic function of
+  `(request icount, modeled latency, per-device RNG draw)` only, with no host
+  wall-clock/scheduling/FS/inode dependence. — satisfies [IO-1], [IO-2], [IO-3],
+  [IO-4]; spec §15.1.
 - [ ] **T-IO-2** Implement the block sub-node base+overlay: read-only
   content-addressed base image, in-memory 4 KiB CoW page overlay, page-wise read
   (overlay-over-base) and write (copy-up to overlay), dirty-page tracking; assert

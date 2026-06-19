@@ -514,12 +514,17 @@ reading order is in the [`README.md`](README.md).
 - [ ] **T-ARCH-4** Stand up the per-layer determinism-gate harness skeleton
   (`gate:layer0-determinism`, `gate:single-vm-fingerprint`, `gate:layer1-injection`,
   `gate:harness-lint`, `gate:control-responsive`) as red placeholder gates wired
-  into CI, to be turned green by their owning subsystems. — satisfies [ARCH-4],
-  [ARCH-6]; spec §4, §6, [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md).
+  into CI, to be turned green by their owning subsystems; make black-box
+  observation sufficient for every core capability with the white-box channel
+  optional and non-perturbing when enabled. — satisfies [ARCH-4], [ARCH-6],
+  [ARCH-8]; spec §4, §6, [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md),
+  [`16-guest-host-channel.md`](16-guest-host-channel.md).
 - [ ] **T-ARCH-5** Establish the single-scheduler boundary: a quantum-loop trait
   in L3 that is the sole owner of virtual-time advancement and cross-node event
-  resolution, with the session actor (L4) as its only driver. — satisfies
-  [ARCH-5], [ARCH-9]; spec §5, §8, [`08-scheduling.md`](08-scheduling.md),
+  resolution, with the session actor (L4) as its only driver; model all cross-node
+  I/O (disk/9p/network) as scheduling sub-nodes resolved in the one total order,
+  never on host timing. — satisfies [ARCH-5], [ARCH-7], [ARCH-9]; spec §5, §8,
+  [`08-scheduling.md`](08-scheduling.md), [`15-io-subnodes.md`](15-io-subnodes.md),
   [`20-session-control-plane.md`](20-session-control-plane.md).
 </content>
 </invoke>
