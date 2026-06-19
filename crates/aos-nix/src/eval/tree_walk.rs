@@ -2902,27 +2902,9 @@ impl TreeWalk {
         let IrData::Node(argument) = node.data else {
             return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
         };
-        self.ensure_derivation_strict_supported(id, node.span)?;
         let argument_span = self.node(argument)?.span;
         let value = self.eval_node(argument)?;
         self.eval_derivation_strict_value(id, node.span, argument, argument_span, value)
-    }
-
-    fn ensure_derivation_strict_supported(
-        &self,
-        id: IrId,
-        span: Span,
-    ) -> Result<(), TreeWalkError> {
-        if self.options.store_dir() != DEFAULT_STORE_DIR {
-            return Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                    id,
-                    feature: "custom store directory",
-                },
-                span,
-            ));
-        }
-        Ok(())
     }
 
     fn eval_derivation_strict_value(
@@ -3258,6 +3240,15 @@ impl TreeWalk {
         let (known_hash, drv_path, output_resolution) = if let Some(floating_ca_output) =
             floating_ca_output
         {
+            if self.options.store_dir() != DEFAULT_STORE_DIR {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                        id,
+                        feature: "floating content-addressed derivations with custom store directory",
+                    },
+                    span,
+                ));
+            }
             let known_hash = Self::hash_floating_ca_derivation_modulo_with_inputs(
                 &derivation,
                 floating_ca_output,
@@ -3276,50 +3267,42 @@ impl TreeWalk {
                 DerivationOutputResolution::FloatingCa(floating_ca_output),
             )
         } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
-            let known_hash =
-                Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
-            let drv_path = derivation
-                .calculate_derivation_path(&name)
-                .map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::DerivationStrict {
-                            id,
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                })?;
+            if self.options.store_dir() != DEFAULT_STORE_DIR {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
+                        id,
+                        feature: "deferred placeholder derivations with custom store directory",
+                    },
+                    span,
+                ));
+            }
+            let known_hash = self.hash_derivation_modulo_with_inputs(
+                id,
+                span,
+                &derivation,
+                &input_hashes.hashes,
+            )?;
+            let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
             (
                 known_hash,
                 drv_path,
                 DerivationOutputResolution::DeferredPlaceholders,
             )
         } else {
-            let hash = Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
-            derivation
-                .calculate_output_paths(&name, &hash)
-                .map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::DerivationStrict {
-                            id,
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                })?;
-            let known_hash =
-                Self::hash_derivation_modulo_with_inputs(&derivation, &input_hashes.hashes);
-            let drv_path = derivation
-                .calculate_derivation_path(&name)
-                .map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::DerivationStrict {
-                            id,
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                })?;
+            let hash = self.hash_derivation_modulo_with_inputs(
+                id,
+                span,
+                &derivation,
+                &input_hashes.hashes,
+            )?;
+            self.calculate_output_paths(id, span, &name, &mut derivation, &hash)?;
+            let known_hash = self.hash_derivation_modulo_with_inputs(
+                id,
+                span,
+                &derivation,
+                &input_hashes.hashes,
+            )?;
+            let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
             (
                 known_hash,
                 drv_path,
@@ -3892,6 +3875,270 @@ impl TreeWalk {
         derivation.outputs.values().any(|output| output.is_fixed())
     }
 
+    fn calculate_derivation_path(
+        &self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let drv_name = format!("{name}.drv");
+        let references = derivation
+            .input_sources
+            .iter()
+            .chain(derivation.input_derivations.keys())
+            .map(|path| self.store_path_absolute_bytes(path));
+        let aterm = self.derivation_aterm_bytes(derivation);
+        self.build_text_path(id, span, &drv_name, &aterm, references)
+    }
+
+    fn calculate_output_paths(
+        &self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        derivation: &mut nix_compat::derivation::Derivation,
+        hash_derivation_modulo: &[u8; 32],
+    ) -> Result<(), TreeWalkError> {
+        for (output_name, output) in derivation.outputs.iter_mut() {
+            debug_assert!(output.path.is_none());
+            let path_name = Self::output_path_name(name, output_name);
+            let store_path = if let Some(ca_hash) = output.ca_hash.as_ref() {
+                self.build_ca_path(
+                    id,
+                    span,
+                    &path_name,
+                    ca_hash,
+                    std::iter::empty::<Vec<u8>>(),
+                    false,
+                )?
+            } else {
+                self.build_store_path_from_fingerprint_parts(
+                    id,
+                    span,
+                    format!("output:{output_name}").as_bytes(),
+                    hash_derivation_modulo,
+                    &path_name,
+                )?
+            };
+            derivation.environment.insert(
+                output_name.to_string(),
+                self.store_path_absolute_bytes(&store_path).into(),
+            );
+            output.path = Some(store_path);
+        }
+        Ok(())
+    }
+
+    fn hash_derivation_modulo_with_inputs(
+        &self,
+        id: IrId,
+        span: Span,
+        derivation: &nix_compat::derivation::Derivation,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    ) -> Result<[u8; 32], TreeWalkError> {
+        if let Some(digest) = self.fixed_output_derivation_digest(id, span, derivation)? {
+            return Ok(digest);
+        }
+        let aterm = self.derivation_aterm_bytes_with_input_hashes(derivation, input_hashes);
+        Ok(Self::sha256_array(&aterm))
+    }
+
+    fn fixed_output_derivation_digest(
+        &self,
+        id: IrId,
+        span: Span,
+        derivation: &nix_compat::derivation::Derivation,
+    ) -> Result<Option<[u8; 32]>, TreeWalkError> {
+        if derivation.outputs.len() != 1 {
+            return Ok(None);
+        }
+        let Some(output) = derivation.outputs.get("out") else {
+            return Ok(None);
+        };
+        let Some(ca_hash) = output.ca_hash.as_ref() else {
+            return Ok(None);
+        };
+        let output_path = output
+            .path
+            .as_ref()
+            .map(|path| self.store_path_absolute_bytes(path))
+            .unwrap_or_default();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"fixed:out:");
+        bytes.extend_from_slice(Self::derivation_ca_kind_prefix(id, span, ca_hash)?.as_bytes());
+        bytes.extend_from_slice(ca_hash.hash().to_nix_lowerhex_string().as_bytes());
+        bytes.push(b':');
+        bytes.extend_from_slice(&output_path);
+        Ok(Some(Self::sha256_array(&bytes)))
+    }
+
+    fn build_text_path(
+        &self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        content: &[u8],
+        references: impl IntoIterator<Item = Vec<u8>>,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let content_digest = Self::sha256_array(content);
+        self.build_ca_path(
+            id,
+            span,
+            name,
+            &nix_compat::derivation::CAHash::Text(content_digest),
+            references,
+            false,
+        )
+    }
+
+    fn build_ca_path(
+        &self,
+        id: IrId,
+        span: Span,
+        name: &str,
+        ca_hash: &nix_compat::derivation::CAHash,
+        references: impl IntoIterator<Item = Vec<u8>>,
+        self_reference: bool,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let mut references = references.into_iter().peekable();
+        let (fingerprint_type, inner_digest) = match ca_hash {
+            nix_compat::derivation::CAHash::Text(digest) => (
+                Self::make_references_fingerprint_type(b"text", references, false),
+                *digest,
+            ),
+            nix_compat::derivation::CAHash::Nar(nix_compat::derivation::NixHash::Sha256(
+                digest,
+            )) => (
+                Self::make_references_fingerprint_type(b"source", references, self_reference),
+                *digest,
+            ),
+            nix_compat::derivation::CAHash::Nar(hash) => {
+                if references.peek().is_some() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: "non-sha256 recursive fixed output references are unsupported"
+                                .to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                (
+                    b"output:out".to_vec(),
+                    Self::fixed_output_path_digest(b"fixed:out:r", hash),
+                )
+            }
+            nix_compat::derivation::CAHash::Flat(hash) => {
+                if references.peek().is_some() {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::DerivationStrict {
+                            id,
+                            message: "flat fixed output references are unsupported".to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                (
+                    b"output:out".to_vec(),
+                    Self::fixed_output_path_digest(b"fixed:out", hash),
+                )
+            }
+        };
+        self.build_store_path_from_fingerprint_parts(
+            id,
+            span,
+            &fingerprint_type,
+            &inner_digest,
+            name,
+        )
+    }
+
+    fn build_store_path_from_fingerprint_parts(
+        &self,
+        id: IrId,
+        span: Span,
+        fingerprint_type: &[u8],
+        inner_digest: &[u8; 32],
+        name: &str,
+    ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
+        let digest = Self::lower_hex_bytes(id, span, inner_digest)?;
+        let mut fingerprint = Vec::new();
+        fingerprint.extend_from_slice(fingerprint_type);
+        fingerprint.extend_from_slice(b":sha256:");
+        fingerprint.extend_from_slice(&digest);
+        fingerprint.push(b':');
+        fingerprint.extend_from_slice(self.options.store_dir());
+        fingerprint.push(b':');
+        fingerprint.extend_from_slice(name.as_bytes());
+        let fingerprint_hash = Sha256::digest(&fingerprint);
+        let digest = nix_compat::store_path::compress_hash::<{ nix_compat::store_path::DIGEST_SIZE }>(
+            &fingerprint_hash,
+        );
+        nix_compat::store_path::StorePath::from_name_and_digest_fixed(name, digest).map_err(
+            |source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+            },
+        )
+    }
+
+    fn make_references_fingerprint_type(
+        kind: &[u8],
+        references: impl IntoIterator<Item = Vec<u8>>,
+        self_reference: bool,
+    ) -> Vec<u8> {
+        let mut out = kind.to_vec();
+        for reference in references {
+            out.push(b':');
+            out.extend_from_slice(&reference);
+        }
+        if self_reference {
+            out.extend_from_slice(b":self");
+        }
+        out
+    }
+
+    fn fixed_output_path_digest(prefix: &[u8], hash: &nix_compat::derivation::NixHash) -> [u8; 32] {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(prefix);
+        bytes.push(b':');
+        bytes.extend_from_slice(hash.to_nix_lowerhex_string().as_bytes());
+        bytes.push(b':');
+        Self::sha256_array(&bytes)
+    }
+
+    fn output_path_name(derivation_name: &str, output_name: &str) -> String {
+        if output_name == "out" {
+            derivation_name.to_owned()
+        } else {
+            format!("{derivation_name}-{output_name}")
+        }
+    }
+
+    fn derivation_ca_kind_prefix(
+        id: IrId,
+        span: Span,
+        ca_hash: &nix_compat::derivation::CAHash,
+    ) -> Result<&'static str, TreeWalkError> {
+        match ca_hash {
+            nix_compat::derivation::CAHash::Flat(_) => Ok(""),
+            nix_compat::derivation::CAHash::Nar(_) => Ok("r:"),
+            nix_compat::derivation::CAHash::Text(_) => Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: "text content address is invalid for derivation outputs".to_owned(),
+                },
+                span,
+            )),
+        }
+    }
+
     fn hash_floating_ca_derivation_modulo_with_inputs(
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
@@ -3955,6 +4202,155 @@ impl TreeWalk {
         Self::write_aterm_environment(&mut out, &derivation.environment);
         out.push(b')');
         out
+    }
+
+    fn derivation_aterm_bytes(&self, derivation: &nix_compat::derivation::Derivation) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Derive(");
+        self.write_derivation_outputs(&mut out, derivation);
+        out.push(b',');
+        self.write_derivation_input_paths(&mut out, &derivation.input_derivations);
+        out.push(b',');
+        self.write_derivation_input_sources(&mut out, &derivation.input_sources);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.builder.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_string_array(&mut out, derivation.arguments.iter().map(String::as_bytes));
+        out.push(b',');
+        Self::write_aterm_environment(&mut out, &derivation.environment);
+        out.push(b')');
+        out
+    }
+
+    fn derivation_aterm_bytes_with_input_hashes(
+        &self,
+        derivation: &nix_compat::derivation::Derivation,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    ) -> Vec<u8> {
+        let replacements: BTreeMap<[u8; 32], BTreeSet<String>> = derivation
+            .input_derivations
+            .iter()
+            .filter_map(|(drv_path, outputs)| {
+                input_hashes
+                    .get(drv_path)
+                    .map(|hash| (*hash, outputs.clone()))
+            })
+            .collect();
+        let mut out = Vec::new();
+        out.extend_from_slice(b"Derive(");
+        self.write_derivation_outputs(&mut out, derivation);
+        out.push(b',');
+        Self::write_derivation_input_hashes(&mut out, &replacements);
+        out.push(b',');
+        self.write_derivation_input_sources(&mut out, &derivation.input_sources);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_field(&mut out, derivation.builder.as_bytes(), true);
+        out.push(b',');
+        Self::write_aterm_string_array(&mut out, derivation.arguments.iter().map(String::as_bytes));
+        out.push(b',');
+        Self::write_aterm_environment(&mut out, &derivation.environment);
+        out.push(b')');
+        out
+    }
+
+    fn write_derivation_outputs(
+        &self,
+        out: &mut Vec<u8>,
+        derivation: &nix_compat::derivation::Derivation,
+    ) {
+        out.push(b'[');
+        for (index, (output_name, output)) in derivation.outputs.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            Self::write_aterm_field(out, output_name.as_bytes(), true);
+            out.push(b',');
+            let path = output
+                .path
+                .as_ref()
+                .map(|path| self.store_path_absolute_bytes(path))
+                .unwrap_or_default();
+            Self::write_aterm_field(out, &path, true);
+            out.push(b',');
+            let mut mode_and_algo = Vec::new();
+            let mut digest = Vec::new();
+            if let Some(ca_hash) = output.ca_hash.as_ref() {
+                let prefix = match ca_hash {
+                    nix_compat::derivation::CAHash::Flat(_) => "",
+                    nix_compat::derivation::CAHash::Nar(_) => "r:",
+                    nix_compat::derivation::CAHash::Text(_) => "",
+                };
+                mode_and_algo.extend_from_slice(prefix.as_bytes());
+                mode_and_algo.extend_from_slice(ca_hash.hash().algo().to_string().as_bytes());
+                Self::write_lower_hex(&mut digest, ca_hash.hash().digest_as_bytes());
+            }
+            Self::write_aterm_field(out, &mode_and_algo, true);
+            out.push(b',');
+            Self::write_aterm_field(out, &digest, true);
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_derivation_input_paths(
+        &self,
+        out: &mut Vec<u8>,
+        input_derivations: &BTreeMap<nix_compat::store_path::StorePath<String>, BTreeSet<String>>,
+    ) {
+        out.push(b'[');
+        for (index, (drv_path, output_names)) in input_derivations.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            let path = self.store_path_absolute_bytes(drv_path);
+            Self::write_aterm_field(out, &path, false);
+            out.push(b',');
+            Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_derivation_input_hashes(
+        out: &mut Vec<u8>,
+        input_hashes: &BTreeMap<[u8; 32], BTreeSet<String>>,
+    ) {
+        out.push(b'[');
+        for (index, (hash, output_names)) in input_hashes.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            out.push(b'(');
+            out.push(b'"');
+            Self::write_lower_hex(out, hash);
+            out.push(b'"');
+            out.push(b',');
+            Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
+            out.push(b')');
+        }
+        out.push(b']');
+    }
+
+    fn write_derivation_input_sources(
+        &self,
+        out: &mut Vec<u8>,
+        input_sources: &BTreeSet<nix_compat::store_path::StorePath<String>>,
+    ) {
+        out.push(b'[');
+        for (index, source) in input_sources.iter().enumerate() {
+            if index > 0 {
+                out.push(b',');
+            }
+            let path = self.store_path_absolute_bytes(source);
+            Self::write_aterm_field(out, &path, true);
+        }
+        out.push(b']');
     }
 
     fn deferred_placeholder_derivation_aterm_bytes(
@@ -4264,7 +4660,7 @@ impl TreeWalk {
                         id,
                         message: format!(
                             "input derivation {} is not a .drv path",
-                            input_derivation_path.to_absolute_path()
+                            self.store_path_absolute_display(input_derivation_path)
                         ),
                     },
                     span,
@@ -4276,7 +4672,7 @@ impl TreeWalk {
                         id,
                         message: format!(
                             "input derivation {} has no output names",
-                            input_derivation_path.to_absolute_path()
+                            self.store_path_absolute_display(input_derivation_path)
                         ),
                     },
                     span,
@@ -4391,6 +4787,48 @@ impl TreeWalk {
             })
     }
 
+    fn store_path_absolute_bytes<S>(&self, path: &nix_compat::store_path::StorePath<S>) -> Vec<u8>
+    where
+        S: AsRef<str>,
+    {
+        let store_dir = self.options.store_dir();
+        let encoded_digest = nix_compat::nixbase32::encode(path.digest());
+        let needs_slash = !store_dir.ends_with(b"/");
+        let mut bytes = Vec::with_capacity(
+            store_dir.len()
+                + usize::from(needs_slash)
+                + encoded_digest.len()
+                + 1
+                + path.name().as_ref().len(),
+        );
+        bytes.extend_from_slice(store_dir);
+        if needs_slash {
+            bytes.push(b'/');
+        }
+        bytes.extend_from_slice(encoded_digest.as_bytes());
+        bytes.push(b'-');
+        bytes.extend_from_slice(path.name().as_ref().as_bytes());
+        bytes
+    }
+
+    fn store_path_absolute_display<S>(&self, path: &nix_compat::store_path::StorePath<S>) -> String
+    where
+        S: AsRef<str>,
+    {
+        String::from_utf8_lossy(&self.store_path_absolute_bytes(path)).into_owned()
+    }
+
+    fn strip_configured_store_dir<'a>(&self, path: &'a [u8]) -> Option<&'a [u8]> {
+        let store_dir = self.options.store_dir();
+        if store_dir == b"/" {
+            return path.strip_prefix(b"/");
+        }
+        if !path.starts_with(store_dir) || path.get(store_dir.len()) != Some(&b'/') {
+            return None;
+        }
+        Some(&path[store_dir.len() + 1..])
+    }
+
     fn add_derivation_context_inputs(
         &self,
         id: IrId,
@@ -4399,7 +4837,7 @@ impl TreeWalk {
         context: &StringContext,
     ) -> Result<(), TreeWalkError> {
         for element in context {
-            let store_path = Self::context_store_path(id, span, element.path())?;
+            let store_path = self.context_store_path(id, span, element.path())?;
             match element.kind() {
                 ContextKind::OpaquePath => {
                     derivation.input_sources.insert(store_path);
@@ -4424,7 +4862,7 @@ impl TreeWalk {
                                     id,
                                     message: format!(
                                         "input derivation {} has no output {output:?}",
-                                        store_path.to_absolute_path()
+                                        self.store_path_absolute_display(&store_path)
                                     ),
                                 },
                                 span,
@@ -4444,7 +4882,7 @@ impl TreeWalk {
                                 id,
                                 message: format!(
                                     "input derivation {} is not known",
-                                    store_path.to_absolute_path()
+                                    self.store_path_absolute_display(&store_path)
                                 ),
                             },
                             span,
@@ -4463,12 +4901,23 @@ impl TreeWalk {
     }
 
     fn context_store_path(
+        &self,
         id: IrId,
         span: Span,
         path: &[u8],
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
         let path = Self::copy_bytes_for_node(id, span, path)?;
-        nix_compat::store_path::StorePath::<String>::from_absolute_path(&path).map_err(|source| {
+        let Some(path_in_store) = self.strip_configured_store_dir(&path) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationPath {
+                    id,
+                    path,
+                    message: "path is not in the configured Nix store".to_owned(),
+                },
+                span,
+            ));
+        };
+        nix_compat::store_path::StorePath::<String>::from_bytes(path_in_store).map_err(|source| {
             TreeWalkError::new(
                 TreeWalkErrorKind::DerivationPath {
                     id,
@@ -4495,7 +4944,7 @@ impl TreeWalk {
                         id,
                         message: format!(
                             "input derivation {} is not known",
-                            input.to_absolute_path()
+                            self.store_path_absolute_display(input)
                         ),
                     },
                     span,
@@ -4516,7 +4965,7 @@ impl TreeWalk {
             .map(|(drv_path, known)| {
                 let aterm_bytes = match known.output_resolution {
                     DerivationOutputResolution::StaticPaths => {
-                        Some(known.derivation.to_aterm_bytes())
+                        Some(self.derivation_aterm_bytes(&known.derivation))
                     }
                     DerivationOutputResolution::FloatingCa(floating_ca_output) => {
                         Some(Self::floating_ca_derivation_aterm_bytes(
@@ -4535,28 +4984,11 @@ impl TreeWalk {
                     }
                 };
                 Ok(EvalDerivation::new(
-                    drv_path.to_absolute_path(),
+                    self.store_path_absolute_display(drv_path),
                     aterm_bytes,
                 ))
             })
             .collect()
-    }
-
-    fn hash_derivation_modulo_with_inputs(
-        derivation: &nix_compat::derivation::Derivation,
-        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
-    ) -> [u8; 32] {
-        derivation.hash_derivation_modulo(|drv_path| {
-            let key = drv_path.to_owned();
-            if let Some(hash) = input_hashes.get(&key) {
-                *hash
-            } else {
-                // `known_derivation_hashes_for_inputs` pre-validates the
-                // derivation's input set, but `nix-compat` requires an
-                // infallible lookup callback.
-                [0; 32]
-            }
-        })
     }
 
     fn remember_derivation(
@@ -4590,7 +5022,7 @@ impl TreeWalk {
         drv_path: &nix_compat::store_path::StorePath<String>,
         output_resolution: DerivationOutputResolution,
     ) -> Result<Value, TreeWalkError> {
-        let drv_path_bytes = drv_path.to_absolute_path().into_bytes();
+        let drv_path_bytes = self.store_path_absolute_bytes(drv_path);
         let mut entries = Vec::new();
         let len = derivation.outputs.len().checked_add(1).ok_or_else(|| {
             TreeWalkError::new(
@@ -4615,7 +5047,7 @@ impl TreeWalk {
 
         for (output_name, output) in &derivation.outputs {
             let output_path = match output.path.as_ref() {
-                Some(path) => path.to_absolute_path().into_bytes(),
+                Some(path) => self.store_path_absolute_bytes(path),
                 None if output_resolution.has_deferred_outputs() => {
                     Self::downstream_output_placeholder(id, span, drv_path, output_name)?
                 }
@@ -14339,9 +14771,11 @@ impl TreeWalk {
                         contents_span,
                     ));
                 }
-                let reference =
-                    Self::context_store_path(contents_id, contents_span, element.path())?
-                        .to_absolute_path();
+                let reference = self.store_path_absolute_bytes(&self.context_store_path(
+                    contents_id,
+                    contents_span,
+                    element.path(),
+                )?);
                 references.insert(reference);
             }
             let reference_context =
@@ -14361,20 +14795,19 @@ impl TreeWalk {
         };
 
         let name_str = Self::to_file_store_path_name(id, name_span, &name)?;
-        let store_path: nix_compat::store_path::StorePath<String> =
-            nix_compat::store_path::build_text_path(name_str, &contents, references).map_err(
-                |source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::ToFilePath {
-                            id,
-                            name: name.clone(),
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                },
-            )?;
-        let path = store_path.to_absolute_path().into_bytes();
+        let store_path = self
+            .build_text_path(id, span, name_str, &contents, references)
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ToFilePath {
+                        id,
+                        name: name.clone(),
+                        message: source.to_string(),
+                    },
+                    span,
+                )
+            })?;
+        let path = self.store_path_absolute_bytes(&store_path);
         let context = StringContext::singleton(ContextElement::opaque_path(path.clone()).map_err(
             |source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span),
         )?)
@@ -26699,7 +27132,6 @@ impl BuiltinRuntime for Builtin {
         let result = (|| match self.execution() {
             BuiltinExecution::DerivationStrict => {
                 check_builtin_arity(call, 1, args.len())?;
-                eval.ensure_derivation_strict_supported(call.id, call.span)?;
                 let argument = args[0];
                 let argument_span = eval.node(argument)?.span;
                 let value = eval.eval_node(argument)?;
@@ -27009,7 +27441,6 @@ impl BuiltinRuntime for Builtin {
             }
             BuiltinExecution::DerivationStrict => {
                 check_builtin_arity(call, 1, args.len())?;
-                eval.ensure_derivation_strict_supported(call.id, call.span)?;
                 let argument = args[0];
                 eval.eval_derivation_strict_value(
                     call.id,
@@ -30610,6 +31041,16 @@ mod tests {
                 .expect_err("empty home directory is rejected"),
             TreeWalkOptionsError::RelativeHomeDir
         );
+    }
+
+    #[test]
+    fn to_file_uses_configured_store_dir() {
+        let options = TreeWalkOptions::with_store_dir(b"/custom/store".to_vec())
+            .expect("custom store dir configures");
+        let path = eval_string_bytes_with_options(r#"builtins.toFile "x" "abc""#, options);
+
+        assert!(path.starts_with(b"/custom/store/"), "{path:?}");
+        assert!(path.ends_with(b"-x"), "{path:?}");
     }
 
     #[test]

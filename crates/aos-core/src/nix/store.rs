@@ -66,7 +66,7 @@ impl NixCli {
 
     /// Instantiates an attribute from a Nix file, returning the `.drv` path.
     ///
-    /// Runs `nix-instantiate -f <file> -A <attr>`; the child's stderr is
+    /// Runs `nix-instantiate <file> -A <attr>`; the child's stderr is
     /// passed through to the terminal.
     ///
     /// # Errors
@@ -74,8 +74,8 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let mut cmd = aos_nix_command("nix-instantiate");
-        cmd.arg("-f").arg(file).arg("-A").arg(attr);
+        let mut cmd = self.nix_command("nix-instantiate");
+        cmd.arg(file).arg("-A").arg(attr);
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
             cmd.arg("--show-trace");
@@ -104,7 +104,7 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
-        let mut cmd = aos_nix_command("nix-instantiate");
+        let mut cmd = self.nix_command("nix-instantiate");
         cmd.arg("-E").arg(expr);
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
@@ -134,7 +134,7 @@ impl NixCli {
     /// Returns an error if `nix-instantiate` cannot be spawned, exits
     /// non-zero, or prints non-UTF-8 output.
     pub fn eval_expr(&self, expr: &str) -> Result<String> {
-        let mut cmd = aos_nix_command("nix-instantiate");
+        let mut cmd = self.nix_command("nix-instantiate");
         cmd.args(["--eval", "--strict", "--json", "-E"]).arg(expr);
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
@@ -164,7 +164,7 @@ impl NixCli {
     /// Returns an error if `nix-build` cannot be spawned, exits
     /// non-zero (i.e. the build failed), or prints non-UTF-8 output.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let mut cmd = aos_nix_command("nix-build");
+        let mut cmd = self.nix_command("nix-build");
         cmd.arg(file).arg("-A").arg(attr).arg("--no-out-link");
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
@@ -192,7 +192,8 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the
     /// realisation fails, or the output is not UTF-8.
     pub fn realise(&self, drv: &str) -> Result<String> {
-        let output = aos_nix_command("nix-store")
+        let output = self
+            .nix_command("nix-store")
             .args(["--realise", drv])
             .stderr(Stdio::inherit())
             .output()
@@ -205,6 +206,12 @@ impl NixCli {
             .trim()
             .to_string();
         Ok(path)
+    }
+
+    fn nix_command(&self, program: &str) -> Command {
+        let mut cmd = aos_nix_command(program);
+        self.eval_config.apply_cli_env(&mut cmd);
+        cmd
     }
 
     fn append_eval_options(&self, cmd: &mut Command) {
@@ -221,7 +228,8 @@ impl NixCli {
     /// Returns an error if `nix-store` cannot be spawned, the query
     /// fails (e.g. the path is not valid), or the output is not UTF-8.
     pub fn closure(&self, path: &str) -> Result<Vec<String>> {
-        let output = aos_nix_command("nix-store")
+        let output = self
+            .nix_command("nix-store")
             .args(["-qR", path])
             .stderr(Stdio::inherit())
             .output()
@@ -250,10 +258,10 @@ impl NixCli {
     /// the path is not valid in the store) or the reported size is not
     /// a valid integer.
     pub fn path_info(&self, store_path: &str) -> Result<PathInfo> {
-        let hash = run_nix_store_query(store_path, "--hash")?;
-        let size_str = run_nix_store_query(store_path, "--size")?;
-        let refs_str = run_nix_store_query(store_path, "--references")?;
-        let deriver_str = run_nix_store_query(store_path, "--deriver")?;
+        let hash = self.run_nix_store_query(store_path, "--hash")?;
+        let size_str = self.run_nix_store_query(store_path, "--size")?;
+        let refs_str = self.run_nix_store_query(store_path, "--references")?;
+        let deriver_str = self.run_nix_store_query(store_path, "--deriver")?;
 
         let nar_size: u64 = size_str
             .parse()
@@ -300,7 +308,8 @@ impl NixCli {
     /// Returns an error only if `nix-store` cannot be spawned; an
     /// invalid path yields `Ok(false)`.
     pub fn is_valid(&self, path: &str) -> Result<bool> {
-        let status = aos_nix_command("nix-store")
+        let status = self
+            .nix_command("nix-store")
             .args(["--check-validity", path])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -321,7 +330,7 @@ impl NixCli {
     /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_dump(&self, path: &str) -> Result<Child> {
-        aos_nix_command("nix-store")
+        self.nix_command("nix-store")
             .args(["--dump", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -342,7 +351,7 @@ impl NixCli {
     /// failure surfaces later through the child's exit status.
     #[allow(dead_code)] // public API
     pub fn nar_export(&self, path: &str) -> Result<Child> {
-        aos_nix_command("nix-store")
+        self.nix_command("nix-store")
             .args(["--export", path])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -364,7 +373,8 @@ impl NixCli {
     /// is not UTF-8.
     #[allow(dead_code)] // public API
     pub fn nar_import(&self, mut data: impl Read) -> Result<Vec<String>> {
-        let mut child = aos_nix_command("nix-store")
+        let mut child = self
+            .nix_command("nix-store")
             .arg("--import")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -394,6 +404,24 @@ impl NixCli {
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect())
+    }
+
+    /// Runs a single `nix-store -q <flag> <path>` query and returns its
+    /// trimmed stdout. Stderr is discarded; failures map to an error.
+    fn run_nix_store_query(&self, path: &str, flag: &str) -> Result<String> {
+        let output = self
+            .nix_command("nix-store")
+            .args(["-q", flag, path])
+            .stderr(Stdio::null())
+            .output()
+            .with_context(|| format!("nix-store -q {flag} {path}"))?;
+        if !output.status.success() {
+            anyhow::bail!("nix-store -q {flag} failed for {path}");
+        }
+        Ok(String::from_utf8(output.stdout)
+            .context("invalid utf-8")?
+            .trim()
+            .to_string())
     }
 }
 
@@ -426,6 +454,13 @@ mod tests {
             .collect()
     }
 
+    fn command_env(command: &Command, name: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
     #[test]
     fn eval_config_emits_cpp_nix_system_option() -> Result<()> {
         let nix =
@@ -453,21 +488,26 @@ mod tests {
             ["--option", "trace-verbose", "true"]
         );
     }
-}
 
-/// Runs a single `nix-store -q <flag> <path>` query and returns its
-/// trimmed stdout. Stderr is discarded; failures map to an error.
-fn run_nix_store_query(path: &str, flag: &str) -> Result<String> {
-    let output = aos_nix_command("nix-store")
-        .args(["-q", flag, path])
-        .stderr(Stdio::null())
-        .output()
-        .with_context(|| format!("nix-store -q {flag} {path}"))?;
-    if !output.status.success() {
-        anyhow::bail!("nix-store -q {flag} failed for {path}");
+    #[test]
+    fn eval_config_emits_cpp_nix_store_env() -> Result<()> {
+        let config =
+            NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+        let nix = NixCli::with_eval_config(0, config);
+        let command = nix.nix_command("nix-instantiate");
+
+        assert_eq!(
+            command_env(&command, "NIX_STORE_DIR").as_deref(),
+            Some("/aos/store")
+        );
+        assert_eq!(
+            command_env(&command, "NIX_STATE_DIR").as_deref(),
+            Some("/aos/var/nix")
+        );
+        assert_eq!(
+            command_env(&command, "NIX_LOG_DIR").as_deref(),
+            Some("/aos/var/nix/log/nix")
+        );
+        Ok(())
     }
-    Ok(String::from_utf8(output.stdout)
-        .context("invalid utf-8")?
-        .trim()
-        .to_string())
 }

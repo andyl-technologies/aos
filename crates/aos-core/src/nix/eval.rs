@@ -11,12 +11,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 #[cfg(feature = "native-eval")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 
+use super::env::aos_nix_env;
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
@@ -110,14 +112,27 @@ pub trait NixEval: Send + Sync {
 }
 
 /// Evaluator settings that must be shared by native and C++ Nix evaluators.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NixEvalConfig {
     current_system: Option<String>,
+    store_dir: Option<String>,
+    state_dir: Option<String>,
+    log_dir: Option<String>,
     trace_verbose: bool,
+}
+
+impl Default for NixEvalConfig {
+    fn default() -> Self {
+        Self::from_env()
+    }
 }
 
 impl NixEvalConfig {
     /// Creates evaluator settings using C++ Nix's ambient defaults.
+    ///
+    /// Store, state, and log directories are captured from `AOS_ROOT`-derived
+    /// settings or inherited `NIX_*` environment variables so native evaluation
+    /// targets the same store directory as real Nix subprocesses.
     pub fn new() -> Self {
         Self::default()
     }
@@ -136,9 +151,33 @@ impl NixEvalConfig {
         Ok(config)
     }
 
+    /// Creates evaluator settings with configured Nix store directories.
+    ///
+    /// The store directory is passed to the native evaluator and the full
+    /// store/state/log triple is passed to C++ Nix subprocesses through their
+    /// corresponding `NIX_*` environment variables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any directory is empty or relative.
+    pub fn with_store_dirs(
+        store_dir: impl Into<String>,
+        state_dir: impl Into<String>,
+        log_dir: impl Into<String>,
+    ) -> Result<Self> {
+        let mut config = Self::default();
+        config.set_store_dirs(store_dir, state_dir, log_dir)?;
+        Ok(config)
+    }
+
     /// Returns the configured Nix `system` value, if one was provided.
     pub fn current_system(&self) -> Option<&str> {
         self.current_system.as_deref()
+    }
+
+    /// Returns the configured Nix store directory, if one was provided.
+    pub fn store_dir(&self) -> Option<&str> {
+        self.store_dir.as_deref()
     }
 
     /// Returns whether `builtins.traceVerbose` should emit trace output.
@@ -166,6 +205,26 @@ impl NixEvalConfig {
         args
     }
 
+    /// Returns C++ Nix environment bindings that reproduce these settings.
+    pub(crate) fn cli_env_vars(&self) -> Vec<(&'static str, String)> {
+        let mut vars = Vec::new();
+        if let Some(store_dir) = &self.store_dir {
+            vars.push(("NIX_STORE_DIR", store_dir.clone()));
+        }
+        if let Some(state_dir) = &self.state_dir {
+            vars.push(("NIX_STATE_DIR", state_dir.clone()));
+        }
+        if let Some(log_dir) = &self.log_dir {
+            vars.push(("NIX_LOG_DIR", log_dir.clone()));
+        }
+        vars
+    }
+
+    /// Applies C++ Nix environment bindings to a command.
+    pub(crate) fn apply_cli_env(&self, command: &mut Command) {
+        command.envs(self.cli_env_vars());
+    }
+
     /// Replaces the configured Nix `system` value.
     ///
     /// # Errors
@@ -185,10 +244,85 @@ impl NixEvalConfig {
         self.current_system = None;
     }
 
+    /// Replaces the configured Nix store, state, and log directories.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any directory is empty or relative.
+    pub fn set_store_dirs(
+        &mut self,
+        store_dir: impl Into<String>,
+        state_dir: impl Into<String>,
+        log_dir: impl Into<String>,
+    ) -> Result<()> {
+        self.store_dir = Some(validate_absolute_env_path(
+            "NIX_STORE_DIR",
+            store_dir.into(),
+        )?);
+        self.state_dir = Some(validate_absolute_env_path(
+            "NIX_STATE_DIR",
+            state_dir.into(),
+        )?);
+        self.log_dir = Some(validate_absolute_env_path("NIX_LOG_DIR", log_dir.into())?);
+        Ok(())
+    }
+
+    /// Clears configured Nix store, state, and log directories.
+    pub fn clear_store_dirs(&mut self) {
+        self.store_dir = None;
+        self.state_dir = None;
+        self.log_dir = None;
+    }
+
     /// Configures whether `builtins.traceVerbose` should emit trace output.
     pub fn set_trace_verbose(&mut self, trace_verbose: bool) {
         self.trace_verbose = trace_verbose;
     }
+
+    fn from_env() -> Self {
+        let mut config = Self {
+            current_system: None,
+            store_dir: None,
+            state_dir: None,
+            log_dir: None,
+            trace_verbose: false,
+        };
+
+        let mut env = aos_nix_env();
+        if env.is_empty() {
+            env.extend(nix_env_from_process("NIX_STORE_DIR"));
+            env.extend(nix_env_from_process("NIX_STATE_DIR"));
+            env.extend(nix_env_from_process("NIX_LOG_DIR"));
+        }
+        for (name, value) in env {
+            config.set_cli_env_var(name, value);
+        }
+
+        config
+    }
+
+    fn set_cli_env_var(&mut self, name: &'static str, value: String) {
+        match name {
+            "NIX_STORE_DIR" => self.store_dir = Some(value),
+            "NIX_STATE_DIR" => self.state_dir = Some(value),
+            "NIX_LOG_DIR" => self.log_dir = Some(value),
+            _ => {}
+        }
+    }
+}
+
+fn nix_env_from_process(name: &'static str) -> Option<(&'static str, String)> {
+    std::env::var(name).ok().map(|value| (name, value))
+}
+
+fn validate_absolute_env_path(name: &str, value: String) -> Result<String> {
+    if value.is_empty() {
+        anyhow::bail!("{name} must not be empty");
+    }
+    if !Path::new(&value).is_absolute() {
+        anyhow::bail!("{name} must be absolute: {value}");
+    }
+    Ok(value)
 }
 
 /// Requested native-evaluator mode from `AOS_NIX_NATIVE`.
@@ -538,6 +672,9 @@ fn native_cli_fallback_count(reason: NativeCliFallbackReason) -> u64 {
 #[cfg(feature = "native-eval")]
 fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
     let mut options = TreeWalkOptions::new();
+    if let Some(store_dir) = config.store_dir() {
+        options.set_store_dir(store_dir.as_bytes().to_vec())?;
+    }
     if let Some(current_system) = config.current_system() {
         options.set_current_system(current_system.as_bytes().to_vec())?;
     }
@@ -555,6 +692,14 @@ mod tests {
             .expect_err("empty currentSystem should be invalid");
 
         assert!(error.to_string().contains("currentSystem"));
+    }
+
+    #[test]
+    fn eval_config_rejects_relative_store_dirs() {
+        let error = NixEvalConfig::with_store_dirs("relative/store", "/aos/var/nix", "/aos/log")
+            .expect_err("relative store dir should be invalid");
+
+        assert!(error.to_string().contains("NIX_STORE_DIR"));
     }
 
     #[test]
@@ -581,6 +726,22 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn eval_config_renders_cpp_nix_env_vars() -> Result<()> {
+        let config =
+            NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+
+        assert_eq!(
+            config.cli_env_vars(),
+            vec![
+                ("NIX_STORE_DIR", "/aos/store".to_string()),
+                ("NIX_STATE_DIR", "/aos/var/nix".to_string()),
+                ("NIX_LOG_DIR", "/aos/var/nix/log/nix".to_string())
+            ]
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "native-eval")]
     #[test]
     fn eval_config_maps_trace_verbose_to_native_options() -> Result<()> {
@@ -590,6 +751,18 @@ mod tests {
         let options = tree_walk_options_from_config(&config)?;
 
         assert!(options.trace_verbose());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_store_dir_to_native_options() -> Result<()> {
+        let config =
+            NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(options.store_dir(), b"/aos/store");
         Ok(())
     }
 

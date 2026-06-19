@@ -364,7 +364,9 @@ impl NixRunner {
     /// Returns an error if `nix` cannot be started or the repl exits
     /// with a non-zero status.
     pub fn repl(&self, nix_file: &Path) -> Result<()> {
-        let status = aos_nix_command("nix")
+        let mut command = aos_nix_command("nix");
+        self.eval_config.apply_cli_env(&mut command);
+        let status = command
             .args(self.repl_args(nix_file))
             .current_dir(&self.root)
             .status()
@@ -466,7 +468,9 @@ impl NixRunner {
             Stdio::piped()
         };
 
-        let child = aos_nix_command(cmd)
+        let mut command = aos_nix_command(cmd);
+        self.eval_config.apply_cli_env(&mut command);
+        let child = command
             .args(&args)
             .current_dir(&self.root)
             .stdout(Stdio::piped())
