@@ -61,8 +61,16 @@ const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 /// Returns an error if package metadata cannot be converted into measurement
 /// events, the event log cannot be written, or live PCR extension fails.
 pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
+    measure_activated_packages_inner(root, installed, root == Path::new("/"), None)
+}
+
+fn measure_activated_packages_inner(
+    root: &Path,
+    installed: &[InstalledMeta],
+    live_root: bool,
+    pcrextend_override: Option<&Path>,
+) -> Result<()> {
     let events = measurement_events(root, installed)?;
-    let live_root = root == Path::new("/");
     let needs_baseline = live_root && !event_log_has_records(root)?;
     let mut logged_events = Vec::with_capacity(events.len() + usize::from(live_root));
     if needs_baseline {
@@ -71,10 +79,20 @@ pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta
         logged_events.push(pcr_baseline_event(&pcr15));
     }
     logged_events.extend(events.iter().cloned());
-    append_event_log(root, &logged_events)?;
+    let append = append_event_log(root, &logged_events)?;
     if live_root {
-        let pcrextend = trusted_systemd_pcrextend_path()?;
-        extend_pcr15(&pcrextend, &events)?;
+        let pcrextend = match pcrextend_override {
+            Some(path) => path.to_path_buf(),
+            None => trusted_systemd_pcrextend_path()?,
+        };
+        if let Err(err) = extend_pcr15(&pcrextend, &events) {
+            if let Err(rollback_err) = rollback_event_log_append(&append) {
+                bail!(
+                    "extending PCR 15 failed and rolling back the package event log also failed: {err:#}; rollback: {rollback_err:#}"
+                );
+            }
+            return Err(err);
+        }
     }
     Ok(())
 }
@@ -186,6 +204,23 @@ pub(crate) struct PackageEventLogVerification {
     pub pcr15: String,
     /// Number of package tuple events validated against the registry catalog.
     pub package_count: usize,
+    /// Package tuples in the latest completed package-set measurement.
+    pub current_packages: Vec<VerifiedPackageMeasurement>,
+}
+
+/// One package tuple validated from the latest measured package set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedPackageMeasurement {
+    /// Package name.
+    pub name: String,
+    /// Package version.
+    pub version: String,
+    /// Canonical root digest that was measured.
+    pub root_digest: String,
+    /// Canonical permission-manifest digest that was measured.
+    pub manifest_digest: String,
+    /// Package measurement digest extended into PCR 15.
+    pub measurement: String,
 }
 
 /// A registry or image-seed golden package measurement catalog entry.
@@ -492,6 +527,8 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
     let mut pcr = [0u8; 32];
     let mut package_count = 0usize;
     let mut pending_package_set: Option<PendingPackageSet> = None;
+    let mut pending_current_packages: Vec<VerifiedPackageMeasurement> = Vec::new();
+    let mut current_packages: Vec<VerifiedPackageMeasurement> = Vec::new();
     let mut saw_baseline = false;
     let mut saw_package_set = false;
 
@@ -542,7 +579,12 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                     );
                 }
                 saw_package_set = true;
-                pending_package_set = Some(parse_package_set_record(index + 1, &record)?);
+                let pending = parse_package_set_record(index + 1, &record)?;
+                pending_current_packages = Vec::with_capacity(pending.remaining);
+                if pending.remaining == 0 {
+                    current_packages.clear();
+                }
+                pending_package_set = Some(pending);
             }
             PACKAGE_EVENT_TYPE => {
                 extend_replayed_pcr(&mut pcr, &recorded_digest)?;
@@ -575,8 +617,13 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                 }
                 pending.remaining -= 1;
                 pending.next_digest += 1;
-                verify_package_record(index + 1, &record, &recorded_digest, &catalog)?;
+                let package =
+                    verify_package_record(index + 1, &record, &recorded_digest, &catalog)?;
+                pending_current_packages.push(package);
                 package_count += 1;
+                if pending.remaining == 0 {
+                    current_packages = std::mem::take(&mut pending_current_packages);
+                }
             }
             _ => bail!(
                 "package event log line {} has unsupported event_type '{}'",
@@ -607,6 +654,7 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
     Ok(PackageEventLogVerification {
         pcr15,
         package_count,
+        current_packages,
     })
 }
 
@@ -1758,7 +1806,7 @@ fn verify_package_record(
     record: &OwnedEventLogRecord,
     recorded_digest: &str,
     catalog: &BTreeMap<(String, String), (String, String)>,
-) -> Result<()> {
+) -> Result<VerifiedPackageMeasurement> {
     let package = record
         .package
         .as_deref()
@@ -1792,7 +1840,13 @@ fn verify_package_record(
     if catalog_root_digest != &canonical_digest(root_digest) {
         bail!("package event on line {line} root digest does not match the registry catalog");
     }
-    Ok(())
+    Ok(VerifiedPackageMeasurement {
+        name: package.to_string(),
+        version: version.to_string(),
+        root_digest: canonical_digest(root_digest),
+        manifest_digest: canonical_digest(manifest_digest),
+        measurement: recorded_digest.to_string(),
+    })
 }
 
 fn extend_replayed_pcr(pcr: &mut [u8; 32], event_digest_hex: &str) -> Result<()> {
@@ -1894,13 +1948,31 @@ fn event_log_has_records(root: &Path) -> Result<bool> {
     }
 }
 
-fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
+#[derive(Debug, Clone)]
+struct EventLogAppend {
+    path: PathBuf,
+    previous_len: u64,
+    created_file: bool,
+}
+
+fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLogAppend> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
-    let (existing_lines, needs_separator) = match fs::read_to_string(&path) {
-        Ok(log) => (log.lines().count(), !log.is_empty() && !log.ends_with('\n')),
-        Err(err) if err.kind() == ErrorKind::NotFound => (0, false),
-        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-    };
+    let (existing_lines, needs_separator, previous_len, created_file) =
+        match fs::read_to_string(&path) {
+            Ok(log) => {
+                let previous_len = fs::metadata(&path)
+                    .with_context(|| format!("reading metadata for {}", path.display()))?
+                    .len();
+                (
+                    log.lines().count(),
+                    !log.is_empty() && !log.ends_with('\n'),
+                    previous_len,
+                    false,
+                )
+            }
+            Err(err) if err.kind() == ErrorKind::NotFound => (0, false, 0, true),
+            Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+        };
     let parent = path
         .parent()
         .with_context(|| format!("event log path has no parent: {}", path.display()))?;
@@ -1917,7 +1989,29 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
         let line = event_log_line(existing_lines + index + 1, event)?;
         writeln!(file, "{line}").with_context(|| format!("writing {}", path.display()))?;
     }
-    Ok(())
+    Ok(EventLogAppend {
+        path,
+        previous_len,
+        created_file,
+    })
+}
+
+fn rollback_event_log_append(append: &EventLogAppend) -> Result<()> {
+    if append.created_file && append.previous_len == 0 {
+        match fs::remove_file(&append.path) {
+            Ok(()) => return Ok(()),
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("removing {}", append.path.display()));
+            }
+        }
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .open(&append.path)
+        .with_context(|| format!("opening {}", append.path.display()))?;
+    file.set_len(append.previous_len)
+        .with_context(|| format!("truncating {}", append.path.display()))
 }
 
 fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<String> {
@@ -2541,6 +2635,31 @@ mod tests {
     }
 
     #[test]
+    fn measure_activated_packages_rolls_back_log_when_live_pcr_extend_fails() {
+        let tmp = TempDir::new().expect("tempdir");
+        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
+        let log_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
+        fs::create_dir_all(log_path.parent().expect("log parent")).expect("log parent");
+        fs::write(&log_path, "existing\n").expect("existing log");
+        let failing_pcrextend = tmp.path().join("systemd-pcrextend");
+        fs::write(&failing_pcrextend, "").expect("failing pcrextend");
+
+        let err = measure_activated_packages_inner(
+            tmp.path(),
+            &[installed],
+            true,
+            Some(&failing_pcrextend),
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("systemd-pcrextend"));
+        assert_eq!(
+            fs::read_to_string(&log_path).expect("log after rollback"),
+            "existing\n"
+        );
+    }
+
+    #[test]
     fn package_event_log_verifier_accepts_catalog_match() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
@@ -2553,6 +2672,14 @@ mod tests {
 
         assert_eq!(verified.pcr15, pcr15);
         assert_eq!(verified.package_count, 1);
+        assert_eq!(verified.current_packages.len(), 1);
+        assert_eq!(verified.current_packages[0].name, "web");
+        assert_eq!(verified.current_packages[0].version, "1.0");
+        assert_eq!(verified.current_packages[0].root_digest, root_hash);
+        assert_eq!(
+            verified.current_packages[0].measurement,
+            measurement.trim_start_matches("sha256:")
+        );
     }
 
     #[test]
@@ -2881,6 +3008,28 @@ mod tests {
             verify_package_event_log_against_catalog(&log, &pcr15, &[]).expect("verify log");
 
         assert_eq!(verified.package_count, 0);
+        assert!(verified.current_packages.is_empty());
+    }
+
+    #[test]
+    fn package_event_log_verifier_reports_latest_package_set() {
+        let tmp = TempDir::new().expect("tempdir");
+        let manifest = br#"{"permissions":{"network":"private"}}"#;
+        let installed = installed_fixture(&tmp, manifest);
+        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest_digest = package_manifest_digest_bytes(manifest);
+        let measurement = package_measurement_digest("web", "1.0", root_hash, &manifest_digest);
+        measure_activated_packages(tmp.path(), &[installed]).expect("measure package set");
+        measure_activated_packages(tmp.path(), &[]).expect("measure empty package set");
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
+        let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
+        let catalog = vec![catalog_meta(&root_hash, &measurement)];
+
+        let verified =
+            verify_package_event_log_against_catalog(&log, &pcr15, &catalog).expect("verify log");
+
+        assert_eq!(verified.package_count, 1);
+        assert!(verified.current_packages.is_empty());
     }
 
     #[test]

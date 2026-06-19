@@ -9,6 +9,7 @@
 # pointing at combined's harness-assigned IP. Functionally a
 # 2-node cluster where one node also runs the API server.
 {
+  dataUrl,
   mkSystem,
   pkgs,
   ...
@@ -29,16 +30,11 @@
   # NormalizeToken takes the password.
   testToken = "aoscombinedfleettoken1";
 
-  uriEncode =
-    builtins.replaceStrings
-    ["%" "\n" " " "&" "+" "=" "[" "]" "#" "?"]
-    ["%25" "%0A" "%20" "%26" "%2B" "%3D" "%5B" "%5D" "%23" "%3F"];
-
   envFile = body: {
     path = "/etc/rancher/k3s/k3s.env";
     mode = 384;
     overwrite = true;
-    contents.source = "data:," + uriEncode body;
+    contents.source = dataUrl body;
   };
 
   # /etc/rancher/k3s/config.yaml is k3s's default config-file
@@ -58,12 +54,10 @@
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
-    contents.source =
-      "data:,"
-      + uriEncode ''
-        node-ip: ${ip}
-        flannel-iface: eth0
-      '';
+    contents.source = dataUrl ''
+      node-ip: ${ip}
+      flannel-iface: eth0
+    '';
   };
 
   combinedSystem = mkSystem [

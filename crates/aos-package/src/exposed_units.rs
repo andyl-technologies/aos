@@ -231,6 +231,8 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
     let changed_credential_units = write_generated_credential_blobs(&root, &packages)?;
     write_exact_preset(&root, &current_targets)?;
     load_ebpf_lsm_before_package_targets(&root, &current_targets)?;
+    crate::package_attestation::measure_activated_packages(&root, &installed)
+        .context("measuring exposed package set into PCR 15")?;
     apply_systemd_changes(
         &root,
         &current_targets,
@@ -238,8 +240,6 @@ pub(crate) async fn reconcile_system_profile(config: &ApmConfig, printer: &Print
         &changed_credential_units,
     )
     .await?;
-    crate::package_attestation::measure_activated_packages(&root, &installed)
-        .context("measuring exposed package set into PCR 15")?;
 
     if current_targets.is_empty() {
         printer.info("Removed exposed package target enablement.");

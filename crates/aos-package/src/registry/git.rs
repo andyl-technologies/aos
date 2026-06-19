@@ -30,6 +30,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
 use crate::gitcmd;
+use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
 use crate::registry::{channel, fetch, keys, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
 use crate::types::{
@@ -1302,6 +1303,28 @@ async fn extract_provenance(
 
     let declared_refs = collect_declared_provenance_refs(packages_dir).await?;
     prune_cached_extra_provenance_artifacts(registry_cache_dir, &declared_refs).await?;
+    if !declared_refs.is_empty() {
+        extract_required_registry_blob(
+            repo_dir,
+            commit,
+            PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+            registry_cache_dir,
+        )
+        .await?;
+        let log =
+            tokio::fs::read_to_string(registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG))
+                .await
+                .with_context(|| {
+                    format!(
+                        "reading extracted package transparency log {}",
+                        registry_cache_dir
+                            .join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+                            .display()
+                    )
+                })?;
+        provenance::validate_transparency_log(&log)
+            .context("validating package transparency log")?;
+    }
     for provenance_ref in &declared_refs {
         clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
     }
@@ -1483,7 +1506,7 @@ async fn extract_required_registry_blob(
     tree_path: &str,
     registry_cache_dir: &Path,
 ) -> Result<()> {
-    validate_attestation_provenance_ref(tree_path)?;
+    validate_extractable_registry_blob_ref(tree_path)?;
     let output_path = registry_cache_dir.join(Path::new(tree_path));
     ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
     remove_cached_registry_artifact_target(&output_path).await?;
@@ -1539,6 +1562,13 @@ async fn extract_required_registry_blob(
         .write_all(&content.stdout)
         .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
     Ok(())
+}
+
+fn validate_extractable_registry_blob_ref(tree_path: &str) -> Result<()> {
+    if tree_path == PACKAGE_PROVENANCE_TRANSPARENCY_LOG {
+        return Ok(());
+    }
+    validate_attestation_provenance_ref(tree_path)
 }
 
 /// Ensure the parent directories for a cached registry artifact are real dirs.
@@ -2638,6 +2668,14 @@ mod tests {
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
+    async fn write_empty_transparency_log(dir: &Path) {
+        let log = dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+        tokio::fs::create_dir_all(log.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(log, "").await.unwrap();
+    }
+
     #[tokio::test]
     async fn extract_store_preserves_presence_semantics() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2814,6 +2852,7 @@ provenance = "{provenance}"
         tokio::fs::write(&custom_path, "custom statement\n")
             .await
             .unwrap();
+        write_empty_transparency_log(&work_dir).await;
         let custom_commit = commit_all(&work_dir, "custom provenance").await;
 
         let registry_cache_dir = tmp.path().join("cache").join("test-reg");
@@ -2850,6 +2889,7 @@ provenance = "{provenance}"
         tokio::fs::write(&generated_path, "generated statement\n")
             .await
             .unwrap();
+        write_empty_transparency_log(&work_dir).await;
         let generated_commit = commit_all(&work_dir, "generated provenance").await;
 
         extract_packages(&work_dir, &generated_commit, &packages_dir)
@@ -2915,6 +2955,7 @@ provenance = "{later_ref}"
         )
         .await
         .unwrap();
+        write_empty_transparency_log(&work_dir).await;
         let commit = commit_all(&work_dir, "missing provenance").await;
 
         let registry_cache_dir = tmp.path().join("cache").join("test-reg");
