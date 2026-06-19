@@ -468,15 +468,7 @@ impl NativeFallbackEval {
 impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         match self.native.instantiate(file, attr) {
-            Ok(path) => {
-                let error: anyhow::Error = NativeEvalError::unsupported(format!(
-                    "native instantiation materialization for {}",
-                    path.display()
-                ))
-                .into();
-                warn_native_cli_fallback(&error, NativeCliFallbackReason::Unsupported);
-                self.fallback.instantiate(file, attr)
-            }
+            Ok(path) => Ok(path),
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -489,15 +481,7 @@ impl NixEval for NativeFallbackEval {
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         match self.native.instantiate_expr(expr) {
-            Ok(path) => {
-                let error: anyhow::Error = NativeEvalError::unsupported(format!(
-                    "native expression instantiation materialization for {}",
-                    path.display()
-                ))
-                .into();
-                warn_native_cli_fallback(&error, NativeCliFallbackReason::Unsupported);
-                self.fallback.instantiate_expr(expr)
-            }
+            Ok(path) => Ok(path),
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -903,6 +887,34 @@ mod tests {
             error.downcast_ref::<NativeEvalError>(),
             Some(NativeEvalError::Unsupported { .. } | NativeEvalError::EvalError { .. })
         ));
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_fallback_eval_returns_native_instantiation_success() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let store = root.path().join("store");
+        let state = root.path().join("state");
+        let log = root.path().join("log");
+        let config = NixEvalConfig::with_store_dirs(
+            store.to_string_lossy().into_owned(),
+            state.to_string_lossy().into_owned(),
+            log.to_string_lossy().into_owned(),
+        )?;
+        let evaluator = NativeFallbackEval::new(0, config)?;
+
+        let path = evaluator.instantiate_expr(
+            r#"derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+        )?;
+
+        assert!(path.starts_with(&store), "{}", path.display());
+        assert!(path.to_string_lossy().ends_with("-base.drv"));
+        assert!(path.exists(), "{}", path.display());
         Ok(())
     }
 

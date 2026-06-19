@@ -2,12 +2,14 @@
 //!
 //! [`NixNative`] is the stable integration handle that will own the parser
 //! cache, symbol interner, hash-consing tables, and evaluator arena as Phase 1
-//! fills in. The current implementation is deliberately conservative: path-level
-//! instantiation is enabled only when the tree-walk oracle can compute a
-//! derivation's `drvPath`, while `.drv` file materialization and JSON
-//! expression evaluation stay limited to the implemented Phase-1 subset.
+//! fills in. The current implementation is deliberately conservative: native
+//! instantiation and JSON expression evaluation stay limited to the implemented
+//! Phase-1 subset.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::fs;
+use std::io::{ErrorKind, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -111,8 +113,8 @@ impl NixNative {
     /// Evaluates `attr` from `file` to a derivation path.
     ///
     /// This path-level native instantiation is intentionally conservative: the
-    /// tree-walk oracle must evaluate the selected value and expose a `drvPath`
-    /// string. `.drv` file materialization remains a later Phase-1 slice.
+    /// tree-walk oracle must evaluate the selected value, expose a `drvPath`
+    /// string, and materialize every in-memory `.drv` in the configured store.
     ///
     /// # Errors
     ///
@@ -124,7 +126,7 @@ impl NixNative {
         let attr_path = attr_path_selector(attr)?;
         let file = nix_string_literal(&path_bytes(file)?)?;
         let source = format!("(import {file}){attr_path}.drvPath");
-        self.eval_derivation_path_source(&source, None)
+        self.eval_derivation_materialized_source(&source, None)
     }
 
     /// Evaluates `attr` from `file` to an in-memory derivation closure.
@@ -156,7 +158,7 @@ impl NixNative {
     /// evaluate to a derivation-like attribute set with a string `drvPath`.
     pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let source = derivation_path_wrapper_source(expr);
-        self.eval_derivation_path_source(
+        self.eval_derivation_materialized_source(
             &source,
             Some(WrappedSourceMap {
                 prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
@@ -235,6 +237,7 @@ impl NixNative {
         "aos-nix"
     }
 
+    #[cfg(test)]
     fn eval_derivation_path_source(
         &self,
         source: &str,
@@ -253,6 +256,16 @@ impl NixNative {
             .eval_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
         derivation_path_from_value(outcome.value(), outcome.heap())
+    }
+
+    fn eval_derivation_materialized_source(
+        &self,
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Result<PathBuf> {
+        let closure = self.eval_derivation_closure_source(source, source_map)?;
+        materialize_drv_closure(&closure)?;
+        Ok(closure.root().to_path_buf())
     }
 
     fn eval_derivation_closure_source(
@@ -288,9 +301,9 @@ impl NixNative {
             drvs.insert(path, bytes.to_vec());
         }
         if !drvs.contains_key(&root) {
-            return Err(NativeEvalError::Internal {
+            return Err(NativeEvalError::EvalError {
                 message: format!(
-                    "native instantiation did not record root derivation {}",
+                    "native instantiation selected a drvPath that was not produced by derivationStrict: {}",
                     root.display()
                 ),
             }
@@ -306,6 +319,158 @@ impl NixNative {
             self.ifd_realizer.clone(),
         )
     }
+}
+
+fn materialize_drv_closure(closure: &NativeDrvClosure) -> Result<()> {
+    for (path, bytes) in closure.drvs() {
+        materialize_drv(path, bytes)?;
+    }
+    Ok(())
+}
+
+fn materialize_drv(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| NativeEvalError::Internal {
+        message: format!(
+            "native derivation path has no parent directory: {}",
+            path.display()
+        ),
+    })?;
+    fs::create_dir_all(parent).map_err(|source| NativeEvalError::Internal {
+        message: format!(
+            "failed to create native derivation parent {}: {source}",
+            parent.display()
+        ),
+    })?;
+
+    match fs::read(path) {
+        Ok(existing) if existing == bytes => return Ok(()),
+        Ok(_) => {
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "refusing to overwrite existing derivation {} with different contents",
+                    path.display()
+                ),
+            }
+            .into());
+        }
+        Err(source) if source.kind() == ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "failed to read existing native derivation {}: {source}",
+                    path.display()
+                ),
+            }
+            .into());
+        }
+    }
+
+    let temp_path = write_temp_drv(parent, path, bytes)?;
+    match fs::hard_link(&temp_path, path) {
+        Ok(()) => fs::remove_file(&temp_path).map_err(|source| NativeEvalError::Internal {
+            message: format!(
+                "failed to remove temporary native derivation {}: {source}",
+                temp_path.display()
+            ),
+        })?,
+        Err(source) if source.kind() == ErrorKind::AlreadyExists => {
+            let existing = fs::read(path).map_err(|source| NativeEvalError::Internal {
+                message: format!(
+                    "failed to read concurrently-created native derivation {}: {source}",
+                    path.display()
+                ),
+            })?;
+            let remove_result = fs::remove_file(&temp_path);
+            if existing == bytes {
+                remove_result.map_err(|source| NativeEvalError::Internal {
+                    message: format!(
+                        "failed to remove temporary native derivation {}: {source}",
+                        temp_path.display()
+                    ),
+                })?;
+                return Ok(());
+            }
+            let _ = remove_result;
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "refusing to overwrite concurrently-created derivation {} with different contents",
+                    path.display()
+                ),
+            }
+            .into());
+        }
+        Err(source) => {
+            let _ = fs::remove_file(&temp_path);
+            return Err(NativeEvalError::Internal {
+                message: format!(
+                    "failed to install native derivation {} from {}: {source}",
+                    path.display(),
+                    temp_path.display()
+                ),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn write_temp_drv(parent: &Path, final_path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    for attempt in 0..100 {
+        let temp_path = temp_drv_path(parent, final_path, attempt)?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(mut file) => {
+                if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(NativeEvalError::Internal {
+                        message: format!(
+                            "failed to write temporary native derivation {}: {source}",
+                            temp_path.display()
+                        ),
+                    }
+                    .into());
+                }
+                return Ok(temp_path);
+            }
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(NativeEvalError::Internal {
+                    message: format!(
+                        "failed to create temporary native derivation {}: {source}",
+                        temp_path.display()
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+
+    Err(NativeEvalError::Internal {
+        message: format!(
+            "failed to allocate temporary native derivation path for {}",
+            final_path.display()
+        ),
+    }
+    .into())
+}
+
+fn temp_drv_path(parent: &Path, final_path: &Path, attempt: u32) -> Result<PathBuf> {
+    let file_name = final_path
+        .file_name()
+        .ok_or_else(|| NativeEvalError::Internal {
+            message: format!(
+                "native derivation path has no file name: {}",
+                final_path.display()
+            ),
+        })?;
+    let mut temp_name = Vec::new();
+    temp_name.push(b'.');
+    temp_name.extend_from_slice(file_name.as_bytes());
+    temp_name.extend_from_slice(format!(".{}.{}.tmp", std::process::id(), attempt).as_bytes());
+    Ok(parent.join(OsString::from_vec(temp_name)))
 }
 
 const JSON_WRAPPER_PREFIX: &str = "builtins.toJSON (\n";
@@ -810,7 +975,7 @@ mod tests {
 
     #[test]
     fn native_instantiation_expr_returns_drv_path() -> Result<()> {
-        let native = NixNative::new(0)?;
+        let (native, root, store) = native_with_temp_store("native-instantiation-expr")?;
 
         let path = native.instantiate_expr(
             r#"derivationStrict {
@@ -820,10 +985,12 @@ mod tests {
                }"#,
         )?;
 
-        assert_eq!(
-            path,
-            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
-        );
+        assert!(path.starts_with(&store), "{}", path.display());
+        assert!(path.to_string_lossy().ends_with("-base.drv"));
+        let bytes = assert_materialized_drv(&path)?;
+        assert!(bytes.starts_with(b"Derive("));
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -1001,8 +1168,75 @@ mod tests {
     }
 
     #[test]
+    fn native_instantiation_expr_materializes_input_drv_closure() -> Result<()> {
+        let (native, root, store) = native_with_temp_store("native-materialized-closure")?;
+        let expr = r#"let
+             base = derivationStrict {
+               name = "base";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+             };
+           in derivationStrict {
+             name = "consumer";
+             system = "x86_64-linux";
+             builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
+             input = "${base.out}";
+           }"#;
+
+        let expected = native.instantiate_expr_closure(expr)?;
+        assert_eq!(expected.drvs().len(), 2);
+        assert!(expected.drvs().keys().all(|path| !path.exists()));
+
+        let path = native.instantiate_expr(expr)?;
+
+        assert_eq!(path, expected.root());
+        assert!(path.starts_with(&store), "{}", path.display());
+        for (path, expected_bytes) in expected.drvs() {
+            let actual = assert_materialized_drv(path)?;
+            assert_eq!(&actual, expected_bytes, "{}", path.display());
+        }
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_refuses_conflicting_existing_drv() -> Result<()> {
+        let (native, root, _store) = native_with_temp_store("native-conflicting-drv")?;
+        let expr = r#"derivationStrict {
+             name = "base";
+             system = "x86_64-linux";
+             builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+           }"#;
+        let closure = native.instantiate_expr_closure(expr)?;
+        let parent = closure
+            .root()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("root derivation path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(closure.root(), b"not a derivation")?;
+
+        let error = native
+            .instantiate_expr(expr)
+            .expect_err("conflicting derivation file must not be overwritten");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Internal { message })
+                    if message.contains("refusing to overwrite existing derivation")
+            ),
+            "{error:?}"
+        );
+        assert_eq!(fs::read(closure.root())?, b"not a derivation");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn native_instantiation_expr_closure_supports_floating_ca_bytes() -> Result<()> {
-        let native = NixNative::new(0)?;
+        let (native, root, store) = native_with_temp_store("native-floating-ca")?;
         let expr = r#"derivationStrict {
              name = "ca";
              system = "x86_64-linux";
@@ -1013,10 +1247,9 @@ mod tests {
            }"#;
 
         let path = native.instantiate_expr(expr)?;
-        assert_eq!(
-            path,
-            PathBuf::from("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv")
-        );
+        assert!(path.starts_with(&store), "{}", path.display());
+        assert!(path.to_string_lossy().ends_with("-ca.drv"));
+        let materialized = assert_materialized_drv(&path)?;
 
         let closure = native.instantiate_expr_closure(expr)?;
         assert_eq!(closure.root(), path);
@@ -1027,12 +1260,15 @@ mod tests {
         let text = std::str::from_utf8(bytes)?;
         assert!(text.contains(r#""r:sha256""#));
         assert!(text.contains(r#"("out","","r:sha256","")"#));
+        assert_eq!(&materialized, bytes);
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn native_path_instantiation_materializes_downstream_deferred_drv_bytes() -> Result<()> {
-        let native = NixNative::new(0)?;
+        let (native, root, store) = native_with_temp_store("native-deferred-drv")?;
         let expr = r#"let
              base = derivationStrict {
                name = "ca";
@@ -1050,11 +1286,16 @@ mod tests {
            }"#;
 
         let path = native.instantiate_expr(expr)?;
+        assert!(path.starts_with(&store), "{}", path.display());
         assert!(path.to_string_lossy().ends_with("-consumer.drv"));
 
         let closure = native.instantiate_expr_closure(expr)?;
         assert_eq!(closure.root(), path);
         assert_eq!(closure.drvs().len(), 2);
+        for (path, expected_bytes) in closure.drvs() {
+            let actual = assert_materialized_drv(path)?;
+            assert_eq!(&actual, expected_bytes, "{}", path.display());
+        }
 
         let root_bytes = closure
             .drvs()
@@ -1065,7 +1306,14 @@ mod tests {
         assert!(!root_text.contains(r#"("out","","","")"#));
         assert!(!root_text.contains(r#"("out","")"#));
         assert_eq!(root_text.matches(r#"("out","/"#).count(), 2);
-        assert!(root_text.contains("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv"));
+        let ca_drv = closure
+            .drvs()
+            .keys()
+            .find(|path| path.to_string_lossy().ends_with("-ca.drv"))
+            .expect("CA input derivation is recorded");
+        assert!(root_text.contains(&ca_drv.display().to_string()));
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -1146,8 +1394,8 @@ mod tests {
 
     #[test]
     fn native_instantiation_imports_file_attr_path() -> Result<()> {
-        let native = NixNative::new(0)?;
-        let dir = unique_temp_dir("aos-nix-native-instantiate");
+        let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate")?;
+        let dir = root.join("src");
         fs::create_dir_all(&dir)?;
         let file = dir.join("default.nix");
         fs::write(
@@ -1162,19 +1410,19 @@ mod tests {
         )?;
 
         let path = native.instantiate(&file, "pkgs.hello")?;
-        let _ = fs::remove_dir_all(&dir);
 
-        assert_eq!(
-            path,
-            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
-        );
+        assert!(path.starts_with(&store), "{}", path.display());
+        assert!(path.to_string_lossy().ends_with("-base.drv"));
+        let _ = assert_materialized_drv(&path)?;
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
     #[test]
     fn native_instantiation_accepts_quoted_attr_path_segments() -> Result<()> {
-        let native = NixNative::new(0)?;
-        let dir = unique_temp_dir("aos-nix-native-instantiate-quoted");
+        let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate-quoted")?;
+        let dir = root.join("src");
         fs::create_dir_all(&dir)?;
         let file = dir.join("default.nix");
         fs::write(
@@ -1189,12 +1437,12 @@ mod tests {
         )?;
 
         let path = native.instantiate(&file, r#""pkgs.with.dot".hello"#)?;
-        let _ = fs::remove_dir_all(&dir);
 
-        assert_eq!(
-            path,
-            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
-        );
+        assert!(path.starts_with(&store), "{}", path.display());
+        assert!(path.to_string_lossy().ends_with("-base.drv"));
+        let _ = assert_materialized_drv(&path)?;
+
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -1277,6 +1525,27 @@ mod tests {
             error.downcast_ref::<NativeEvalError>(),
             Some(NativeEvalError::EvalError { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_rejects_fabricated_drv_path_attrsets() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        let error = native
+            .instantiate_expr(
+                r#"{ drvPath = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fake.drv"; }"#,
+            )
+            .expect_err("fabricated drvPath attrsets do not have native drv bytes");
+
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { message })
+                    if message.contains("not produced by derivationStrict")
+            ),
+            "{error:?}"
+        );
         Ok(())
     }
 
@@ -1515,6 +1784,30 @@ mod tests {
         ));
         assert_eq!(native.name(), "aos-nix");
         Ok(())
+    }
+
+    fn native_with_temp_store(prefix: &str) -> Result<(NixNative, PathBuf, PathBuf)> {
+        let root = unique_temp_dir(prefix);
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let store = root.join("store");
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+        Ok((NixNative::with_options(0, options)?, root, store))
+    }
+
+    fn assert_materialized_drv(path: &Path) -> Result<Vec<u8>> {
+        assert!(
+            path.exists(),
+            "derivation was not written: {}",
+            path.display()
+        );
+        let bytes = fs::read(path)?;
+        assert!(
+            bytes.starts_with(b"Derive("),
+            "materialized derivation did not start with an ATerm Derive node: {}",
+            path.display()
+        );
+        Ok(bytes)
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
