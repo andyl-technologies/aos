@@ -118,6 +118,11 @@ in
         script = ''
           make install
 
+          if [ -f include/qemu/qemu-plugin.h ]; then
+            mkdir -p "$out/include/qemu"
+            install -m 644 include/qemu/qemu-plugin.h "$out/include/qemu/qemu-plugin.h"
+          fi
+
           # Create qemu-kvm symlink for compatibility
           if [ -f "$out/bin/qemu-system-x86_64" ]; then
             ln -s qemu-system-x86_64 "$out/bin/qemu-kvm"

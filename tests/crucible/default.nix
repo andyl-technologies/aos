@@ -30,6 +30,7 @@ in {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
     controlPlaneBoundary = import ./phase1-control-plane-boundary.nix {inherit pkgs lib;};
     crateArtifactTypes = import ./phase1-crate-artifact-types.nix {inherit pkgs lib;};
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
