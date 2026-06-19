@@ -2282,9 +2282,23 @@ pub(crate) async fn org_create_binding(
         )
             .into_response();
     };
+    // Custom s3/r2 bindings have no working fetcher/writer yet; refuse to create
+    // one that cannot serve. New registries use the deployment's default storage.
+    let runtime = RuntimeKind::current();
+    if !kind.implemented_as_custom_binding() {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "custom '{}' bindings are not implemented yet; new registries use \
+                 the deployment's default storage ({})",
+                kind.as_str(),
+                runtime.default_storage_label()
+            ),
+        )
+            .into_response();
+    }
     // The serving runtime gates which kinds are usable; `current()` reflects
     // this process (native hub vs. Worker).
-    let runtime = RuntimeKind::current();
     if !runtime.supports(kind) {
         let supported = runtime
             .supported_binding_kinds()
