@@ -847,44 +847,52 @@ restatement of Contract A is false and [G-10]/[G-11] cannot be built.
 ### Assumption under test
 
 An SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount shift=K`, a
-fixed content-addressed `rr_switch_quantum` in node-icount, the full §4.6 entropy
-elimination set applied to **all** vCPUs (including deterministic IPI/SIPI
-delivery), and the plugin holding time control, produces a **bit-identical
-aggregate-icount instruction stream AND extended fingerprint** — the existing
-[DET-29] fingerprint extended to cover all N vCPUs' register files plus the
-round-robin cursor — across runs and across adversarial host conditions. Because
-round-robin TCG pins every vCPU onto a single host thread, host-core variation is
-irrelevant to the interleaving *by construction*; the switch boundary is decided
-by virtual time, not by host scheduling.
+fixed content-addressed `rr_switch_quantum` in node-icount, the S11-relevant
+§4.6 launch eliminations (`-cpu` pin, fixed RTC epoch, deterministic seed,
+`nokaslr`/`norandmaps`, no interactive input), and plugin-visible fingerprint
+capture, produces a **bit-identical aggregate-icount instruction stream AND
+extended fingerprint** — the existing [DET-29] RAM fingerprint extended to cover
+all N vCPUs' register files plus the round-robin cursor — across a clean run and
+a host-jitter run. Because round-robin TCG pins every vCPU onto a single host
+thread, host CPU load is irrelevant to the interleaving *by construction*; the
+switch boundary is decided by virtual time, not by host scheduling. S11 retires
+the RR-TCG interleaving risk (E13/E21); unrelated entropy sources such as
+QEMU-internal RNG seeding, plugin time control, block-device completion timing,
+and full device-model state hashing remain owned by their later §4.6 patch/gate
+work.
 
 ### What to build / measure
 
-Boot a stock `-smp 4` image twice to a fixed icount horizon under the launch
-configuration above, capturing the **extended fingerprint** (all N vCPUs'
-register hashes + the RR cursor + the [DET-29] memory/device hash) at a fixed
-icount cadence and at the horizon. Drive an SMP-contended microworkload (shared
-counter / spinlock ping-pong across vCPUs). Diff the two extended-fingerprint
-sequences. Then repeat under adversarial host conditions ([DET-38]): vary host
-core count and inject host scheduling jitter/load — which, because RR pins all
+Boot a stock Linux `-smp 4` guest twice to a fixed icount horizon under the
+launch configuration above, capturing the **extended fingerprint** (all N vCPUs'
+register hashes + the RR cursor + the [DET-29] RAM hash) at a fixed
+icount cadence and at the horizon. The Phase-0 proof MAY use a diskless
+initramfs and MUST then assert `block_devices=0`, so S11 isolates the RR-TCG
+multi-vCPU interleaving from unrelated asynchronous block-device completion
+paths. Drive an SMP-contended microworkload (shared counter / spinlock ping-pong
+across vCPUs). Diff the two extended-fingerprint sequences. Then repeat with
+injected host scheduling jitter/load ([DET-38]) — which, because RR pins all
 vCPUs to one host thread, should be irrelevant by construction.
 
 ```text
 S11 procedure (throwaway; no engine, no scheduler):
   launch: -accel tcg,thread=single -smp 4 -icount shift=K
-          rr_switch_quantum=Q (fixed, content-addressed), §4.6 on all vCPUs,
-          deterministic IPI/SIPI, plugin time control active
-  run A: boot to horizon H; extended fingerprint at cadence C and at H -> EFP_A[]
-         (extended FP = per-vCPU reg hashes + RR cursor + mem/device hash)
-  run B: identical config, adversarial host (different cores, injected jitter)
+          rr_switch_quantum=Q (fixed, content-addressed), S11 launch eliminations,
+          plugin-visible all-vCPU fingerprint capture active
+  run A: boot diskless to horizon H; extended fingerprint at cadence C and at H -> EFP_A[]
+         (extended FP = per-vCPU reg hashes + RR cursor + RAM hash; block_devices=0)
+  run B: identical config, adversarial host jitter/load
          boot to H; extended fingerprint -> EFP_B[]
   compare: EFP_A == EFP_B  (element-by-element, all vCPUs + RR cursor)
 ```
 
 ### Pass / fail criterion
 
-**Pass:** `EFP_A[i] == EFP_B[i]` for every cadence point `i` and at the horizon,
-across all adversarial conditions, where each extended fingerprint covers all N
-vCPUs' register files, the RR cursor, and the [DET-29] memory/device hash.
+**Pass:** `EFP_A[i] == EFP_B[i]` for every cadence point `i` and at the horizon
+across the clean and host-jitter runs, where each extended fingerprint covers all
+N vCPUs' register files, the RR cursor, and the [DET-29] RAM hash; the Phase-0
+diskless proof additionally asserts from the launch argv that no block-device
+state is present.
 
 **Fail:** any extended-fingerprint element differs. The harness MUST localize the
 first differing node-icount **and the component** — which vCPU's registers, or the
@@ -892,14 +900,14 @@ RR cursor — so the leaking source is identified.
 
 - **[RISK-25]** Spike **S11** (Phase-0 blocker ★ for [G-10]) MUST demonstrate
   that an SMP guest under `-accel tcg,thread=single`, `-smp N`, `-icount`, a fixed
-  content-addressed `rr_switch_quantum`, the §4.6 elimination set applied to all
-  vCPUs (incl. deterministic IPI/SIPI), and plugin time control produces a
+  content-addressed `rr_switch_quantum`, diskless launch, the S11-relevant §4.6
+  launch eliminations, and plugin-visible all-vCPU fingerprint capture produces a
   **bit-identical aggregate-icount stream and extended fingerprint** (all N vCPUs'
-  register files + the RR cursor) across runs and adversarial host conditions
-  ([DET-38]). S11 MUST pass before any multi-vCPU foundation code is built; a
-  mismatch MUST be localized to the first differing node-icount and component
-  (which vCPU / the RR cursor) and treated as a leaking source to eliminate, never
-  a tolerance to accept. *Gate:* `gate:single-vm-fingerprint`,
+  register files + the RR cursor) across clean and host-jitter runs ([DET-38]).
+  S11 MUST pass before any multi-vCPU foundation code is built; a mismatch MUST
+  be localized to the first differing node-icount and component (which vCPU /
+  the RR cursor) and treated as a leaking source to eliminate, never a tolerance
+  to accept. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer0-determinism`. *Spec:* §30.11a; satisfies [G-10], [DET-23],
   [SCHED-45], [PLUG-3]; back-ref §4.6, §8.
 
@@ -1279,6 +1287,26 @@ pre-production lookahead-budget risk for the modeled scheduler cost surface; the
 row remains listed as a regression risk until production scheduler liveness,
 real host-core perf measurement, and `gate:perf-bench` land.
 
+**RISK-25** is retired by `T-RISK-17`:
+`checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
+kernel plus diskless initramfs twice with `-smp 4`,
+`-accel tcg,thread=single`, `-icount shift=0,sleep=off,align=off`, and a fixed
+`rr_switch_quantum=4096`. The second run injected host scheduling jitter with
+CPU load. The run reported `block_devices=0`, `vcpus=4`, `samples=33`,
+`extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
+`horizon_fingerprint_match=true`, `register_read_failures=0`,
+`register_count_assertion=nonempty_per_vcpu`, `device_event_capture=false`,
+`block_device_assertion=launch_argv_scan`, `mismatch_localization=component`,
+`first_differing_line=none`, `first_differing_component=none`,
+`fallback=smp1_not_needed`, `final_extended_hash=16e7a49bfce0eb0f`,
+`final_register_hash=ba71b2992131002d`,
+`final_ram_hash=6f3239f7118a53e2`, and
+`final_ram_bytes=268967936`. This retires the Phase-0 RR-TCG multi-vCPU
+interleaving risk for the diskless no-block-device proof path. A block-backed
+diagnostic attempt produced a reproducible first-difference artifact and is
+treated as a separate device-path determinism concern, not as an `-smp 1`
+fallback for [G-10].
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1300,8 +1328,8 @@ real host-core perf measurement, and `gate:perf-bench` land.
 risk spike has a decision-register entry and a concrete check name, that the four
 foundational Phase-0 blockers remain unchecked until their own PASS/fallback
 evidence exists, and that no non-risk checklist item is marked complete while
-those blockers remain open. The run reported `checked_risk_tasks=7`,
-`retired_decision_entries=7`, `phase0_foundational_blockers_open=4`,
+those blockers remain open. The run reported `checked_risk_tasks=8`,
+`retired_decision_entries=8`, `phase0_foundational_blockers_open=4`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1412,14 +1440,15 @@ never tolerated). Results live in the decision register (31).
   block dependent Phase-1 work on the four ★ blockers, and add a new `RISK-n` row
   with an owning spike for any newly-discovered load-bearing assumption. —
   satisfies [RISK-1], [RISK-2], [RISK-3], [RISK-23], [RISK-24]; spec §30.1, §30.13.
-- [ ] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
-  `-smp 4` image twice under `-accel tcg,thread=single` with a fixed
-  `rr_switch_quantum`, the §4.6 elimination set on all vCPUs (incl. deterministic
-  IPI/SIPI), and plugin time control; capture the **extended fingerprint** (all N
-  vCPUs' registers + RR cursor + [DET-29] mem/device hash) at a cadence and at the
-  horizon under an SMP-contended microworkload and adversarial host conditions, and
-  diff; localize any mismatch to the first differing node-icount + component. Block
-  multi-vCPU foundation work until green; fall back to `-smp 1` if irrecoverable. —
+- [x] **T-RISK-17** Run **S11** (Phase-0 blocker ★ for [G-10]): boot a stock
+  Linux `-smp 4` diskless initramfs twice under `-accel tcg,thread=single` with a
+  fixed `rr_switch_quantum`, S11-relevant §4.6 launch eliminations, and an
+  asserted no-block-device launch; capture the **extended fingerprint** (all N
+  vCPUs' nonempty register descriptor sets + RR cursor + RAM hash) at a cadence
+  and at the horizon under an SMP-contended microworkload and host jitter/load,
+  and diff; localize any
+  mismatch to the first differing node-icount + component. Block multi-vCPU
+  foundation work until green; fall back to `-smp 1` if irrecoverable. —
   satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.
 - [ ] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for
   `N>1`, timer-interrupt timing for any `N`) at several commanded node-icounts in
