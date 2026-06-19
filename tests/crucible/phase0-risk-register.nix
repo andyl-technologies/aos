@@ -56,6 +56,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-16
           printf '%s\n' T-RISK-17
           printf '%s\n' T-RISK-18
+          printf '%s\n' T-RISK-19
         } > expected-checked-tasks.txt
 
         gawk '
@@ -68,7 +69,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 18 ] || fail "expected 18 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 19 ] || fail "expected 19 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -115,6 +116,11 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "\`known_preemption_injection_surface_found=false\`"
         require_fixed "$risk_doc" "\`default_determinism_prereqs_green=true\`"
         require_fixed "$risk_doc" "\`fallback_adopted=default_deterministic_interleaving_only_until_preemption_injection\`"
+        require_fixed "$risk_doc" "**RISK-27** is resolved by \`T-RISK-19\` with the modeled-throughput default-only fallback"
+        require_fixed "$risk_doc" "\`selected_phase0_default_rr_switch_quantum=4096\`"
+        require_fixed "$risk_doc" "\`race_yield_tested=false\`"
+        require_fixed "$risk_doc" "\`d25_status=open_until_s12_passes_without_fallback\`"
+        require_fixed "$risk_doc" "\`fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection\`"
 
         require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
         require_fixed "$decision_doc" "RISK-6 / RISK-7 / T-RISK-2"
@@ -134,6 +140,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-23 / RISK-24 / T-RISK-16"
         require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
         require_fixed "$decision_doc" "RISK-26 / T-RISK-18"
+        require_fixed "$decision_doc" "RISK-27 / T-RISK-19"
 
         require_fixed "$decision_doc" "checks.crucible.phase0.s1Fingerprint"
         require_fixed "$decision_doc" "checks.crucible.phase0.s2HltBusyPoll"
@@ -170,13 +177,17 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.s12PreemptionDecision"
         require_fixed "$decision_doc" "decision_preemption_exploration_enabled=false"
         require_fixed "$decision_doc" "default_deterministic_interleaving_only_until_preemption_injection"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s13RrSwitchQuantumFallback"
+        require_fixed "$decision_doc" "selected_phase0_default_rr_switch_quantum=4096"
+        require_fixed "$decision_doc" "d25_status=open_until_s12_passes_without_fallback"
+        require_fixed "$decision_doc" "modeled_throughput_default_only_quantum_until_preemption_injection"
 
         mkdir -p "$out"
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=18
-          echo retired_decision_entries=18
+          echo checked_risk_tasks=19
+          echo retired_decision_entries=19
           echo phase0_foundational_blockers_open=0
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0

@@ -895,6 +895,11 @@ becomes a new `Decided` entry referencing the one it supersedes).
 - **Affects:** [SCHED-45], [PLUG-3], [G-9]; files 08, 22, 25. *Spike:*
   [`30-risks-spikes.md`](30-risks-spikes.md) §30.11c (S13, `rr_switch_quantum`
   granularity vs throughput).
+- **Phase-0 S13 outcome:** `checks.crucible.phase0.s13RrSwitchQuantumFallback`
+  adopted `rr_switch_quantum=4096` as a modeled-throughput default-only fallback
+  because S12 disabled commanded preemption exploration. D-25 remains open until
+  S12 passes without fallback and S13 can measure empirical throughput plus
+  race-surfacing yield.
 
 ---
 
@@ -1479,7 +1484,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=18`, `retired_decision_entries=18`,
+  - **Result:** `checked_risk_tasks=19`, `retired_decision_entries=19`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
@@ -1567,6 +1572,36 @@ register.
     default deterministic interleaving until preemption injection lands in the
     AOS QEMU patch series; rerun S12 before enabling the explorer branch.
 
+- **RISK-27 / T-RISK-19 — S13 `rr_switch_quantum` default**
+  - **Status:** PASS WITH FALLBACK; the throughput side of the default-only RR
+    quantum choice is modeled, but race yield is unavailable because S12 disabled
+    commanded preemption exploration. D-25 remains open.
+  - **Check:** `checks.crucible.phase0.s13RrSwitchQuantumFallback`.
+  - **Result:** `candidate_quantums=1024,2048,4096,8192,16384`,
+    `throughput_metric=modeled_retired_instruction_efficiency_x1000`,
+    `throughput_measurement_scope=modeled_rr_switch_overhead_default_only`,
+    `target_efficiency_x1000=980`, `sample_0_efficiency_x1000=941`,
+    `sample_2_rr_switch_quantum=4096`, `sample_2_efficiency_x1000=984`,
+    `coarse_baseline_rr_switch_quantum=16384`,
+    `coarse_baseline_efficiency_x1000=996`,
+    `selected_vs_coarse_efficiency_x1000=987`,
+    `selected_phase0_default_rr_switch_quantum=4096`,
+    `selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
+    `race_yield_tested=false`,
+    `race_yield_source=not_available_s12_preemption_explorer_disabled`,
+    `s12_decision_entry_consumed=true`,
+    `decision_preemption_exploration_enabled=false`,
+    `d25_status=open_until_s12_passes_without_fallback`,
+    `fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection`,
+    `s13_complete=true`.
+  - **Scope:** validates only the Phase-0 default-only fallback. It does not
+    measure S12 race yield, does not claim the final D-25 default is resolved, and
+    does not exercise commanded vCPU-switch or interrupt-timing branches.
+  - **Fallback:** use `rr_switch_quantum=4096` for default deterministic
+    interleaving based on the modeled overhead check until commanded preemption
+    injection lands; rerun S12 and S13 before closing D-25 or enabling per-branch
+    explorer quantum overrides.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed
@@ -1591,7 +1626,8 @@ register.
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
   §08, §25.
-- [ ] **T-D-4** Run the `rr_switch_quantum`-granularity spike (S13): sweep the
+- [ ] **T-D-4** After S12 passes without fallback, rerun the
+  `rr_switch_quantum`-granularity spike (S13): sweep the
   round-robin switch quantum, measure multi-vCPU throughput against the perf budget
   and race-surfacing yield via the S12 explorer, choose the default value, and
   record the resolution superseding D-25 (the per-branch explorer override is the

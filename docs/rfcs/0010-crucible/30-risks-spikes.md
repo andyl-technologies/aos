@@ -1200,7 +1200,7 @@ RISK                                            LIKE  IMPACT  MITIGATION        
 ★ multi-vCPU RR-TCG NOT bit-identical            M     H       patch leak / IPI; else revert to -smp 1     S11 (RISK-25)
   (Phase-0 blocker for G-10) [G-10]
   Decision::Preemption unavailable/not discrim   L     M       default-only until injection API lands      S12 (RISK-26)
-  rr_switch_quantum default (perf vs races)      M     M(perf) coarser default + per-branch override       S13 (RISK-27)
+  rr_switch_quantum default (perf vs races)      M     M(perf) modeled default until S12 green            S13 (RISK-27)
   gdbstub attach/step disturbs icount            L     M       read-only attach + Crucible-driven step      S14 (RISK-28)
   shmem ABI drift passes silently               L     H       gen header + bilateral asserts + golden     RISK-18
   cross-process futex lost/spurious wake        L     H       race-free idiom; jitter stress spike        RISK-19
@@ -1601,6 +1601,31 @@ recorded by S1/S11 until the patch-series preemption-injection capability exists
 and S12 can be rerun as the real commanded vCPU-switch / interrupt-timing race
 test.
 
+**RISK-27** is resolved by `T-RISK-19` with the modeled-throughput default-only fallback:
+`checks.crucible.phase0.s13RrSwitchQuantumFallback` consumed the S12 fallback
+result, swept candidate `rr_switch_quantum` values in a deterministic default-only
+RR switch-overhead model, and selected `4096` as the smallest S11-green quantum
+above the throughput floor. The run reported
+`candidate_quantums=1024,2048,4096,8192,16384`,
+`throughput_metric=modeled_retired_instruction_efficiency_x1000`,
+`throughput_measurement_scope=modeled_rr_switch_overhead_default_only`,
+`target_efficiency_x1000=980`, `sample_0_efficiency_x1000=941`,
+`sample_2_rr_switch_quantum=4096`, `sample_2_efficiency_x1000=984`,
+`coarse_baseline_rr_switch_quantum=16384`,
+`coarse_baseline_efficiency_x1000=996`,
+`selected_vs_coarse_efficiency_x1000=987`,
+`selected_phase0_default_rr_switch_quantum=4096`,
+`selected_default_basis=s11_green_smallest_quantum_above_throughput_floor`,
+`race_yield_tested=false`,
+`race_yield_source=not_available_s12_preemption_explorer_disabled`,
+`d25_status=open_until_s12_passes_without_fallback`, and
+`fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection`.
+Phase 0 therefore keeps the S11-proven `rr_switch_quantum=4096` as a
+modeled-throughput default-only value, but it does not claim empirical throughput
+against the §25 budget and does not close D-25's race-yield half. The real
+default-selection spike must be rerun after S12 enables commanded preemption
+exploration.
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1623,8 +1648,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=18`,
-`retired_decision_entries=18`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=19`,
+`retired_decision_entries=19`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1647,7 +1672,7 @@ Gated-but-not-blocking spikes:
   S9   determinism survives AOS QEMU build / version bumps (pin build id; re-gate)
   S10  multi-arch doorbell on aarch64 (else aarch64 black-box only)
   S12  Decision::Preemption reproducible + discriminating (else default-only)
-  S13  rr_switch_quantum default: perf vs races (D-25; coarser + per-branch o/r)
+  S13  rr_switch_quantum default: perf vs races (D-25 stays open until S12 green)
   S14  gdbstub attach/step doesn't disturb icount (else read-only + Crucible step)
 
 Secondary validations / standing risks:
@@ -1781,12 +1806,15 @@ never tolerated). Results live in the decision register (31).
   interleaving until the patch capability lands and S12 is rerun. — resolves
   [RISK-26] by disabling the [G-11] exploration surface for now; does not yet
   satisfy [SCHED-46] or [DET-12] for commanded preemption; spec §30.11b.
-- [ ] **T-RISK-19** Run **S13**: sweep `rr_switch_quantum`, reporting per value the
-  multi-vCPU throughput against the [`25-performance-targets.md`](25-performance-targets.md)
-  budget and the race-surfacing yield via the S12 explorer; record the resolved
-  default (closing **D-25**). Correctness-neutral; fall back to a coarser default
-  with per-branch explorer overrides. — satisfies [RISK-27], [D-25], [SCHED-45],
-  [PLUG-3]; spec §30.11c.
+- [x] **T-RISK-19** Run **S13** fallback: consume the S12 fallback, model the
+  default-only `rr_switch_quantum` throughput side, select the S11-green
+  `rr_switch_quantum=4096`, and record `race_yield_tested=false`. The full S13
+  sweep that reports empirical multi-vCPU throughput against the
+  [`25-performance-targets.md`](25-performance-targets.md) budget, measures
+  race-surfacing yield via the S12 explorer, and closes **D-25** remains deferred
+  until S12 passes without fallback. — resolves [RISK-27] by adopting the
+  modeled-throughput default-only fallback; does not close [D-25] yet; spec
+  §30.11c.
 - [ ] **T-RISK-20** Run **S14**: attach the gdbstub at a known icount, confirm
   read-only operations leave the [DET-29] fingerprint and icount unchanged, and
   confirm any gdb single-step is routed through the scheduler's deterministic step
