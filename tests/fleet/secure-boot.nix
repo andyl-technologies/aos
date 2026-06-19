@@ -152,6 +152,16 @@ in {
       # enforcement, the real proof). Remount /boot rw to tamper it;
       # `mount` needs util-linux on PATH (not on the agent PATH).
       mount = "${pkgs.util-linux}/bin/mount"
+      # Ensure the ESP is actually mounted before flipping it rw. /boot is a
+      # plain fstab vfat mount (modules/base/filesystems.nix) pulled by
+      # local-fs.target, NOT a hard dependency of multi-user.target — under
+      # load its fsck+mount can still be settling (or have transiently
+      # failed) once we reach here, so a bare `remount,rw` races and dies
+      # with "mount point not mounted". `systemctl start boot.mount` is
+      # synchronous and idempotent: it joins an in-flight mount job or
+      # re-drives a failed/inactive one, and surfaces a clear error if the
+      # ESP genuinely cannot mount.
+      target.succeed("systemctl start boot.mount")
       target.succeed(f"{mount} -o remount,rw /boot")
       uki = target.succeed("ls /boot/EFI/Linux/aos-*.efi | head -1").strip()
       print(f"UKI: {uki}")
