@@ -1424,6 +1424,32 @@ including a mid-I/O burst and plugin time-control state. RISK-9 is retired for
 the default realization discipline; RISK-8 is mitigated by non-use of unverified
 fat snapshots, not retired for the fat-snapshot optimization.
 
+**RISK-12** is retired by `T-RISK-5`:
+`checks.crucible.phase0.s5VirtualMemory` booted a diskless stock Linux guest and
+used a throwaway instruction-marker doorbell double whose register triplet carried
+`(kind, ptr, len)` at the marker instruction. The plugin read those registers at
+the marker, called QEMU's `qemu_plugin_read_memory_vaddr`, and verified the bytes
+against deterministic payload formulas before the guest poisoned the buffers after
+the marker. The run covered three virtual-address placements:
+resident static storage, a payload spanning two guest pages, and an anonymous
+`mmap` region subject to the guest's normal page tables. Two read-enabled runs
+matched exactly, and a read-disabled control matched the final fingerprint. The
+run reported `qemu_plugin_read_memory_vaddr_available=true`,
+`doorbell_surface=phase0_instruction_marker_double`,
+`payload_source=register_triplet_kind_ptr_len`,
+`virtual_address_read_result=pass`, `placements=3`,
+`resident_read=pass`, `page_spanning_read=pass`, `paged_mmap_read=pass`,
+`marker_icounts=3002401208,3002411158,3002477481`,
+`marker_icounts_reproducible=true`, `read_bytes_match_expected=true`,
+`read_hashes_reproducible=true`, `side_effect_free_fingerprint_match=true`,
+`production_whitebox_channel_implemented=false`, and
+`physical_pinned_fallback_adopted=false`. This retires the S5 virtual-vs-physical
+payload-address risk for the measured plugin memory-read path: the convenient
+virtual pointer+length form is sound enough to remain the default for the future
+white-box channel. The production doorbell, binary frame decoder, inertness, and
+white-box on/off fingerprint gates remain owned by the later `T-GHC-*` and
+`T-PLUG-*` implementation tasks.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1466,8 +1492,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=12`,
-`retired_decision_entries=12`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=13`,
+`retired_decision_entries=13`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1483,7 +1509,7 @@ Phase-0 blockers (run/pass first, in priority order):
   S11 ★  deterministic multi-vCPU under RR-TCG + icount (G-10; else revert -smp 1)
 
 Gated-but-not-blocking spikes:
-  S5   plugin reads guest VIRTUAL memory at trap (else physical/pinned page)
+  S5   plugin reads guest VIRTUAL memory via marker double (physical fallback unused)
   S6   deterministic boot WITH KASLR (else keep nokaslr/norandmaps default)
   S7   exact next-deadline + zero ceiling overshoot (else TB-split / conservative)
   S8   TCG-exec coverage cheap enough for fuzzing (else cheaper representation)
@@ -1537,9 +1563,12 @@ never tolerated). Results live in the decision register (31).
   satisfies [RISK-8] via fallback adoption, [RISK-9], and [QEMU-21]; keeps full
   [DET-32] / [QEMU-27] fat-snapshot content equality gated on a later complete S3
   run; spec §30.4.
-- [ ] **T-RISK-5** Run **S5**: plugin reads guest **virtual** memory at the doorbell
-  trap icount (resident / page-spanning / paged buffers), reproducibly and
-  side-effect-free; default to the physical/pinned identity page until green. —
+- [x] **T-RISK-5** Run **S5**: plugin reads guest **virtual** memory at the
+  doorbell trap icount (resident / page-spanning / paged buffers), reproducibly
+  and side-effect-free; default to the physical/pinned identity page until green.
+  Phase 0 verified QEMU's `qemu_plugin_read_memory_vaddr` using a synchronous
+  instruction-marker doorbell double carrying `(kind, ptr, len)` in registers;
+  the production white-box channel remains a later implementation task. —
   satisfies [RISK-12], [GHC-33]; spec §30.6.
 - [ ] **T-RISK-6** Run **S6**: KASLR/ASLR-enabled boot fingerprint-identical across
   runs given fully-seeded E8/E9; decide whether `nokaslr`/`norandmaps` are required
