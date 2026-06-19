@@ -2182,10 +2182,14 @@ async fn deploy_worker(
         email_api_token: args.email_api_token.clone(),
     };
     let applied = cloudflare::deploy(assets, &cfg, &secrets).await?;
-    if applied.minted {
-        println!("NOTE: store these minted secrets — they are not recoverable:");
-        println!("  HUB_JWT_SECRET={}", applied.jwt_secret);
-        println!("  HUB_SEAL_KEY={}", applied.seal_key);
+    if applied.minted_jwt_secret.is_some() || applied.minted_seal_key.is_some() {
+        println!("NOTE: store these freshly minted secrets — they are not recoverable:");
+        if let Some(jwt) = &applied.minted_jwt_secret {
+            println!("  HUB_JWT_SECRET={jwt}");
+        }
+        if let Some(seal) = &applied.minted_seal_key {
+            println!("  HUB_SEAL_KEY={seal}");
+        }
     }
     match &args.domain {
         Some(domain) => println!("deployed: bound to {domain}"),
