@@ -280,13 +280,25 @@ struct WorkerArgs {
     /// The KV namespace title for sessions.
     #[arg(long, default_value = "SESSIONS")]
     kv_title: String,
-    /// The deployed Worker's externally-reachable base URL.
+    /// The hub's canonical public base URL (scheme + host), e.g.
+    /// https://aos.andyl.org. This is the origin the hub emits about *itself*:
+    /// the `{external_url}/{slug}` push/pull URL in setup snippets, the OIDC
+    /// redirect_uri base (must match what's registered with your IdP), the
+    /// WebAuthn relying-party ID passkeys bind to, and absolute links on browse
+    /// pages. Clients, browsers, and your IdP all reach the hub here — it is not
+    /// a Cloudflare identifier. Set it to one of your --custom-domain values (or
+    /// the *.workers.dev URL if you bind none).
     #[arg(long)]
     external_url: String,
-    /// Bind the Worker to a custom domain (e.g. aos.andyl.org); its zone must be
-    /// on the same Cloudflare account. Omit to serve on *.workers.dev only.
-    #[arg(long)]
-    custom_domain: Option<String>,
+    /// Bind the Worker to a custom domain (repeatable: pass once per domain).
+    /// Each domain's zone must be on the same Cloudflare account; `wrangler
+    /// deploy` provisions its DNS record + edge cert and emits one
+    /// `custom_domain` route so Cloudflare sends that hostname to this Worker.
+    /// Omit to serve only on *.workers.dev. Bind the hub's own domain plus any
+    /// per-registry/per-cache frontend domains here; the hub dispatches them
+    /// internally by Host header.
+    #[arg(long = "custom-domain")]
+    custom_domains: Vec<String>,
     /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
@@ -2118,7 +2130,7 @@ async fn provision_worker(
         &args.kv_title,
         &args.external_url,
         args.email_relay_url.as_deref(),
-        args.custom_domain.as_deref(),
+        &args.custom_domains,
     )
     .await
 }
