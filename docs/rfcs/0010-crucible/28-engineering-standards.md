@@ -548,7 +548,7 @@ the conditions under which feature code can be trusted to stay deterministic
   iteration and unordered `select`, plus bare-`unsafe`-without-`// SAFETY:`
   detection; deterministic, file/line/rule findings, zero-tolerance. — satisfies
   [STD-10] (1, 4), [STD-12], [STD-17]; spec §2.2.
-- [ ] **T-STD-6** Implement the annotated-exception mechanism (`#[allow]` /
+- [x] **T-STD-6** Implement the annotated-exception mechanism (`#[allow]` /
   `// crucible-lint: allow` with mandatory rationale) and the rule that an
   un-annotated allow is itself a finding; treat the lint config as versioned spec
   surface that is never weakened to pass. — satisfies [STD-13], [STD-14],

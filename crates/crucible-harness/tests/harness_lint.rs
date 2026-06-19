@@ -122,6 +122,28 @@ fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dy
 }
 
 #[test]
+fn allow_annotations_are_checked_for_all_crucible_targets() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let mut findings = Vec::new();
+
+    for spec in crate_spec_index() {
+        let package_dir = root.join(spec.package);
+        for source in rust_sources(&package_dir)? {
+            let content = fs::read_to_string(&source)?;
+            findings.extend(allow_annotation_failures(&source, &content));
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "gate:harness-lint allow-annotation findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn harness_lint_rejects_banned_code_patterns() {
     let findings = scan_content(
         Path::new("synthetic.rs"),
@@ -415,6 +437,283 @@ fn harness_lint_rejects_custom_static_analysis_drift() {
 }
 
 #[test]
+fn harness_lint_enforces_annotated_exceptions() {
+    let map_findings = scan_content(
+        Path::new("synthetic.rs"),
+        r#"
+            fn allowed() {
+                // crucible-lint: allow unordered-map-set -- synthetic pure lookup cache, order never escapes
+                let _map: std::collections::HashMap<u8, u8> = std::collections::HashMap::new();
+            }
+        "#,
+    );
+    assert!(
+        map_findings.is_empty(),
+        "expected annotated map exception to pass, got {map_findings:?}"
+    );
+
+    let iteration_findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            use std::collections::HashMap;
+
+            fn allowed() {
+                let map: HashMap<u8, u8> = HashMap::new();
+                // crucible-lint: allow hash-iteration -- synthetic cache is sorted before any state/log use
+                for item in map.iter() {
+                    consume(item);
+                }
+            }
+        "#,
+    );
+    assert!(
+        iteration_findings.is_empty(),
+        "expected annotated iteration exception to pass, got {iteration_findings:?}"
+    );
+
+    let malformed_findings = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            fn bad() {
+                // crucible-lint: allow hash-iteration
+                work();
+            }
+        "#,
+    );
+    assert_contains(&malformed_findings, "malformed crucible-lint allow");
+
+    let unannotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&unannotated_allow, "unannotated allow");
+
+    let mismatched_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow unordered-map-set -- wrong rule for this clippy allow
+            #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&mismatched_allow, "unannotated allow");
+
+    let cfg_attr_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            #[cfg_attr(test, allow(clippy::disallowed_methods))]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&cfg_attr_allow, "unannotated allow");
+
+    let same_line_unannotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            #[derive(Debug)] #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&same_line_unannotated_allow, "unannotated allow");
+
+    let same_line_annotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- same-line allow attribute is tied to this exception
+            #[derive(Debug)] #[allow(clippy::disallowed_types)]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        same_line_annotated_allow.is_empty(),
+        "expected annotated same-line allow attribute to pass, got {same_line_annotated_allow:?}"
+    );
+
+    let multiline_preceding_same_line_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            #[derive(
+                Debug
+            )] #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&multiline_preceding_same_line_allow, "unannotated allow");
+
+    let multi_rule_missing_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- type allow is tied to this exception
+            #[allow(clippy::disallowed_types, clippy::unwrap_used)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&multi_rule_missing_allow, "unannotated allow");
+
+    let multi_rule_annotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- type allow is tied to this exception
+            // crucible-lint: allow panic-shortcut -- panic lint allow is tied to this exception
+            #[allow(clippy::disallowed_types, clippy::unwrap_used)]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        multi_rule_annotated_allow.is_empty(),
+        "expected fully annotated multi-rule allow attribute to pass, got {multi_rule_annotated_allow:?}"
+    );
+
+    let compact_marker_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            //crucible-lint: allow clippy-disallowed-type -- compact marker syntax is invalid
+            #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&compact_marker_allow, "malformed crucible-lint allow");
+    assert_contains(&compact_marker_allow, "unannotated allow");
+
+    let token_spaced_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            # [allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&token_spaced_allow, "unannotated allow");
+
+    let newline_spaced_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            #
+            [allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&newline_spaced_allow, "unannotated allow");
+
+    let trailing_marker_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            let _not_a_marker = 0; // crucible-lint: allow clippy-disallowed-type -- trailing marker syntax is invalid
+            #[allow(clippy::disallowed_types)]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&trailing_marker_allow, "malformed crucible-lint allow");
+    assert_contains(&trailing_marker_allow, "unannotated allow");
+
+    let error_logging_allowed = error_logging_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            fn allowed() {
+                // crucible-lint: allow panic-shortcut -- synthetic shortcut is isolated to this regression sample
+                maybe().unwrap();
+                // crucible-lint: allow direct-diagnostic -- synthetic stdout is isolated to this regression sample
+                println!("diagnostic");
+                // crucible-lint: allow erased-error -- synthetic erased error is isolated to this regression sample
+                anyhow::bail!("error");
+                // crucible-lint: allow stringly-error -- synthetic string error is isolated to this regression sample
+                let _value: Result<(), String> = Ok(());
+            }
+        "#,
+        false,
+    );
+    assert!(
+        error_logging_allowed.is_empty(),
+        "expected annotated error/logging exceptions to pass, got {error_logging_allowed:?}"
+    );
+
+    let multiline_mismatched_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow rust-allow -- wrong rule for multiline clippy allow
+            #[allow(
+                clippy::disallowed_types
+            )]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&multiline_mismatched_allow, "unannotated allow");
+
+    let multiline_annotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- multiline clippy allow is tied to this exception
+            #[allow(
+                clippy::disallowed_types
+            )]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        multiline_annotated_allow.is_empty(),
+        "expected annotated multiline allow attribute to pass, got {multiline_annotated_allow:?}"
+    );
+
+    let multiline_cfg_attr_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-method -- multiline cfg_attr clippy allow is tied to this exception
+            #[cfg_attr(
+                test,
+                allow(clippy::disallowed_methods)
+            )]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        multiline_cfg_attr_allow.is_empty(),
+        "expected annotated multiline cfg_attr allow to pass, got {multiline_cfg_attr_allow:?}"
+    );
+
+    let split_head_mismatched_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow rust-allow -- wrong rule for split-head clippy allow
+            #[
+                allow(clippy::disallowed_types)
+            ]
+            fn bad() {}
+        "#,
+    );
+    assert_contains(&split_head_mismatched_allow, "unannotated allow");
+
+    let split_head_annotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- split-head clippy allow is tied to this exception
+            #[
+                allow(clippy::disallowed_types)
+            ]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        split_head_annotated_allow.is_empty(),
+        "expected annotated split-head allow attribute to pass, got {split_head_annotated_allow:?}"
+    );
+
+    let annotated_allow = custom_static_analysis_failures(
+        Path::new("synthetic.rs"),
+        r#"
+            // crucible-lint: allow clippy-disallowed-type -- synthetic clippy allow is tied to this exception
+            #[allow(clippy::disallowed_types)]
+            fn allowed() {}
+        "#,
+    );
+    assert!(
+        annotated_allow.is_empty(),
+        "expected annotated allow attribute to pass, got {annotated_allow:?}"
+    );
+}
+
+#[test]
 fn harness_lint_rejects_clippy_tier_drift() {
     let package_manifests = [(
         "crucible-sim",
@@ -494,6 +793,25 @@ const HASH_ITERATION_METHODS: &[&str] = &[
     "symmetric_difference",
     "union",
 ];
+const LINT_ALLOW_PREFIX: &str = "crucible-lint: allow ";
+const LINT_ALLOW_SEPARATOR: &str = " -- ";
+const LINT_RULES: &[&str] = &[
+    "host-wall-clock",
+    "host-monotonic-time",
+    "thread-global-rng",
+    "host-rng",
+    "unordered-map-set",
+    "nondeterministic-select",
+    "hash-iteration",
+    "unordered-select",
+    "clippy-disallowed-method",
+    "clippy-disallowed-type",
+    "rust-allow",
+    "panic-shortcut",
+    "erased-error",
+    "direct-diagnostic",
+    "stringly-error",
+];
 
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -550,43 +868,97 @@ fn scan_content(path: &Path, content: &str) -> Vec<String> {
         };
 
         match identifier.as_str() {
-            "SystemTime" => {
-                findings.push(finding(path, token.line, "host wall-clock", "SystemTime"))
-            }
-            "Instant" => findings.push(finding(path, token.line, "host monotonic time", "Instant")),
-            "thread_rng" => {
-                findings.push(finding(path, token.line, "thread/global RNG", "thread_rng"))
-            }
-            "rng" if previous_path_identifier(&tokens, index) == Some("rand") => {
-                findings.push(finding(path, token.line, "thread/global RNG", "rand::rng"))
-            }
+            "SystemTime" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "host wall-clock",
+                "SystemTime",
+                "host-wall-clock",
+            ),
+            "Instant" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "host monotonic time",
+                "Instant",
+                "host-monotonic-time",
+            ),
+            "thread_rng" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "thread/global RNG",
+                "thread_rng",
+                "thread-global-rng",
+            ),
+            "rng" if previous_path_identifier(&tokens, index) == Some("rand") => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "thread/global RNG",
+                "rand::rng",
+                "thread-global-rng",
+            ),
             "from_entropy"
                 if matches!(
                     previous_path_identifier(&tokens, index),
                     Some("StdRng" | "SmallRng")
                 ) =>
             {
-                findings.push(finding(
+                push_finding(
+                    &mut findings,
                     path,
+                    content,
                     token.line,
                     "thread/global RNG",
                     "from_entropy",
-                ));
+                    "thread-global-rng",
+                );
             }
-            "OsRng" => findings.push(finding(path, token.line, "host RNG", "OsRng")),
-            "getrandom" => findings.push(finding(path, token.line, "host RNG", "getrandom")),
-            "HashMap" | "HashSet" => {
-                findings.push(finding(path, token.line, "unordered map/set", identifier))
-            }
+            "OsRng" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "host RNG",
+                "OsRng",
+                "host-rng",
+            ),
+            "getrandom" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "host RNG",
+                "getrandom",
+                "host-rng",
+            ),
+            "HashMap" | "HashSet" => push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "unordered map/set",
+                identifier,
+                "unordered-map-set",
+            ),
             "select"
                 if next_is_bang(&tokens, index) && select_macro_is_unordered(&tokens, index) =>
             {
-                findings.push(finding(
+                push_finding(
+                    &mut findings,
                     path,
+                    content,
                     token.line,
                     "nondeterministic select",
                     "select!",
-                ))
+                    "nondeterministic-select",
+                )
             }
             _ => {}
         }
@@ -600,9 +972,10 @@ fn custom_static_analysis_failures(path: &Path, content: &str) -> Vec<String> {
     let tokens = tokenize(&scrubbed);
     let hash_containers = hash_container_bindings(&tokens);
 
-    let mut findings = hash_container_iteration_failures(path, &tokens, &hash_containers);
-    findings.extend(unordered_select_failures(path, &tokens));
+    let mut findings = hash_container_iteration_failures(path, content, &tokens, &hash_containers);
+    findings.extend(unordered_select_failures(path, content, &tokens));
     findings.extend(bare_unsafe_block_failures(path, content, &tokens));
+    findings.extend(allow_annotation_failures(path, content));
     findings
 }
 
@@ -672,6 +1045,7 @@ fn token_is_hash_container(token: &Token) -> bool {
 
 fn hash_container_iteration_failures(
     path: &Path,
+    content: &str,
     tokens: &[Token],
     hash_containers: &BTreeSet<String>,
 ) -> Vec<String> {
@@ -686,17 +1060,21 @@ fn hash_container_iteration_failures(
             && previous_is_punct(tokens, index, '.')
             && method_target_is_hash_container(tokens, index, hash_containers)
         {
-            findings.push(finding(
+            push_finding(
+                &mut findings,
                 path,
+                content,
                 token.line,
                 "unordered hash-container iteration",
                 &format!(".{identifier}()"),
-            ));
+                "hash-iteration",
+            );
         }
 
         if identifier == "for" {
             findings.extend(for_loop_hash_iteration_failure(
                 path,
+                content,
                 tokens,
                 index,
                 hash_containers,
@@ -724,6 +1102,7 @@ fn method_target_is_hash_container(
 
 fn for_loop_hash_iteration_failure(
     path: &Path,
+    content: &str,
     tokens: &[Token],
     for_index: usize,
     hash_containers: &BTreeSet<String>,
@@ -741,12 +1120,17 @@ fn for_loop_hash_iteration_failure(
     };
 
     if hash_containers.contains(iterated.name) {
-        vec![finding(
+        let mut findings = Vec::new();
+        push_finding(
+            &mut findings,
             path,
+            content,
             iterated.line,
             "unordered hash-container iteration",
             &format!("for ... in {}", iterated.name),
-        )]
+            "hash-iteration",
+        );
+        findings
     } else {
         Vec::new()
     }
@@ -775,7 +1159,7 @@ fn for_loop_iterated_binding(tokens: &[Token], mut index: usize) -> Option<Bindi
     })
 }
 
-fn unordered_select_failures(path: &Path, tokens: &[Token]) -> Vec<String> {
+fn unordered_select_failures(path: &Path, content: &str, tokens: &[Token]) -> Vec<String> {
     let mut findings = Vec::new();
 
     for (index, token) in tokens.iter().enumerate() {
@@ -783,7 +1167,15 @@ fn unordered_select_failures(path: &Path, tokens: &[Token]) -> Vec<String> {
             && next_is_bang(tokens, index)
             && select_macro_is_unordered(tokens, index)
         {
-            findings.push(finding(path, token.line, "unordered select", "select!"));
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "unordered select",
+                "select!",
+                "unordered-select",
+            );
         }
     }
 
@@ -1104,41 +1496,72 @@ fn error_logging_failures(path: &Path, content: &str, is_binary_boundary: bool) 
         if matches!(identifier.as_str(), "unwrap" | "expect")
             && previous_is_punct(&tokens, index, '.')
         {
-            findings.push(finding(
+            push_finding(
+                &mut findings,
                 path,
+                content,
                 token.line,
                 "panic shortcut",
                 &format!(".{identifier}()"),
-            ));
+                "panic-shortcut",
+            );
         }
 
         if !is_binary_boundary
             && matches!(identifier.as_str(), "println" | "eprintln" | "print")
             && next_is_bang(&tokens, index)
         {
-            findings.push(finding(
+            push_finding(
+                &mut findings,
                 path,
+                content,
                 token.line,
                 "direct stdout/stderr diagnostic",
                 &format!("{identifier}!"),
-            ));
+                "direct-diagnostic",
+            );
         }
 
         if !is_binary_boundary && matches!(identifier.as_str(), "anyhow" | "eyre" | "miette") {
-            findings.push(finding(path, token.line, "erased error", identifier));
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "erased error",
+                identifier,
+                "erased-error",
+            );
         }
 
         if !is_binary_boundary && identifier == "bail" && next_is_bang(&tokens, index) {
-            findings.push(finding(path, token.line, "erased error", "bail!"));
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "erased error",
+                "bail!",
+                "erased-error",
+            );
         }
 
         if !is_binary_boundary && identifier == "dyn" && dyn_error_follows(&tokens, index) {
-            findings.push(finding(path, token.line, "erased error", "dyn Error"));
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "erased error",
+                "dyn Error",
+                "erased-error",
+            );
         }
     }
 
     findings.extend(result_string_error_failures(
         path,
+        content,
         &tokens,
         is_binary_boundary,
     ));
@@ -1148,6 +1571,7 @@ fn error_logging_failures(path: &Path, content: &str, is_binary_boundary: bool) 
 
 fn result_string_error_failures(
     path: &Path,
+    content: &str,
     tokens: &[Token],
     is_binary_boundary: bool,
 ) -> Vec<String> {
@@ -1197,12 +1621,15 @@ fn result_string_error_failures(
         }
 
         if error_uses_string {
-            findings.push(finding(
+            push_finding(
+                &mut findings,
                 path,
+                content,
                 start_line,
                 "stringly error",
                 "Result<_, String>",
-            ));
+                "stringly-error",
+            );
         }
 
         index += 1;
@@ -1216,6 +1643,249 @@ fn finding(path: &Path, line: usize, reason: &str, pattern: &str) -> String {
         "{}:{line}: banned {reason} pattern `{pattern}`",
         path.display()
     )
+}
+
+fn push_finding(
+    findings: &mut Vec<String>,
+    path: &Path,
+    content: &str,
+    line: usize,
+    reason: &str,
+    pattern: &str,
+    rule: &str,
+) {
+    if !has_lint_allow_for_line(content, line, rule) {
+        findings.push(finding(path, line, reason, pattern));
+    }
+}
+
+fn allow_annotation_failures(path: &Path, content: &str) -> Vec<String> {
+    let mut findings = Vec::new();
+    let scrubbed = scrub_comments_and_strings(content);
+    let scrubbed_lines: Vec<&str> = scrubbed.lines().collect();
+    let comment_lines = line_comment_texts(content);
+
+    for index in 0..scrubbed_lines.len() {
+        let line_number = index + 1;
+        if let Some(comment) = comment_lines.get(index).and_then(Option::as_ref)
+            && comment.text.trim_start().starts_with(LINT_ALLOW_PREFIX)
+            && lint_allow_rule_from_comment(comment).is_none()
+        {
+            findings.push(finding(
+                path,
+                line_number,
+                "malformed crucible-lint allow",
+                "crucible-lint: allow",
+            ));
+        }
+
+        for required_rule in allow_attribute_rules_on_line(&scrubbed_lines, index) {
+            if !has_lint_allow_in_preceding_marker_block(content, line_number, required_rule) {
+                findings.push(finding(path, line_number, "unannotated allow", "#[allow]"));
+            }
+        }
+    }
+
+    findings
+}
+
+fn has_lint_allow_for_line(content: &str, line: usize, rule: &str) -> bool {
+    has_lint_allow_on_previous_line(content, line, rule)
+}
+
+fn has_lint_allow_on_previous_line(content: &str, line: usize, required_rule: &str) -> bool {
+    if line <= 1 {
+        return false;
+    }
+
+    let comment_lines = line_comment_texts(content);
+    comment_lines
+        .get(line - 2)
+        .and_then(Option::as_ref)
+        .and_then(lint_allow_rule_from_comment)
+        == Some(required_rule)
+}
+
+fn has_lint_allow_in_preceding_marker_block(
+    content: &str,
+    line: usize,
+    required_rule: &str,
+) -> bool {
+    if line <= 1 {
+        return false;
+    }
+
+    let comment_lines = line_comment_texts(content);
+    let mut index = line - 2;
+    loop {
+        let Some(rule) = comment_lines
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(lint_allow_rule_from_comment)
+        else {
+            return false;
+        };
+
+        if rule == required_rule {
+            return true;
+        }
+
+        if index == 0 {
+            return false;
+        }
+        index -= 1;
+    }
+}
+
+fn lint_allow_rule_from_comment(comment: &LineComment) -> Option<&str> {
+    if !comment.is_line_leading {
+        return None;
+    }
+
+    let rest = comment
+        .text
+        .strip_prefix(' ')?
+        .strip_prefix(LINT_ALLOW_PREFIX)?;
+    lint_allow_rule_from_rest(rest)
+}
+
+fn lint_allow_rule_from_rest(rest: &str) -> Option<&str> {
+    let (rule, rationale) = rest.split_once(LINT_ALLOW_SEPARATOR)?;
+    (LINT_RULES.contains(&rule) && !rationale.trim().is_empty()).then_some(rule)
+}
+
+fn allow_attribute_rules_on_line(lines: &[&str], start: usize) -> Vec<&'static str> {
+    let Some(first_line) = lines.get(start) else {
+        return Vec::new();
+    };
+    if !first_line.contains('#') {
+        return Vec::new();
+    }
+
+    let mut rules = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(attribute_start) = next_attribute_start(lines[start], cursor) {
+        if let Some(attribute) = attribute_text(lines, start, attribute_start) {
+            for rule in allow_attribute_rules(&attribute.normalized) {
+                push_unique_rule(&mut rules, rule);
+            }
+
+            if attribute.end_line != start {
+                break;
+            }
+            cursor = attribute.end_column;
+        } else {
+            cursor = attribute_start + 1;
+        }
+    }
+
+    rules
+}
+
+fn next_attribute_start(line: &str, cursor: usize) -> Option<usize> {
+    line.get(cursor..)
+        .and_then(|rest| rest.find('#').map(|relative| cursor + relative))
+}
+
+fn attribute_text(lines: &[&str], start: usize, start_column: usize) -> Option<AttributeText> {
+    let mut normalized = String::new();
+    let mut bracket_depth = 0usize;
+    let mut saw_attribute = false;
+
+    for (line_offset, line) in lines[start..].iter().enumerate() {
+        let line_start = if line_offset == 0 { start_column } else { 0 };
+        for (byte_offset, ch) in line[line_start..].char_indices() {
+            if !ch.is_whitespace() {
+                normalized.push(ch);
+            }
+
+            match ch {
+                '[' => {
+                    saw_attribute = true;
+                    bracket_depth += 1;
+                }
+                ']' if saw_attribute => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    if bracket_depth == 0 {
+                        return Some(AttributeText {
+                            normalized,
+                            end_line: start + line_offset,
+                            end_column: line_start + byte_offset + ch.len_utf8(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    None
+}
+
+fn allow_attribute_rules(normalized: &str) -> Vec<&'static str> {
+    let is_direct_allow = normalized.starts_with("#[allow(") || normalized.starts_with("#![allow(");
+    let is_cfg_attr =
+        normalized.starts_with("#[cfg_attr(") || normalized.starts_with("#![cfg_attr(");
+
+    if !(is_direct_allow || is_cfg_attr && normalized.contains("allow(")) {
+        return Vec::new();
+    }
+
+    let mut rules = Vec::new();
+    for allow_group in allow_group_texts(normalized) {
+        for lint in allow_group
+            .split(',')
+            .map(str::trim)
+            .filter(|lint| !lint.is_empty())
+        {
+            let rule = match lint {
+                "clippy::disallowed_types" => "clippy-disallowed-type",
+                "clippy::disallowed_methods" => "clippy-disallowed-method",
+                "clippy::unwrap_used" | "clippy::expect_used" => "panic-shortcut",
+                _ => "rust-allow",
+            };
+            push_unique_rule(&mut rules, rule);
+        }
+    }
+    rules
+}
+
+fn allow_group_texts(normalized: &str) -> Vec<&str> {
+    let mut groups = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(relative) = normalized[cursor..].find("allow(") {
+        let open_paren = cursor + relative + "allow".len();
+        if let Some(close_paren) = closing_paren(normalized, open_paren) {
+            groups.push(&normalized[open_paren + 1..close_paren]);
+            cursor = close_paren + 1;
+        } else {
+            break;
+        }
+    }
+    groups
+}
+
+fn closing_paren(value: &str, open_paren: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (byte_index, ch) in value[open_paren..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(open_paren + byte_index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn push_unique_rule<'a>(rules: &mut Vec<&'a str>, rule: &'a str) {
+    if !rules.contains(&rule) {
+        rules.push(rule);
+    }
 }
 
 fn tokenize(content: &str) -> Vec<Token> {
@@ -1328,6 +1998,128 @@ fn is_identifier_continue(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
+fn line_comment_texts(content: &str) -> Vec<Option<LineComment>> {
+    let chars: Vec<char> = content.chars().collect();
+    let mut comments = Vec::new();
+    let mut index = 0;
+    let mut line = 1;
+    let mut line_has_code = false;
+    let mut state = ScannerState::Code;
+
+    while index < chars.len() {
+        ensure_comment_line(&mut comments, line);
+        let ch = chars[index];
+        let next = chars.get(index + 1).copied();
+        match state {
+            ScannerState::Code => {
+                if ch == '/' && next == Some('/') {
+                    let mut cursor = index + 2;
+                    let mut comment = String::new();
+                    while cursor < chars.len() && chars[cursor] != '\n' {
+                        comment.push(chars[cursor]);
+                        cursor += 1;
+                    }
+                    comments[line - 1] = Some(LineComment {
+                        text: comment,
+                        is_line_leading: !line_has_code,
+                    });
+                    index = cursor;
+                } else if ch == '/' && next == Some('*') {
+                    index += 2;
+                    state = ScannerState::BlockComment(1);
+                } else if ch == '"' {
+                    line_has_code = true;
+                    index += 1;
+                    state = ScannerState::String;
+                } else if let Some(end) = char_literal_end(&chars, index) {
+                    line_has_code = true;
+                    if advance_line_count(&chars[index..end], &mut line) {
+                        line_has_code = false;
+                    }
+                    index = end;
+                } else if let Some(end) = raw_string_end(&chars, index) {
+                    line_has_code = true;
+                    if advance_line_count(&chars[index..end], &mut line) {
+                        line_has_code = false;
+                    }
+                    index = end;
+                } else {
+                    if ch == '\n' {
+                        line += 1;
+                        line_has_code = false;
+                    } else if !ch.is_whitespace() {
+                        line_has_code = true;
+                    }
+                    index += 1;
+                }
+            }
+            ScannerState::LineComment => {
+                if ch == '\n' {
+                    line += 1;
+                    line_has_code = false;
+                    state = ScannerState::Code;
+                }
+                index += 1;
+            }
+            ScannerState::BlockComment(depth) => {
+                if ch == '/' && next == Some('*') {
+                    index += 2;
+                    state = ScannerState::BlockComment(depth + 1);
+                } else if ch == '*' && next == Some('/') {
+                    index += 2;
+                    if depth == 1 {
+                        state = ScannerState::Code;
+                    } else {
+                        state = ScannerState::BlockComment(depth - 1);
+                    }
+                } else {
+                    if ch == '\n' {
+                        line += 1;
+                        line_has_code = false;
+                    }
+                    index += 1;
+                }
+            }
+            ScannerState::String => {
+                if ch == '\\' && next.is_some() {
+                    if next == Some('\n') {
+                        line += 1;
+                        line_has_code = false;
+                    }
+                    index += 2;
+                } else if ch == '"' {
+                    index += 1;
+                    state = ScannerState::Code;
+                } else {
+                    if ch == '\n' {
+                        line += 1;
+                        line_has_code = false;
+                    }
+                    index += 1;
+                }
+            }
+        }
+    }
+
+    if comments.is_empty() {
+        comments.push(None);
+    }
+
+    comments
+}
+
+fn ensure_comment_line(comments: &mut Vec<Option<LineComment>>, line: usize) {
+    if comments.len() < line {
+        comments.resize_with(line, || None);
+    }
+}
+
+fn advance_line_count(chars: &[char], line: &mut usize) -> bool {
+    let newline_count = chars.iter().filter(|ch| **ch == '\n').count();
+    *line += newline_count;
+    newline_count > 0
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Token {
     kind: TokenKind,
@@ -1338,6 +2130,19 @@ struct Token {
 struct BindingRef<'a> {
     name: &'a str,
     line: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AttributeText {
+    normalized: String,
+    end_line: usize,
+    end_column: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LineComment {
+    text: String,
+    is_line_leading: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
