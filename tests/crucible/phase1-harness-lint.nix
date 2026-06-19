@@ -6,6 +6,7 @@
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
+  harnessLintRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
 
   hasInfix = needle: haystack: let
@@ -310,7 +311,6 @@
       reason = "erased error";
     }
   ];
-
   listRustFiles = dir: let
     entries = builtins.readDir dir;
   in
@@ -493,6 +493,40 @@
   in
     workspaceDenyFailures ++ methodFailures ++ typeFailures ++ manifestFailures ++ buildHookFailures;
 
+  customStaticTierFailures = let
+    requiredRustTierText = [
+      "custom_static_analysis_tier_runs_over_crucible_sources"
+      "for spec in crate_spec_index()"
+      "package_dir.join(\"src\")"
+      "custom_static_analysis_failures"
+      "hash_container_iteration_failures"
+      "unordered_select_failures"
+      "select_macro_is_unordered"
+      "bare_unsafe_block_failures"
+      "has_immediately_preceding_safety_comment"
+      "HASH_ITERATION_METHODS"
+      "\"iter_mut\""
+      "\"values_mut\""
+      "\"into_keys\""
+      "\"into_values\""
+      "\"biased\""
+      "stale_safety_findings"
+    ];
+    rustTierFailures =
+      lib.concatMap (
+        required:
+          lib.optionals (!(hasInfix required harnessLintRust)) [
+            "crates/crucible-harness/tests/harness_lint.rs: missing custom static-analysis tier wiring `${required}`"
+          ]
+      )
+      requiredRustTierText;
+    packageHookFailures =
+      lib.optionals (!(hasInfix "doCheck=true" (normalize cruciblePackageNix) && hasInfix "cargoTestFlags=packageFlags" (normalize cruciblePackageNix))) [
+        "pkgs/tools/crucible/crucible.nix: missing package test hook for Rust custom static-analysis tier"
+      ];
+  in
+    rustTierFailures ++ packageHookFailures;
+
   regressionFailures = let
     findings = scanContent "regression.rs" ''
       fn bad() {
@@ -608,7 +642,7 @@
       "harness-lint regression failed to reject manifest error policy drift"
     ];
 
-  failures = sourceFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures;
+  failures = sourceFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -630,11 +664,12 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-CRATE-7,T-STD-3,T-STD-4
+            tasks=T-CRATE-7,T-STD-3,T-STD-4,T-STD-5
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
+            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,unordered-select,immediate-safety-comments
             RESULT
           '';
         }
