@@ -630,7 +630,7 @@ Crucible needs and marks the seam.
   fingerprint, deliver-input, snapshot, restore, shutdown), object-safe or single
   generic, with no QEMU/FFI types named in the engine. — satisfies [CRATE-6],
   [CRATE-10]; spec §3, §4.
-- [ ] **T-CRATE-5** Implement the in-process `SimBackend` under the engine's
+- [x] **T-CRATE-5** Implement the in-process `SimBackend` under the engine's
   `test-double` feature in SAFE Rust, deterministic via `crucible-sim`, sufficient
   to run the engine determinism gates with no QEMU. — satisfies [CRATE-7];
   spec §4.

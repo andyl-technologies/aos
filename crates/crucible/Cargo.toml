@@ -6,7 +6,8 @@ publish = false
 
 [features]
 default = []
-test-double = []
+test-double = ["dep:crucible-sim"]
 qemu-backend = []
 
 [dependencies]
+crucible-sim = { path = "../crucible-sim", optional = true }
