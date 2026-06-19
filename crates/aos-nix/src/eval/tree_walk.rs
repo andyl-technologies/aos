@@ -11105,7 +11105,7 @@ impl TreeWalk {
             let canonical_uri =
                 self.fetch_tree_unresolved_forge_canonical_uri(id, span, input_type, attrs)?;
             self.check_fetch_tree_forge_access(id, span, &canonical_uri)?;
-            if self.options.eval_mode() == EvalMode::Pure && expected_nar_hash.is_none() {
+            if self.options.eval_mode() == EvalMode::Pure {
                 return Err(TreeWalkError::new(
                     TreeWalkErrorKind::FetchTreeLockedInputRequired {
                         id,
@@ -49002,6 +49002,30 @@ mod tests {
                 ..
             }
         ));
+
+        for source in [
+            format!(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={nar_hash_query}""#),
+            format!(
+                r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; narHash = "{nar_hash}"; }}"#
+            ),
+        ] {
+            let error = eval_whnf_owned_with_options(
+                &lower(&source),
+                TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+            )
+            .expect_err("pure forge fetchTree rejects mutable refs even with narHash");
+            assert!(
+                matches!(
+                    error.kind(),
+                    TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                        input,
+                        mode: EvalMode::Pure,
+                        ..
+                    } if input == format!("github:NixOS/nixpkgs/main?narHash={nar_hash_query}").as_bytes()
+                ),
+                "{source}: {error:?}",
+            );
+        }
 
         let error = eval_whnf_owned_with_options(
             &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#),
