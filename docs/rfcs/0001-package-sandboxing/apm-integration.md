@@ -181,7 +181,13 @@ nar_hash    = "sha256:..."
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1"]
+requires-features = [
+  "expose-v1",
+  "expose-artifact-v1",
+  "permissions-v1",
+  "network-policy-v1",
+  # plus "requires-v1" when expose.requires is non-empty
+]
 
 # NEW: this package exposes a systemd handle + a container (every package does).
 [versions.platforms.x86_64-linux.expose]
@@ -197,6 +203,12 @@ format       = "ext4"                # "ext4" | "erofs" | "dir" | "oci" (TBD)
 store_path   = "/nix/store/...-myapp-container-root"
 nar_hash     = "sha256:..."
 nar_size     = 0
+
+# NEW: rendered units plus manifest, produced by pkg.expose.
+[versions.platforms.x86_64-linux.expose_artifact]
+store_path   = "/nix/store/...-expose-myapp"
+nar_hash     = "sha256:..."
+nar_size     = 4096
 
 # NEW: the declared, signed privilege manifest — defined in permissions.md.
 # Empty here = a tightly-sandboxed container. k3s would list host network,
@@ -214,10 +226,14 @@ pub struct ExposeMeta {
     pub units: Vec<String>,
     pub images: Vec<SysrootImageEntry>, // reuse the existing struct
     pub requires: Vec<String>,          // service deps by package NAME (Decision 18)
+    pub config: ExposeConfigMeta,       // config artifacts and credentials
+    pub provides: Vec<ProvidedCapabilityMeta>,
+    pub uses: Vec<RequiredCapabilityMeta>,
     // no `kind` — every exposing package is a container; see PermissionsMeta
 }
 // added to PackageMeta as:
 //   pub expose: Option<ExposeMeta>,
+//   pub expose_artifact: Option<ExposeArtifactMeta>,
 //   pub permissions: PermissionsMeta,   // the signed manifest, see permissions.md
 ```
 
@@ -230,21 +246,19 @@ pub struct ExposeMeta {
 > a package cannot widen its own privileges after publish. See Decision 1 in
 > [`open-questions.md`](open-questions.md), now resolved by this model.
 
-`requires` is **new resolver surface**: today's resolution
-(`crates/aos-package/src/resolve.rs`) finds the root package by name and then
-walks dependencies by store-path hash only — `PackageMeta.references` carries
-hashes, never names. Resolving `requires` means name-level resolution per
-entry plus closure merge (the download path already deduplicates by hash). The
-semantics — target-level `After=`/`Wants=` edges between flat siblings — live
-in [`container-model.md`](container-model.md) §Composition.
+`requires` is **package-name resolver surface**: current resolution
+(`crates/aos-package/src/resolve.rs`) finds the root package by name, walks the
+store-path reference graph for closure edges, and also pulls in package names
+listed in `expose.requires`. Typed capability consumers in `expose.uses`
+resolve their provider packages through the same package index. The target-level
+`After=`/`Wants=` edges between flat siblings live in
+[`container-model.md`](container-model.md) §Composition.
 
 Reusing `SysrootImageEntry` for `expose.images` is deliberate: the container
 root is "just another pre-compiled image artifact," and the verify/download
-machinery already understands that struct. *Needs verification:* whether the
-existing `images:` resolution path is wired into `apm install` for non-sysroot
-packages, or only consulted on the system-upgrade path. From the findings,
-`images:` is documented as "sysroot only" today, so the installer change in §4
-must explicitly resolve `expose.images` for ordinary packages.
+machinery already understands that struct. `apm install` and upgrade now
+explicitly resolve `expose.images[].store_path` for ordinary packages and verify
+the image NAR against signed registry metadata before generation activation.
 
 ### 2.3 The runtime nspawn shape (Option B sketch)
 
@@ -700,20 +714,16 @@ works:
 
 | Stage | Today | Change for containerized packages |
 |---|---|---|
-| Registry metadata | `PackageMeta` | + `expose` (target/units/images) + `[permissions]` manifest (permissions.md), all `#[serde(default)]` |
-| Resolve | `resolve_multiple()` | also enqueue `expose.images[].store_path` |
-| Download / verify / import | NAR path | **unchanged** — container root is just another NAR |
-| Profile generation | gc-root + meta + FHS | also gc-root the container-root image |
-| **Expose phase** | *(does not exist)* | **NEW**: drop launch unit + template instance + `aos-pkg-<name>.target`, then enable |
+| Registry metadata | `PackageMeta` | + `min-format`/`requires-features`, `expose` (target/units/images/requires/config/provides/uses), `expose_artifact`, and signed `[permissions]` manifest (permissions.md), all `#[serde(default)]` |
+| Resolve | `resolve_multiple()` | also pull `expose.requires` and provider packages named by `expose.uses` |
+| Download / verify / import | NAR path | also fetch and verify `expose_artifact` plus `expose.images[]` as signed secondary artifacts |
+| Profile generation | gc-root + meta + FHS | also gc-root the expose artifact and container-root image |
+| **Expose phase** | *(does not exist)* | materialize rendered units/drop-ins + `aos-pkg-<name>.target` into the package generation, then enable |
 | Activation | n/a | `systemctl enable --now` (runtime) or Ignition `systemd.units[]` (first boot) |
 | Trust | tag-signed metadata + NAR hash + cache sig | **unchanged** for delivery — roots ride the same chain |
 | Attestation / provenance | tag-sig + anti-rollback floor only | + `root_digest`/`root_hash`/`root_hash_sig`/`provenance`/`measurement` (§7.2); registry hosts provenance + golden values, never a runtime signer (§7.1); full TUF + transparency log (§7.3); design in [`attestation.md`](attestation.md) |
 
-The two genuinely new pieces are (a) the **expose phase** post-install hook and
-(b) where its **unit files physically land** under the immutable-root /etc
-overlay (§4.1). Both, plus config delivery and the baked-vs-fetched trust split,
-are the open items carried into [`open-questions.md`](open-questions.md).
-
-Phase 0 implements the consumer/schema side for registry metadata that is
-authored by a generator or by hand. `apr publish` emission and build-time
-`expose` rendering are intentionally part of Phase 1.
+The P0/P1 schema and renderer/publish path are now implemented: package
+authors declare `expose`, the build renderer emits `pkg.expose/manifest.json`,
+and `apr publish --expose-manifest` writes the signed registry metadata after
+revalidating the manifest.

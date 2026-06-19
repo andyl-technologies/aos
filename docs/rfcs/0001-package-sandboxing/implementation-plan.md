@@ -127,7 +127,8 @@ invent a field.
 - [x] **Hybrid package metadata (D12).** Add `expose: Option<ExposeMeta>` and the
       signed `permissions` manifest to `PackageMeta`; registry TOML gains
       `[…expose]` + `[…permissions]` sections, all `#[serde(default)]`. Shape:
-      `ExposeMeta { target: String, units: Vec<String>, images: Vec<…>, requires: Vec<String> }`.
+      `ExposeMeta { target, units, images, requires, config, provides, uses }`,
+      plus `ExposeArtifactMeta` and the signed `PermissionsMeta` surface.
       The TOML (tag-signed, visible pre-fetch) carries `target`/`requires`/the
       `[permissions]` manifest so `apm info --permissions` and the host policy
       check work **without** fetching the closure; the rendered unit files ride
@@ -863,11 +864,22 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       exposes `systemd-creds`, signed-PCR TPM2 encryption flags, credstore
       tmpfiles entries, `systemd-measure`, TPM2 setup units and generator, and the
       cryptsetup TPM2 token plugin. Verified by `checks.systemd-credentials`.
-- [ ] **Exact `expose` schema (P0/P1).** The precise units / permissions /
-      `requires` / container-root-reference shape, co-designed with the registry
-      metadata ([`apm-integration.md`](apm-integration.md) §2) and gated on D19.
-- [ ] **`expose.permissions` validation point (P1).** Build-time, `apr publish`,
-      or both (lean: both — build for authoring feedback, publish as the gate).
+- [x] **Exact `expose` schema (P0/P1).** Verified in
+      `crates/aos-package/src/types.rs`: `PackageMeta` carries
+      `min-format`, `requires-features`, `expose: Option<ExposeMeta>`,
+      `expose_artifact: Option<ExposeArtifactMeta>`, and the signed
+      `PermissionsMeta`; `ExposeMeta` covers target, units, images, package
+      `requires`, config artifacts/credentials, and typed capability
+      `provides`/`uses`. The registry writer emits the matching TOML and
+      required feature gates from the rendered manifest, so the P0 schema and
+      P1 renderer/publish artifact are one contract.
+- [x] **`expose.permissions` validation point (P1).** Verified as both:
+      `pkgs/build-support/_expose-renderer.nix` validates
+      `expose.permissions` while rendering package-authored `expose` metadata,
+      and `apr publish --expose-manifest` parses the renderer manifest through
+      `read_publish_expose_manifest()`, revalidates `expose` and
+      `permissions`, computes confinement when absent, and rejects malformed
+      MAC/profile artifacts before writing registry TOML.
 - [x] **Runtime package scope (P5).** Whether runtime apm-installed packages share
       the `system` scope or get their own (`crates/aos-package/src/profile/mod.rs`);
       the apm package generation must stay independent of the toplevel generation.

@@ -1,6 +1,6 @@
 # Authoring packages: the `expose` attribute
 
-Status: planning (direction resolved by investigation; exact schema open)
+Status: implemented for MVP (schema and validation placement verified)
 Siblings: [README.md](README.md) · [permissions.md](permissions.md) ·
 [container-model.md](container-model.md) · [apm-integration.md](apm-integration.md) ·
 [boot-activation.md](boot-activation.md) · [config.md](config.md) ·
@@ -53,14 +53,12 @@ exactly our Decision 18.
 
 All ground-truthed against the current tree:
 
-- **`mkDerivation` is ready** (`lib/derivations.nix:478–656`): it already has
-  `passthru`, `overrideAttrs`, multi-output support, and a `removeAttrs`
-  filter list. One required change: unknown attrs flow into
-  `builtins.derivation` (env serialization), where a nested attrset fails — so
-  `expose` must be **added to the filter list** (one line) and routed to the
-  renderer instead. This also settles "one namespaced attr vs. N top-level
-  args": every top-level key would be a permanent filter-list entry and a
-  reserved word; one attr is one entry.
+- **`mkDerivation` routes `expose`** (`lib/derivations.nix`,
+  `pkgs/default.nix`): `expose` is filtered out of the derivation environment
+  instead of being serialized into `builtins.derivation`, then routed to the
+  renderer and surfaced through `passthru`. This also settles "one namespaced
+  attr vs. N top-level args": every top-level key would be a permanent
+  filter-list entry and a reserved word; one attr is one entry.
 - **The optional-attr pattern already exists in-house**: `checks`
   (`default.nix:137–151`) is an optional per-package attribute enumerated via
   `builtins.attrNames pkgs` + `pkg ? checks`. `expose` is the second instance
@@ -75,9 +73,10 @@ All ground-truthed against the current tree:
   `pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
   `passthru` — so editing a unit re-renders text and never rebuilds the
   payload, and the payload's closure never references its own integration.
-- **The name `expose` is free** (zero uses in `.nix` or `crates/`), and the
-  obvious alternative `system` is **taken** — it is the core derivation
-  platform attribute (`lib/derivations.nix:730`).
+- **The name `expose` was free at adoption**, and the obvious alternative
+  `system` was already taken as the core derivation platform attribute. The
+  implemented tree now uses `expose` consistently for package-authored service
+  integration and the rendered artifact.
 
 ## Authoring shapes
 
@@ -200,52 +199,29 @@ the distro norm: static units that read runtime config from `/etc`
 is runtime config, not eval-time parameterization. Per-host variation is config
 delivery, never unit-text variation.
 
+## Implemented schema
+
+The registry schema is the Rust/TOML contract in
+`crates/aos-package/src/types.rs`: `PackageMeta` carries `min-format`,
+`requires-features`, `expose: Option<ExposeMeta>`,
+`expose_artifact: Option<ExposeArtifactMeta>`, and the signed
+`PermissionsMeta`. `ExposeMeta` contains the activation `target`, rendered
+`units`, package-root `images`, package-name `requires`, config
+artifacts/credentials, and typed capability `provides`/`uses`.
+
+`expose.permissions` is validated at both intended gates:
+`pkgs/build-support/_expose-renderer.nix` validates package-authored
+permissions during build-time rendering, and `apr publish --expose-manifest`
+parses the rendered manifest through `read_publish_expose_manifest()`,
+revalidates `expose` plus `permissions`, computes confinement if missing, and
+rejects malformed MAC/profile artifacts before writing registry metadata.
+
+Typed capability routing is the Decision 18 target in this flat package model:
+packages may still use `requires = [ ... ]` for coarse install-time pull-in and
+target ordering, while `provides`/`uses` model typed cross-package routes under
+the `capability-routes-v1` feature gate.
+
 ## Open
 
-- The exact `expose` schema (units / permissions / `requires` /
-  container-root reference) — co-designed with the registry metadata
-  ([apm-integration.md](apm-integration.md) §2) and gated on the schema
-  capability-gate fix (Decision 19).
-- Whether `expose.permissions` is validated at package build, at
-  `apr publish`, or both (lean: both — build-time for authoring feedback,
-  publish-time as the gate).
 - Naming alignment with nixpkgs Modular Services (`passthru.services`) if AOS
   ever wants interop — cosmetic, defer.
-- **Flat declaration vs. typed capability routing (the Fuchsia question).**
-  AOS shares the keyword `expose` with Fuchsia's component framework (CFv2),
-  but they mean different things, and the comparison surfaces a real design
-  fork ([state-of-the-art.md](state-of-the-art.md) §"Capability/component
-  OSes" — `use`/`offer`/`expose`). In Fuchsia, `expose` is **directional and
-  non-transitive**: a component `expose`s a capability *upward* to its parent
-  only so the parent can *re-offer* it to a sibling. The parent itself
-  **cannot `use`** an exposed capability, and a consumer reaches a provider
-  only via the `expose`→`offer`→`use` chain routed through their **common
-  ancestor**. That asymmetry is not incidental — it is what mechanically
-  guarantees **acyclic dependencies** (capabilities only flow up-then-down a
-  tree, never in a cycle) and **least privilege / deny-by-default** (a
-  component starts with *zero* capabilities and gets only what is explicitly
-  routed to it).
-
-  AOS's `expose` is today a **flat declaration** — a package's `units`,
-  `permissions`, and `requires` listed in one block on the derivation, with no
-  routing topology. The open question for the implementer: does AOS keep the
-  flat model (simpler authoring, one mechanism, no tree to maintain — but no
-  cycle-freedom guarantee and no routed least-privilege for *cross-package
-  service* dependencies), or adopt **typed capability routing** for the edges
-  between packages? This is the same frontier nixpkgs Modular Services names as
-  its open future ("typed cross-service connections", cited above) and is
-  precisely **Decision 18** (`requires`,
-  [open-questions.md](open-questions.md) §18), which today materializes as flat
-  `After=`/`Wants=` ordering edges between package targets with **no solver**
-  and no provider/consumer typing.
-
-  Under this RFC's unlimited-engineering-budget mandate, **cost is no longer a
-  reason to keep `requires` flat** — typed routing must be evaluated on its
-  merits, not dismissed as too expensive. Staying flat may still be the right
-  product call for a server/fleet OS (a small set of long-lived system services
-  is not the same problem as Fuchsia's deep, dynamically-composed component
-  topology, and `After=`/`Wants=` over a flat package set is well understood
-  and debuggable), but that decision should be made **deliberately** — with the
-  least-privilege and acyclicity guarantees Fuchsia buys from routing weighed
-  explicitly against the authoring and resolver complexity it costs — rather
-  than defaulted to because routing was assumed out of budget.

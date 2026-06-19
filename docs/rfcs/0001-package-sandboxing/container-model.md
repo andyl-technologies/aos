@@ -433,16 +433,12 @@ No inheritance, no transitive union, ever.
 A package's `expose` block may declare `requires = ["b"]`
 ([authoring.md](authoring.md)); apm resolves it like any dependency and the
 expose phase materializes `After=`/`Wants=` edges between the **targets**
-(`aos-pkg-a.target` → `aos-pkg-b.target`). Honest gap: this is genuinely
-**new resolver surface** — today's resolver
-(`crates/aos-package/src/resolve.rs`) finds the root by name but walks
-dependencies by store-path hash only; `PackageMeta` has no named dependencies
-(Decision 18 in [open-questions.md](open-questions.md)). The supporting fact
-is favorable: `apm install a b` already lands both in **one profile
-generation**, so cross-package edges materialize atomically before the
-generation switch. Keeping ordering edges is deliberate: snapd offers *no*
-cross-snap ordering and its users hand-roll retry loops as a recurring,
-documented pain point.
+(`aos-pkg-a.target` → `aos-pkg-b.target`). Current resolution
+(`crates/aos-package/src/resolve.rs`) pulls both `expose.requires` package
+names and provider packages referenced by typed `expose.uses` routes; the
+profile switch still lands the resulting set atomically. Keeping ordering edges
+is deliberate: snapd offers *no* cross-snap ordering and its users hand-roll
+retry loops as a recurring, documented pain point.
 
 **Rule 3 — communication channels are declared on both sides.** B exposes a
 socket/port; A declares the matching `host-paths` (unix socket dir) or network
