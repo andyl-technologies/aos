@@ -87,7 +87,7 @@ Two fields matter a lot for this design and are worth calling out:
   ```
 
   This is the existing precedent for "a package can ship more than just its own
-  closure." The container-root design (below) is essentially a second use of
+  closure." The package-root image design (below) is essentially a second use of
   this same pattern.
 
 ### 1.2 The real `apm install` path
@@ -121,12 +121,11 @@ Profile layout (`crates/aos-package/src/profile/mod.rs`):
 └── gen-2/...
 ```
 
-**The critical observation for this whole design:** `apm install` today does
-*store delivery and profile bookkeeping only*. It downloads, verifies, imports,
-and records — but it has **no post-install hook** that touches systemd, writes
-units, enables targets, or starts machines. "Exposing a container" is exactly
-that missing step. The rest of this doc is about adding it without disturbing
-steps 1–6.
+**The critical observation for this whole design:** the pre-RFC `apm install`
+path did *store delivery and profile bookkeeping only*. It downloaded, verified,
+imported, and recorded packages, but did not touch systemd, write units, enable
+targets, or start services. The RFC-0001 expose phase is the added step that
+materializes generated units without disturbing steps 1–6.
 
 One favorable ground-truth update: the systemd client surface already exists —
 `crates/aos-systemd` is a complete async zbus D-Bus client (start / stop /
@@ -187,18 +186,18 @@ requires-features = [
   # plus "requires-v1" when expose.requires is non-empty
 ]
 
-# NEW: this package exposes a systemd handle + a container (every package does).
+# NEW: this package exposes a systemd handle plus generated units.
 [versions.platforms.x86_64-linux.expose]
 target       = "aos-pkg-myapp.target"   # the activation handle apm registers
 units        = ["myapp.service"]     # member units pulled by the target
-# No "kind" field: under the unified model every exposing package IS a
-# container. Privilege is declared separately in the [permissions] manifest
-# (see permissions.md); k3s is just a container with a long permission list.
+# No "kind" field: under the unified model every exposing package gets a
+# package target. Privilege is declared separately in the [permissions] manifest
+# (see permissions.md); k3s is a high-privilege package with an explicit grant list.
 
-# NEW: container root delivered as a separate artifact (like images:).
+# Optional: package root image delivered as a separate artifact (like images:).
 [[versions.platforms.x86_64-linux.expose.images]]
-format       = "ext4"                # "ext4" | "erofs" | "dir" | "oci" (TBD)
-store_path   = "/nix/store/...-myapp-container-root"
+format       = "ext4-verity"         # package root image with signed dm-verity metadata
+store_path   = "/nix/store/...-myapp-package-root"
 nar_hash     = "sha256:..."
 nar_size     = 0
 
@@ -252,8 +251,8 @@ resolve their provider packages through the same package index. The target-level
 `After=`/`Wants=` edges between flat siblings live in
 [`container-model.md`](container-model.md) §Composition.
 
-Reusing `SysrootImageEntry` for `expose.images` is deliberate: the container
-root is "just another pre-compiled image artifact," and the verify/download
+Reusing `SysrootImageEntry` for `expose.images` is deliberate: the package
+root image is "just another pre-compiled image artifact," and the verify/download
 machinery already understands that struct. `apm install` and upgrade now
 explicitly resolve `expose.images[].store_path` for ordinary packages and verify
 the image NAR against signed registry metadata before generation activation.
@@ -261,7 +260,7 @@ the image NAR against signed registry metadata before generation activation.
 ### 2.3 The runtime nspawn shape (Option B sketch)
 
 The fine-grained launch parameters belong with the artifact, e.g.
-`<container-root>/.aos-nspawn.toml`, read by the future nspawn launch unit
+`<package-root>/.aos-nspawn.toml`, read by the future nspawn launch unit
 generator, not by
 the registry resolver:
 
@@ -294,8 +293,9 @@ For infrastructure that ships on every machine (k3s today), the package root is
 a Nix derivation built alongside the host image and referenced from the system
 closure. The build pattern is the same `exportReferencesGraph`,
 `mkfs.ext4 -d`, and `fakeroot` flow that `lib/build/rootfs.nix` already uses
-for the host rootfs — see [`container-model.md`](container-model.md) for the proposed
-`lib/build/container-root.nix`. Delivery is then "free": the artifact is already
+for the host rootfs — see the implemented
+[`lib/build/package-root-image.nix`](../../../lib/build/package-root-image.nix)
+builder. Delivery is then "free": the artifact is already
 in `/nix/store` because it is in the system closure. No registry fetch happens.
 
 - **Pro:** zero runtime fetch, works air-gapped, integrity is the same as the
@@ -305,12 +305,12 @@ in `/nix/store` because it is in the system closure. No registry fetch happens.
 
 ### 3.2 Fetched from the registry as a package artifact (install-time)
 
-For optional/per-tenant workloads, the container root is a *separate store path*
+For optional/per-tenant workloads, the package root is a *separate store path*
 named by `expose.images[].store_path` and fetched exactly like any other NAR:
 
 1. `apm install` resolves `expose.images[].store_path` to its closure (via the
    same `closures/<hash>` adjacency walk).
-2. `download_nars()` pulls the container-root NAR from the `[[caches]]` mirror.
+2. `download_nars()` pulls the package-root NAR from the `[[caches]]` mirror.
 3. `verify_nar_hash()` checks it against `expose.images[].nar_hash`.
 4. `import_nar()` writes it to `/nix/store`.
 5. `create_gc_roots()` roots it in the new generation so it survives GC.
@@ -318,7 +318,7 @@ named by `expose.images[].store_path` and fetched exactly like any other NAR:
 This is **the same five-step path** as the package's own closure (§1.2). The
 only new work is teaching the resolver to *also* enqueue
 `expose.images[].store_path` as a root to fetch. That keeps the security story
-identical: the container root is content-addressed, NAR-hashed, and gc-rooted
+identical: the package root is content-addressed, NAR-hashed, and gc-rooted
 just like everything else.
 
 | Aspect | Baked (§3.1) | Fetched (§3.2) |
@@ -330,11 +330,10 @@ just like everything else.
 | Integrity | host image hash | `nar_hash` + cache signature |
 | Good for | k3s, base infra | optional workloads |
 
-**Honest gap:** AOS builds today are *source → derivation → NAR*, not
-*rootfs → squashfs*. No container-root images are produced yet by any package.
-The `lib/build/container-root.nix` builder in
-[`container-model.md`](container-model.md) is **net-new** and unbuilt. Until it
-exists, "fetched container root" is a schema with no producer.
+**Implemented producer:** package-root images are produced by
+[`lib/build/package-root-image.nix`](../../../lib/build/package-root-image.nix),
+which emits the `root.img` / verity tuple consumed by generated `RootImage=`
+services and covered by the `expose.images[]` metadata.
 
 ---
 
@@ -462,12 +461,13 @@ generation.
 
 ## 6. The high-privilege case: k3s
 
-k3s is a **high-privilege container** — see [`permissions.md`](permissions.md)
-for its manifest. It is still a container like every other package, but its
-`[permissions]` manifest declares host network, broad capabilities,
-cgroup-delegate, host-paths, and kernel-modules, so its container is a
-packaging/lifecycle wrapper, not a security boundary. It needs host privilege
-that a default sandbox would deny. The k3s-worker exposed package
+k3s is a **high-privilege package** — see [`permissions.md`](permissions.md)
+for its manifest. It still gets the same package target and generated unit
+lifecycle as other exposing packages, but its `[permissions]` manifest declares
+host network, broad capabilities, cgroup delegation, host paths, and
+kernel-modules. That means the target is a packaging/lifecycle wrapper, not a
+security boundary. It needs host privilege that a default sandbox would deny.
+The k3s-worker exposed package
 (`pkgs/kubernetes/k3s-worker.nix`, via
 `pkgs/kubernetes/_k3s-expose-package.nix`) already shows why:
 
@@ -482,44 +482,44 @@ expose = {
 };
 ```
 
-Honest consequences for the package/container model:
+Honest consequences for the package model:
 
-- **Kernel modules are global.** There is no per-container module namespace.
+- **Kernel modules are global.** There is no per-package module namespace.
   `br_netfilter`/`vxlan`/`ip_set` load into the host kernel regardless of any
-  nspawn boundary. The "container" cannot contain them.
-- **Host network + cgroups.** k3s needs `--network=host` and `Delegate=yes`; an
-  isolated veth/private-users container breaks pod networking and the kubelet's
-  cgroup management. So k3s gets only a *nominal* container (mount/UTS isolation
-  at most), and that must be labeled as such — it is **not** a security boundary.
+  package boundary. The package service cannot contain them.
+- **Host network + cgroups.** k3s needs host networking and `Delegate=yes`; an
+  isolated private-network/private-user service breaks pod networking and the
+  kubelet's cgroup management. So k3s gets a high-privilege generated service,
+  and that must be labeled as such — it is **not** a security boundary.
 - **Config is host-side.** k3s reads `/etc/rancher/k3s/k3s.env` via
   `EnvironmentFile`. Under the layered config model, simple non-secret config
   can stay in an `EnvironmentFile=`, while secrets use TPM2-sealed credentials
   and structured config uses schema-validated apm artifacts.
-- **Upgrades kill pods under the nspawn materialization — a regression.**
+- **Upgrades would kill pods under the skipped nspawn materialization.**
   Today's bare unit sets `KillMode=process` (upstream k3s packaging), so a k3s
   restart/upgrade kills only the supervisor; containerd, the shims, and all pod
   processes survive. An nspawn container always has a private PID namespace, so
-  the restart in §5 kills **everything** inside it — an ungraceful mass pod
-  kill, not a drain, unless cordon+drain is orchestrated first. This cost is
-  introduced by the wrapper, not inherent to upgrades; see
+  that alternate materialization would kill **everything** inside it — an
+  ungraceful mass pod kill, not a drain, unless cordon+drain is orchestrated
+  first. This is one reason nspawn is skipped for the MVP; see
   [`container-model.md`](container-model.md) §"The `KillMode=process`
   regression" and Decisions 11/17 in
   [`open-questions.md`](open-questions.md).
 
 The takeaway: there is no separate "class" to encode — the package's signed
 `[permissions]` manifest already tells `apm` (and an operator, via `apm info
-<pkg> --permissions`) exactly how privileged the container is, so it knows *not*
+<pkg> --permissions`) exactly how privileged the generated service is, so it knows *not*
 to promise isolation for a package like k3s that has declared host network and
 broad caps. The manifest replaces the dropped `expose.kind` strawman (§2.2). The
-container-model details and the exact nspawn flags for the nominal k3s container
-are in [`container-model.md`](container-model.md); the permission surface is in
+container-model details and the current per-unit high-privilege k3s shape are in
+[`container-model.md`](container-model.md); the permission surface is in
 [`permissions.md`](permissions.md).
 
 ---
 
-## 7. Signing and trust for container roots
+## 7. Signing and trust for package roots
 
-The good news: container roots inherit the **existing** registry trust model
+The good news: package roots inherit the **existing** registry trust model
 end to end, because they are delivered as ordinary NARs (§3.2) named by
 tag-signed metadata.
 
@@ -529,10 +529,10 @@ tag-signed metadata.
    name-binding and the `tag -> tag -> commit` chain
    (see [`../../registry/signing-and-trust.md`](../../registry/signing-and-trust.md)
    and [`../../registry/current-state.md`](../../registry/current-state.md) §6). So a
-   container-root reference cannot be substituted without breaking the release
+   package-root reference cannot be substituted without breaking the release
    signature.
 2. **The NAR is content-addressed.** `verify_nar_hash()` checks the downloaded
-   container-root NAR against the `nar_hash` from the signed metadata. The bytes
+   package-root NAR against the `nar_hash` from the signed metadata. The bytes
    cannot be tampered with in transit or at the cache.
 3. **The cache may add a second signature.** Generated narinfo can be Nix-cache
    signed (`aos-core::nar::cache::NarInfoSigner`,
@@ -540,13 +540,13 @@ tag-signed metadata.
    stock-Nix substituter with `require-sigs = true` also accepts it.
 4. **TOFU + anti-rollback still apply.** First sync pins the registry's Ed25519
    key; the anti-rollback floor prevents downgrading the package — and therefore
-   its container root — below a stored semver
+   its package root — below a stored semver
    (see [`../../registry/current-state.md`](../../registry/current-state.md) §4–5).
 
-**No new trust primitive is required for fetched container roots.** They are
+**No new trust primitive is required for fetched package roots.** They are
 just NARs whose hashes are committed to tag-signed metadata.
 
-**Honest gap for *baked* roots (§3.1):** a host-image-baked container root is
+**Honest gap for *baked* roots (§3.1):** a host-image-baked package root is
 covered by the host image's own integrity (UKI / system closure), *not* by a
 registry tag signature, because it never transits the registry. If a deployment
 mixes baked and fetched roots for the same package across a fleet, the trust

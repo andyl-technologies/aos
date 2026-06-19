@@ -59,10 +59,10 @@ reframes how the phases below are read:
   side-effect `expose-smoke` package, and `k3s` as per-unit services) must pass
   before Phases 4–7 build on the per-unit substrate. It is
   *validation* of a resolved direction, not an open decision.
-- **Every "needs verification" item in the set is collected in the
-  [Needs-verification register](#needs-verification-register) below** and tagged
-  to the phase that must resolve it. The implementer should clear each one
-  rather than guessing.
+- **Every verification-tracked item in the set is collected in the
+  [verification register](#needs-verification-register) below** and tagged to
+  the phase that must resolve it. The implementer should clear each one rather
+  than guessing.
 
 ## The invariants (do not violate)
 
@@ -103,7 +103,7 @@ reframes how the phases below are read:
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
 the state-of-the-art additions under the [budget mandate](#budget-mandate);
-they gate on the per-unit substrate (P3) / container roots (P6) but are
+they gate on the per-unit substrate (P3) / package roots (P6) but are
 otherwise independent workstreams that proceed in parallel.
 
 ---
@@ -222,7 +222,7 @@ design, now produced by the P1 renderer (not a `modules/roles` synthesis).
 
 - [x] **Synthesize `aos-pkg-<name>.target`** (D15 naming, resolved). Members are
       `PartOf=` + `WantedBy=` the target; no member is `WantedBy=` a system target
-      directly. Template stays `aos-package@.service` with `PartOf=aos-pkg-%i.target`.
+      directly. The generated package service carries `PartOf=aos-pkg-<name>.target`.
 - [x] **Gated side-effect oneshots** replacing the three global scan-dir drop-ins:
       `aos-pkg-<name>-modules.service` (`modprobe -a`),
       `aos-pkg-<name>-sysctl.service` (`sysctl -w`),
@@ -771,8 +771,8 @@ the transparency log; a rollback/mix-and-match attempt is refused.
 
 Under the budget mandate the **only** reason to not build something is that
 building it would make the OS *worse*. Everything cost-deferred moved into Phases
-8–10; what remains is justified on merit, and the genuinely-open items below are
-**maintainer decisions**, not engineering deferrals.
+8–10; what remains is justified on merit, and the items below are **maintainer
+decisions**, not engineering deferrals.
 
 - [x] **nspawn substrate (D17) — *dominated*, skipped.** Lighter than per-unit
       for every package we have, weaker than a microVM tier for untrusted code; a
@@ -828,7 +828,7 @@ Every tracked decision and where it is discharged. Statuses are from
 | D2 kernel-modules as allowlisted permission | RESOLVED | P0 (schema) + P3 (load) |
 | D3 networking modes | RESOLVED | P0 (schema) + P3 (validate) + P6 (build) |
 | D4 nspawn-in-VM / lifecycle test | RESOLVED (mooted; per-unit test remains) | P3 |
-| D5 container roots = `RootDirectory=` store path | RESOLVED | P6 |
+| D5 package roots / `RootDirectory=` default / signed `RootImage=` path | RESOLVED | P6 |
 | D6 bake vs fetch | RESOLVED by D5 | P6 |
 | D7 machined/portabled/importd disabled | RESOLVED (stay) | P11 |
 | D8 install-at-boot + enable | RESOLVED (presets + install/reconcile) | P4 (enable) + P5 (install) |
@@ -855,8 +855,9 @@ Every tracked decision and where it is discharged. Statuses are from
 
 ## Needs-verification register
 
-Every small open gap in the set, collected so the implementer clears it rather
-than guessing. Resolve each in the cited phase before ticking that phase's exit.
+Every small verification gap that was tracked for the set, collected so the
+implementer cleared it rather than guessing. Each item below is closed before
+the cited phase's exit is ticked.
 
 - [x] **`system.attached` search path (P5).** Whether the AOS systemd build
       includes `/etc/systemd/system.attached/` in the unit search path with

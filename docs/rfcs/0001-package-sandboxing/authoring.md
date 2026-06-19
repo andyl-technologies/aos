@@ -16,7 +16,7 @@ mechanics, and the precedent.
 
 `apm install` runs on a deployed host with **no Nix evaluator** — no
 `lib.evalModules`, no fixpoint. Whatever a package needs at install time
-(units, target, `[permissions]` manifest, container-root reference) must exist
+(units, target, `[permissions]` manifest, package-root image metadata) must exist
 as **build artifacts in its store output / registry metadata**. A central
 module tree can only serve image-baked packages; runtime-installed ones would
 need a second authoring path — the split-brain this doc set keeps warning

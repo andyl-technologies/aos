@@ -30,41 +30,43 @@ only correctness-driven deferrals (nspawn) remain.
 
 The model (see [README.md](README.md)) builds on AOS's
 registry/`apm` package system. A **package** is the registry-installable
-unit (`apm install`). Under the unified model **every** package exposes a
-`systemd-nspawn` container plus an `aos-pkg-<name>.target` handle. This doc is
-about that container. There is **one shape** — a container — with a *privilege
-gradient* set by the package's declared `[permissions]` manifest
+unit (`apm install`). Under the unified model every service package exposes an
+`aos-pkg-<name>.target` handle plus generated systemd units. There is **one
+shape** — a package target — with a *privilege gradient* set by the package's
+declared `[permissions]` manifest
 (see [permissions.md](permissions.md)):
 
 | Privilege | Manifest | Boundary | Example |
 |---|---|---|---|
-| Default (sandboxed) | empty `[permissions]` | real (PID/mount/net/IPC/user ns) | `test-http-server` |
+| Default (sandboxed) | empty `[permissions]` | real per-unit sandbox (private root, namespaces, caps/seccomp) | `test-http-server` |
 | Some grants | a few declared permissions | real, but with declared holes | a web app needing a host path |
-| High-privilege | host network + caps + cgroup-delegate + host-paths + kernel-modules | nominal — packaging/lifecycle wrapper, not a security boundary | `k3s-*` |
+| High-privilege | host network + caps + cgroup-delegate + host-paths + kernel-modules | packaging/lifecycle wrapper, not a security boundary | `k3s-*` |
 
 The boundary strength is a *gradient set by the manifest*, from "full sandbox"
 (empty manifest) to "packaging wrapper only" (k3s) — not a categorical
 workload/infra split. See [permissions.md](permissions.md) for the full
-permission surface and how each grant maps onto an nspawn flag.
+permission surface and how each grant maps onto systemd unit directives and
+defense-in-depth policy artifacts.
 
 The target sandbox ([activation.md](activation.md))
 is the *activation* mechanism: `aos-pkg-<name>.target` is the one
 switch, gated `*-modules`/`*-sysctl`/`*-firewall` oneshots are members,
-and the disabled case is the strict guarantee. What this doc adds is one
-more kind of member unit — the nspawn instance — that every package carries.
+and the disabled case is the strict guarantee. What this doc adds is the
+execution substrate for the generated member units behind that target.
 
 ## Permissions
 
-The privilege a container holds is **not** baked into the unit by hand — it is
+The privilege a package holds is **not** baked into the unit by hand — it is
 **generated from a declared, signed `[permissions]` manifest** on the package,
 exactly like an Android/iOS app permission list. The default (empty manifest) is
-a tightly-sandboxed container; a package gets only what it declares. Each grant
+a tightly-sandboxed service; a package gets only what it declares. Each grant
 (`capabilities`, `network`, `devices`, `host-paths`, `cgroup-delegate`,
 `privileged-users`, `kernel-modules`, `syscalls`, `security-label`) maps onto a
-specific `systemd-nspawn` / unit knob. The full surface, the manifest examples
+specific systemd unit directive, host-side gated service, and generated policy
+artifact. The full surface, the manifest examples
 (including k3s's long list), and the honest host-level limits live in
-[permissions.md](permissions.md). The nspawn-flag mechanics below are the *how*;
-the manifest is the *what*.
+[permissions.md](permissions.md). The manifest is the *what*; generated units
+and artifacts are the *how*.
 
 ## Substrate decision (RESOLVED): per-unit default, nspawn skipped
 
@@ -100,7 +102,7 @@ Why this wins for the MVP:
   and non-disruptive restart keeps working.
 - **It removes the second service manager** for single-unit packages: no
   in-container PID1, no `--notify=ready` proxying, no nspawn-in-VM nesting risk
-  (Decision 4), no container-root image for single-binary packages. The
+  (Decision 4), no extra nspawn package-root image for single-binary packages. The
   "single-service root" strategy below is `RootImage=` with extra steps.
 - **nspawn's remaining honest use case** is a package that needs its own
   multi-unit init tree — currently a set of approximately zero (k3s is one
@@ -114,7 +116,7 @@ Why this wins for the MVP:
   different shape where the listen socket itself must bind inside a shared
   private namespace. The same substrate also lets
   `RootImage=` carry dm-verity natively (`RootHash=`, `RootVerity=`,
-  `RootHashSignature=`, v246+) — signed container roots extending the registry
+  `RootHashSignature=`, v246+) — signed package roots extending the registry
   trust chain to runtime integrity (now in scope and built — see
   [attestation.md](attestation.md)). The `RootImage=` + `DynamicUser=` +
   `PrivateUsers=` + `MountAPIVFS=` stack is upstream's own portable-services
@@ -134,7 +136,7 @@ considered one of NixOS's weaker subsystems (machined coupling,
 restart-on-switch semantics, networking friction); much of that ecosystem moved
 to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
 **per-unit sandboxing as the default materialization, nspawn skipped** until
-a package genuinely needs an init tree. The simple **default** "container root" is a
+a package genuinely needs an init tree. The simple **default** "package root" is a
 **store path consumed via `RootDirectory=`** — no image build, no loop
 device, no udev ordering — and stays the default for early-boot and minimal
 packages. The signed-verity **`RootImage=` path is now IN SCOPE**: the
@@ -153,10 +155,9 @@ materializing `expose-minimal`'s default manifest (the
 test-http-server-equivalent proving package before the P7 role migration),
 `expose-smoke`'s side-effect manifest, and k3s's manifest as per-unit services,
 including teardown semantics and the private-outbound netns plumbing cost.
-Everything below specifies the **future nspawn materialization** —
-retained as the spec for if/when a package needs an init tree; the *boundary
-semantics* (what an empty manifest isolates, what a grant opens) stand either
-way.
+The nspawn-specific sections below are retained as the spec for if/when a
+package needs an init tree; the *boundary semantics* (what an empty manifest
+isolates, what a grant opens) stand either way.
 
 ## Feasibility baseline (from investigation)
 
@@ -178,12 +179,12 @@ Consequences, verified against the current flags in
   `nss-mymachines` `.host`/`.local` name resolution. We define **explicit
   units** instead of relying on `machinectl start`.
 - **No `portabled`.** No portable services / sysext-confext install path. Not
-  needed; container roots carry their own contents.
+  needed; package roots carry their own contents.
 - **No `importd`.** No `systemd-pull` image fetch. Images come from the AOS
   store via `apm`, not from upstream OCI registries.
 
-This shapes the design: we drive containers through **first-class systemd
-template units**, not `machinectl`. systemd is 259.1, so the full
+This shapes any future nspawn design: AOS would drive containers through
+**first-class systemd units**, not `machinectl`. systemd is 259.1, so the full
 `--private-users`, `LoadCredential=`, `--volatile`, cgroup-delegation feature
 set is present. The kernel config pins `CONFIG_NAMESPACES`, `CONFIG_USER_NS`,
 `CONFIG_PID_NS`, `CONFIG_NET_NS`, `CONFIG_IPC_NS`, `CONFIG_UTS_NS`, and
@@ -192,21 +193,23 @@ config is asserted by `tests/build/kernel-config.nix`.
 
 ## Per-package root image
 
-A container root is just a **smaller, single-purpose rootfs** built with the
-exact same machinery AOS already uses for the host image and VM test disks
-(`lib/build/rootfs.nix`, `lib/build/closure-info.nix`). The investigation
-proposes a sibling builder `lib/build/container-root.nix` (new, ~200 lines)
-that mirrors `rootfs.nix`:
+A package root is just a **smaller, single-purpose rootfs** built with the exact
+same hermetic style AOS already uses for the host image and VM test disks. The
+implemented builder is
+[`lib/build/package-root-image.nix`](../../../lib/build/package-root-image.nix):
 
 - `exportReferencesGraph` over the package's `rootPackages` discovers the
   closure (no host tools, sandbox-safe).
 - The FHS skeleton (`/usr/{bin,lib,sbin}` real, `/bin`/`/sbin`/`/lib`
   symlinks, empty `/etc`, `/proc`, `/sys`, `/dev`, `/run`) is staged.
 - Store closures are copied in; `/aos-registration` carries the closure-info
-  stream so the in-container store is coherent.
+  stream so the embedded store is coherent.
 - `fakeroot -- mkfs.ext4 -d rootfs … root.img` produces the image — **no
   losetup, no mount**, every file owned by uid/gid 0. This is the same
   sandbox-compatible path the host image uses.
+- `veritysetup` and `openssl cms` produce `root.verity`, `root.roothash`, and
+  `root.roothash.p7s` for `RootImage=` services that enforce dm-verity against
+  the platform keyring.
 
 Two PID1 strategies, chosen per package:
 
@@ -215,33 +218,28 @@ Two PID1 strategies, chosen per package:
   sidecars and simple workloads.
 - **systemd PID1 root** — `/init -> ${systemd}/lib/systemd/systemd`, with a
   minimal `/etc/systemd/system` carrying only the package's units and the
-  targets to auto-start. Needed when the workload is several interdependent
-  units. This is what a high-privilege package like k3s would use *inside* the
-  container.
+  targets to auto-start. Needed only if a future package genuinely needs several
+  interdependent units inside its own init tree; k3s does not use this path for
+  the MVP because its preflight and daemon are generated host units under the
+  package target.
 
-Image **format is ext4, not EROFS**, for container roots. ext4 mounts
-read-write (we make it RO at runtime via nspawn instead), needs no
-`mkcomposefs`/dump step, and is what `systemd-nspawn --image=` consumes
-transparently. EROFS is reserved for the host `/etc` composefs path. (Needs
-verification: whether we want EROFS roots later for compression on large
-images.)
+Image **format is ext4**, not EROFS, for package roots. The generated service
+consumes it directly from the image store path with `RootImage=`,
+`RootVerity=`, `RootHash=`, `RootHashSignature=`, and
+`RootImagePolicy=root=signed`. Plain store-path roots can also be consumed with
+`RootDirectory=`.
 
-Where the image lives: `/var/lib/machines/<pkg>.img` (or
-`/var/lib/aos-containers/`). `/var` is the writable persistent partition that
-Ignition already creates, alongside `/var/log`, `/var/lib`, `/var/tmp`. The
-store path itself (`/nix/store/…`) is **read-only composefs/EROFS** and cannot
-hold a writable image, so the image is either copied to `/var` at install time
-or the package's image-output store path is bind-mounted RO and overlaid (see
-ephemeral overlay below).
+Where the image lives: in a signed package image store path referenced by
+`expose.images[]`. `apm install` and upgrade carry those image roots into the
+package generation alongside the package closure and rendered expose artifact.
 
-## The `aos-package@.service` template
+## Deferred nspawn template
 
-Because `machined` is off, we ship an explicit **template unit**,
-`aos-package@.service` (instance `%i` = package name), rather than relying on
-`systemd-nspawn@.service` + `machinectl`. A package's `aos-pkg-<name>.target`
-`Wants=`/`PartOf=` its `aos-package@<pkg>.service` instance, exactly the way it
-`Wants=` the `*-modules`/`*-sysctl` gated services today. Sketch (illustrative;
-exact flags per package, **needs verification** of each against systemd 259.1):
+The following sketch is retained only for the future case where a package needs
+its own multi-unit init tree. It is **not** the MVP materialization. If nspawn
+returns, machined stays off and the implementation must use explicit generated
+units or a template with generated drop-ins rather than relying on
+`systemd-nspawn@.service` + `machinectl`:
 
 ```ini
 # aos-package@.service  (template; %i = package name)
@@ -287,16 +285,13 @@ with* `--register=no` — escaping the unit's cgroup and making
 `DeviceAllow=` loop/device-mapper block, which mirrors upstream's own
 `systemd-nspawn@.service` and is what lets `--image=` attach its loop device
 under a closed device policy. With `--keep-unit`, `Slice=aos-pkg-%i.slice` is
-fully honored — the package's container, like its gated oneshots, lives under
+fully honored — the package's nspawn instance, like its gated oneshots, lives under
 `aos.slice/aos-pkg-<name>.slice` (see §Composition below).
 
-Per-package divergence (network mode, binds, capabilities, user-ns policy) is
-supplied by a drop-in the package synthesizes —
-`aos-package@<pkg>.service.d/10-<pkg>.conf` — so the template stays generic.
-This mirrors how `render-role.nix` already synthesizes per-role units; the
-container instance is one more synthesized member. Whether we prefer a template
-with drop-ins or a fully-rendered concrete `aos-pkg-<name>-container.service` per
-package is an open call — see [open-questions.md](open-questions.md).
+Per-package divergence (network mode, binds, capabilities, user-ns policy) would
+be supplied by generated unit text. The existing per-unit implementation already
+uses fully rendered per-package services; that is the preferred shape if this
+future nspawn path is reopened.
 
 ## Namespaces
 
@@ -309,11 +304,11 @@ package is an open call — see [open-questions.md](open-questions.md).
 | Net | private (`--network-veth`) | veth pair to host; see networking below |
 | IPC | private | no host SysV/POSIX IPC leakage |
 | UTS | private | own hostname (`--machine=%i`) |
-| User | `--private-users=pick` | maps container root → unprivileged host uid range |
+| User | `--private-users=pick` | maps package root → unprivileged host uid range |
 | cgroup | delegated subtree | `Delegate=yes`, container manages its own children |
 
 `--private-users` is the contentious one. For the **default** (no
-`privileged-users` permission) it is the right choice: container-root maps to
+`privileged-users` permission) it is the right choice: package-root maps to
 `nobody`-class host uids, so a container escape lands as an unprivileged host
 user. The cost is the usual user-ns friction — file ownership in the image must
 be shifted (`-U`/`--private-users=pick` handle this via UID shifting), and some
@@ -366,7 +361,7 @@ Three modes, selected by the manifest's `network` permission:
 
 ## cgroup delegation
 
-`Delegate=yes` on the nspawn service hands the container a delegated cgroup
+`Delegate=yes` on the generated service hands the package a delegated cgroup
 subtree it can subdivide. This is the same mechanism the k3s exposed packages
 already rely on today: `pkgs/kubernetes/_k3s-expose-package.nix` sets
 
@@ -379,27 +374,21 @@ serviceConfig = {
 };
 ```
 
-For a package that declares `cgroup-delegate` the same keys go on
-`aos-package@<pkg>.service`, and the container's PID1 manages workload cgroups
-beneath the delegated root. Note `--keep-unit` is not an alternative but the
-**default for every package** on this machined-less host (see the template
-above): the container lives in the nspawn service's own cgroup under the
-package slice, and nspawn creates a payload subcgroup beneath it (upstream
-pairs this with `DelegateSubgroup=supervisor`, v254+ — adopt the same).
+For a package that declares `cgroup-delegate` the same keys go on the
+`aos-pkg-<name>.service` unit, and the package manages workload cgroups beneath
+the delegated root. Because the service lives under `aos-pkg-<name>.slice`,
+accounting and cgroup policy stay inside the package target hierarchy without a
+second service manager.
 
-## Ephemeral overlay root (fs-revert)
+## Immutable root and writable state
 
-`--volatile=overlay` mounts the package root image **read-only as the lower**
-and a **tmpfs upper**, so all runtime writes land in tmpfs and **evaporate on
-stop**. This gives us a cheap fs-revert for free: a workload container is born
-from the pristine image every start, and tearing it down discards all
-filesystem mutations. Persistent state is exactly and only what the package
-**explicitly binds** from `/var` (e.g. `--bind=/var/lib/<pkg>:/data`). This is
-the recommended default for stateless workloads.
-
-Stateful packages that genuinely need an accumulating root use
-`--directory=<extracted-root>` (writable) and own their snapshot/rollback story
-— out of scope here, flagged in [open-questions.md](open-questions.md).
+`RootImage=` and `RootDirectory=` make the package root immutable for the
+running service. Runtime writes must be explicit: tmpfs scratch paths through
+`TemporaryFileSystem=`/`RuntimeDirectory=`, persistent state through
+`StateDirectory=` or declared host-path grants. A package upgrade is therefore
+"new package root + restart", not in-place mutation. k3s binds most real state
+out to host paths, so the immutable-root property is mostly lifecycle hygiene
+for it rather than meaningful isolation.
 
 ## Composition: packages that depend on each other
 
@@ -413,14 +402,14 @@ in verified prior art.
    are inert bytes that ride the Nix closure into the dependent's root
    image/`RootImage=`. Nix already composes these flatly and perfectly, and a
    payload being *also* installable as a service does not infect its
-   dependents: B's binaries inside A's container run **as A**, under **A's**
+   dependents: B's binaries inside A's package root run **as A**, under **A's**
    manifest.
 2. **Service dependencies** (rare, explicit): A needs B *running* — a web app
    needs the database package up. These are **not** closure edges; they are
    orchestration edges between flat siblings.
 
 **Rule 1 — permissions never flow along closure edges.** Grants attach to the
-runtime context: the unit/container that executes code declares for all code
+runtime context: the unit that executes code declares for all code
 it executes, like a statically-linked Android app. The cautionary precedent is
 exact: Android deprecated `sharedUserId` (API 29) because merged security
 identities made permission grants non-deterministic and impossible to unwind.
@@ -443,26 +432,18 @@ reachability. Precedent: snapd's content interface (producer slot + consumer
 plug + store-gated auto-connect) — coupling is capability-shaped and visible
 in both manifests ([permissions.md](permissions.md)).
 
-**Rule 4 — no nested containers.** Verified mechanism (v259):
-nspawn-in-nspawn *works under nspawn's defaults* — the default capability set
-includes `CAP_SYS_ADMIN`, and the seccomp allowlist includes `@mount`,
-`clone`, `setns` — and **breaks precisely when capabilities are dropped**
-(systemd#12798). So a default-deny (least-privilege) package can never host a
-nested container; only a near-fully-privileged one can, which inverts the
-sandbox. Upstream considers nesting expected-to-work but it is undocumented
-and untested (doc+test PR systemd#34811, still draft). The one sanctioned
-"nesting" — k3s spawning runc containers inside its nominal wrapper — is
-possible only because k3s is effectively unconfined; it is the degenerate
-case, not a pattern. Kubernetes reached the same conclusion: pods are a flat
-container list, and ordered helpers became sidecars-as-init-containers rather
-than nesting.
+**Rule 4 — no nested package substrates.** A default-deny package cannot create
+another privileged sandbox inside itself; doing so would require the very
+capabilities the default profile removes. k3s spawning runc/containerd workloads
+is the high-privilege proving case, not a pattern for ordinary packages: its
+manifest makes those host grants explicit. Kubernetes reached the same
+conclusion at the model level: pods are a flat container list, and ordered
+helpers became sidecars-as-init-containers rather than nested pods.
 
-**Resource hierarchy lives in slices, not containers.** Every package's units
-— the nspawn instance (or sandboxed host units) *and* its gated oneshots — run
-under `aos.slice/aos-pkg-<name>.slice`. Slices carry resource control only (no
-config, no privilege), give `systemd-cgtop` per-package accounting, and
-replace what `machine.slice` would have provided with machined off. With
-`--keep-unit` the unit's `Slice=` is fully honored (see the template above).
+**Resource hierarchy lives in slices.** Every package's generated service and
+gated oneshots run under `aos.slice/aos-pkg-<name>.slice`. Slices carry resource
+control only (no config, no privilege) and give `systemd-cgtop` per-package
+accounting.
 
 **The pod case (co-location) is one package, not two nested ones.** Two
 processes that must share fate and a network namespace are a single
@@ -480,41 +461,38 @@ Install and enable are split (see [boot-activation.md](boot-activation.md) and
 [apm-integration.md](apm-integration.md) for the boot path):
 
 1. **Install** — `apm install <pkg>` resolves the closure, fetches NARs,
-   imports to the store, and writes a profile generation. For a container
-   package the package's image-output store path comes along in the closure;
-   `apm` materializes/links `/var/lib/machines/<pkg>.img`. (This post-install
-   image step is **not yet implemented** — `PackageMeta` in
-   `crates/aos-package/src/types.rs` has no container/image field today; see
-   [apm-integration.md](apm-integration.md).)
+   imports to the store, and writes a profile generation. If the package
+   declares `expose.images[]`, those signed image store paths are fetched,
+   verified, rooted, and linked into the generation's expose image roots.
 2. **Enable** — `systemctl preset aos-pkg-<name>.target` against the merged
    preset policy; at boot the every-boot `aos-preset.service` pass re-derives
    enablement for every unit (see [boot-activation.md](boot-activation.md)
-   §3.2). The target `Wants=` the `aos-package@<pkg>` instance.
-3. **Run** — `aos-package@<pkg>.service` `ExecStart`s nspawn; `Type=notify` +
-   `--notify=ready` lets the container PID1 signal readiness.
+   §3.2). The target `Wants=` the generated per-package service and gated
+   side-effect services.
+3. **Run** — the generated `aos-pkg-<name>.service` starts the package workload;
+   `Type=notify` / `Type=notify-reload` is used where the service supports it.
 4. **Stop** — `systemctl stop aos-pkg-<name>.target` → `PartOf` propagates to the
-   nspawn instance → container PID1 gets `SIGRTMIN+3` (clean shutdown) → tmpfs
-   upper discarded.
+   generated service → systemd applies the package's stop/kill policy.
 
 ## Teardown semantics: what reverts, what does not
 
-This refines the target-sandbox teardown table for the container case.
+This refines the target-sandbox teardown table for the package-service case.
 
 | Effect | On `stop aos-pkg-<name>.target` | Notes |
 |---|---|---|
-| Container filesystem writes | **reverted** | tmpfs upper of `--volatile=overlay` is discarded |
-| Container processes | **reverted** | PID ns torn down with the leader |
-| veth / host-side `.network` | **reverted** | nspawn removes the veth; host iface disappears |
+| Package-root writes | **reverted or rejected** | root is immutable; tmpfs scratch evaporates |
+| Package processes | **reverted** | `PartOf=` stops the generated service |
+| Private network namespace | **reverted** | generated netns/veth helper is stopped with the package target |
 | Firewall ports | **reverted** | `aos-pkg-<name>-firewall.service` `ExecStop` `nft delete element` |
 | Explicitly-bound `/var/lib/<pkg>` state | **persists** | by design — that is what binds are for |
 | Kernel modules (`aos-pkg-<name>-modules`) | **persists** | global, one-way; same caveat as today |
 | sysctls (`aos-pkg-<name>-sysctl`) | **persists** | global, no saved prior value; same caveat |
 
-So the container boundary *improves* revert for the workload's own fs and
-processes (vs. a bare host service) but **does not change** the two
-fundamentally-global caveats: **kernel modules and sysctls stay**. `kernel-modules`
-is a host-fulfilled (allowlisted) permission — the host loads them and a
-container cannot, so they persist one-way after stop (see
+So the package boundary improves revert for the workload's own root and
+processes (vs. an ad hoc host service) but **does not change** the two
+fundamentally-global caveats: **kernel modules and sysctls stay**.
+`kernel-modules` is a host-fulfilled (allowlisted) permission — the host loads
+them and they persist one-way after stop (see
 [permissions.md](permissions.md) for the allowlist + signing model). The strict
 guarantee remains the
 *disabled* (never-enabled) case, identical to
@@ -522,19 +500,17 @@ guarantee remains the
 
 ## Security / isolation
 
-For a default (empty-manifest) package the boundary is real: separate
-PID/mount/net/IPC/UTS namespaces, user-ns mapping container-root to an
-unprivileged host range, a RO root with an ephemeral upper, a delegated (capped)
-cgroup, and `nftables`-gated ports. Further hardening available but not yet
-specified: `--system-call-filter` (seccomp), capability dropping
-(`--drop-capability=`), `--read-only`, `ProtectKernelModules=` on the service.
-These are honest TODOs, not claims.
+For a default (empty-manifest) package the boundary is real: a private package
+root, `PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`,
+`SystemCallFilter=`, `DeviceAllow=`, Landlock TCP/path rules, generated MAC
+policy, eBPF network policy, and `nftables`-gated ports. The details live in
+[enforcement.md](enforcement.md).
 
 Boundary strength is a *gradient set by the manifest* (see
 [permissions.md](permissions.md)). It is **not** a security boundary for a
 high-privilege package like k3s — once a package declares host network, broad
-caps, and host paths, its container is a packaging/lifecycle wrapper, not a
-sandbox — and we must not pretend otherwise. The value is that the privilege is
+caps, and host paths, its generated service is a packaging/lifecycle wrapper,
+not a sandbox — and we must not pretend otherwise. The value is that the privilege is
 least-by-default, declared, signed, and visible in the manifest, not that
 everything is isolated.
 
@@ -547,75 +523,59 @@ secrets, schema-validated apm config artifacts for structured config, and
 boundary mechanics.
 
 systemd's native path is `LoadCredential=`/`ImportCredential=`: the host unit
-loads a credential, nspawn exposes it to the container PID1 under
-`/run/credentials/<unit>/<name>` (tmpfs, `noexec`), and the container's units
-re-import it. The mechanism exists in systemd 259.1. The blocker is that AOS has
-**no credential backend** today — without a TPM/sealed/encrypted store,
-`LoadCredential=/path` just reads plaintext from `/var`, which is no better than
-a bind-mount. The known-working interim is the current k3s pattern: Ignition
-writes an env file, the unit reads it via `EnvironmentFile=`, and for a
-container we bind that path RO into the instance. **Do not settle this here** —
-the decision, the option matrix, and the criteria live in [config.md](config.md).
+loads a credential and exposes it to the service under
+`$CREDENTIALS_DIRECTORY` (tmpfs, `noexec`). AOS's resolved secret path layers
+that runtime mechanism over TPM2-sealed credential sources, so the package does
+not need a separate host-to-container credential handoff for the MVP.
 
-## Honest caveat: k3s is a high-privilege container
+## Honest caveat: k3s is a high-privilege package
 
-k3s is still an nspawn container — but a **high-privilege** one whose manifest
-declares away most of the boundary. Its container is *nominal*: a
-packaging/lifecycle wrapper, not a security boundary. k3s must manage *host*
-state, and every one of these grants is an explicit entry in its
+k3s is a **high-privilege** package whose manifest declares away most of the
+boundary. Its generated unit is a packaging/lifecycle wrapper, not a security
+boundary. k3s must manage *host* state, and every one of these grants is an
+explicit entry in its
 `[permissions]` manifest (see [permissions.md](permissions.md)):
 
 - **Kernel modules are global.** k3s declares `kernel-modules = ["br_netfilter",
   "vxlan", "ip_set"]` (via `pkgs/kubernetes/_k3s-expose-package.nix`). There is no
-  per-container module namespace — these load into the host kernel via
-  `aos-pkg-k3s-worker-modules.service` regardless of any container. The container
-  cannot own them; this is a host-fulfilled, allowlisted permission (the host
-  grants it only if the requested modules are allowlisted — see
+  per-package module namespace — these load into the host kernel via
+  `aos-pkg-k3s-worker-modules.service`. The package cannot own them; this is a
+  host-fulfilled, allowlisted permission (the host grants it only if the
+  requested modules are allowlisted — see
   [permissions.md](permissions.md)).
-- **Host network.** CNI/flannel program host routes, the host bridge, and
-  host iptables/nftables. `--network-veth` would cut k3s off from the L2 it is
+- **Host network.** CNI/flannel program host routes, the host bridge, and host
+  iptables/nftables. `PrivateNetwork=true` would cut k3s off from the L2 it is
   supposed to manage, so it declares `network = "host"`.
-- **Host cgroups.** kubelet manages host cgroups; it declares `cgroup-delegate`
-  (`Delegate=yes`) plus, realistically, a near-flat `--keep-unit` placement.
+- **Host cgroups.** kubelet manages host cgroups; it declares
+  `cgroup-delegate` (`Delegate=yes`) and runs in the package slice.
 - **Broad capabilities** (declared `capabilities`) and host `/sys`, `/proc`,
   `/var/lib/kubelet`, `/var/lib/rancher` (declared `host-paths`).
 
-Wrapped in nspawn it is a **nominal** container — mount + UTS isolation only —
-around a process with effectively full host privilege. The privilege is
-**visible in the manifest** rather than buried in the implementation. The unit
-its manifest generates makes the privilege explicit and ugly (illustrative,
-**needs verification** of the exact flag set):
+The generated unit runs a process with effectively full host privilege. The
+privilege is **visible in the manifest** rather than buried in the
+implementation. The unit its manifest generates makes the privilege explicit and
+ugly:
 
 ```ini
 [Service]
 Type=notify
 Delegate=yes
-ExecStart=/usr/lib/systemd/systemd-nspawn \
-  --machine=k3s \
-  --image=/var/lib/machines/k3s.img \
-  --network=host \
-  --keep-unit \
-  --register=no \
-  --capability=all \
-  --bind=/sys \
-  --bind=/var/lib/rancher:/var/lib/rancher \
-  --bind=/var/lib/kubelet:/var/lib/kubelet \
-  --bind=/etc/rancher:/etc/rancher \
-  --volatile=overlay \
-  --notify=ready
+PrivateNetwork=false
+PrivateUsers=false
+CapabilityBoundingSet=CAP_AUDIT_WRITE CAP_CHOWN CAP_DAC_OVERRIDE ...
+AmbientCapabilities=CAP_AUDIT_WRITE CAP_CHOWN CAP_DAC_OVERRIDE ...
+BindPaths=/sys /proc /var/lib/rancher /var/lib/kubelet /etc/rancher
+KillMode=process
 ```
 
-`--network=host --capability=all --keep-unit` plus those host binds is "a
-process running on the host wearing a container costume". The fs-revert benefit
-shrinks to the parts of k3s's tree that are *not* host-bound (most of its real
-state is bound out to `/var/lib/rancher` and `/var/lib/kubelet`, which persist).
-The isolation benefit is near zero. The honest recommendation:
+Host network, broad capabilities, delegated cgroups, and those host binds mean
+the isolation benefit is intentionally low. The honest recommendation:
 
-> **k3s is a high-privilege container** — like every package it gets an
-> `aos-pkg-k3s-*.target` and an nspawn instance, but its `[permissions]`
-> manifest declares host network, broad caps, cgroup-delegate, host-paths, and
-> kernel-modules, so the container is a packaging/lifecycle wrapper, not a
-> sandbox. It must be labelled as cosmetic isolation, not a security boundary —
+> **k3s is a high-privilege package** — like every package it gets an
+> `aos-pkg-k3s-*.target` and generated units, but its `[permissions]` manifest
+> declares host network, broad caps, cgroup-delegate, host-paths, and
+> kernel-modules, so the generated service is a packaging/lifecycle wrapper, not
+> a sandbox. It must be labelled as high privilege, not as a security boundary,
 > and that labelling lives in the signed manifest, not in tribal knowledge.
 
 ### The `KillMode=process` regression (restart kills every pod)
@@ -646,8 +606,8 @@ which keeps `KillMode=process` intact. There is no nspawn flag that recovers
 it. Tracked in [open-questions.md](open-questions.md) Decisions 11 and 17.
 
 This is the **privilege gradient**, not a shape split: the same one-shape
-container model spans "full sandbox" (empty manifest) to "packaging wrapper"
-(k3s), and the manifest is what places a package on it. See
+package target model spans "full sandbox" (empty manifest) to "packaging
+wrapper" (k3s), and the manifest is what places a package on it. See
 [permissions.md](permissions.md) for the gradient and k3s's full (still
 high-privilege) permission set.
 
@@ -655,40 +615,35 @@ high-privilege) permission set.
 
 Nothing here weakens the target sandbox ([activation.md](activation.md)):
 
-- **Single activation root** — still `aos-pkg-<name>.target`. The nspawn instance is
-  `WantedBy=`/`PartOf=` the target, never `WantedBy=multi-user.target`
+- **Single activation root** — still `aos-pkg-<name>.target`. Generated member
+  units are `WantedBy=`/`PartOf=` the target, never `WantedBy=multi-user.target`
   directly. Invariant 1 holds.
 - **No global side-channels** — modules/sysctl/firewall remain gated oneshots
-  under the target. The container does not reintroduce drop-in scan dirs.
+  under the target. The package service does not reintroduce drop-in scan dirs.
   Invariant 2 holds.
-- **Containment edges** — the nspawn instance carries `PartOf=aos-pkg-<name>.target`
-  like every other member. Invariant 3 holds.
+- **Containment edges** — the generated service carries
+  `PartOf=aos-pkg-<name>.target` like every other member. Invariant 3 holds.
 - **One enable switch** — still exactly the target. How that switch is flipped
   is owned by [boot-activation.md](boot-activation.md) §3.2 (canonical:
   systemd presets — image `disable *`, Ignition-written host preset file, an
   every-boot `aos-preset.service` pass, `systemctl preset` for runtime
-  installs). The container template and
-  its drop-in ship inert in EROFS either way.
+  installs). Generated package units ship inert either way.
 
-## Open items (carried to [open-questions.md](open-questions.md))
+## Conditional future nspawn work
 
-- **Decision 17: the substrate itself** — per-unit `RootImage=` sandboxing as
-  the default materialization vs. nspawn everywhere (see "Substrate decision"
-  above). Upstream of most items below.
-- Template-with-drop-ins vs. fully-rendered per-package container unit.
-  Prior art: quadlet (podman's systemd generator, the canonical
-  container-under-systemd path) chose fully-rendered per-container units over
-  template+drop-ins after per-instance divergence overwhelmed the template; our
-  per-package divergence is the entire manifest, so the evidence points to
-  fully-rendered.
-- `PackageMeta`/registry schema extension for image + nspawn metadata (today:
-  none; `crates/aos-package/src/types.rs`).
-- Where the image is materialized and how `apm` links it into `/var/lib/machines`
-  (post-install hook does not exist yet).
-- `--private-users` policy (the `privileged-users` permission); UID-shift cost
-  on first start.
-- Production-kernel namespace/cgroup config verification.
-- Stateful (`--directory=`) snapshot/rollback story.
-- Whether to enable `machined` for `machinectl` introspection (current lean:
-  no — explicit units, no magic).
-- The whole config/credential delivery decision — [config.md](config.md).
+Decision 17 resolves the current substrate: per-unit `RootImage=` /
+`RootDirectory=` sandboxing is the default and nspawn is skipped. If a future
+multi-unit-init package reopens nspawn, the work is conditional and should start
+from these items:
+
+- Fully rendered per-package nspawn units, not a host-side evaluator and not
+  `machinectl`.
+- A separate nspawn metadata extension if `expose.images[]` plus unit text is
+  insufficient.
+- Materialization outside `/var/lib/machines` unless there is a concrete reason
+  to use nspawn's machine-image conventions.
+- A fresh `--private-users` and namespace/cgroup verification pass against the
+  exact AOS systemd/kernel build.
+- A stateful (`--directory=`) snapshot/rollback story.
+- Continued refusal to enable `machined` unless a concrete need outweighs the
+  attack-surface cost.
