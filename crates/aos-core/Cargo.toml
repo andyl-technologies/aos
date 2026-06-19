@@ -26,6 +26,7 @@ alejandra = { workspace = true }
 tokio = { workspace = true }
 atty = { workspace = true }
 tracing = { workspace = true }
+nix-compat = { workspace = true }
 aos-nix = { workspace = true, optional = true }
 
 [dev-dependencies]

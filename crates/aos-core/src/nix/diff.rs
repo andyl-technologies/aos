@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use nix_compat::derivation::Derivation;
 
 use super::drv::{DrvInput, parse_drv_input_drvs_from_str};
 use super::{DrvClosure, NixEval};
@@ -21,6 +22,8 @@ pub enum DiffMode {
     Path,
     /// Compare root paths and ATerm bytes through the input-derivation closure.
     Byte,
+    /// Compare bytes and report the first parsed derivation field that differs.
+    Structural,
 }
 
 /// The side of the differential comparison that diverged.
@@ -55,6 +58,24 @@ pub enum DrvDiff {
         oracle: PathBuf,
         /// Candidate-side `.drv` path.
         candidate: PathBuf,
+    },
+    /// Parsed derivation fields differ for a compared derivation pair.
+    Structural {
+        /// Oracle-side `.drv` path.
+        oracle: PathBuf,
+        /// Candidate-side `.drv` path.
+        candidate: PathBuf,
+        /// First field that differs after parsing both `.drv` ATerms.
+        field: String,
+    },
+    /// A `.drv` failed structural parsing.
+    StructuralParse {
+        /// Side whose `.drv` failed structural parsing.
+        side: DiffSide,
+        /// Path to the `.drv` that failed parsing.
+        path: PathBuf,
+        /// User-facing parse error text.
+        error: String,
     },
     /// The two derivations refer to a different number of input derivations.
     InputCount {
@@ -161,9 +182,15 @@ pub fn diff_closure(
                 });
             }
         }
-        DiffMode::Byte => {
+        DiffMode::Byte | DiffMode::Structural => {
             let mut visited = BTreeSet::new();
-            compare_drv_pair(&oracle_result, &candidate_result, &mut visited, &mut report)?;
+            compare_drv_pair(
+                &oracle_result,
+                &candidate_result,
+                mode == DiffMode::Structural,
+                &mut visited,
+                &mut report,
+            )?;
             if oracle_result.root != candidate_result.root {
                 report.divergences.push(DrvDiff::RootPath {
                     oracle: oracle_result.root,
@@ -228,7 +255,7 @@ fn instantiate_for_mode(
         DiffMode::Path => eval
             .instantiate(file, attr)
             .map(DiffInstantiation::file_backed),
-        DiffMode::Byte => match eval.instantiate_closure(file, attr)? {
+        DiffMode::Byte | DiffMode::Structural => match eval.instantiate_closure(file, attr)? {
             Some(closure) => Ok(DiffInstantiation::from_closure(closure)),
             None => eval
                 .instantiate(file, attr)
@@ -240,6 +267,7 @@ fn instantiate_for_mode(
 fn compare_drv_pair(
     oracle: &DiffInstantiation,
     candidate: &DiffInstantiation,
+    structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
@@ -248,6 +276,7 @@ fn compare_drv_pair(
         candidate,
         &oracle.root,
         &candidate.root,
+        structural,
         visited,
         report,
     )
@@ -258,6 +287,7 @@ fn compare_drv_pair_at(
     candidate: &DiffInstantiation,
     oracle_path: &Path,
     candidate_path: &Path,
+    structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
@@ -268,9 +298,45 @@ fn compare_drv_pair_at(
 
     let oracle_bytes = oracle.read_drv_bytes(oracle_path, "oracle")?;
     let candidate_bytes = candidate.read_drv_bytes(candidate_path, "candidate")?;
-    let oracle_inputs = parse_drv_inputs_from_bytes(&oracle_bytes, oracle_path, "oracle")?;
-    let candidate_inputs =
-        parse_drv_inputs_from_bytes(&candidate_bytes, candidate_path, "candidate")?;
+    let bytes_differ = oracle_bytes != candidate_bytes;
+    if structural && bytes_differ {
+        report.divergences.push(DrvDiff::Bytes {
+            oracle: oracle_path.to_path_buf(),
+            candidate: candidate_path.to_path_buf(),
+        });
+    }
+
+    let (oracle_inputs, candidate_inputs) = if structural {
+        let Some((oracle_drv, candidate_drv)) = parse_structural_pair(
+            &oracle_bytes,
+            &candidate_bytes,
+            oracle_path,
+            candidate_path,
+            report,
+        ) else {
+            return Ok(());
+        };
+        if bytes_differ {
+            let field = first_derivation_diff_field(&oracle_drv, &candidate_drv);
+            report.divergences.push(DrvDiff::Structural {
+                oracle: oracle_path.to_path_buf(),
+                candidate: candidate_path.to_path_buf(),
+                field: field.to_string(),
+            });
+        }
+        if oracle_drv.input_derivations != candidate_drv.input_derivations {
+            return Ok(());
+        }
+        (
+            drv_inputs_from_derivation(&oracle_drv),
+            drv_inputs_from_derivation(&candidate_drv),
+        )
+    } else {
+        (
+            parse_drv_inputs_from_bytes(&oracle_bytes, oracle_path, "oracle")?,
+            parse_drv_inputs_from_bytes(&candidate_bytes, candidate_path, "candidate")?,
+        )
+    };
     if oracle_inputs.len() != candidate_inputs.len() {
         report.divergences.push(DrvDiff::InputCount {
             oracle: oracle_path.to_path_buf(),
@@ -286,12 +352,13 @@ fn compare_drv_pair_at(
             candidate,
             oracle_input,
             candidate_input,
+            structural,
             visited,
             report,
         )?;
     }
 
-    if oracle_bytes != candidate_bytes {
+    if !structural && bytes_differ {
         report.divergences.push(DrvDiff::Bytes {
             oracle: oracle_path.to_path_buf(),
             candidate: candidate_path.to_path_buf(),
@@ -306,6 +373,7 @@ fn compare_input_pair(
     candidate_result: &DiffInstantiation,
     oracle: &DrvInput,
     candidate: &DrvInput,
+    structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
@@ -325,9 +393,72 @@ fn compare_input_pair(
         candidate_result,
         &oracle_path,
         &candidate_path,
+        structural,
         visited,
         report,
     )
+}
+
+fn parse_structural_pair(
+    oracle_bytes: &[u8],
+    candidate_bytes: &[u8],
+    oracle_path: &Path,
+    candidate_path: &Path,
+    report: &mut DrvDiffReport,
+) -> Option<(Derivation, Derivation)> {
+    let oracle = parse_derivation(oracle_bytes).map_err(|error| {
+        report.divergences.push(DrvDiff::StructuralParse {
+            side: DiffSide::Oracle,
+            path: oracle_path.to_path_buf(),
+            error,
+        });
+    });
+    let candidate = parse_derivation(candidate_bytes).map_err(|error| {
+        report.divergences.push(DrvDiff::StructuralParse {
+            side: DiffSide::Candidate,
+            path: candidate_path.to_path_buf(),
+            error,
+        });
+    });
+    match (oracle, candidate) {
+        (Ok(oracle), Ok(candidate)) => Some((oracle, candidate)),
+        _ => None,
+    }
+}
+
+fn parse_derivation(bytes: &[u8]) -> Result<Derivation, String> {
+    Derivation::from_aterm_bytes(bytes).map_err(|source| format!("{source:?}"))
+}
+
+fn drv_inputs_from_derivation(derivation: &Derivation) -> Vec<DrvInput> {
+    derivation
+        .input_derivations
+        .iter()
+        .map(|(drv_path, outputs)| DrvInput {
+            drv_path: drv_path.to_absolute_path(),
+            outputs: outputs.iter().cloned().collect(),
+        })
+        .collect()
+}
+
+fn first_derivation_diff_field(oracle: &Derivation, candidate: &Derivation) -> &'static str {
+    if oracle.outputs != candidate.outputs {
+        "outputs"
+    } else if oracle.input_derivations != candidate.input_derivations {
+        "input_derivations"
+    } else if oracle.input_sources != candidate.input_sources {
+        "input_sources"
+    } else if oracle.system != candidate.system {
+        "system"
+    } else if oracle.builder != candidate.builder {
+        "builder"
+    } else if oracle.arguments != candidate.arguments {
+        "arguments"
+    } else if oracle.environment != candidate.environment {
+        "environment"
+    } else {
+        "serialization"
+    }
 }
 
 fn parse_drv_inputs_from_bytes(bytes: &[u8], path: &Path, label: &str) -> Result<Vec<DrvInput>> {
@@ -429,6 +560,29 @@ mod tests {
             .join(",");
         format!(
             r#"Derive([("out","/nix/store/{marker}-out","","")],[{inputs}],[],"x86_64-linux","/nix/store/bash",[],[("name","{marker}")])"#
+        )
+    }
+
+    fn structural_drv(name: &str) -> String {
+        const OUT: &str = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-shared";
+        const BUILDER: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash";
+        format!(
+            r#"Derive([("out","{OUT}","","")],[],[],"x86_64-linux","{BUILDER}",[],[("builder","{BUILDER}"),("name","{name}"),("out","{OUT}"),("system","x86_64-linux")])"#
+        )
+    }
+
+    fn structural_drv_with_input(input: &str, name: &str) -> String {
+        structural_drv_with_input_and_output(
+            input,
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-shared",
+            name,
+        )
+    }
+
+    fn structural_drv_with_input_and_output(input: &str, output: &str, name: &str) -> String {
+        const BUILDER: &str = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash";
+        format!(
+            r#"Derive([("out","{output}","","")],[("{input}",["out"])],[],"x86_64-linux","{BUILDER}",[],[("builder","{BUILDER}"),("name","{name}"),("out","{output}"),("system","x86_64-linux")])"#
         )
     }
 
@@ -558,6 +712,171 @@ mod tests {
             error
                 .to_string()
                 .contains("did not provide in-memory drv bytes")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_mode_reports_first_parsed_field_difference() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(&oracle_root, structural_drv("oracle"))?;
+        fs::write(&candidate_root, structural_drv("candidate"))?;
+        let oracle = FakeEval::path(oracle_root.clone());
+        let candidate = FakeEval::path(candidate_root.clone());
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Structural,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
+                    if oracle == &oracle_root && candidate == &candidate_root))
+        );
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Structural { field, .. }
+                    if field == "environment"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_mode_reports_input_derivation_difference_before_descent() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(
+            &oracle_root,
+            structural_drv_with_input(
+                "/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv",
+                "root",
+            ),
+        )?;
+        fs::write(
+            &candidate_root,
+            structural_drv_with_input("/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv", "root"),
+        )?;
+        let oracle = FakeEval::path(oracle_root.clone());
+        let candidate = FakeEval::path(candidate_root.clone());
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Structural,
+        )?;
+
+        assert_eq!(
+            report.divergences.first(),
+            Some(&DrvDiff::Bytes {
+                oracle: oracle_root.clone(),
+                candidate: candidate_root.clone(),
+            })
+        );
+        assert_eq!(
+            report.divergences.get(1),
+            Some(&DrvDiff::Structural {
+                oracle: oracle_root,
+                candidate: candidate_root,
+                field: "input_derivations".to_string(),
+            })
+        );
+        assert!(
+            !report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::StructuralParse { .. }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_mode_skips_descent_when_outputs_and_inputs_differ() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(
+            &oracle_root,
+            structural_drv_with_input_and_output(
+                "/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv",
+                "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-shared",
+                "root",
+            ),
+        )?;
+        fs::write(
+            &candidate_root,
+            structural_drv_with_input_and_output(
+                "/nix/store/wvza442rgjdb2cyhwm59ax3qy0y9skkk-ca.drv",
+                "/nix/store/c9hhy38jds9ffzzqwkb50vrv2pi8x614-base",
+                "root",
+            ),
+        )?;
+        let oracle = FakeEval::path(oracle_root.clone());
+        let candidate = FakeEval::path(candidate_root.clone());
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Structural,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Structural { field, .. }
+                    if field == "outputs"))
+        );
+        assert!(
+            !report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::StructuralParse { .. }))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn structural_mode_reports_parse_failure_as_divergence() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(&oracle_root, structural_drv("oracle"))?;
+        fs::write(&candidate_root, b"not-a-derivation")?;
+        let oracle = FakeEval::path(oracle_root);
+        let candidate = FakeEval::path(candidate_root.clone());
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Structural,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::StructuralParse {
+                    side: DiffSide::Candidate,
+                    path,
+                    ..
+                } if path == &candidate_root))
         );
         Ok(())
     }

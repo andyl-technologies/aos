@@ -278,6 +278,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn nix_diff_parses_structural_mode() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.hello",
+            "--mode",
+            "structural",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff { mode, .. } => {
+                assert_eq!(mode, NixDiffMode::Structural);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
     fn parse_cli<const N: usize>(args: [&'static str; N]) -> Cli {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)

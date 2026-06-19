@@ -10,6 +10,8 @@ pub enum NixDiffMode {
     Path,
     /// Compare `.drv` paths and ATerm bytes through the input closure.
     Byte,
+    /// Compare bytes and report the first parsed derivation field that differs.
+    Structural,
 }
 
 impl From<NixDiffMode> for DiffMode {
@@ -17,6 +19,7 @@ impl From<NixDiffMode> for DiffMode {
         match mode {
             NixDiffMode::Path => Self::Path,
             NixDiffMode::Byte => Self::Byte,
+            NixDiffMode::Structural => Self::Structural,
         }
     }
 }

@@ -134,6 +134,22 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
             "oracle": oracle.to_string_lossy(),
             "candidate": candidate.to_string_lossy(),
         }),
+        DrvDiff::Structural {
+            oracle,
+            candidate,
+            field,
+        } => serde_json::json!({
+            "kind": "structural",
+            "oracle": oracle.to_string_lossy(),
+            "candidate": candidate.to_string_lossy(),
+            "field": field,
+        }),
+        DrvDiff::StructuralParse { side, path, error } => serde_json::json!({
+            "kind": "structural_parse",
+            "side": side_name(*side),
+            "path": path.to_string_lossy(),
+            "error": error,
+        }),
         DrvDiff::InputCount {
             oracle,
             candidate,
@@ -176,6 +192,20 @@ fn render_diff(diff: &DrvDiff) -> String {
             oracle.display(),
             candidate.display()
         ),
+        DrvDiff::Structural {
+            oracle,
+            candidate,
+            field,
+        } => format!(
+            "structural: oracle={} candidate={} field={field}",
+            oracle.display(),
+            candidate.display()
+        ),
+        DrvDiff::StructuralParse { side, path, error } => format!(
+            "structural parse: {} path={} error={error}",
+            side_name(*side),
+            path.display()
+        ),
         DrvDiff::InputCount {
             oracle,
             candidate,
@@ -205,6 +235,7 @@ const fn mode_name(mode: DiffMode) -> &'static str {
     match mode {
         DiffMode::Path => "path",
         DiffMode::Byte => "byte",
+        DiffMode::Structural => "structural",
     }
 }
 
@@ -248,6 +279,48 @@ mod tests {
         let error = NixDiffReportedFailure::diverged(3);
 
         assert_eq!(error.to_string(), "drv diff found 3 divergence(s)");
+    }
+
+    #[test]
+    fn report_json_renders_structural_divergence_details() {
+        let report = DrvDiffReport {
+            mode: DiffMode::Structural,
+            oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
+            candidate_root: Some(PathBuf::from("/nix/store/candidate.drv")),
+            divergences: vec![DrvDiff::Structural {
+                oracle: PathBuf::from("/nix/store/oracle.drv"),
+                candidate: PathBuf::from("/nix/store/candidate.drv"),
+                field: "environment".to_string(),
+            }],
+        };
+
+        let failure = report_failure(&report);
+        let value = report_json(&report, "aos-nix", failure.as_ref());
+
+        assert_eq!(value["mode"], "structural");
+        assert_eq!(value["divergences"][0]["kind"], "structural");
+        assert_eq!(value["divergences"][0]["field"], "environment");
+    }
+
+    #[test]
+    fn report_json_renders_structural_parse_divergence_details() {
+        let report = DrvDiffReport {
+            mode: DiffMode::Structural,
+            oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
+            candidate_root: Some(PathBuf::from("/nix/store/candidate.drv")),
+            divergences: vec![DrvDiff::StructuralParse {
+                side: DiffSide::Candidate,
+                path: PathBuf::from("/nix/store/candidate.drv"),
+                error: "parse failed".to_string(),
+            }],
+        };
+
+        let failure = report_failure(&report);
+        let value = report_json(&report, "aos-nix", failure.as_ref());
+
+        assert_eq!(value["divergences"][0]["kind"], "structural_parse");
+        assert_eq!(value["divergences"][0]["side"], "candidate");
+        assert_eq!(value["divergences"][0]["error"], "parse failed");
     }
 
     #[test]
