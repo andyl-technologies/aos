@@ -612,7 +612,7 @@ Crucible needs and marks the seam.
   `crucible-harness`, each as an empty, compiling crate carrying its `//!` crate
   doc naming its owning RFC file(s). — satisfies [CRATE-1], [CRATE-13],
   [CRATE-14]; spec §1, §6, §7.
-- [ ] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
+- [x] **T-CRATE-2** Apply the crate-level safe/unsafe fence: `#![forbid(unsafe_code)]`
   on the nine SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the four UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.

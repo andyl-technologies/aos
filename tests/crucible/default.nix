@@ -24,4 +24,7 @@
     riskRegisterGate = import ./phase0-risk-register.nix {inherit pkgs;};
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
+  phase1 = {
+    crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
+  };
 }
