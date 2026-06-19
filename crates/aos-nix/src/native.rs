@@ -494,6 +494,14 @@ fn ensure_native_json_subset(
             ));
         }
 
+        if node.kind == IrKind::BuiltinAttr
+            && let IrData::Symbol(symbol) = node.data
+            && let Some(name) = ir.symbols.resolve(symbol)
+            && let Some(feature) = builtin_attr_native_json_fallback_feature(name, options)
+        {
+            return Err(unsupported_native_node(feature, node.span, expr_len));
+        }
+
         if node.kind == IrKind::GlobalVar
             && let IrData::Symbol(symbol) = node.data
         {
@@ -816,6 +824,22 @@ fn builtins_global_native_json_fallback_feature(
     }
 }
 
+fn builtin_attr_native_json_fallback_feature(
+    name: &[u8],
+    options: &TreeWalkOptions,
+) -> Option<&'static str> {
+    if name == b"currentSystem"
+        && options.eval_mode() != EvalMode::Pure
+        && options.current_system().is_some()
+    {
+        return None;
+    }
+    if name == b"builtins" {
+        return Some("CLI-sensitive builtin evaluation");
+    }
+    builtin_native_cli_fallback_feature(name)
+}
+
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
     lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
 }
@@ -824,6 +848,16 @@ fn native_instantiation_cli_fallback_feature(
     ir: &Ir,
     options: &TreeWalkOptions,
 ) -> Option<(&'static str, Span)> {
+    for node in ir.arena.nodes() {
+        if node.kind == IrKind::BuiltinAttr
+            && let IrData::Symbol(symbol) = node.data
+            && let Some(name) = ir.symbols.resolve(symbol)
+            && builtin_instantiation_attr_is_cli_sensitive(name, options)
+        {
+            return Some(("CLI-sensitive builtin evaluation", node.span));
+        }
+    }
+
     for (index, node) in ir.arena.nodes().iter().enumerate() {
         let (IrKind::GlobalVar, IrData::Symbol(symbol)) = (node.kind, node.data) else {
             continue;
@@ -841,6 +875,16 @@ fn native_instantiation_cli_fallback_feature(
         }
     }
     None
+}
+
+fn builtin_instantiation_attr_is_cli_sensitive(name: &[u8], options: &TreeWalkOptions) -> bool {
+    match name {
+        b"currentSystem" => {
+            options.eval_mode() != EvalMode::Pure && options.current_system().is_none()
+        }
+        b"currentTime" => options.eval_mode() != EvalMode::Pure && options.current_time().is_none(),
+        _ => false,
+    }
 }
 
 fn builtins_global_native_instantiation_fallback_feature(
@@ -880,15 +924,9 @@ fn builtins_instantiation_attr_path_is_cli_sensitive(
     let IrAttrPathSegment::Static(symbol) = first else {
         return true;
     };
-    match ir.symbols.resolve(*symbol) {
-        Some(b"currentSystem") => {
-            options.eval_mode() != EvalMode::Pure && options.current_system().is_none()
-        }
-        Some(b"currentTime") => {
-            options.eval_mode() != EvalMode::Pure && options.current_time().is_none()
-        }
-        _ => false,
-    }
+    ir.symbols
+        .resolve(*symbol)
+        .is_some_and(|name| builtin_instantiation_attr_is_cli_sensitive(name, options))
 }
 
 fn select_receiver_references_global(ir: &Ir, mut receiver: IrId, global_index: usize) -> bool {
@@ -2022,6 +2060,7 @@ mod tests {
         for source in [
             r#"builtins.getEnv "HOME""#,
             "builtins.nixPath",
+            "builtins.builtins",
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
             "builtins.fetchMercurial",

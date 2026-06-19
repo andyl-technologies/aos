@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::{FrameInfo, ResolvedAst};
-use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin};
+use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin, lookup_builtin};
 use crate::syntax::{
     AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, Span, Symbol,
     SymbolTable, UnaryOpKind,
@@ -266,6 +266,8 @@ pub enum IrKind {
     UpvalVar,
     /// A resolved global variable access.
     GlobalVar,
+    /// A statically known builtin attribute value.
+    BuiltinAttr,
     /// A dynamic lookup through active `with` scopes.
     WithVar,
     /// A list construction.
@@ -1309,6 +1311,9 @@ impl IrLowerer {
         else {
             return Err(self.invalid_shape(node, "select payload"));
         };
+        if let Some(symbol) = self.static_builtin_select_symbol(receiver, path, default)? {
+            return self.push(IrKind::BuiltinAttr, node.span, IrData::Symbol(symbol));
+        }
         let receiver = self.lower_expr(receiver)?;
         let path = self.lower_attr_path(path)?;
         let default = default
@@ -1325,6 +1330,39 @@ impl IrLowerer {
                 default,
             },
         )
+    }
+
+    fn static_builtin_select_symbol(
+        &self,
+        receiver: NodeId,
+        path: ChildSlice,
+        default: Option<NodeId>,
+    ) -> Result<Option<Symbol>, IrError> {
+        if self.options.dynamic_builtin_scope() || default.is_some() {
+            return Ok(None);
+        }
+        let receiver = self.node(receiver)?;
+        if receiver.kind != NodeKind::GlobalVar || !self.symbol_payload_is(receiver, b"builtins") {
+            return Ok(None);
+        }
+        let segments = self.child_ids(path)?;
+        let Some(segment) = segments.first().copied() else {
+            return Ok(None);
+        };
+        if segments.len() != 1 {
+            return Ok(None);
+        }
+        let segment = self.node(segment)?;
+        if !matches!(segment.kind, NodeKind::Ident | NodeKind::Str) {
+            return Ok(None);
+        }
+        let NodeData::Symbol(symbol) = segment.data else {
+            return Err(self.invalid_shape(segment, "attribute symbol payload"));
+        };
+        let Some(name) = self.resolved.symbols.resolve(symbol) else {
+            return Ok(None);
+        };
+        Ok(lookup_builtin(name).is_some().then_some(symbol))
     }
 
     fn lower_has_attr(&mut self, node: Node) -> Result<IrId, IrError> {
@@ -2031,6 +2069,53 @@ mod tests {
             panic!("apply payload expected");
         };
         assert_eq!(node(&ir, first).kind, IrKind::Select);
+    }
+
+    #[test]
+    fn static_builtin_selects_lower_to_builtin_attr_nodes() {
+        let ir = lowered("builtins.length");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::BuiltinAttr);
+        assert_eq!(root.effect, EffectClass::Pure);
+        let IrData::Symbol(symbol) = root.data else {
+            panic!("builtin attr payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"length");
+
+        let ir = lowered("builtins.currentSystem");
+        let root = root_node(&ir);
+        assert_eq!(root.kind, IrKind::BuiltinAttr);
+        let IrData::Symbol(symbol) = root.data else {
+            panic!("builtin attr payload expected");
+        };
+        assert_eq!(symbol_text(&ir, symbol), b"currentSystem");
+    }
+
+    #[test]
+    fn non_static_builtin_selects_remain_select_nodes() {
+        for source in [
+            "builtins.length or 42",
+            "builtins.__missing",
+            "builtins.length.foo",
+            "let builtins = { length = x: 42; }; in builtins.length",
+        ] {
+            let ir = lowered(source);
+            let root = root_node(&ir);
+            match root.data {
+                IrData::Let { body, .. } => assert_eq!(node(&ir, body).kind, IrKind::Select),
+                _ => assert_eq!(root.kind, IrKind::Select),
+            }
+        }
+    }
+
+    #[test]
+    fn dynamic_builtin_scope_keeps_static_builtin_selects_dynamic() {
+        let resolved =
+            resolve(parse_str("builtins.length").expect("source parses")).expect("source resolves");
+        let ir = lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
+            .expect("IR lowers");
+
+        assert_eq!(root_node(&ir).kind, IrKind::Select);
     }
 
     #[test]
@@ -3198,7 +3283,7 @@ mod tests {
         let IrData::Pair { first, .. } = root.data else {
             panic!("apply payload expected");
         };
-        assert_eq!(node(&ir, first).kind, IrKind::Select);
+        assert_eq!(node(&ir, first).kind, IrKind::BuiltinAttr);
 
         let ir = lowered("(builtins.elemAt or (xs: n: 42)) [ 1 ] 0");
         let root = root_node(&ir);
@@ -3241,7 +3326,7 @@ mod tests {
         let IrData::Pair { first, .. } = root.data else {
             panic!("apply payload expected");
         };
-        assert_eq!(node(&ir, first).kind, IrKind::Select);
+        assert_eq!(node(&ir, first).kind, IrKind::BuiltinAttr);
 
         for (name, left, right) in [
             ("add", "1", "2"),

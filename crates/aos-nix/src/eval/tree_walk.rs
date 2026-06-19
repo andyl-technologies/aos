@@ -2209,6 +2209,7 @@ impl TreeWalk {
             IrKind::UpvalVar => self.eval_upval_var(id, &node),
             IrKind::WithVar => self.eval_with_var(id, &node),
             IrKind::GlobalVar => self.eval_global_var(id, &node),
+            IrKind::BuiltinAttr => self.eval_builtin_attr(id, &node),
             IrKind::List => self.eval_list(id, &node),
             IrKind::AttrSet => self.eval_attrset(id, &node),
             IrKind::Lambda => self.eval_lambda(id, &node),
@@ -2831,6 +2832,28 @@ impl TreeWalk {
             },
             node.span,
         ))
+    }
+
+    fn eval_builtin_attr(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "builtin attr symbol payload"));
+        };
+        let Some(builtin) = lookup_builtin_by_symbol(&self.symbols, symbol) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedBuiltinAttr { id, symbol },
+                node.span,
+            ));
+        };
+        if !builtin.is_available(self) {
+            if self.reject_unconfigured_impure_builtin_constant(builtin) {
+                return Err(self.unsupported_ambient_builtin_constant(id, node.span));
+            }
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::MissingAttribute { id, symbol },
+                node.span,
+            ));
+        }
+        builtin.select(self, id, node.span, symbol)
     }
 
     fn eval_builtins_attrset(&mut self, id: IrId, span: Span) -> Result<Value, TreeWalkError> {
@@ -32313,6 +32336,12 @@ mod tests {
 
     #[test]
     fn static_builtin_selects_are_first_class_functions() {
+        let length = lower("builtins.length");
+        assert_eq!(
+            length.arena.node(length.root).expect("root exists").kind,
+            IrKind::BuiltinAttr
+        );
+        assert_eq!(eval("builtins.length [ 1 2 ]").as_int(), Ok(2));
         assert_eq!(eval("builtins.true").as_bool(), Ok(true));
         assert_eq!(eval("builtins.false").as_bool(), Ok(false));
         assert_eq!(eval("builtins.null").as_null(), Ok(()));

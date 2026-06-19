@@ -38,7 +38,7 @@ use crate::syntax::{
 };
 
 /// The schema version included in every parse-cache key and metadata file.
-pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 5;
+pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 6;
 
 const KEY_PERSONALIZATION: &[u8] = b"aos-nix-parse-cache-key-v1";
 const FLAG_ENCODING_VERSION: u8 = 1;
@@ -1390,6 +1390,7 @@ fn validate_ir_node_shape(node: IrNode) -> Result<(), String> {
             | (IrKind::LocalVar, IrData::Local { .. })
             | (IrKind::UpvalVar, IrData::Upval { .. })
             | (IrKind::GlobalVar, IrData::Symbol(_))
+            | (IrKind::BuiltinAttr, IrData::Symbol(_))
             | (IrKind::WithVar, IrData::WithVar { .. })
             | (IrKind::List, IrData::Children(_))
             | (IrKind::AttrSet, IrData::AttrSet { .. })
@@ -2258,6 +2259,7 @@ fn ir_kind_tag(kind: IrKind) -> u8 {
         IrKind::ThunkAlloc => 27,
         IrKind::PrimOp => 28,
         IrKind::DerivationStrict => 29,
+        IrKind::BuiltinAttr => 30,
     }
 }
 
@@ -2293,6 +2295,7 @@ fn decode_ir_kind(tag: u8) -> Result<IrKind, String> {
         27 => Ok(IrKind::ThunkAlloc),
         28 => Ok(IrKind::PrimOp),
         29 => Ok(IrKind::DerivationStrict),
+        30 => Ok(IrKind::BuiltinAttr),
         tag => Err(format!("invalid IR kind tag {tag}")),
     }
 }
@@ -2644,7 +2647,7 @@ mod tests {
 
         entry.write_meta(&meta).expect("metadata writes");
         let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
-        assert!(text.contains("schema_version = 5"));
+        assert!(text.contains("schema_version = 6"));
         assert!(!entry.is_complete());
 
         let _ = fs::remove_dir_all(root);
