@@ -45,13 +45,29 @@ fn d1_err(err: worker::Error) -> anyhow::Error {
     anyhow::anyhow!("D1: {err}")
 }
 
+/// Returns a genuine JavaScript `null` for binding a SQL `NULL` to D1.
+///
+/// The static `wasm_bindgen::JsValue::NULL` is a well-known heap *sentinel*, and
+/// under this Worker's build pipeline (`wasm-bindgen --target bundler`, the
+/// custom wasm-instantiation glue, then an `esbuild` bundle) that sentinel does
+/// not resolve to a real JS `null` at runtime: it reaches D1 as a plain object,
+/// which D1 rejects with `D1_TYPE_ERROR: Type 'object' not supported`. (Reads are
+/// unaffected — a `NULL` column comes back as a real engine `null`, which
+/// [`js_to_value`] maps correctly.) Parsing the literal `"null"` produces a real
+/// engine `null` on the JS heap, independent of the sentinel table, so D1 binds
+/// it as SQL `NULL`. `JSON.parse("null")` cannot fail; the fallback is defensive.
+fn js_null() -> JsValue {
+    js_sys::JSON::parse("null").unwrap_or(JsValue::NULL)
+}
+
 /// Converts a bound [`Value`] into the `JsValue` D1 binds.
 ///
 /// Integers cross as JS numbers (f64): every hub id/count is well under 2^53, so
-/// this is lossless. Blobs cross as a `Uint8Array`.
+/// this is lossless. Blobs cross as a `Uint8Array`. `NULL` uses [`js_null`]
+/// rather than the `JsValue::NULL` sentinel (see that function).
 fn to_js(value: &Value) -> JsValue {
     match value {
-        Value::Null => JsValue::NULL,
+        Value::Null => js_null(),
         Value::Int(n) => JsValue::from_f64(*n as f64),
         Value::Real(f) => JsValue::from_f64(*f),
         Value::Text(s) => JsValue::from_str(s),
