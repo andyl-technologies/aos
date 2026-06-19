@@ -584,11 +584,13 @@ registry plays three roles, one per artifact:
    **tag-signs** that binding (the existing Ed25519 tag-signature chain, with
    name-binding and the anti-rollback floor), **hosts** the in-toto/SLSA
    provenance attestation that ties the NAR + `[permissions]` manifest to the
-   build inputs (the `.drv` / source), and **appends the binding to a
-   transparency log** so the publication is externally auditable and
-   non-equivocable. It decides *what may be distributed* and *signs the catalog
-   entry* — it never knows a host's local policy (the three-layer rule of
-   [`permissions.md`](permissions.md) is unchanged).
+   build inputs (the `.drv` / source), and **appends the binding to the
+   in-registry transparency hash chain** so clients following the same registry
+   history can audit append consistency. Independent witness / Trustix /
+   Rekor-style non-equivocation is future work. It decides *what may be
+   distributed* and *signs the catalog entry* — it never knows a host's local
+   policy (the three-layer rule of [`permissions.md`](permissions.md) is
+   unchanged).
 2. **Source of the signed dm-verity root hash (artifact 2).** The
    `.roothash.p7s` (PKCS#7 over the dm-verity root hash) for each
    package/generation root is a **registry-served artifact** (the new

@@ -1047,6 +1047,7 @@ fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
 /// `signing_key` points at an OpenSSH private key.
 fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
     let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
+    validate_staged_package_toml_provenance_requirements(dir)?;
     if staged_package_provenance_transparency_validation_needed(dir)? {
         validate_staged_package_provenance_transparency_log(dir)?;
     }
@@ -3861,6 +3862,25 @@ fn validate_staged_package_toml_provenance_entries(
     Ok(())
 }
 
+fn validate_staged_package_toml_provenance_requirements(dir: &Path) -> Result<()> {
+    for path in staged_changed_paths(dir)? {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing staged package metadata {path}"))?;
+        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "staged")? {
+            ensure_staged_package_rfc0001_provenance(&path, &key, platform_entry)?;
+        }
+    }
+    Ok(())
+}
+
 fn staged_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
     package_toml_provenance_entries_from_paths(dir, staged_changed_paths(dir)?, true)
 }
@@ -4051,6 +4071,41 @@ fn package_toml_provenance_entries_from_paths(
         }
     }
     Ok(metas)
+}
+
+fn ensure_staged_package_rfc0001_provenance(
+    path: &str,
+    key: &PackageTomlPlatformKey,
+    entry: &toml::Value,
+) -> Result<()> {
+    let requires_provenance = entry.get("expose").is_some()
+        || entry.get("expose_artifact").is_some()
+        || entry
+            .get("permissions")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|permissions| !permissions.is_empty())
+        || entry
+            .get("bpf_lsm")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|bpf_lsm| !bpf_lsm.is_empty());
+    if !requires_provenance {
+        return Ok(());
+    }
+    match entry.get("provenance") {
+        Some(provenance) if provenance.is_str() => Ok(()),
+        Some(_) => bail!(
+            "staged package metadata {path} {} {} {} provenance must be a string",
+            key.package,
+            key.version,
+            key.platform
+        ),
+        None => bail!(
+            "staged package metadata {path} {} {} {} uses RFC-0001 exposed or permission metadata without attestation provenance",
+            key.package,
+            key.version,
+            key.platform
+        ),
+    }
 }
 
 fn ensure_staged_package_provenance_not_downgraded(
@@ -14258,6 +14313,40 @@ mod tests {
             commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
 
         assert!(format!("{err:#}").contains("transparency log is missing"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_rfc0001_package_without_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"webapp\"\n\
+             description = \"\"\n\
+             \n\
+             [[versions]]\n\
+             version = \"1.0.0\"\n\
+             \n\
+             [versions.platforms.x86_64-linux]\n\
+             store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+             closure_size = 1\n\
+             source_drv = \"\"\n\
+             source_nar_hash = \"\"\n\
+             \n\
+             [versions.platforms.x86_64-linux.expose]\n\
+             target = \"aos-pkg-webapp.target\"\n",
+        )
+        .unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("without attestation provenance"));
     }
 
     #[test]
