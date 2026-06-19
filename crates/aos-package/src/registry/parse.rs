@@ -37,7 +37,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::types::{
-    PackageMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
+    PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name,
 };
 
 // ---------------------------------------------------------------------------
