@@ -105,16 +105,26 @@ new mechanism.
   verifier-supplied **nonce**, signed by an **Attestation Key (AK)** whose
   credential is bound to the **Endorsement Key (EK)** fused at manufacture. This
   is the standard Keylime/TPM2 quote; AOS ships the agent side as a small
-  `aos-attest` unit (zbus/`tpm2-tss`, from-source per CLAUDE.md).
+  `aos-attest` unit using AOS-built `tpm2-tools`.
 - **Verify.** A verifier replays the event log against the quoted PCR digests,
-  checks the nonce and the AK→EK chain, and then checks **each measured tuple
-  against the registry's golden catalog** (next section). Result: cryptographic
-  proof that node X runs exactly package-set P, at versions V, with root digests
-  D, under privilege manifests M — all chaining to hardware. Reference verifier:
-  Keylime-shaped (`TPM2_Quote` + IMA/CEL replay). AOS hosts this as the
-  standalone `aos.services.attestationVerifier` role: it consumes delivered
+  checks the nonce and quote signature, matches the AK/EK identity against the
+  verifier's trust catalog, and then checks **each measured tuple against the
+  registry's golden catalog** (next section). Result: cryptographic proof that
+  node X runs exactly package-set P, at versions V, with root digests D, under
+  privilege manifests M — all chaining to hardware once the AK/EK identity has
+  been enrolled. Reference verifier: Keylime-shaped (`TPM2_Quote` + IMA/CEL
+  replay). AOS hosts this as the standalone
+  `aos.services.attestationVerifier` role: it consumes delivered
   quote/event-log/catalog evidence and writes a verifier result, while the
   registry remains only the catalog/provenance plane (see custody below).
+- **Enroll.** `apm attest enroll` populates the verifier trust catalog from a
+  quote bundle after an operator has completed TPM credential activation, a
+  privacy-CA certification, or an equivalent out-of-band TPM enrollment proof.
+  The catalog stores the AK/EK public/name/qualified-name fingerprints plus the
+  SHA-256 digest of that enrollment evidence. `apm attest verify` reports
+  `ak_ek_trusted=true` only when the quote identity matches an enrolled anchor;
+  a bare identity pin remains useful for continuity checks but reports
+  `ak_ek_trusted=false`.
 
 ## How the AOS registry fits in
 

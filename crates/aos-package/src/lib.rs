@@ -84,7 +84,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
@@ -615,6 +615,24 @@ pub enum AttestCommand {
         #[arg(long)]
         output_dir: PathBuf,
     },
+    /// Enroll a quote identity into a verifier trust catalog
+    Enroll {
+        /// Directory containing a quote bundle with AK/EK identity files
+        #[arg(long)]
+        quote_dir: PathBuf,
+        /// Human-readable fleet node or TPM label
+        #[arg(long)]
+        label: String,
+        /// Enrollment proof workflow used for this identity
+        #[arg(long, value_enum)]
+        method: AttestEnrollmentMethod,
+        /// File containing the credential-activation, privacy-CA, or OOB proof
+        #[arg(long = "evidence-file")]
+        evidence_file: PathBuf,
+        /// Verifier quote identity catalog to create or update
+        #[arg(long = "catalog-file")]
+        catalog_file: PathBuf,
+    },
     /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
@@ -661,7 +679,28 @@ impl AttestCommand {
         match self {
             AttestCommand::Verify { system, .. } => *system,
             AttestCommand::Catalog { system, .. } => *system,
-            AttestCommand::Quote { .. } => false,
+            AttestCommand::Quote { .. } | AttestCommand::Enroll { .. } => false,
+        }
+    }
+}
+
+/// Enrollment proof workflows accepted by `apm attest enroll`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AttestEnrollmentMethod {
+    /// TPM credential activation was completed outside this verifier.
+    CredentialActivation,
+    /// A privacy CA certified the AK/EK binding.
+    PrivacyCa,
+    /// An operator supplied an equivalent out-of-band TPM enrollment proof.
+    OutOfBand,
+}
+
+impl AttestEnrollmentMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            AttestEnrollmentMethod::CredentialActivation => "credential-activation",
+            AttestEnrollmentMethod::PrivacyCa => "privacy-ca",
+            AttestEnrollmentMethod::OutOfBand => "out-of-band",
         }
     }
 }
@@ -1851,6 +1890,27 @@ pub async fn run(
         return run_produce_package_attestation_quote(&nonce, output_dir, printer);
     }
 
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Enroll {
+                quote_dir,
+                label,
+                method,
+                evidence_file,
+                catalog_file,
+            },
+    } = command
+    {
+        return run_enroll_package_attestation_quote(
+            quote_dir,
+            catalog_file,
+            label,
+            *method,
+            evidence_file,
+            printer,
+        );
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -2085,6 +2145,9 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::Quote { .. },
         } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::Enroll { .. },
+        } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -2178,7 +2241,7 @@ enum AttestationMeasurement {
 enum AttestationQuoteTrust {
     PcrValueOnly,
     BundleSelfConsistent,
-    IdentityPinned { anchor: String },
+    IdentityPinned { anchor: String, ak_ek_trusted: bool },
 }
 
 fn read_attestation_measurement(
@@ -2233,6 +2296,7 @@ fn run_verify_package_attestation(
                     anchor: quote
                         .identity_label
                         .unwrap_or_else(|| "unlabeled".to_string()),
+                    ak_ek_trusted: quote.ak_ek_trusted,
                 }
             } else {
                 AttestationQuoteTrust::BundleSelfConsistent
@@ -2261,12 +2325,18 @@ fn run_verify_package_attestation(
                 | AttestationQuoteTrust::IdentityPinned { .. }
         ) {
             output["quote_bundle_verified"] = serde_json::json!(true);
-            output["ak_ek_trusted"] = serde_json::json!(false);
+            output["ak_ek_trusted"] = serde_json::json!(matches!(
+                &trust,
+                AttestationQuoteTrust::IdentityPinned {
+                    ak_ek_trusted: true,
+                    ..
+                }
+            ));
             output["quote_identity_pinned"] = serde_json::json!(matches!(
-                trust,
+                &trust,
                 AttestationQuoteTrust::IdentityPinned { .. }
             ));
-            if let AttestationQuoteTrust::IdentityPinned { anchor } = &trust {
+            if let AttestationQuoteTrust::IdentityPinned { anchor, .. } = &trust {
                 output["quote_identity_label"] = serde_json::json!(anchor);
             }
         }
@@ -2278,10 +2348,20 @@ fn run_verify_package_attestation(
         );
         if trust == AttestationQuoteTrust::BundleSelfConsistent {
             message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
-        } else if let AttestationQuoteTrust::IdentityPinned { anchor } = trust {
-            message.push_str(&format!(
-                " Quote bundle matches pinned identity '{anchor}'; AK/EK trust was not checked."
-            ));
+        } else if let AttestationQuoteTrust::IdentityPinned {
+            anchor,
+            ak_ek_trusted,
+        } = trust
+        {
+            if ak_ek_trusted {
+                message.push_str(&format!(
+                    " Quote bundle matches enrolled identity '{anchor}'."
+                ));
+            } else {
+                message.push_str(&format!(
+                    " Quote bundle matches pinned identity '{anchor}'; AK/EK trust was not checked."
+                ));
+            }
         }
         printer.success(&message);
     }
@@ -2408,6 +2488,36 @@ fn run_produce_package_attestation_quote(
             "Package attestation quote written to {} ({}).",
             output_dir.display(),
             quote.pcr_selection
+        ));
+    }
+    Ok(())
+}
+
+fn run_enroll_package_attestation_quote(
+    quote_dir: &PathBuf,
+    catalog_file: &PathBuf,
+    label: &str,
+    method: AttestEnrollmentMethod,
+    evidence_file: &PathBuf,
+    printer: &Printer,
+) -> Result<()> {
+    let enrollment = package_attestation::enroll_quote_identity(
+        quote_dir,
+        catalog_file,
+        label,
+        method.as_str(),
+        evidence_file,
+    )?;
+    let json = serde_json::to_value(&enrollment).context("serializing package quote enrollment")?;
+
+    if printer.mode() == OutputMode::Json {
+        printer.json(&json);
+    } else {
+        printer.success(&format!(
+            "Enrolled package attestation identity '{}' in {} ({}).",
+            enrollment.label,
+            catalog_file.display(),
+            enrollment.method
         ));
     }
     Ok(())
@@ -3769,6 +3879,18 @@ mod tests {
                     nonce: Some("00".into()),
                     nonce_file: None,
                     output_dir: "/tmp/aos-quote".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Enroll {
+                    quote_dir: "/tmp/aos-quote".into(),
+                    label: "node-a".into(),
+                    method: AttestEnrollmentMethod::OutOfBand,
+                    evidence_file: "/tmp/evidence.txt".into(),
+                    catalog_file: "/tmp/quote-identity.json".into(),
                 },
             }
             .is_system()

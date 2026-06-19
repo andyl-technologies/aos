@@ -708,11 +708,15 @@ PCR index, SHA-256 digest list, event size, and measured event content; the
 verifier rejects malformed sequence numbers while retaining legacy log
 compatibility. Quote verification can also require an explicit quote-identity
 pin catalog; without one, quote mode remains explicitly marked as
-self-consistent but untrusted. The verifier-hosting decision is implemented as
-the standalone `aos.services.attestationVerifier` role, which consumes delivered
+self-consistent but untrusted. `apm attest enroll` now records a quote bundle's
+AK/EK identity plus the SHA-256 digest of credential-activation, privacy-CA, or
+equivalent out-of-band enrollment evidence into that catalog, and quote
+verification reports `ak_ek_trusted=true` only for enrolled anchors. The
+verifier-hosting decision is implemented as the standalone
+`aos.services.attestationVerifier` role, which consumes delivered
 quote/event-log/catalog evidence and writes the verifier result without sharing
-registry signing custody. Remaining P9 blockers are AK/EK enrollment and
-credential activation, and external/binary TCG CEL compatibility validation.
+registry signing custody. Remaining P9 blocker: external/binary TCG CEL
+compatibility validation.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
 D22 registry golden-catalog coverage gap; D22 itself remains open until the
@@ -912,11 +916,14 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       ([`attestation.md`](attestation.md))
 - [x] **Quote identity pinning (P9).** Quote verification can require an
       explicit catalog of quote-bundle identity fingerprints; matching quotes
-      report `quote_identity_pinned=true`, while `ak_ek_trusted` remains false
-      until AK/EK enrollment is implemented.
-- [ ] **TPM AK/EK enrollment workflow (P9).** Define and automate how fleet
-      trust catalogs are populated from credential activation, a privacy CA, or
-      equivalent out-of-band TPM enrollment proof.
+      report `quote_identity_pinned=true`, with `ak_ek_trusted=false` for
+      legacy identity-only pins that lack enrollment evidence.
+- [x] **TPM AK/EK enrollment workflow (P9).** `apm attest enroll` populates the
+      quote identity catalog from a quote bundle after credential activation, a
+      privacy-CA certificate, or equivalent out-of-band TPM enrollment proof has
+      been completed. The catalog records the AK/EK identity fingerprints plus
+      the SHA-256 digest of the enrollment evidence; `attest verify` reports
+      `ak_ek_trusted=true` only for matching enrolled anchors.
 - [x] **Verifier hosting (P9).** The fleet attestation verifier is a standalone
       AOS service role (`aos.services.attestationVerifier`) that runs
       `apm attest verify` over delivered evidence. It is separate from the
