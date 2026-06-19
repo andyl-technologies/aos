@@ -821,6 +821,17 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
     // it.
     if mount_browse {
+        // First-party static assets (`/_assets/*`) the browse pages + console
+        // link. Served from the shared router so the Worker exposes them too
+        // (otherwise its CSS/JS/fonts 404). Static-prefixed, so they outrank the
+        // facade wildcard.
+        use crate::web::assets;
+        r = r
+            .route("/_assets/style.css", get(assets::stylesheet))
+            .route("/_assets/app.js", get(assets::app_js))
+            .route("/_assets/jetbrains-mono-regular.woff2", get(assets::font_regular))
+            .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
+            .route("/_assets/OFL.txt", get(assets::font_license));
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
         // the `/{slug}/-/api/…` JSON read API. These static-prefixed routes win
         // over the facade wildcard below by axum's static-over-dynamic

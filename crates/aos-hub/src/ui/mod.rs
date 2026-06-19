@@ -20,19 +20,6 @@ pub mod console;
 pub mod pages;
 pub mod render;
 
-/// The single first-party stylesheet, embedded at build time.
-pub const STYLESHEET: &str = include_str!("style.css");
-
-/// First-party progressive-enhancement bundle (live search + the TOML
-/// config editor), served at `/_assets/app.js`. Same-origin, so it loads
-/// under the strict `default-src 'self'` CSP with no nonce; every behavior
-/// is an enhancement over a form/textarea that already works without JS.
-pub const APP_JS: &str = include_str!("app.js");
-
-/// JetBrains Mono Regular (OFL), self-hosted per the first-party asset
-/// policy — no font CDNs, ever. License: `assets/OFL.txt`.
-pub const FONT_REGULAR: &[u8] = include_bytes!("assets/JetBrainsMono-Regular.woff2");
-/// JetBrains Mono Bold (OFL), self-hosted.
-pub const FONT_BOLD: &[u8] = include_bytes!("assets/JetBrainsMono-Bold.woff2");
-/// The SIL Open Font License text for the embedded fonts.
-pub const FONT_LICENSE: &str = include_str!("assets/OFL.txt");
+// The first-party static assets (stylesheet, app.js, fonts) moved to the shared
+// `aos_hub_core::web::assets` module and are served by the shared browse router,
+// so both the native hub and the Cloudflare Worker expose `/_assets/*`.

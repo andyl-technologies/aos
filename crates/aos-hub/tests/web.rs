@@ -109,6 +109,33 @@ fn fixture_with_homepage(root: &Path, homepage: &str) -> common::Fixture {
     fixture
 }
 
+/// The browse pages link `/_assets/style.css` + `/_assets/app.js`; the shared
+/// browse router must serve them (so both the native hub and the Worker do, not
+/// just the native hub — regression for them 404ing on the deployed Worker).
+#[tokio::test]
+async fn static_assets_are_served_by_the_shared_router() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let (app, _db) = serve_fixture(&surface, &fixture).await;
+
+    for (uri, ctype) in [
+        ("/_assets/style.css", "text/css"),
+        ("/_assets/app.js", "text/javascript"),
+        ("/_assets/jetbrains-mono-regular.woff2", "font/woff2"),
+    ] {
+        let (status, headers, body) = get(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri} must be served");
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+            Some(ctype),
+            "{uri} content-type"
+        );
+        assert!(!body.is_empty(), "{uri} non-empty");
+    }
+}
+
 #[tokio::test]
 async fn security_headers_on_every_route_class() {
     let dir = tempfile::tempdir().unwrap();
