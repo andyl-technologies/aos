@@ -40,20 +40,21 @@ Each decision is tagged with a rough disposition:
 Owners are roles, not people: *packages-core* (the module synthesis),
 *apm* (`crates/aos-package/`), *boot* (`modules/services/ignition.nix`),
 *test-infra* (`lib/testing/`), *pkgs* (`pkgs/system/systemd.nix`,
-container-root builders).
+package-root builders).
 
 ---
 
-## 1. Package privilege model — RESOLVED (unified container + `[permissions]` manifest)
+## 1. Package privilege model — RESOLVED (unified target + `[permissions]` manifest)
 
 > **Resolved.** The earlier proposal here — introduce a package **class**
 > distinction (`workload` vs. `infrastructure`) — is **superseded** by the
-> unified model in [permissions.md](permissions.md): **every** package is an
-> nspawn container, and privilege is a declared, signed `[permissions]` manifest
-> (Android/iOS app-permission analogy), not a two-valued class. The default
-> (empty manifest) is a tightly-sandboxed container; a package gets only what it
-> declares. k3s is not a special case — it is a high-privilege **container** that
-> declares a long permission list (host network, privileged-users,
+> unified model in [permissions.md](permissions.md): every service package has a
+> target plus generated systemd units, and privilege is a declared, signed
+> `[permissions]` manifest (Android/iOS app-permission analogy), not a
+> two-valued class. The default (empty manifest) is a tightly-sandboxed per-unit
+> service; a package gets only what it declares. k3s is not a special case — it
+> is a high-privilege **package** that declares a long permission list (host
+> network, privileged-users,
 > cgroup-delegate, broad capabilities, devices, host-paths, kernel-modules). Its
 > container is honestly "a packaging/lifecycle wrapper, not a security boundary,"
 > but that privilege is now *visible in the manifest*. This also retires the
@@ -68,8 +69,8 @@ control, and globally-loaded kernel modules (`br_netfilter`, `vxlan`, `ip_set`).
 Describing that as "isolated" would mislead operators. The difference is that the
 manifest *records* the trade rather than burying it in a class label.
 
-One sub-question is now **answered** and one remains **genuinely open** under the
-resolved model:
+Both sub-questions that shaped the old split are resolved under the current
+model:
 
 **(a) Policy enforcement point — ANSWERED (see
 [permissions.md](permissions.md) §"Enforcement: package / registry / system").**
@@ -116,10 +117,10 @@ the host-fulfilled `br_netfilter` / `vxlan` / `ip_set` module loads.
 
 ---
 
-## 2. Kernel modules are global — there is no per-container module namespace
+## 2. Kernel modules are global — there is no per-package module namespace
 
 **Statement.** k3s needs `br_netfilter`, `vxlan`, `ip_set`. Kernel modules load
-into the single host kernel; containers inherit them and cannot scope them. These
+into the single host kernel; package services inherit them and cannot scope them. These
 load via a synthesized `aos-pkg-<pkg>-modules.service` (`modprobe -a …`) gated by
 the package target ([activation.md](activation.md)).
 
@@ -157,7 +158,7 @@ non-reversible after package stop.
 
 ---
 
-## 3. Container networking model — RESOLVED (direction, under Decision 17)
+## 3. Package networking model — RESOLVED (direction, under Decision 17)
 
 > **Resolved (direction).** The `network` permission materializes as:
 > **inbound-only private** (default) — host-owned socket units pass named fds
@@ -168,22 +169,25 @@ non-reversible after package stop.
 > netns + veth pair (host side managed by systemd-networkd; `CONFIG_VETH=y`
 > confirmed in the kernel config) and the workload unit joins via
 > `NetworkNamespacePath=/run/netns/aos-pkg-<n>` — the one place per-unit is
-> more plumbing than nspawn's `--network-veth`, to be validated in the
-> Decision 17 spike; **host** — k3s and peers, per their manifest. Zone-style
-> multi-container L2 is deferred until a real need appears.
+> more plumbing than nspawn's `--network-veth`, validated by the Decision 17
+> spike; **host** — k3s and peers, per their manifest. Zone-style multi-package
+> L2 is deferred until a real need appears.
 
-**Statement.** systemd-nspawn offers `--network-veth` (paired veth, host side
-managed by systemd-networkd), `--network-zone`, `--network-namespace-path`, and
-`--network=host`. AOS already runs systemd-networkd + systemd-resolved. Workload
-containers want veth; k3s wants host (Decision 1).
+**Statement.** AOS already runs systemd-networkd + systemd-resolved. Sandboxed
+package services want a private network namespace with explicit inbound/outbound
+grants; k3s wants host networking (Decision 1). The skipped nspawn substrate
+would have offered `--network-veth`, `--network-zone`,
+`--network-namespace-path`, and `--network=host`; the per-unit substrate
+materializes the same manifest semantics through systemd service directives and
+host-side gated helper units.
 
-**Why it matters.** Veth requires host-side `.network` files (e.g.
-`/etc/systemd/network/30-container-<pkg>.network` matching `ve-<pkg>-*`),
-firewall coordination with the base nftables sets, and possibly DHCP/static
-inside the container. Cross-container and container↔host reachability in test L2
-is fiddly (the k3s fleet test already pins `node-ip`/`flannel-iface` to work
-around a missing default route). `nss-mymachines` is **not** shipped, so
-`getent hosts <container>` does not resolve container names.
+**Why it matters.** Private outbound networking requires host-side `.network`
+files or equivalent setup, firewall coordination with the base nftables sets,
+and possibly DHCP/static addressing inside the package netns. Cross-package and
+package-host reachability in test L2 is fiddly (the k3s fleet test already pins
+`node-ip`/`flannel-iface` to work around a missing default route).
+`nss-mymachines` is **not** shipped, so there is no machine-name DNS substrate to
+lean on if nspawn returns.
 
 **Options.**
 - Workload default `--network-veth` + a generated host `.network`; firewall
@@ -238,49 +242,44 @@ lifecycle coverage is the per-unit VM test path, with introspection through
 
 ---
 
-## 5. Container root images — RESOLVED (store path via `RootDirectory=`)
+## 5. Package roots and RootImage — RESOLVED
 
-> **Resolved.** Store-path-in-closure, consumed via `RootDirectory=` (per
-> Decision 17): the package's root tree is an ordinary store path inside the
-> package closure — it inherits NAR hashing, the registry tag-signature
-> chain, and gc-rooting with zero new machinery, and needs no image build, no
-> loop device, no udev ordering. The `expose.images` registry field is
-> therefore **not needed for MVP**; it returns if/when a verity-signed
-> `RootImage=` variant lands (blocked on adding `CONFIG_DM_VERITY` to the
-> kernel config — verified absent today). The baked-vs-fetched trust
-> split-brain dissolves with it: a store path rides whichever closure
-> delivers it (system toplevel or apm fetch), covered by that channel's
-> existing trust.
+> **Resolved.** Store-path-in-closure, consumed via `RootDirectory=`, remains the
+> default package root shape: it inherits NAR hashing, the registry
+> tag-signature chain, and gc-rooting with zero new machinery, and needs no
+> image build, loop device, or udev ordering. The stronger verity-signed
+> `RootImage=` path also landed for packages that declare signed
+> `expose.images[]` metadata: the builder emits `root.img`, `root.verity`,
+> `root.roothash`, and `root.roothash.p7s`, while the kernel config enables the
+> dm-verity platform-keyring checks.
 
-**Statement.** systemd-nspawn needs a real root filesystem; AOS today builds
-store closures + a host rootfs (`lib/build/rootfs.nix` via `mkfs.ext4 -d` +
-`fakeroot`, closure discovery via `lib/build/closure-info.nix`'s
-`exportReferencesGraph`) but **does not** build per-package container roots, and
-there is **no OCI format** in the pipeline. A proposed `lib/build/container-root.nix`
-would reuse the rootfs pattern to emit a minimal ext4 image per package.
+**Statement.** AOS now builds per-package roots as store paths. The implemented
+builder, [`lib/build/package-root-image.nix`](../../../lib/build/package-root-image.nix),
+reuses the rootfs pattern (`mkfs.ext4 -d`, `fakeroot`, closure discovery via
+`exportReferencesGraph`) to emit a minimal ext4 image plus its verity tuple.
+There is still **no OCI format** in the pipeline.
 
-**Why it matters.** This is net-new build surface and a new **registry
-artifact**. Today the registry ships package closures as NARs
-(`crates/aos-package/`); a container root is an additional artifact that must be
-fetched, verified, and stored (`/var/lib/machines` on the writable `/var`
-partition). Container roots are currently **unsigned** in the proposal, whereas
-the registry already has an Ed25519 signing/TOFU/anti-rollback trust model
-(`docs/registry/signing-and-trust.md`). An unsigned container root run as PID1
-is a trust gap.
+**Why it matters.** This is build surface and a registry artifact. The registry
+ships package closures as NARs (`crates/aos-package/`); a package root is an
+additional artifact that must be fetched, verified, rooted in the package
+generation, and consumed by `RootImage=`/`RootDirectory=`. The resolved
+`RootImage=` path signs the dm-verity root hash and validates it against the
+platform keyring, closing the unsigned-root trust gap.
 
 **Options.**
-- Ship the container root as a normal store path inside the package closure →
-  it inherits NAR hashing + the registry signing chain for free; nspawn mounts
-  the store-path rootfs read-only. (Most hermetic; aligns with "verify it exists
-  in the closure".)
-- Ship a separate `*-container-root.img` artifact with its own narinfo/signature.
-  More like OCI; more schema and a second verification path.
-- Bake the container root into the host image for infrastructure packages
+- Ship the package root as a normal store path inside the package closure →
+  it inherits NAR hashing + the registry signing chain for free; the generated
+  service consumes the store-path rootfs with `RootDirectory=`. (Most hermetic;
+  aligns with "verify it exists in the closure".)
+- Ship a separate verity-signed package-root image through `expose.images[]`
+  with the existing narinfo/signature chain plus `RootImage=` runtime
+  verification.
+- Bake the package root into the host image for infrastructure packages
   (no runtime fetch; bloats image — see Decision 6).
 
 **Baked-vs-fetched trust split-brain.** Per
 [apm-integration.md](apm-integration.md) §7, the two delivery models have *two
-different roots of trust*: a **fetched** container root is covered by the
+different roots of trust*: a **fetched** package root is covered by the
 registry tag signature + NAR hash, while a **host-image-baked** root never
 transits the registry and is covered only by the host image's own integrity
 (UKI / system closure). Mixing baked and fetched roots for the *same* package
@@ -306,18 +305,18 @@ the package root.
 > real workload package exists.
 
 **Statement.** Per the investigation, the host rootfs closure is ~800 MiB–1.2 GiB
-uncompressed (~400–600 MiB shrunk). A k3s container root is ~200–300 MiB
+uncompressed (~400–600 MiB shrunk). A k3s package root is ~200–300 MiB
 (k3s + containerd + runc + cni-plugins), with coreutils/bash deduped against the
 host closure.
 
-**Why it matters.** If container roots are **baked into the host image**
+**Why it matters.** If package roots are **baked into the host image**
 (Decision 5 Option 3), every host carries them whether or not the package is
 enabled — directly contradicting "installed at boot via apm." If fetched at
 boot, we trade image size for a network/registry dependency and first-boot
 latency.
 
 **Options.**
-- Fetch container roots at boot via apm (keeps host image lean; needs network +
+- Fetch package roots at boot via apm (keeps host image lean; needs network +
   registry reachability — conflicts with air-gapped).
 - Bake only a small set of "always-on" infrastructure roots; fetch the rest.
 - Store-path-in-closure (Decision 5 Option 1) makes "fetch" just a normal apm
@@ -473,12 +472,14 @@ config change runs `systemctl reload-or-restart` where supported.
 > `--private-users` question folds into the manifest's `privileged-users`
 > permission (`PrivateUsers=` under the per-unit substrate).
 
-**Statement.** A default (empty-manifest) package gets a real nspawn sandbox
-(own PID1, namespaces); a high-privilege package (k3s) declares away the
-boundary. `--private-users` is available but has file-ownership/`/dev`
-trade-offs; the investigation recommends `--private-users=no` (the
-`privileged-users` permission) with seccomp/mount restrictions instead for the
-packages that need it.
+**Statement.** A default (empty-manifest) package gets a generated systemd unit
+with the per-unit sandboxing boundary: private package root, namespace
+directives, capability bounding, syscall/device filtering, Landlock/MAC/eBPF
+policy, and a computed confinement label. A high-privilege package (k3s)
+declares away parts of that boundary. `PrivateUsers=` is available but has
+file-ownership/`/dev` trade-offs; packages that need host identity request the
+`privileged-users` permission and keep the rest of the manifest restrictions
+explicit.
 
 **Why it matters.** Operators must know exactly which packages are isolated and
 which are not. Misrepresenting a high-privilege package as sandboxed is a
@@ -512,23 +513,24 @@ declared grants and computed confinement label before install/enable.
 
 **Statement.** apm already has a generation/profile model
 (`/var/lib/profiles/{scope}/gen-N/`, atomic `current` symlink switch, anti-
-rollback floor in the registry). It is unclear how this maps onto a running
-nspawn container and its `/var/lib/machines` rootfs and persistent state.
+rollback floor in the registry). The resolved model maps exposed package roots
+and rendered units into the package generation rather than into
+`/var/lib/machines`.
 
-**Why it matters.** Upgrading a workload means swapping the container root and
+**Why it matters.** Upgrading a workload means swapping the package root and
 restarting the unit; rollback means switching back a generation. Stateful
-packages (databases) complicate this (persistent volumes, snapshots). For k3s
-under the nspawn materialization, restart **kills all pods** — private PID-ns
-teardown loses today's `KillMode=process` survival property (see
+packages (databases) complicate this (persistent volumes, snapshots). The
+resolved per-unit path keeps k3s's `KillMode=process` semantics; the skipped
+nspawn materialization would have killed all pods because private PID-ns
+teardown loses that survival property (see
 [container-model.md](container-model.md) §"The `KillMode=process` regression"
-and Decision 17) — so upgrade is disruptive well beyond a drain. Without a
-defined story, upgrades risk orphaned roots in `/var/lib/machines`, state loss,
-or wedged units.
+and Decision 17). Without a defined story, upgrades risk state loss or wedged
+units.
 
 **Options.**
-- Ephemeral container roots (read-only image + `--volatile=overlay`, state in
-  explicit host bind-mounts) so upgrade = swap image + restart; rollback = apm
-  generation switch + restart. Recommended default.
+- Immutable package roots (read-only store path or signed `RootImage=`, state in
+  explicit host bind-mounts/state directories) so upgrade = swap root + restart;
+  rollback = apm generation switch + restart. Recommended default.
 - Persistent roots only for packages that require it, with explicit
   snapshot/rollback (out of MVP scope).
 
@@ -539,7 +541,7 @@ permissions/config surface.
 
 ---
 
-## 12. Package metadata: how a package declares a container/service — RESOLVED (hybrid)
+## 12. Package metadata: how a package declares generated services — RESOLVED (hybrid)
 
 > **Resolved (hybrid).** The registry TOML (tag-signed, visible pre-fetch)
 > carries what introspection and policy need **before download**:
@@ -558,11 +560,11 @@ permissions/config surface.
 and copies the manifest into that eval-free output.
 
 **Why it matters.** This is the schema that everything else keys off (install
-hook, activation, container launch, config). Getting it wrong is expensive to
-migrate (the registry is content-addressed and signed). It must also carry the
-signed `[permissions]` manifest (Decision 1, [permissions.md](permissions.md))
+hook, activation, package service launch, config). Getting it wrong is expensive
+to migrate (the registry is content-addressed and signed). It must also carry
+the signed `[permissions]` manifest (Decision 1, [permissions.md](permissions.md))
 — which subsumes network mode (Decision 3) and isolation level (Decision 10) —
-and the container-root reference (Decision 5).
+and any package-root image metadata (Decision 5).
 
 **Options.**
 - Extend registry `packages/<letter>/<name>.toml` with optional
@@ -755,23 +757,23 @@ See "Substrate decision" in [container-model.md](container-model.md).
 onto a directive as cleanly as onto an nspawn flag. The per-unit substrate
 dissolves the k3s `KillMode=process` regression (Decision 11), removes the
 second service manager for single-unit packages (no in-container PID1, no
-nesting risk — Decision 4; no container-root image for single-binary packages —
+nesting risk — Decision 4; no extra nspawn package-root image for single-binary packages —
 Decision 5), and shrinks nspawn's honest use case to "package needs its own
 multi-unit init tree" — currently approximately none. Choosing the substrate
-late invalidates the container-root builder, image format, and template
+late invalidates the package-root builder, image format, and template
 decisions, so it is upstream of Decisions 4, 5, 11, and 13. Further verified
 evidence for the per-unit side: host-namespace socket units give named-fd
 socket activation into a `PrivateNetwork=` service, while `JoinsNamespaceOf=`
 remains the two-unit pod primitive when units intentionally share a private
 namespace (nspawn forwards `$LISTEN_FDS` only to a `--boot` init, unnamed —
 systemd#17764); `RootImage=` carries dm-verity (`RootHashSignature=`) for
-signed container roots; and `RootImage=` + `DynamicUser=` + `PrivateUsers=` is
+signed package roots; and `RootImage=` + `DynamicUser=` + `PrivateUsers=` is
 upstream's own portable-services default profile.
 
 **Options.**
 - Per-unit sandboxing as the default materialization; nspawn opt-in for
   packages that need an init tree. (Lean.)
-- nspawn everywhere (the current doc set), accepting the k3s regression and
+- Universal nspawn materialization (the superseded proposal), accepting the k3s regression and
   the nesting/test costs.
 
 **Resolution.** The head-to-head spike chose per-unit sandboxing. nspawn is

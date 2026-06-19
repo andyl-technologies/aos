@@ -26,8 +26,8 @@ There is one package target shape with a permission gradient — not a
 
 Two things fall out of making privilege declarative:
 
-1. **Uniformity.** One shape, one lifecycle, one mental model. Every package is
-   an nspawn container fronted by an `aos-pkg-<name>.target`
+1. **Uniformity.** One target shape, one lifecycle, one mental model. Every
+   service package is fronted by an `aos-pkg-<name>.target`
    (see [container-model.md](container-model.md)). k3s stops being a carve-out.
 2. **Legibility.** You can ask a package *what it needs to run* before you
    install or enable it — `apm info <pkg> --permissions` — the way an app store
@@ -46,9 +46,10 @@ a manifest, just as a privileged Android app is still an app with a manifest.
 One unifying rule governs every entry below:
 
 > Every permission is **`requested by the package ∩ granted by host policy`**.
-> Permissions differ only in *how* a grant is fulfilled — **inside** the
-> container (caps, seccomp, devices, mounts, netns) or by a **host-side action**
-> (`modprobe` for `kernel-modules`; the host firewall for `network: host`).
+> Permissions differ only in *how* a grant is fulfilled — on the generated
+> service sandbox (caps, seccomp, devices, mounts, netns) or by a **host-side
+> action** (`modprobe` for `kernel-modules`; the host firewall for
+> `network: host`).
 
 So `kernel-modules` is not an exception to the model — it is a normal permission
 whose grant happens to be fulfilled host-side. The package *declares* a request;
@@ -130,17 +131,18 @@ above. (Profile rendering details live in [enforcement.md](enforcement.md).)
 
 ## Default-deny, least privilege
 
-The baseline container, with an **empty** `[permissions]` block:
+The baseline generated service, with an **empty** `[permissions]` block:
 
-- private network namespace (veth into a host zone; only the ports the package
-  declares are reachable. Rules inside the container's netns revert on teardown
-  by construction; reachability from off-host is materialized **host-side** by
-  the gated `aos-pkg-<name>-firewall.service` — base-table set elements plus the
-  `--port=`/DNAT forward for the veth — and reverts via its `ExecStop`. See
-  [container-model.md](container-model.md) §Networking);
+- private network namespace; only the ports the package declares are reachable.
+  Rules in the package netns revert on teardown by construction; reachability
+  from off-host is materialized **host-side** by the gated
+  `aos-pkg-<name>-firewall.service` — base-table set elements plus any needed
+  DNAT/forwarding — and reverts via its `ExecStop`. See
+  [container-model.md](container-model.md) §Networking.
 - no added capabilities, default seccomp, user namespacing on;
 - no host devices, no host bind mounts beyond the package's own state dir;
-- ephemeral overlay root (filesystem writes revert on stop — see
+- immutable package root plus explicit writable state/scratch paths (filesystem
+  writes outside those paths revert on stop — see
   [container-model.md](container-model.md)).
 
 A package gets *only* what it lists on top of that. So a plain workload package
@@ -190,15 +192,15 @@ from it:
    `CapabilityBoundingSet=`, `BindPaths=`/`BindReadOnlyPaths=`,
    `PrivateNetwork=`, `PrivateUsers=`, `Delegate=`, `DeviceAllow=`, and
    `SystemCallFilter=` directives;
-2. the host-side gated services for permissions that cannot live inside the
-   container — today that is `aos-pkg-<name>-modules.service` (host `modprobe`
-   of the declared `kernel-modules`), wired `WantedBy`/`PartOf` the package
-   target like the other sandbox services in
+2. the host-side gated services for permissions that cannot be expressed solely
+   on the workload unit — today that is `aos-pkg-<name>-modules.service` (host
+   `modprobe` of the declared `kernel-modules`), wired `WantedBy`/`PartOf` the
+   package target like the other sandbox services in
    [container-model.md](container-model.md).
 
-So `aos-pkg-<name>.target` `Wants=` both the nspawn instance and any host-side
-permission services. Enabling the target grants exactly the declared
-permission set; disabling it removes the container and the host-side grants
+So `aos-pkg-<name>.target` `Wants=` the generated workload service and any
+host-side permission services. Enabling the target grants exactly the declared
+permission set; disabling it stops the generated units and host-side grants
 (modulo the one-way limits below).
 
 > **Substrate-independent.** The manifest does not presuppose nspawn: under the
@@ -211,13 +213,13 @@ permission set; disabling it removes the container and the host-side grants
 
 ## The two host-fulfilled permissions (honest limits)
 
-These two are **fulfilled host-side** rather than inside the container — but
+These two are **fulfilled host-side** rather than solely on the workload unit — but
 they are *not* exceptions to the `request ∩ grant` model above. The package
 still only *requests*; the host still decides whether to *grant*. The difference
 is the mechanism, plus an honest one-way teardown caveat for modules.
 
-1. **`kernel-modules`.** No container can load a kernel module — the kernel is
-   shared. The package **declares** `kernel-modules = [...]` as a *request*; the
+1. **`kernel-modules`.** No sandboxed package can load a kernel module — the
+   kernel is shared. The package **declares** `kernel-modules = [...]` as a *request*; the
    host **grants** it only if every requested module is in a host **allowlist**.
    A non-allowlisted module **fails admission with a clear message — exactly
    like a forbidden capability**. Granted modules are loaded host-side by

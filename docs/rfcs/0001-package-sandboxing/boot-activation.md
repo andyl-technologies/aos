@@ -14,9 +14,9 @@ present and their units reachable; enable activates them. Config delivery that
 those enabled units consume is layered — see [config.md](config.md) and
 [open-questions.md](open-questions.md).
 
-This is a planning doc. Where the current code already does part of this, the
-real file/line is cited. Where the mechanism does not yet exist, it is marked
-**(new)** or **needs verification** rather than presented as built.
+This is an implementation-tracking doc. Where a mechanism is now built, this doc
+states the resolved shape; where future work is conditional, it is called out as
+future rather than as part of the boot path.
 
 ---
 
@@ -108,7 +108,7 @@ install and enable are distinct states (§1).
 ### 3.1 Declaring the set
 
 The declared set is delivered as an Ignition-written file that the boot install
-step (§4) reads. Strawman path and shape **(new)**:
+step (§4) reads. The resolved path and shape:
 
 ```
 /etc/aos/packages.d/desired.toml      # written by ignition-files
@@ -194,7 +194,7 @@ replaced scriptlets with `systemd-update-helper` + RPM file triggers; Arch
 ships `disable *` and never auto-enables. AOS composes the Arch default with a
 Fedora-style per-host allowlist written by Ignition.
 
-**Verified against the tree (was "needs verification" — now resolved):**
+**Verified against the tree (previously unresolved — now resolved):**
 
 - **systemd's native first-boot preset pass will never fire on AOS — by
   design, and that is correct.** PID 1 keys "first boot" on
@@ -247,7 +247,7 @@ It must run after three things are true: the store is writable, the system
 profile exists, and (only if fetching) the network is up.
 
 ```ini
-# aos-install-packages.service  (new)
+# aos-install-packages.service
 [Unit]
 Description=Install Ignition-declared apm packages at boot
 After=nix-overlay-setup.service aos-seed-profiles.service
@@ -460,4 +460,4 @@ findings; harness files under `lib/testing/`):
 - [apm-integration.md](apm-integration.md) — registry metadata, target declaration, install/enable/remove
 - [config.md](config.md) — layered config and credential delivery
 - [migration.md](migration.md) — migration onto the packages model and the k3s mapping
-- [open-questions.md](open-questions.md) — unresolved decisions (prune, enable mechanism, config backend)
+- [open-questions.md](open-questions.md) — decision register and resolved dispositions
