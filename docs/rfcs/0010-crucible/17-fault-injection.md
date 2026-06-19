@@ -959,8 +959,12 @@ Seed, Schedule)` exactly like a fault-free run — which is what
   heal) as the body of the `Plan`, in virtual time, with build-time validation
   (declared refs, heal-tag injected somewhere, in-range params) and integer-bp
   content-addressing; activate/heal at exact virtual times in total order with the
-  topology swap + lookahead recompute. — satisfies [FAULT-24], [FAULT-25]; spec
-  §17.6.1; cross-ref 06 §9, 08 §8.11.
+  topology swap + lookahead recompute. Express every fault as an
+  `InjectFault`/`HealFault` `Action` in the 17a event graph (no parallel fault
+  scheduler) and lower the declarative `FaultPlan` mechanically as the degenerate
+  pure-`At` case sharing one canonicalization and content hash. — satisfies
+  [FAULT-24], [FAULT-25], [FAULT-33], [FAULT-34]; spec §17.6.1; cross-ref 06 §9,
+  08 §8.11, 17a §17a.4, §17a.7.
 - [ ] **T-FAULT-11** Implement imperative inject/heal over the control plane
   applied at quantum boundaries and recorded in the `Schedule`, so an
   imperatively-driven session reduces to the same self-contained repro artifact.

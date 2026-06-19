@@ -824,7 +824,9 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
 - [ ] **T-ADV-3** Implement fork as `instantiate` of a non-tip configuration plus
   divergent `step`s, CoW-shared with the parent, with no fork-specific realization
   path; assert the child is an independent session actor that cannot mutate the
-  parent. — satisfies [ADV-6], [ADV-7], [ADV-9]; spec §22.3; cross-ref 05 §6, 07
+  parent; ensure `save`/`fork` produce only controlled deterministic checkpoints
+  and never a detach-to-live-non-deterministic-QEMU debug mode. — satisfies
+  [ADV-6], [ADV-7], [ADV-9], [ADV-33]; spec §22.3, §22.3.1; cross-ref 05 §6, 07
   §5, 20 §7.
 - [ ] **T-ADV-4** Validate every fork by the replay oracle (same
   `gate:replay-oracle` as restore), localizing any divergence by bisection; assert

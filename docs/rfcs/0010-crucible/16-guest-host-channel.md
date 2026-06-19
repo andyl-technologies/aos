@@ -619,8 +619,9 @@ the transport layer by construction.
   satisfies [GHC-5], [GHC-6]; spec §16.1.2.
 - [ ] **T-GHC-4** Implement the synchronous trapped-instruction doorbell in the
   plugin, serviced inline at the exact retirement icount, with payload via shared
-  page or register ptr+len. — satisfies [GHC-10], [GHC-11], [GHC-13]; spec §16.3,
-  §16.4.
+  page or register ptr+len; forbid a virtio-serial/device data channel for the
+  reasons of §16.3.1. — satisfies [GHC-10], [GHC-11], [GHC-13], [GHC-14]; spec
+  §16.3, §16.3.1, §16.4.
 - [ ] **T-GHC-5** Define the per-arch doorbell: x86_64 reserved port I/O and
   aarch64 reserved-immediate HLT/BRK (or hvc), from a single-source ABI
   definition; document and golden-vector the encodings. — satisfies [GHC-15],
@@ -634,8 +635,9 @@ the transport layer by construction.
   [GHC-20], [GHC-21]; spec §16.5.
 - [ ] **T-GHC-8** Implement the closed, versioned marker-kind vocabulary
   (assert always/sometimes/reachable + dual; lifecycle setup_complete/test_done;
-  event; coverage) and its mapping to event-log/assertion semantics. — satisfies
-  [GHC-22], [GHC-23], [GHC-25]; spec §16.5.1.
+  event; coverage) and its mapping to event-log/assertion semantics, including the
+  assertion-marker payload fields (id/kind/`must_hit`/details/location) that drive
+  finalize. — satisfies [GHC-22], [GHC-23], [GHC-25], [GHC-36]; spec §16.5.1.
 - [ ] **T-GHC-9** Record every marker as an observational, icount-stamped
   event-log entry excluded from the determinism comparison; prove markers do not
   move the fingerprint. — satisfies [GHC-24], [GHC-30]; spec §16.5.2, §16.7.

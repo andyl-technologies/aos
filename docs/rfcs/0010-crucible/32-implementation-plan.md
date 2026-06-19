@@ -22,14 +22,17 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **462 tasks** across 29 areas, satisfying ~900 numbered
-requirements. Task counts by area:
+The plan covers **497 tasks** across 33 areas, satisfying **952 numbered
+requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
+**complete**: every defined requirement is cited by at least one checklist task,
+and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
+Task counts by area:
 
 ```text
-SCHED 30  DET 28  PERF 26  HARN 26  EXEC 25  PLUG 23  SPAT 21  SHM 21
-PKG 20  PATCH 20  RISK 16  IO 16  FAULT 16  CLI 16  ASRT 16  ADV 16
-SESS 15  GHC 15  CRATE 15  QEMU 14  API 14  STD 13  OBS 13  TEMP 11
-PROTO 11  PAT 9  TIME 8  ARCH 5  D 3
+SCHED 30  DET 28  PERF 26  HARN 26  EXEC 25  PLUG 23  SPAT 21  SHM 21  TRIG 20
+PKG 20  PATCH 20  ASRT 17  RISK 16  IO 16  FAULT 16  CLI 16  ADV 16  SESS 15
+GHC 15  CRATE 15  QEMU 14  API 14  STD 13  OBS 13  TEMP 11  PROTO 11  PAT 9
+TIME 8  WL 6  EX 5  ARCH 5  PLAN 3  D 3
 ```
 
 ## The phase ladder
@@ -241,8 +244,10 @@ maintained two ways:
 
 - [ ] **T-PLAN-1** Implement the RFC coverage/consistency doc-lint: every `MUST`
   requirement has ≥1 satisfying task; every task cites existing requirement IDs;
-  every `gate:*` is in the 24 catalog; per-file checklists match this plan. Wire
-  it as a CI doc check. — satisfies [PLAN-1], [PLAN-2], [PLAN-3]; spec §coverage.
+  every `gate:*` is in the 24 catalog; per-file checklists match this plan; and no
+  banned names (prior internal exploration / third-party commercial products)
+  appear in the RFC or Crucible code/comments/docs. Wire it as a CI doc check. —
+  satisfies [PLAN-1], [PLAN-2], [PLAN-3], [CONV-1]; spec §coverage.
 - [ ] **T-PLAN-2** Keep the per-file checklist copies in sync with this plan's
   ordering (the lint from T-PLAN-1 fails on drift). — satisfies [PLAN-3]; spec §"How to use".
 - [ ] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is

@@ -852,8 +852,11 @@ by when the producer's store landed in shared memory.
 
 - [ ] **T-SHM-1** Define the `#[repr(C)]` `RegionHeader`, `NodeSlot`,
   `RingHeader`, and `FrameEntry` in `crucible-shmem` with the field set, order,
-  and padding of §13.3, and the constants of §13.4. — satisfies [SHM-1], [SHM-7],
-  [SHM-9], [SHM-12], [SHM-13]; spec §13.3, §13.4.
+  and padding of §13.3, and the constants of §13.4; make the region the only
+  channel for virtual-time advancement and cross-node frame delivery (the IPC
+  protocol carries no per-quantum timing or per-frame delivery decisions). —
+  satisfies [SHM-1], [SHM-2], [SHM-7], [SHM-9], [SHM-12], [SHM-13]; spec §13.1,
+  §13.3, §13.4.
 - [ ] **T-SHM-2** Add Rust `const _: () = assert!(size_of/align_of/offset_of...)`
   for every shared struct and field per §13.4. — satisfies [SHM-5], [SHM-14];
   spec §13.4.

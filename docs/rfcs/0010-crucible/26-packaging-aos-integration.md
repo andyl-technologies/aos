@@ -502,12 +502,14 @@ cheap and the present ships standalone.
 - [ ] **T-PKG-1** Establish the Crucible package inventory under
   `pkgs/emulation/`, `pkgs/kernel/`, and `pkgs/tools/crucible/` with AOS package
   structure (mkDerivation / mkCargoPackage, inline pins, dep classification), no
-  host tools, no nixpkgs. — satisfies [PKG-1], [PKG-2], [PKG-3], [PKG-4], [PKG-6];
-  spec §26.1, §26.2.
+  host tools, no nixpkgs. — satisfies [PKG-1], [PKG-2], [PKG-3], [PKG-4], [PKG-6],
+  [G-7]; spec §26.1, §26.2.
 - [ ] **T-PKG-2** Package `qemu-crucible`: same pinned (≥ 10.0) QEMU source as
   production QEMU + ordered `crucible-*.patch` series applied at unpack, sim accel
-  / shmem device files compiled in, completeness preserved. — satisfies [PKG-5],
-  [PKG-8], [PKG-9], [PKG-10], [PKG-12]; spec §26.3.
+  / shmem device files compiled in, completeness preserved; build `qemu-crucible`
+  and `crucible-qemu-plugin` from the same pinned QEMU source, co-located as a
+  matched pair with a sim-capability marker. — satisfies [PKG-5], [PKG-7], [PKG-8],
+  [PKG-9], [PKG-10], [PKG-12]; spec §26.2, §26.3.
 - [ ] **T-PKG-3** Wire `gate:qemu-inert` as a `qemu-crucible` package check:
   unpatched vs patched-sim-off byte-identical over the upstream-equivalent corpus.
   — satisfies [PKG-13]; spec §26.3.1, routes [INV-7].
@@ -564,7 +566,8 @@ cheap and the present ships standalone.
   — satisfies [PKG-32], [PKG-33]; spec §26.9.
 - [ ] **T-PKG-18** Write the ratchet-seam merge marker (module docs: future home,
   narrow interface, conformance bar) and the future-merge plan (thin adapter behind
-  the unchanged interface, gate-gated). — satisfies [PKG-34], [PKG-35]; spec §26.9.
+  the unchanged interface, gate-gated), keeping Crucible standalone with no
+  RFC-0007 dependency. — satisfies [PKG-34], [PKG-35], [NG-7]; spec §26.9.
 - [ ] **T-PKG-19** Produce the release manifest versioning the three things
   (Crucible version, QEMU tag + series hash, three ABI versions) and ensure
   per-package reproducibility (pinned hashes, vendored deps, no embedded
