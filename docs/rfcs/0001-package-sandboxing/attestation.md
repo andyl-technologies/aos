@@ -62,21 +62,24 @@ fs-verity/dm-verity over it (upstream issue open since 2021). Under the
   firmware→kernel→filesystem trust bridge (`veritysetup --root-hash-signature`,
   Linux ≥5.4): the same key custody that authenticates the UKI now authenticates
   package roots.
-- **Kernel config:** add `CONFIG_DM_VERITY`, `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`,
-  and `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING` (absent today —
-  the prior blocker the deferral cited). Add via `pkgs.linuxWith`
-  ([kernel extraConfig memory]).
-- **Consolidated vs per-package root.** Prefer **one signed root digest per
-  package generation** (a composefs/EROFS image whose backing objects are the
-  package-set closure) over N per-package images: one digest to sign, measure,
-  and attest, and composefs gives per-file fs-verity over shared backing objects
-  without losing store dedup. Per-package `RootImage=` remains available for a
-  package that needs an independently-revocable root.
+- **Kernel config:** include `CONFIG_DM_VERITY`,
+  `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG`, and
+  `CONFIG_DM_VERITY_VERIFY_ROOTHASH_SIG_PLATFORM_KEYRING` via `pkgs.linuxWith`.
+- **Consolidated vs per-package root.** AOS uses **per-package signed ext4
+  dm-verity `RootImage=` roots** for the MVP. Each package image carries its own
+  `root.img`, `root.verity`, `root_hash`, and `.roothash.p7s`, and the package
+  measurement uses that package root digest. This matches the package-profile
+  lifecycle: an exposed image is downloaded, gc-rooted, rolled back, and revoked
+  with the package that references it. A consolidated composefs/EROFS digest per
+  package generation remains a future size/dedup optimization, not the MVP
+  integrity boundary.
 
-Caveat to carry into the spike: `RootImage=` is loop-device backed and pulls
-`After=systemd-udevd.service` (not early-boot), and must not combine with
-`PrivateDevices=yes` — reconcile against the [enforcement.md](enforcement.md)
-hardening baseline per unit.
+`RootImage=` is loop-device backed and pulls `After=systemd-udevd.service`
+(not early-boot), and must not combine with `PrivateDevices=yes`. AOS reconciles
+that in the rendered unit contract: verity `RootImage=` workloads require
+`After=`/`Requires=systemd-udevd.service` and `PrivateDevices=false`, while the
+rest of the [enforcement.md](enforcement.md) hardening baseline still applies
+per unit.
 
 ## Artifact 3 — runtime attestation: measure into the TPM, then quote
 

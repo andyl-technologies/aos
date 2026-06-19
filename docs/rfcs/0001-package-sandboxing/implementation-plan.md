@@ -672,9 +672,9 @@ Full spec: [`attestation.md`](attestation.md).
 
 **Deliverables.**
 
-- [x] **dm-verity package roots (D21).** Build the package-set root (prefer one
-      consolidated composefs/EROFS digest per generation) as a dm-verity image,
-      hermetically (`veritysetup format`, no host tools). Consume via
+- [x] **dm-verity package roots (D21).** Build each exposed package root as its
+      own signed ext4 dm-verity image, hermetically (`veritysetup format`, no
+      host tools). Consume via
       `RootImage=`+`RootHash=`+`RootVerity=`+`RootHashSignature=`; the PKCS#7
       `.roothash.p7s` is validated by the kernel against the **`.platform`
       keyring** populated from the UEFI db (RFC-0006). Kernel config:
@@ -695,22 +695,24 @@ Full spec: [`attestation.md`](attestation.md).
       ([`apm-integration.md`](apm-integration.md), [`attestation.md`](attestation.md)).
       Key custody: registry key ≠ UEFI-db/verity key ≠ TPM AK/EK.
 
-**Implemented so far.** Package activation measures every explicitly exposed
-package, including non-verity `RootDirectory=` packages, by using
-`root_digest` as the measurement input. For verity packages `root_digest` equals
-`root_hash`; otherwise the registry derives it from the package NAR hash and
-seeded bundled metadata derives a stable package-root digest before writing the
-golden catalog. The package event log is an AOS JSONL CEL profile with monotonic
-`sequence_number`, PCR index, SHA-256 digest list, event size, and measured
-event content; the verifier rejects malformed sequence numbers while retaining
-legacy log compatibility. Quote verification can also require an explicit
-quote-identity pin catalog; without one, quote mode remains explicitly marked
-as self-consistent but untrusted. The verifier-hosting decision is implemented
-as the standalone `aos.services.attestationVerifier` role, which consumes
-delivered quote/event-log/catalog evidence and writes the verifier result
-without sharing registry signing custody. Remaining P9 blockers are AK/EK
-enrollment and credential activation, and external/binary TCG CEL compatibility
-validation.
+**Implemented so far.** Verity packages use per-package signed ext4 dm-verity
+`RootImage=` roots; a consolidated composefs/EROFS digest per package generation
+is left as a future size/dedup optimization, not the MVP integrity boundary.
+Package activation measures every explicitly exposed package, including
+non-verity `RootDirectory=` packages, by using `root_digest` as the measurement
+input. For verity packages `root_digest` equals `root_hash`; otherwise the
+registry derives it from the package NAR hash and seeded bundled metadata
+derives a stable package-root digest before writing the golden catalog. The
+package event log is an AOS JSONL CEL profile with monotonic `sequence_number`,
+PCR index, SHA-256 digest list, event size, and measured event content; the
+verifier rejects malformed sequence numbers while retaining legacy log
+compatibility. Quote verification can also require an explicit quote-identity
+pin catalog; without one, quote mode remains explicitly marked as
+self-consistent but untrusted. The verifier-hosting decision is implemented as
+the standalone `aos.services.attestationVerifier` role, which consumes delivered
+quote/event-log/catalog evidence and writes the verifier result without sharing
+registry signing custody. Remaining P9 blockers are AK/EK enrollment and
+credential activation, and external/binary TCG CEL compatibility validation.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
 D22 registry golden-catalog coverage gap; D22 itself remains open until the
@@ -901,9 +903,13 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       `sequence_number`, PCR index, SHA-256 digest list, event size, and measured
       event content; still validate external/binary TCG CEL compatibility.
       ([`attestation.md`](attestation.md))
-- [ ] **Consolidated vs per-package verity root (P9).** Whether one composefs/EROFS
-      digest per generation or per-package `RootImage=` images; composefs maturity
-      in the AOS kernel/userspace. ([`attestation.md`](attestation.md))
+- [x] **Consolidated vs per-package verity root (P9).** AOS uses per-package
+      signed ext4 dm-verity `RootImage=` images for the MVP; each exposed image
+      is downloaded, gc-rooted, rolled back, revoked, measured, and verified by
+      the kernel with the package that references it. A consolidated
+      composefs/EROFS digest per package generation remains a future size/dedup
+      optimization rather than the MVP integrity boundary.
+      ([`attestation.md`](attestation.md))
 - [x] **Quote identity pinning (P9).** Quote verification can require an
       explicit catalog of quote-bundle identity fingerprints; matching quotes
       report `quote_identity_pinned=true`, while `ak_ek_trusted` remains false
