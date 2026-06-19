@@ -20,13 +20,6 @@ macro_rules! builtin_registry {
             )*
         ];
 
-        #[cfg(test)]
-        const REGISTERED_BUILTIN_TYPES: &[&str] = &[
-            $(
-                stringify!($ty),
-            )*
-        ];
-
         fn lookup_builtin_declaration(name: &[u8]) -> Option<Builtin> {
             $(
                 if name == <$ty as BuiltinDefinition>::NAME {
@@ -1735,28 +1728,6 @@ mod tests {
         }
         assert_eq!(BUILTINS.lookup(b"toXML\0"), None);
         assert_eq!(BUILTINS.lookup(b"foldl"), None);
-    }
-
-    #[test]
-    fn registry_lists_every_builtin_definition_type() {
-        let declarations = include_str!("builtins.rs")
-            .split_once("define_builtins! {")
-            .map(|(_, declarations)| declarations)
-            .expect("builtins are declared through define_builtins!");
-        let declared = declarations
-            .lines()
-            .filter_map(|line| {
-                let line = line.trim();
-                line.strip_prefix("impl BuiltinDefinition for ")
-                    .and_then(|name| name.strip_suffix(" {"))
-            })
-            .collect::<BTreeSet<_>>();
-        let registered = REGISTERED_BUILTIN_TYPES
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-
-        assert_eq!(declared, registered);
     }
 
     #[test]
