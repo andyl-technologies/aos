@@ -79,7 +79,7 @@ pub(crate) mod testutil;
 
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
@@ -634,9 +634,21 @@ pub enum AttestCommand {
         /// File containing the verifier nonce as hex
         #[arg(long)]
         nonce_file: Option<PathBuf>,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
         /// Expected PCR 15 value before package measurements
         #[arg(long)]
         pcr15_baseline: Option<String>,
+    },
+    /// Print the package golden measurement catalog
+    Catalog {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Additional golden measurement catalog JSON file
+        #[arg(long = "catalog-file")]
+        catalog_files: Vec<PathBuf>,
     },
 }
 
@@ -644,6 +656,7 @@ impl AttestCommand {
     fn is_system(&self) -> bool {
         match self {
             AttestCommand::Verify { system, .. } => *system,
+            AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Quote { .. } => false,
         }
     }
@@ -2040,13 +2053,24 @@ pub async fn run(
                     quote_dir,
                     nonce,
                     nonce_file,
+                    catalog_files,
                     pcr15_baseline,
                     ..
                 },
         } => {
             let measurement = read_attestation_measurement(pcr15, quote_dir, nonce, nonce_file)?;
-            run_verify_package_attestation(&config, event_log, measurement, pcr15_baseline, printer)
+            run_verify_package_attestation(
+                &config,
+                event_log,
+                measurement,
+                catalog_files,
+                pcr15_baseline,
+                printer,
+            )
         }
+        PackageCommand::Attest {
+            command: AttestCommand::Catalog { catalog_files, .. },
+        } => run_package_attestation_catalog(&config, catalog_files, printer),
         PackageCommand::Attest {
             command: AttestCommand::Quote { .. },
         } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
@@ -2106,6 +2130,7 @@ pub async fn run(
             &config,
             event_log,
             AttestationMeasurement::Pcr15(pcr15.clone()),
+            &[],
             pcr15_baseline,
             printer,
         ),
@@ -2166,6 +2191,7 @@ fn run_verify_package_attestation(
     config: &config::ApmConfig,
     event_log: &PathBuf,
     measurement: AttestationMeasurement,
+    catalog_files: &[PathBuf],
     pcr15_baseline: &Option<String>,
     printer: &Printer,
 ) -> Result<()> {
@@ -2178,30 +2204,7 @@ fn run_verify_package_attestation(
     };
     let log = fs::read_to_string(event_log)
         .with_context(|| format!("reading package event log {}", event_log.display()))?;
-    let registries = install::load_registries(config)?;
-    let catalog = registries
-        .registries()
-        .iter()
-        .flat_map(|registry| registry.package_versions().cloned())
-        .collect::<Vec<_>>();
-    let mut catalog = package_attestation::package_measurement_catalog_from_package_meta(&catalog)?;
-    match fs::read_to_string(PACKAGE_ATTESTATION_SEED_CATALOG) {
-        Ok(seed_catalog) => {
-            let seed_catalog = serde_json::from_str::<
-                Vec<package_attestation::PackageMeasurementCatalogEntry>,
-            >(&seed_catalog)
-            .with_context(|| {
-                format!(
-                    "parsing package attestation seed catalog {PACKAGE_ATTESTATION_SEED_CATALOG}"
-                )
-            })?;
-            catalog.extend(seed_catalog);
-        }
-        Err(err) if err.kind() == ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(err).with_context(|| format!("reading {PACKAGE_ATTESTATION_SEED_CATALOG}"));
-        }
-    }
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
     let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
         &log,
         &pcr15,
@@ -2230,6 +2233,100 @@ fn run_verify_package_attestation(
         printer.success(&message);
     }
     Ok(())
+}
+
+fn run_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+    printer: &Printer,
+) -> Result<()> {
+    let catalog = load_package_attestation_catalog(config, catalog_files)?;
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!(catalog));
+        return Ok(());
+    }
+    if catalog.is_empty() {
+        printer.info("No package attestation measurements in catalog.");
+        return Ok(());
+    }
+    for entry in catalog {
+        printer.plain(&format!(
+            "{} {} {} {}",
+            entry.name, entry.version, entry.root_digest, entry.measurement
+        ));
+    }
+    Ok(())
+}
+
+fn load_package_attestation_catalog(
+    config: &config::ApmConfig,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let registries = install::load_registries(config)?;
+    let catalog = registries
+        .registries()
+        .iter()
+        .flat_map(|registry| registry.package_versions().cloned())
+        .collect::<Vec<_>>();
+    package_attestation_catalog_from_sources(
+        &catalog,
+        Some(Path::new(PACKAGE_ATTESTATION_SEED_CATALOG)),
+        catalog_files,
+    )
+}
+
+fn package_attestation_catalog_from_sources(
+    registry_packages: &[types::PackageMeta],
+    seed_catalog: Option<&Path>,
+    catalog_files: &[PathBuf],
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let mut catalog =
+        package_attestation::package_measurement_catalog_from_package_meta(registry_packages)?;
+    if let Some(seed_catalog) = seed_catalog {
+        append_optional_package_attestation_catalog(seed_catalog, &mut catalog)?;
+    }
+    for path in catalog_files {
+        append_package_attestation_catalog(path, &mut catalog)?;
+    }
+    package_attestation::canonical_package_measurement_catalog(&catalog)
+}
+
+fn append_optional_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    match read_package_attestation_catalog(path) {
+        Ok(entries) => {
+            catalog.extend(entries);
+            Ok(())
+        }
+        Err(err)
+            if err
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|err| err.kind() == ErrorKind::NotFound) =>
+        {
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn append_package_attestation_catalog(
+    path: &Path,
+    catalog: &mut Vec<package_attestation::PackageMeasurementCatalogEntry>,
+) -> Result<()> {
+    let entries = read_package_attestation_catalog(path)?;
+    catalog.extend(entries);
+    Ok(())
+}
+
+fn read_package_attestation_catalog(
+    path: &Path,
+) -> Result<Vec<package_attestation::PackageMeasurementCatalogEntry>> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("reading package attestation catalog {}", path.display()))?;
+    serde_json::from_str(&content)
+        .with_context(|| format!("parsing package attestation catalog {}", path.display()))
 }
 
 fn read_attestation_nonce(nonce: &Option<String>, nonce_file: &Option<PathBuf>) -> Result<String> {
@@ -3438,7 +3535,10 @@ fn registry_defined_by_seed(config: &config::ApmConfig, name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::config::ApmConfig;
-    use crate::types::{ApmSettings, RegistryConfig};
+    use crate::types::{
+        ApmSettings, AttestationMeta, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta,
+        RegistryConfig,
+    };
     use tempfile::TempDir;
 
     fn make_config(
@@ -3497,6 +3597,62 @@ mod tests {
         }
     }
 
+    fn attested_package_meta(
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) -> PackageMeta {
+        PackageMeta {
+            name: name.into(),
+            version: version.into(),
+            description: String::new(),
+            homepage: None,
+            license: String::new(),
+            maintainer: String::new(),
+            platform: "x86_64-linux".into(),
+            store_path: format!("/nix/store/hash-{name}-{version}"),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 0,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec!["attestation-v1".into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_hash: Some(root_digest.into()),
+                root_hash_sig: Some("root.roothash.p7s".into()),
+                provenance: None,
+                measurement: Some(measurement.into()),
+            },
+        }
+    }
+
+    fn write_catalog_file(
+        path: &Path,
+        name: &str,
+        version: &str,
+        root_digest: &str,
+        measurement: &str,
+    ) {
+        let content = serde_json::json!([{
+            "name": name,
+            "version": version,
+            "root_digest": root_digest,
+            "measurement": measurement,
+        }]);
+        fs::write(path, serde_json::to_vec(&content).expect("catalog JSON"))
+            .expect("write catalog");
+    }
+
     #[test]
     fn derive_name_from_https_url() {
         assert_eq!(
@@ -3546,6 +3702,7 @@ mod tests {
                     quote_dir: None,
                     nonce: None,
                     nonce_file: None,
+                    catalog_files: Vec::new(),
                     pcr15_baseline: None,
                 },
             }
@@ -3557,6 +3714,15 @@ mod tests {
                     nonce: Some("00".into()),
                     nonce_file: None,
                     output_dir: "/tmp/aos-quote".into(),
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Catalog {
+                    system: true,
+                    catalog_files: Vec::new(),
                 },
             }
             .is_system()
@@ -3611,6 +3777,71 @@ mod tests {
         let stray_nonce =
             read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file).unwrap_err();
         assert!(format!("{stray_nonce:#}").contains("require --quote-dir"));
+    }
+
+    #[test]
+    fn package_attestation_catalog_file_parses_entries() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("catalog.json");
+        fs::write(
+            &path,
+            r#"[{"name":"web","version":"1.0","root_digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","measurement":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]"#,
+        )
+        .expect("catalog file");
+
+        let entries = read_package_attestation_catalog(&path).expect("read catalog");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "web");
+        assert_eq!(entries[0].version, "1.0");
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_merge_registry_seed_and_files() {
+        let tmp = TempDir::new().expect("tempdir");
+        let seed = tmp.path().join("seed-catalog.json");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let web_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let seed_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let explicit_measurement =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        write_catalog_file(&seed, "seeded", "1.0", root_digest, seed_measurement);
+        write_catalog_file(&explicit, "extra", "2.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, web_measurement);
+
+        let catalog =
+            package_attestation_catalog_from_sources(&[registry], Some(&seed), &[explicit])
+                .expect("merged catalog");
+
+        let names = catalog
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["extra", "seeded", "web"]);
+        assert_eq!(catalog[0].measurement, explicit_measurement);
+        assert_eq!(catalog[1].measurement, seed_measurement);
+        assert_eq!(catalog[2].measurement, web_measurement);
+    }
+
+    #[test]
+    fn package_attestation_catalog_sources_reject_conflicting_explicit_file() {
+        let tmp = TempDir::new().expect("tempdir");
+        let explicit = tmp.path().join("explicit-catalog.json");
+        let root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let registry_measurement =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let explicit_measurement =
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        write_catalog_file(&explicit, "web", "1.0", root_digest, explicit_measurement);
+        let registry = attested_package_meta("web", "1.0", root_digest, registry_measurement);
+
+        let err =
+            package_attestation_catalog_from_sources(&[registry], None, &[explicit]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
 
     #[test]
