@@ -10618,12 +10618,17 @@ impl TreeWalk {
         attrs: &FlakeRefAttrs,
     ) -> Result<FetchTreeArguments, TreeWalkError> {
         let input_type = Self::required_flake_ref_string_attr(id, span, attrs, TYPE_ATTR)?;
-        if attrs.contains_key(DIR_ATTR) && !matches!(input_type, b"tarball" | b"git") {
+        if attrs.contains_key(DIR_ATTR)
+            && !matches!(
+                input_type,
+                b"tarball" | b"git" | b"github" | b"gitlab" | b"sourcehut"
+            )
+        {
             return Err(Self::fetch_tree_error(
                 id,
                 span,
                 input,
-                "fetchTree string references with dir metadata are supported only for tarball and git inputs",
+                "fetchTree string references with dir metadata are supported only for tarball, git, and forge inputs",
             ));
         }
         match input_type {
@@ -10776,6 +10781,7 @@ impl TreeWalk {
                 LAST_MODIFIED_ATTR,
                 HOST_ATTR,
                 b"treeHash",
+                DIR_ATTR,
             ],
         )?;
         if Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?.is_some() {
@@ -10814,8 +10820,12 @@ impl TreeWalk {
                 ));
             }
         }
+        let mut extra_query = BTreeMap::new();
+        if let Some(dir) = Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)? {
+            extra_query.insert(DIR_ATTR.to_vec(), dir.to_vec());
+        }
         let canonical_uri =
-            self.forge_flake_ref_to_string(id, span, attrs, input_type, BTreeMap::new())?;
+            self.forge_flake_ref_to_string(id, span, attrs, input_type, extra_query)?;
         let archive_url =
             Self::fetch_tree_forge_archive_url(id, span, input_type, owner, repo, host, &rev)?;
 
@@ -46846,6 +46856,11 @@ mod tests {
                 format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz"),
             ),
             (
+                format!("github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+                format!("github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+                format!("https://github.com/NixOS/nixpkgs/archive/{rev}.tar.gz"),
+            ),
+            (
                 format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
                 format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
                 format!(
@@ -46942,6 +46957,26 @@ mod tests {
                 mode: EvalMode::Restricted,
                 ..
             } if input == format!("https://git.example/api/v3/repos/NixOS/nixpkgs/tarball/{rev}").as_bytes()
+        ));
+
+        let restricted_dir_source = format!(
+            r#"builtins.fetchTree "github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}""#
+        );
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri(format!(
+                "github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"
+            ))
+            .expect("forge URI without dir is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(&lower(&restricted_dir_source), options)
+            .expect_err("restricted forge fetchTree canonical URI includes dir metadata");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!("github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}").as_bytes()
         ));
 
         for source in [
