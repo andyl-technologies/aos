@@ -2823,23 +2823,10 @@ impl TreeWalk {
         symbol: Symbol,
         builtin: Builtin,
     ) -> Result<Value, TreeWalkError> {
-        match builtin.execution() {
-            BuiltinExecution::BuiltinsValue => self.alloc_thunk_for_node(id, id, span),
-            BuiltinExecution::TrueValue
-            | BuiltinExecution::FalseValue
-            | BuiltinExecution::NullValue
-            | BuiltinExecution::CurrentSystemValue
-            | BuiltinExecution::CurrentTimeValue
-            | BuiltinExecution::StoreDirValue
-            | BuiltinExecution::NixVersionValue
-            | BuiltinExecution::LangVersionValue
-            | BuiltinExecution::NixPathValue => builtin.select(self, id, span, symbol),
-            BuiltinExecution::Derivation => self.eval_derivation_wrapper_lambda(id, span),
-            _ => self
-                .heap
-                .alloc_primop(EvalPrimOp::new(symbol))
-                .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)),
+        if builtin.execution() == BuiltinExecution::BuiltinsValue {
+            return self.alloc_thunk_for_node(id, id, span);
         }
+        builtin.select(self, id, span, symbol)
     }
 
     fn invalid_payload(&self, id: IrId, node: &IrNode, expected: &'static str) -> TreeWalkError {
