@@ -6,8 +6,9 @@
 #
 #   1. Boot the signed image in Setup Mode, enroll db/KEK/PK, and reboot into
 #      enforcing Secure Boot.
-#   2. Seed two baked RootImage packages whose expose artifacts carry built
-#      dm-verity root hashes from their rendered manifest.json metadata.
+#   2. Seed two baked per-package RootImage packages whose expose artifacts
+#      carry built dm-verity root hashes from their rendered manifest.json
+#      metadata.
 #   3. Start the db-signed RootImage service and prove it reads a payload that
 #      exists only inside the image root.
 #   4. Start an otherwise identical RootImage service signed by an unrelated
@@ -424,6 +425,14 @@ in {
           assert_file_line(unit, "RootImagePolicy=root=signed")
           assert_file_line(unit, f"RootHash={root_hash}")
 
+      def assert_per_package_root_images_are_distinct():
+          good_image = "${goodImage}"
+          bad_image = "${badImage}"
+          assert good_image != bad_image
+          good_root_hash = target.succeed(f"cat {good_image}/root.roothash").strip()
+          bad_root_hash = target.succeed(f"cat {bad_image}/root.roothash").strip()
+          assert good_root_hash != bad_root_hash
+
       def write_direct_rootimage_unit(unit, image, root_image, command, state_dir):
           root_hash = target.succeed(f"cat {image}/root.roothash").strip()
           target.succeed(
@@ -765,6 +774,7 @@ in {
           "${badPackageHash}",
           "${badImage}",
       )
+      assert_per_package_root_images_are_distinct()
       assert_quote_verifies_package_event_log()
 
       target.reboot()
