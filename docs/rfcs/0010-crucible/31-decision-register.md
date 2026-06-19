@@ -948,6 +948,37 @@ register.
     regression thresholds.
   - **Fallback:** none adopted.
 
+- **RISK-18 / T-RISK-11 — shmem ABI drift fails closed**
+  - **Status:** PASS; risk retired for the Phase-0 ABI-drift defense proof in
+    [SHM-31].
+  - **Check:** `checks.crucible.phase0.abiDrift`.
+  - **Result:** `generated_header_diff_detected=1`,
+    `c_static_assert_drift_failed=1`,
+    `c_static_assert_specific_offset_failed=1`,
+    `rust_static_assert_drift_failed=1`,
+    `rust_static_assert_specific_offset_failed=1`,
+    `golden_vector_drift_mismatch=1`,
+    `golden_vector_good_c_matches_rust=1`,
+    `golden_vector_good_c_roundtrip=1`,
+    `golden_vector_good_rust_roundtrip=1`,
+    `golden_vector_drifted_c_matches_generated=1`,
+    `golden_vector_drifted_c_mismatch=1`, `good_c_header_compiles=1`,
+    `good_rust_layout_compiles=1`, `drifted_field=node_count`,
+    `expected_node_count_offset=12`, `drifted_node_count_offset=16`,
+    `drifted_header_size=256`.
+  - **Scope:** validates a throwaway RegionHeader layout model generated from
+    Rust `#[repr(C)]` facts. The generated C header and good Rust layout compile;
+    a deliberate size-preserving C-side and Rust-side field-order drift fails the
+    specific `node_count` / `queue_capacity` offset static assertions while the
+    drifted header remains 256 bytes. The generated-header diff is nonempty, a
+    good C encoder matches the Rust golden bytes, good C and Rust views round-trip
+    the fixture byte-for-byte, and a drifted C encoder matches the generated
+    drifted fixture while differing from the good fixture. The production
+    `crucible-shmem` crate and full
+    `gate:abi-conformance` still own the permanent generated header, checked-in
+    golden corpus, and version-bump workflow.
+  - **Fallback:** none adopted.
+
 - **RISK-19 / T-RISK-12 — cross-process futex stress**
   - **Status:** PASS; risk retired for the non-private futex wake/wait idiom in
     [SHM-26].
