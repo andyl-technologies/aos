@@ -786,6 +786,9 @@ impl BpfLsmPolicyMeta {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AttestationMeta {
+    /// Digest used as the package-root input to the TPM measurement tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_digest: Option<String>,
     /// dm-verity Merkle root hash for the package root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_hash: Option<String>,
@@ -803,7 +806,8 @@ pub struct AttestationMeta {
 impl AttestationMeta {
     /// Returns whether no attestation facts are declared.
     pub fn is_empty(&self) -> bool {
-        self.root_hash.is_none()
+        self.root_digest.is_none()
+            && self.root_hash.is_none()
             && self.root_hash_sig.is_none()
             && self.provenance.is_none()
             && self.measurement.is_none()
@@ -1487,11 +1491,19 @@ pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
     if meta.root_hash.is_some() != meta.root_hash_sig.is_some() {
         bail!("attestation root_hash and root_hash_sig must be declared together");
     }
-    if meta.measurement.is_some() && meta.root_hash.is_none() {
-        bail!("attestation measurement requires root_hash/root_hash_sig");
+    if meta.measurement.is_some() && meta.root_digest.is_none() && meta.root_hash.is_none() {
+        bail!("attestation measurement requires root_digest or root_hash/root_hash_sig");
+    }
+    if let Some(root_digest) = &meta.root_digest {
+        validate_sha256_digest("attestation root_digest", root_digest)?;
     }
     if let Some(root_hash) = &meta.root_hash {
         validate_sha256_digest("attestation root_hash", root_hash)?;
+    }
+    if let (Some(root_digest), Some(root_hash)) = (&meta.root_digest, &meta.root_hash)
+        && canonical_sha256_digest(root_digest) != canonical_sha256_digest(root_hash)
+    {
+        bail!("attestation root_digest must match root_hash when both are declared");
     }
     if let Some(measurement) = &meta.measurement {
         validate_sha256_digest("attestation measurement", measurement)?;
@@ -4518,6 +4530,10 @@ last_update = "2026-02-13T10:30:00Z"
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
             attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
                 root_hash: Some(
                     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         .into(),
@@ -4553,13 +4569,14 @@ last_update = "2026-02-13T10:30:00Z"
     }
 
     #[test]
-    fn package_meta_rejects_attestation_measurement_without_root_hash() {
+    fn package_meta_rejects_attestation_measurement_without_root_digest() {
         let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_digest = None;
         meta.attestation.root_hash = None;
         meta.attestation.root_hash_sig = None;
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
-        assert!(format!("{err:#}").contains("measurement requires root_hash"));
+        assert!(format!("{err:#}").contains("measurement requires root_digest"));
     }
 
     #[test]
@@ -4605,6 +4622,8 @@ last_update = "2026-02-13T10:30:00Z"
         meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
         meta.expose = Some(expose_meta_with_image(verity_image_entry()));
         meta.attestation.root_hash =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+        meta.attestation.root_digest =
             Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
 
         let err = validate_supported_package_meta(&meta).unwrap_err();

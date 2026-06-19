@@ -146,6 +146,9 @@ struct PlatformEntry {
     /// Signed fleet BPF-LSM policy metadata.
     #[serde(default)]
     bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Digest used as the package-root input to TPM measurements.
+    #[serde(default)]
+    root_digest: Option<String>,
     /// dm-verity Merkle root hash for this package root.
     #[serde(default)]
     root_hash: Option<String>,
@@ -163,6 +166,7 @@ struct PlatformEntry {
 impl PlatformEntry {
     fn attestation(&self) -> AttestationMeta {
         AttestationMeta {
+            root_digest: self.root_digest.clone(),
             root_hash: self.root_hash.clone(),
             root_hash_sig: self.root_hash_sig.clone(),
             provenance: self.provenance.clone(),

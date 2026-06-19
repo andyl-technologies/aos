@@ -3123,43 +3123,64 @@ fn publish_attestation_meta(
     name: &str,
     version: &str,
     platform: &str,
+    info: &StorePathInfo,
     manifest: &PublishExposeManifest,
     expose_manifest_digest: Option<&str>,
 ) -> Result<Option<AttestationMeta>> {
-    let Some(image) = manifest
+    let image = manifest
         .expose
         .images
         .iter()
-        .find(|image| image.root_hash.is_some() || image.root_hash_sig.is_some())
-    else {
-        return Ok(None);
-    };
-
-    let root_hash = image
-        .root_hash
-        .clone()
-        .context("verity package root image is missing root_hash")?;
-    let root_hash_sig = image
-        .root_hash_sig
-        .clone()
-        .context("verity package root image is missing root_hash_sig")?;
+        .find(|image| image.root_hash.is_some() || image.root_hash_sig.is_some());
     let manifest_digest = expose_manifest_digest
-        .context("verity package root attestation requires an expose manifest digest")?;
+        .context("package root attestation requires an expose manifest digest")?;
+    let root_hash = image
+        .map(|image| {
+            image
+                .root_hash
+                .clone()
+                .context("verity package root image is missing root_hash")
+        })
+        .transpose()?;
+    let root_hash_sig = image
+        .map(|image| {
+            image
+                .root_hash_sig
+                .clone()
+                .context("verity package root image is missing root_hash_sig")
+        })
+        .transpose()?;
+    let root_digest = root_hash
+        .clone()
+        .unwrap_or_else(|| package_nar_root_digest(&info.nar_hash));
     let measurement = crate::package_attestation::package_measurement_digest(
         name,
         version,
-        &root_hash,
+        &root_digest,
         manifest_digest,
     );
-    let provenance = publish_provenance_ref(name, platform, &measurement)?;
+    let provenance = if root_hash.is_some() {
+        Some(publish_provenance_ref(name, platform, &measurement)?)
+    } else {
+        None
+    };
     let meta = AttestationMeta {
-        root_hash: Some(root_hash),
-        root_hash_sig: Some(root_hash_sig),
-        provenance: Some(provenance),
+        root_digest: Some(root_digest),
+        root_hash,
+        root_hash_sig,
+        provenance,
         measurement: Some(measurement),
     };
     validate_attestation_meta(&meta)?;
     Ok(Some(meta))
+}
+
+fn package_nar_root_digest(nar_hash: &str) -> String {
+    if let Some(hex) = sha256_hex_payload(nar_hash) {
+        format!("sha256:{hex}")
+    } else {
+        format!("sha256:{}", sha256_hex(nar_hash.as_bytes()))
+    }
 }
 
 const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
@@ -3311,15 +3332,21 @@ fn publish_provenance_artifact(
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
 ) -> Result<Option<PublishProvenanceArtifact>> {
-    let Some(attestation) =
-        publish_attestation_meta(name, version, platform, manifest, Some(manifest_digest))?
+    let Some(attestation) = publish_attestation_meta(
+        name,
+        version,
+        platform,
+        info,
+        manifest,
+        Some(manifest_digest),
+    )?
     else {
         return Ok(None);
     };
-    let provenance = attestation
-        .provenance
-        .as_deref()
-        .context("package attestation provenance missing")?;
+    let provenance = attestation.provenance.as_deref().map(str::to_string);
+    let Some(provenance) = provenance else {
+        return Ok(None);
+    };
     let statement = publish_provenance_statement(
         name,
         version,
@@ -3333,7 +3360,7 @@ fn publish_provenance_artifact(
         serde_json::to_string(&statement).context("serializing package provenance statement")?;
     jsonl.push('\n');
     Ok(Some(PublishProvenanceArtifact {
-        path: provenance.to_string(),
+        path: provenance,
         jsonl,
         attestation,
     }))
@@ -4749,11 +4776,15 @@ fn package_platform_table(
     if let Some(manifest) = expose_manifest {
         let artifact = expose_artifact_info
             .context("expose manifest requires rendered expose artifact metadata")?;
-        let attestation =
-            publish_attestation_meta(name, version, platform, manifest, expose_manifest_digest)
-                .with_context(|| {
-                    format!("deriving package attestation metadata for package '{name}'")
-                })?;
+        let attestation = publish_attestation_meta(
+            name,
+            version,
+            platform,
+            info,
+            manifest,
+            expose_manifest_digest,
+        )
+        .with_context(|| format!("deriving package attestation metadata for package '{name}'"))?;
         table.insert(
             "min-format".into(),
             toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
@@ -4824,30 +4855,18 @@ fn package_platform_table(
                 .context("serializing permissions manifest metadata")?,
         );
         if let Some(attestation) = attestation {
-            table.insert(
-                "root_hash".into(),
-                toml::Value::String(
-                    attestation
-                        .root_hash
-                        .context("package attestation root_hash missing")?,
-                ),
-            );
-            table.insert(
-                "root_hash_sig".into(),
-                toml::Value::String(
-                    attestation
-                        .root_hash_sig
-                        .context("package attestation root_hash_sig missing")?,
-                ),
-            );
-            table.insert(
-                "provenance".into(),
-                toml::Value::String(
-                    attestation
-                        .provenance
-                        .context("package attestation provenance missing")?,
-                ),
-            );
+            if let Some(root_digest) = attestation.root_digest {
+                table.insert("root_digest".into(), toml::Value::String(root_digest));
+            }
+            if let Some(root_hash) = attestation.root_hash {
+                table.insert("root_hash".into(), toml::Value::String(root_hash));
+            }
+            if let Some(root_hash_sig) = attestation.root_hash_sig {
+                table.insert("root_hash_sig".into(), toml::Value::String(root_hash_sig));
+            }
+            if let Some(provenance) = attestation.provenance {
+                table.insert("provenance".into(), toml::Value::String(provenance));
+            }
             table.insert(
                 "measurement".into(),
                 toml::Value::String(
@@ -12716,6 +12735,16 @@ mod tests {
             _firewall: None,
             _confinement: None,
         };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            &manifest_digest,
+        );
 
         let content = build_package_toml(
             "",
@@ -12733,7 +12762,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
-            None,
+            Some(&manifest_digest),
         )
         .unwrap();
 
@@ -12771,7 +12800,16 @@ mod tests {
                 FEATURE_CAPABILITY_ROUTES_V1,
                 FEATURE_EBPF_NET_POLICY_V1,
                 FEATURE_MAC_PROFILE_V1,
+                FEATURE_ATTESTATION_V1,
             ]
+        );
+        assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
         );
         assert_eq!(
             platform
@@ -12896,6 +12934,9 @@ mod tests {
             _firewall: None,
             _confinement: None,
         };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
 
         let content = build_package_toml(
             "",
@@ -12913,7 +12954,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
-            None,
+            Some(&manifest_digest),
         )
         .unwrap();
 
@@ -13017,6 +13058,16 @@ mod tests {
             _firewall: None,
             _confinement: None,
         };
+        let manifest_digest = crate::package_attestation::package_manifest_digest_bytes(
+            br#"{"expose":{"target":"aos-pkg-webapp.target","units":["webapp.service"]},"permissions":{}}"#,
+        );
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let expected_measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            &manifest_digest,
+        );
 
         let content = build_package_toml(
             "",
@@ -13034,7 +13085,7 @@ mod tests {
             None,
             Some(&manifest),
             Some(&artifact),
-            None,
+            Some(&manifest_digest),
         )
         .unwrap();
 
@@ -13058,12 +13109,24 @@ mod tests {
             .unwrap();
         assert!(features.contains(&FEATURE_EXPOSE_ARTIFACT_V1));
         assert!(features.contains(&FEATURE_NETWORK_POLICY_V1));
+        assert!(features.contains(&FEATURE_ATTESTATION_V1));
         assert_eq!(
             platform
                 .get("expose_artifact")
                 .and_then(|artifact| artifact.get("store_path"))
                 .and_then(toml::Value::as_str),
             Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(platform.get("root_hash"), None);
+        assert_eq!(platform.get("root_hash_sig"), None);
+        assert_eq!(platform.get("provenance"), None);
+        assert_eq!(
+            platform.get("measurement").and_then(toml::Value::as_str),
+            Some(expected_measurement.as_str())
         );
 
         let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
@@ -13075,6 +13138,14 @@ mod tests {
                 .as_ref()
                 .map(|artifact| artifact.store_path.as_str()),
             Some("/nix/store/artifacthash111-expose-webapp")
+        );
+        assert_eq!(
+            parsed.attestation.root_digest.as_deref(),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            parsed.attestation.measurement.as_deref(),
+            Some(expected_measurement.as_str())
         );
     }
 
@@ -13146,6 +13217,10 @@ mod tests {
             .unwrap();
         assert!(features.contains(&FEATURE_ATTESTATION_V1));
         assert_eq!(
+            platform.get("root_digest").and_then(toml::Value::as_str),
+            Some(root_hash)
+        );
+        assert_eq!(
             platform.get("root_hash").and_then(toml::Value::as_str),
             Some(root_hash)
         );
@@ -13167,6 +13242,7 @@ mod tests {
         let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
             .unwrap()
             .unwrap();
+        assert_eq!(parsed.attestation.root_digest.as_deref(), Some(root_hash));
         assert_eq!(parsed.attestation.root_hash.as_deref(), Some(root_hash));
         assert_eq!(
             parsed.attestation.root_hash_sig.as_deref(),

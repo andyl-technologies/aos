@@ -612,6 +612,11 @@ store_path  = "/nix/store/...-myapp-1.0"
 nar_hash    = "sha256:..."
 # ... existing fields ...
 
+# NEW: package-root digest used as the measurement input. For dm-verity roots
+# this equals root_hash; for non-verity exposed packages it is derived from the
+# package NAR hash so the package set is still measured completely.
+root_digest   = "sha256:..."                  # package-root measurement input
+
 # NEW (artifact 2): dm-verity root hash for this package/generation root, plus
 # its PKCS#7 detached signature (.roothash.p7s). The registry DISTRIBUTES these;
 # the KERNEL enforces root_hash_sig against the .platform keyring (UEFI db).
@@ -635,6 +640,10 @@ Mapping to Rust (proposed; added to `PackageMeta`, all defaulted):
 /// a TPM enforces `measurement`). All fields default for back-compat and are
 /// gated behind the Decision 19 capability gate.
 pub struct AttestationMeta {
+    /// Digest used as the package-root input to the TPM measurement tuple.
+    /// Equals `root_hash` for dm-verity roots.
+    #[serde(default)]
+    pub root_digest: Option<String>,
     /// dm-verity Merkle root hash over the package/generation root image.
     #[serde(default)]
     pub root_hash: Option<String>,
@@ -698,7 +707,7 @@ works:
 | **Expose phase** | *(does not exist)* | **NEW**: drop launch unit + template instance + `aos-pkg-<name>.target`, then enable |
 | Activation | n/a | `systemctl enable --now` (runtime) or Ignition `systemd.units[]` (first boot) |
 | Trust | tag-signed metadata + NAR hash + cache sig | **unchanged** for delivery — roots ride the same chain |
-| Attestation / provenance | tag-sig + anti-rollback floor only | + `root_hash`/`root_hash_sig`/`provenance`/`measurement` (§7.2); registry hosts provenance + golden values, never a runtime signer (§7.1); full TUF + transparency log (§7.3); design in [`attestation.md`](attestation.md) |
+| Attestation / provenance | tag-sig + anti-rollback floor only | + `root_digest`/`root_hash`/`root_hash_sig`/`provenance`/`measurement` (§7.2); registry hosts provenance + golden values, never a runtime signer (§7.1); full TUF + transparency log (§7.3); design in [`attestation.md`](attestation.md) |
 
 The two genuinely new pieces are (a) the **expose phase** post-install hook and
 (b) where its **unit files physically land** under the immutable-root /etc
