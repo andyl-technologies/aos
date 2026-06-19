@@ -1799,8 +1799,11 @@ pub(crate) struct Builtin {
     kind: BuiltinKind,
     name: &'static [u8],
     execution: BuiltinExecution,
+    direct: Option<BuiltinDirect>,
+    first_class_arity: Option<usize>,
+    availability: BuiltinAvailability,
     name_scope: BuiltinNameScope,
-    native_cli_fallback_feature_override: Option<NativeCliFallbackFeature>,
+    native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
     docs: &'static BuiltinDocs,
 }
 
@@ -1810,16 +1813,22 @@ impl Builtin {
         kind: BuiltinKind,
         name: &'static [u8],
         execution: BuiltinExecution,
+        direct: Option<BuiltinDirect>,
+        first_class_arity: Option<usize>,
+        availability: BuiltinAvailability,
         name_scope: BuiltinNameScope,
-        native_cli_fallback_feature_override: Option<NativeCliFallbackFeature>,
+        native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
         docs: &'static BuiltinDocs,
     ) -> Self {
         Self {
             kind,
             name,
             execution,
+            direct,
+            first_class_arity,
+            availability,
             name_scope,
-            native_cli_fallback_feature_override,
+            native_cli_fallback_feature,
             docs,
         }
     }
@@ -1836,12 +1845,12 @@ impl Builtin {
 
     /// Returns direct-lowering behavior for the builtin, if any.
     pub(crate) const fn direct(&self) -> Option<BuiltinDirect> {
-        self.execution.direct()
+        self.direct
     }
 
     /// Returns the arity exposed when the builtin is selected as a first-class value.
     pub(crate) const fn first_class_arity(&self) -> Option<usize> {
-        self.execution.first_class_arity()
+        self.first_class_arity
     }
 
     /// Returns how this builtin's spelling participates in top-level name resolution.
@@ -1860,7 +1869,7 @@ impl Builtin {
 
     /// Returns when this builtin is visible through the reified `builtins` attrset.
     pub(crate) const fn availability(&self) -> BuiltinAvailability {
-        self.execution.availability()
+        self.availability
     }
 
     /// Returns the diagnostic feature label when native JSON evaluation must fall back.
@@ -1873,10 +1882,7 @@ impl Builtin {
 
     /// Returns the native JSON fallback class for this builtin.
     const fn native_cli_fallback_feature_kind(&self) -> Option<NativeCliFallbackFeature> {
-        match self.native_cli_fallback_feature_override {
-            Some(feature) => Some(feature),
-            None => self.execution.native_cli_fallback_feature(),
-        }
+        self.native_cli_fallback_feature
     }
 
     /// Returns the static documentation attached to the builtin.
@@ -2207,22 +2213,35 @@ trait BuiltinDefinition {
     /// Runtime execution strategy for this builtin.
     const EXECUTION: BuiltinExecution;
 
+    /// Direct-lowering behavior for this builtin, if any.
+    const DIRECT: Option<BuiltinDirect> = Self::EXECUTION.direct();
+
+    /// Arity exposed when this builtin is selected as a first-class value.
+    const FIRST_CLASS_ARITY: Option<usize> = Self::EXECUTION.first_class_arity();
+
+    /// Availability policy for the reified `builtins` attrset.
+    const AVAILABILITY: BuiltinAvailability = Self::EXECUTION.availability();
+
     /// Static documentation attached to this builtin.
     const DOCS: &'static BuiltinDocs;
 
     /// Scope behavior for this builtin's spelling.
     const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::BuiltinsAttrOnly;
 
-    /// Override for the execution-derived native JSON fallback class.
-    const NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE: Option<NativeCliFallbackFeature> = None;
+    /// Native JSON fallback class for this builtin.
+    const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
+        Self::EXECUTION.native_cli_fallback_feature();
 
     /// Declaration shared by all evaluator tiers for this builtin.
     const DECLARATION: Builtin = Builtin::new(
         Self::KIND,
         Self::NAME,
         Self::EXECUTION,
+        Self::DIRECT,
+        Self::FIRST_CLASS_ARITY,
+        Self::AVAILABILITY,
         Self::NAME_SCOPE,
-        Self::NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE,
+        Self::NATIVE_CLI_FALLBACK_FEATURE,
         Self::DOCS,
     );
 
@@ -2908,32 +2927,77 @@ mod tests {
     }
 
     #[test]
-    fn default_builtin_declarations_stay_derived_from_execution_strategy() {
+    fn builtin_accessors_return_stored_declaration_metadata() {
         for builtin in BUILTINS.iter() {
-            let execution = builtin.execution();
-            assert_eq!(builtin.direct(), execution.direct(), "{builtin:?}");
+            assert_eq!(builtin.direct(), builtin.direct, "{builtin:?}");
             assert_eq!(
                 builtin.first_class_arity(),
-                execution.first_class_arity(),
+                builtin.first_class_arity,
                 "{builtin:?}",
             );
-            assert_eq!(
-                builtin.availability(),
-                execution.availability(),
-                "{builtin:?}",
-            );
-            assert_eq!(
-                builtin.native_cli_fallback_feature_override, None,
-                "{builtin:?}"
-            );
+            assert_eq!(builtin.availability(), builtin.availability, "{builtin:?}");
             assert_eq!(
                 builtin.native_cli_fallback_feature(),
-                execution
-                    .native_cli_fallback_feature()
+                builtin
+                    .native_cli_fallback_feature
                     .map(NativeCliFallbackFeature::label),
                 "{builtin:?}",
             );
         }
+    }
+
+    static OVERRIDE_PROBE_DOCS: BuiltinDocs = BuiltinDocs {
+        summary: "Exercises test-only declaration metadata overrides.",
+    };
+
+    struct OverrideProbeBuiltin;
+
+    impl BuiltinDefinition for OverrideProbeBuiltin {
+        const KIND: BuiltinKind = BuiltinKind::LengthBuiltin;
+        const NAME: &'static [u8] = b"overrideProbe";
+        const EXECUTION: BuiltinExecution =
+            BuiltinExecution::strict_unary(StrictUnaryPrimOp::Length);
+        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::LazyUnary {
+            effect: BuiltinEffect::Effectful,
+        });
+        const FIRST_CLASS_ARITY: Option<usize> = Some(3);
+        const AVAILABILITY: BuiltinAvailability = BuiltinAvailability::ImpureCurrentSystem;
+        const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
+        const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
+            Some(NativeCliFallbackFeature::Flakes);
+        const DOCS: &'static BuiltinDocs = &OVERRIDE_PROBE_DOCS;
+    }
+
+    #[test]
+    fn builtin_definition_overrides_are_stored_on_declaration() {
+        let builtin = OverrideProbeBuiltin::DECLARATION;
+
+        assert_eq!(
+            builtin.execution(),
+            BuiltinExecution::strict_unary(StrictUnaryPrimOp::Length)
+        );
+        assert_eq!(
+            builtin.direct(),
+            Some(BuiltinDirect::LazyUnary {
+                effect: BuiltinEffect::Effectful,
+            })
+        );
+        assert_ne!(builtin.direct(), builtin.execution().direct());
+        assert_eq!(builtin.first_class_arity(), Some(3));
+        assert_ne!(
+            builtin.first_class_arity(),
+            builtin.execution().first_class_arity()
+        );
+        assert_eq!(
+            builtin.availability(),
+            BuiltinAvailability::ImpureCurrentSystem
+        );
+        assert_eq!(builtin.name_scope(), BuiltinNameScope::UnshadowableGlobal);
+        assert_eq!(builtin.native_cli_fallback_feature(), Some("flakes"));
+        assert_eq!(
+            builtin.docs().summary(),
+            "Exercises test-only declaration metadata overrides."
+        );
     }
 
     #[derive(Default)]
