@@ -1210,6 +1210,14 @@ successful futex returns in each phase and reported `lost_wakes=0`,
 regression risk; future shmem work must keep the same publish-precondition /
 read-counter / re-check / wait idiom and non-private futex operation.
 
+**RISK-20** is retired by `T-RISK-13`: `checks.crucible.phase0.lifecycle`
+induced clean QMP quit, control-plane SIGTERM, guest kernel panic, plugin hang,
+setup failure, host SIGKILL, and parent death without unwind against real
+AOS-built QEMU children. The run reported each path exactly once, `survivors=0`,
+and `reaped=7`. The row remains listed as a regression risk; the production
+`QemuNode` implementation must preserve `kill_on_drop`, `PR_SET_PDEATHSIG`, and
+unconditional reap behavior.
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1319,7 +1327,7 @@ never tolerated). Results live in the decision register (31).
 - [x] **T-RISK-12** Run the **cross-process futex** stress spike: millions of
   park/wake cycles under host jitter with no lost wake and no spurious advance. —
   satisfies [RISK-19], [SHM-26]; spec §30.12.
-- [ ] **T-RISK-13** Run the **no-leak lifecycle** spike: induce every termination
+- [x] **T-RISK-13** Run the **no-leak lifecycle** spike: induce every termination
   path and assert the surviving-child count returns to zero. — satisfies [RISK-20],
   [QEMU-29], [QEMU-31]; spec §30.12.
 - [ ] **T-RISK-14** Run the **search-tree-growth** spike: measure temporal-graph
