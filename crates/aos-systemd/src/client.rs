@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
@@ -597,11 +597,6 @@ impl Drop for SystemdClient {
         }
         let _ = &self.conn;
     }
-}
-
-/// Whether a zbus error is systemd's `NoSuchUnit` method error.
-fn is_no_such_unit(e: &zbus::Error) -> bool {
-    matches!(e, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
 }
 
 /// Capture `systemctl status --no-pager --full <unit>` for human display. This

@@ -114,18 +114,26 @@ pub async fn reconcile_from_file(
         ));
     }
 
-    let resolved_additions = if desired_file.credentials.is_empty() || additions.is_empty() {
+    let resolved_additions = if additions.is_empty() {
         Vec::new()
     } else {
         let registries = install::load_registries(config)
-            .context("loading registries for desired credential preflight")?;
+            .context("loading registries for desired package preflight")?;
         resolve::resolve_multiple(&registries, &additions, None)
-            .context("resolving desired additions for credential preflight")?
+            .context("resolving desired additions for package preflight")?
     };
     let resolved_addition_roots = resolved_additions
         .iter()
         .map(|closure| closure.root.clone())
         .collect::<Vec<_>>();
+    crate::config_artifact::preflight_desired_config(
+        config,
+        &desired_file.config,
+        &desired,
+        &installed_before_meta,
+        &resolved_addition_roots,
+    )
+    .context("preflighting desired package config")?;
     crate::credential_artifact::preflight_desired_credentials(
         config,
         &desired_file.credentials,
@@ -164,7 +172,7 @@ pub async fn reconcile_from_file(
         .collect::<Vec<_>>();
 
     if !removals.is_empty() {
-        remove::run(config, &removals, true, dry_run, yes, printer)
+        remove::run_deferred_expose_reconcile(config, &removals, true, dry_run, yes, printer)
             .await
             .context("removing packages absent from desired package set")?;
     }

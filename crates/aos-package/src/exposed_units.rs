@@ -2921,7 +2921,11 @@ fn try_restart_changed_credential_units(root: &Path, units: &BTreeSet<String>) -
 
 async fn apply_attached_unit_diff(client: &SystemdClient, diff: &UnitDiff) -> Result<()> {
     for unit in &diff.to_stop {
-        ensure_job_done("stop", unit, client.stop_unit(unit).await?)?;
+        match client.stop_unit(unit).await {
+            Ok(outcome) => ensure_job_done("stop", unit, outcome)?,
+            Err(err) if err.is_no_such_unit() => {}
+            Err(err) => return Err(err).with_context(|| format!("stopping removed unit {unit}")),
+        }
     }
     for unit in &diff.to_reload {
         ensure_job_done("reload", unit, client.reload_unit(unit).await?)?;

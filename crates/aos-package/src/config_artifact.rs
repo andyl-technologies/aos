@@ -18,8 +18,8 @@ use crate::desired::DesiredPackageConfig;
 use crate::profile::Profile;
 use crate::profile::meta::list_meta;
 use crate::types::{
-    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, InstalledMeta, ProfileScope,
-    validate_config_field_name,
+    ConfigArtifactFormat, ConfigArtifactMeta, ConfigReloadPolicy, InstalledMeta, PackageMeta,
+    ProfileScope, validate_config_field_name,
 };
 
 #[derive(Debug, Default)]
@@ -40,6 +40,68 @@ impl ConfigReconciliation {
         }
         Ok(())
     }
+}
+
+/// Validate desired config against the final package set without writing.
+///
+/// `installed` is the current explicit profile metadata, and
+/// `resolved_roots` are registry-resolved explicit package roots that will be
+/// installed before materialization. This catches schema and package-set errors
+/// before the desired reconciler mutates the package profile.
+pub(crate) fn preflight_desired_config(
+    config: &ApmConfig,
+    desired: &DesiredPackageConfig,
+    final_packages: &BTreeSet<String>,
+    installed: &[InstalledMeta],
+    resolved_roots: &[PackageMeta],
+) -> Result<()> {
+    if config.scope != ProfileScope::System {
+        return Ok(());
+    }
+
+    let mut candidates = BTreeMap::<&str, &[ConfigArtifactMeta]>::new();
+    for entry in installed {
+        let Some(apm) = entry.apm.as_ref() else {
+            continue;
+        };
+        if !apm.explicit || !final_packages.contains(&apm.name) {
+            continue;
+        }
+        if let Some(expose) = apm.expose.as_ref()
+            && !expose.config.artifacts.is_empty()
+        {
+            candidates.insert(apm.name.as_str(), expose.config.artifacts.as_slice());
+        }
+    }
+    for root in resolved_roots {
+        if !final_packages.contains(&root.name) {
+            continue;
+        }
+        if let Some(expose) = root.expose.as_ref()
+            && !expose.config.artifacts.is_empty()
+        {
+            candidates.insert(root.name.as_str(), expose.config.artifacts.as_slice());
+        }
+    }
+
+    for package in desired.keys() {
+        if !final_packages.contains(package) {
+            bail!("desired config references package '{package}' outside the desired package set");
+        }
+    }
+
+    for (package, artifacts) in &candidates {
+        let desired_package = desired.get(*package);
+        render_package_config(package, artifacts, desired_package)?;
+    }
+
+    for package in desired.keys() {
+        if !candidates.contains_key(package.as_str()) {
+            bail!("desired config references package '{package}' without signed config metadata");
+        }
+    }
+
+    Ok(())
 }
 
 /// Materialize desired package config artifacts.
@@ -128,18 +190,10 @@ fn materialize_package_config(
         .expose
         .as_ref()
         .context("installed package missing expose metadata")?;
-    let desired_package = desired_package.cloned().unwrap_or_default();
-    let mut known_artifacts = BTreeSet::new();
     let mut changed = false;
+    let rendered = render_package_config(package, &expose.config.artifacts, desired_package)?;
 
-    for artifact in &expose.config.artifacts {
-        known_artifacts.insert(artifact.name.clone());
-        let values = desired_package
-            .get(&artifact.name)
-            .cloned()
-            .unwrap_or_default();
-        validate_artifact_values(package, artifact, &values)?;
-        let bytes = render_artifact(artifact, &values)?;
+    for (artifact, bytes) in rendered {
         if write_artifact(root, &artifact.path, &bytes)? {
             changed = true;
             match artifact.reload {
@@ -152,6 +206,28 @@ fn materialize_package_config(
         }
     }
 
+    Ok(changed)
+}
+
+fn render_package_config<'a>(
+    package: &str,
+    artifacts: &'a [ConfigArtifactMeta],
+    desired_package: Option<&BTreeMap<String, BTreeMap<String, toml::Value>>>,
+) -> Result<Vec<(&'a ConfigArtifactMeta, Vec<u8>)>> {
+    let desired_package = desired_package.cloned().unwrap_or_default();
+    let mut known_artifacts = BTreeSet::new();
+    let mut rendered = Vec::new();
+
+    for artifact in artifacts {
+        known_artifacts.insert(artifact.name.clone());
+        let values = desired_package
+            .get(&artifact.name)
+            .cloned()
+            .unwrap_or_default();
+        validate_artifact_values(package, artifact, &values)?;
+        rendered.push((artifact, render_artifact(artifact, &values)?));
+    }
+
     for artifact in desired_package.keys() {
         if !known_artifacts.contains(artifact) {
             bail!(
@@ -160,7 +236,7 @@ fn materialize_package_config(
         }
     }
 
-    Ok(changed)
+    Ok(rendered)
 }
 
 fn validate_artifact_values(
@@ -317,8 +393,16 @@ fn aos_root_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ApmMeta, ExposeConfigMeta, ExposeMeta};
+    use crate::types::{ApmMeta, ApmSettings, ExposeConfigMeta, ExposeMeta};
     use tempfile::TempDir;
+
+    fn system_config() -> ApmConfig {
+        ApmConfig {
+            settings: ApmSettings::default(),
+            registries: Vec::new(),
+            scope: ProfileScope::System,
+        }
+    }
 
     fn installed_with_config() -> InstalledMeta {
         InstalledMeta {
@@ -363,6 +447,37 @@ mod tests {
                 bpf_lsm: None,
                 attestation: Default::default(),
             }),
+        }
+    }
+
+    fn package_meta_with_config() -> PackageMeta {
+        let installed = installed_with_config();
+        let expose = installed.apm.unwrap().expose;
+        PackageMeta {
+            name: "web".into(),
+            version: "1.0".into(),
+            description: "web".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "test".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/nix/store/pkghash111-web".into(),
+            nar_hash: "sha256:test".into(),
+            nar_size: 1,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: None,
+            requires_features: Vec::new(),
+            expose,
+            expose_artifact: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         }
     }
 
@@ -420,5 +535,74 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("missing required field"));
+    }
+
+    #[test]
+    fn preflight_desired_config_rejects_packages_outside_desired_set() {
+        let installed = installed_with_config();
+        let desired = BTreeMap::from([(
+            "web".into(),
+            BTreeMap::from([(
+                "env".into(),
+                BTreeMap::from([("TOKEN".into(), toml::Value::String("abc".into()))]),
+            )]),
+        )]);
+
+        let err = preflight_desired_config(
+            &system_config(),
+            &desired,
+            &BTreeSet::new(),
+            &[installed],
+            &[],
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("outside the desired package set"));
+    }
+
+    #[test]
+    fn preflight_desired_config_validates_resolved_addition_metadata() {
+        let desired = BTreeMap::new();
+        let final_packages = BTreeSet::from(["web".to_string()]);
+        let root = package_meta_with_config();
+
+        let err =
+            preflight_desired_config(&system_config(), &desired, &final_packages, &[], &[root])
+                .unwrap_err();
+
+        assert!(err.to_string().contains("missing required field"));
+    }
+
+    #[test]
+    fn materialize_package_config_rejects_unknown_artifact_before_writing() {
+        let tmp = TempDir::new().unwrap();
+        let installed = installed_with_config();
+        let desired = BTreeMap::from([
+            (
+                "env".into(),
+                BTreeMap::from([("TOKEN".into(), toml::Value::String("abc".into()))]),
+            ),
+            ("unknown".into(), BTreeMap::new()),
+        ]);
+        let mut reload = BTreeSet::new();
+        let mut restart = BTreeSet::new();
+
+        let err = materialize_package_config(
+            tmp.path(),
+            "web",
+            &installed,
+            Some(&desired),
+            &mut reload,
+            &mut restart,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unknown artifact"));
+        assert!(!tmp.path().join("etc/aos/packages/web/config.env").exists());
+        assert!(
+            !tmp.path()
+                .join("var/etc/aos/packages/web/config.env")
+                .exists()
+        );
     }
 }

@@ -31,5 +31,22 @@ pub enum Error {
     JobSenderDropped(String),
 }
 
+impl Error {
+    /// Returns `true` when the error is systemd's `NoSuchUnit` method error.
+    ///
+    /// This lets callers treat stop/remove operations on already-unloaded
+    /// units as idempotent without swallowing unrelated D-Bus failures.
+    pub fn is_no_such_unit(&self) -> bool {
+        match self {
+            Self::Zbus(err) => is_no_such_unit(err),
+            Self::SystemdUnavailable(_) | Self::Fdo(_) | Self::JobSenderDropped(_) => false,
+        }
+    }
+}
+
+pub(crate) fn is_no_such_unit(err: &zbus::Error) -> bool {
+    matches!(err, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
+}
+
 /// Convenience alias for results from this crate.
 pub type Result<T> = std::result::Result<T, Error>;
