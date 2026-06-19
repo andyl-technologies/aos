@@ -194,6 +194,7 @@ async fn facade(
     headers: HeaderMap,
     slug: String,
     path: String,
+    query: Option<String>,
 ) -> Response {
     let auth = auth_header(&headers);
     // A managed cache: stream NAR/narinfo through the shared `cache_serve`
@@ -227,8 +228,57 @@ async fn facade(
             object.bytes,
         )
             .into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        // Nothing served for the single-segment slug. If that slug is itself a
+        // flat registry, the path is genuinely absent (`404`). Otherwise the
+        // `/{slug}/{*path}` wildcard captured a NESTED-canonical URL — the slug
+        // spans `/` (e.g. `andyl/demo`) — so resolve it over the full path and
+        // dispatch to the shared browse/facade handlers. This is the Worker's
+        // equivalent of the native hub's `machine_path` nested fallthrough; the
+        // extra `registry_by_slug` lookup runs only on this cold (would-be-404)
+        // branch, never on a successful serve.
+        Ok(None) => {
+            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
+                StatusCode::NOT_FOUND.into_response()
+            } else {
+                nested_dispatch(svc, headers, &slug, &path, query).await
+            }
+        }
         Err(err) => error_response(&err),
+    }
+}
+
+/// Dispatch a nested-canonical (`org/registry`, `acme/infra/cdn`) GET/HEAD
+/// request that the `/{slug}/{*path}` wildcard captured with a single-segment
+/// slug, reconstructing the full path from `slug` + `path`.
+///
+/// The reserved browse marker (`/-/`) takes precedence over machine resolution:
+/// a path containing it splits into the registry slug (left) and the page/`api/…`
+/// tail (right) and dispatches through [`browse_dispatch`], so the human
+/// namespace can never be shadowed by a machine path. Otherwise the longest
+/// registry-slug prefix is resolved ([`resolve_registry_prefix`]): an empty tail
+/// is the registry home (browse), a non-empty tail is a machine path served by
+/// recursing into [`facade`] with the now-flat resolved slug (which terminates —
+/// the resolved slug is a real registry, so its own `Ok(None)` is a plain `404`).
+/// An unresolvable path is a `404`.
+async fn nested_dispatch(
+    svc: Arc<RpcService>,
+    headers: HeaderMap,
+    slug: &str,
+    path: &str,
+    query: Option<String>,
+) -> Response {
+    let full = format!("{slug}/{path}");
+    let full = full.trim_end_matches('/');
+    if let Some((left, rest)) = split_browse_marker(full) {
+        let left = left.trim_end_matches('/').to_string();
+        return browse_dispatch(svc, headers, left, rest, query).await;
+    }
+    match resolve_registry_prefix(&svc, full).await {
+        Some((rslug, tail)) if tail.is_empty() => {
+            browse_dispatch(svc, headers, rslug, String::new(), query).await
+        }
+        Some((rslug, tail)) => Box::pin(facade(svc, headers, rslug, tail, query)).await,
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -298,6 +348,25 @@ async fn facade_put(
     let outcome = svc
         .put_machine_path(auth.as_deref(), &slug, &path, &body)
         .await;
+    // A nested-canonical upload (`PUT /andyl/demo/nar/x`) arrives with the slug
+    // captured as the single leading segment, so the flat write misses the
+    // registry. When the single-segment slug names no flat registry, resolve the
+    // nested registry by longest prefix and retry the upload against it — the
+    // mirror of the read-path fallthrough in `facade`.
+    if matches!(outcome, FacadeWrite::NotFound)
+        && !matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_)))
+    {
+        let full = format!("{slug}/{path}");
+        if let Some((rslug, tail)) = resolve_registry_prefix(&svc, full.trim_end_matches('/')).await
+        {
+            if !tail.is_empty() {
+                let nested = svc
+                    .put_machine_path(auth.as_deref(), &rslug, &tail, &body)
+                    .await;
+                return facade_write_response(nested, &tail);
+            }
+        }
+    }
     facade_write_response(outcome, &path)
 }
 
@@ -764,81 +833,6 @@ async fn resolve_registry_prefix(svc: &RpcService, path: &str) -> Option<(String
     .await
 }
 
-/// The nested-canonical fallback that lets the Cloudflare Worker serve
-/// registries whose slug contains slashes (e.g. `andyl/demo`, `acme/infra/cdn`).
-///
-/// The shared router's browse and facade routes capture only a single leading
-/// path segment as the slug (`/{slug}/…`, `/{slug}/{*path}`), so a nested slug
-/// never matches them. This fallback recovers those requests by longest-prefix
-/// slug resolution, then dispatches to the *same* shared [`browse_dispatch`] and
-/// [`facade`]/facade-write handlers the flat routes use, so a nested registry
-/// serves byte-identically to a flat one.
-///
-/// It is wired into [`router`] only (the Worker entry). The native hub composes
-/// [`rpc_browse_router`] and installs its own richer `nested_catch_all`
-/// (filesystem autoindex, pull-through mirroring, session cookies), so this
-/// fallback never affects native.
-///
-/// Routing rules:
-/// - `GET`/`HEAD` whose path contains the reserved browse marker (`/-/`, or a
-///   trailing `/-`) splits at the *first* marker into the registry slug (left)
-///   and the page/`api/…` tail (right), dispatching through
-///   [`browse_dispatch`] exactly like the `/{slug}/-/{*rest}` route. This marker
-///   split takes precedence over longest-prefix resolution so the reserved `/-/`
-///   namespace can never be shadowed by a machine path.
-/// - Other `GET`/`HEAD` resolves the longest registry-slug prefix: an empty tail
-///   serves the registry home via [`browse_dispatch`]; a non-empty tail serves
-///   the machine path via [`facade`].
-/// - `PUT` resolves the longest registry-slug prefix and dispatches a non-empty
-///   tail to the upload facade (the shared facade-write path); an empty tail or
-///   an unresolved path is a `404`.
-/// - Every other method, and any unresolved path, is a `404`.
-async fn nested_fallback(
-    State(state): State<SharedState>,
-    method: axum::http::Method,
-    headers: HeaderMap,
-    uri: Uri,
-    body: Bytes,
-) -> Response {
-    let svc = from_state(state);
-    send_bridge(async move {
-        let raw = uri.path().trim_start_matches('/');
-        let decoded = percent_decode_path(raw);
-        match method {
-            axum::http::Method::GET | axum::http::Method::HEAD => {
-                // The reserved `/-/` human/browse namespace wins over machine
-                // longest-prefix resolution: split at the FIRST marker so a slug
-                // segment can never be confused for the marker.
-                if let Some((left, rest)) = split_browse_marker(&decoded) {
-                    let slug = left.trim_end_matches('/').to_string();
-                    return browse_dispatch(svc, headers, slug, rest, uri.query().map(str::to_owned))
-                        .await;
-                }
-                let trimmed = decoded.trim_end_matches('/');
-                match resolve_registry_prefix(&svc, trimmed).await {
-                    Some((slug, tail)) if tail.is_empty() => {
-                        browse_dispatch(svc, headers, slug, String::new(), uri.query().map(str::to_owned))
-                            .await
-                    }
-                    Some((slug, tail)) => facade(svc, headers, slug, tail).await,
-                    None => StatusCode::NOT_FOUND.into_response(),
-                }
-            }
-            axum::http::Method::PUT => {
-                let trimmed = decoded.trim_end_matches('/');
-                match resolve_registry_prefix(&svc, trimmed).await {
-                    Some((slug, tail)) if !tail.is_empty() => {
-                        facade_put(svc, headers, slug, tail, body).await
-                    }
-                    _ => StatusCode::NOT_FOUND.into_response(),
-                }
-            }
-            _ => StatusCode::NOT_FOUND.into_response(),
-        }
-    })
-    .await
-}
-
 /// Split a decoded path at the first browse marker (`/-/`, or a trailing `/-`),
 /// returning `(left, rest)` where `left` is the registry-slug portion and `rest`
 /// is the page/`api/…` tail after the marker (empty for a trailing marker).
@@ -855,15 +849,13 @@ fn split_browse_marker(path: &str) -> Option<(String, String)> {
 }
 
 pub fn router(service: Arc<RpcService>) -> Router {
-    // The nested-canonical fallback is mounted here ONLY (the Worker entry), via
-    // `mount_nested = true`, so a slashed slug that misses the single-segment
-    // browse/facade routes still resolves. The other `build` callers pass
-    // `false`: the native hub composes [`rpc_browse_router`] and installs its own
-    // richer `nested_catch_all`, so this never affects native serving. It must be
-    // mounted *inside* `build` because the fallback handler takes
-    // `State<SharedState>`, which axum can only satisfy before `build`'s closing
-    // `with_state` erases the state type.
-    build(service, true, true, true)
+    // The Worker entry: browse + the machine facade. Nested-canonical (slashed)
+    // slugs are handled inside the [`facade`] wildcard handler (the route that
+    // captures them), which resolves the longest registry-slug prefix and
+    // dispatches to the shared browse/facade — so the Worker serves `org/registry`
+    // registries identically to flat ones. The native hub doesn't use this entry;
+    // it composes [`rpc_browse_router`] and keeps its own richer `nested_catch_all`.
+    build(service, true, true)
 }
 
 /// Build the shared Connect-JSON router with neither the browse surface nor the
@@ -877,7 +869,7 @@ pub fn router(service: Arc<RpcService>) -> Router {
 /// axum state.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
-    build(service, false, false, false)
+    build(service, false, false)
 }
 
 /// Build the shared Connect-JSON router *with* the session-aware browse surface
@@ -895,7 +887,7 @@ pub fn rpc_router(service: Arc<RpcService>) -> Router {
 /// the service as axum state.
 #[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
-    build(service, true, false, false)
+    build(service, true, false)
 }
 
 /// Build the shared router, optionally mounting the browse surface and/or the
@@ -904,17 +896,12 @@ pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
 /// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
 /// pages, and the `/{slug}/-/api/…` JSON read API). `mount_facade` adds the
-/// catch-all `GET`/`HEAD` `/{slug}/{*path}` machine-surface facade.
-/// `mount_nested` adds the [`nested_fallback`] for slashed slugs. The Worker
-/// takes all three ([`router`]); the native hub takes browse only
-/// ([`rpc_browse_router`]) and keeps its own facade and nested fallback;
-/// [`rpc_router`] takes none.
-fn build(
-    service: Arc<RpcService>,
-    mount_browse: bool,
-    mount_facade: bool,
-    mount_nested: bool,
-) -> Router {
+/// catch-all `GET`/`HEAD`/`PUT` `/{slug}/{*path}` machine-surface facade (which
+/// also resolves nested-canonical slugs internally; see [`facade`]). The Worker
+/// takes both ([`router`]); the native hub takes browse only
+/// ([`rpc_browse_router`]) and keeps its own facade + nested handling;
+/// [`rpc_router`] takes neither.
+fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
     let mut r = Router::new();
     // RegistryService
     r = rpc_route!(r, "/aos.registry.v1.RegistryService/ListRegistries", list_registries);
@@ -1128,9 +1115,10 @@ fn build(
         r = r.route(
             "/{slug}/{*path}",
             get(
-                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>| {
+                |State(state): State<SharedState>, headers: HeaderMap, Path((slug, path)): Path<(String, String)>, uri: axum::http::Uri| {
                     let svc = from_state(state);
-                    send_bridge(facade(svc, headers, slug, path))
+                    let query = uri.query().map(str::to_owned);
+                    send_bridge(facade(svc, headers, slug, path, query))
                 },
             )
             // The authenticated surface-upload `PUT` shares the wildcard so an
@@ -1147,12 +1135,6 @@ fn build(
                 },
             ),
         );
-    }
-    if mount_nested {
-        // The nested-canonical fallback for slashed slugs (Worker entry only).
-        // Added before `with_state` so axum can satisfy its `State<SharedState>`
-        // extractor; see [`router`].
-        r = r.fallback(nested_fallback);
     }
     r.with_state(into_state(service))
 }
