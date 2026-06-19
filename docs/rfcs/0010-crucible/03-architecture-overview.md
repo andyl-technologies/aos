@@ -507,7 +507,7 @@ reading order is in the [`README.md`](README.md).
 - [x] **T-ARCH-2** Encode the layer dependency rule as an enforced check (a CI
   lint that forbids any upward dependency between layers). — satisfies [ARCH-3];
   spec §4, [`27-crate-structure.md`](27-crate-structure.md).
-- [ ] **T-ARCH-3** Define the core type spine — `Configuration`, `ScenarioDef`
+- [x] **T-ARCH-3** Define the core type spine — `Configuration`, `ScenarioDef`
   handle, `Schedule`, `Decision`, `Checkpoint` — and the `step` / `reduce` /
   `instantiate` / `bake` signatures in L3 so every later subsystem builds against
   fixed shapes. — satisfies [ARCH-1], [ARCH-2]; spec §1, §3,
