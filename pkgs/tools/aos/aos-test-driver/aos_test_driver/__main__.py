@@ -11,6 +11,7 @@ named after each machine's ``name`` (e.g. ``vm``, ``controlplane``,
 """
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -36,9 +37,15 @@ NAME_PATTERN: re.Pattern[str] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 def _configure_stdio() -> None:
     """Keep driver/test output visible while Nix is still running the check."""
     for stream in (sys.stdout, sys.stderr):
+        # reconfigure() lives on TextIOWrapper; sys.stdout/stderr are typed
+        # as the broader TextIO, so narrow before calling. The isinstance
+        # check also covers the runtime case where stdio was replaced with
+        # a non-wrapper stream. ValueError guards an already-detached stream.
+        if not isinstance(stream, io.TextIOWrapper):
+            continue
         try:
             stream.reconfigure(line_buffering=True, write_through=True)
-        except (AttributeError, ValueError):
+        except ValueError:
             pass
 
 
