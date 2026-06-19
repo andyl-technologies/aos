@@ -63,6 +63,12 @@ static NATIVE_MODE: OnceLock<NativeMode> = OnceLock::new();
 static NATIVE_FALLBACK_UNSUPPORTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "native-eval")]
 static NATIVE_FALLBACK_INTERNAL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SUCCESS_FILE_INSTANTIATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SUCCESS_EXPRESSION_INSTANTIATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SUCCESS_EXPRESSION_EVALUATION: AtomicU64 = AtomicU64::new(0);
 
 /// Native evaluator fallback counters captured for the current process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,6 +94,57 @@ impl NativeFallbackStats {
     }
 }
 
+/// Authoritative native evaluator success counters captured for the current process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeSuccessStats {
+    file_instantiations: u64,
+    expression_instantiations: u64,
+    expression_evaluations: u64,
+}
+
+impl NativeSuccessStats {
+    /// Returns file-backed derivation instantiations completed by authoritative native eval.
+    pub const fn file_instantiations(&self) -> u64 {
+        self.file_instantiations
+    }
+
+    /// Returns expression-backed derivation instantiations completed by authoritative native eval.
+    pub const fn expression_instantiations(&self) -> u64 {
+        self.expression_instantiations
+    }
+
+    /// Returns strict JSON expression evaluations completed by authoritative native eval.
+    pub const fn expression_evaluations(&self) -> u64 {
+        self.expression_evaluations
+    }
+
+    /// Returns the total number of successful native-evaluator operations.
+    pub const fn total(&self) -> u64 {
+        self.file_instantiations
+            .saturating_add(self.expression_instantiations)
+            .saturating_add(self.expression_evaluations)
+    }
+}
+
+/// Authoritative native evaluator counters captured for the current process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeEvalStats {
+    successes: NativeSuccessStats,
+    fallbacks: NativeFallbackStats,
+}
+
+impl NativeEvalStats {
+    /// Returns authoritative native operations that completed without falling back to C++ Nix.
+    pub const fn successes(&self) -> NativeSuccessStats {
+        self.successes
+    }
+
+    /// Returns native operations that fell back to C++ Nix.
+    pub const fn fallbacks(&self) -> NativeFallbackStats {
+        self.fallbacks
+    }
+}
+
 /// Returns native evaluator fallback counters captured for the current process.
 pub fn native_fallback_stats() -> NativeFallbackStats {
     #[cfg(feature = "native-eval")]
@@ -101,6 +158,32 @@ pub fn native_fallback_stats() -> NativeFallbackStats {
     #[cfg(not(feature = "native-eval"))]
     {
         NativeFallbackStats::default()
+    }
+}
+
+/// Returns authoritative native evaluator success counters captured for the current process.
+pub fn native_success_stats() -> NativeSuccessStats {
+    #[cfg(feature = "native-eval")]
+    {
+        NativeSuccessStats {
+            file_instantiations: NATIVE_SUCCESS_FILE_INSTANTIATION.load(Ordering::Relaxed),
+            expression_instantiations: NATIVE_SUCCESS_EXPRESSION_INSTANTIATION
+                .load(Ordering::Relaxed),
+            expression_evaluations: NATIVE_SUCCESS_EXPRESSION_EVALUATION.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    {
+        NativeSuccessStats::default()
+    }
+}
+
+/// Returns authoritative native evaluator counters captured for the current process.
+pub fn native_eval_stats() -> NativeEvalStats {
+    NativeEvalStats {
+        successes: native_success_stats(),
+        fallbacks: native_fallback_stats(),
     }
 }
 
@@ -577,7 +660,10 @@ impl NativeFallbackEval {
 impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         match self.native.instantiate(file, attr) {
-            Ok(path) => Ok(path),
+            Ok(path) => {
+                observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
+                Ok(path)
+            }
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -590,7 +676,10 @@ impl NixEval for NativeFallbackEval {
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         match self.native.instantiate_expr(expr) {
-            Ok(path) => Ok(path),
+            Ok(path) => {
+                observe_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
+                Ok(path)
+            }
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -603,7 +692,10 @@ impl NixEval for NativeFallbackEval {
 
     fn eval_expr(&self, expr: &str) -> Result<String> {
         match self.native.eval_expr(expr) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+                Ok(value)
+            }
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -641,21 +733,28 @@ impl NativeOnlyEval {
 #[cfg(feature = "native-eval")]
 impl NixEval for NativeOnlyEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        self.native.instantiate(file, attr)
+        let path = self.native.instantiate(file, attr)?;
+        observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
+        Ok(path)
     }
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
-        self.native.instantiate_expr(expr)
+        let path = self.native.instantiate_expr(expr)?;
+        observe_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
+        Ok(path)
     }
 
     fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
         let closure = self.native.instantiate_closure(file, attr)?;
+        observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
         let (root, drvs) = closure.into_parts();
         Ok(Some(DrvClosure::new(root, drvs)))
     }
 
     fn eval_expr(&self, expr: &str) -> Result<String> {
-        self.native.eval_expr(expr)
+        let value = self.native.eval_expr(expr)?;
+        observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+        Ok(value)
     }
 
     fn name(&self) -> &'static str {
@@ -839,6 +938,25 @@ fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usi
 }
 
 #[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy)]
+enum NativeSuccessOperation {
+    FileInstantiation,
+    ExpressionInstantiation,
+    ExpressionEvaluation,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeSuccessOperation {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::FileInstantiation => "file instantiation",
+            Self::ExpressionInstantiation => "expression instantiation",
+            Self::ExpressionEvaluation => "expression evaluation",
+        }
+    }
+}
+
+#[cfg(feature = "native-eval")]
 fn native_cli_fallback_reason(error: &anyhow::Error) -> Option<NativeCliFallbackReason> {
     error
         .downcast_ref::<NativeEvalError>()
@@ -868,6 +986,26 @@ fn warn_native_cli_fallback(error: &anyhow::Error, reason: NativeCliFallbackReas
         fallback_count = count,
         "native eval fell back to nix-cli"
     );
+}
+
+#[cfg(feature = "native-eval")]
+fn observe_native_eval_success(operation: NativeSuccessOperation) {
+    let count = record_native_eval_success(operation);
+    tracing::debug!(
+        operation = operation.label(),
+        native_success_count = count,
+        "native eval completed without nix-cli fallback"
+    );
+}
+
+#[cfg(feature = "native-eval")]
+fn record_native_eval_success(operation: NativeSuccessOperation) -> u64 {
+    let counter = match operation {
+        NativeSuccessOperation::FileInstantiation => &NATIVE_SUCCESS_FILE_INSTANTIATION,
+        NativeSuccessOperation::ExpressionInstantiation => &NATIVE_SUCCESS_EXPRESSION_INSTANTIATION,
+        NativeSuccessOperation::ExpressionEvaluation => &NATIVE_SUCCESS_EXPRESSION_EVALUATION,
+    };
+    counter.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 #[cfg(feature = "native-eval")]
@@ -1069,6 +1207,19 @@ mod tests {
 
     #[cfg(feature = "native-eval")]
     #[test]
+    fn native_only_eval_records_authoritative_successes() -> Result<()> {
+        let evaluator = NativeOnlyEval::new(0, NixEvalConfig::new())?;
+        let before = native_success_stats();
+
+        assert_eq!(evaluator.eval_expr("1 + 1")?, "2");
+
+        let after = native_success_stats();
+        assert!(after.expression_evaluations() > before.expression_evaluations());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
     fn native_fallback_eval_returns_native_instantiation_success() -> Result<()> {
         let root = tempfile::tempdir()?;
         let store = root.path().join("store");
@@ -1080,6 +1231,7 @@ mod tests {
             log.to_string_lossy().into_owned(),
         )?;
         let evaluator = NativeFallbackEval::new(0, config)?;
+        let before = native_success_stats();
 
         let path = evaluator.instantiate_expr(
             r#"derivationStrict {
@@ -1092,6 +1244,8 @@ mod tests {
         assert!(path.starts_with(&store), "{}", path.display());
         assert!(path.to_string_lossy().ends_with("-base.drv"));
         assert!(path.exists(), "{}", path.display());
+        let after = native_success_stats();
+        assert!(after.expression_instantiations() > before.expression_instantiations());
         Ok(())
     }
 
@@ -1133,6 +1287,62 @@ mod tests {
         assert_eq!(stats.unsupported(), 2);
         assert_eq!(stats.internal(), 3);
         assert_eq!(stats.total(), 5);
+    }
+
+    #[test]
+    fn native_success_stats_total_sums_operation_counts() {
+        let stats = NativeSuccessStats {
+            file_instantiations: 2,
+            expression_instantiations: 3,
+            expression_evaluations: 5,
+        };
+
+        assert_eq!(stats.file_instantiations(), 2);
+        assert_eq!(stats.expression_instantiations(), 3);
+        assert_eq!(stats.expression_evaluations(), 5);
+        assert_eq!(stats.total(), 10);
+    }
+
+    #[test]
+    fn native_eval_stats_groups_success_and_fallback_counts() {
+        let stats = NativeEvalStats {
+            successes: NativeSuccessStats {
+                file_instantiations: 1,
+                expression_instantiations: 2,
+                expression_evaluations: 3,
+            },
+            fallbacks: NativeFallbackStats {
+                unsupported: 4,
+                internal: 5,
+            },
+        };
+
+        assert_eq!(stats.successes().total(), 6);
+        assert_eq!(stats.fallbacks().total(), 9);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_success_recording_counts_by_operation() {
+        let before = native_success_stats();
+
+        let file_after = record_native_eval_success(NativeSuccessOperation::FileInstantiation);
+        assert!(file_after > before.file_instantiations());
+        let file_stats = native_success_stats();
+        assert!(file_stats.file_instantiations() >= file_after);
+
+        let instantiation_after =
+            record_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
+        assert!(instantiation_after > file_stats.expression_instantiations());
+        let instantiation_stats = native_success_stats();
+        assert!(instantiation_stats.expression_instantiations() >= instantiation_after);
+
+        let evaluation_after =
+            record_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
+        assert!(evaluation_after > instantiation_stats.expression_evaluations());
+        let evaluation_stats = native_eval_stats();
+        assert!(evaluation_stats.successes().expression_evaluations() >= evaluation_after);
+        assert!(evaluation_stats.successes().total() >= evaluation_after);
     }
 
     #[cfg(feature = "native-eval")]

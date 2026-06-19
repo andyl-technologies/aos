@@ -26,8 +26,9 @@ pub mod store;
 
 pub use env::{aos_nix_command, aos_nix_env, aos_tokio_nix_command};
 pub use eval::{
-    DrvClosure, NativeFallbackStats, NativeMode, NixEval, NixEvalConfig, native_fallback_stats,
-    native_mode_from_env, select_evaluator, select_evaluator_with_config,
+    DrvClosure, NativeEvalStats, NativeFallbackStats, NativeMode, NativeSuccessStats, NixEval,
+    NixEvalConfig, native_eval_stats, native_fallback_stats, native_mode_from_env,
+    native_success_stats, select_evaluator, select_evaluator_with_config,
     select_native_diff_candidate_with_config,
 };
 pub use runner::NixRunner;
