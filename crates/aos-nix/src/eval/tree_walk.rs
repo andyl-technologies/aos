@@ -28622,7 +28622,7 @@ impl BuiltinExecutor for TreeWalk {
         args: &[IrId],
     ) -> Result<Value, TreeWalkError> {
         let eval = self;
-        check_builtin_apply_arity(call, builtin, args.len())?;
+        check_builtin_direct_arity(call, builtin, args.len())?;
 
         if builtin.execution() == BuiltinExecution::Derivation {
             let argument = args[0];
@@ -29231,6 +29231,23 @@ fn check_builtin_apply_arity(
         ));
     };
     check_builtin_arity(call, expected, actual)
+}
+
+fn check_builtin_direct_arity(
+    call: BuiltinCall,
+    builtin: Builtin,
+    actual: usize,
+) -> Result<(), TreeWalkError> {
+    let Some(direct) = builtin.direct() else {
+        return Err(TreeWalkError::new(
+            TreeWalkErrorKind::UnsupportedPrimOp {
+                id: call.id,
+                symbol: call.symbol,
+            },
+            call.span,
+        ));
+    };
+    check_builtin_arity(call, direct.arity(), actual)
 }
 
 fn check_builtin_arity(
@@ -32433,6 +32450,33 @@ mod tests {
         for builtin in BUILTINS.iter().copied() {
             assert_eq!(lookup_builtin(builtin.name()), Some(builtin));
         }
+    }
+
+    #[test]
+    fn direct_builtin_arity_uses_direct_metadata_not_first_class_metadata() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.intern(b"__testBuiltin").expect("symbol interns");
+        let call = BuiltinCall::new(IrId::new(0), Span::new(0, 13), symbol);
+        let builtin = Builtin::test_with_call_arities(
+            Some(BuiltinDirect::LazyUnary {
+                effect: BuiltinEffect::Pure,
+            }),
+            Some(3),
+        );
+
+        check_builtin_direct_arity(call, builtin, 1).expect("direct arity uses direct metadata");
+
+        let error = check_builtin_direct_arity(call, builtin, 3)
+            .expect_err("direct arity ignores first-class arity");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::InvalidPrimOpArity {
+                id: call.id,
+                symbol: call.symbol,
+                expected: 1,
+                actual: 3,
+            }
+        );
     }
 
     #[test]

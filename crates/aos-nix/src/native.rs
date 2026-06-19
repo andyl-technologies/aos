@@ -24,7 +24,8 @@ use crate::eval::{
     eval_whnf_owned_with_options_and_realizer,
 };
 use crate::runtime::builtins::{
-    Builtin, BuiltinAvailability, is_unshadowable_global_name, lookup_builtin,
+    Builtin, BuiltinAvailability, NativeCliFallbackFeature, is_unshadowable_global_name,
+    lookup_builtin,
 };
 use crate::syntax::{Span, parse_str};
 use crate::value::{Value, ValueTag};
@@ -754,19 +755,15 @@ fn builtins_global_native_json_fallback_feature(
         let name = match static_single_attr_path(ir, path) {
             StaticSingleAttrPath::Single(name) => name,
             StaticSingleAttrPath::Invalid => continue,
-            StaticSingleAttrPath::NotSingle => return Some("CLI-sensitive builtin evaluation"),
+            StaticSingleAttrPath::NotSingle => return Some(cli_sensitive_builtin_feature()),
         };
         if name == b"builtins" {
-            return Some("CLI-sensitive builtin evaluation");
+            return Some(cli_sensitive_builtin_feature());
         }
         let Some(builtin) = lookup_builtin(name) else {
-            return Some("CLI-sensitive builtin evaluation");
+            return Some(cli_sensitive_builtin_feature());
         };
-        if ambient_builtin_constant_available_for_native_json(builtin, options) {
-            selected_known_native_builtin = true;
-            continue;
-        }
-        if let Some(feature) = builtin.native_cli_fallback_feature() {
+        if let Some(feature) = builtin_native_json_fallback_feature(builtin, options) {
             return Some(feature);
         }
 
@@ -778,7 +775,7 @@ fn builtins_global_native_json_fallback_feature(
     } else if saw_referencing_attr_path {
         None
     } else {
-        Some("CLI-sensitive builtin evaluation")
+        Some(cli_sensitive_builtin_feature())
     }
 }
 
@@ -787,9 +784,15 @@ fn builtin_attr_native_json_fallback_feature(
     options: &TreeWalkOptions,
 ) -> Option<&'static str> {
     if name == b"builtins" {
-        return Some("CLI-sensitive builtin evaluation");
+        return Some(cli_sensitive_builtin_feature());
     }
-    let builtin = lookup_builtin(name)?;
+    lookup_builtin(name).and_then(|builtin| builtin_native_json_fallback_feature(builtin, options))
+}
+
+fn builtin_native_json_fallback_feature(
+    builtin: Builtin,
+    options: &TreeWalkOptions,
+) -> Option<&'static str> {
     if ambient_builtin_constant_available_for_native_json(builtin, options) {
         return None;
     }
@@ -798,6 +801,10 @@ fn builtin_attr_native_json_fallback_feature(
 
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
     lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
+}
+
+fn cli_sensitive_builtin_feature() -> &'static str {
+    NativeCliFallbackFeature::CliSensitiveBuiltinEvaluation.label()
 }
 
 fn builtin_available_in_options(builtin: Builtin, options: &TreeWalkOptions) -> bool {
@@ -834,7 +841,7 @@ fn native_instantiation_cli_fallback_feature(
             && let Some(name) = ir.symbols.resolve(symbol)
             && builtin_instantiation_attr_is_cli_sensitive(name, options)
         {
-            return Some(("CLI-sensitive builtin evaluation", node.span));
+            return Some((cli_sensitive_builtin_feature(), node.span));
         }
     }
 
@@ -886,7 +893,7 @@ fn builtins_global_native_instantiation_fallback_feature(
         }
 
         if builtins_instantiation_attr_path_is_cli_sensitive(ir, path, options) {
-            return Some(("CLI-sensitive builtin evaluation", node.span));
+            return Some((cli_sensitive_builtin_feature(), node.span));
         }
     }
     None

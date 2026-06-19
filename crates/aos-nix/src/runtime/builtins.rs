@@ -1180,6 +1180,20 @@ pub(crate) enum BuiltinDirect {
     StrictTernary { effect: BuiltinEffect },
 }
 
+impl BuiltinDirect {
+    /// Returns the number of arguments consumed by a direct-lowered call.
+    pub(crate) const fn arity(self) -> usize {
+        match self {
+            Self::DerivationStrict | Self::StrictUnary { .. } | Self::LazyUnary { .. } => 1,
+            Self::StrictBinary { .. }
+            | Self::StrictLazyBinary { .. }
+            | Self::LazyStrictBinary { .. }
+            | Self::Sort { .. } => 2,
+            Self::StrictTernary { .. } => 3,
+        }
+    }
+}
+
 /// Runtime execution strategy attached to a concrete builtin declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum BuiltinExecution {
@@ -1658,6 +1672,11 @@ impl BuiltinDocs {
     }
 }
 
+#[cfg(test)]
+static TEST_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
+    summary: "Test builtin declaration.",
+};
+
 static APPEND_CONTEXT_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Returns a string with reflected string context appended.",
 };
@@ -1851,6 +1870,25 @@ impl Builtin {
     /// Returns the arity exposed when the builtin is selected as a first-class value.
     pub(crate) const fn first_class_arity(&self) -> Option<usize> {
         self.first_class_arity
+    }
+
+    /// Creates a test-only builtin with explicit direct and first-class arity metadata.
+    #[cfg(test)]
+    pub(crate) const fn test_with_call_arities(
+        direct: Option<BuiltinDirect>,
+        first_class_arity: Option<usize>,
+    ) -> Self {
+        Self::new(
+            BuiltinKind::LengthBuiltin,
+            b"__testBuiltin",
+            BuiltinExecution::strict_unary(StrictUnaryPrimOp::Length),
+            direct,
+            first_class_arity,
+            BuiltinAvailability::Always,
+            BuiltinNameScope::BuiltinsAttrOnly,
+            None,
+            &TEST_BUILTIN_DOCS,
+        )
     }
 
     /// Returns how this builtin's spelling participates in top-level name resolution.
@@ -2843,6 +2881,75 @@ mod tests {
     }
 
     #[test]
+    fn builtin_declarations_record_direct_arity_by_direct_lowering() {
+        assert_eq!(
+            BuiltinDirect::DerivationStrict.arity(),
+            1,
+            "derivationStrict consumes one argument"
+        );
+        assert_eq!(
+            BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            1
+        );
+        assert_eq!(
+            BuiltinDirect::LazyUnary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            1
+        );
+        assert_eq!(
+            BuiltinDirect::StrictBinary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            2
+        );
+        assert_eq!(
+            BuiltinDirect::StrictLazyBinary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            2
+        );
+        assert_eq!(
+            BuiltinDirect::LazyStrictBinary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            2
+        );
+        assert_eq!(
+            BuiltinDirect::Sort {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            2
+        );
+        assert_eq!(
+            BuiltinDirect::StrictTernary {
+                effect: BuiltinEffect::Pure,
+            }
+            .arity(),
+            3
+        );
+
+        for builtin in BUILTINS.iter().copied() {
+            if let Some(direct) = builtin.direct() {
+                assert_eq!(
+                    builtin.first_class_arity(),
+                    Some(direct.arity()),
+                    "{} direct and first-class arity should match until a builtin explicitly needs different call surfaces",
+                    String::from_utf8_lossy(builtin.name()),
+                );
+            }
+        }
+    }
+
+    #[test]
     fn builtin_declarations_record_contextual_availability() {
         assert_eq!(
             BUILTINS.lookup(b"length").unwrap().availability(),
@@ -2984,6 +3091,11 @@ mod tests {
         );
         assert_ne!(builtin.direct(), builtin.execution().direct());
         assert_eq!(builtin.first_class_arity(), Some(3));
+        assert_eq!(builtin.direct().map(BuiltinDirect::arity), Some(1));
+        assert_ne!(
+            builtin.direct().map(BuiltinDirect::arity),
+            builtin.first_class_arity()
+        );
         assert_ne!(
             builtin.first_class_arity(),
             builtin.execution().first_class_arity()
