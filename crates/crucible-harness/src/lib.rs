@@ -89,12 +89,16 @@ pub enum GatePhase {
     Phase1,
     /// The gate guards Phase 2 VM/backend work.
     Phase2,
-    /// The gate guards Phase 3 temporal-graph, scheduler, or control-plane work.
+    /// The gate guards Phase 3 scheduling and cross-node determinism work.
     Phase3,
-    /// The gate guards Phase 4 adversarial-host work.
+    /// The gate guards Phase 4 full engine work.
     Phase4,
-    /// The gate guards Phase 5 final acceptance.
+    /// The gate guards Phase 5 control-plane work.
     Phase5,
+    /// The gate guards Phase 6 exploration work.
+    Phase6,
+    /// The gate guards Phase 7 packaging, performance, and acceptance work.
+    Phase7,
 }
 
 /// The current local implementation status for a gate target.
@@ -124,13 +128,13 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
     },
     GateSpec {
         name: "gate:single-vm-fingerprint",
-        phase: GatePhase::Phase2,
+        phase: GatePhase::Phase1,
         owner: "crucible-qemu",
         status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:layer1-injection",
-        phase: GatePhase::Phase1,
+        phase: GatePhase::Phase3,
         owner: "crucible-device",
         status: GateStatus::RedPlaceholder,
     },
@@ -138,29 +142,29 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:content-address",
         phase: GatePhase::Phase1,
         owner: "crucible",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:replay-oracle",
-        phase: GatePhase::Phase3,
+        phase: GatePhase::Phase1,
         owner: "crucible",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:divergence-bisect",
         phase: GatePhase::Phase1,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:scheduler-liveness",
         phase: GatePhase::Phase3,
         owner: "crucible",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:control-responsive",
-        phase: GatePhase::Phase3,
+        phase: GatePhase::Phase5,
         owner: "crucible-session",
         status: GateStatus::RedPlaceholder,
     },
@@ -168,55 +172,55 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:any-guest",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:qemu-inert",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:abi-conformance",
-        phase: GatePhase::Phase1,
+        phase: GatePhase::Phase2,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:patch-microtests",
         phase: GatePhase::Phase2,
         owner: "crucible-qemu-plugin",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:adversarial-determinism",
-        phase: GatePhase::Phase4,
+        phase: GatePhase::Phase3,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:e2e-determinism",
-        phase: GatePhase::Phase5,
+        phase: GatePhase::Phase4,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:perf-bench",
-        phase: GatePhase::Phase2,
+        phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:fleet-equivalence",
-        phase: GatePhase::Phase3,
+        phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
     GateSpec {
         name: "gate:campaign-continuity",
-        phase: GatePhase::Phase3,
+        phase: GatePhase::Phase7,
         owner: "crucible-harness",
-        status: GateStatus::CatalogOnly,
+        status: GateStatus::RedPlaceholder,
     },
 ];
 

@@ -1,11 +1,11 @@
 //! Checks that the RFC gate catalog stays canonical across code and docs.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crucible_harness::{GateStatus, canonical_gates, find_gate};
+use crucible_harness::{GatePhase, GateStatus, canonical_gates, find_gate};
 
 #[test]
 fn canonical_gate_catalog_matches_rfc_table_and_references() -> Result<(), Box<dyn Error>> {
@@ -38,10 +38,23 @@ fn architecture_red_placeholder_gates_are_wired() {
         })
         .collect();
     let expected = BTreeSet::from([
-        "gate:layer0-determinism",
-        "gate:single-vm-fingerprint",
-        "gate:layer1-injection",
+        "gate:abi-conformance",
+        "gate:adversarial-determinism",
+        "gate:any-guest",
+        "gate:campaign-continuity",
+        "gate:content-address",
         "gate:control-responsive",
+        "gate:divergence-bisect",
+        "gate:e2e-determinism",
+        "gate:fleet-equivalence",
+        "gate:layer0-determinism",
+        "gate:layer1-injection",
+        "gate:patch-microtests",
+        "gate:perf-bench",
+        "gate:qemu-inert",
+        "gate:replay-oracle",
+        "gate:scheduler-liveness",
+        "gate:single-vm-fingerprint",
     ]);
 
     assert_eq!(placeholders, expected);
@@ -56,6 +69,31 @@ fn architecture_red_placeholder_gates_are_wired() {
         find_gate("gate:harness-lint").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
+
+    let expected_phases = BTreeMap::from([
+        ("gate:harness-lint", GatePhase::Always),
+        ("gate:layer0-determinism", GatePhase::Phase1),
+        ("gate:single-vm-fingerprint", GatePhase::Phase1),
+        ("gate:layer1-injection", GatePhase::Phase3),
+        ("gate:content-address", GatePhase::Phase1),
+        ("gate:replay-oracle", GatePhase::Phase1),
+        ("gate:divergence-bisect", GatePhase::Phase1),
+        ("gate:scheduler-liveness", GatePhase::Phase3),
+        ("gate:control-responsive", GatePhase::Phase5),
+        ("gate:any-guest", GatePhase::Phase2),
+        ("gate:qemu-inert", GatePhase::Phase2),
+        ("gate:abi-conformance", GatePhase::Phase2),
+        ("gate:patch-microtests", GatePhase::Phase2),
+        ("gate:adversarial-determinism", GatePhase::Phase3),
+        ("gate:e2e-determinism", GatePhase::Phase4),
+        ("gate:perf-bench", GatePhase::Phase7),
+        ("gate:fleet-equivalence", GatePhase::Phase7),
+        ("gate:campaign-continuity", GatePhase::Phase7),
+    ]);
+
+    for (gate, phase) in expected_phases {
+        assert_eq!(find_gate(gate).map(|spec| spec.phase), Some(phase));
+    }
 }
 
 fn workspace_root() -> PathBuf {

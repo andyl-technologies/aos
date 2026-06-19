@@ -804,29 +804,42 @@ and the input to bisection (§5). Forward refs:
 
 The gates are layered exactly as the system is, and the phase plan
 ([`32-implementation-plan.md`](32-implementation-plan.md)) orders the foundation
-first ([G-5], [PLAN-4]):
+first ([G-5], [PLAN-4]). Phase 0 additionally has the non-catalog
+`phase0:blockers` spike aggregate described by [`30-risks-spikes.md`](30-risks-spikes.md)
+and [`32-implementation-plan.md`](32-implementation-plan.md):
 
 ```text
-  Phase 0   gate:harness-lint                         (every PR, always on)
-  Phase 1   gate:layer0-determinism                   (L0 core)
-            gate:content-address                       (store)
-            gate:abi-conformance                       (L1 ABIs, double-backed)
-            gate:layer1-injection                      (Contract B, double-backed)
-            gate:divergence-bisect                     (diagnostic, exercised on doubles)
-  Phase 2   gate:single-vm-fingerprint                 (Contract A, real QEMU)
-            gate:any-guest                             (unmodified guest)
-            gate:qemu-inert, gate:patch-microtests     (patch series)
-  Phase 3   gate:replay-oracle                         (temporal graph)
-            gate:scheduler-liveness                    (scheduler actor)
-            gate:control-responsive                    (control plane)
-  Phase 4   gate:adversarial-determinism               (hostile-condition matrix)
-  Phase 5   gate:e2e-determinism                       (final acceptance)
+  phase0  phase0:blockers                    (S1/S2/S4/S3 plus S11 for G-10)
+  phase0  gate:harness-lint                  (every PR, always on)
+  phase1  gate:harness-lint                  (first phase exit gate)
+  phase1  gate:layer0-determinism            (L0 core)
+  phase1  gate:content-address               (store)
+  phase1  gate:replay-oracle                 (double-backed replay)
+  phase1  gate:single-vm-fingerprint         (double-backed fingerprint)
+  phase1  gate:divergence-bisect             (diagnostic, exercised on doubles)
+  phase2  gate:abi-conformance               (L1 ABIs)
+  phase2  gate:qemu-inert                    (sim-off QEMU behavior)
+  phase2  gate:patch-microtests              (patch series)
+  phase2  gate:single-vm-fingerprint         (Contract A, real QEMU)
+  phase2  gate:any-guest                     (unmodified guest)
+  phase3  gate:layer1-injection              (Contract B)
+  phase3  gate:scheduler-liveness            (scheduler actor)
+  phase3  gate:adversarial-determinism       (2-VM hostile-condition matrix)
+  phase4  gate:replay-oracle                 (full temporal graph)
+  phase4  gate:e2e-determinism               (mock backend)
+  phase5  gate:control-responsive            (control plane)
+  phase6  gate:replay-oracle                 (active search)
+  phase7  gate:perf-bench                    (performance regression)
+  phase7  gate:e2e-determinism               (final acceptance)
+  phase7  gate:fleet-equivalence             (distributed equivalence)
+  phase7  gate:campaign-continuity           (coverage ratchet)
 ```
 
 - **[HARN-30]** A phase's gate(s) MUST be green before the next phase's tasks are
-  worked, and `gate:e2e-determinism` MUST be the terminal gate. The in-process
-  double (§3) is what makes Phases 1, 3, and 4 fast enough to iterate on, and
-  must therefore be built in Phase 1 before the layers that depend on it.
+  worked, and `gate:e2e-determinism` MUST remain in the terminal Phase 7 gate
+  set. The in-process double (§3) is what makes the Phase 1 foundation and
+  Phase 4 mock end-to-end checks fast enough to iterate on, and must therefore
+  be built in Phase 1 before the layers that depend on it.
 
 ---
 
