@@ -40,6 +40,7 @@ use axum::Router;
 use send_wrapper::SendWrapper;
 
 use super::handlers;
+use super::handlers::RequestStart;
 use super::ports::ConsoleDeps;
 
 /// The axum state type carrying [`ConsoleDeps`], made `Send + Sync`.
@@ -125,41 +126,41 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
     Router::new()
         .route(
             "/login",
-            get(|State(s): State<SharedState>| {
-                send_bridge(handlers::login_form(from_state(s)))
+            get(|State(s): State<SharedState>, r: RequestStart| {
+                send_bridge(handlers::login_form(from_state(s), r))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
-                send_bridge(handlers::login_submit(from_state(s), h, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_submit(from_state(s), h, r, f))
             }),
         )
         .route(
             "/login/password",
-            post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
-                send_bridge(handlers::login_password(from_state(s), h, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_password(from_state(s), h, r, f))
             }),
         )
         .route(
             "/auth/magic",
-            get(|State(s): State<SharedState>, q: Query<_>| {
-                send_bridge(handlers::magic_consume(from_state(s), q))
+            get(|State(s): State<SharedState>, r: RequestStart, q: Query<_>| {
+                send_bridge(handlers::magic_consume(from_state(s), r, q))
             }),
         )
         .route(
             "/auth/sso",
-            post(|State(s): State<SharedState>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::login_sso(from_state(s), f))
+            post(|State(s): State<SharedState>, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::login_sso(from_state(s), r, f))
             }),
         )
         .route(
             "/auth/oidc/start",
-            get(|State(s): State<SharedState>, q: Query<_>| {
-                send_bridge(handlers::oidc_start(from_state(s), q))
+            get(|State(s): State<SharedState>, r: RequestStart, q: Query<_>| {
+                send_bridge(handlers::oidc_start(from_state(s), r, q))
             }),
         )
         .route(
             "/auth/oidc/callback",
-            get(|State(s): State<SharedState>, q: Query<_>| {
-                send_bridge(handlers::oidc_callback(from_state(s), q))
+            get(|State(s): State<SharedState>, r: RequestStart, q: Query<_>| {
+                send_bridge(handlers::oidc_callback(from_state(s), r, q))
             }),
         )
         .route(
@@ -170,14 +171,14 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/account",
-            get(|State(s): State<SharedState>, h: HeaderMap| {
-                send_bridge(handlers::account(from_state(s), h))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::account(from_state(s), h, r))
             }),
         )
         .route(
             "/account/password",
-            post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
-                send_bridge(handlers::account_set_password(from_state(s), h, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::account_set_password(from_state(s), h, r, f))
             }),
         )
         .route(
@@ -188,8 +189,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/account/passkeys",
-            get(|State(s): State<SharedState>, h: HeaderMap| {
-                send_bridge(handlers::passkeys(from_state(s), h))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::passkeys(from_state(s), h, r))
             }),
         )
         .route(
@@ -218,8 +219,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/activate",
-            get(|State(s): State<SharedState>, h: HeaderMap, q: Query<_>| {
-                send_bridge(handlers::activate_form(from_state(s), h, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, q: Query<_>| {
+                send_bridge(handlers::activate_form(from_state(s), h, r, q))
             })
             .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::activate_submit(from_state(s), h, f))
@@ -227,29 +228,29 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/new",
-            get(|State(s): State<SharedState>, h: HeaderMap| {
-                send_bridge(handlers::new_org_form(from_state(s), h))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::new_org_form(from_state(s), h, r))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
-                send_bridge(handlers::new_org_submit(from_state(s), h, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::new_org_submit(from_state(s), h, r, f))
             }),
         )
         .route(
             "/-/orgs",
-            get(|State(s): State<SharedState>, h: HeaderMap, q: Query<_>| {
-                send_bridge(handlers::orgs(from_state(s), h, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, q: Query<_>| {
+                send_bridge(handlers::orgs(from_state(s), h, r, q))
             }),
         )
         .route(
             "/-/org/{org}",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, q: Query<_>| {
-                send_bridge(handlers::org_dashboard(from_state(s), h, p, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_dashboard(from_state(s), h, r, p, q))
             }),
         )
         .route(
             "/-/org/{org}/audit",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, q: Query<_>| {
-                send_bridge(handlers::org_audit(from_state(s), h, p, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::org_audit(from_state(s), h, r, p, q))
             }),
         )
         .route(
@@ -296,14 +297,14 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/registries/new",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>| {
-                send_bridge(handlers::org_new_registry_form(from_state(s), h, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::org_new_registry_form(from_state(s), h, r, p))
             }),
         )
         .route(
             "/-/org/{org}/registries",
-            post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::org_create_registry(from_state(s), h, p, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::org_create_registry(from_state(s), h, r, p, f))
             }),
         )
         .route(
@@ -314,50 +315,50 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/keys",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>| {
-                send_bridge(handlers::org_keys(from_state(s), h, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::org_keys(from_state(s), h, r, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::org_keys_action(from_state(s), h, p, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::org_keys_action(from_state(s), h, r, p, f))
             }),
         )
         .route(
             "/-/org/{org}/webhooks",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>| {
-                send_bridge(handlers::org_webhooks(from_state(s), h, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::org_webhooks(from_state(s), h, r, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, b: axum::body::Bytes| {
-                send_bridge(handlers::org_webhooks_action(from_state(s), h, p, b))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, b: axum::body::Bytes| {
+                send_bridge(handlers::org_webhooks_action(from_state(s), h, r, p, b))
             }),
         )
         .route(
             "/-/org/{org}/sso",
-            get(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>| {
-                send_bridge(handlers::org_sso(from_state(s), h, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                send_bridge(handlers::org_sso(from_state(s), h, r, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, p: Path<_>, b: axum::body::Bytes| {
-                send_bridge(handlers::org_sso_action(from_state(s), h, p, b))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>, b: axum::body::Bytes| {
+                send_bridge(handlers::org_sso_action(from_state(s), h, r, p, b))
             }),
         )
         .route(
             "/-/instance",
-            get(|State(s): State<SharedState>, h: HeaderMap| {
-                send_bridge(handlers::instance_settings(from_state(s), h))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart| {
+                send_bridge(handlers::instance_settings(from_state(s), h, r))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
-                send_bridge(handlers::instance_settings_action(from_state(s), h, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, f: axum::extract::Form<_>| {
+                send_bridge(handlers::instance_settings_action(from_state(s), h, r, f))
             }),
         )
         .route(
             "/{slug}/-/settings",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::registry_settings(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::registry_settings(from_state(s), h, r, u, p))
             }),
         )
         .route(
             "/{slug}/-/settings/visibility",
-            post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::registry_visibility(from_state(s), h, u, p, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::registry_visibility(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
@@ -368,80 +369,80 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/{slug}/-/settings/serving",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::serving(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::serving(from_state(s), h, r, u, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, b: axum::body::Bytes| {
-                send_bridge(handlers::serving_post(from_state(s), h, u, p, b))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, b: axum::body::Bytes| {
+                send_bridge(handlers::serving_post(from_state(s), h, r, u, p, b))
             }),
         )
         .route(
             "/{slug}/-/settings/tokens",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, q: Query<_>| {
-                send_bridge(handlers::tokens(from_state(s), h, u, p, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::tokens(from_state(s), h, r, u, p, q))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::tokens_create(from_state(s), h, u, p, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::tokens_create(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/settings/tokens/revoke",
-            post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::tokens_revoke(from_state(s), h, u, p, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::tokens_revoke(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/settings/tokens/rotate",
-            post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::tokens_rotate(from_state(s), h, u, p, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::tokens_rotate(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/channels/{name}/console",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::channel_console(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::channel_console(from_state(s), h, r, u, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::channel_advance(from_state(s), h, u, p, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::channel_advance(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/channels/{name}/advance",
-            post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::channel_advance_direct(from_state(s), h, u, p, f))
+            post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::channel_advance_direct(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/keys",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, q: Query<_>| {
-                send_bridge(handlers::keys(from_state(s), h, u, p, q))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, q: Query<_>| {
+                send_bridge(handlers::keys(from_state(s), h, r, u, p, q))
             }),
         )
         .route(
             "/{slug}/-/keys/rotate",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::keys_rotate(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::keys_rotate(from_state(s), h, r, u, p))
             }),
         )
         .route(
             "/{slug}/-/publishes",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::publishes(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::publishes(from_state(s), h, r, u, p))
             }),
         )
         .route(
             "/{slug}/-/settings/config",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::config_edit(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::config_edit(from_state(s), h, r, u, p))
             })
-            .post(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
-                send_bridge(handlers::config_submit(from_state(s), h, u, p, f))
+            .post(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>, f: axum::extract::Form<_>| {
+                send_bridge(handlers::config_submit(from_state(s), h, r, u, p, f))
             }),
         )
         .route(
             "/{slug}/-/changes",
-            get(|State(s): State<SharedState>, h: HeaderMap, u: Uri, p: Path<_>| {
-                send_bridge(handlers::changes(from_state(s), h, u, p))
+            get(|State(s): State<SharedState>, h: HeaderMap, r: RequestStart, u: Uri, p: Path<_>| {
+                send_bridge(handlers::changes(from_state(s), h, r, u, p))
             }),
         )
         .with_state(into_state(deps))
