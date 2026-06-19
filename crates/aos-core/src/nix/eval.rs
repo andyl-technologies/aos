@@ -279,7 +279,15 @@ impl NativeFallbackEval {
 impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         match self.native.instantiate(file, attr) {
-            Ok(path) => Ok(path),
+            Ok(path) => {
+                let error: anyhow::Error = NativeEvalError::unsupported(format!(
+                    "native instantiation materialization for {}",
+                    path.display()
+                ))
+                .into();
+                warn_native_cli_fallback(&error, NativeCliFallbackReason::Unsupported);
+                self.fallback.instantiate(file, attr)
+            }
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -292,7 +300,15 @@ impl NixEval for NativeFallbackEval {
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         match self.native.instantiate_expr(expr) {
-            Ok(path) => Ok(path),
+            Ok(path) => {
+                let error: anyhow::Error = NativeEvalError::unsupported(format!(
+                    "native expression instantiation materialization for {}",
+                    path.display()
+                ))
+                .into();
+                warn_native_cli_fallback(&error, NativeCliFallbackReason::Unsupported);
+                self.fallback.instantiate_expr(expr)
+            }
             Err(error) => {
                 let Some(reason) = native_cli_fallback_reason(&error) else {
                     return Err(error);
@@ -561,11 +577,11 @@ mod tests {
 
         let error = candidate
             .instantiate_expr("1")
-            .expect_err("raw native instantiation should remain unsupported");
+            .expect_err("raw native instantiation should reject non-derivations");
 
         assert!(matches!(
             error.downcast_ref::<NativeEvalError>(),
-            Some(NativeEvalError::Unsupported { .. })
+            Some(NativeEvalError::Unsupported { .. } | NativeEvalError::EvalError { .. })
         ));
         Ok(())
     }

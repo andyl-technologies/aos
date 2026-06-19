@@ -2,10 +2,12 @@
 //!
 //! [`NixNative`] is the stable integration handle that will own the parser
 //! cache, symbol interner, hash-consing tables, and evaluator arena as Phase 1
-//! fills in. The current implementation is deliberately conservative: it never
-//! fabricates a derivation, while expression JSON evaluation is enabled only for
-//! the tree-walk subset that can be evaluated without derivation materialization.
+//! fills in. The current implementation is deliberately conservative: path-level
+//! instantiation is enabled only when the tree-walk oracle can compute a
+//! derivation's `drvPath`, while `.drv` file materialization and JSON
+//! expression evaluation stay limited to the implemented Phase-1 subset.
 
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -19,7 +21,7 @@ use crate::eval::{
 };
 use crate::runtime::builtins::lookup_builtin;
 use crate::syntax::{Span, parse_str};
-use crate::value::ValueTag;
+use crate::value::{Value, ValueTag};
 
 /// In-process RFC-0007 evaluator handle.
 #[derive(Debug, Clone)]
@@ -58,22 +60,40 @@ impl NixNative {
 
     /// Evaluates `attr` from `file` to a derivation path.
     ///
+    /// This path-level native instantiation is intentionally conservative: the
+    /// tree-walk oracle must evaluate the selected value and expose a `drvPath`
+    /// string. `.drv` file materialization remains a later Phase-1 slice.
+    ///
     /// # Errors
     ///
-    /// Returns [`NativeEvalError::Unsupported`] until the Phase-1 parser,
-    /// oracle, and derivation serializer are implemented.
-    pub fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
-        Err(NativeEvalError::unsupported("native instantiation").into())
+    /// Returns [`NativeEvalError::Unsupported`] when the selected expression
+    /// reaches an evaluator feature that is still outside the native tree-walk
+    /// subset. Returns [`NativeEvalError::EvalError`] when the selected value
+    /// does not expose a string `drvPath`.
+    pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
+        let attr_path = attr_path_selector(attr)?;
+        let file = nix_string_literal(&path_bytes(file)?)?;
+        let source = format!("(import {file}){attr_path}.drvPath");
+        self.eval_derivation_path_source(&source, None)
     }
 
     /// Evaluates a raw expression to a derivation path.
     ///
     /// # Errors
     ///
-    /// Returns [`NativeEvalError::Unsupported`] until expression
-    /// instantiation is implemented.
-    pub fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
-        Err(NativeEvalError::unsupported("native expression instantiation").into())
+    /// Returns [`NativeEvalError::Unsupported`] when the expression reaches an
+    /// evaluator feature that is still outside the native tree-walk subset.
+    /// Returns [`NativeEvalError::EvalError`] when the expression does not
+    /// evaluate to a derivation-like attribute set with a string `drvPath`.
+    pub fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
+        let source = derivation_path_wrapper_source(expr);
+        self.eval_derivation_path_source(
+            &source,
+            Some(WrappedSourceMap {
+                prefix_len: DRV_PATH_WRAPPER_PREFIX.len(),
+                expr_len: expr.len(),
+            }),
+        )
     }
 
     /// Evaluates a raw expression and renders it as strict JSON text.
@@ -86,18 +106,27 @@ impl NixNative {
     /// normal Nix evaluation semantics or cannot be represented as JSON.
     pub fn eval_expr(&self, expr: &str) -> Result<String> {
         let source = json_wrapper_source(expr);
+        let source_map = WrappedSourceMap {
+            prefix_len: JSON_WRAPPER_PREFIX.len(),
+            expr_len: expr.len(),
+        };
         let parsed = parse_str(&source).map_err(|source| {
-            unsupported_frontend_error("parse", source.to_string(), source.span(), expr.len())
+            unsupported_frontend_error("parse", source.to_string(), source.span(), Some(source_map))
         })?;
         let resolved = resolve(parsed).map_err(|source| {
-            unsupported_frontend_error("resolve", source.to_string(), source.span(), expr.len())
+            unsupported_frontend_error(
+                "resolve",
+                source.to_string(),
+                source.span(),
+                Some(source_map),
+            )
         })?;
         let ir = lower(resolved).map_err(|source| {
-            unsupported_frontend_error("lower", source.to_string(), source.span(), expr.len())
+            unsupported_frontend_error("lower", source.to_string(), source.span(), Some(source_map))
         })?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
         let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
-            .map_err(|error| native_eval_error(error, expr.len()))?;
+            .map_err(|error| native_eval_error(error, Some(source_map)))?;
         let string = outcome
             .heap()
             .get_string(outcome.value())
@@ -116,33 +145,68 @@ impl NixNative {
     pub fn name(&self) -> &'static str {
         "aos-nix"
     }
+
+    fn eval_derivation_path_source(
+        &self,
+        source: &str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Result<PathBuf> {
+        let parsed = parse_str(source).map_err(|source| {
+            unsupported_frontend_error("parse", source.to_string(), source.span(), source_map)
+        })?;
+        let resolved = resolve(parsed).map_err(|source| {
+            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
+        })?;
+        let ir = lower(resolved).map_err(|source| {
+            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
+        })?;
+        let outcome = eval_whnf_owned_with_options(&ir, self.options.clone())
+            .map_err(|error| native_eval_error(error, source_map))?;
+        derivation_path_from_value(outcome.value(), outcome.heap())
+    }
 }
 
 const JSON_WRAPPER_PREFIX: &str = "builtins.toJSON (\n";
 const JSON_WRAPPER_SUFFIX: &str = "\n)";
+const DRV_PATH_WRAPPER_PREFIX: &str = "(\n";
+const DRV_PATH_WRAPPER_SUFFIX: &str = "\n).drvPath";
 
 fn json_wrapper_source(expr: &str) -> String {
     format!("{JSON_WRAPPER_PREFIX}{expr}{JSON_WRAPPER_SUFFIX}")
+}
+
+fn derivation_path_wrapper_source(expr: &str) -> String {
+    format!("{DRV_PATH_WRAPPER_PREFIX}{expr}{DRV_PATH_WRAPPER_SUFFIX}")
+}
+
+#[derive(Clone, Copy)]
+struct WrappedSourceMap {
+    prefix_len: usize,
+    expr_len: usize,
 }
 
 fn unsupported_frontend_error(
     stage: &'static str,
     message: String,
     span: Span,
-    expr_len: usize,
+    source_map: Option<WrappedSourceMap>,
 ) -> NativeEvalError {
     NativeEvalError::Unsupported {
         feature: format!("native expression {stage} failure: {message}"),
-        span: source_span_from_wrapped(span, expr_len),
+        span: source_map.and_then(|source_map| source_span_from_wrapped(span, source_map)),
     }
 }
 
-fn native_eval_error(error: TreeWalkError, expr_len: usize) -> NativeEvalError {
+fn native_eval_error(
+    error: TreeWalkError,
+    source_map: Option<WrappedSourceMap>,
+) -> NativeEvalError {
     let kind = error.kind();
     if tree_walk_error_is_unsupported(&kind) {
         return NativeEvalError::Unsupported {
             feature: kind.to_string(),
-            span: source_span_from_wrapped(error.span(), expr_len),
+            span: source_map
+                .and_then(|source_map| source_span_from_wrapped(error.span(), source_map)),
         };
     }
 
@@ -160,6 +224,7 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
         | TreeWalkErrorKind::UnsupportedPrimOp { .. }
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
+        | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
         | TreeWalkErrorKind::UnsupportedAttrPath { .. }
         | TreeWalkErrorKind::UnsupportedNode { .. } => true,
@@ -168,6 +233,11 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
             actual: ValueTag::Attrs,
             ..
         } => matches!(*expected, "lambda" | "function"),
+        TreeWalkErrorKind::Type {
+            expected: "attrs",
+            actual: ValueTag::Lambda | ValueTag::Primop,
+            ..
+        } => true,
         _ => false,
     }
 }
@@ -238,6 +308,241 @@ fn ensure_native_json_subset(
     Ok(())
 }
 
+fn derivation_path_from_value(value: Value, heap: &crate::eval::EvalHeap) -> Result<PathBuf> {
+    let string = heap
+        .get_string(value)
+        .map_err(|source| NativeEvalError::EvalError {
+            message: format!("native instantiation did not produce a string drvPath: {source}"),
+        })?;
+    let path =
+        std::str::from_utf8(string.bytes()).map_err(|source| NativeEvalError::EvalError {
+            message: format!("native instantiation produced a non-UTF-8 drvPath: {source}"),
+        })?;
+    if !path.ends_with(".drv") {
+        return Err(NativeEvalError::EvalError {
+            message: format!("native instantiation produced a non-derivation path: {path}"),
+        }
+        .into());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn attr_path_selector(attr: &str) -> Result<String> {
+    let mut selector = String::new();
+    for segment in parse_attr_path_segments(attr)? {
+        selector.push('.');
+        selector.push_str(&nix_string_literal(&segment)?);
+    }
+    Ok(selector)
+}
+
+fn parse_attr_path_segments(attr: &str) -> Result<Vec<Vec<u8>>> {
+    if attr.is_empty() {
+        return Err(NativeEvalError::EvalError {
+            message: "native instantiation attribute path must not be empty".to_string(),
+        }
+        .into());
+    }
+
+    let bytes = attr.as_bytes();
+    let mut segments = Vec::new();
+    let mut cursor = 0;
+
+    while cursor < bytes.len() {
+        let (segment, next_cursor) = if bytes[cursor] == b'"' {
+            parse_quoted_attr_segment(attr, cursor)?
+        } else {
+            parse_bare_attr_segment(attr, cursor)?
+        };
+        segments.push(segment);
+        cursor = next_cursor;
+
+        if cursor == bytes.len() {
+            break;
+        }
+        if bytes[cursor] != b'.' {
+            return Err(NativeEvalError::EvalError {
+                message: format!("native instantiation attribute path has invalid syntax: {attr}"),
+            }
+            .into());
+        }
+        cursor += 1;
+        if cursor == bytes.len() {
+            return Err(NativeEvalError::EvalError {
+                message: format!(
+                    "native instantiation attribute path has an empty segment: {attr}"
+                ),
+            }
+            .into());
+        }
+    }
+
+    Ok(segments)
+}
+
+fn parse_bare_attr_segment(attr: &str, start: usize) -> Result<(Vec<u8>, usize)> {
+    let bytes = attr.as_bytes();
+    let mut cursor = start;
+    while cursor < bytes.len() && bytes[cursor] != b'.' {
+        if bytes[cursor] == b'"' || bytes[cursor].is_ascii_whitespace() {
+            return Err(NativeEvalError::EvalError {
+                message: format!("native instantiation attribute path has invalid syntax: {attr}"),
+            }
+            .into());
+        }
+        cursor += 1;
+    }
+    if cursor == start {
+        return Err(NativeEvalError::EvalError {
+            message: format!("native instantiation attribute path has an empty segment: {attr}"),
+        }
+        .into());
+    }
+    if !is_valid_bare_attr_segment(&bytes[start..cursor]) {
+        return Err(NativeEvalError::EvalError {
+            message: format!(
+                "native instantiation attribute path has an invalid bare segment: {attr}"
+            ),
+        }
+        .into());
+    }
+    Ok((bytes[start..cursor].to_vec(), cursor))
+}
+
+fn is_valid_bare_attr_segment(segment: &[u8]) -> bool {
+    let Some((first, rest)) = segment.split_first() else {
+        return false;
+    };
+    if !is_nix_ident_start(*first) {
+        return false;
+    }
+    if !rest.iter().copied().all(is_nix_ident_continue) {
+        return false;
+    }
+    segment == b"or" || !is_reserved_nix_keyword(segment)
+}
+
+fn is_nix_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_nix_ident_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'\'' | b'-')
+}
+
+fn is_reserved_nix_keyword(segment: &[u8]) -> bool {
+    matches!(
+        segment,
+        b"let" | b"in" | b"if" | b"then" | b"else" | b"with" | b"rec" | b"inherit" | b"assert"
+    )
+}
+
+fn parse_quoted_attr_segment(attr: &str, start: usize) -> Result<(Vec<u8>, usize)> {
+    let bytes = attr.as_bytes();
+    let mut out = Vec::new();
+    let mut cursor = start + 1;
+
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => return Ok((out, cursor + 1)),
+            b'$' if bytes.get(cursor + 1) == Some(&b'{') => {
+                return Err(NativeEvalError::Unsupported {
+                    feature: "dynamic interpolation in native instantiation attribute path"
+                        .to_string(),
+                    span: None,
+                }
+                .into());
+            }
+            b'\\' => {
+                cursor += 1;
+                let Some(escaped) = bytes.get(cursor).copied() else {
+                    return Err(NativeEvalError::EvalError {
+                        message: format!(
+                            "native instantiation attribute path has an unterminated escape: {attr}"
+                        ),
+                    }
+                    .into());
+                };
+                match escaped {
+                    b'n' => out.push(b'\n'),
+                    b'r' => out.push(b'\r'),
+                    b't' => out.push(b'\t'),
+                    b'\\' | b'"' => out.push(escaped),
+                    b'$' if bytes.get(cursor + 1) == Some(&b'{') => {
+                        out.extend_from_slice(b"${");
+                        cursor += 1;
+                    }
+                    _ => {
+                        return Err(NativeEvalError::Unsupported {
+                            feature: "unsupported escape in native instantiation attribute path"
+                                .to_string(),
+                            span: None,
+                        }
+                        .into());
+                    }
+                }
+            }
+            byte => out.push(byte),
+        }
+        cursor += 1;
+    }
+
+    Err(NativeEvalError::EvalError {
+        message: format!("native instantiation attribute path has an unterminated string: {attr}"),
+    }
+    .into())
+}
+
+fn path_bytes(path: &Path) -> Result<Vec<u8>> {
+    let bytes = path.as_os_str().as_bytes();
+    if path.is_absolute() {
+        Ok(bytes.to_vec())
+    } else {
+        let mut out = std::env::current_dir()
+            .map_err(|source| NativeEvalError::EvalError {
+                message: format!(
+                    "failed to resolve current directory for native instantiation: {source}"
+                ),
+            })?
+            .into_os_string()
+            .into_vec();
+        out.push(b'/');
+        out.extend_from_slice(bytes);
+        Ok(out)
+    }
+}
+
+fn nix_string_literal(bytes: &[u8]) -> Result<String> {
+    let mut out = String::new();
+    out.push('"');
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => out.push_str(r"\\"),
+            b'"' => out.push_str("\\\""),
+            b'\n' => out.push_str(r"\n"),
+            b'\r' => out.push_str(r"\r"),
+            b'\t' => out.push_str(r"\t"),
+            b'$' if bytes.get(cursor + 1) == Some(&b'{') => {
+                out.push_str(r"\${");
+                cursor += 1;
+            }
+            0x20..=0x7e => out.push(char::from(bytes[cursor])),
+            _ => {
+                return Err(NativeEvalError::Unsupported {
+                    feature: "non-ASCII path or attribute segment in native instantiation"
+                        .to_string(),
+                    span: None,
+                }
+                .into());
+            }
+        }
+        cursor += 1;
+    }
+    out.push('"');
+    Ok(out)
+}
+
 fn builtins_global_cli_fallback_feature(
     ir: &Ir,
     receiver_index: usize,
@@ -306,15 +611,22 @@ fn static_single_attr_path<'a>(ir: &'a Ir, path: IrAttrPathId) -> Option<&'a [u8
 }
 
 fn unsupported_native_node(feature: &'static str, span: Span, expr_len: usize) -> NativeEvalError {
+    let source_map = WrappedSourceMap {
+        prefix_len: JSON_WRAPPER_PREFIX.len(),
+        expr_len,
+    };
     NativeEvalError::Unsupported {
         feature: feature.to_string(),
-        span: source_span_from_wrapped(span, expr_len),
+        span: source_span_from_wrapped(span, source_map),
     }
 }
 
-fn source_span_from_wrapped(span: Span, expr_len: usize) -> Option<crate::error::SrcSpan> {
-    let prefix_len = u32::try_from(JSON_WRAPPER_PREFIX.len()).ok()?;
-    let expr_len = u32::try_from(expr_len).ok()?;
+fn source_span_from_wrapped(
+    span: Span,
+    source_map: WrappedSourceMap,
+) -> Option<crate::error::SrcSpan> {
+    let prefix_len = u32::try_from(source_map.prefix_len).ok()?;
+    let expr_len = u32::try_from(source_map.expr_len).ok()?;
     let expr_end = prefix_len.checked_add(expr_len)?;
     if span.start < prefix_len || span.end > expr_end {
         return None;
@@ -335,7 +647,9 @@ const fn src_span(span: Span) -> crate::error::SrcSpan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::process::Command;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn native_expression_eval_renders_strict_json() -> Result<()> {
@@ -349,6 +663,161 @@ mod tests {
             r#"{"a":[true,null,"x"],"b":1}"#
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_expr_returns_drv_path() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        let path = native.instantiate_expr(
+            r#"derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+        )?;
+
+        assert_eq!(
+            path,
+            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_imports_file_attr_path() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let dir = unique_temp_dir("aos-nix-native-instantiate");
+        fs::create_dir_all(&dir)?;
+        let file = dir.join("default.nix");
+        fs::write(
+            &file,
+            r#"{
+              pkgs.hello = derivationStrict {
+                name = "base";
+                system = "x86_64-linux";
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+            }"#,
+        )?;
+
+        let path = native.instantiate(&file, "pkgs.hello")?;
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            path,
+            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_accepts_quoted_attr_path_segments() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let dir = unique_temp_dir("aos-nix-native-instantiate-quoted");
+        fs::create_dir_all(&dir)?;
+        let file = dir.join("default.nix");
+        fs::write(
+            &file,
+            r#"{
+              "pkgs.with.dot".hello = derivationStrict {
+                name = "base";
+                system = "x86_64-linux";
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+            }"#,
+        )?;
+
+        let path = native.instantiate(&file, r#""pkgs.with.dot".hello"#)?;
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(
+            path,
+            PathBuf::from("/nix/store/v1z1rms3n03v2j8icjwqz7w48w624adi-base.drv")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_function_file_stays_fallback_eligible() -> Result<()> {
+        let native = NixNative::new(0)?;
+        let dir = unique_temp_dir("aos-nix-native-instantiate-function");
+        fs::create_dir_all(&dir)?;
+        let file = dir.join("default.nix");
+        fs::write(
+            &file,
+            r#"{ system ? "x86_64-linux" }: {
+              pkgs.hello = derivationStrict {
+                name = "base";
+                inherit system;
+                builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+              };
+            }"#,
+        )?;
+
+        let error = native
+            .instantiate(&file, "pkgs.hello")
+            .expect_err("function-valued files should fall back to C++ Nix for now");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_attr_path_selector_rejects_invalid_bare_segments() -> Result<()> {
+        for attr in ["pkgs;hello", "1pkg.hello", "let.hello", "pkgs."] {
+            let error = attr_path_selector(attr).expect_err("invalid attr path should fail");
+            assert!(matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { .. })
+            ));
+        }
+
+        assert_eq!(
+            attr_path_selector("or.foo-bar.x'")?,
+            r#"."or"."foo-bar"."x'""#
+        );
+        assert_eq!(
+            attr_path_selector(r#""pkgs.with.dot".hello"#)?,
+            r#"."pkgs.with.dot"."hello""#
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_string_literals_escape_interpolation_openers() -> Result<()> {
+        assert_eq!(nix_string_literal(b"/tmp/${name}")?, r#""/tmp/\${name}""#);
+        assert_eq!(
+            attr_path_selector(r#""a\${b}".hello"#)?,
+            r#"."a\${b}"."hello""#
+        );
+
+        let error = attr_path_selector(r#""a${b}""#)
+            .expect_err("dynamic attr-path interpolation should stay unsupported");
+        assert!(matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::Unsupported { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_rejects_non_derivations() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        let error = native
+            .instantiate_expr("1")
+            .expect_err("non-derivations should not instantiate");
+
+        assert!(matches!(
+            error.downcast_ref::<NativeEvalError>(),
+            Some(NativeEvalError::EvalError { .. })
+        ));
         Ok(())
     }
 
@@ -547,5 +1016,13 @@ mod tests {
         ));
         assert_eq!(native.name(), "aos-nix");
         Ok(())
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
     }
 }
