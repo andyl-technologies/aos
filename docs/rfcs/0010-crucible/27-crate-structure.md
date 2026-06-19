@@ -51,7 +51,7 @@ split.)
                        temporal graph, event log; the pure reduction
 
   L2  QEMU INTEGRATION
-    crucible-qemu        host-side launch/control of QEMU; the backend trait impl
+    crucible-qemu        host-side launch/control of QEMU; concrete VM driver
     crucible-qemu-plugin in-VM cdylib (-plugin); owns virtual-time control + hooks
     crucible-guest       OPTIONAL in-guest white-box agent (doorbell client)
 
@@ -75,7 +75,7 @@ One-line responsibilities:
 | L1 | `crucible-shmem` | The `#[repr(C)]` shared-memory layout (per-node clocks, status, SPSC frame queues): the single source of truth shared with the C plugin patches. |
 | L1 | `crucible-protocol` | The host↔plugin IPC protocol: message framing, explicit version field, encode/decode, golden vectors. |
 | L1 | `crucible-device` | Disk (CoW overlay), 9p (read-only, path-hashed QIDs), and net-link I/O sub-nodes with deterministic completion events. |
-| L2 | `crucible-qemu` | Host-side QEMU process launch/control and the concrete `Backend` implementation that drives a real VM. |
+| L2 | `crucible-qemu` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
 | L2 | `crucible-qemu-plugin` | The in-VM `cdylib` loaded via `-plugin`; owns virtual-time control (`qemu_plugin_request_time_control`) and the device/channel callbacks. |
 | L2 | `crucible-guest` | OPTIONAL in-guest agent for white-box markers via the doorbell; never required for any core capability (`G-3`). |
 | L3 | `crucible` | The engine: scenario model, the single authoritative scheduler, fault injection, assertion evaluation, temporal graph, event log — the pure `reduce`. |
@@ -100,9 +100,9 @@ One-line responsibilities:
                           crucible            (L3 engine)
                          /    │    \
                         /     │     \
-        crucible-qemu ◄┘      │      └► (engine uses L2 only via Backend trait;
-              │               │           the trait is declared in crucible,
-              ▼               ▼           impl'd in crucible-qemu)
+        crucible-qemu         │      └► (engine uses VM drivers only via
+              │               │           Backend trait adapters declared
+              ▼               ▼           outside lower-layer crates)
         crucible-device  crucible-protocol
               │               │
               └──────┬────────┘
@@ -121,9 +121,11 @@ One-line responsibilities:
 The two L2 in-VM crates (`crucible-qemu-plugin`, `crucible-guest`) deliberately
 depend **only on L1** (the ABI + protocol), never on the engine: they run inside
 a different address space (or process) and must share *only* the wire/memory
-contract. The host-side `crucible-qemu` depends on L1 and on the engine's
-`Backend` trait, but the engine does not depend on `crucible-qemu` (it depends on
-the trait it itself declares — see `CRATE-6`).
+contract. The host-side `crucible-qemu` is likewise limited to L1/L2 dependencies
+in the Cargo graph. Higher-layer wiring may wrap its concrete host driver in the
+engine's `Backend` trait, but this MUST NOT introduce a `crucible-qemu` →
+`crucible` Cargo dependency; the layer lint deliberately rejects that upward edge
+(see `CRATE-6`).
 
 - **[CRATE-1]** The AOS Rust workspace's Crucible package set MUST contain
   exactly the thirteen runtime crates above, partitioned into the five layers
@@ -247,11 +249,13 @@ bytes' transport into the VM (the plugin/shmem path).
 
 **`crucible-qemu`** owns **host-side QEMU**: building the argv (`-icount
 shift=N`, `-plugin`, `-smp 1`, sealed-entropy flags), launching and supervising
-the process, mapping the shmem region, and implementing the engine's `Backend`
-trait (`CRATE-6`) so the engine can advance a VM, read its fingerprint, snapshot
-and restore it — all without the engine knowing it is QEMU. *Not in it:* the
-scheduler, the temporal graph, any decision-making about *which* node to advance
-(all L3); the in-VM time-control logic (that is the plugin).
+the process, mapping the shmem region, and exposing a concrete host-driver API
+that can advance a VM, read its fingerprint, snapshot, and restore it. The
+engine-facing `Backend` trait remains in `crucible` (`CRATE-6`) and is adapted by
+higher-layer wiring that may depend on both crates; `crucible-qemu` itself MUST
+NOT depend on `crucible`. *Not in it:* the scheduler, the temporal graph, any
+decision-making about *which* node to advance (all L3); the in-VM time-control
+logic (that is the plugin).
 
 **`crucible-qemu-plugin`** owns the **in-VM `cdylib`**
 ([`12-qemu-plugin.md`](12-qemu-plugin.md)): the QEMU TCG plugin `extern "C"`
@@ -283,11 +287,13 @@ the **temporal graph** (checkpoint DAG, CoW, the replay oracle,
 ([`05-execution-model.md`](05-execution-model.md)).
 
 The engine has **no QEMU knowledge**: it talks to L2 only through a `Backend`
-trait (`CRATE-6`) that it declares itself. The concrete QEMU backend lives in
-`crucible-qemu`; an in-process test double lives behind the same trait (§4,
-`CRATE-7`). This is the load-bearing boundary: it is *why* `crucible` can be
-`#![forbid(unsafe_code)]` and `miri`-clean, and *why* `gate:layer0-determinism`
-and the engine-level gates can run with no QEMU present.
+trait (`CRATE-6`) that it declares itself. The concrete QEMU driver lives in
+`crucible-qemu`; a higher-layer adapter wraps that driver in the engine trait
+without adding a lower-to-higher Cargo edge. An in-process test double lives
+behind the same trait (§4, `CRATE-7`). This is the load-bearing boundary: it is
+*why* `crucible` can be `#![forbid(unsafe_code)]` and `miri`-clean, and *why*
+`gate:layer0-determinism` and the engine-level gates can run with no QEMU
+present.
 
 - **[CRATE-6]** The engine (`crucible`) MUST interact with any VM backend solely
   through a `Backend` trait that it declares; the engine MUST NOT name
@@ -332,7 +338,7 @@ The single most important seam is the `Backend` trait (`CRATE-6`). It has two
 implementations, selected by Cargo features so that the engine's own test suites
 need no QEMU:
 
-- The **real backend** (`crucible-qemu`) drives a patched QEMU process.
+- The **real QEMU driver** (`crucible-qemu`) drives a patched QEMU process.
 - The **in-process double** (`SimBackend`) is a deterministic model of a VM-like
   node — it advances an icount, returns a deterministic fingerprint, accepts
   delivered inputs, and snapshots/restores its small state — entirely in SAFE
@@ -350,8 +356,8 @@ default = []
 # Compile the in-process deterministic backend (SimBackend) used by the
 # layer-0/engine determinism gates. Pure SAFE Rust; no QEMU.
 test-double = []
-# Compile the engine against the real QEMU backend trait object wiring.
-# (The concrete impl lives in crucible-qemu; this only flips engine glue.)
+# Compile the engine-side hooks used by higher-layer QEMU adapter wiring.
+# The concrete driver lives in crucible-qemu; this only flips engine glue.
 qemu-backend = []
 ```
 
@@ -616,7 +622,7 @@ Crucible needs and marks the seam.
   on the nine SAFE crates, `#![deny(unsafe_op_in_unsafe_fn)]` on the four UNSAFE
   crates, with a CI lint asserting the attribute on every crate root. — satisfies
   [CRATE-4], [CRATE-5]; spec §2.
-- [ ] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
+- [x] **T-CRATE-3** Implement the layer-dependency + acyclicity lint that reads
   each crate's `[dependencies]` and rejects any upward edge or cycle, including
   the L2-in-VM-crates-depend-only-on-L1 rule. — satisfies [CRATE-2], [CRATE-3];
   spec §1.
