@@ -23,7 +23,9 @@ use crate::eval::{
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_whnf_owned_with_options_and_realizer,
 };
-use crate::runtime::builtins::{is_unshadowable_global_name, lookup_builtin};
+use crate::runtime::builtins::{
+    Builtin, BuiltinAvailability, is_unshadowable_global_name, lookup_builtin,
+};
 use crate::syntax::{Span, parse_str};
 use crate::value::{Value, ValueTag};
 
@@ -754,19 +756,16 @@ fn builtins_global_native_json_fallback_feature(
             StaticSingleAttrPath::Invalid => continue,
             StaticSingleAttrPath::NotSingle => return Some("CLI-sensitive builtin evaluation"),
         };
-        if name == b"currentSystem"
-            && options.eval_mode() != EvalMode::Pure
-            && options.current_system().is_some()
-        {
-            selected_known_native_builtin = true;
-            continue;
-        }
         if name == b"builtins" {
             return Some("CLI-sensitive builtin evaluation");
         }
         let Some(builtin) = lookup_builtin(name) else {
             return Some("CLI-sensitive builtin evaluation");
         };
+        if ambient_builtin_constant_available_for_native_json(builtin, options) {
+            selected_known_native_builtin = true;
+            continue;
+        }
         if let Some(feature) = builtin.native_cli_fallback_feature() {
             return Some(feature);
         }
@@ -787,20 +786,40 @@ fn builtin_attr_native_json_fallback_feature(
     name: &[u8],
     options: &TreeWalkOptions,
 ) -> Option<&'static str> {
-    if name == b"currentSystem"
-        && options.eval_mode() != EvalMode::Pure
-        && options.current_system().is_some()
-    {
-        return None;
-    }
     if name == b"builtins" {
         return Some("CLI-sensitive builtin evaluation");
     }
-    builtin_native_cli_fallback_feature(name)
+    let builtin = lookup_builtin(name)?;
+    if ambient_builtin_constant_available_for_native_json(builtin, options) {
+        return None;
+    }
+    builtin.native_cli_fallback_feature()
 }
 
 fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
     lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
+}
+
+fn builtin_available_in_options(builtin: Builtin, options: &TreeWalkOptions) -> bool {
+    match builtin.availability() {
+        BuiltinAvailability::Always => true,
+        BuiltinAvailability::ImpureCurrentSystem => {
+            options.eval_mode() != EvalMode::Pure && options.current_system().is_some()
+        }
+        BuiltinAvailability::ImpureCurrentTime => {
+            options.eval_mode() != EvalMode::Pure && options.current_time().is_some()
+        }
+    }
+}
+
+fn ambient_builtin_constant_available_for_native_json(
+    builtin: Builtin,
+    options: &TreeWalkOptions,
+) -> bool {
+    match builtin.availability() {
+        BuiltinAvailability::ImpureCurrentSystem => builtin_available_in_options(builtin, options),
+        BuiltinAvailability::Always | BuiltinAvailability::ImpureCurrentTime => false,
+    }
 }
 
 fn native_instantiation_cli_fallback_feature(
@@ -837,12 +856,14 @@ fn native_instantiation_cli_fallback_feature(
 }
 
 fn builtin_instantiation_attr_is_cli_sensitive(name: &[u8], options: &TreeWalkOptions) -> bool {
-    match name {
-        b"currentSystem" => {
-            options.eval_mode() != EvalMode::Pure && options.current_system().is_none()
+    let Some(builtin) = lookup_builtin(name) else {
+        return false;
+    };
+    match builtin.availability() {
+        BuiltinAvailability::Always => false,
+        BuiltinAvailability::ImpureCurrentSystem | BuiltinAvailability::ImpureCurrentTime => {
+            options.eval_mode() != EvalMode::Pure && !builtin_available_in_options(builtin, options)
         }
-        b"currentTime" => options.eval_mode() != EvalMode::Pure && options.current_time().is_none(),
-        _ => false,
     }
 }
 
