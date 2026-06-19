@@ -504,7 +504,7 @@ reading order is in the [`README.md`](README.md).
   `crucible-cli`) as empty, compiling crates with their `//!` crate docs. —
   satisfies [ARCH-3]; spec §4,
   [`27-crate-structure.md`](27-crate-structure.md).
-- [ ] **T-ARCH-2** Encode the layer dependency rule as an enforced check (a CI
+- [x] **T-ARCH-2** Encode the layer dependency rule as an enforced check (a CI
   lint that forbids any upward dependency between layers). — satisfies [ARCH-3];
   spec §4, [`27-crate-structure.md`](27-crate-structure.md).
 - [ ] **T-ARCH-3** Define the core type spine — `Configuration`, `ScenarioDef`
