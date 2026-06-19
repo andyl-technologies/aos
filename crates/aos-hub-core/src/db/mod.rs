@@ -3427,7 +3427,11 @@ impl Database {
                 }
             }
         }
-        crate::url_guard::is_safe_remote_url(&frontend_probe_url(domain))
+        // Hostnames are case-insensitive: store lowercase so a request `Host`
+        // (which the dispatcher lowercases) matches, and the UNIQUE(domain,
+        // base_path) constraint can't be dodged by case.
+        let domain = domain.to_ascii_lowercase();
+        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
             .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
         self.backend
             .execute_insert(
@@ -3512,7 +3516,10 @@ impl Database {
                 }
             }
         }
-        crate::url_guard::is_safe_remote_url(&frontend_probe_url(domain))
+        // Hostnames are case-insensitive: store lowercase so the dispatcher's
+        // (lowercased) request `Host` matches and the UNIQUE constraint holds.
+        let domain = domain.to_ascii_lowercase();
+        crate::url_guard::is_safe_remote_url(&frontend_probe_url(&domain))
             .with_context(|| format!("rejecting frontend domain '{domain}'"))?;
         self.backend
             .execute_insert(
@@ -3580,6 +3587,31 @@ impl Database {
              FROM frontends WHERE cache_id = ?1
              ORDER BY consumer_priority DESC, domain",
                 &vals![cache_id],
+            )
+            .await?;
+        rows.iter().map(row_to_frontend).collect()
+    }
+
+    /// List the frontends bound to a serving `domain`, most specific
+    /// (longest `base_path`) first.
+    ///
+    /// Used by the request-time domain dispatcher to map an incoming `Host` to
+    /// the registry/cache it serves; the caller picks the first row whose
+    /// `base_path` prefixes the request path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn frontends_by_domain(&self, domain: &str) -> Result<Vec<FrontendRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, registry_id, cache_id, domain, base_path, mode, serves_git,
+                    serves_cache, serves_web, consumer_priority, advertised,
+                    proxy_config, is_primary, created_at
+             FROM frontends WHERE domain = ?1
+             ORDER BY LENGTH(base_path) DESC, consumer_priority DESC",
+                &vals![domain],
             )
             .await?;
         rows.iter().map(row_to_frontend).collect()

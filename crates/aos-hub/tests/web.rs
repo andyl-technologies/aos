@@ -799,3 +799,179 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
     let (status, _, _) = get(&app, "/priv-cache/aaaa.narinfo").await;
     assert_ne!(status, StatusCode::OK, "private cache must gate anonymous reads");
 }
+
+/// Issue a GET carrying a `Host` header (domain-routed frontend dispatch).
+async fn get_with_host(
+    app: &axum::Router,
+    host: &str,
+    uri: &str,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::HOST, host)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// A request arriving on a serving frontend's domain is dispatched to the bound
+/// cache by `Host` (no slug in the path), and the `serves_cache` subset gate
+/// rejects a frontend that does not advertise the cache surface.
+#[tokio::test]
+async fn frontend_domain_routes_to_bound_cache_and_gates_on_serves_cache() {
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", root.path().to_str().unwrap())
+        .await
+        .unwrap();
+    // A public cache served by its own domain (prefix `pc`).
+    let cache = db
+        .create_cache(
+            Some(org),
+            "ext-cache",
+            "Ext",
+            binding,
+            "pc",
+            None,
+            "public",
+            40,
+            "none",
+            true,
+        )
+        .await
+        .unwrap();
+    std::fs::create_dir_all(root.path().join("pc")).unwrap();
+    std::fs::write(
+        root.path().join("pc/aaaa.narinfo"),
+        b"StorePath: /nix/store/aaaa-x-1.0\n",
+    )
+    .unwrap();
+    // A proxied frontend that serves the cache surface on `cache.example.test`.
+    db.create_cache_frontend(cache, "cache.example.test", "/", "proxied", true, 100, true)
+        .await
+        .unwrap();
+    // A second proxied frontend on `nocache.example.test` that does NOT serve
+    // the cache surface (serves_cache = false).
+    db.create_cache_frontend(cache, "nocache.example.test", "/", "proxied", false, 100, true)
+        .await
+        .unwrap();
+
+    let app = router(Arc::new(
+        AppState::new(Arc::clone(&db), "http://hub.example.test:8420".into()).await,
+    ))
+    .await;
+
+    // Host-routed: the narinfo is served off the frontend domain with no slug in
+    // the path (rewritten internally to `/ext-cache/aaaa.narinfo`).
+    let (status, _, body) = get_with_host(&app, "cache.example.test", "/aaaa.narinfo").await;
+    assert_eq!(status, StatusCode::OK, "frontend domain should serve the cache");
+    assert!(
+        body.contains("StorePath: /nix/store/aaaa-x-1.0"),
+        "served the bound cache's narinfo: {body}"
+    );
+
+    // The generated nix-cache-info is served off the domain too.
+    let (status, _, body) = get_with_host(&app, "cache.example.test", "/nix-cache-info").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("StoreDir: /nix/store"), "{body}");
+
+    // serves_cache = false: the cache surface is gated (404) on that domain.
+    let (status, _, _) = get_with_host(&app, "nocache.example.test", "/aaaa.narinfo").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a frontend that does not serve the cache must 404 its surface"
+    );
+
+    // An unknown host is not a frontend: it falls through to normal slug routing
+    // and is never served the bound cache's bytes (here the single-segment path
+    // hits the `/{slug}` -> `/{slug}/` canonical redirect, i.e. not a 200 serve).
+    let (status, _, body) = get_with_host(&app, "stranger.example.test", "/aaaa.narinfo").await;
+    assert_ne!(status, StatusCode::OK, "unknown host must not serve the cache");
+    assert!(
+        !body.contains("StorePath: /nix/store/aaaa-x-1.0"),
+        "unknown host must not leak the cache's narinfo"
+    );
+
+    // The domain match is case-insensitive: a frontend created with mixed case
+    // is reached by a lowercase request `Host` (domains are stored lowercased).
+    db.create_cache_frontend(cache, "Mixed.Example.Test", "/", "proxied", true, 100, true)
+        .await
+        .unwrap();
+    let (status, _, _) = get_with_host(&app, "mixed.example.test", "/aaaa.narinfo").await;
+    assert_eq!(status, StatusCode::OK, "domain match must be case-insensitive");
+
+    // base_path matches on a segment boundary: a frontend at `/v1` does not
+    // capture `/v1x/...`.
+    db.create_cache_frontend(cache, "based.example.test", "/v1", "proxied", true, 100, true)
+        .await
+        .unwrap();
+    let (status, _, body) = get_with_host(&app, "based.example.test", "/v1/aaaa.narinfo").await;
+    assert_eq!(status, StatusCode::OK, "base_path /v1 should serve /v1/<path>");
+    assert!(body.contains("StorePath"), "{body}");
+    let (status, _, _) = get_with_host(&app, "based.example.test", "/v1x/aaaa.narinfo").await;
+    assert_ne!(status, StatusCode::OK, "base_path /v1 must not capture /v1x/...");
+}
+
+/// The `serves_*` subset gate classifies on the *decoded* path, so a
+/// percent-encoded token (e.g. `%48EAD` for `HEAD`) cannot dodge the gate and
+/// reach the machine surface a downstream extractor would decode and serve.
+#[tokio::test]
+async fn frontend_subset_gate_resists_percent_encoded_surface_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let (app, db) = serve_fixture(&surface, &fixture).await;
+
+    // A web-only frontend over the registry: it serves browse pages but NOT the
+    // git machine surface (serves_git = false, serves_web = true).
+    let reg = db.registry_by_slug("demo").await.unwrap().unwrap();
+    db.create_frontend(
+        reg.id,
+        "reg.example.test",
+        "/",
+        "proxied",
+        false, // serves_git
+        false, // serves_cache
+        true,  // serves_web
+        100,
+        true,
+    )
+    .await
+    .unwrap();
+
+    // Browse home is served (serves_web).
+    let (status, _, _) = get_with_host(&app, "reg.example.test", "/").await;
+    assert_eq!(status, StatusCode::OK, "web-only frontend serves browse");
+
+    // The git surface is gated: `/HEAD` is a machine path → serves_git=false → 404.
+    let (status, _, _) = get_with_host(&app, "reg.example.test", "/HEAD").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "git surface must be gated");
+
+    // Regression: the same path percent-encoded (`%48EAD`) must STILL be gated —
+    // it must not be misclassified as a web page and bypass `serves_git`.
+    let (status, _, body) = get_with_host(&app, "reg.example.test", "/%48EAD").await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "encoded machine path must not bypass the serves_git gate"
+    );
+    assert!(
+        !body.contains("ref:"),
+        "encoded path must not leak the git HEAD pointer: {body}"
+    );
+}

@@ -501,7 +501,7 @@ the current spec. Phases are orderable; A lands first, E last.
       `cache_gc_roots` (with `expires_at`) SoR tables; `cache_objects`,
       `cache_usage`, `cache_gc_runs` derived tables; indexed `LIKE` search over
       `cache_objects(store_name)` (FTS5 ranking deferred to D-web for D1 safety).
-- [~] Migration: add nullable `frontends.cache_id`; enforce exactly one of
+- [x] Migration: add nullable `frontends.cache_id`; enforce exactly one of
       `registry_id`/`cache_id`; gate the cache facade on `serves_cache`. **Done:**
       v24 rebuilds `frontends` so `registry_id`/`cache_id` are both nullable with a
       `CHECK ((registry_id IS NULL) <> (cache_id IS NULL))`; `FrontendRecord` carries
@@ -511,13 +511,27 @@ the current spec. Phases are orderable; A lands first, E last.
       **and validated on the D1 path** — the worker-e2e migrates from the
       `schema dump` on miniflare's SQLite engine and the cache surface still serves
       green.
-      **Remaining:** a per-`serves_cache` *gate* applies only to a
-      domain-routed multiplexing facade (where one domain serves a chosen surface
-      subset); the hub currently serves a cache by its own slug, so the slug *is*
-      the cache and there is no frontend to gate against on that path. The
-      streamed-proxy decision does consult the cache's primary frontend
-      (`proxy_config.stream`), so the frontend model is wired into serving; the
-      `serves_cache` subset gate lands with the domain-routed facade (future).
+      **Domain-routed serving + the `serves_cache` gate are now implemented**
+      (RFC-0004 "Frontends"): a shared dispatcher (`connect::rewrite_for_frontend`,
+      backed by `Database::frontends_by_domain`) resolves an incoming `Host` to the
+      registry/cache a *proxied* frontend binds — a Direct frontend CNAMEs to the
+      origin and never reaches the hub — strips its `base_path` (segment-aligned),
+      enforces the frontend's `serves_git`/`serves_cache`/`serves_web` subset
+      (`404` for a surface it doesn't advertise; classification runs on the
+      percent-*decoded* path so an encoded token can't dodge it), and rewrites the
+      request to the internal `/{slug}/…` identity so every existing handler serves
+      it unchanged. Both shells run the *same* decision: the native hub via a
+      `with_frontend_dispatch` middleware (outer-router `fallback_service` so the
+      rewrite precedes routing), the Worker via the request bridge (its `!Send`
+      services preclude `from_fn`). Frontend domains are stored lowercased so a
+      mixed-case host matches and the `UNIQUE(domain, base_path)` constraint can't
+      be dodged by case. Integration-tested (cache served by `Host` with no slug in
+      the path; `serves_cache=false` 404s; case-insensitive host; base_path segment
+      boundary; the percent-encoded `serves_git` bypass is gated).
+      **Remaining (own follow-up, RFC-sized):** multi-domain TLS/cert
+      *provisioning* — the Worker can now bind several `--custom-domain` routes;
+      the native hub serving N custom domains needs a fronting SNI proxy or
+      in-hub ACME, which is environment-coupled and out of this subsystem's scope.
 - [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/
       update/soft-delete/delete cache, link/unlink/list links, set/get GC policy,
       pin/renew/unpin/list roots, cache-object upsert/get/list/search/delete,

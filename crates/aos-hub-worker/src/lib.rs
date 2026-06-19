@@ -196,7 +196,7 @@ mod entry {
     /// Returns an error if a binding is missing, the `HUB_JWT_SECRET`,
     /// `HUB_SEAL_KEY`, or `HUB_EXTERNAL_URL` secret/var is absent or empty, or
     /// the rate-limiter table cannot be ensured.
-    async fn router_from(env: &Env) -> Result<Router> {
+    async fn router_from(env: &Env) -> Result<(Router, Arc<RpcService>)> {
         let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
             env.d1(crate::handlers::bindings::D1)?,
         ))));
@@ -282,7 +282,12 @@ mod entry {
             reindexer,
         };
 
-        Ok(aos_hub_core::connect::router(service).merge(console_router(console_deps)))
+        // The service is returned alongside the router so the bridge can run the
+        // shared frontend domain-routing decision before dispatch (the Worker's
+        // `!Send` services preclude the native `from_fn` middleware).
+        let router =
+            aos_hub_core::connect::router(Arc::clone(&service)).merge(console_router(console_deps));
+        Ok((router, service))
     }
 
     /// The HTTP entry point: bridge every request to the shared router.
@@ -300,8 +305,8 @@ mod entry {
     /// returned as a `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-        let router = router_from(&env).await?;
-        crate::bridge::dispatch(router, req).await
+        let (router, service) = router_from(&env).await?;
+        crate::bridge::dispatch(router, &service, req).await
     }
 
     /// The Cron-triggered indexer: re-walk every public registry's R2 surface

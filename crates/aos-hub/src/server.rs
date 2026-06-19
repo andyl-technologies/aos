@@ -336,6 +336,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // surface-upload PUT path keeps its own, far larger limit).
     // `RequestBodyLimitLayer` enforces the cap at the body-stream level (`413
     // Payload Too Large`) regardless of how the handler consumes the body.
+    // Kept for the outermost domain-routing layer below (it captures the service
+    // directly, independent of the AppState-typed router's state).
+    let dispatch_service = Arc::clone(&rpc_service);
     let rpc_router =
         aos_hub_core::connect::rpc_browse_router(rpc_service).layer(
             tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
@@ -418,7 +421,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // Kept for the outermost client-IP injection layer below, which runs after
     // `with_state` moves `state` into the router.
     let ip_state = Arc::clone(&state);
-    router
+    let app = router
         // The native-only producer-console routes (pre-auth login/activation,
         // OIDC, git-backed config/changes). Its static prefixes win over the
         // registry catch-all by static-over-dynamic precedence.
@@ -472,7 +475,11 @@ pub async fn router(state: Arc<AppState>) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             ip_state,
             inject_client_ip,
-        ))
+        ));
+    // Domain-routed frontends (RFC-0004): a request on a per-registry/per-cache
+    // proxied domain is rewritten to its bound `/{slug}/…` identity by `Host`
+    // before any route matches. Outermost so it runs first on the way in.
+    aos_hub_core::connect::with_frontend_dispatch(app, dispatch_service)
 }
 
 /// Resolve the current session and run the request with the user's email in

@@ -133,11 +133,20 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 /// Returns an error if either conversion fails or the router itself errors (the
 /// shared router is infallible at the `tower::Service` level, so an error here
 /// is a bridge failure, surfaced as a `500` by the caller).
-pub async fn dispatch(router: axum::Router, req: Request) -> Result<Response> {
+pub async fn dispatch(
+    router: axum::Router,
+    svc: &aos_hub_core::service::RpcService,
+    req: Request,
+) -> Result<Response> {
     let axum_req = to_axum(req).await?;
-    let axum_resp = router
-        .oneshot(axum_req)
-        .await
-        .map_err(|err| worker::Error::RustError(format!("router dispatch: {err}")))?;
+    // Shared frontend domain-routing: rewrite the request to its bound
+    // `/{slug}/…` identity by `Host` (or short-circuit a `404`) before dispatch.
+    let axum_resp = match aos_hub_core::connect::rewrite_for_frontend(svc, axum_req).await {
+        Ok(axum_req) => router
+            .oneshot(axum_req)
+            .await
+            .map_err(|err| worker::Error::RustError(format!("router dispatch: {err}")))?,
+        Err(response) => response,
+    };
     to_worker(axum_resp).await
 }
