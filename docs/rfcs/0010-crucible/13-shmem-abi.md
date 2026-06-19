@@ -308,9 +308,10 @@ pub struct NodeSlot {
     pub device_io_active: AtomicU8, // @ 38
     // @ 39 one byte padding to align the next 8-byte field.
     pub(crate) _pad0: u8, // @ 39
-    /// Monotonic generation counter the node bumps each time it publishes a new
-    /// `current_icount`/`status` pair, letting the scheduler detect a stale read
-    /// without locking (used by the snapshot protocol, §13.4).
+    /// Seqlock generation counter the node bumps around each publish of its
+    /// multi-field `(current_icount, current_ns, status, ...)` state, letting a
+    /// reader/snapshotter detect a torn or in-progress publish without locking
+    /// (the seqlock protocol, §13.3.4). Even == stable, odd == write in progress.
     pub publish_gen: AtomicU32, // @ 40
     // @ 44..128 reserved, zero-initialized (forward-compatible additions only).
     pub(crate) _reserved: [u8; 84],
@@ -418,6 +419,54 @@ const _: () = assert!(core::mem::offset_of!(FrameEntry, data) == 24);
   header) without truncation. A frame whose `len` exceeds `MAX_FRAME_DATA` MUST be
   rejected at enqueue, never silently truncated. *Gate:* `gate:abi-conformance`,
   `gate:layer1-injection`. *Spec:* §13.3.3, §13.4.
+
+### 13.3.4 The `publish_gen` seqlock: torn-free snapshots of a slot
+
+A node's slot holds *several* fields that must be read as a consistent set —
+`current_icount`, the derived `current_ns`, `status`, and the idle/kind/flags —
+yet the node mutates them without taking a lock, and the scheduler (or a
+checkpoint snapshotter) reads them concurrently from another process. A plain
+multi-field read can observe a **torn** state: `current_icount` from after a
+write but `status` from before it. The `publish_gen` counter is a classic
+**seqlock** that makes such a read detectable and retryable, so a reader always
+obtains a self-consistent picture of the slot without blocking the writer.
+
+The discipline is the standard seqlock idiom:
+
+- **Writer (the node)** bumps `publish_gen` to the next **odd** value with a
+  release store *before* mutating the slot's multi-field state, writes the fields,
+  then bumps `publish_gen` to the next **even** value with a release store
+  *after*. While a publish is in progress the counter is odd.
+- **Reader (scheduler / snapshotter)** loads `publish_gen` with acquire ordering
+  into `g0`; if `g0` is odd, a write is in progress, so it retries. It then reads
+  the fields (acquire), re-loads `publish_gen` with acquire into `g1`, and
+  **retries the whole read** if `g1 != g0` (a write straddled the read). Only a
+  read bracketed by an equal, even generation is accepted.
+
+```text
+  writer (node)                          reader (scheduler / snapshotter)
+  ----------------------------------     ---------------------------------------
+  g := publish_gen
+  store publish_gen = g+1 (odd, rel)     loop:
+  store current_icount  (release)          g0 := load publish_gen (acq)
+  store current_ns      (release)          if g0 is odd: continue   # write in flight
+  store status          (release)          read current_icount/ns/status (acq)
+  ...                                       g1 := load publish_gen (acq)
+  store publish_gen = g+2 (even, rel)       if g1 == g0 (even): accept snapshot
+                                            else: continue           # torn; retry
+```
+
+- **[SHM-36]** The `publish_gen` field MUST implement a **seqlock** over the
+  node's multi-field slot state. The writing node MUST bump `publish_gen` to an
+  **odd** value (release) before mutating `current_icount`/`current_ns`/`status`
+  (and any other field published together), and to the next **even** value
+  (release) after. A reader or snapshotter MUST read `publish_gen` (acquire),
+  require it **even** (retry while odd), read the fields (acquire), re-read
+  `publish_gen` (acquire), and **retry** if the value changed or was odd —
+  accepting the snapshot only when bracketed by an equal, even generation. This
+  guarantees a torn-free, lock-free, consistent snapshot of a slot; a reader MUST
+  NOT consume a slot read whose bracketing generation is odd or unequal. *Gate:*
+  `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §13.3.4.
 
 ## 13.4 Normative offset and size table
 
@@ -827,7 +876,9 @@ by when the producer's store landed in shared memory.
   — satisfies [SHM-21], [SHM-22]; spec §13.6.
 - [ ] **T-SHM-8** Implement the advance-ceiling handshake helpers (publish
   current icount + gen; scheduler-only ceiling store; node-side acquire load +
-  advance check). — satisfies [SHM-10], [SHM-24], [SHM-25]; spec §13.6.
+  advance check), with the `publish_gen` seqlock writer/reader discipline for
+  torn-free multi-field slot snapshots. — satisfies [SHM-10], [SHM-24], [SHM-25],
+  [SHM-36]; spec §13.6, §13.3.4.
 - [ ] **T-SHM-9** Implement the cross-process (non-private) futex
   `wait`/`wake` on `wake_signal` with the race-free idiom, plus the
   raise-ceiling and frame-delivered wake triggers. — satisfies [SHM-26],

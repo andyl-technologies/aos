@@ -306,6 +306,60 @@ hermetically-built guest to run.
   mutated at run time — Crucible boots them copy-on-write ([INV-5]). *Gate:*
   `gate:e2e-determinism`. *Spec:* §26.7; satisfies [G-7], [INV-5].
 
+The following four requirements pin the load-bearing determinism specifics of
+the **shipped test fixtures**. They are requirements on Crucible's own
+fixture kernel/rootfs, **not** on user guests: by [G-2] and [INV-5] an arbitrary
+user guest needs none of this (Crucible's determinism is enforced at the QEMU/host
+boundary by `-seed`+icount, [PKG-13], 11), and `gate:any-guest` ([PKG-26]) proves
+it. These fixtures exist only to give Crucible's gates a small, hermetic,
+boot-stable guest.
+
+- **[PKG-39]** The fixture kernel (`linux-crucible`, [PKG-24]) config MUST take
+  determinism from the QEMU `-seed`+icount boundary, not from kernel-side entropy
+  suppression. It MUST set `CONFIG_RANDOM_TRUST_BOOTLOADER=y` (so the kernel
+  accepts the seeded bootloader/`setup_data` entropy as its CRNG seed rather than
+  blocking on entropy collection), and for boot stability MUST disable
+  auto-module-loading (`# CONFIG_MODULES is not set`, equivalently a built-in-only
+  config so `request_module` does nothing) and ACPI (`# CONFIG_ACPI is not set`).
+  It MUST **NOT** require `nokaslr`, `CONFIG_RANDOM=n`, or RDRAND/RDSEED disabling:
+  once the seed is fixed, KASLR is a deterministic function of that seed (the
+  emulated entropy QEMU feeds is itself seeded, 11 [PATCH-16]) and the guest CRNG
+  is seeded deterministically, so KASLR and in-guest entropy are already
+  reproducible — disabling them would only reduce fidelity to a real guest for no
+  determinism gain. *Gate:* `gate:e2e-determinism`. *Spec:* §26.7; satisfies
+  [G-2], [G-7].
+
+- **[PKG-40]** Paired with `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, the fixture boot
+  MUST supply a **deterministic entropy-seed artifact** — a fixed, content-addressed
+  byte blob handed to the guest as bootloader/`setup_data` RNG seed — *unless* the
+  deterministic QEMU entropy patches ([PATCH-16], `crucible-det-getrandom`, plus a
+  `-cpu` model advertising no `RDRAND`/`RDSEED`) already make the guest's CRNG seed
+  a pure function of the run seed, in which case a separate fixed blob is
+  unnecessary. The package MUST state which mechanism is in force; the chosen
+  mechanism MUST make the guest CRNG seed bit-identical across two runs of the same
+  `(image, seed)`. *Gate:* `gate:e2e-determinism`. *Spec:* §26.7; satisfies [G-7].
+
+- **[PKG-41]** The fixture rootfs model MUST be a **read-only base image plus the
+  host Nix store shared into the guest via virtio-9p** ([`15-io-subnodes.md`](15-io-subnodes.md)),
+  not a fat writable disk; the guest boots it copy-on-write ([INV-5], [PKG-25]).
+  The ext4 fixture images MUST be built with `mkfs.ext4 -d` (sandbox-compatible, no
+  `losetup`/`mount`) and with the feature flags **`-O ^has_journal,^metadata_csum,^64bit`**:
+  the journal is disabled because journal replay can panic the minimal fixture
+  guest, and `^metadata_csum,^64bit` keep the image within the conservative feature
+  set the fixture kernel mounts cleanly. These flags are a requirement, not a
+  suggestion. *Gate:* `gate:e2e-determinism`. *Spec:* §26.7; satisfies [G-7],
+  [INV-5].
+
+- **[PKG-42]** Each fixture node's **guest MAC address MUST be a deterministic
+  function of the node's stable content-addressed identity** ([`06-spatial-graph.md`](06-spatial-graph.md)),
+  never of spawn order or launch sequence. A spawn-order-dependent MAC assignment
+  is a determinism hazard: it makes ARP tables, neighbor discovery, and any
+  MAC-ordered guest behavior depend on host scheduling, breaking bit-identical
+  reproduction. The MAC (and any analogous per-node identifier) MUST be derived
+  from the node id so two runs assign the same MAC to the same logical node
+  regardless of the order the nodes happen to start. *Gate:* `gate:e2e-determinism`.
+  *Spec:* §26.7; satisfies [G-7], [INV-9].
+
 - **[PKG-26]** The fixtures MUST include at least one **unmodified third-party
   guest** path exercised by `gate:any-guest`
   ([`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §1) —
@@ -485,11 +539,16 @@ cheap and the present ships standalone.
   version-field checks) as an eval/double-backed AOS check. — satisfies [PKG-19],
   [PKG-21], [PKG-23]; spec §26.6, §26.8.
 - [ ] **T-PKG-12** Build the determinism guest kernel `linux-crucible` via
-  `pkgs.linuxWith` extraConfig (single-vCPU, fixed timer, virtio drivers), as a
-  fixture, not a guest precondition. — satisfies [PKG-24]; spec §26.7.
+  `pkgs.linuxWith` extraConfig (single-vCPU, fixed timer, virtio drivers,
+  `CONFIG_RANDOM_TRUST_BOOTLOADER=y`, no auto-module-load, no ACPI; no
+  nokaslr/`CONFIG_RANDOM=n`/RDRAND-disable), as a fixture, not a guest
+  precondition. — satisfies [PKG-24], [PKG-39]; spec §26.7.
 - [ ] **T-PKG-13** Build the minimal root-image fixtures `crucible-fixtures`
-  from source (`mkfs.ext4 -d`, CoW boot, rootfs init shebang exception) plus one
-  unmodified third-party guest path. — satisfies [PKG-25], [PKG-26]; spec §26.7.
+  from source (read-only base + virtio-9p host store share; `mkfs.ext4 -d` with
+  `-O ^has_journal,^metadata_csum,^64bit`; CoW boot; rootfs init shebang
+  exception), with a deterministic entropy-seed mechanism and node-id-derived guest
+  MACs, plus one unmodified third-party guest path. — satisfies [PKG-25], [PKG-26],
+  [PKG-40], [PKG-41], [PKG-42]; spec §26.7.
 - [ ] **T-PKG-14** Wire the determinism gates as AOS nix checks with correct
   layer ordering: eval-class L0/L1/ABI gates, package-class QEMU gates, VM/fleet
   e2e gate. — satisfies [PKG-27], [PKG-28]; spec §26.8.

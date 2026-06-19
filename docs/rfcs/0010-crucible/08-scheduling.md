@@ -476,6 +476,31 @@ exactly. This section is the full algorithm.
   unresolved cross-node dependency. *Gate:* `gate:scheduler-liveness`,
   `gate:layer1-injection`. *Spec:* §8.9.1; routes [INV-3], [INV-8].
 
+- **[SCHED-44]** PICK's global-minimum-horizon argmin MUST be taken over a single
+  **unified per-node horizon projection** `effective_horizon(node)`, defined by
+  the node's status:
+
+  ```text
+  effective_horizon(node) =
+      DONE/Halted  →  +∞                  (u64::MAX; a finished node never holds
+                                           back the simulation)
+      IDLE         →  idle_wake_icount    (its exact wake time, SCHED-28/8.9.3)
+      RUNNING      →  current frontier    (horizon(node) of SCHED-9: the min of
+                                           next_exact_local_event and the
+                                           conservative network bound)
+  ```
+
+  The global step MUST pick `argmin over non-DONE nodes of effective_horizon`
+  (ties broken by ascending `node_id`, [SCHED-25]). A DONE node MUST contribute
+  `+∞` so it is never selected and never lowers the global minimum; when *every*
+  node projects `+∞` (all DONE, or all idle/network-bounded with no finite term)
+  and all queues are empty, the system is **quiescent** (§8.8, [SCHED-22]) and the
+  step yields no advance. This is the single projection used by the liveness
+  argument (§8.3.2), quiescence detection (§8.8), and the quantum loop (§8.9.7);
+  there is no second, status-specific horizon rule. *Gate:*
+  `gate:scheduler-liveness`, `gate:layer1-injection`. *Spec:* §8.9.1, §8.8, §8.9.7;
+  routes [INV-3], [INV-8].
+
 ### 8.9.2 RUN
 
 - **[SCHED-26]** **RUN** MUST advance the selected node under `-icount` until it

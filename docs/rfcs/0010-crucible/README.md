@@ -134,7 +134,7 @@ Start here, then read in three bands:
 7. [`06-spatial-graph.md`](06-spatial-graph.md) · 8. [`07-temporal-graph.md`](07-temporal-graph.md) · 9. [`08-scheduling.md`](08-scheduling.md) · 10. [`09-virtual-time-icount.md`](09-virtual-time-icount.md)
 11. [`10-qemu-integration.md`](10-qemu-integration.md) · 12. [`11-qemu-patches.md`](11-qemu-patches.md) · 13. [`12-qemu-plugin.md`](12-qemu-plugin.md)
 14. [`13-shmem-abi.md`](13-shmem-abi.md) · 15. [`14-protocol.md`](14-protocol.md) · 16. [`15-io-subnodes.md`](15-io-subnodes.md) · 17. [`16-guest-host-channel.md`](16-guest-host-channel.md)
-18. [`17-fault-injection.md`](17-fault-injection.md) · 19. [`18-assertions-properties.md`](18-assertions-properties.md) · 20. [`19-observability-event-log.md`](19-observability-event-log.md)
+18. [`17-fault-injection.md`](17-fault-injection.md) · 18a. [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) · 19. [`18-assertions-properties.md`](18-assertions-properties.md) · 20. [`19-observability-event-log.md`](19-observability-event-log.md)
 21. [`20-session-control-plane.md`](20-session-control-plane.md) · 22. [`21-api.md`](21-api.md) · 23. [`22-advanced-features.md`](22-advanced-features.md) · 24. [`23-cli.md`](23-cli.md)
 
 **Band C — making it real:**
