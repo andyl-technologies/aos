@@ -1391,6 +1391,39 @@ discipline, and delivery order ignores arrival order. Production QEMU/plugin
 device injection remains owned by the later `gate:layer1-injection` and QEMU
 integration gates.
 
+**RISK-8 / RISK-9** are resolved by `T-RISK-4` with the thin/replay fallback
+adopted: `checks.crucible.phase0.s3SavevmLoadvm` verified the currently
+available QMP snapshot transport and the Crucible-owned checkpoint half without
+enabling fat snapshots as the default. The check found typed
+`snapshot-save`/`snapshot-load`, `migrate`, `migrate-incoming`, and
+`human-monitor-command` in QMP, confirmed typed legacy `savevm`/`loadvm` are not
+available, and used `snapshot-save`/`snapshot-load` against a qcow2 `vmstate`
+node rather than HMP. It snapshotted a diskless single-vCPU stock Linux VM at
+`snapshot_icount=100000000`, restored into a fresh plugin-loaded child, advanced
+`suffix_segment_icount=50000000`, and compared the restored suffix against an
+uninterrupted replay suffix at the same logical horizon. The run reported
+`suffix_fingerprint_match=true`, `register_hash_match=true`,
+`ram_hash_match=true`, `suffix_stream_hash=f6defe3619623dd8`,
+`suffix_register_hash=9ceff31179cf3b96`,
+`suffix_ram_hash=4b38bd1adad92f0c`, `suffix_ram_bytes=268967936`,
+`current_vmstate_snapshot_scope=diskless_single_vcpu_qemu_vmstate`,
+`mid_io_burst_snapshot_covered=false`,
+`plugin_time_control_snapshot_covered=false`,
+`full_fat_checkpoint_complete=false`,
+`crucible_owned_state_roundtrip=true`,
+`ring_snapshot_restore=pass`, `overlay_delta_roundtrip=pass`,
+`rng_position_roundtrip=pass`, `thin_checkpoint_default=true`,
+`fat_snapshot_default=false`, `loadvm_branch_enabled=false`,
+`fallback_adopted=thin_replay_until_full_s3`,
+`risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot`, and
+`risk9_status=retired_thin_replay_default`. This adopts the [QEMU-21] /
+[QEMU-26] fallback for Phase 0: checkpoint realization defaults to thin replay
+from genesis or a verified ancestor, and the `loadvm` branch remains disabled
+until a later S3 rerun proves fat snapshots across the full required surface,
+including a mid-I/O burst and plugin time-control state. RISK-9 is retired for
+the default realization discipline; RISK-8 is mitigated by non-use of unverified
+fat snapshots, not retired for the fat-snapshot optimization.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1430,11 +1463,11 @@ fallback for [G-10].
 **RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by `T-RISK-16`:
 `checks.crucible.phase0.riskRegisterGate` verifies that every completed Phase-0
 risk spike has a decision-register entry and a concrete check name, that the
-remaining foundational Phase-0 blockers stay unchecked until their own
-PASS/fallback evidence exists, and that no non-risk checklist item is marked
-complete while those blockers remain open. The run reported
-`checked_risk_tasks=11`,
-`retired_decision_entries=11`, `phase0_foundational_blockers_open=1`,
+foundational Phase-0 blockers are either passed or fallback-adopted before
+dependent work proceeds, and that no non-risk checklist item is marked complete
+while those blockers remain open. The run reported
+`checked_risk_tasks=12`,
+`retired_decision_entries=12`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1446,7 +1479,7 @@ Phase-0 blockers (run/pass first, in priority order):
   S1  ★  icount + entropy elimination => bit-identical single-VM (FATAL if false)
   S2  ★  guest HLTs during blocking I/O (idle fast-forward applies to measured path)
   S4  ★  producer→consumer shmem visibility is icount-not-wallclock
-  S3  ★  savevm/loadvm complete (else thin/replay checkpoints — clean fallback)
+  S3  ★  savevm/loadvm scoped smoke; thin/replay fallback adopted for fat snapshots
   S11 ★  deterministic multi-vCPU under RR-TCG + icount (G-10; else revert -smp 1)
 
 Gated-but-not-blocking spikes:
@@ -1494,11 +1527,16 @@ never tolerated). Results live in the decision register (31).
   identical per-frame consumer-visibility icounts and `(delivery_icount, src_node,
   seq)` injection order ([SHM-33], [SHM-34]); localize any transport-timing leak.
   — satisfies [RISK-10], [RISK-11], [DET-6], [DET-34]; spec §30.5.
-- [ ] **T-RISK-4** Run **S3** (Phase-0 blocker ★): savevm/loadvm + ring/overlay/RNG
-  round-trip vs uninterrupted replay at several snapshot points (incl. mid-I/O
-  burst) under the replay oracle; keep thin/replay checkpoints the default until
-  green. — satisfies [RISK-8], [RISK-9], [DET-32], [QEMU-21], [QEMU-27]; spec
-  §30.4.
+- [x] **T-RISK-4** Run **S3** (Phase-0 blocker ★): savevm/loadvm +
+  ring/overlay/RNG round-trip vs uninterrupted replay at several snapshot points
+  (incl. mid-I/O burst) under the replay oracle; keep thin/replay checkpoints
+  the default until green. Phase 0 verified a scoped QMP `snapshot-save` /
+  `snapshot-load` diskless VMState suffix match plus Crucible-owned
+  ring/overlay/RNG round-trip and adopted the thin/replay fallback; fat snapshots
+  stay disabled until full mid-I/O and plugin time-control coverage is green. —
+  satisfies [RISK-8] via fallback adoption, [RISK-9], and [QEMU-21]; keeps full
+  [DET-32] / [QEMU-27] fat-snapshot content equality gated on a later complete S3
+  run; spec §30.4.
 - [ ] **T-RISK-5** Run **S5**: plugin reads guest **virtual** memory at the doorbell
   trap icount (resident / page-spanning / paged buffers), reproducibly and
   side-effect-free; default to the physical/pinned identity page until green. —

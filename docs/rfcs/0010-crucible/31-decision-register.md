@@ -1019,6 +1019,54 @@ register.
     the exactness-preserving busy-poll fast-forward of [IO-30] remains the
     specified fallback if a future target path commonly busy-polls.
 
+- **RISK-8 / RISK-9 / T-RISK-4 — S3 savevm/loadvm completeness fallback**
+  - **Status:** PASS WITH FALLBACK; the thin/replay checkpoint realization is
+    adopted as the Phase-0 default, so unverified fat snapshots are not used.
+  - **Check:** `checks.crucible.phase0.s3SavevmLoadvm`.
+  - **Result:** `qmp_snapshot_save_available=true`,
+    `qmp_snapshot_load_available=true`, `qmp_migrate_available=true`,
+    `qmp_migrate_incoming_available=true`,
+    `qmp_human_monitor_command_available=true`,
+    `qmp_legacy_savevm_loadvm_available=false`, `hmp_savevm_used=false`,
+    `restore_transport=snapshot_save_load`,
+    `vmstate_node=qcow2_internal_snapshot`, `snapshot_points=1`,
+    `snapshot_point_0=diskless_boot_window`,
+    `snapshot_icount=100000000`, `suffix_segment_icount=50000000`,
+    `suffix_logical_horizon=150000000`,
+    `suffix_fingerprint_match=true`,
+    `suffix_stream_hash=f6defe3619623dd8`, `register_hash_match=true`,
+    `suffix_register_hash=9ceff31179cf3b96`, `ram_hash_match=true`,
+    `suffix_ram_hash=4b38bd1adad92f0c`, `suffix_ram_bytes=268967936`,
+    `suffix_state_hash=7e48fe1730d53378`,
+    `device_event_hash_match=not_measured_in_diskless_scope`,
+    `current_vmstate_snapshot_smoke=true`,
+    `current_vmstate_snapshot_scope=diskless_single_vcpu_qemu_vmstate`,
+    `mid_io_burst_snapshot_covered=false`,
+    `plugin_time_control_snapshot_covered=false`,
+    `full_fat_checkpoint_complete=false`,
+    `crucible_owned_state_roundtrip=true`,
+    `ring_snapshot_restore=pass`, `ring_live_hash=a3e895964e3c9a45`,
+    `overlay_delta_roundtrip=pass`, `overlay_hash=e1215fa76fa5ab16`,
+    `rng_position_roundtrip=pass`, `rng_next=7f0e17493d165353`,
+    `thin_checkpoint_default=true`, `fat_snapshot_default=false`,
+    `loadvm_branch_enabled=false`,
+    `fallback_adopted=thin_replay_until_full_s3`,
+    `risk8_status=mitigated_by_fallback_not_retired_for_fat_snapshot`,
+    `risk9_status=retired_thin_replay_default`,
+    `s3_fallback_adopted=true`.
+  - **Scope:** validates only the currently available QMP
+    `snapshot-save`/`snapshot-load` path for a diskless single-vCPU VMState
+    snapshot and a suffix replay comparison, plus a host-side Crucible-owned
+    ring/overlay/RNG round-trip. It deliberately does not claim the full S3 pass
+    criterion for a restored fat checkpoint at several snapshot points, a
+    mid-I/O burst, device-event state hashing, or plugin time-control state.
+  - **Fallback:** adopted. `instantiate` and the temporal graph default to thin
+    checkpoint realization by replay from genesis or a verified ancestor; the
+    fat-snapshot `loadvm` branch remains disabled until a later S3 rerun proves
+    the complete replay-oracle surface. This retires RISK-9 for the default
+    realization discipline and mitigates RISK-8 by non-use of unverified fat
+    snapshots.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1218,15 +1266,15 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=11`, `retired_decision_entries=11`,
-    `phase0_foundational_blockers_open=1`, `unexpected_checked_nonrisk_tasks=0`,
+  - **Result:** `checked_risk_tasks=12`, `retired_decision_entries=12`,
+    `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
-    has a retirement record and a decision-register check name, the remaining
-    foundational blocker S3 is still visibly open, and no non-risk
-    checklist item is marked complete while those blockers remain open. The full
-    RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this check is
-    the narrower RISK-23/RISK-24 guard.
+    has a retirement or fallback-adoption record and a decision-register check
+    name, all foundational blockers are either passed or fallback-adopted, and no
+    non-risk checklist item is marked complete while foundational blockers remain
+    open. The full RFC coverage/gate catalog lint remains owned by `T-PLAN-1`;
+    this check is the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
