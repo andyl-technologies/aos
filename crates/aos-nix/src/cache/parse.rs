@@ -18,10 +18,12 @@
 //! artifact while still reparsing changed files.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
@@ -46,6 +48,7 @@ const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
 const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
 const SYMBOL_MAGIC: &[u8; 8] = b"AOSNIXSY";
 const ARTIFACT_VERSION: u32 = 1;
+static ATOMIC_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Parser options that affect parse-cache identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,7 +449,8 @@ impl ParseCacheEntry {
     pub fn write_meta(&self, meta: &ParseCacheMeta) -> Result<(), ParseCacheError> {
         self.ensure_dir()?;
         let path = self.meta_path();
-        fs::write(&path, meta.to_toml())
+        let toml = meta.to_toml();
+        write_cache_file_atomic(&path, toml.as_bytes())
             .map_err(|source| ParseCacheError::WriteMeta { path, source })
     }
 
@@ -479,25 +483,37 @@ impl ParseCacheEntry {
         let ir_path = self.ir_path();
         let resolved_path = self.resolved_path();
         let symbols_path = self.symbols_path();
-        fs::write(&resolved_path, encode_resolved_ir(&resolved)?).map_err(|source| {
+        let meta_path = self.meta_path();
+        let resolved_bytes = encode_resolved_ir(&resolved)?;
+        let ir_bytes = encode_lowered_ir(&ir)?;
+        let symbols_bytes = encode_symbols(&resolved.symbols)?;
+        let meta_toml = meta.to_toml();
+
+        let _ = fs::remove_file(&meta_path);
+        write_cache_file_atomic(&resolved_path, &resolved_bytes).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: resolved_path,
                 source,
             }
         })?;
-        fs::write(&ir_path, encode_lowered_ir(&ir)?).map_err(|source| {
+        write_cache_file_atomic(&ir_path, &ir_bytes).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: ir_path,
                 source,
             }
         })?;
-        fs::write(&symbols_path, encode_symbols(&resolved.symbols)?).map_err(|source| {
+        write_cache_file_atomic(&symbols_path, &symbols_bytes).map_err(|source| {
             ParseCacheError::WriteArtifact {
                 path: symbols_path,
                 source,
             }
         })?;
-        self.write_meta(&meta)
+        write_cache_file_atomic(&meta_path, meta_toml.as_bytes()).map_err(|source| {
+            ParseCacheError::WriteMeta {
+                path: meta_path,
+                source,
+            }
+        })
     }
 
     /// Reads a resolved AST artifact from this cache entry.
@@ -720,6 +736,30 @@ pub enum ParseCacheError {
 
 fn file_content_hash(source: &[u8]) -> [u8; 32] {
     *blake3::hash(source).as_bytes()
+}
+
+fn write_cache_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let temp_path = atomic_write_temp_path(path)?;
+    let result = fs::write(&temp_path, bytes).and_then(|()| fs::rename(&temp_path, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
+}
+
+fn atomic_write_temp_path(path: &Path) -> io::Result<PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "parse-cache path has no file name",
+        )
+    })?;
+    let id = ATOMIC_WRITE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut temp_name = OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".tmp-{}-{id}", std::process::id()));
+    Ok(parent.join(temp_name))
 }
 
 fn file_local_resolved(resolved: &ResolvedAst) -> Result<ResolvedAst, ParseCacheError> {
@@ -2567,6 +2607,19 @@ mod tests {
         std::env::temp_dir().join(format!("aos-nix-parse-cache-{id}-{}", std::process::id()))
     }
 
+    fn cache_temp_files(entry: &ParseCacheEntry) -> Vec<PathBuf> {
+        fs::read_dir(entry.dir())
+            .expect("entry dir reads")
+            .map(|entry| entry.expect("dir entry reads").path())
+            .filter(|path| {
+                path.file_name()
+                    .expect("file name exists")
+                    .to_string_lossy()
+                    .contains(".tmp-")
+            })
+            .collect()
+    }
+
     fn resolved_single_symbol(symbols: SymbolTable, symbol: Symbol) -> ResolvedAst {
         ResolvedAst {
             root: NodeId::new(0),
@@ -2653,6 +2706,43 @@ mod tests {
         let text = fs::read_to_string(entry.meta_path()).expect("metadata is readable");
         assert!(text.contains("schema_version = 6"));
         assert!(!entry.is_complete());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn write_resolved_cleans_temporary_files_after_artifact_commit_failure() {
+        let root = temp_root();
+        let cache = ParseCache::new(root.join("parse"));
+        let source = "let x = 1; in x";
+        let resolved = resolve(parse_str(source).expect("source parses")).expect("source resolves");
+        let entry = cache.entry_for_source(source.as_bytes());
+        let meta = ParseCacheMeta::new(
+            cache.schema_version(),
+            Some("expr.nix".to_owned()),
+            resolved.arena.len() as u32,
+            resolved.symbols.len() as u32,
+        );
+        entry.ensure_dir().expect("entry dir creates");
+        entry.write_meta(&meta).expect("stale metadata writes");
+        fs::create_dir(entry.ir_path()).expect("blocking artifact directory creates");
+
+        let error = entry
+            .write_resolved(&resolved, &meta)
+            .expect_err("artifact commit fails");
+        match error {
+            ParseCacheError::WriteArtifact { path, .. } => assert_eq!(path, entry.ir_path()),
+            other => panic!("unexpected write error: {other:?}"),
+        }
+
+        assert!(!entry.is_complete());
+        assert!(!entry.meta_path().exists());
+        assert!(entry.resolved_path().is_file());
+        assert!(entry.ir_path().is_dir());
+        assert!(
+            cache_temp_files(&entry).is_empty(),
+            "temporary files were not cleaned up"
+        );
 
         let _ = fs::remove_dir_all(root);
     }
