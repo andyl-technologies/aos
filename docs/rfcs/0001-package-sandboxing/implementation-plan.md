@@ -700,13 +700,17 @@ package, including non-verity `RootDirectory=` packages, by using
 `root_digest` as the measurement input. For verity packages `root_digest` equals
 `root_hash`; otherwise the registry derives it from the package NAR hash and
 seeded bundled metadata derives a stable package-root digest before writing the
-golden catalog. Quote verification can also require an explicit quote-identity
-pin catalog; without one, quote mode remains explicitly marked as
-self-consistent but untrusted. The verifier-hosting decision is implemented as
-the standalone `aos.services.attestationVerifier` role, which consumes delivered
-quote/event-log/catalog evidence and writes the verifier result without sharing
-registry signing custody. Remaining P9 blockers are AK/EK enrollment and
-credential activation, and canonical TCG CEL compatibility.
+golden catalog. The package event log is an AOS JSONL CEL profile with monotonic
+`sequence_number`, PCR index, SHA-256 digest list, event size, and measured
+event content; the verifier rejects malformed sequence numbers while retaining
+legacy log compatibility. Quote verification can also require an explicit
+quote-identity pin catalog; without one, quote mode remains explicitly marked
+as self-consistent but untrusted. The verifier-hosting decision is implemented
+as the standalone `aos.services.attestationVerifier` role, which consumes
+delivered quote/event-log/catalog evidence and writes the verifier result
+without sharing registry signing custody. Remaining P9 blockers are AK/EK
+enrollment and credential activation, and external/binary TCG CEL compatibility
+validation.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
 D22 registry golden-catalog coverage gap; D22 itself remains open until the
@@ -893,7 +897,9 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [ ] **PCR index / event-log convention for the package set (P9).** The
       implementation extends PCR 15 during package activation; still confirm
       PCR 15 is free / the right convention on the AOS measured-boot layout
-      (RFC-0006 uses 11/12) and confirm canonical TCG CEL compatibility.
+      (RFC-0006 uses 11/12). The AOS JSONL CEL profile now records monotonic
+      `sequence_number`, PCR index, SHA-256 digest list, event size, and measured
+      event content; still validate external/binary TCG CEL compatibility.
       ([`attestation.md`](attestation.md))
 - [ ] **Consolidated vs per-package verity root (P9).** Whether one composefs/EROFS
       digest per generation or per-package `RootImage=` images; composefs maturity
