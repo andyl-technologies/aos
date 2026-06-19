@@ -11,6 +11,9 @@
 //!   one source statement form serves sqlite, postgres, and mysql.
 //! - [`domain`] — the tenancy/IAM model (org → project → registry tree,
 //!   principals, and the pure role/permission/scope authorization kernel).
+//! - [`email`] — pure transactional-email rendering ([`EmailContent`](email::EmailContent)
+//!   plus the magic-link and org-invite renderers), shared so the native hub and
+//!   the Worker send byte-identical messages over their different transports.
 //! - [`auth`] — runtime-agnostic authentication primitives (Argon2id password
 //!   hashing, the token/session/magic/device secret generators, and the
 //!   permission-string parser; OIDC, sealing, and WebAuthn to follow).
@@ -54,6 +57,7 @@ pub mod crawl;
 pub mod db;
 pub mod dialect;
 pub mod domain;
+pub mod email;
 pub mod fetch;
 pub mod filter;
 pub mod gc;

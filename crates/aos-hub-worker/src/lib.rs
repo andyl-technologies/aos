@@ -141,6 +141,7 @@ mod entry {
 
     use std::sync::Arc;
 
+    use wasm_bindgen::JsCast;
     use worker::{Context, Env, Request, Response, Result, ScheduleContext, ScheduledEvent};
 
     use aos_hub_core::auth::jwt::JwtKeys;
@@ -169,6 +170,15 @@ mod entry {
     const HUB_EMAIL_API_URL: &str = "HUB_EMAIL_API_URL";
     /// Optional secret: a `Bearer` token for the email relay above.
     const HUB_EMAIL_API_TOKEN: &str = "HUB_EMAIL_API_TOKEN";
+    /// The Cloudflare Email Service binding name (`[[send_email]]`).
+    ///
+    /// Present only once the operator has onboarded a sender domain and deployed
+    /// with the binding; when present (with [`HUB_EMAIL_FROM`]) the
+    /// [`WorkerMailer`] sends through it, taking priority over the HTTP relay.
+    const EMAIL_BINDING: &str = "EMAIL";
+    /// Optional `[vars]` entry: the verified sender address the Email Service
+    /// binding sends `from`. Required to use the [`EMAIL_BINDING`].
+    const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
 
     /// Build the shared `axum` router over the Worker's D1/R2 bindings.
     ///
@@ -237,8 +247,20 @@ mod entry {
         let sealer = sealer_from_secret(&seal_secret)
             .map_err(|err| worker::Error::RustError(format!("seal key: {err:#}")))?;
 
-        // Optional email relay for magic-link delivery; unset → WorkerMailer
-        // logs the link instead of sending it.
+        // Email delivery, in priority order (see `WorkerMailer`):
+        //  1. the Cloudflare Email Service `EMAIL` binding + `HUB_EMAIL_FROM`,
+        //  2. the `HUB_EMAIL_API_URL` HTTP relay (+ optional bearer),
+        //  3. logging (dev/unconfigured).
+        // The `EMAIL` binding has no workers-rs wrapper, so it is read as a raw
+        // JS object via Reflect and handed to the mailer for the JS interop call.
+        let email_binding = js_sys::Reflect::get(
+            env.as_ref(),
+            &wasm_bindgen::JsValue::from_str(EMAIL_BINDING),
+        )
+        .ok()
+        .filter(|v| !v.is_undefined())
+        .and_then(|v| v.dyn_into::<js_sys::Object>().ok());
+        let email_from = env.var(HUB_EMAIL_FROM).ok().map(|v| v.to_string());
         let email_api_url = env.var(HUB_EMAIL_API_URL).ok().map(|v| v.to_string());
         let email_api_token = env.secret(HUB_EMAIL_API_TOKEN).ok().map(|s| s.to_string());
 
@@ -291,7 +313,12 @@ mod entry {
             external_url,
             dev: false,
             ratelimit,
-            mailer: Arc::new(WorkerMailer::new(email_api_url, email_api_token)),
+            mailer: Arc::new(WorkerMailer::new(
+                email_binding,
+                email_from,
+                email_api_url,
+                email_api_token,
+            )),
             sealer,
             http: Arc::new(WorkerHttpClient),
             surface,

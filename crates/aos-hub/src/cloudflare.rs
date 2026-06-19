@@ -164,6 +164,13 @@ pub struct DeployConfig {
     pub external_url: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
+    /// The verified sender address for Cloudflare Email Service. When `Some`, the
+    /// config emits a `[[send_email]]` binding named `EMAIL` (`remote = true`)
+    /// plus a `HUB_EMAIL_FROM` `[vars]` entry, so the Worker delivers
+    /// transactional email through the Email Service. `None` emits neither — a
+    /// deploy without Email Service set up is unchanged, the binding appears only
+    /// once the operator has onboarded their sender domain.
+    pub email_from: Option<String>,
     /// Custom domains to bind the Worker to (e.g. `aos.example.com`), each
     /// emitted as its own `custom_domain` route so Cloudflare sends that hostname
     /// to this Worker. Empty serves on `*.workers.dev` only. Every domain's zone
@@ -195,8 +202,11 @@ pub struct DeployConfig {
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
 /// staged). There is intentionally **no** `[build]` command — the hermetic dist
 /// is deployed as-is rather than rebuilt on the operator's machine. The non-
-/// secret configuration (optional `HUB_EXTERNAL_URL` / `HUB_EMAIL_API_URL`) is
-/// baked into `[vars]`; secrets are applied separately with [`secret_put_args`].
+/// secret configuration (optional `HUB_EXTERNAL_URL` / `HUB_EMAIL_API_URL` /
+/// `HUB_EMAIL_FROM`) is baked into `[vars]`; secrets are applied separately with
+/// [`secret_put_args`]. When [`DeployConfig::email_from`] is set, a
+/// `[[send_email]]` binding named `EMAIL` (`remote = true`) is emitted so the
+/// Worker can deliver through Cloudflare Email Service.
 ///
 /// `HUB_EXTERNAL_URL` is omitted when [`DeployConfig::external_url`] is empty —
 /// the Worker then derives its canonical URL from each request's origin (its
@@ -214,6 +224,16 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
     }
+    if let Some(from) = &cfg.email_from {
+        vars.push_str(&format!("HUB_EMAIL_FROM = {}\n", toml_string(from)));
+    }
+    // The Cloudflare Email Service binding: present only when a verified sender
+    // is configured, so a deploy without Email Service onboarded is unchanged.
+    let send_email = if cfg.email_from.is_some() {
+        "[[send_email]]\nname = \"EMAIL\"\nremote = true\n\n"
+    } else {
+        ""
+    };
     // Each custom-domain route binds the Worker to one hostname (e.g.
     // aos.example.com); `wrangler deploy` provisions the domain (DNS record +
     // cert) when the zone is on the account. With none, the Worker serves on
@@ -266,6 +286,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
          \n{vars}\n\
          {assets}\
          {routes}\
+         {send_email}\
          [[d1_databases]]\n\
          binding = \"{d1b}\"\n\
          database_name = {d1name}\n\
@@ -287,6 +308,7 @@ pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
         logpush = logpush,
         assets = assets,
         routes = routes,
+        send_email = send_email,
         d1b = D1_BINDING,
         d1name = toml_string(&cfg.d1_name),
         d1id = toml_string(&cfg.d1_id),
@@ -687,6 +709,9 @@ pub async fn provision(
         kv_id,
         external_url: external_url.to_string(),
         email_relay_url: email_relay_url.map(str::to_string),
+        // The `worker` CLI overrides this from its `--email-from` flag before
+        // staging the config; Email Service is off until a sender is set.
+        email_from: None,
         custom_domains: custom_domains.to_vec(),
         serve_assets: assets.assets_dir.is_some(),
         // Observability defaults (on, full sampling, no logpush); the `worker`
@@ -1385,6 +1410,7 @@ mod tests {
             kv_id: "kv-id".into(),
             external_url: String::new(),
             email_relay_url: None,
+            email_from: None,
             custom_domains: vec!["aos.example.com".into()],
             serve_assets: false,
             observability: true,
@@ -1430,6 +1456,7 @@ mod tests {
             kv_id: "kv-id".into(),
             external_url: String::new(),
             email_relay_url: None,
+            email_from: None,
             custom_domains: vec![],
             serve_assets: false,
             observability: false,
@@ -1453,6 +1480,7 @@ mod tests {
             kv_id: "kv-id".into(),
             external_url: String::new(),
             email_relay_url: None,
+            email_from: None,
             custom_domains: vec![],
             serve_assets: true,
             observability: true,
@@ -1465,6 +1493,45 @@ mod tests {
         // non-asset paths still fall through to the Worker.
         assert_eq!(parsed["assets"]["directory"].as_str(), Some("./assets"));
         assert_eq!(parsed["assets"]["html_handling"].as_str(), Some("none"));
+    }
+
+    #[test]
+    fn rendered_toml_emits_send_email_binding_when_from_set() {
+        let base = DeployConfig {
+            name: "aos-hub".into(),
+            d1_name: "aos-hub".into(),
+            d1_id: "d1-uuid".into(),
+            bucket: "aos-hub-surfaces".into(),
+            kv_id: "kv-id".into(),
+            external_url: String::new(),
+            email_relay_url: None,
+            email_from: Some("noreply@example.com".into()),
+            custom_domains: vec![],
+            serve_assets: false,
+            observability: true,
+            head_sampling_rate: 1.0,
+            logpush: false,
+        };
+        let parsed: toml::Value =
+            toml::from_str(&render_wrangler_toml(&base)).expect("valid TOML");
+        // The Email Service binding is emitted with the EMAIL name and remote=true.
+        assert_eq!(parsed["send_email"][0]["name"].as_str(), Some("EMAIL"));
+        assert_eq!(parsed["send_email"][0]["remote"].as_bool(), Some(true));
+        // The sender address is baked into [vars].
+        assert_eq!(
+            parsed["vars"]["HUB_EMAIL_FROM"].as_str(),
+            Some("noreply@example.com")
+        );
+
+        // With no email_from, neither the binding nor the var appears.
+        let none = DeployConfig {
+            email_from: None,
+            ..base
+        };
+        let parsed: toml::Value =
+            toml::from_str(&render_wrangler_toml(&none)).expect("valid TOML");
+        assert!(parsed.get("send_email").is_none());
+        assert!(parsed["vars"].get("HUB_EMAIL_FROM").is_none());
     }
 
     #[test]

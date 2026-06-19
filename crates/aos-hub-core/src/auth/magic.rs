@@ -12,10 +12,13 @@
 //!                                              single-use, 15-minute expiry
 //! ```
 //!
-//! Actual delivery is abstracted behind the [`Mailer`] trait. This module
-//! ships [`LogMailer`], which logs the link instead of sending it — useful
-//! for dev and tests. Real transports (SMTP via `lettre` natively, an HTTP
-//! mail API on Workers) implement [`Mailer`] in a later phase. The link
+//! Actual delivery is abstracted behind the [`Mailer`] trait, whose single
+//! required method ([`Mailer::send_email`]) takes a fully-rendered
+//! [`EmailContent`](crate::email::EmailContent); the message bodies are rendered
+//! once in [`crate::email`] so every transport sends identical copy. This module
+//! ships [`LogMailer`], which logs the message instead of sending it — useful
+//! for dev and tests. Real transports (SMTP via `lettre` natively, the
+//! Cloudflare Email Service binding on Workers) implement [`Mailer`]. The link
 //! lifecycle (create, consume-once) lives on `Database`.
 
 use rand::Rng;
@@ -35,42 +38,81 @@ pub fn new_magic_secret() -> String {
     hex::encode(bytes)
 }
 
-/// Delivers a login magic link to an email address.
+/// Delivers a rendered transactional email to an address.
 ///
-/// Implementations send the URL however their runtime allows; the hub
-/// holds a `dyn Mailer` and calls [`Mailer::send_magic_link`] after
-/// `Database::create_magic_link` returns the secret.
+/// Implementations send the message however their runtime allows; the hub
+/// holds a `dyn Mailer` and calls [`Mailer::send_email`] with content rendered
+/// by [`crate::email`]. [`send_magic_link`](Mailer::send_magic_link) is a
+/// convenience that renders the (brand-less) magic-link email and forwards to
+/// [`send_email`](Mailer::send_email).
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Mailer: BackendBounds {
-    /// Sends `link_url` (a fully-formed magic-link URL) to `email`.
+    /// Sends a fully-rendered [`EmailContent`](crate::email::EmailContent) to
+    /// `to`.
     ///
-    /// `async` so a deployment can deliver over the network (the Cloudflare
-    /// Worker `fetch`es an email relay; a native impl may call an SMTP/HTTP
-    /// provider). The bound is [`BackendBounds`]: `Send + Sync` natively,
-    /// unbounded on the single-threaded Worker.
+    /// This is the single required method: callers render a message with the
+    /// shared [`crate::email`] helpers and hand it here, so the transport never
+    /// owns the copy. `async` so a deployment can deliver over the network (the
+    /// Cloudflare Worker calls the Email Service binding or an HTTP relay; a
+    /// native impl may call SMTP/HTTP). The bound is [`BackendBounds`]:
+    /// `Send + Sync` natively, unbounded on the single-threaded Worker.
     ///
     /// # Errors
     ///
     /// Returns an error if delivery fails; the hub surfaces this as a
     /// transient failure to the caller without leaking whether the address
     /// is known.
-    async fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()>;
+    async fn send_email(
+        &self,
+        to: &str,
+        content: &crate::email::EmailContent,
+    ) -> anyhow::Result<()>;
+
+    /// Renders and sends the brand-less magic-link sign-in email to `email`.
+    ///
+    /// A convenience over [`send_email`](Mailer::send_email): it renders
+    /// [`crate::email::magic_link_email`] with an empty brand (callers with a
+    /// configured brand should render the email themselves and call
+    /// [`send_email`](Mailer::send_email) directly) and forwards `link_url`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_email`](Mailer::send_email).
+    async fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()> {
+        let content = crate::email::magic_link_email("", link_url);
+        self.send_email(email, &content).await
+    }
 }
 
-/// A [`Mailer`] that logs the link instead of sending it.
+/// A [`Mailer`] that logs the message instead of sending it.
 ///
-/// Intended for dev mode and tests: the link is emitted at `info` level so
-/// an operator can follow it manually. **Do not** use it where real
-/// delivery is expected — the link is visible to anyone reading the logs.
+/// Intended for dev mode and tests: the subject, recipient, and a short body
+/// snippet are emitted at `info` level so an operator can follow a magic link
+/// manually. **Do not** use it where real delivery is expected — the message is
+/// visible to anyone reading the logs. It implements only the required
+/// [`Mailer::send_email`] and inherits the default
+/// [`send_magic_link`](Mailer::send_magic_link).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LogMailer;
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Mailer for LogMailer {
-    async fn send_magic_link(&self, email: &str, link_url: &str) -> anyhow::Result<()> {
-        tracing::info!(%email, %link_url, "magic link issued (LogMailer: not actually emailed)");
+    async fn send_email(
+        &self,
+        to: &str,
+        content: &crate::email::EmailContent,
+    ) -> anyhow::Result<()> {
+        // Log a bounded body snippet so a magic link is still followable from
+        // the logs without dumping the entire HTML body.
+        let snippet: String = content.text.chars().take(200).collect();
+        tracing::info!(
+            %to,
+            subject = %content.subject,
+            %snippet,
+            "email issued (LogMailer: not actually sent)"
+        );
         Ok(())
     }
 }
