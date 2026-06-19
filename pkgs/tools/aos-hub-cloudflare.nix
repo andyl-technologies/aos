@@ -5,9 +5,9 @@
 ##! command group (provision / deploy / install / init) needs two extra runtime
 ##! assets that this wrapper layers on:
 ##!
-##! - the **prebuilt Worker wasm dist** (`shim.mjs` + `index.wasm` from
-##!   `aos-hub-worker-dist`) — the payload `wrangler deploy` uploads, copied
-##!   into `$out/share/aos-hub/worker/`;
+##! - the **prebuilt Worker wasm dist** (`shim.mjs` + `index.wasm` plus the
+##!   `assets/` static bundle from `aos-hub-worker-dist`) — the payload
+##!   `wrangler deploy` uploads, copied into `$out/share/aos-hub/worker/`;
 ##! - the **`wrangler` CLI** (from `pkgs.miniflare`, 4.x) + its `node` runtime.
 ##!
 ##! The wrapper sets `AOS_HUB_WORKER_DIST` / `AOS_HUB_WRANGLER` (read by
@@ -44,6 +44,11 @@ mkDerivation {
         mkdir -p "$out/bin" "$out/share/aos-hub/worker"
         cp ${aos-hub-worker-dist}/shim.mjs ${aos-hub-worker-dist}/index.wasm \
           "$out/share/aos-hub/worker/"
+        # The static-asset bundle Cloudflare serves from its CDN edge (the
+        # `[assets]` directory the generated wrangler.toml points at). Copied
+        # writable so `wrangler deploy`'s asset manifest pass can stat it.
+        cp -r ${aos-hub-worker-dist}/assets "$out/share/aos-hub/worker/assets"
+        chmod -R u+w "$out/share/aos-hub/worker/assets"
 
         # Hand-rolled wrapper (AOS has no nixpkgs makeWrapper). The unquoted
         # heredoc bakes the literal `$out` store path and the Nix-interpolated

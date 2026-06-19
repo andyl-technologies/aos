@@ -46,7 +46,21 @@
 ##! ```text
 ##! $out/shim.mjs    the bundled ES-module Worker entry (the wrangler `main`)
 ##! $out/index.wasm  the wasm-bindgen module the shim imports
+##! $out/assets/     first-party static files (CSS/JS/fonts under _assets/)
+##!                  served directly by Cloudflare's CDN edge — see below
 ##! ```
+##!
+##! ## Static assets bypass the Worker
+##!
+##! The browse stylesheet, progressive-enhancement JS, and fonts are copied into
+##! `$out/assets/_assets/` and declared to `wrangler` via an `[assets]` directory
+##! binding. Cloudflare serves any request whose path matches a file there
+##! *before* invoking the Worker, so `GET /_assets/*` is answered from the CDN
+##! edge with no wasm instantiation — eliminating the per-request Worker spin-up
+##! that an embedded-bytes handler would pay. The same bytes are embedded in the
+##! native hub via `aos_hub_core::web::assets`, so the files in
+##! `crates/aos-hub-core/src/web/static_assets/` are the single source of truth;
+##! only the delivery differs (the native hub has no CDN and serves them itself).
 {
   lib,
   mkDerivation,
@@ -264,6 +278,24 @@ in
           mkdir -p "$out"
           cp build/worker/shim.mjs   "$out/shim.mjs"
           cp build/worker/index.wasm "$out/index.wasm"
+
+          # Static assets served by Cloudflare's CDN edge (no Worker invocation).
+          # Lay them out under `_assets/` so the on-edge path matches the URL the
+          # browse pages + stylesheet reference (e.g. /_assets/style.css), and
+          # rename the fonts to the lowercase-hyphenated URL names. The `_headers`
+          # file sets a browser cache lifetime; Cloudflare edge-caches them
+          # regardless. (Names are stable, not content-hashed, so the lifetime is
+          # bounded rather than `immutable` — hashing is the follow-on if needed.)
+          mkdir -p "$out/assets/_assets"
+          cp aos-hub-core/src/web/static_assets/style.css "$out/assets/_assets/style.css"
+          cp aos-hub-core/src/web/static_assets/app.js    "$out/assets/_assets/app.js"
+          cp aos-hub-core/src/web/static_assets/JetBrainsMono-Regular.woff2 \
+            "$out/assets/_assets/jetbrains-mono-regular.woff2"
+          cp aos-hub-core/src/web/static_assets/JetBrainsMono-Bold.woff2 \
+            "$out/assets/_assets/jetbrains-mono-bold.woff2"
+          cp aos-hub-core/src/web/static_assets/OFL.txt   "$out/assets/_assets/OFL.txt"
+          printf '/_assets/*\n  Cache-Control: public, max-age=86400\n' \
+            > "$out/assets/_headers"
         '';
       }
     ];
