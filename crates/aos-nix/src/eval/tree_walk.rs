@@ -749,6 +749,8 @@ pub struct TreeWalkOptions {
     reject_ambient_search_path: bool,
     reject_unconfigured_impure_builtin_constants: bool,
     parse_cache_root: Option<PathBuf>,
+    #[cfg(test)]
+    fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 impl Default for TreeWalkOptions {
@@ -771,6 +773,8 @@ impl Default for TreeWalkOptions {
             reject_ambient_search_path: false,
             reject_unconfigured_impure_builtin_constants: false,
             parse_cache_root: None,
+            #[cfg(test)]
+            fetch_tree_url_responses: BTreeMap::new(),
         }
     }
 }
@@ -1154,6 +1158,16 @@ impl TreeWalkOptions {
     /// Clears all allowed URI prefixes.
     pub fn clear_allowed_uris(&mut self) {
         self.allowed_uris.clear();
+    }
+
+    #[cfg(test)]
+    fn add_fetch_tree_url_response(
+        &mut self,
+        url: impl Into<Vec<u8>>,
+        response: impl Into<Vec<u8>>,
+    ) {
+        self.fetch_tree_url_responses
+            .insert(url.into(), response.into());
     }
 
     /// Replaces the configured target system.
@@ -11329,6 +11343,20 @@ impl TreeWalk {
         url: &[u8],
         parsed: &Url,
     ) -> Result<Vec<u8>, TreeWalkError> {
+        #[cfg(test)]
+        if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
+            return Ok(response.clone());
+        }
+        #[cfg(test)]
+        if !self.options.fetch_tree_url_responses.is_empty() {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                url,
+                "missing test fetchTree URL response",
+            ));
+        }
+
         match parsed.scheme() {
             "http" | "https" => {
                 let client = reqwest::blocking::Client::builder()
@@ -12861,6 +12889,20 @@ impl TreeWalk {
         url: &[u8],
         parsed: &Url,
     ) -> Result<Vec<u8>, TreeWalkError> {
+        #[cfg(test)]
+        if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
+            return Ok(response.clone());
+        }
+        #[cfg(test)]
+        if !self.options.fetch_tree_url_responses.is_empty() {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                url,
+                "missing test fetchTree URL response",
+            ));
+        }
+
         match parsed.scheme() {
             "file" => {
                 let path = Self::fetchurl_file_path(id, span, url, parsed)?;
@@ -49092,6 +49134,76 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn fetch_tree_github_refs_resolve_with_test_url_responses() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-github-ref");
+        let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
+        let store_dir = unique_temp_dir("fetch-tree-github-ref-store");
+        let mut options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let resolved_rev = "0123456789abcdef0123456789abcdef01234567";
+        let recursive_nar_hash = "sha256-2huQKpXoKVd3jyPd2WSNvpaYPRMVWmOk+ehCZVNq3KI=";
+        let recursive_nar_hash_query =
+            url::form_urlencoded::byte_serialize(recursive_nar_hash.as_bytes()).collect::<String>();
+
+        options.add_fetch_tree_url_response(
+            "https://api.github.com/repos/NixOS/nixpkgs/commits/main",
+            format!(r#"{{"sha":"{resolved_rev}"}}"#).into_bytes(),
+        );
+        options.add_fetch_tree_url_response(
+            format!("https://github.com/NixOS/nixpkgs/archive/{resolved_rev}.tar.gz"),
+            archive_bytes,
+        );
+
+        let source = format!(
+            r#"
+            let x = builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}";
+            in {{
+              data = builtins.readFile "${{x.outPath}}/file.txt";
+              nested = builtins.readFile "${{x.outPath}}/sub/nested.txt";
+              rev = x.rev;
+              shortRev = x.shortRev;
+              narHash = x.narHash;
+            }}
+            "#
+        );
+        let json = eval_json_bytes_with_options(&source, options.clone());
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("GitHub fetchTree JSON parses");
+        assert_eq!(value["data"], "data");
+        assert_eq!(value["nested"], "inner");
+        assert_eq!(value["rev"], resolved_rev);
+        assert_eq!(value["shortRev"], &resolved_rev[..7]);
+        assert!(
+            value["narHash"]
+                .as_str()
+                .expect("narHash is a string")
+                .starts_with("sha256-")
+        );
+
+        let mut restricted_options = options;
+        restricted_options.set_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_uri(format!(
+                "github:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}"
+            ))
+            .expect("restricted GitHub ref URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(
+                r#"let x = builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}"; in x.rev"#
+            ),
+            restricted_options,
+        );
+        assert_eq!(
+            restricted_json,
+            serde_json::to_vec(resolved_rev).expect("rev JSON serializes")
+        );
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 
     #[test]
