@@ -14893,8 +14893,51 @@ impl TreeWalk {
                 return Ok(false);
             }
         }
+        if self.can_trust_existing_fetch_tarball_store_path(store_path) {
+            return Ok(true);
+        }
 
         self.fetch_tarball_store_path_matches_digest(id, span, store_path, expected_digest)
+    }
+
+    fn can_trust_existing_fetch_tarball_store_path(&self, store_path: &[u8]) -> bool {
+        self.should_query_default_nix_store_for_fetch_tarball_path(store_path)
+            && Self::nix_store_reports_valid_path(store_path)
+    }
+
+    fn should_query_default_nix_store_for_fetch_tarball_path(&self, store_path: &[u8]) -> bool {
+        self.options.store_dir() == DEFAULT_STORE_DIR
+            && is_valid_store_path(store_path, DEFAULT_STORE_DIR)
+    }
+
+    fn nix_store_reports_valid_path(store_path: &[u8]) -> bool {
+        let Ok(path) = std::str::from_utf8(store_path) else {
+            return false;
+        };
+        Self::nix_store_validity_command(path)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn nix_store_validity_command(path: &str) -> std::process::Command {
+        let mut command = std::process::Command::new("nix-store");
+        command
+            .args(["--store", "daemon", "--check-validity", path])
+            .env("HOME", "/var/empty")
+            .env("XDG_CONFIG_HOME", "/var/empty/.config")
+            .env("XDG_CONFIG_DIRS", "/var/empty")
+            .env("NIX_USER_CONF_FILES", "")
+            .env_remove("AOS_NIX_NATIVE")
+            .env_remove("AOS_NIX_NATIVE_VERIFY")
+            .env_remove("NIX_REMOTE")
+            .env_remove("NIX_CONFIG")
+            .env_remove("NIX_CONF_DIR")
+            .env_remove("NIX_STORE_DIR")
+            .env_remove("NIX_STATE_DIR")
+            .env_remove("NIX_LOG_DIR")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        command
     }
 
     fn fetch_tarball_temp_dir(id: IrId, span: Span, url: &[u8]) -> Result<PathBuf, TreeWalkError> {
@@ -15536,16 +15579,36 @@ impl TreeWalk {
                 })
             }
             "http" | "https" => {
-                let response = reqwest::blocking::get(parsed.as_str()).map_err(|source| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::FetchUrl {
-                            id,
-                            url: url.to_vec(),
-                            message: source.to_string(),
-                        },
-                        span,
-                    )
-                })?;
+                let client = reqwest::blocking::Client::builder()
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .build()
+                    .map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::FetchUrl {
+                                id,
+                                url: url.to_vec(),
+                                message: source.to_string(),
+                            },
+                            span,
+                        )
+                    })?;
+                let response = client
+                    .get(parsed.as_str())
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                    .send()
+                    .map_err(|source| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::FetchUrl {
+                                id,
+                                url: url.to_vec(),
+                                message: source.to_string(),
+                            },
+                            span,
+                        )
+                    })?;
                 let response = response.error_for_status().map_err(|source| {
                     TreeWalkError::new(
                         TreeWalkErrorKind::FetchUrl {
@@ -30691,6 +30754,7 @@ mod tests {
     use std::{
         collections::{BTreeMap, BTreeSet},
         fs,
+        net::TcpListener,
         path::{Path, PathBuf},
         process::Command,
         ptr::NonNull,
@@ -30698,6 +30762,7 @@ mod tests {
             Arc, Mutex,
             atomic::{AtomicU64, Ordering},
         },
+        thread,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -46435,6 +46500,74 @@ mod tests {
     }
 
     #[test]
+    fn fetchurl_primop_fetches_http_urls_as_identity_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+        let address = listener
+            .local_addr()
+            .expect("HTTP fixture address resolves");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, b"abc").expect("HTTP fixture gzip writes");
+        let body = encoder.finish().expect("HTTP fixture gzip finalizes");
+        let body_hash = format!("{:x}", Sha256::digest(&body));
+        let response_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("HTTP fixture accepts request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = std::io::Read::read(&mut stream, &mut buffer)
+                    .expect("HTTP fixture reads request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            std::io::Write::write_all(&mut stream, response_header.as_bytes())
+                .expect("HTTP fixture writes response header");
+            std::io::Write::write_all(&mut stream, &body)
+                .expect("HTTP fixture writes response body");
+            request
+        });
+
+        let url = nix_string_literal(&format!("http://{address}/data.txt"));
+        let store_dir = unique_temp_dir("fetchurl-http-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    r#"
+                let p = builtins.fetchurl {{
+                  url = {url};
+                  name = "http-identity-data";
+                  sha256 = "{body_hash}";
+                }};
+                in builtins.hashFile "sha256" p
+                "#
+                ),
+                options,
+            ),
+            body_hash.as_bytes()
+        );
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+
+        let request = handle.join().expect("HTTP fixture thread completes");
+        let request = String::from_utf8(request).expect("HTTP request is UTF-8");
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("accept-encoding: identity")),
+            "fetchurl HTTP request should ask for raw identity bytes, got: {request:?}"
+        );
+    }
+
+    #[test]
     fn fetchurl_primop_reuses_materialized_fixed_output_paths_before_fetching() {
         let (dir, path) = temp_file_with_bytes("fetchurl-reuse", b"abc");
         let path = path_source(&path);
@@ -48560,6 +48693,88 @@ mod tests {
 
         fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_reuse_trusts_only_default_nix_store_paths() {
+        let default_eval = TreeWalk::new(&lower("null"));
+        assert!(
+            default_eval.should_query_default_nix_store_for_fetch_tarball_path(
+                b"/nix/store/00000000000000000000000000000000-source"
+            )
+        );
+        assert!(!default_eval.can_trust_existing_fetch_tarball_store_path(
+            b"/nix/store/00000000000000000000000000000000-source"
+        ));
+        assert!(
+            !default_eval.should_query_default_nix_store_for_fetch_tarball_path(
+                b"/tmp/store/not-a-store-path"
+            )
+        );
+
+        let store_dir = unique_temp_dir("fetch-tarball-trust-store");
+        let custom_options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let custom_eval = TreeWalk::with_options(&lower("null"), custom_options);
+        assert!(
+            !custom_eval.should_query_default_nix_store_for_fetch_tarball_path(
+                b"/nix/store/00000000000000000000000000000000-source"
+            )
+        );
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tarball_default_store_validity_pins_local_store_and_scrubs_env() {
+        let command = TreeWalk::nix_store_validity_command(
+            "/nix/store/00000000000000000000000000000000-source",
+        );
+        let args = command
+            .get_args()
+            .map(|arg| arg.as_bytes())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            [
+                b"--store".as_slice(),
+                b"daemon".as_slice(),
+                b"--check-validity".as_slice(),
+                b"/nix/store/00000000000000000000000000000000-source".as_slice(),
+            ]
+        );
+        for (key, value) in [
+            ("HOME", "/var/empty"),
+            ("XDG_CONFIG_HOME", "/var/empty/.config"),
+            ("XDG_CONFIG_DIRS", "/var/empty"),
+            ("NIX_USER_CONF_FILES", ""),
+        ] {
+            assert!(
+                matches!(
+                    command.get_envs().find(|(name, _)| *name == key),
+                    Some((_, Some(found))) if found == std::ffi::OsStr::new(value)
+                ),
+                "{key} should be pinned for nix-store validity checks"
+            );
+        }
+        for key in [
+            "AOS_NIX_NATIVE",
+            "AOS_NIX_NATIVE_VERIFY",
+            "NIX_REMOTE",
+            "NIX_CONFIG",
+            "NIX_CONF_DIR",
+            "NIX_STORE_DIR",
+            "NIX_STATE_DIR",
+            "NIX_LOG_DIR",
+        ] {
+            assert!(
+                matches!(
+                    command.get_envs().find(|(name, _)| *name == key),
+                    Some((_, None))
+                ),
+                "{key} should be explicitly removed from nix-store validity checks"
+            );
+        }
     }
 
     #[test]
