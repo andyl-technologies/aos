@@ -88,6 +88,22 @@ impl BindingKind {
             BindingKind::R2 => "Cloudflare R2",
         }
     }
+
+    /// Reports whether a *custom* binding of this kind has a working read/write
+    /// implementation today.
+    ///
+    /// Only [`LocalFs`](BindingKind::LocalFs) does: the native hub resolves it
+    /// to a filesystem fetcher/writer. Custom [`S3`](BindingKind::S3) and
+    /// [`R2`](BindingKind::R2) bindings — an org pointing at its *own* external
+    /// object store with credentials — are not yet implemented (the byte I/O is
+    /// a TODO), so the UI must not let an operator create one that cannot serve.
+    ///
+    /// This is distinct from runtime *support*: the Worker serves registries
+    /// from its single deployment R2 bucket by prefix (the default storage),
+    /// which is not a custom binding row and is always available without one.
+    pub fn implemented_as_custom_binding(&self) -> bool {
+        matches!(self, BindingKind::LocalFs)
+    }
 }
 
 /// The runtime the hub is being served from.
@@ -143,6 +159,36 @@ impl RuntimeKind {
     pub fn supports(&self, kind: BindingKind) -> bool {
         self.supported_binding_kinds().contains(&kind)
     }
+
+    /// Returns the binding kinds an operator can actually *create* on this
+    /// runtime right now — those both [supported](Self::supports) by the runtime
+    /// and [implemented](BindingKind::implemented_as_custom_binding) as a custom
+    /// binding.
+    ///
+    /// This is what the WebUI offers in the create-binding form. It is empty on
+    /// the [`Worker`](RuntimeKind::Worker) today (its only object store is the
+    /// deployment's default R2 bucket, used automatically — not a custom
+    /// binding), and `[local_fs]` on the [`Native`](RuntimeKind::Native) hub.
+    pub fn creatable_binding_kinds(&self) -> Vec<BindingKind> {
+        self.supported_binding_kinds()
+            .iter()
+            .copied()
+            .filter(BindingKind::implemented_as_custom_binding)
+            .collect()
+    }
+
+    /// Returns a human-facing description of this runtime's *default* storage —
+    /// the backend new registries use automatically, with no binding.
+    ///
+    /// The [`Worker`](RuntimeKind::Worker) serves from its deployment R2 bucket;
+    /// the [`Native`](RuntimeKind::Native) hub from its configured default
+    /// storage root.
+    pub fn default_storage_label(&self) -> &'static str {
+        match self {
+            RuntimeKind::Native => "this deployment's default storage",
+            RuntimeKind::Worker => "Cloudflare R2 (this deployment)",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +208,31 @@ mod tests {
         assert_eq!(BindingKind::parse("LOCAL_FS"), None);
         assert_eq!(BindingKind::parse(" s3"), None);
         assert_eq!(BindingKind::parse("gcs"), None);
+    }
+
+    #[test]
+    fn only_local_fs_is_implemented_as_a_custom_binding() {
+        assert!(BindingKind::LocalFs.implemented_as_custom_binding());
+        assert!(!BindingKind::S3.implemented_as_custom_binding());
+        assert!(!BindingKind::R2.implemented_as_custom_binding());
+    }
+
+    #[test]
+    fn creatable_kinds_are_supported_and_implemented() {
+        // Native can create local_fs; the Worker can create none today (its R2
+        // is the default storage, not a custom binding).
+        assert_eq!(
+            RuntimeKind::Native.creatable_binding_kinds(),
+            vec![BindingKind::LocalFs]
+        );
+        assert!(RuntimeKind::Worker.creatable_binding_kinds().is_empty());
+        // Every creatable kind is both supported and implemented.
+        for rt in [RuntimeKind::Native, RuntimeKind::Worker] {
+            for kind in rt.creatable_binding_kinds() {
+                assert!(rt.supports(kind));
+                assert!(kind.implemented_as_custom_binding());
+            }
+        }
     }
 
     #[test]

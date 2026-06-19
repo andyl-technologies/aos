@@ -1304,37 +1304,56 @@ pub fn org_dashboard(
             .collect();
         body.push_str(&table(&["name", "kind", "root", ""], &rows));
     }
+    // New registries use the deployment's default storage automatically — no
+    // binding required. A custom binding is only for pointing an org at an
+    // *additional* backend.
+    let _ = write!(
+        body,
+        "<p class=\"dim\">New registries use {default} automatically — no storage binding is \
+         required. A custom binding below only adds an extra backend.</p>\n",
+        default = escape(RuntimeKind::current().default_storage_label()),
+    );
     if can_configure {
-        body.push_str("<h3>Create a storage binding</h3>\n");
-        // Offer only the kinds the serving runtime supports (the native hub
-        // rejects r2; the Worker rejects local_fs).
-        let mut kind_options = String::new();
-        for kind in RuntimeKind::current().supported_binding_kinds() {
+        // Offer only kinds that are both runtime-supported and actually
+        // implemented as a custom binding. Today that is `local_fs` on the
+        // native hub and nothing on the Worker (its R2 is the default storage,
+        // not a custom binding), so the misleading "create an s3/r2 binding that
+        // can't serve" form is never shown.
+        let creatable = RuntimeKind::current().creatable_binding_kinds();
+        if creatable.is_empty() {
+            body.push_str(
+                "<p class=\"dim\">Custom storage bindings (for example an external S3 bucket) are \
+                 not available on this deployment yet — registries use the default storage \
+                 above.</p>\n",
+            );
+        } else {
+            body.push_str("<h3>Add a custom storage binding</h3>\n");
+            let mut kind_options = String::new();
+            for kind in &creatable {
+                let _ = write!(
+                    kind_options,
+                    "<option value=\"{value}\">{label}</option>",
+                    value = escape(kind.as_str()),
+                    label = escape(kind.label()),
+                );
+            }
             let _ = write!(
-                kind_options,
-                "<option value=\"{value}\">{label}</option>",
-                value = escape(kind.as_str()),
-                label = escape(kind.label()),
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\">\n{csrf}\
+                 <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
+                 <label>kind <select name=\"kind\">{kinds}</select></label>\n\
+                 <label>root <input type=\"text\" name=\"root\" required \
+                 placeholder=\"/srv/registries/acme\"></label>\n\
+                 <button>create binding</button>\n</form>\n",
+                org = escape(slug),
+                csrf = csrf_field(csrf),
+                kinds = kind_options,
+            );
+            body.push_str(
+                "<p class=\"dim\">For <code>local_fs</code> the root is an absolute host path with no \
+                 <code>..</code> components. Managed registries place their surfaces under it.</p>\n",
             );
         }
-        let _ = write!(
-            body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\">\n{csrf}\
-             <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
-             <label>kind <select name=\"kind\">{kinds}</select></label>\n\
-             <label>root <input type=\"text\" name=\"root\" required \
-             placeholder=\"/srv/registries/acme\"></label>\n\
-             <button>create binding</button>\n</form>\n",
-            org = escape(slug),
-            csrf = csrf_field(csrf),
-            kinds = kind_options,
-        );
-        body.push_str(
-            "<p class=\"dim\">A binding is a named storage backend. Its root is kind-dependent: \
-             for <code>local_fs</code> an absolute path with no <code>..</code> components; for \
-             <code>s3</code>/<code>r2</code> a bucket/prefix. Managed registries place their \
-             surfaces under it.</p>\n",
-        );
     }
 
     body.push_str("<h2>Members</h2>\n");
