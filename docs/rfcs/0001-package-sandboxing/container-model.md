@@ -173,8 +173,8 @@ however, disables the surrounding ecosystem — in `pkgs/system/systemd.nix`:
 -Dimportd=disabled
 ```
 
-Consequences (needs verification against the exact current flags in
-`pkgs/system/systemd.nix`):
+Consequences, verified against the current flags in
+`pkgs/system/systemd.nix`:
 
 - **No `machined` / `machinectl`.** No machine registry, no
   `systemd-nspawn@.service` multiplexing via `machinectl`, no
@@ -188,10 +188,10 @@ Consequences (needs verification against the exact current flags in
 This shapes the design: we drive containers through **first-class systemd
 template units**, not `machinectl`. systemd is 259.1, so the full
 `--private-users`, `LoadCredential=`, `--volatile`, cgroup-delegation feature
-set is present. The kernel ships `CONFIG_USER_NS`, `CONFIG_PID_NS`,
-`CONFIG_NET_NS`, `CONFIG_IPC_NS`, `CONFIG_UTS_NS`, and mount namespaces, and
-cgroup v2 — confirmed present for the VM test kernels; needs verification that
-the production image kernel config matches.
+set is present. The kernel config pins `CONFIG_NAMESPACES`, `CONFIG_USER_NS`,
+`CONFIG_PID_NS`, `CONFIG_NET_NS`, `CONFIG_IPC_NS`, `CONFIG_UTS_NS`, and
+`CONFIG_CGROUPS` in `pkgs/kernel/config/base.config`; the production resolved
+config is asserted by `tests/build/kernel-config.nix`.
 
 ## Per-package root image
 

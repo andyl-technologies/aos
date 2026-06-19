@@ -980,7 +980,9 @@ D17 (nspawn) stays skipped on merit, not cost.
   operator-facing surfaces, not just in design docs.
 - **No premature config commitment.** Config delivery (Decision 9) stays open;
   credstore is one option among several, not the default.
-- **Needs verification.** The "machined disabled" flags, the kernel namespace
-  configs for nesting, and the exact `aos-seed-profiles` ordering are reported
-  from investigation and should be re-confirmed against the tree before the MVP
-  lands.
+- **Verified against the tree.** The "machined disabled" flags remain in
+  `pkgs/system/systemd.nix`, the namespace and LSM kernel configs are pinned in
+  `pkgs/kernel/config/base.config` / `security.config` and checked by
+  `tests/build/kernel-config.nix`, and `aos-seed-profiles.service` still runs
+  after `nix-overlay-setup.service` in initrd before the stage-2 package seed
+  and desired-package install services.
