@@ -66,6 +66,13 @@
         builtins.map (name: "${package}.${name}") overlaps
     )
     credentialPackages;
+  exposedBundledPackages =
+    lib.filterAttrs
+    (_: package: package.bundle && (package.package ? expose))
+    config.aos.packages;
+  packageAttestationReadinessUnits =
+    lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"]
+    ++ lib.optionals cfg.enable ["aos-install-packages.service"];
 
   desiredToml = toml.toTOML ({
       packages = cfg.packages;
@@ -319,7 +326,54 @@ in {
       d  /root/.config/apm                   0755 root root - -
       d  /root/.config/apm/registries.d      0755 root root - -
       d  /etc/aos/packages.d                 0755 root root - -
+      d  /run/aos-attest                     0700 root root - -
     '';
+
+    systemd.services.aos-attest = {
+      description = "Produce AOS package attestation quote";
+      requires = packageAttestationReadinessUnits;
+      after = [
+        "aos-seed-baked-packages.service"
+        "aos-install-packages.service"
+      ];
+      serviceConfig = {
+        Type = "oneshot";
+        RuntimeDirectory = "aos-attest";
+        RuntimeDirectoryMode = "0700";
+        RuntimeDirectoryPreserve = "yes";
+        StateDirectory = "aos-attest";
+        StateDirectoryMode = "0700";
+      };
+      script = ''
+        nonce_file=/run/aos-attest/nonce
+        event_log=/run/log/aos-packages.cel
+        output_dir=/var/lib/aos-attest/quote
+        quote_json=/var/lib/aos-attest/quote.json
+        quote_json_tmp=/var/lib/aos-attest/quote.json.tmp
+        cleanup() {
+          status=$?
+          if ! ${pkgs.coreutils}/bin/rm -f -- "$nonce_file" "$quote_json_tmp"; then
+            if [ "$status" -eq 0 ]; then
+              status=1
+            fi
+          fi
+          exit "$status"
+        }
+        trap cleanup EXIT
+        if [ ! -s "$nonce_file" ]; then
+          echo "write verifier nonce hex to $nonce_file before starting aos-attest.service" >&2
+          exit 2
+        fi
+        if [ ! -s "$event_log" ]; then
+          echo "package attestation event log $event_log is not ready" >&2
+          exit 3
+        fi
+        ${pkgs.coreutils}/bin/rm -rf -- "$output_dir"
+        ${pkgs.coreutils}/bin/rm -f -- "$quote_json" "$quote_json_tmp"
+        ${pkgs.aos}/bin/apm --json attest quote --nonce-file "$nonce_file" --output-dir "$output_dir" > "$quote_json_tmp"
+        ${pkgs.coreutils}/bin/mv -f -- "$quote_json_tmp" "$quote_json"
+      '';
+    };
 
     systemd.services.aos-install-packages = {
       description = "Reconcile AOS desired packages";

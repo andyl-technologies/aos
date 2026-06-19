@@ -301,6 +301,12 @@ pub enum PackageCommand {
         #[arg(long)]
         system: bool,
     },
+    /// Produce and verify package runtime attestations
+    Attest {
+        /// The attestation operation to run
+        #[command(subcommand)]
+        command: AttestCommand,
+    },
     /// Prevent a package from being upgraded
     Hold {
         /// Package name
@@ -584,11 +590,52 @@ impl PackageCommand {
             PackageCommand::Rdepends { system, .. } => *system,
             PackageCommand::Policy { system, .. } => *system,
             PackageCommand::Files { system, .. } => *system,
+            PackageCommand::Attest { command } => command.is_system(),
             PackageCommand::Held { system, .. } => *system,
             PackageCommand::Orphans { system, .. } => *system,
             PackageCommand::TestReconcileExposedUnits { system } => *system,
             PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
             _ => false,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum AttestCommand {
+    /// Produce a TPM quote over the package PCR set
+    Quote {
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
+        /// Directory where quote artifacts are written
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Verify a package event log against a quoted PCR 15 value
+    Verify {
+        /// Use system registry metadata
+        #[arg(long)]
+        system: bool,
+        /// Package event log JSONL path
+        #[arg(long)]
+        event_log: PathBuf,
+        /// Quoted PCR 15 value as SHA-256 hex
+        #[arg(long)]
+        pcr15: String,
+        /// Expected PCR 15 value before package measurements
+        #[arg(long)]
+        pcr15_baseline: Option<String>,
+    },
+}
+
+impl AttestCommand {
+    fn is_system(&self) -> bool {
+        match self {
+            AttestCommand::Verify { system, .. } => *system,
+            AttestCommand::Quote { .. } => false,
         }
     }
 }
@@ -1762,7 +1809,20 @@ pub async fn run(
     }
 
     if let PackageCommand::TestProducePackageAttestationQuote { nonce, output_dir } = command {
-        return run_test_produce_package_attestation_quote(nonce, output_dir, printer);
+        return run_produce_package_attestation_quote(nonce, output_dir, printer);
+    }
+
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::Quote {
+                nonce,
+                nonce_file,
+                output_dir,
+            },
+    } = command
+    {
+        let nonce = read_attestation_nonce(nonce, nonce_file)?;
+        return run_produce_package_attestation_quote(&nonce, output_dir, printer);
     }
 
     // The hidden activate split runs during the activate script while that
@@ -1963,6 +2023,18 @@ pub async fn run(
         PackageCommand::Rdepends { package, .. } => deps::rdepends(&config, package, printer).await,
         PackageCommand::Policy { package, .. } => deps::policy(&config, package, printer).await,
         PackageCommand::Files { package, .. } => deps::files(&config, package, printer).await,
+        PackageCommand::Attest {
+            command:
+                AttestCommand::Verify {
+                    event_log,
+                    pcr15,
+                    pcr15_baseline,
+                    ..
+                },
+        } => run_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer),
+        PackageCommand::Attest {
+            command: AttestCommand::Quote { .. },
+        } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -2015,9 +2087,7 @@ pub async fn run(
             pcr15,
             pcr15_baseline,
             ..
-        } => {
-            run_test_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer)
-        }
+        } => run_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer),
         PackageCommand::TestProducePackageAttestationQuote { .. } => {
             unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
         }
@@ -2037,7 +2107,7 @@ pub async fn run(
     }
 }
 
-fn run_test_verify_package_attestation(
+fn run_verify_package_attestation(
     config: &config::ApmConfig,
     event_log: &PathBuf,
     pcr15: &str,
@@ -2091,7 +2161,18 @@ fn run_test_verify_package_attestation(
     Ok(())
 }
 
-fn run_test_produce_package_attestation_quote(
+fn read_attestation_nonce(nonce: &Option<String>, nonce_file: &Option<PathBuf>) -> Result<String> {
+    match (nonce.as_deref(), nonce_file.as_ref()) {
+        (Some(_), Some(_)) => bail!("use either --nonce or --nonce-file, not both"),
+        (Some(nonce), None) => Ok(nonce.to_string()),
+        (None, Some(path)) => fs::read_to_string(path)
+            .with_context(|| format!("reading attestation nonce {}", path.display()))
+            .map(|nonce| nonce.trim().to_string()),
+        (None, None) => bail!("attest quote requires --nonce or --nonce-file"),
+    }
+}
+
+fn run_produce_package_attestation_quote(
     nonce: &str,
     output_dir: &PathBuf,
     printer: &Printer,
@@ -3385,6 +3466,48 @@ mod tests {
             }
             .is_system()
         );
+        assert!(
+            PackageCommand::Attest {
+                command: AttestCommand::Verify {
+                    system: true,
+                    event_log: "/run/log/aos-packages.cel".into(),
+                    pcr15: "00".repeat(32),
+                    pcr15_baseline: None,
+                },
+            }
+            .is_system()
+        );
+        assert!(
+            !PackageCommand::Attest {
+                command: AttestCommand::Quote {
+                    nonce: Some("00".into()),
+                    nonce_file: None,
+                    output_dir: "/tmp/aos-quote".into(),
+                },
+            }
+            .is_system()
+        );
+    }
+
+    #[test]
+    fn attest_nonce_reader_accepts_inline_or_file() {
+        assert_eq!(
+            read_attestation_nonce(&Some("0011".into()), &None).expect("inline nonce"),
+            "0011"
+        );
+
+        let tmp = TempDir::new().expect("tempdir");
+        let nonce_file = tmp.path().join("nonce");
+        fs::write(&nonce_file, "aabb\n").expect("nonce file");
+        assert_eq!(
+            read_attestation_nonce(&None, &Some(nonce_file)).expect("file nonce"),
+            "aabb"
+        );
+
+        let conflict =
+            read_attestation_nonce(&Some("0011".into()), &Some(tmp.path().join("nonce")))
+                .unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --nonce or --nonce-file"));
     }
 
     #[test]

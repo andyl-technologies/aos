@@ -31,7 +31,7 @@
       target.succeed(f"test ! -e {out_dir}")
 
       raw = target.succeed(
-          f"{apm} --json _test-produce-package-attestation-quote "
+          f"{apm} --json attest quote "
           f"--nonce {nonce} --output-dir {out_dir}"
       )
       print("=== package attestation quote ===")
