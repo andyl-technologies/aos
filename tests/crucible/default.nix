@@ -34,6 +34,7 @@ in {
     crateArtifactTypes = import ./phase1-crate-artifact-types.nix {inherit pkgs lib;};
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
+    crateSpecIndex = import ./phase1-crate-spec-index.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};

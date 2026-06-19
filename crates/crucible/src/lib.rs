@@ -1,5 +1,7 @@
 //! `crucible` owns the pure engine type spine.
 //!
+//! Spec index: RFC-0010 files 05, 06, 07, 08, 17, 18, 19.
+//!
 //! This L3 crate defines the RFC-0010 execution-model vocabulary shared by the
 //! scheduler, temporal graph, checkpoint cache, fault engine, assertions, event
 //! log, and VM backend adapters. The crate remains a safe reduction island: it

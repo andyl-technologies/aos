@@ -1,5 +1,7 @@
 //! `crucible-harness` owns cross-crate determinism gate scaffolding.
 //!
+//! Spec index: RFC-0010 files 24, 27.
+//!
 //! This test-only workspace member will host the fingerprint comparator,
 //! divergence bisector, replay-oracle checker, ABI golden-vector runner, and
 //! adversarial-host driver described by RFC-0010 files 24 and 27.
@@ -17,6 +19,7 @@ pub mod divergence;
 pub mod fingerprint;
 pub mod gate_targets;
 pub mod replay_oracle;
+pub mod spec_index;
 
 /// A cross-crate harness component hosted by `crucible-harness`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
