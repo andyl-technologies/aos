@@ -1391,8 +1391,11 @@ impl IrLowerer {
         let NodeData::Binary { op, lhs, rhs } = node.data else {
             return Err(self.invalid_shape(node, "binary payload"));
         };
-        let lhs = self.lower_expr(lhs)?;
-        let rhs = self.lower_expr(rhs)?;
+        let (lhs, rhs) = match op {
+            BinOpKind::PipeRight => (self.lower_lazy(lhs)?, self.lower_expr(rhs)?),
+            BinOpKind::PipeLeft => (self.lower_expr(lhs)?, self.lower_lazy(rhs)?),
+            _ => (self.lower_expr(lhs)?, self.lower_expr(rhs)?),
+        };
         self.push(IrKind::BinOp, node.span, IrData::Binary { op, lhs, rhs })
     }
 
@@ -1726,8 +1729,8 @@ fn is_trivial_value(kind: IrKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compile::resolve;
-    use crate::syntax::parse_str;
+    use crate::compile::{ScopeTables, resolve};
+    use crate::syntax::{AstArena, parse_str};
 
     fn lowered(source: &str) -> Ir {
         lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))
@@ -1748,6 +1751,22 @@ mod tests {
             panic!("thunk payload expected");
         };
         inner
+    }
+
+    fn manual_resolved_ast(root: NodeId, nodes: Vec<Node>) -> ResolvedAst {
+        let node_count = nodes.len();
+        ResolvedAst {
+            root,
+            arena: AstArena::from_raw_parts(nodes, Vec::new()),
+            symbols: SymbolTable::new(),
+            scopes: ScopeTables::from_raw_parts(
+                Vec::new(),
+                vec![None; node_count],
+                Vec::new(),
+                Vec::new(),
+                vec![None; node_count],
+            ),
+        }
     }
 
     fn lookup_site(ir: &Ir, id: IrId) -> IrInlineCacheSiteId {
@@ -1811,6 +1830,91 @@ mod tests {
         assert_eq!(
             node(&ir, thunk_inner(&ir, elements[1])).kind,
             IrKind::LocalVar
+        );
+    }
+
+    #[test]
+    fn pipe_binary_operands_lower_piped_side_lazily() {
+        let division_lhs = NodeId::new(0);
+        let division_rhs = NodeId::new(1);
+        let division = NodeId::new(2);
+        let function_side = NodeId::new(3);
+        let pipe = NodeId::new(4);
+        let pipe_right = lower(manual_resolved_ast(
+            pipe,
+            vec![
+                Node::new(NodeKind::Int, Span::new(0, 1), NodeData::Int(1)),
+                Node::new(NodeKind::Int, Span::new(4, 5), NodeData::Int(0)),
+                Node::new(
+                    NodeKind::BinOp,
+                    Span::new(0, 5),
+                    NodeData::Binary {
+                        op: BinOpKind::Div,
+                        lhs: division_lhs,
+                        rhs: division_rhs,
+                    },
+                ),
+                Node::new(NodeKind::Int, Span::new(9, 10), NodeData::Int(7)),
+                Node::new(
+                    NodeKind::BinOp,
+                    Span::new(0, 10),
+                    NodeData::Binary {
+                        op: BinOpKind::PipeRight,
+                        lhs: division,
+                        rhs: function_side,
+                    },
+                ),
+            ],
+        ))
+        .expect("forward pipe IR lowers");
+        let IrData::Binary { lhs, rhs, .. } = root_node(&pipe_right).data else {
+            panic!("pipe payload expected");
+        };
+        assert_eq!(
+            node(&pipe_right, thunk_inner(&pipe_right, lhs)).kind,
+            IrKind::BinOp
+        );
+        assert_eq!(node(&pipe_right, rhs).kind, IrKind::Int);
+
+        let function_side = NodeId::new(0);
+        let division_lhs = NodeId::new(1);
+        let division_rhs = NodeId::new(2);
+        let division = NodeId::new(3);
+        let pipe = NodeId::new(4);
+        let pipe_left = lower(manual_resolved_ast(
+            pipe,
+            vec![
+                Node::new(NodeKind::Int, Span::new(0, 1), NodeData::Int(7)),
+                Node::new(NodeKind::Int, Span::new(5, 6), NodeData::Int(1)),
+                Node::new(NodeKind::Int, Span::new(9, 10), NodeData::Int(0)),
+                Node::new(
+                    NodeKind::BinOp,
+                    Span::new(5, 10),
+                    NodeData::Binary {
+                        op: BinOpKind::Div,
+                        lhs: division_lhs,
+                        rhs: division_rhs,
+                    },
+                ),
+                Node::new(
+                    NodeKind::BinOp,
+                    Span::new(0, 10),
+                    NodeData::Binary {
+                        op: BinOpKind::PipeLeft,
+                        lhs: function_side,
+                        rhs: division,
+                    },
+                ),
+            ],
+        ))
+        .expect("reverse pipe IR lowers");
+        let IrData::Binary { lhs, rhs, .. } = root_node(&pipe_left).data else {
+            panic!("pipe payload expected");
+        };
+        assert_eq!(node(&pipe_left, lhs).kind, IrKind::Int);
+        assert_eq!(
+            node(&pipe_left, thunk_inner(&pipe_left, rhs)).kind,
+            IrKind::BinOp
         );
     }
 

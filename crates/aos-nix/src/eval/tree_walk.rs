@@ -2111,8 +2111,8 @@ impl TreeWalk {
     ///
     /// This initial public node entry point is intentionally limited to scalar
     /// literal, list literal, static attrset literal, string and URI literal,
-    /// control-flow, boolean operator, string/list concatenation, attrset
-    /// update, static
+    /// control-flow, boolean operator, pipe application, string/list
+    /// concatenation, attrset update, static
     /// attribute selection, lexical `let` environment, simple and formal-set
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
     /// string/list comparison, direct strict unary primops,
@@ -5543,10 +5543,8 @@ impl TreeWalk {
             BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
             BinOpKind::Concat => self.eval_list_concat(id, node, lhs, rhs),
             BinOpKind::Update => self.eval_attr_update(id, node, lhs, rhs),
-            BinOpKind::PipeRight | BinOpKind::PipeLeft => Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedBinaryOp { id, op },
-                node.span,
-            )),
+            BinOpKind::PipeRight => self.eval_apply_expression(id, node.span, rhs, lhs),
+            BinOpKind::PipeLeft => self.eval_apply_expression(id, node.span, lhs, rhs),
         }
     }
 
@@ -6978,22 +6976,32 @@ impl TreeWalk {
         let IrData::Pair { first, second } = node.data else {
             return Err(self.invalid_payload(id, node, "application pair"));
         };
-        let function_span = self.node(first)?.span;
-        let mut function = self.eval_node(first)?;
+        self.eval_apply_expression(id, node.span, first, second)
+    }
+
+    fn eval_apply_expression(
+        &mut self,
+        id: IrId,
+        span: Span,
+        function_id: IrId,
+        argument_id: IrId,
+    ) -> Result<Value, TreeWalkError> {
+        let function_span = self.node(function_id)?.span;
+        let mut function = self.eval_node(function_id)?;
         if !matches!(function.tag(), ValueTag::Lambda | ValueTag::Primop)
-            && !self.node_is_break_primop(first)?
+            && !self.node_is_break_primop(function_id)?
         {
-            function = self.force_demanded_value(first, function_span, function)?;
+            function = self.force_demanded_value(function_id, function_span, function)?;
         }
-        function = self.ensure_applicable_value(first, function_span, function)?;
-        let argument = self.eval_lazy_node(second)?;
+        function = self.ensure_applicable_value(function_id, function_span, function)?;
+        let argument = self.eval_lazy_node(argument_id)?;
         self.apply_lambda_value(
             id,
-            node.span,
-            first,
+            span,
+            function_id,
             function,
             function_span,
-            second,
+            argument_id,
             argument,
         )
     }
@@ -29930,8 +29938,8 @@ mod tests {
     };
 
     use crate::compile::{
-        EffectClass, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode, IrShape,
-        IrWithChain, lower as lower_ir, resolve as resolve_ast,
+        EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode,
+        IrShape, IrWithChain, lower as lower_ir, resolve as resolve_ast,
     };
     use crate::runtime::builtins::{
         BUILTINS, Builtin, BuiltinDirect, BuiltinEffect, direct_builtin,
@@ -31201,6 +31209,37 @@ mod tests {
 
     fn manual_ir(root: IrId, nodes: Vec<IrNode>) -> Ir {
         empty_ir(root, IrArena::from_raw_parts(nodes, Vec::new()))
+    }
+
+    fn manual_ir_with_symbols(root: IrId, nodes: Vec<IrNode>, symbols: SymbolTable) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            symbols,
+            frames: Vec::new().into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        }
+    }
+
+    fn manual_ir_with_symbols_and_frames(
+        root: IrId,
+        nodes: Vec<IrNode>,
+        symbols: SymbolTable,
+        frames: Vec<FrameInfo>,
+    ) -> Ir {
+        Ir {
+            root,
+            arena: IrArena::from_raw_parts(nodes, Vec::new()),
+            symbols,
+            frames: frames.into_boxed_slice(),
+            with_chains: Vec::new().into_boxed_slice(),
+            attr_paths: Vec::new().into_boxed_slice(),
+            bindings: Vec::new().into_boxed_slice(),
+            shapes: Vec::new().into_boxed_slice(),
+        }
     }
 
     fn manual_ir_with_with_chains(
@@ -54683,36 +54722,215 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_operators_report_operator_and_span() {
-        let lhs = IrId::new(0);
-        let rhs = IrId::new(1);
-        let root = IrId::new(2);
-        let span = Span::new(0, 6);
-        let binary = manual_ir(
-            root,
+    fn pipe_operators_apply_functions() {
+        let mut symbols = SymbolTable::new();
+        let to_string = symbols.intern(b"toString").expect("symbol interns");
+
+        let forward = manual_ir_with_symbols(
+            IrId::new(2),
             vec![
-                pure_node(IrKind::Int, Span::new(0, 1), IrData::Int(1)),
-                pure_node(IrKind::Int, Span::new(5, 6), IrData::Int(2)),
+                pure_node(IrKind::Int, Span::new(0, 2), IrData::Int(42)),
+                pure_node(
+                    IrKind::GlobalVar,
+                    Span::new(6, 14),
+                    IrData::Symbol(to_string),
+                ),
                 pure_node(
                     IrKind::BinOp,
-                    span,
+                    Span::new(0, 14),
                     IrData::Binary {
                         op: BinOpKind::PipeRight,
-                        lhs,
-                        rhs,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            symbols.clone(),
+        );
+        let forward = eval_whnf_owned(&forward).expect("forward pipe evaluates");
+        assert_eq!(
+            forward
+                .heap()
+                .get_string(forward.value())
+                .expect("forward pipe returns a string")
+                .bytes(),
+            b"42",
+        );
+
+        let reverse = manual_ir_with_symbols(
+            IrId::new(2),
+            vec![
+                pure_node(
+                    IrKind::GlobalVar,
+                    Span::new(0, 8),
+                    IrData::Symbol(to_string),
+                ),
+                pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(7)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 13),
+                    IrData::Binary {
+                        op: BinOpKind::PipeLeft,
+                        lhs: IrId::new(0),
+                        rhs: IrId::new(1),
+                    },
+                ),
+            ],
+            symbols,
+        );
+        let reverse = eval_whnf_owned(&reverse).expect("reverse pipe evaluates");
+        assert_eq!(
+            reverse
+                .heap()
+                .get_string(reverse.value())
+                .expect("reverse pipe returns a string")
+                .bytes(),
+            b"7",
+        );
+    }
+
+    #[test]
+    fn pipe_operators_pass_piped_operand_lazily() {
+        let mut symbols = SymbolTable::new();
+        let x = symbols.intern(b"x").expect("symbol interns");
+        let frames = vec![FrameInfo {
+            slot_count: 1,
+            captures: Vec::new().into_boxed_slice(),
+            rec: false,
+            has_with: false,
+        }];
+
+        fn ignored_division_pipe(
+            op: BinOpKind,
+            x: Symbol,
+            symbols: SymbolTable,
+            frames: Vec<FrameInfo>,
+        ) -> Ir {
+            let (lhs, rhs) = match op {
+                BinOpKind::PipeRight => (IrId::new(6), IrId::new(2)),
+                BinOpKind::PipeLeft => (IrId::new(2), IrId::new(6)),
+                _ => unreachable!("test helper only builds pipe operators"),
+            };
+            manual_ir_with_symbols_and_frames(
+                IrId::new(7),
+                vec![
+                    pure_node(
+                        IrKind::Formal,
+                        Span::new(0, 1),
+                        IrData::Formal {
+                            name: x,
+                            default: None,
+                        },
+                    ),
+                    pure_node(IrKind::Int, Span::new(3, 4), IrData::Int(5)),
+                    pure_node(
+                        IrKind::Lambda,
+                        Span::new(0, 4),
+                        IrData::Lambda {
+                            pattern: IrId::new(0),
+                            body: IrId::new(1),
+                            frame: Some(FrameId::new(0)),
+                        },
+                    ),
+                    pure_node(IrKind::Int, Span::new(8, 9), IrData::Int(1)),
+                    pure_node(IrKind::Int, Span::new(12, 13), IrData::Int(0)),
+                    pure_node(
+                        IrKind::BinOp,
+                        Span::new(8, 13),
+                        IrData::Binary {
+                            op: BinOpKind::Div,
+                            lhs: IrId::new(3),
+                            rhs: IrId::new(4),
+                        },
+                    ),
+                    pure_node(
+                        IrKind::ThunkAlloc,
+                        Span::new(8, 13),
+                        IrData::Node(IrId::new(5)),
+                    ),
+                    pure_node(
+                        IrKind::BinOp,
+                        Span::new(0, 18),
+                        IrData::Binary { op, lhs, rhs },
+                    ),
+                ],
+                symbols,
+                frames,
+            )
+        }
+
+        for (op, label) in [
+            (BinOpKind::PipeRight, "forward pipe"),
+            (BinOpKind::PipeLeft, "reverse pipe"),
+        ] {
+            let ir = ignored_division_pipe(op, x, symbols.clone(), frames.clone());
+            assert_eq!(
+                eval_whnf(&ir)
+                    .unwrap_or_else(|_| panic!("{label} does not force ignored argument"))
+                    .as_int(),
+                Ok(5),
+                "{label}",
+            );
+        }
+    }
+
+    #[test]
+    fn pipe_operators_report_non_callable_function_side() {
+        let function = IrId::new(0);
+        let root = IrId::new(1);
+        let function_span = Span::new(5, 6);
+        let forward = manual_ir(
+            root,
+            vec![
+                pure_node(IrKind::Int, function_span, IrData::Int(1)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 6),
+                    IrData::Binary {
+                        op: BinOpKind::PipeRight,
+                        lhs: IrId::new(99),
+                        rhs: function,
                     },
                 ),
             ],
         );
-        let binary_error = eval_whnf(&binary).expect_err("pipe operator is not implemented yet");
+        let error = eval_whnf(&forward).expect_err("forward pipe function must be callable");
         assert_eq!(
-            binary_error.kind(),
-            TreeWalkErrorKind::UnsupportedBinaryOp {
-                id: root,
-                op: BinOpKind::PipeRight,
-            }
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            },
         );
-        assert_eq!(binary_error.span(), span);
+        assert_eq!(error.span(), function_span);
+
+        let function_span = Span::new(0, 1);
+        let reverse = manual_ir(
+            root,
+            vec![
+                pure_node(IrKind::Int, function_span, IrData::Int(1)),
+                pure_node(
+                    IrKind::BinOp,
+                    Span::new(0, 6),
+                    IrData::Binary {
+                        op: BinOpKind::PipeLeft,
+                        lhs: function,
+                        rhs: IrId::new(99),
+                    },
+                ),
+            ],
+        );
+        let error = eval_whnf(&reverse).expect_err("reverse pipe function must be callable");
+        assert_eq!(
+            error.kind(),
+            TreeWalkErrorKind::Type {
+                id: function,
+                expected: "lambda",
+                actual: ValueTag::Int,
+            },
+        );
+        assert_eq!(error.span(), function_span);
     }
 
     #[test]
