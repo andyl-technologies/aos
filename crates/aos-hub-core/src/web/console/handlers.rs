@@ -62,6 +62,22 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 
 // -- shared helpers ---------------------------------------------------------
 
+/// A per-request start instant, captured when the handler's arguments are
+/// extracted (before its body runs) so the "rendered … ms" footer reflects
+/// real handler + DB time rather than ~0.
+pub(crate) struct RequestStart(pub Instant);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestStart {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(RequestStart(Instant::now()))
+    }
+}
+
 /// A `500 Internal Server Error` response that logs the underlying cause.
 ///
 /// The console's catch-all for an unexpected database or capability failure:
@@ -333,9 +349,12 @@ pub(crate) fn resolved_client_ip(headers: &HeaderMap) -> String {
 /// Sets a per-request `script-src 'nonce-…'` CSP (via [`passkey_html_response`])
 /// so the page's first-party passkey script (driving `navigator.credentials.get`)
 /// runs while every other inline script stays blocked.
-pub(crate) async fn login_form(_deps: ConsoleDeps) -> Response {
+pub(crate) async fn login_form(
+    _deps: ConsoleDeps,
+    RequestStart(started): RequestStart,
+) -> Response {
     let nonce = crate::auth::webauthn::new_challenge();
-    let html = console::login_page(None, Some(&nonce), Instant::now());
+    let html = console::login_page(None, Some(&nonce), started);
     passkey_html_response(html, &nonce)
 }
 
@@ -364,6 +383,7 @@ pub(crate) struct LoginForm {
 pub(crate) async fn login_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Form(form): Form<LoginForm>,
 ) -> Response {
     let email = form.email.trim().to_lowercase();
@@ -371,7 +391,7 @@ pub(crate) async fn login_submit(
         return Html(console::login_page(
             Some("Enter a valid email address."),
             None,
-            Instant::now(),
+            started,
         ))
         .into_response();
     }
@@ -396,13 +416,7 @@ pub(crate) async fn login_submit(
         if enforce_sso {
             return Redirect::to(&start).into_response();
         }
-        return Html(console::login_sso_page(
-            &email,
-            &org_slug,
-            &start,
-            Instant::now(),
-        ))
-        .into_response();
+        return Html(console::login_sso_page(&email, &org_slug, &start, started)).into_response();
     }
     let secret = match deps.db.create_magic_link(&email).await {
         Ok(secret) => secret,
@@ -418,7 +432,7 @@ pub(crate) async fn login_submit(
     // In `--dev` mode the mailer only logs, so surface the link on the page so a
     // local operator can follow it (the native hub keyed this off `LogMailer`).
     let dev_link = deps.dev.then_some(link.as_str());
-    Html(console::login_sent_page(&email, dev_link, Instant::now())).into_response()
+    Html(console::login_sent_page(&email, dev_link, started)).into_response()
 }
 
 /// `POST /login/password` body: the email and password to authenticate.
@@ -448,6 +462,7 @@ pub(crate) struct PasswordLoginForm {
 pub(crate) async fn login_password(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Form(form): Form<PasswordLoginForm>,
 ) -> Response {
     let email = form.email.trim().to_lowercase();
@@ -457,7 +472,7 @@ pub(crate) async fn login_password(
         Html(console::login_page(
             Some("Invalid email or password."),
             None,
-            Instant::now(),
+            started,
         ))
         .into_response()
     };
@@ -618,8 +633,12 @@ pub(crate) struct SsoForm {
 /// Reached from the two-step login page when SSO is offered but not enforced;
 /// it simply begins the OIDC flow for the named org, mirroring a `GET` of
 /// `/auth/oidc/start?org=…`.
-pub(crate) async fn login_sso(deps: ConsoleDeps, Form(form): Form<SsoForm>) -> Response {
-    begin_oidc(&deps, &form.org, None).await
+pub(crate) async fn login_sso(
+    deps: ConsoleDeps,
+    RequestStart(started): RequestStart,
+    Form(form): Form<SsoForm>,
+) -> Response {
+    begin_oidc(&deps, &form.org, None, started).await
 }
 
 /// `GET /auth/oidc/start?org=` query.
@@ -635,22 +654,34 @@ pub(crate) struct OidcStartQuery {
 /// Looks up the org and stages the authorization-code + PKCE flow, then
 /// 302-redirects the browser to the IdP's authorization endpoint. An unknown
 /// org or an org without an IdP renders a clean error page (no stack trace).
-pub(crate) async fn oidc_start(deps: ConsoleDeps, Query(query): Query<OidcStartQuery>) -> Response {
-    begin_oidc(&deps, &query.org, query.next.as_deref()).await
+pub(crate) async fn oidc_start(
+    deps: ConsoleDeps,
+    RequestStart(started): RequestStart,
+    Query(query): Query<OidcStartQuery>,
+) -> Response {
+    begin_oidc(&deps, &query.org, query.next.as_deref(), started).await
 }
 
 /// Shared "begin OIDC login" helper for the `GET` and `POST` entry points.
-async fn begin_oidc(deps: &ConsoleDeps, org_slug: &str, next: Option<&str>) -> Response {
+async fn begin_oidc(
+    deps: &ConsoleDeps,
+    org_slug: &str,
+    next: Option<&str>,
+    started: Instant,
+) -> Response {
     let org = match deps.db.org_by_slug(org_slug).await {
         Ok(Some(org)) => org,
-        Ok(None) => return sso_error("That organization does not exist."),
+        Ok(None) => return sso_error("That organization does not exist.", started),
         Err(err) => return internal(err),
     };
     match crate::auth::oidc::begin_login(&deps.db, &deps.external_url, org.id, next).await {
         Ok(redirect) => Redirect::to(&redirect.url).into_response(),
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), org = %org_slug, "oidc begin failed");
-            sso_error("Single sign-on is not configured for that organization.")
+            sso_error(
+                "Single sign-on is not configured for that organization.",
+                started,
+            )
         }
     }
 }
@@ -663,6 +694,7 @@ async fn begin_oidc(deps: &ConsoleDeps, org_slug: &str, next: Option<&str>) -> R
 /// than leaking internals.
 pub(crate) async fn oidc_callback(
     deps: ConsoleDeps,
+    RequestStart(started): RequestStart,
     Query(params): Query<crate::auth::oidc::CallbackParams>,
 ) -> Response {
     let login = match crate::auth::oidc::complete_login(
@@ -677,7 +709,7 @@ pub(crate) async fn oidc_callback(
         Ok(login) => login,
         Err(err) => {
             tracing::warn!(error = %format!("{err:#}"), "oidc callback failed");
-            return sso_error("Sign-in could not be completed. Please try again.");
+            return sso_error("Sign-in could not be completed. Please try again.", started);
         }
     };
     // A fresh SSO sign-in is a re-authentication: the session is sudo-capable.
@@ -699,8 +731,8 @@ pub(crate) async fn oidc_callback(
 }
 
 /// Render a clean SSO error page (no stack traces).
-fn sso_error(message: &str) -> Response {
-    Html(console::login_page(Some(message), None, Instant::now())).into_response()
+fn sso_error(message: &str, started: Instant) -> Response {
+    Html(console::login_page(Some(message), None, started)).into_response()
 }
 
 // -- query / form param shapes ----------------------------------------------
@@ -756,6 +788,7 @@ pub(crate) struct MagicQuery {
 /// expired, or replayed link returns the login page with an error.
 pub(crate) async fn magic_consume(
     deps: ConsoleDeps,
+    RequestStart(started): RequestStart,
     Query(query): Query<MagicQuery>,
 ) -> Response {
     let email = match deps.db.consume_magic_link(&query.token).await {
@@ -764,7 +797,7 @@ pub(crate) async fn magic_consume(
             return Html(console::login_page(
                 Some("That sign-in link is invalid or expired. Request a new one."),
                 None,
-                Instant::now(),
+                started,
             ))
             .into_response()
         }
@@ -799,7 +832,11 @@ pub(crate) async fn logout(deps: ConsoleDeps, headers: HeaderMap) -> Response {
 // -- account ----------------------------------------------------------------
 
 /// `GET /account` — the profile page (email, sessions, tokens, passkeys).
-pub(crate) async fn account(deps: ConsoleDeps, headers: HeaderMap) -> Response {
+pub(crate) async fn account(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
@@ -818,7 +855,7 @@ pub(crate) async fn account(deps: ConsoleDeps, headers: HeaderMap) -> Response {
         &tokens,
         password_set,
         None,
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -840,6 +877,7 @@ pub(crate) struct SetPasswordForm {
 pub(crate) async fn account_set_password(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Form(form): Form<SetPasswordForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -875,7 +913,7 @@ pub(crate) async fn account_set_password(
                         "Your organization requires single sign-on; \
                          passwords cannot be set. Sign in through your identity provider.",
                     ),
-                    Instant::now(),
+                    started,
                 )),
             )
                 .into_response();
@@ -900,7 +938,7 @@ pub(crate) async fn account_set_password(
             &tokens,
             password_set,
             Some("Enter a password between 1 and 1024 characters."),
-            Instant::now(),
+            started,
         ))
         .into_response();
     }
@@ -948,7 +986,11 @@ pub(crate) async fn account_revoke_all_sessions(
 // -- passkeys / WebAuthn ----------------------------------------------------
 
 /// `GET /account/passkeys` — list the user's passkeys and offer to add one.
-pub(crate) async fn passkeys(deps: ConsoleDeps, headers: HeaderMap) -> Response {
+pub(crate) async fn passkeys(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
@@ -958,13 +1000,7 @@ pub(crate) async fn passkeys(deps: ConsoleDeps, headers: HeaderMap) -> Response 
         Err(err) => return internal(err),
     };
     let nonce = crate::auth::webauthn::new_challenge();
-    let html = console::passkeys_page(
-        &session.email,
-        &session.csrf(),
-        &creds,
-        &nonce,
-        Instant::now(),
-    );
+    let html = console::passkeys_page(&session.email, &session.csrf(), &creds, &nonce, started);
     passkey_html_response(html, &nonce)
 }
 
@@ -1244,6 +1280,7 @@ async fn activate_rate_limited(
 pub(crate) async fn activate_form(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Query(query): Query<ActivateQuery>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -1269,7 +1306,7 @@ pub(crate) async fn activate_form(
         &user_code,
         request_ref,
         query.message.as_deref(),
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -1333,6 +1370,7 @@ pub(crate) async fn activate_submit(
 pub(crate) async fn orgs(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Query(params): Query<PageQuery>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -1359,7 +1397,7 @@ pub(crate) async fn orgs(
             can_create,
             is_instance_admin,
             params.page(),
-            Instant::now(),
+            started,
         ))
         .into_response(),
         Err(err) => internal(err),
@@ -1393,6 +1431,7 @@ async fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool
 pub(crate) async fn org_dashboard(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Query(pages): Query<DashboardPages>,
 ) -> Response {
@@ -1442,7 +1481,7 @@ pub(crate) async fn org_dashboard(
             owner_count,
             pages.registries(),
             pages.members(),
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -1478,6 +1517,7 @@ async fn load_members(db: &Database, org_slug: &str) -> anyhow::Result<Vec<conso
 pub(crate) async fn org_audit(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Query(params): Query<PageQuery>,
 ) -> Response {
@@ -1502,7 +1542,7 @@ pub(crate) async fn org_audit(
             &org,
             &rows,
             params.page(),
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -1808,7 +1848,11 @@ pub(crate) async fn org_member_role(
 // -- create organization ----------------------------------------------------
 
 /// `GET /new` — the create-organization form.
-pub(crate) async fn new_org_form(deps: ConsoleDeps, headers: HeaderMap) -> Response {
+pub(crate) async fn new_org_form(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
@@ -1818,7 +1862,7 @@ pub(crate) async fn new_org_form(deps: ConsoleDeps, headers: HeaderMap) -> Respo
             &session.email,
             &session.csrf(),
             None,
-            Instant::now(),
+            started,
         ))
         .into_response(),
         Ok(false) => (
@@ -1843,6 +1887,7 @@ pub(crate) struct NewOrgForm {
 pub(crate) async fn new_org_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Form(form): Form<NewOrgForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -1870,7 +1915,7 @@ pub(crate) async fn new_org_submit(
             &session.email,
             &session.csrf(),
             Some(message),
-            Instant::now(),
+            started,
         ))
         .into_response()
     };
@@ -2237,6 +2282,7 @@ pub(crate) async fn org_create_binding(
 pub(crate) async fn org_new_registry_form(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -2262,7 +2308,7 @@ pub(crate) async fn org_new_registry_form(
             &projects,
             &bindings,
             None,
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -2296,6 +2342,7 @@ pub(crate) struct NewRegistryForm {
 pub(crate) async fn org_create_registry(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Form(form): Form<NewRegistryForm>,
 ) -> Response {
@@ -2324,6 +2371,7 @@ pub(crate) async fn org_create_registry(
         org: &OrgRecord,
         session: &Session,
         message: &str,
+        started: Instant,
     ) -> Response {
         let projects = deps.db.list_projects(org.id).await.unwrap_or_default();
         let bindings = deps
@@ -2338,19 +2386,19 @@ pub(crate) async fn org_create_registry(
             &projects,
             &bindings,
             Some(message),
-            Instant::now(),
+            started,
         ))
         .into_response()
     }
 
     let name = form.name.trim();
     if name.is_empty() {
-        return reject(&deps, &org, &session, "Registry name is required.").await;
+        return reject(&deps, &org, &session, "Registry name is required.", started).await;
     }
     let visibility = match form.visibility.trim() {
         "" => "private",
         v @ ("public" | "internal" | "private") => v,
-        _ => return reject(&deps, &org, &session, "Invalid visibility.").await,
+        _ => return reject(&deps, &org, &session, "Invalid visibility.", started).await,
     };
     let binding_id = match deps
         .db
@@ -2358,7 +2406,7 @@ pub(crate) async fn org_create_registry(
         .await
     {
         Ok(Some(b)) => b.id,
-        Ok(None) => return reject(&deps, &org, &session, "Choose a storage binding.").await,
+        Ok(None) => return reject(&deps, &org, &session, "Choose a storage binding.", started).await,
         Err(err) => return internal(err),
     };
     let project_path = form.project_path.trim().trim_matches('/');
@@ -2387,7 +2435,7 @@ pub(crate) async fn org_create_registry(
         .await;
     match created {
         Ok(_) => {}
-        Err(err) => return reject(&deps, &org, &session, &format!("{err:#}")).await,
+        Err(err) => return reject(&deps, &org, &session, &format!("{err:#}"), started).await,
     }
     let canonical = match deps.db.registry_by_scope(&org.slug, project_path, name).await {
         Ok(Some(reg)) => reg.slug,
@@ -2508,12 +2556,13 @@ async fn require_org_perm(
 pub(crate) async fn instance_settings(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_instance_settings(&deps, &session, None).await
+    render_instance_settings(&deps, &session, None, started).await
 }
 
 /// Render the instance-settings page; instance-admin only.
@@ -2521,6 +2570,7 @@ async fn render_instance_settings(
     deps: &ConsoleDeps,
     session: &Session,
     notice: Option<&str>,
+    started: Instant,
 ) -> Response {
     if !session
         .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
@@ -2537,7 +2587,7 @@ async fn render_instance_settings(
         &session.csrf(),
         policy,
         notice,
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -2554,6 +2604,7 @@ pub(crate) struct InstanceSettingsForm {
 pub(crate) async fn instance_settings_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Form(form): Form<InstanceSettingsForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -2590,7 +2641,7 @@ pub(crate) async fn instance_settings_action(
     {
         return internal(err);
     }
-    render_instance_settings(&deps, &session, Some("Signup policy saved.")).await
+    render_instance_settings(&deps, &session, Some("Signup policy saved."), started).await
 }
 
 // -- registry resolution for console pages ----------------------------------
@@ -2646,6 +2697,7 @@ async fn resolve_by_prefix(
 pub(crate) async fn registry_settings(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -2659,7 +2711,7 @@ pub(crate) async fn registry_settings(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_settings_view(&deps, &session, &registry, None).await
+    registry_settings_view(&deps, &session, &registry, None, started).await
 }
 
 /// Render the registry settings landing page.
@@ -2668,6 +2720,7 @@ async fn registry_settings_view(
     session: &Session,
     registry: &RegistryRecord,
     result: Option<&str>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     if let Some(deny) = require_org_perm(deps, session, &scope, Permission::RegistryConfigure).await
@@ -2694,7 +2747,7 @@ async fn registry_settings_view(
             binding_ref,
             can_delete,
             result,
-            Instant::now(),
+            started,
         ))
     }
     .await;
@@ -2716,6 +2769,7 @@ pub(crate) struct VisibilityForm {
 pub(crate) async fn registry_visibility(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Form(form): Form<VisibilityForm>,
@@ -2730,7 +2784,8 @@ pub(crate) async fn registry_visibility(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_visibility_action(&deps, &session, &registry, &form.csrf, &form.visibility).await
+    registry_visibility_action(&deps, &session, &registry, &form.csrf, &form.visibility, started)
+        .await
 }
 
 /// The visibility-change action.
@@ -2740,6 +2795,7 @@ async fn registry_visibility_action(
     registry: &RegistryRecord,
     csrf: &str,
     visibility: &str,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -2770,7 +2826,7 @@ async fn registry_visibility_action(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
-    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str())).await
+    registry_settings_view(deps, session, &updated, Some(change_id.0.as_str()), started).await
 }
 
 /// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
@@ -2862,6 +2918,7 @@ async fn registry_delete_action(
 pub(crate) async fn tokens(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Query(page): Query<PageQuery>,
@@ -2876,7 +2933,7 @@ pub(crate) async fn tokens(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_view(&deps, &session, &registry, &headers, page.page()).await
+    tokens_view(&deps, &session, &registry, &headers, page.page(), started).await
 }
 
 /// Render the tokens page (read path): visibility-gated, no result banner.
@@ -2886,11 +2943,12 @@ async fn tokens_view(
     registry: &RegistryRecord,
     headers: &HeaderMap,
     page_number: usize,
+    started: Instant,
 ) -> Response {
     if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
         return *deny;
     }
-    render_tokens(deps, session, registry, None, page_number).await
+    render_tokens(deps, session, registry, None, page_number, started).await
 }
 
 /// The token-create action: CSRF + TokensSelf gate, mint, show secret once.
@@ -2901,6 +2959,7 @@ async fn tokens_create_action(
     csrf: &str,
     want_read: bool,
     want_publish: bool,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -2944,6 +3003,7 @@ async fn tokens_create_action(
         registry,
         Some(("New token created", &secret)),
         1,
+        started,
     )
     .await
 }
@@ -2956,6 +3016,7 @@ async fn tokens_modify_action(
     csrf: &str,
     token_id: &str,
     rotate: bool,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -2969,7 +3030,15 @@ async fn tokens_modify_action(
         }
         match deps.db.rotate_token(token_id).await {
             Ok(Some((_, secret))) => {
-                render_tokens(deps, session, registry, Some(("Token rotated", &secret)), 1).await
+                render_tokens(
+                    deps,
+                    session,
+                    registry,
+                    Some(("Token rotated", &secret)),
+                    1,
+                    started,
+                )
+                .await
             }
             Ok(None) => {
                 Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
@@ -2993,6 +3062,7 @@ async fn render_tokens(
     registry: &RegistryRecord,
     result: Option<(&str, &str)>,
     page_number: usize,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     let can_create = session.allows(&deps.db, Permission::TokensSelf, &scope).await;
@@ -3012,7 +3082,7 @@ async fn render_tokens(
         can_create,
         result,
         page_number,
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -3032,6 +3102,7 @@ pub(crate) struct TokenCreateForm {
 pub(crate) async fn tokens_create(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Form(form): Form<TokenCreateForm>,
@@ -3053,6 +3124,7 @@ pub(crate) async fn tokens_create(
         &form.csrf,
         form.perm_read.is_some(),
         form.perm_publish.is_some(),
+        started,
     )
     .await
 }
@@ -3069,6 +3141,7 @@ pub(crate) struct TokenIdForm {
 pub(crate) async fn tokens_revoke(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Form(form): Form<TokenIdForm>,
@@ -3083,13 +3156,15 @@ pub(crate) async fn tokens_revoke(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, false).await
+    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, false, started)
+        .await
 }
 
 /// `POST /{slug}/-/settings/tokens/rotate` — rotate one of the caller's tokens.
 pub(crate) async fn tokens_rotate(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Form(form): Form<TokenIdForm>,
@@ -3104,7 +3179,7 @@ pub(crate) async fn tokens_rotate(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, true).await
+    tokens_modify_action(&deps, &session, &registry, &form.csrf, &form.token_id, true, started).await
 }
 
 /// Verify the session user owns the token being revoked/rotated, else 403.
@@ -3134,6 +3209,7 @@ async fn ensure_owns_token(
 pub(crate) async fn channel_console(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path((slug, name)): Path<(String, String)>,
 ) -> Response {
@@ -3150,7 +3226,7 @@ pub(crate) async fn channel_console(
     if let Err(deny) = authorize_registry_read(&deps, &registry, &headers).await {
         return *deny;
     }
-    render_channel_console(&deps, &session, &registry, &name, None, None).await
+    render_channel_console(&deps, &session, &registry, &name, None, None, started).await
 }
 
 /// Render the channel console.
@@ -3161,6 +3237,7 @@ async fn render_channel_console(
     name: &str,
     prepared: Option<(&str, &str)>,
     advanced: Option<&str>,
+    started: Instant,
 ) -> Response {
     let result = async {
         let status = deps.db.index_status(registry.id).await?;
@@ -3186,7 +3263,7 @@ async fn render_channel_console(
             hosted_key.as_deref(),
             prepared,
             advanced,
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -3210,6 +3287,7 @@ pub(crate) struct AdvanceForm {
 pub(crate) async fn channel_advance(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path((slug, name)): Path<(String, String)>,
     Form(form): Form<AdvanceForm>,
@@ -3232,6 +3310,7 @@ pub(crate) async fn channel_advance(
         &form.csrf,
         &form.release,
         form.partitions.as_deref(),
+        started,
     )
     .await
 }
@@ -3246,6 +3325,7 @@ async fn channel_advance_action(
     csrf: &str,
     release: &str,
     partitions: Option<&str>,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -3292,6 +3372,7 @@ async fn channel_advance_action(
         name,
         Some((change_id.as_str(), &command)),
         None,
+        started,
     )
     .await
 }
@@ -3301,6 +3382,7 @@ async fn channel_advance_action(
 pub(crate) async fn channel_advance_direct(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path((slug, name)): Path<(String, String)>,
     Form(form): Form<AdvanceForm>,
@@ -3323,6 +3405,7 @@ pub(crate) async fn channel_advance_direct(
         &form.csrf,
         &form.release,
         form.partitions.as_deref(),
+        started,
     )
     .await
 }
@@ -3339,6 +3422,7 @@ async fn advance_direct_action(
     csrf: &str,
     release: &str,
     partitions: Option<&str>,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -3351,8 +3435,10 @@ async fn advance_direct_action(
         return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
     }
     if registry.hosted_key_id.is_none() {
-        return channel_advance_action(deps, session, registry, name, csrf, release, partitions)
-            .await;
+        return channel_advance_action(
+            deps, session, registry, name, csrf, release, partitions, started,
+        )
+        .await;
     }
     let release = release.trim();
     if release.is_empty() {
@@ -3381,7 +3467,8 @@ async fn advance_direct_action(
                 "Advanced {} to {} · {} partition(s) moved · {}% rolled out",
                 outcome.channel, outcome.release, outcome.moved, outcome.rollout_percent,
             );
-            render_channel_console(deps, session, registry, name, None, Some(&message)).await
+            render_channel_console(deps, session, registry, name, None, Some(&message), started)
+                .await
         }
         Err(err) => {
             (StatusCode::BAD_REQUEST, format!("advance failed: {err:#}")).into_response()
@@ -3395,13 +3482,14 @@ async fn advance_direct_action(
 pub(crate) async fn org_keys(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_keys(&deps, &session, &org_slug, None).await
+    render_org_keys(&deps, &session, &org_slug, None, started).await
 }
 
 /// Render the org hosted-keys page.
@@ -3410,6 +3498,7 @@ async fn render_org_keys(
     session: &Session,
     org_slug: &str,
     created: Option<&str>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(org_slug);
     if !session.allows(&deps.db, Permission::KeysManage, &scope).await {
@@ -3437,7 +3526,7 @@ async fn render_org_keys(
             &keys,
             &registries,
             created,
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -3466,6 +3555,7 @@ pub(crate) struct OrgKeysForm {
 pub(crate) async fn org_keys_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Form(form): Form<OrgKeysForm>,
 ) -> Response {
@@ -3527,7 +3617,7 @@ pub(crate) async fn org_keys_action(
             {
                 return internal(err);
             }
-            render_org_keys(&deps, &session, &org_slug, Some(&public)).await
+            render_org_keys(&deps, &session, &org_slug, Some(&public), started).await
         }
         "attach" => {
             let Some(registry) = (match deps.db.registry_by_slug(form.registry.trim()).await {
@@ -3579,7 +3669,7 @@ pub(crate) async fn org_keys_action(
             {
                 return internal(err);
             }
-            render_org_keys(&deps, &session, &org_slug, None).await
+            render_org_keys(&deps, &session, &org_slug, None, started).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -3591,13 +3681,14 @@ pub(crate) async fn org_keys_action(
 pub(crate) async fn org_webhooks(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_webhooks(&deps, &session, &org_slug, None).await
+    render_org_webhooks(&deps, &session, &org_slug, None, started).await
 }
 
 /// Render the org webhooks page.
@@ -3606,6 +3697,7 @@ async fn render_org_webhooks(
     session: &Session,
     org_slug: &str,
     created_secret: Option<&str>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(org_slug);
     if !session
@@ -3628,7 +3720,7 @@ async fn render_org_webhooks(
             &session.csrf(),
             &webhooks,
             created_secret,
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -3643,6 +3735,7 @@ async fn render_org_webhooks(
 pub(crate) async fn org_webhooks_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -3736,6 +3829,7 @@ pub(crate) async fn org_webhooks_action(
                 &session,
                 &org_slug,
                 generated.then_some(secret.as_str()),
+                started,
             )
             .await
         }
@@ -3769,7 +3863,7 @@ pub(crate) async fn org_webhooks_action(
             {
                 return internal(err);
             }
-            render_org_webhooks(&deps, &session, &org_slug, None).await
+            render_org_webhooks(&deps, &session, &org_slug, None, started).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -3781,13 +3875,14 @@ pub(crate) async fn org_webhooks_action(
 pub(crate) async fn org_sso(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_sso(&deps, &session, &org_slug, None).await
+    render_org_sso(&deps, &session, &org_slug, None, started).await
 }
 
 /// Whether `session` may verify captured domains: an *instance* admin only.
@@ -3803,6 +3898,7 @@ async fn render_org_sso(
     session: &Session,
     org_slug: &str,
     notice: Option<&str>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(org_slug);
     if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
@@ -3825,7 +3921,7 @@ async fn render_org_sso(
             &domains,
             can_verify_domains(deps, session).await,
             notice,
-            Instant::now(),
+            started,
         )))
     }
     .await;
@@ -3840,6 +3936,7 @@ async fn render_org_sso(
 pub(crate) async fn org_sso_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     body: axum::body::Bytes,
 ) -> Response {
@@ -3942,7 +4039,14 @@ pub(crate) async fn org_sso_action(
             {
                 return internal(err);
             }
-            render_org_sso(&deps, &session, &org_slug, Some("Identity provider saved.")).await
+            render_org_sso(
+                &deps,
+                &session,
+                &org_slug,
+                Some("Identity provider saved."),
+                started,
+            )
+            .await
         }
         "remove-idp" => {
             if let Err(err) = deps.db.delete_idp_config(org.id).await {
@@ -3965,7 +4069,14 @@ pub(crate) async fn org_sso_action(
             {
                 return internal(err);
             }
-            render_org_sso(&deps, &session, &org_slug, Some("Identity provider removed.")).await
+            render_org_sso(
+                &deps,
+                &session,
+                &org_slug,
+                Some("Identity provider removed."),
+                started,
+            )
+            .await
         }
         "add-domain" => {
             let domain = field("domain").trim().to_lowercase();
@@ -4011,6 +4122,7 @@ pub(crate) async fn org_sso_action(
                 Some(&format!(
                     "Captured {domain} (unverified). Publish this TXT record: {challenge}"
                 )),
+                started,
             )
             .await
         }
@@ -4050,7 +4162,14 @@ pub(crate) async fn org_sso_action(
             {
                 return internal(err);
             }
-            render_org_sso(&deps, &session, &org_slug, Some(&format!("Verified {domain}."))).await
+            render_org_sso(
+                &deps,
+                &session,
+                &org_slug,
+                Some(&format!("Verified {domain}.")),
+                started,
+            )
+            .await
         }
         "remove-domain" => {
             let domain = field("domain").trim().to_lowercase();
@@ -4074,7 +4193,14 @@ pub(crate) async fn org_sso_action(
             {
                 return internal(err);
             }
-            render_org_sso(&deps, &session, &org_slug, Some(&format!("Removed {domain}."))).await
+            render_org_sso(
+                &deps,
+                &session,
+                &org_slug,
+                Some(&format!("Removed {domain}.")),
+                started,
+            )
+            .await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -4086,6 +4212,7 @@ pub(crate) async fn org_sso_action(
 pub(crate) async fn serving(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -4099,7 +4226,7 @@ pub(crate) async fn serving(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    serving_view(&deps, &session, &registry, None).await
+    serving_view(&deps, &session, &registry, None, started).await
 }
 
 /// Render the serving & mirror page.
@@ -4108,6 +4235,7 @@ async fn serving_view(
     session: &Session,
     registry: &RegistryRecord,
     notice: Option<&str>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     if !session
@@ -4129,7 +4257,7 @@ async fn serving_view(
             &frontends,
             mirror.as_ref(),
             notice,
-            Instant::now(),
+            started,
         ))
     }
     .await;
@@ -4144,6 +4272,7 @@ async fn serving_view(
 pub(crate) async fn serving_post(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     body: axum::body::Bytes,
@@ -4159,7 +4288,7 @@ pub(crate) async fn serving_post(
         return StatusCode::NOT_FOUND.into_response();
     };
     let fields = parse_form(&String::from_utf8_lossy(&body));
-    serving_action(&deps, &session, &registry, &fields).await
+    serving_action(&deps, &session, &registry, &fields, started).await
 }
 
 /// Apply a serving/mirror mutation.
@@ -4168,6 +4297,7 @@ async fn serving_action(
     session: &Session,
     registry: &RegistryRecord,
     fields: &std::collections::HashMap<String, String>,
+    started: Instant,
 ) -> Response {
     let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
     if let Err(resp) = check_csrf(session, field("csrf")) {
@@ -4233,7 +4363,7 @@ async fn serving_action(
             if let Err(err) = audit(deps, session, registry, "frontend.add", domain).await {
                 return internal(err);
             }
-            serving_view(deps, session, registry, Some("Frontend added.")).await
+            serving_view(deps, session, registry, Some("Frontend added."), started).await
         }
         "delete-frontend" => {
             let Ok(id) = field("id").parse::<i64>() else {
@@ -4251,7 +4381,7 @@ async fn serving_action(
             {
                 return internal(err);
             }
-            serving_view(deps, session, registry, Some("Frontend deleted.")).await
+            serving_view(deps, session, registry, Some("Frontend deleted."), started).await
         }
         "set-mirror" => {
             let upstream = field("upstream_url").trim();
@@ -4278,7 +4408,7 @@ async fn serving_action(
             if let Err(err) = audit(deps, session, registry, "mirror.set", upstream).await {
                 return internal(err);
             }
-            serving_view(deps, session, registry, Some("Mirror configuration saved.")).await
+            serving_view(deps, session, registry, Some("Mirror configuration saved."), started).await
         }
         "remove-mirror" => {
             if let Err(err) = deps.db.delete_mirror_source(registry.id).await {
@@ -4287,7 +4417,7 @@ async fn serving_action(
             if let Err(err) = audit(deps, session, registry, "mirror.remove", &registry.slug).await {
                 return internal(err);
             }
-            serving_view(deps, session, registry, Some("Stopped mirroring.")).await
+            serving_view(deps, session, registry, Some("Stopped mirroring."), started).await
         }
         _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
@@ -4299,6 +4429,7 @@ async fn serving_action(
 pub(crate) async fn keys(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Query(page): Query<PageQuery>,
@@ -4313,7 +4444,7 @@ pub(crate) async fn keys(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    keys_view(&deps, &session, &registry, &headers, page.page()).await
+    keys_view(&deps, &session, &registry, &headers, page.page(), started).await
 }
 
 /// Render the key roster page: visibility-gated.
@@ -4323,6 +4454,7 @@ async fn keys_view(
     registry: &RegistryRecord,
     headers: &HeaderMap,
     page_number: usize,
+    started: Instant,
 ) -> Response {
     if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
         return *deny;
@@ -4344,7 +4476,7 @@ async fn keys_view(
         &roster,
         can_manage,
         page_number,
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -4353,6 +4485,7 @@ async fn keys_view(
 pub(crate) async fn keys_rotate(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -4366,7 +4499,7 @@ pub(crate) async fn keys_rotate(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    keys_rotate_view(&deps, &session, &registry, &headers).await
+    keys_rotate_view(&deps, &session, &registry, &headers, started).await
 }
 
 /// Render the rotation wizard: visibility-gated.
@@ -4375,16 +4508,12 @@ async fn keys_rotate_view(
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
+    started: Instant,
 ) -> Response {
     if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
         return *deny;
     }
-    Html(console::keys_rotate_page(
-        &session.email,
-        registry,
-        Instant::now(),
-    ))
-    .into_response()
+    Html(console::keys_rotate_page(&session.email, registry, started)).into_response()
 }
 
 // -- publishes --------------------------------------------------------------
@@ -4393,6 +4522,7 @@ async fn keys_rotate_view(
 pub(crate) async fn publishes(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -4406,7 +4536,7 @@ pub(crate) async fn publishes(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    publishes_view(&deps, &session, &registry, &headers).await
+    publishes_view(&deps, &session, &registry, &headers, started).await
 }
 
 /// Render the publish-pipeline view: visibility-gated.
@@ -4415,6 +4545,7 @@ async fn publishes_view(
     session: &Session,
     registry: &RegistryRecord,
     headers: &HeaderMap,
+    started: Instant,
 ) -> Response {
     if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
         return *deny;
@@ -4440,7 +4571,7 @@ async fn publishes_view(
             status.as_ref(),
             &releases,
             &audit,
-            Instant::now(),
+            started,
         ))
     }
     .await;
@@ -4459,6 +4590,7 @@ async fn publishes_view(
 pub(crate) async fn config_edit(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -4472,7 +4604,7 @@ pub(crate) async fn config_edit(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    config_edit_view(&deps, &session, &registry, None).await
+    config_edit_view(&deps, &session, &registry, None, started).await
 }
 
 /// Render the config-edit page, optionally with a just-created change-request
@@ -4482,6 +4614,7 @@ async fn config_edit_view(
     session: &Session,
     registry: &RegistryRecord,
     result: Option<(&str, &str)>,
+    started: Instant,
 ) -> Response {
     let scope = Scope::parse(&registry.slug);
     let can_edit = session
@@ -4498,7 +4631,7 @@ async fn config_edit_view(
         &current,
         can_edit,
         result,
-        Instant::now(),
+        started,
     ))
     .into_response()
 }
@@ -4550,6 +4683,7 @@ pub(crate) struct ConfigForm {
 pub(crate) async fn config_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
     Form(form): Form<ConfigForm>,
@@ -4564,7 +4698,7 @@ pub(crate) async fn config_submit(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    config_submit_action(&deps, &session, &registry, &form.csrf, &form.contents).await
+    config_submit_action(&deps, &session, &registry, &form.csrf, &form.contents, started).await
 }
 
 /// Process a config-change submission for a resolved registry.
@@ -4582,6 +4716,7 @@ async fn config_submit_action(
     registry: &RegistryRecord,
     csrf: &str,
     contents: &str,
+    started: Instant,
 ) -> Response {
     if let Err(resp) = check_csrf(session, csrf) {
         return *resp;
@@ -4628,6 +4763,7 @@ async fn config_submit_action(
                 session,
                 registry,
                 Some((proposed.change_id.as_str(), &merge_command)),
+                started,
             )
             .await
         }
@@ -4643,6 +4779,7 @@ async fn config_submit_action(
 pub(crate) async fn changes(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> Response {
@@ -4656,14 +4793,19 @@ pub(crate) async fn changes(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    changes_view(&deps, &session, &registry).await
+    changes_view(&deps, &session, &registry, started).await
 }
 
 /// Render the change-request list page for a resolved registry.
 ///
 /// Gated to `audit.read` (admin+). Each draft renders its file diffs (computed
 /// from the recorded old/new file contents) and the promotion command.
-async fn changes_view(deps: &ConsoleDeps, session: &Session, registry: &RegistryRecord) -> Response {
+async fn changes_view(
+    deps: &ConsoleDeps,
+    session: &Session,
+    registry: &RegistryRecord,
+    started: Instant,
+) -> Response {
     let scope = Scope::parse(&registry.slug);
     if !session.allows(&deps.db, Permission::AuditRead, &scope).await {
         return (StatusCode::FORBIDDEN, "audit.read required").into_response();
@@ -4712,7 +4854,7 @@ async fn changes_view(deps: &ConsoleDeps, session: &Session, registry: &Registry
             &session.email,
             registry,
             &requests,
-            Instant::now(),
+            started,
         ))
     }
     .await;
