@@ -69,6 +69,18 @@ static NATIVE_SUCCESS_FILE_INSTANTIATION: AtomicU64 = AtomicU64::new(0);
 static NATIVE_SUCCESS_EXPRESSION_INSTANTIATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "native-eval")]
 static NATIVE_SUCCESS_EXPRESSION_EVALUATION: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_DRV_MATCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_DRV_DIVERGENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_DRV_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_EXPRESSION_MATCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_EXPRESSION_DIVERGENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_SHADOW_EXPRESSION_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
 
 /// Native evaluator fallback counters captured for the current process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -126,11 +138,79 @@ impl NativeSuccessStats {
     }
 }
 
-/// Authoritative native evaluator counters captured for the current process.
+/// Shadow-mode native evaluator comparison counters captured for the current process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeShadowStats {
+    drv_matches: u64,
+    drv_divergences: u64,
+    drv_incomplete: u64,
+    expression_matches: u64,
+    expression_divergences: u64,
+    expression_incomplete: u64,
+}
+
+impl NativeShadowStats {
+    /// Returns `.drv` closure comparisons that matched C++ Nix.
+    pub const fn drv_matches(&self) -> u64 {
+        self.drv_matches
+    }
+
+    /// Returns `.drv` closure comparisons that diverged from C++ Nix.
+    pub const fn drv_divergences(&self) -> u64 {
+        self.drv_divergences
+    }
+
+    /// Returns `.drv` closure comparisons where either side could not be compared.
+    pub const fn drv_incomplete(&self) -> u64 {
+        self.drv_incomplete
+    }
+
+    /// Returns strict JSON expression comparisons that matched C++ Nix.
+    pub const fn expression_matches(&self) -> u64 {
+        self.expression_matches
+    }
+
+    /// Returns strict JSON expression comparisons that diverged from C++ Nix.
+    pub const fn expression_divergences(&self) -> u64 {
+        self.expression_divergences
+    }
+
+    /// Returns strict JSON expression comparisons where native eval did not complete.
+    pub const fn expression_incomplete(&self) -> u64 {
+        self.expression_incomplete
+    }
+
+    /// Returns the total number of completed shadow comparisons that matched.
+    pub const fn matches(&self) -> u64 {
+        self.drv_matches.saturating_add(self.expression_matches)
+    }
+
+    /// Returns the total number of completed shadow comparisons that diverged.
+    pub const fn divergences(&self) -> u64 {
+        self.drv_divergences
+            .saturating_add(self.expression_divergences)
+    }
+
+    /// Returns the total number of shadow comparisons that could not complete.
+    pub const fn incomplete(&self) -> u64 {
+        self.drv_incomplete
+            .saturating_add(self.expression_incomplete)
+    }
+
+    /// Returns the total number of shadow comparison attempts.
+    pub const fn total(&self) -> u64 {
+        self.matches()
+            .saturating_add(self.divergences())
+            .saturating_add(self.incomplete())
+    }
+}
+
+/// Native evaluator counters captured for the current process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeEvalStats {
     successes: NativeSuccessStats,
     fallbacks: NativeFallbackStats,
+    shadow: NativeShadowStats,
 }
 
 impl NativeEvalStats {
@@ -142,6 +222,11 @@ impl NativeEvalStats {
     /// Returns native operations that fell back to C++ Nix.
     pub const fn fallbacks(&self) -> NativeFallbackStats {
         self.fallbacks
+    }
+
+    /// Returns shadow-mode native comparisons against C++ Nix.
+    pub const fn shadow(&self) -> NativeShadowStats {
+        self.shadow
     }
 }
 
@@ -179,11 +264,32 @@ pub fn native_success_stats() -> NativeSuccessStats {
     }
 }
 
-/// Returns authoritative native evaluator counters captured for the current process.
+/// Returns shadow-mode native evaluator comparison counters captured for the current process.
+pub fn native_shadow_stats() -> NativeShadowStats {
+    #[cfg(feature = "native-eval")]
+    {
+        NativeShadowStats {
+            drv_matches: NATIVE_SHADOW_DRV_MATCH.load(Ordering::Relaxed),
+            drv_divergences: NATIVE_SHADOW_DRV_DIVERGENCE.load(Ordering::Relaxed),
+            drv_incomplete: NATIVE_SHADOW_DRV_INCOMPLETE.load(Ordering::Relaxed),
+            expression_matches: NATIVE_SHADOW_EXPRESSION_MATCH.load(Ordering::Relaxed),
+            expression_divergences: NATIVE_SHADOW_EXPRESSION_DIVERGENCE.load(Ordering::Relaxed),
+            expression_incomplete: NATIVE_SHADOW_EXPRESSION_INCOMPLETE.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    {
+        NativeShadowStats::default()
+    }
+}
+
+/// Returns native evaluator counters captured for the current process.
 pub fn native_eval_stats() -> NativeEvalStats {
     NativeEvalStats {
         successes: native_success_stats(),
         fallbacks: native_fallback_stats(),
+        shadow: native_shadow_stats(),
     }
 }
 
@@ -812,10 +918,23 @@ impl NixEval for ShadowEval {
         let fallback = self.fallback.eval_expr(expr)?;
         match self.native.eval_expr(expr) {
             Ok(native) if native != fallback => {
+                observe_native_shadow_result(
+                    NativeShadowOperation::ExpressionEvaluation,
+                    NativeShadowOutcome::Divergence,
+                );
                 tracing::error!("shadow native eval expression result diverged from nix-cli");
             }
-            Ok(_) => {}
+            Ok(_) => {
+                observe_native_shadow_result(
+                    NativeShadowOperation::ExpressionEvaluation,
+                    NativeShadowOutcome::Match,
+                );
+            }
             Err(error) => {
+                observe_native_shadow_result(
+                    NativeShadowOperation::ExpressionEvaluation,
+                    NativeShadowOutcome::Incomplete,
+                );
                 tracing::warn!(error = %error, "shadow native eval did not complete");
             }
         }
@@ -854,6 +973,10 @@ fn compare_shadow_drv_closure_from_fallback_root(
     let fallback = match read_drv_closure(fallback_root.to_path_buf()) {
         Ok(fallback) => fallback,
         Err(error) => {
+            observe_native_shadow_result(
+                NativeShadowOperation::DrvClosure,
+                NativeShadowOutcome::Incomplete,
+            );
             tracing::warn!(
                 error = %error,
                 fallback = %fallback_root.display(),
@@ -879,10 +1002,23 @@ fn compare_shadow_native_drv_closure(
             let native = DrvClosure::new(root, drvs);
             let divergences = compare_shadow_drv_closure(fallback, &native);
             if divergences == 0 {
+                observe_native_shadow_result(
+                    NativeShadowOperation::DrvClosure,
+                    NativeShadowOutcome::Match,
+                );
                 tracing::debug!(operation, "shadow native eval drv closure matched nix-cli");
+            } else {
+                observe_native_shadow_result(
+                    NativeShadowOperation::DrvClosure,
+                    NativeShadowOutcome::Divergence,
+                );
             }
         }
         Err(error) => {
+            observe_native_shadow_result(
+                NativeShadowOperation::DrvClosure,
+                NativeShadowOutcome::Incomplete,
+            );
             tracing::warn!(
                 error = %error,
                 operation,
@@ -957,6 +1093,42 @@ impl NativeSuccessOperation {
 }
 
 #[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy)]
+enum NativeShadowOperation {
+    DrvClosure,
+    ExpressionEvaluation,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeShadowOperation {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DrvClosure => "drv closure",
+            Self::ExpressionEvaluation => "expression evaluation",
+        }
+    }
+}
+
+#[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy)]
+enum NativeShadowOutcome {
+    Match,
+    Divergence,
+    Incomplete,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeShadowOutcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Match => "match",
+            Self::Divergence => "divergence",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+#[cfg(feature = "native-eval")]
 fn native_cli_fallback_reason(error: &anyhow::Error) -> Option<NativeCliFallbackReason> {
     error
         .downcast_ref::<NativeEvalError>()
@@ -996,6 +1168,43 @@ fn observe_native_eval_success(operation: NativeSuccessOperation) {
         native_success_count = count,
         "native eval completed without nix-cli fallback"
     );
+}
+
+#[cfg(feature = "native-eval")]
+fn observe_native_shadow_result(operation: NativeShadowOperation, outcome: NativeShadowOutcome) {
+    let count = record_native_shadow_result(operation, outcome);
+    tracing::debug!(
+        operation = operation.label(),
+        shadow_outcome = outcome.label(),
+        shadow_count = count,
+        "shadow native eval comparison recorded"
+    );
+}
+
+#[cfg(feature = "native-eval")]
+fn record_native_shadow_result(
+    operation: NativeShadowOperation,
+    outcome: NativeShadowOutcome,
+) -> u64 {
+    let counter = match (operation, outcome) {
+        (NativeShadowOperation::DrvClosure, NativeShadowOutcome::Match) => &NATIVE_SHADOW_DRV_MATCH,
+        (NativeShadowOperation::DrvClosure, NativeShadowOutcome::Divergence) => {
+            &NATIVE_SHADOW_DRV_DIVERGENCE
+        }
+        (NativeShadowOperation::DrvClosure, NativeShadowOutcome::Incomplete) => {
+            &NATIVE_SHADOW_DRV_INCOMPLETE
+        }
+        (NativeShadowOperation::ExpressionEvaluation, NativeShadowOutcome::Match) => {
+            &NATIVE_SHADOW_EXPRESSION_MATCH
+        }
+        (NativeShadowOperation::ExpressionEvaluation, NativeShadowOutcome::Divergence) => {
+            &NATIVE_SHADOW_EXPRESSION_DIVERGENCE
+        }
+        (NativeShadowOperation::ExpressionEvaluation, NativeShadowOutcome::Incomplete) => {
+            &NATIVE_SHADOW_EXPRESSION_INCOMPLETE
+        }
+    };
+    counter.fetch_add(1, Ordering::Relaxed) + 1
 }
 
 #[cfg(feature = "native-eval")]
@@ -1304,6 +1513,29 @@ mod tests {
     }
 
     #[test]
+    fn native_shadow_stats_total_sums_comparison_counts() {
+        let stats = NativeShadowStats {
+            drv_matches: 2,
+            drv_divergences: 3,
+            drv_incomplete: 5,
+            expression_matches: 7,
+            expression_divergences: 11,
+            expression_incomplete: 13,
+        };
+
+        assert_eq!(stats.drv_matches(), 2);
+        assert_eq!(stats.drv_divergences(), 3);
+        assert_eq!(stats.drv_incomplete(), 5);
+        assert_eq!(stats.expression_matches(), 7);
+        assert_eq!(stats.expression_divergences(), 11);
+        assert_eq!(stats.expression_incomplete(), 13);
+        assert_eq!(stats.matches(), 9);
+        assert_eq!(stats.divergences(), 14);
+        assert_eq!(stats.incomplete(), 18);
+        assert_eq!(stats.total(), 41);
+    }
+
+    #[test]
     fn native_eval_stats_groups_success_and_fallback_counts() {
         let stats = NativeEvalStats {
             successes: NativeSuccessStats {
@@ -1315,10 +1547,19 @@ mod tests {
                 unsupported: 4,
                 internal: 5,
             },
+            shadow: NativeShadowStats {
+                drv_matches: 6,
+                drv_divergences: 7,
+                drv_incomplete: 8,
+                expression_matches: 9,
+                expression_divergences: 10,
+                expression_incomplete: 11,
+            },
         };
 
         assert_eq!(stats.successes().total(), 6);
         assert_eq!(stats.fallbacks().total(), 9);
+        assert_eq!(stats.shadow().total(), 51);
     }
 
     #[cfg(feature = "native-eval")]
@@ -1343,6 +1584,61 @@ mod tests {
         let evaluation_stats = native_eval_stats();
         assert!(evaluation_stats.successes().expression_evaluations() >= evaluation_after);
         assert!(evaluation_stats.successes().total() >= evaluation_after);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_shadow_recording_counts_by_operation_and_outcome() {
+        let before = native_shadow_stats();
+
+        let drv_match = record_native_shadow_result(
+            NativeShadowOperation::DrvClosure,
+            NativeShadowOutcome::Match,
+        );
+        assert!(drv_match > before.drv_matches());
+        let after_drv_match = native_shadow_stats();
+        assert!(after_drv_match.drv_matches() >= drv_match);
+
+        let drv_divergence = record_native_shadow_result(
+            NativeShadowOperation::DrvClosure,
+            NativeShadowOutcome::Divergence,
+        );
+        assert!(drv_divergence > after_drv_match.drv_divergences());
+        let after_drv_divergence = native_shadow_stats();
+        assert!(after_drv_divergence.drv_divergences() >= drv_divergence);
+
+        let drv_incomplete = record_native_shadow_result(
+            NativeShadowOperation::DrvClosure,
+            NativeShadowOutcome::Incomplete,
+        );
+        assert!(drv_incomplete > after_drv_divergence.drv_incomplete());
+        let after_drv_incomplete = native_shadow_stats();
+        assert!(after_drv_incomplete.drv_incomplete() >= drv_incomplete);
+
+        let expression_match = record_native_shadow_result(
+            NativeShadowOperation::ExpressionEvaluation,
+            NativeShadowOutcome::Match,
+        );
+        assert!(expression_match > after_drv_incomplete.expression_matches());
+        let after_expression_match = native_shadow_stats();
+        assert!(after_expression_match.expression_matches() >= expression_match);
+
+        let expression_divergence = record_native_shadow_result(
+            NativeShadowOperation::ExpressionEvaluation,
+            NativeShadowOutcome::Divergence,
+        );
+        assert!(expression_divergence > after_expression_match.expression_divergences());
+        let after_expression_divergence = native_shadow_stats();
+        assert!(after_expression_divergence.expression_divergences() >= expression_divergence);
+
+        let expression_incomplete = record_native_shadow_result(
+            NativeShadowOperation::ExpressionEvaluation,
+            NativeShadowOutcome::Incomplete,
+        );
+        assert!(expression_incomplete > after_expression_divergence.expression_incomplete());
+        let stats = native_eval_stats();
+        assert!(stats.shadow().expression_incomplete() >= expression_incomplete);
+        assert!(stats.shadow().total() >= expression_incomplete);
     }
 
     #[cfg(feature = "native-eval")]
