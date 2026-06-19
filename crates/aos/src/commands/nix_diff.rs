@@ -542,8 +542,16 @@ fn insert_oracle_stats(value: &mut serde_json::Value, stats: Option<&NixInstanti
 fn oracle_stats_json(stats: &NixInstantiateStats) -> serde_json::Value {
     serde_json::json!({
         "drv_path": stats.drv_path.to_string_lossy(),
+        "elapsed": {
+            "seconds": stats.elapsed.as_secs_f64(),
+            "nanos": duration_nanos(stats.elapsed),
+        },
         "raw": stats.stats,
     })
+}
+
+fn duration_nanos(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn pair_json(pair: &DrvDiffPair) -> serde_json::Value {
@@ -654,7 +662,7 @@ fn render_single_oracle_stats(printer: &Printer, stats: Option<&NixInstantiateSt
     printer.plain(&format!(
         "  nix-cli stats: drv={}{}",
         stats.drv_path.display(),
-        stats_summary_suffix(&stats.stats)
+        stats_summary_suffix(stats)
     ));
 }
 
@@ -662,34 +670,60 @@ fn render_corpus_oracle_stats_summary(printer: &Printer, reports: &[AttrDiffRepo
     if printer.mode() == OutputMode::Quiet {
         return;
     }
-    let captured = reports
-        .iter()
-        .filter(|report| report.oracle_stats.is_some())
-        .count();
-    if captured == 0 {
-        return;
+    if let Some(summary) = corpus_oracle_stats_summary(reports) {
+        printer.plain(&summary);
     }
-    printer.plain(&format!(
-        "  captured nix-cli stats for {captured} selected derivation(s); use --json for raw NIX_SHOW_STATS"
-    ));
 }
 
-fn stats_summary_suffix(stats: &serde_json::Value) -> String {
-    let mut fields = Vec::new();
-    if let Some(cpu_time) = stats.get("cpuTime").and_then(serde_json::Value::as_f64) {
+fn corpus_oracle_stats_summary(reports: &[AttrDiffReport]) -> Option<String> {
+    let mut captured = 0;
+    let mut elapsed_total = std::time::Duration::ZERO;
+    for stats in reports
+        .iter()
+        .filter_map(|report| report.oracle_stats.as_ref())
+    {
+        captured += 1;
+        elapsed_total = elapsed_total
+            .checked_add(stats.elapsed)
+            .unwrap_or(std::time::Duration::MAX);
+    }
+
+    if captured == 0 {
+        return None;
+    }
+
+    Some(format!(
+        "  captured nix-cli stats for {captured} selected derivation(s) \
+         (elapsed_total={:.6}s, elapsed_avg={:.6}s); use --json for raw NIX_SHOW_STATS",
+        elapsed_total.as_secs_f64(),
+        elapsed_total.as_secs_f64() / captured as f64,
+    ))
+}
+
+fn stats_summary_suffix(stats: &NixInstantiateStats) -> String {
+    let mut fields = vec![format!("elapsed={:.6}s", stats.elapsed.as_secs_f64())];
+    if let Some(cpu_time) = stats
+        .stats
+        .get("cpuTime")
+        .and_then(serde_json::Value::as_f64)
+    {
         fields.push(format!("cpuTime={cpu_time:.6}s"));
     }
-    if let Some(thunks) = stats.get("nrThunks").and_then(serde_json::Value::as_u64) {
+    if let Some(thunks) = stats
+        .stats
+        .get("nrThunks")
+        .and_then(serde_json::Value::as_u64)
+    {
         fields.push(format!("nrThunks={thunks}"));
     }
-    if let Some(exprs) = stats.get("nrExprs").and_then(serde_json::Value::as_u64) {
+    if let Some(exprs) = stats
+        .stats
+        .get("nrExprs")
+        .and_then(serde_json::Value::as_u64)
+    {
         fields.push(format!("nrExprs={exprs}"));
     }
-    if fields.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", fields.join(", "))
-    }
+    format!(" ({})", fields.join(", "))
 }
 
 fn render_diff(diff: &DrvDiff) -> String {
@@ -828,16 +862,60 @@ mod tests {
                 "nrThunks": 7,
                 "nrExprs": 55,
             }),
+            elapsed: std::time::Duration::from_millis(1500),
         };
 
         let value = report_json(&report, "aos-nix", None, Some(&stats));
 
         assert_eq!(value["oracle_stats"]["drv_path"], "/nix/store/stats.drv");
+        assert_eq!(value["oracle_stats"]["elapsed"]["seconds"], 1.5);
+        assert_eq!(value["oracle_stats"]["elapsed"]["nanos"], 1_500_000_000);
         assert_eq!(value["oracle_stats"]["raw"]["nrThunks"], 7);
         assert_eq!(
-            stats_summary_suffix(&stats.stats),
-            " (cpuTime=0.125000s, nrThunks=7, nrExprs=55)"
+            stats_summary_suffix(&stats),
+            " (elapsed=1.500000s, cpuTime=0.125000s, nrThunks=7, nrExprs=55)"
         );
+    }
+
+    #[test]
+    fn corpus_oracle_stats_summary_renders_elapsed_aggregate() {
+        let reports = vec![
+            AttrDiffReport {
+                attr: "pkgs.fast".to_string(),
+                report: None,
+                failure: None,
+                oracle_stats: Some(NixInstantiateStats {
+                    drv_path: PathBuf::from("/nix/store/fast.drv"),
+                    stats: serde_json::json!({}),
+                    elapsed: std::time::Duration::from_millis(500),
+                }),
+            },
+            AttrDiffReport {
+                attr: "pkgs.slow".to_string(),
+                report: None,
+                failure: None,
+                oracle_stats: Some(NixInstantiateStats {
+                    drv_path: PathBuf::from("/nix/store/slow.drv"),
+                    stats: serde_json::json!({}),
+                    elapsed: std::time::Duration::from_millis(1500),
+                }),
+            },
+            AttrDiffReport {
+                attr: "pkgs.skipped".to_string(),
+                report: None,
+                failure: None,
+                oracle_stats: None,
+            },
+        ];
+
+        assert_eq!(
+            corpus_oracle_stats_summary(&reports).as_deref(),
+            Some(
+                "  captured nix-cli stats for 2 selected derivation(s) \
+                 (elapsed_total=2.000000s, elapsed_avg=1.000000s); use --json for raw NIX_SHOW_STATS"
+            )
+        );
+        assert_eq!(corpus_oracle_stats_summary(&[]), None);
     }
 
     #[test]

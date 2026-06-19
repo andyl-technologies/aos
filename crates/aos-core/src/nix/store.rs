@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
@@ -42,13 +43,15 @@ pub struct PathInfo {
     pub signatures: Vec<String>,
 }
 
-/// Instantiation output plus raw C++ Nix evaluation statistics.
+/// Instantiation output plus raw C++ Nix evaluation statistics and wall time.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NixInstantiateStats {
     /// The `.drv` path emitted by `nix-instantiate`.
     pub drv_path: PathBuf,
     /// The raw `NIX_SHOW_STATS=1` JSON object emitted by C++ Nix.
     pub stats: serde_json::Value,
+    /// Wall-clock time spent waiting for the `nix-instantiate` oracle process.
+    pub elapsed: Duration,
 }
 
 /// Portable classic Nix command wrapper.
@@ -125,17 +128,19 @@ impl NixCli {
         if self.verbose > 0 {
             cmd.arg("--show-trace");
         }
+        let started = Instant::now();
         let output = cmd
             .stderr(Stdio::piped())
             .output()
             .context("failed to run nix-instantiate with stats")?;
+        let elapsed = started.elapsed();
         if !output.status.success() {
             return Err(command_status_error(
                 format!("nix-instantiate with stats failed for {attr}"),
                 &output,
             ));
         }
-        parse_instantiate_stats_output(&output.stdout, &output.stderr)
+        parse_instantiate_stats_output(&output.stdout, &output.stderr, elapsed)
     }
 
     /// Instantiates a raw Nix expression, returning the `.drv` path.
@@ -478,7 +483,11 @@ impl NixCli {
     }
 }
 
-fn parse_instantiate_stats_output(stdout: &[u8], stderr: &[u8]) -> Result<NixInstantiateStats> {
+fn parse_instantiate_stats_output(
+    stdout: &[u8],
+    stderr: &[u8],
+    elapsed: Duration,
+) -> Result<NixInstantiateStats> {
     let text = String::from_utf8(stdout.to_vec())
         .context("invalid utf-8 from nix-instantiate with stats")?;
     let stderr = String::from_utf8(stderr.to_vec())
@@ -509,7 +518,11 @@ fn parse_instantiate_stats_output(stdout: &[u8], stderr: &[u8]) -> Result<NixIns
         .or_else(|_| parse_nix_show_stats_json(&stats_text))
         .context("parsing NIX_SHOW_STATS JSON from nix-instantiate")?;
 
-    Ok(NixInstantiateStats { drv_path, stats })
+    Ok(NixInstantiateStats {
+        drv_path,
+        stats,
+        elapsed,
+    })
 }
 
 fn parse_nix_show_stats_json(text: &str) -> Result<serde_json::Value> {
@@ -706,7 +719,7 @@ mod tests {
 }
 "#;
 
-        let parsed = parse_instantiate_stats_output(stdout, stderr)?;
+        let parsed = parse_instantiate_stats_output(stdout, stderr, Duration::from_millis(125))?;
 
         assert_eq!(
             parsed.drv_path,
@@ -714,6 +727,7 @@ mod tests {
         );
         assert_eq!(parsed.stats["nrThunks"], 7);
         assert_eq!(parsed.stats["time"]["cpu"], 0.125);
+        assert_eq!(parsed.elapsed, Duration::from_millis(125));
         Ok(())
     }
 
@@ -726,13 +740,14 @@ mod tests {
 /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv
 "#;
 
-        let parsed = parse_instantiate_stats_output(stdout, b"")?;
+        let parsed = parse_instantiate_stats_output(stdout, b"", Duration::from_millis(250))?;
 
         assert_eq!(
             parsed.drv_path,
             PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv")
         );
         assert_eq!(parsed.stats["nrThunks"], 7);
+        assert_eq!(parsed.elapsed, Duration::from_millis(250));
         Ok(())
     }
 
@@ -746,16 +761,17 @@ mod tests {
 }
 "#;
 
-        let parsed = parse_instantiate_stats_output(stdout, stderr)?;
+        let parsed = parse_instantiate_stats_output(stdout, stderr, Duration::from_millis(375))?;
 
         assert_eq!(parsed.stats["nrThunks"], 7);
         assert_eq!(parsed.stats.get("x"), None);
+        assert_eq!(parsed.elapsed, Duration::from_millis(375));
         Ok(())
     }
 
     #[test]
     fn parse_instantiate_stats_output_rejects_missing_drv_path() {
-        let error = parse_instantiate_stats_output(b"", br#"{"nrThunks":0}"#)
+        let error = parse_instantiate_stats_output(b"", br#"{"nrThunks":0}"#, Duration::ZERO)
             .expect_err("stats without a drv path should fail");
 
         assert!(
