@@ -92,7 +92,38 @@ fn js_to_value(value: &JsValue) -> Value {
     }
 }
 
+/// Names the JS type D1 sees for a bound value, for bind-error diagnostics.
+///
+/// D1 accepts `null`, numbers, strings, booleans, and `ArrayBuffer` blobs; it
+/// rejects any other object with `D1_TYPE_ERROR: Type 'object' not supported`.
+/// Surfacing the per-parameter type turns that opaque error into an actionable
+/// one (which column, what shape).
+fn js_type_name(value: &JsValue) -> &'static str {
+    if value.is_null() {
+        "null"
+    } else if value.is_undefined() {
+        "undefined"
+    } else if value.as_f64().is_some() {
+        "number"
+    } else if value.as_string().is_some() {
+        "string"
+    } else if value.dyn_ref::<js_sys::Uint8Array>().is_some() {
+        "uint8array"
+    } else if value.is_object() {
+        "object"
+    } else {
+        "other"
+    }
+}
+
 /// Prepares + binds a single source statement for D1 (sqlite dialect).
+///
+/// # Errors
+///
+/// Returns an error if dialect translation fails or D1 rejects a bound value.
+/// A bind failure is annotated with the translated SQL and each parameter's JS
+/// type (see [`js_type_name`]) so the otherwise-opaque `D1_TYPE_ERROR` points at
+/// the offending column.
 fn bind_stmt(
     db: &D1Database,
     sql: &str,
@@ -100,7 +131,13 @@ fn bind_stmt(
 ) -> anyhow::Result<worker::D1PreparedStatement> {
     let (translated, ordered) = prepare(Dialect::Sqlite, sql, params)?;
     let js: Vec<JsValue> = ordered.iter().map(to_js).collect();
-    db.prepare(&translated).bind(&js).map_err(d1_err)
+    db.prepare(&translated).bind(&js).map_err(|err| {
+        let types: Vec<&str> = js.iter().map(js_type_name).collect();
+        anyhow::anyhow!(
+            "D1 bind failed: {err} | sql: {translated} | param_types: [{}]",
+            types.join(", ")
+        )
+    })
 }
 
 #[async_trait(?Send)]
