@@ -277,11 +277,9 @@ in {
           description = "Set Up Encrypted Swap";
           wantedBy = ["swap.target"];
           before = ["swap.target"];
-          wants = ["systemd-udev-settle.service"];
           requires = ["dev-disk-by\\x2dpartlabel-swap.device"];
           after = [
             "local-fs.target"
-            "systemd-udev-settle.service"
             "dev-disk-by\\x2dpartlabel-swap.device"
           ];
           unitConfig = {
