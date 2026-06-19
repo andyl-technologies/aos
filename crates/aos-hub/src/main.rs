@@ -2061,6 +2061,13 @@ async fn ensure_root(db: &Database, email: &str, plaintext: &str) -> Result<(Str
     let user_id = db.find_or_create_user(&email).await?;
     let hash = aos_hub::auth::password::hash_password(plaintext)?;
     db.set_user_password(user_id, &hash).await?;
+    // Grant the root admin `Owner` at the instance-root scope (`""`) so it is a
+    // true instance administrator: `Role::Owner` carries `Permission::IamAdmin`
+    // at root, which authorizes creating organizations and administering the
+    // whole instance. Without this the bootstrapped account can log in but, under
+    // the default invite-only signup policy, cannot create an org or do anything.
+    db.grant_membership("user", user_id, "", aos_hub::domain::Role::Owner.as_str())
+        .await?;
     Ok((email, user_id))
 }
 
