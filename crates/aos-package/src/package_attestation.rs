@@ -33,6 +33,7 @@ const TPM2_CREATEAK_ENV: &str = "AOS_TPM2_CREATEAK";
 const TPM2_READPUBLIC_ENV: &str = "AOS_TPM2_READPUBLIC";
 const TPM2_QUOTE_ENV: &str = "AOS_TPM2_QUOTE";
 const TPM2_PCRREAD_ENV: &str = "AOS_TPM2_PCRREAD";
+const TPM2_CHECKQUOTE_ENV: &str = "AOS_TPM2_CHECKQUOTE";
 const TPM2_FLUSHCONTEXT_ENV: &str = "AOS_TPM2_FLUSHCONTEXT";
 const TPM2_TCTI_ENV: &str = "AOS_TPM2_TCTI";
 const PCR_INDEX: u8 = 15;
@@ -624,6 +625,67 @@ pub(crate) fn produce_package_quote(
         quoted_pcr15,
         flush_warnings,
     })
+}
+
+/// Verifies a package attestation quote bundle and returns the quoted PCR 15.
+///
+/// This checks the quote signature, nonce, PCR selection, and event-log replay
+/// input binding. It does not authenticate the AK/EK against a fleet trust
+/// registry.
+///
+/// # Errors
+///
+/// Returns an error if the nonce is malformed, `tpm2_checkquote` is not
+/// available through the trusted wrapper environment, quote verification fails,
+/// or the quote bundle's PCR values file cannot be parsed.
+pub(crate) fn verify_attestation_quote_bundle(quote_dir: &Path, nonce_hex: &str) -> Result<String> {
+    let nonce = parse_quote_nonce_hex(nonce_hex)?;
+    let checkquote = trusted_tpm2_tool_path(TPM2_CHECKQUOTE_ENV, "tpm2_checkquote")?;
+    let snapshot_dir = private_quote_bundle_snapshot(quote_dir)?;
+    let ak_public = snapshot_dir.join("ak.pub");
+    let quote_message = snapshot_dir.join("quote.msg");
+    let quote_signature = snapshot_dir.join("quote.sig");
+    let quote_pcrs = snapshot_dir.join("quote.pcrs");
+
+    let result = run_tpm2_tool(
+        &checkquote,
+        &[
+            os_arg("-u"),
+            os_arg(&ak_public),
+            os_arg("-m"),
+            os_arg(&quote_message),
+            os_arg("-s"),
+            os_arg(&quote_signature),
+            os_arg("-f"),
+            os_arg(&quote_pcrs),
+            os_arg("-l"),
+            os_arg(QUOTE_PCR_SELECTION),
+            os_arg("-g"),
+            os_arg("sha256"),
+            os_arg("-q"),
+            os_arg(&nonce),
+        ],
+        None,
+    )
+    .with_context(|| {
+        format!(
+            "verifying package attestation quote {}",
+            quote_dir.display()
+        )
+    })
+    .and_then(|()| quoted_pcr15_from_values_file(&quote_pcrs));
+
+    match fs::remove_dir_all(&snapshot_dir) {
+        Ok(()) => {}
+        Err(err) if result.is_err() => {
+            let _ = err;
+        }
+        Err(err) => {
+            return Err(err).with_context(|| format!("removing {}", snapshot_dir.display()));
+        }
+    }
+
+    result
 }
 
 fn read_current_pcr15() -> Result<String> {
@@ -1313,24 +1375,49 @@ fn parse_quote_nonce_hex(value: &str) -> Result<String> {
     Ok(value.to_ascii_lowercase())
 }
 
+fn private_quote_bundle_snapshot(quote_dir: &Path) -> Result<PathBuf> {
+    let snapshot_dir = unique_temp_dir("aos-attest-verify")?;
+    for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+        let source = quote_dir.join(name);
+        let target = snapshot_dir.join(name);
+        fs::copy(&source, &target)
+            .with_context(|| format!("copying quote bundle member {}", source.display()))?;
+    }
+    Ok(snapshot_dir)
+}
+
 fn unique_quote_work_dir(parent: &Path) -> Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?
         .as_nanos();
+    unique_dir_under(
+        parent,
+        &format!(".aos-attest-quote-{}", std::process::id()),
+        nanos,
+    )
+}
+
+fn unique_temp_dir(prefix: &str) -> Result<PathBuf> {
+    let root = std::env::temp_dir();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_nanos();
+    unique_dir_under(&root, &format!("{prefix}-{}", std::process::id()), nanos)
+}
+
+fn unique_dir_under(parent: &Path, prefix: &str, nanos: u128) -> Result<PathBuf> {
     for attempt in 0..32u8 {
-        let path = parent.join(format!(
-            ".aos-attest-quote-{}-{nanos}-{attempt}",
-            std::process::id()
-        ));
-        match fs::create_dir(&path) {
+        let path = parent.join(format!("{prefix}-{nanos}-{attempt}"));
+        match DirBuilder::new().mode(0o700).create(&path) {
             Ok(()) => return Ok(path),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err).with_context(|| format!("creating {}", path.display())),
         }
     }
     bail!(
-        "could not allocate a unique quote work directory under {}",
+        "could not allocate a unique directory under {}",
         parent.display()
     );
 }
@@ -1847,6 +1934,39 @@ mod tests {
 
         let non_hex = parse_quote_nonce_hex("zz").unwrap_err();
         assert!(format!("{non_hex:#}").contains("only hex"));
+    }
+
+    #[test]
+    fn quote_bundle_verifier_rejects_invalid_nonce_before_tools() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = verify_attestation_quote_bundle(tmp.path(), "zz").unwrap_err();
+
+        assert!(format!("{err:#}").contains("only hex"));
+    }
+
+    #[test]
+    fn quote_bundle_snapshot_copies_members_to_private_dir() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+            fs::write(tmp.path().join(name), name).expect("bundle member");
+        }
+
+        let snapshot = private_quote_bundle_snapshot(tmp.path()).expect("snapshot");
+
+        assert_ne!(snapshot.parent(), Some(tmp.path()));
+        assert_eq!(
+            fs::metadata(&snapshot)
+                .expect("snapshot metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        for name in ["ak.pub", "quote.msg", "quote.sig", "quote.pcrs"] {
+            let copied = fs::read_to_string(snapshot.join(name)).expect("copied member");
+            assert_eq!(copied, name);
+        }
+        fs::remove_dir_all(snapshot).expect("cleanup snapshot");
     }
 
     #[test]
