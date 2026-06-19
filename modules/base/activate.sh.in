@@ -57,12 +57,17 @@ STAGE="$STAGE_PREFLIGHT"
 cleanup_partial_gen() {
   # Best-effort teardown of a half-built generation. All guarded with
   # `|| true` + `:-` so the trap never fails inside itself.
+  #
+  # The upper (/run/etc/upper-${N}/dir) is deliberately NOT removed. Uppers
+  # are now persistent per-generation (see the compose stage), so when this
+  # activation is a rollback INTO an existing gen N, wiping upper-N here would
+  # destroy the runtime /etc writes preserved from N's earlier life this boot.
+  # A leftover fresh-empty upper from a never-completed new gen is harmless;
+  # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
   @util-linux@/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
-  @util-linux@/bin/umount --lazy "${upper_root:-/nonexistent}"   2>/dev/null || true
   @coreutils@/bin/rm -rf "/run/etc/system-${N:-_}" \
-                         "/run/etc/ignition-${N:-_}" \
-                         "/run/etc/upper-${N:-_}" 2>/dev/null || true
+                         "/run/etc/ignition-${N:-_}" 2>/dev/null || true
 }
 
 on_err() {
@@ -126,6 +131,31 @@ exec {LOCK_FD}>/run/apm/switch.lock
 if ! @util-linux@/bin/flock -n "$LOCK_FD"; then
   echo "activate: another system switch holds /run/apm/switch.lock" >&2
   exit "$EX_PREFLIGHT"
+fi
+
+# Warn if the currently-live generation has runtime /etc writes in its
+# overlay upper that aren't backed by the /var/etc allowlist. Per-gen
+# uppers persist for the life of the boot, so these writes stay with the
+# current generation (and are restored if it is re-activated this boot) but
+# do NOT follow the switch into gen $N. A dirty upper usually means some
+# process wrote under /etc outside the persistence allowlist; the durable
+# fix is to add the path to /var/etc (storage.links), not to lean on the
+# ephemeral upper. Detection uses bash globbing (nullglob+dotglob) so it
+# needs no external tool; any immediate child of dir/ — file, subdir, or
+# overlay whiteout — counts as dirty.
+cur_upper=$(@coreutils@/bin/readlink -f /run/etc/upper 2>/dev/null || true)
+if [ -n "$cur_upper" ] && [ -d "$cur_upper/dir" ]; then
+  shopt -s nullglob dotglob
+  cur_writes=("$cur_upper"/dir/*)
+  shopt -u nullglob dotglob
+  if [ "${#cur_writes[@]}" -gt 0 ]; then
+    echo "activate: WARNING: the live generation's /etc overlay upper" >&2
+    echo "activate:   ($cur_upper/dir) holds ${#cur_writes[@]} runtime write(s)" >&2
+    echo "activate:   not captured in /var/etc. They stay with that generation" >&2
+    echo "activate:   (restored if you switch back to it this boot) but do NOT" >&2
+    echo "activate:   carry into gen $N. Persist anything that must survive via" >&2
+    echo "activate:   the /var/etc allowlist (storage.links)." >&2
+  fi
 fi
 
 # --- prepare ---
@@ -217,16 +247,22 @@ EOF
 # gen stays live.
 STAGE="$STAGE_COMPOSE"
 
-# $upper_root was declared during preflight; mount its tmpfs now. It is
-# a FRESH, empty tmpfs — the candidate overlay deliberately does not
-# inherit the live system's runtime /etc writes (those live in the old
-# gen's upper). This matches reboot semantics: the /etc upper is
-# ephemeral; persistent host state lives in /var/etc (a shared lower
-# present in both the old and candidate overlay).
-@coreutils@/bin/mkdir -p "$upper_root"
-@util-linux@/bin/mount -t tmpfs -o nosuid,nodev,mode=755 \
-  tmpfs "$upper_root"
-@coreutils@/bin/mkdir -p "$upper_root/upper" "$upper_root/work"
+# $upper_root was declared during preflight. Create the upper + work dirs
+# as plain directories inside the /run/etc tmpfs — there is no dedicated
+# per-gen tmpfs mount: the parent /run/etc is already tmpfs (nosuid,nodev,
+# mode=755), so a subdirectory inherits the same backing and flags. This
+# also matches how the boot path (etc-overlay-setup.service) creates it.
+#
+# `mkdir -p` is deliberately content-preserving. Per-generation uppers are
+# NOT torn down on switch-away (see the cleanup stage), so re-activating a
+# generation this boot — a rollback or a roll-forward — reuses the upper it
+# left behind and restores that generation's runtime /etc writes. A gen
+# never activated this boot has no upper-<N> yet, so it starts empty,
+# matching fresh-boot semantics. Persistent host state still lives in
+# /var/etc (a shared lower in every generation's overlay); the upper holds
+# only writes that escaped that allowlist, and it is wiped on reboot
+# (tmpfs) regardless.
+@coreutils@/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
 
 tmpEtc=$(@coreutils@/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
 @util-linux@/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
@@ -240,7 +276,7 @@ lowerdir+=/var/etc,\
 lowerdir+="$ign/etc",\
 lowerdir+="$sys/metadata",\
 datadir+="$sys/content",\
-upperdir="$upper_root/upper",\
+upperdir="$upper_root/dir",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
@@ -327,13 +363,22 @@ esac
 # maps 5 to a successful upgrade.
 STAGE="$STAGE_CLEANUP"
 
+# Tear down the previous generation's LOWER stack only (EROFS metadata +
+# content bind, and the rendered ignition lower). These are rebuilt from the
+# toplevel by the prepare stage on every activation, so a later switch back
+# to $prev_gen reconstructs them cheaply.
+#
+# The previous gen's upper (/run/etc/upper-${prev_gen}) is deliberately
+# PRESERVED — uppers are per-generation and persist for the life of the boot
+# so switching back restores that gen's runtime /etc writes. Nothing is
+# unmounted for the upper either: it is a plain directory in the /run/etc
+# tmpfs now, not its own mount. Stale uppers are reclaimed by generation GC
+# (when apm prunes the generation) and by reboot (tmpfs), never here.
 if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
   @util-linux@/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
   @util-linux@/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
-  @util-linux@/bin/umount --lazy "/run/etc/upper-${prev_gen}"           || true
   @coreutils@/bin/rm -rf "/run/etc/system-${prev_gen}" \
-                         "/run/etc/ignition-${prev_gen}" \
-                         "/run/etc/upper-${prev_gen}"
+                         "/run/etc/ignition-${prev_gen}"
 fi
 
 # All phases succeeded. If reconcile reported failed units the switch

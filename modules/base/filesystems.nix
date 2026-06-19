@@ -228,7 +228,7 @@ in {
 
     # tmpfiles rules to create standard volatile directories. The
     # `/run/etc-upper` triplet from the legacy overlay is gone —
-    # etc-overlay-setup.service now creates `/run/etc/upper-<gen>/{upper,work}`
+    # etc-overlay-setup.service now creates `/run/etc/upper-<gen>/{dir,work}`
     # at boot time directly (spec v12 §6.1.4).
     environment.etc."tmpfiles.d/aos-filesystems.conf" = {
       text = ''

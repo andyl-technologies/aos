@@ -20,6 +20,7 @@ use super::config::ApmConfig;
 use super::profile::Profile;
 use super::profile::meta;
 use super::registry::RegistrySet;
+use super::types::ProfileScope;
 use aos_core::output::{OutputMode, Printer};
 
 /// List user package profile generations.
@@ -78,6 +79,12 @@ pub async fn list(config: &ApmConfig, printer: &Printer) -> Result<()> {
 
     if generations.is_empty() {
         printer.info("No profile generations.");
+        if let Some(count) = system_generation_hint(config) {
+            printer.info(&format!(
+                "{count} system generation{} available; did you mean `apm rollback --system --list`?",
+                if count == 1 { "" } else { "s" },
+            ));
+        }
         return Ok(());
     }
 
@@ -137,7 +144,14 @@ pub async fn run(
     // Must have a current generation to roll back from.
     let current = match inspect_profile.current_generation()? {
         Some(g) => g,
-        None => bail!("no active generation to roll back from"),
+        None => match system_generation_hint(config) {
+            Some(count) => bail!(
+                "no active generation to roll back from ({count} system generation{} available; \
+                 did you mean `apm rollback --system`?)",
+                if count == 1 { "" } else { "s" },
+            ),
+            None => bail!("no active generation to roll back from"),
+        },
     };
 
     let all_gens = inspect_profile.list_generations()?;
@@ -351,6 +365,26 @@ fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
     RegistrySet::load(&config.cache_path(), &reg_configs, "x86_64-linux")
+}
+
+/// Number of system generations to surface as a `--system` hint, or `None`.
+///
+/// The package-profile rollback path operates on the per-user profile
+/// selected by the absence of `--system` ([`ProfileScope::User`]). When that
+/// profile is empty, operators frequently meant to roll back the *system*
+/// profile instead. This returns the count of recorded system generations so
+/// the caller can nudge toward `apm rollback --system` — but only when the
+/// current scope is the implicit user default and at least one system
+/// generation exists. Returns `None` for an explicit system scope, an empty
+/// or unreadable system state file, so the hint never fires spuriously.
+fn system_generation_hint(config: &ApmConfig) -> Option<usize> {
+    if config.scope != ProfileScope::User {
+        return None;
+    }
+    let system_path = ProfileScope::System.profile_path();
+    let state = crate::sysroot::load_generation_state_pub(&system_path).ok()?;
+    let count = state.generations.len();
+    (count > 0).then_some(count)
 }
 
 /// Human description of a root: `name version [registry]` when resolvable,
