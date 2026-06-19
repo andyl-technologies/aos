@@ -1266,4 +1266,3 @@ vocabulary, and lets it compose cleanly with the fork/search/fuzz of 22.
   `(ScenarioDef, Seed, Schedule)`, identical online vs offline, and divergence
   localized to the first differing firing. — satisfies [TRIG-16], [TRIG-19],
   [TRIG-30]; spec §17a.3, §17a.8; cross-ref 24.
-```

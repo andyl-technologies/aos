@@ -142,6 +142,9 @@ Start here, then read in three bands:
 28. [`27-crate-structure.md`](27-crate-structure.md) · 29. [`28-engineering-standards.md`](28-engineering-standards.md) · 30. [`29-patterns-and-sketches.md`](29-patterns-and-sketches.md)
 31. [`30-risks-spikes.md`](30-risks-spikes.md) · 32. [`31-decision-register.md`](31-decision-register.md)
 
+**Worked examples & workloads:**
+33. [`33-examples-and-workloads.md`](33-examples-and-workloads.md) — end-to-end worked scenarios (happy path, partition-recovery, crash/restart, fault campaign, determinism check) authored with zero guest-side components, plus the in-guest workload/traffic-generation story.
+
 **The plan (the thing an implementor works through):**
 33. [`32-implementation-plan.md`](32-implementation-plan.md) — the master, phased, checkbox implementation plan. Every task references the spec requirement IDs it satisfies; every spec file carries the slice of the plan that belongs to it. Phase ordering puts **determinism, the test harness, the transport ABI, and the control-plane API correctness first**, before any feature is built on top.
 

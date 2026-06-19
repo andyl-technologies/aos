@@ -548,7 +548,10 @@ A fault becomes active either **declaratively** — it is part of the `Plan`
 component of the `ScenarioDef`, scheduled at an exact virtual time — or
 **imperatively** — it is injected by a control command during a live session.
 Both routes converge on the same active-fault state the scheduler consults at
-RESOLVE.
+RESOLVE. Both are, more generally, the firing of an `InjectFault`/`HealFault`
+**`Action`** in the 17a event graph (§17.6.5,
+[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.4); the
+declarative `FaultPlan` below is its degenerate pure-`At`-trigger case.
 
 ### 17.6.1 The declarative `FaultPlan` (part of the `Plan`)
 
@@ -690,6 +693,60 @@ recompute) at the quantum boundary whenever an activation/heal changes it
   iteration order on the ordering-significant path ([INV-9], [SCHED-19]). *Gate:*
   `gate:layer1-injection`, `gate:harness-lint`, `gate:replay-oracle`. *Spec:*
   §17.6.4; cross-ref 08 §8.11, 07 §3.
+
+### 17.6.5 Faults are `Action`s in the 17a event graph
+
+The scheduling story above is one model, not two. A fault is not a special-case
+scheduling primitive: it is an **`Action`** in the event graph of
+[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md). `InjectFault`
+and `HealFault` are the canonical actions of that graph ([TRIG-22], 17a §17a.4);
+an *event* binds a trigger condition to one of them, and "inject the partition once
+the cluster is observed healthy, heal it thirty virtual seconds later" is two
+events whose triggers are observable conditions (17a §17a.2), not two `PlanEntry`s.
+The condition/trigger vocabulary — the timer-fired, event-fired,
+assertion-satisfied/violated, and compound all-of/any-of triggers that
+[`06-spatial-graph.md`](06-spatial-graph.md) §5.1 attributes to the `Plan` — is
+defined once in 17a; this file does **not** re-specify it and MUST be read as a
+consumer of it (a fault is a trigger *action*).
+
+The declarative `FaultPlan` of §17.6.1 (`At` / `PermanentAt` / `Heal`) is the
+**degenerate case** of that event graph: the subset whose every trigger is a pure
+`At` condition and whose every action is `InjectFault`/`HealFault`. It lowers
+mechanically to 17a events — `PermanentAt { at, fault, tag }` ⇒ one event
+`(trigger: At{at}, action: InjectFault{tag, fault})`; a finite `At { at, duration,
+fault, tag }` ⇒ that inject event plus a heal event `(trigger: At{at+duration},
+action: HealFault{tag})`; `Heal { at, tag }` ⇒ `(trigger: At{at}, action:
+HealFault{tag})` (17a §17a.7). The `FaultPlan` and the event graph are therefore
+**one content-addressed model**: an author who needs only time-scheduled faults
+writes the `FaultPlan` and never touches a `ConsoleMatch`; an author who needs
+observation-anchored choreography writes richer events; both hash and reduce
+identically (17a [TRIG-28], [TRIG-29]). Imperative injection (§17.6.2) is the
+control-plane spelling of firing an `InjectFault`/`HealFault` action at the current
+virtual time, recorded as a `Decision` ([FAULT-26]) rather than computed from a
+trigger — the firing-vs-Decision boundary 17a §17a.3.3 draws.
+
+- **[FAULT-33]** A fault MUST be expressed as an `InjectFault`/`HealFault`
+  **`Action`** in the event graph of
+  [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) ([TRIG-22],
+  17a §17a.4); there MUST be no parallel fault-scheduling mechanism outside that
+  action set. The trigger/condition vocabulary that decides *when* a fault fires
+  MUST be the single vocabulary of 17a §17a.2 (this file MUST NOT define a separate
+  one), and a declarative or imperative fault MUST apply at its firing virtual time
+  at a quantum boundary exactly as 17a [TRIG-23] requires. *Gate:*
+  `gate:layer1-injection`, `gate:e2e-determinism`. *Spec:* §17.6.5; cross-ref 17a
+  §17a.4, §17a.3.3.
+
+- **[FAULT-34]** The declarative `FaultPlan` (§17.6.1 — `At` / `PermanentAt` /
+  `Heal`) MUST be the **degenerate pure-`At` case** of the 17a event graph and MUST
+  lower to it mechanically: each `PlanEntry` lowers to one or more events whose
+  trigger is a pure `At` condition and whose action is `InjectFault`/`HealFault`
+  (a finite `At { duration }` lowering to an inject event plus an `At { at+duration
+  }` heal event, 17a §17a.7). The `FaultPlan` and the event graph MUST be one
+  content-addressed model sharing one canonicalization, one content hash, and one
+  build-time validator (17a [TRIG-28], [TRIG-29]); a pure-`At` `FaultPlan` MUST hash
+  and reduce identically whether expressed as a `FaultPlan` or as the equivalent
+  `At`-triggered event graph. *Gate:* `gate:content-address`, `gate:e2e-determinism`.
+  *Spec:* §17.6.5; cross-ref 17a §17a.7, 06 §5.1.
 
 ## 17.7 `RandomFaultConfig`: weighted probabilistic fault generation
 

@@ -149,6 +149,7 @@ guest↔host channel (black-box default + optional white-box).
 - Assertions / properties (incl. offline checker): `T-ASRT-1 … T-ASRT-16` ([`18`](18-assertions-properties.md)).
 - Unified event log: `T-OBS-1 … T-OBS-13` ([`19`](19-observability-event-log.md)).
 - Guest↔host channel + optional agent: `T-GHC-1 … T-GHC-15` ([`16`](16-guest-host-channel.md)).
+- Workload / traffic-generation story (in-guest, seeded via the entropy boundary): `T-WL-1 … T-WL-6` ([`33`](33-examples-and-workloads.md)).
 - Patterns realized here: `T-PAT-4, T-PAT-7` ([`29`](29-patterns-and-sketches.md)).
 
 **Exit gates.** `gate:replay-oracle` (full, fat checkpoints over real backends),
@@ -193,6 +194,7 @@ acceptance gate.
 **Tasks.**
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam): `T-PKG-1 … T-PKG-20` ([`26`](26-packaging-aos-integration.md)).
 - Performance: `T-PERF-1 … T-PERF-26` ([`25`](25-performance-targets.md)).
+- Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
 - Open-decision spikes that gate release: `T-D-1 … T-D-3` ([`31`](31-decision-register.md)).
 
 **Exit gates.** `gate:perf-bench` (cost-model metrics meet baselines, no

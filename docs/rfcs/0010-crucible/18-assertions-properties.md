@@ -49,6 +49,20 @@ quantifier** that says *when* the predicate must hold. That is the entire model.
 There is no spec language, no LTL/CTL formula compiler, no state-exploration
 engine inside the assertion layer.
 
+The **predicate** here is not a second vocabulary: it is the single `Condition`
+type of [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2,
+which has **exactly two consumers** (17a [TRIG-4]). An *assertion* is a `Condition`
+that is **continuously checked for pass/fail** (this file); a *trigger* (17a) is a
+`Condition` that **fires an `Action` once** when it first becomes true. Both
+consumers evaluate the **identical** predicate over the **identical** event log at
+the **identical** deterministic evaluation points (§18.7, 17a §17a.3) — an author
+learns one predicate vocabulary and uses it both to *check* the run (assertions)
+and to *steer* it (triggers). The `AssertionState` leaf (17a §17a.2.8) closes the
+loop: a trigger can fire *because* an assertion just became satisfied or violated.
+The temporal quantifiers below (Always/Sometimes/Eventually/AfterQuiescence/
+Reachable) are the *grading discipline* this file layers over that shared
+`Condition`; they are not a different predicate type.
+
 - **[ASRT-1]** The assertion layer MUST be a fixed, closed vocabulary of temporal
   property quantifiers (§18.2) evaluated as predicates over the run's recorded
   observable state (§18.3). It MUST NOT include a model checker, a
@@ -636,6 +650,116 @@ Reproduction: a violation carries (id, icount/vtime, node, detail) and a
   content-addressed (seed, scenario, schedule) artifact that replays the failure
   bit-identically; non-reproduction is a divergence, localized by bisection.
 ```
+
+## 18.12 The shared predicate vocabulary, the predicate DSL, and finalize-driving markers
+
+### 18.12.1 One `Condition` vocabulary, two consumers
+
+The predicate every assertion grades is the `Condition` of
+[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2, shared
+with the trigger graph (§18.1, 17a [TRIG-4]). This file does **not** define a
+disjoint assertion-only predicate type; a predicate usable as a trigger MUST be
+usable as an assertion and vice versa, modulo a leaf whose semantics are inherently
+edge-shaped (e.g. 17a's `After`).
+
+- **[ASRT-30]** An assertion's predicate MUST be the single `Condition` vocabulary
+  of [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2
+  (17a [TRIG-4]): an **assertion** is a `Condition` continuously checked for
+  pass/fail (this file), a **trigger** (17a) is a `Condition` that fires an
+  `Action` once, and both MUST evaluate the identical predicate over the identical
+  event log (19) at the identical deterministic evaluation points (§18.7, 17a
+  §17a.3). There MUST NOT be a trigger-only predicate vocabulary disjoint from the
+  assertion predicate vocabulary; a predicate usable as one MUST be usable as the
+  other, modulo an inherently edge-shaped leaf (17a `After`). A trigger MUST be able
+  to fire on an assertion outcome via the `AssertionState` leaf (17a §17a.2.8),
+  closing the grading↔steering loop with no second mechanism. *Gate:*
+  `gate:harness-lint`, `gate:e2e-determinism`. *Spec:* §18.1, §18.12.1; cross-ref
+  17a §17a.2, [TRIG-4], [TRIG-12].
+
+### 18.12.2 The predicate DSL — named, TOML-authorable conditions
+
+So that scenarios can express assertions and triggers **declaratively** without
+writing closures, Crucible provides a set of **named conditions** — a small
+predicate DSL — that desugar to 17a leaf `Condition`s. Each name is sugar for a
+concrete 17a leaf (or a compound of them); authoring a property or a trigger in
+TOML names a DSL predicate instead of supplying a host closure. The DSL is
+*additive*: a host-side closure ([ASRT-10]) remains available for predicates the
+named set does not cover.
+
+```toml
+# A property and a trigger authored declaratively with the predicate DSL.
+# Each named predicate desugars to a 17a leaf Condition (§18.12.2); no closure.
+
+[[properties.assertion]]
+name = "no-crashes"
+kind = "always"
+predicate = "no_crashed_nodes"        # desugars to Not(AnyOf(NodeState{*,Crashed}))
+
+[[properties.assertion]]
+name = "settles-clean"
+kind = "after_quiescence"
+predicate = "no_active_faults"        # no fault tag is active at the check point
+
+[[event]]                              # a trigger sharing the same DSL (17a)
+id = "fork-on-quiet"
+trigger = "quiescent"                  # desugars to 17a Quiescent
+action  = { fork = {} }
+```
+
+The named predicates and their desugaring to 17a leaves:
+
+```text
+  DSL name              desugars to (17a §17a.2 leaf / compound)
+  --------------------  ----------------------------------------------------
+  no_crashed_nodes      Not(AnyOf([ NodeState{node=n, Crashed} for all n ]))
+  quiescent             Quiescent
+  no_active_faults      Not(AnyOf([ <fault-active> for each declared tag ]))
+  node_alive:<n>        Not(NodeState{node=<n>, state=Crashed})
+  node_crashed:<n>      Once(NodeState{node=<n>, state=Crashed})
+```
+
+- **[ASRT-31]** Crucible MUST provide a **predicate DSL**: a set of named,
+  TOML-authorable conditions (at least `no_crashed_nodes`, `quiescent`,
+  `no_active_faults`, `node_alive:<n>`, `node_crashed:<n>`) that **desugar to 17a
+  leaf `Condition`s** (§17a.2), so an author MAY express an assertion or a trigger
+  declaratively without writing a host closure. Each DSL name MUST desugar to a
+  fixed 17a `Condition` (a leaf or a compound of leaves), MUST be usable wherever a
+  `Condition` is (both as an assertion predicate and as a trigger, [ASRT-30]), and
+  MUST resolve its node/link/tag references at build time against the `World`/`Plan`
+  ([SPAT-6], [SPAT-31], 17a [TRIG-26]). The DSL MUST be strictly additive: a
+  host-side closure ([ASRT-10]) remains available for predicates the named set does
+  not cover. *Gate:* `gate:harness-lint`, `gate:content-address`. *Spec:* §18.12.2;
+  cross-ref 17a §17a.2.
+
+### 18.12.3 White-box doorbell markers MUST carry enough to drive finalize
+
+The OPTIONAL white-box doorbell assertion marker (§18.5,
+[`16-guest-host-channel.md`](16-guest-host-channel.md)) is an *observational,
+white-box, never-required* leaf. When present, however, its recorded payload MUST
+carry enough structure for the engine to **finalize** the quantifier correctly —
+in particular, Always and Reachable have *finalize-at-quiescence* obligations
+([ASRT-18] table, [ASRT-21]) that depend on knowing a marker's *kind* and whether
+it was *declared/expected at all* even when its in-guest instruction was **never
+reached**. A `reachable` marker that never fires can only be finalized as
+"never-reached (warn/fail)" if the engine knows it was *catalog-declared* and with
+what disposition; an `always` marker can only finalize as passing if the engine
+knows the assertion's kind and `must_hit` expectation. A bare boolean doorbell is
+insufficient.
+
+- **[ASRT-32]** The OPTIONAL white-box doorbell assertion marker (§18.5, 16) MUST,
+  when emitted, carry a payload sufficient to drive quantifier finalize semantics:
+  the assertion **id** ([ASRT-5], [GHC-20]); the **kind**
+  (always/sometimes/reachable/unreachable, mirroring §18.2); a `must_hit` /
+  **catalog-declaration** flag so a **never-reached** marker can still be finalized
+  (Always/Reachable, [ASRT-21], [ASRT-22]); a structured **details** blob (for the
+  violation record, [ASRT-27]); and the source **location**. These markers MUST
+  remain **observational, white-box, and OPTIONAL** — never required ([GHC-2],
+  [GHC-28], [ASRT-13]) and fingerprint-neutral ([ASRT-12], [GHC-24], [GHC-30]) — but
+  when present they MUST let the engine finalize Always/Sometimes/Reachable/
+  unreachable identically online and offline ([ASRT-15], [ASRT-23]). The marker
+  payload schema MUST be the one carried by the channel ([GHC-36]). *Gate:*
+  `gate:any-guest`, `gate:replay-oracle`. *Spec:* §18.12.3; cross-ref §18.5, §18.8,
+  16 §16.5.
 
 ## Implementation checklist
 

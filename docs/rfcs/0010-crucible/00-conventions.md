@@ -74,6 +74,8 @@ test that enforces it, and a back-pointer to the defining section.
 | `PAT` | Implementation patterns & sketches | 29 |
 | `RISK` | Risks & validation spikes | 30 |
 | `D` | Design decisions (decision register) | 31 |
+| `EX` | Worked example scenarios | 33 |
+| `WL` | Workload / traffic generation | 33 |
 
 Within a file, requirements are numbered in document order starting at 1. A file
 MAY group them under sub-headings but the numbers are flat within the file.
