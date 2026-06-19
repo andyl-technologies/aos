@@ -29806,14 +29806,6 @@ pub enum TreeWalkErrorKind {
         /// The invalid boolean payload.
         payload: u64,
     },
-    /// The binary operator is outside this evaluator slice.
-    #[error("unsupported tree-walk binary operator {op:?} at {id:?}")]
-    UnsupportedBinaryOp {
-        /// The unsupported node id.
-        id: IrId,
-        /// The unsupported binary operator.
-        op: BinOpKind,
-    },
     /// A primitive operation exists in IR but is outside this evaluator slice.
     #[error("unsupported tree-walk primop symbol {symbol:?} at {id:?}")]
     UnsupportedPrimOp {

@@ -362,7 +362,6 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
         TreeWalkErrorKind::UnsupportedLambdaPattern { .. }
         | TreeWalkErrorKind::UnsupportedLetBindingKey { .. }
         | TreeWalkErrorKind::UnsupportedSourcePathType { .. }
-        | TreeWalkErrorKind::UnsupportedBinaryOp { .. }
         | TreeWalkErrorKind::UnsupportedPrimOp { .. }
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
