@@ -24,7 +24,8 @@ in
         set -eu
         export PATH="${prev.coreutils}/bin:${prev.gcc}/bin:${prev.binutils}/bin:${prev.gnumake}/bin:${prev.bash}/bin:${prev.sed}/bin:${prev.grep}/bin:${prev.gawk}/bin:${prev.findutils}/bin:${prev.diffutils}/bin:${prev.tar}/bin:${prev.gzip}/bin:${prev.bzip2}/bin:${prev.patch}/bin"
 
-        cp -r ${src} "$TMPDIR/linux-3.10.108"
+        mkdir -p "$TMPDIR/linux-3.10.108"
+        (cd ${src} && tar cf - .) | (cd "$TMPDIR/linux-3.10.108" && tar xf -)
         chmod -R u+w "$TMPDIR/linux-3.10.108"
         cd "$TMPDIR/linux-3.10.108"
 

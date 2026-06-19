@@ -31,9 +31,15 @@
       preferLocalBuild = true;
     };
 
+  # SourceForge is tukaani's historical mirror and still serves the
+  # ORIGINAL release tarball (sha256 f6f4910f...). tukaani.org 403s
+  # the path since the post-5.6 site restructure, and the re-uploaded
+  # GitHub release asset is a DIFFERENT byte stream (regenerated
+  # archive, sha256 0019dfc4...) — do not "fix" this by repinning to
+  # GitHub's hash without auditing the diff.
   xz-src = fetchSrc {
     name = "xz-5.2.5.tar.gz";
-    url = "https://tukaani.org/xz/xz-5.2.5.tar.gz";
+    url = "https://downloads.sourceforge.net/project/lzmautils/xz-5.2.5.tar.gz";
     hash = "sha256-9vSRD9AzB4c4vYK/uk9JIZ0DsX6weU65HvuuQZ9KuhA=";
   };
 

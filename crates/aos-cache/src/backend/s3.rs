@@ -44,6 +44,12 @@ impl S3Backend {
 
 #[async_trait]
 impl CacheBackend for S3Backend {
+    async fn exists(&self, relative_path: &str) -> Result<bool> {
+        let url = self.s3_url(relative_path.trim_start_matches('/'));
+        let result = self.engine.head(&url).await?;
+        Ok(result.status != 404)
+    }
+
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.s3_url(&format!("{store_hash}.narinfo"));
         let result = self.engine.head(&url).await?;

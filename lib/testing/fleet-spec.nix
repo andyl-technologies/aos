@@ -135,6 +135,17 @@
         '';
       };
 
+      tpm = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Attach an emulated TPM 2.0 (swtpm) to this machine. The driver
+          launches a swtpm process per machine and wires QEMU's
+          `tpm-tis` device to it over a control socket. Needed by
+          measured-boot tests (RFC-0006 phase 3); harmless otherwise.
+        '';
+      };
+
       varSizeMiB = mkOption {
         type = positiveInt;
         default = 256;
@@ -163,7 +174,8 @@
                   if config.bootMode == "image"
                   then ignitionFullFormat
                   else ignitionFormat
-                ).type;
+                )
+                .type;
               default = {};
             };
           };
@@ -201,6 +213,17 @@
       timeout = mkOption {
         type = types.int;
         default = 300;
+      };
+      bootTimeout = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = ''
+          Per-boot budget (seconds) for a machine's agent to answer after
+          (re)launch, overriding the driver default. Raise it for boots
+          that are legitimately slow — e.g. measured boot, where the
+          emulated TPM adds tens of seconds of slow command round-trips
+          per boot. Null uses the driver default.
+        '';
       };
     };
   };

@@ -23,7 +23,7 @@ An AOS registry is a git repository of package metadata:
 - `packages/<letter>/<name>.toml` stores package metadata in the nested
   `[package]` / `[[versions]]` / `[versions.platforms.<platform>]` shape parsed
   by `registry/parse.rs`.
-- `closures/<hash>` stores precomputed dependency adjacency lists.
+- `store/<2-char>/<ia>` stores the realisation graph: blessed NAR bytes, dependency edges, and content addresses per store path (RFC-0005).
 
 The producer creates sha256 git repositories and refreshes the static object
 indexes needed by dumb HTTP. The consumer uses native git sync for both `git://`
@@ -114,14 +114,14 @@ Implemented producer behavior:
   supports it.
 - `apr release <semver>` is the guarded producer orchestrator. It can release an
   already committed registry tree or optionally publish a real Nix store path
-  first, commits a `[[caches]]` pointer before signing when `--cache-url` is
-  supplied, creates/reuses the signed semver tag, generates full packs at
-  `X.Y.0` anchors and compressed guaranteed thin deltas, refreshes static git
-  indexes, optionally generates static Nix-cache files with `--cache-output`,
-  initializes or advances channel partitions, and uploads the static origin to
-  repeatable backend URLs in immutable-first / mutable-last order. It has a
-  local publisher lock, `--dry-run`, and `--resume` for interrupted immutable
-  artifact generation.
+  first, stages static Nix-cache files internally when publishing store roots,
+  commits the `[[caches]]` pointer before signing, creates/reuses the signed
+  semver tag, generates full packs at `X.Y.0` anchors and compressed guaranteed
+  thin deltas, refreshes static git indexes, initializes or advances channel
+  partitions, and uploads cache payloads plus the static origin to repeatable
+  backend URLs in producer-safe order. It has a local publisher lock,
+  `--dry-run`, `--no-skip`, and `--resume` for interrupted immutable artifact
+  generation.
 
 ---
 
@@ -155,7 +155,7 @@ Implemented producer behavior:
     - branch/tag/version/commit modes verify the commit signature when required;
     - channel mode verifies the signed partition tag, signed semver tag, and
       commit chain with name-binding.
-11. Extract `packages/` and `closures/` to the remote metadata cache.
+11. Extract `packages/` and `store/` to the remote metadata cache.
 12. Extract committed root `registry.toml`, `keys.toml`, and `.gitattributes`
     so `[[caches]]` are available to NAR mirror resolution and trust-roster
     helpers can read the authenticated tree after sync.

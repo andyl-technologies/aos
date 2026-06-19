@@ -81,6 +81,22 @@
           not listed here.)
         '';
       };
+
+      ## Extra packages whose full runtime closures are copied into the
+      ## initrd's /nix/store, beyond the built-in set. Used by features
+      ## that need an extra file or tool available pre-switch-root — e.g.
+      ## measured boot ships the PCR-policy public key here so the
+      ## first-boot /var sealing service can read it (RFC-0006 phase 3).
+      extraPackages = lib.mkOption {
+        type = lib.types.listOf lib.types.package;
+        default = [];
+        description = ''
+          Additional packages (derivations) whose closures are included
+          in the initrd. Anything an initrd unit references by store path
+          must be reachable through this list, since the initrd copies a
+          fixed package set rather than the whole toplevel closure.
+        '';
+      };
     };
   };
 
@@ -126,6 +142,13 @@
       # image builder writes via sfdisk (name="root-a").
       "root=/dev/disk/by-partlabel/root-a"
       "ro"
+      # Mask systemd-boot-random-seed.service: with efivarfs now built-in
+      # (CONFIG_EFIVAR_FS=y, base.config) its ConditionPathExists is met,
+      # so it activates and then fails trying to write /loader/random-seed
+      # to the read-only ESP. AOS images are immutable and don't maintain
+      # an sd-boot random seed, so mask it rather than leave a failed unit
+      # on every UEFI boot (RFC-0006).
+      "systemd.mask=systemd-boot-random-seed.service"
     ];
 
     # systemd-initrd kernel modules configuration.

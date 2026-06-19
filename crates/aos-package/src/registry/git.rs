@@ -322,7 +322,7 @@ pub async fn sync_git(
     let packages_dir = registry_cache_dir.join("packages");
     let old_packages = count_toml_files(&packages_dir).await;
     extract_packages(&repo_dir, &new_commit, &packages_dir).await?;
-    extract_closures(&repo_dir, &new_commit, &registry_cache_dir.join("closures")).await?;
+    extract_store(&repo_dir, &new_commit, &registry_cache_dir.join("store")).await?;
     let new_packages = count_toml_files(&packages_dir).await;
 
     // Step 7b: Materialise root registry files so resolve_mirror and trust
@@ -1202,36 +1202,51 @@ async fn enforce_fast_forward(repo_dir: &Path, old_commit: &str, new_commit: &st
 /// Uses `git archive` to export the `packages/` directory from the commit
 /// and extract it into the output directory.
 async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "packages", output_dir).await
+    extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
-/// Extract precomputed closure adjacency files from a git tree.
-async fn extract_closures(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
-    extract_tree_dir(repo_dir, commit, "closures", output_dir).await
+/// Extract the `store/` realisation graph from a git tree (RFC-0005).
+///
+/// Presence semantics matter here: a registry without a committed `store/`
+/// tree must yield NO local `store/` directory - an empty directory would
+/// read as a present-but-empty (i.e. malformed/stripped) graph and flip
+/// consumer enforcement on against a legacy registry.
+async fn extract_store(repo_dir: &Path, commit: &str, output_dir: &Path) -> Result<()> {
+    extract_tree_dir(repo_dir, commit, "store", output_dir, false).await
 }
 
 /// Replace `output_dir` with the contents of `commit:tree_path/`.
 ///
 /// The existing directory is removed first so deletions in the registry
-/// propagate; a tree path absent from the commit leaves an empty directory.
+/// propagate. When the tree path is absent from the commit,
+/// `create_empty_when_absent` selects between leaving an empty directory
+/// (the historical behavior for `packages/`) and leaving no directory at
+/// all (required for `store/`, where presence is meaningful).
 async fn extract_tree_dir(
     repo_dir: &Path,
     commit: &str,
     tree_path: &str,
     output_dir: &Path,
+    create_empty_when_absent: bool,
 ) -> Result<()> {
     if output_dir.exists() {
         tokio::fs::remove_dir_all(output_dir)
             .await
             .with_context(|| format!("cleaning {}", output_dir.display()))?;
     }
+
+    if !tree_path_exists(repo_dir, commit, tree_path).await? {
+        if create_empty_when_absent {
+            tokio::fs::create_dir_all(output_dir)
+                .await
+                .with_context(|| format!("creating {}", output_dir.display()))?;
+        }
+        return Ok(());
+    }
+
     tokio::fs::create_dir_all(output_dir)
         .await
         .with_context(|| format!("creating {}", output_dir.display()))?;
-
-    if !tree_path_exists(repo_dir, commit, tree_path).await? {
-        return Ok(());
-    }
 
     let tarball = tempfile::NamedTempFile::new().context("creating temporary git archive")?;
     let archive = gitcmd::hermetic_async()
@@ -1299,7 +1314,12 @@ pub async fn extract_registry_root(repo_dir: &Path, commit: &str, target_dir: &P
         .await
         .with_context(|| format!("creating {}", target_dir.display()))?;
 
-    for file in ["registry.toml", "keys.toml", ".gitattributes"] {
+    for file in [
+        "registry.toml",
+        "keys.toml",
+        "sb-certs.toml",
+        ".gitattributes",
+    ] {
         extract_optional_root_file(repo_dir, commit, target_dir, file).await?;
     }
 
@@ -1672,6 +1692,7 @@ mod tests {
             pin: None,
             max_staleness_seconds,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: Some(SigningConfig {
@@ -2155,6 +2176,98 @@ mod tests {
             .await
             .unwrap();
         assert!(content.contains("curl"));
+    }
+
+    /// Init a non-bare repo with a configured identity at `dir`.
+    async fn init_repo(dir: &Path) {
+        tokio::fs::create_dir_all(dir).await.unwrap();
+        assert!(
+            git(dir)
+                .args(["init"])
+                .output()
+                .await
+                .unwrap()
+                .status
+                .success()
+        );
+        let _ = git(dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .await;
+        let _ = git(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .await;
+    }
+
+    async fn commit_all(dir: &Path, message: &str) -> String {
+        let _ = git(dir).args(["add", "-A"]).output().await;
+        let _ = git(dir).args(["commit", "-m", message]).output().await;
+        let output = git(dir).args(["rev-parse", "HEAD"]).output().await.unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn extract_store_preserves_presence_semantics() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let work_dir = tmp.path().join("work");
+        init_repo(&work_dir).await;
+
+        // Commit 1: a registry WITHOUT a store/ tree (legacy).
+        tokio::fs::create_dir_all(work_dir.join("packages").join("c"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("packages").join("c").join("curl.toml"),
+            "[package]\nname = \"curl\"\n",
+        )
+        .await
+        .unwrap();
+        let legacy_commit = commit_all(&work_dir, "legacy").await;
+
+        // Commit 2: add a sharded store/ record.
+        tokio::fs::create_dir_all(work_dir.join("store").join("r4"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            work_dir.join("store").join("r4").join("r4q1m2kp8v3x"),
+            "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:10\n",
+        )
+        .await
+        .unwrap();
+        let mapped_commit = commit_all(&work_dir, "add store").await;
+
+        // Commit 3: remove the store/ tree again.
+        tokio::fs::remove_dir_all(work_dir.join("store"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "drop store").await;
+
+        let store_dir = tmp.path().join("out-store");
+
+        // Absent tree → NO local store/ directory (StoreMap reads not-present).
+        extract_store(&work_dir, &legacy_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(!store_dir.exists(), "absent store/ must leave no directory");
+
+        // Present tree → extracted.
+        extract_store(&work_dir, &mapped_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(
+            store_dir.join("r4").join("r4q1m2kp8v3x").exists(),
+            "present store/ must be extracted"
+        );
+
+        // Dropped between syncs → stale local store/ is removed.
+        extract_store(&work_dir, &removed_commit, &store_dir)
+            .await
+            .unwrap();
+        assert!(
+            !store_dir.exists(),
+            "dropping store/ upstream must remove the stale local directory"
+        );
     }
 
     #[tokio::test]

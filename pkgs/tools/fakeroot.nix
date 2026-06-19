@@ -15,7 +15,13 @@ in
     inherit version;
 
     src = fetchurl {
+      # Debian's pool keeps only the current version; 1.37.2 was
+      # superseded (1.38.1 is current) and 404s there now. The
+      # content-addressed snapshot.debian.org /file/<sha1> URL serves the
+      # exact tarball permanently. The pool URL is kept as a secondary in
+      # case the version is reinstated.
       urls = [
+        "https://snapshot.debian.org/file/1a721c2b4093a4e83dc091dc41a028f19340c1b3"
         "https://deb.debian.org/debian/pool/main/f/fakeroot/fakeroot_${version}.orig.tar.gz"
       ];
       hash = "sha256-Dupg++iXcbiPz0Fcjy8KbM/p7eu887pdwCEnGNmIhNs=";

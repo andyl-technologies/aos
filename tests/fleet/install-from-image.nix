@@ -57,8 +57,11 @@ in {
       system = systems.server;
       roles = ["aos-registry-server" "test-http-server"];
       extraClosures = [server2Top pkgs.bc];
-      # Static cache of the full closure lands under /var/lib.
-      varSizeMiB = 1536;
+      # Static cache of the full closure lands under /var/lib. The server-2
+      # closure has grown past the old 1536 MiB margin (the zstd cache now
+      # overflows it mid-generation: "No space left on device"), so give
+      # /var more room.
+      varSizeMiB = 3072;
     };
 
     target = {

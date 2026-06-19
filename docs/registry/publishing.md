@@ -77,8 +77,8 @@ new one — never a partition tag pointing at a commit whose objects are missing
 **CURRENT.** `apr` is the same binary as `aos`/`apm`, dispatched on `argv[0]`;
 `apr …` expands to `package registry …`. All producer logic lives in
 [`crates/aos-package/src/registry_ops.rs`](../../crates/aos-package/src/registry_ops.rs).
-Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml` +
-`closures/<hash>`). The sha256 object-store scaffolding, signed release tags,
+Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml`)
+plus the `store/` realisation graph (RFC-0005). The sha256 object-store scaffolding, signed release tags,
 channel partition commands, `update-server-info`, root `objects/info/alternates`
 refresh hooks, static Nix-cache generation/upload, and static git-origin upload
 now exist.
@@ -90,13 +90,15 @@ The commands relevant to a release, in workflow order:
 | `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>] [--key <path> \| --key-id <id>]` | `create` (`registry_ops.rs`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml` (seeded by `--trust-key`), initial commit (signed with `--key`/`--key-id` when the roster is seeded), then refresh dumb-HTTP object indexes; optional `git remote add origin`. |
 | `apr keys generate <id> [--registry <name>] [--add] [--no-commit] [--key \| --key-id]` | `generate_roster_key` (`registry_ops.rs:2922`) | Mints an Ed25519 keypair in-process (hermetic `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to `apm/keys/<registry>-<id>.key` (`0600`, refuses overwrite), records its path in `[registry.signing_keys]`, prints the public key + fingerprint; with `--add` appends it to `keys.toml` (signed commit unless `--no-commit`). `--add` on an empty roster errors → use `apr create --trust-key`. |
 | `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and **re-sign** the channel/release tags whose only valid signer was the retired key (`--no-resign` to skip). `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
-| `apr publish <store-path> […]` | `publish` (`registry_ops.rs:476`) | Introspect the path, write `packages/<x>/<name>.toml`, compute + write `closures/<hash>`, then (unless `--no-commit`) `git add -A && git commit` and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | Introspect the path, write `packages/<x>/<name>.toml`, and record `store/<2-char>/<ia>` realisation files for every runtime-closure member - blessed NAR + dependency edges, plus the CA realisation and pins (via `nix store make-content-addressed`) when the registry is `content_addressed` - refusing on a content mismatch unless `--bless`, then (unless `--no-commit`) commit the touched paths and refresh `objects/info/alternates` + `update-server-info`. |
+| `apr store bless/revoke/verify/backfill [--registry <name>] [--key \| --key-id]` | `run_store` (`registry_ops.rs`) | Maintains the `store/` realisation graph (RFC-0005): `bless` records a path's closure from the local Nix store; `revoke` removes a blessed realisation (a security event - signed, reviewable diff); `verify` checks graph health + closure coverage (`--deep` recomputes local NAR hashes); `backfill` records every published closure so an existing registry becomes fully covered in one signed commit. |
 | `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
-| `apr cache generate --output <dir> [--key <key>] [--cache-url <url>] [--upload-url <backend>]...` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path; fails closed when a path is absent locally; optionally uploads the exact generated files to one or more repeatable `--upload-url` destinations via `aos-cache`, reporting any partial destination failures, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr cache generate [--output <dir>] [--key <key>] [--cache-url <url>] [--upload-url <backend>]... [--no-skip]` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path into the internal per-registry staging dir unless `--output` is supplied; fails closed when a path is absent locally; skips remotely present narinfos unless `--no-skip`; optionally uploads the generated files to repeatable `--upload-url` destinations via `aos-cache`, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
+| `apr cache gc [--registry <name>] [--max-age <days>] [--dry-run]` | `run_cache` (`registry_ops.rs`) | Removes old internal static-cache staging narinfo/NAR pairs, defaulting to `[registry.cache].max_age_days` or 30 days. |
 | `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
-| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-output <dir>] [--cache-url <url>] [--upload-url <backend>]... [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, commits a cache pointer before signing when `--cache-url` is supplied, creates/reuses a signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, optionally generates static Nix-cache files, initializes/advances channel partitions, and uploads the static origin in immutable-first / mutable-last order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
+| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-url <url>] [--cache-key <key>] [--cache-priority N] [--upload-url <backend>]... [--no-skip] [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, generates static Nix-cache files into internal staging when publishing store roots, commits the cache pointer, creates/reuses the signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, initializes/advances channel partitions, and uploads cache bytes plus the static origin in producer-safe order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 ### 2.1 CURRENT: transport/index refresh
@@ -512,7 +514,6 @@ apr release 2026.06.0 \
     --description "URL transfer tool" --license MIT --maintainer acme \
     --key-id initial \
     --channel stable --init-channel \
-    --cache-output ./cache-static \
     --cache-key ./nix_cache_signing_key \
     --cache-url https://registry.example/cache \
     --s3-region us-east-1 \
@@ -598,11 +599,11 @@ upload with CDN TTLs:  /releases/**, loose, packs = long/immutable
 
 `apr release` is the production wrapper for this pipeline. It supports a
 committed-tree mode and an optional `--store-path` mode; the latter delegates to
-`apr publish` first and therefore requires a real local Nix store path. Static
-cache generation is opt-in with `--cache-output` for the same reason. Uploads
-accept repeatable backend URLs (`file://`, `http(s)://`, `s3://`, and
-`sftp://`/`ssh://`) and publish immutable payloads before low-TTL mutable
-pointers.
+`apr publish` first and therefore requires a real local Nix store path. When a
+publishing release has store roots, `apr` stages the static cache internally,
+commits the advertised `[[caches]]` pointer before signing the release tag, and
+uploads cache payloads before mutable pointers. Uploads accept repeatable backend
+URLs (`file://`, `http(s)://`, `s3://`, and `sftp://`/`ssh://`).
 The mixed cache upload path is validated by
 `checks.vm.apm.registry-validation-stock-nix-backend-array`; the static-origin
 upload ordering and CDN metadata contract are validated by

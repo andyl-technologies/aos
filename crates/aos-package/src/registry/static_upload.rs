@@ -15,19 +15,33 @@
 //! therefore at worst see *old* pointers — never a pointer to content
 //! that has not been uploaded yet, on any mirror.
 //!
+//! Within each phase the per-destination uploads run concurrently
+//! (`UPLOAD_CONCURRENCY` in flight), and an already-present immutable object
+//! is skipped (an existence check, unless `--no-skip`) so a re-publish only
+//! re-uploads what changed.
+//!
 //! Every file is classified as [`StaticOriginClass::Immutable`]
-//! (content-addressed git objects, release packs, narinfos, NARs) or
+//! (content-addressed git objects and release packs) or
 //! [`StaticOriginClass::Mutable`] (refs, channel partitions, server-info
 //! metadata) and tagged with matching `Cache-Control` and `Content-Type`
-//! headers for CDN-fronted hosting.
+//! headers for CDN-fronted hosting. The static binary cache (narinfos, NARs,
+//! `nix-cache-info`) is uploaded separately, and owns its own §8 write
+//! ordering, in [`crate::registry::nixcache::upload_static_cache_to_all`].
 
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions, CacheBackend};
 use aos_core::output::Printer;
+use futures_util::future::join_all;
+use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::registry::objectstore;
+
+/// Maximum origin-file uploads kept in flight per destination. The
+/// `aos_net` connection pool enforces the real per-host limit; this only
+/// bounds how many requests we stage at once.
+const UPLOAD_CONCURRENCY: usize = 16;
 
 /// `Cache-Control` for content-addressed files that never change in place.
 const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
@@ -40,10 +54,10 @@ const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 /// upload order: payloads land before the pointers that reference them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StaticOriginClass {
-    /// Content-addressed payload (git objects, packs, narinfos, NARs).
+    /// Content-addressed payload (git objects and release packs).
     Immutable,
     /// Pointer or metadata rewritten on publish (`HEAD`, `info/refs`,
-    /// `objects/info/*`, channel partitions, `nix-cache-info`).
+    /// `objects/info/*`, channel partitions).
     Mutable,
 }
 
@@ -69,24 +83,23 @@ pub struct StaticOriginUploadReport {
     pub files: usize,
     /// Total payload size in bytes per destination.
     pub bytes: u64,
+    /// Number of immutable files skipped because a destination already had
+    /// the backend-relative object.
+    pub skipped_files: usize,
 }
 
-/// Collect the full static origin file set in safe upload order.
+/// Collect the git-origin file set in safe upload order.
 ///
 /// Walks the registry's git directory (`HEAD`, `info/refs`, `objects/`,
-/// `releases/`, `channels/`) and, when `cache_dir` is given, the static Nix
-/// cache (`nix-cache-info`, `*.narinfo`, `nar/`). Files are classified and
-/// sorted immutable-first, then by path. Missing optional directories are
-/// skipped.
+/// `releases/`, `channels/`), classifies each file, and sorts immutable-first
+/// then by path. Missing optional directories are skipped. The static binary
+/// cache is uploaded separately (see the module docs).
 ///
 /// # Errors
 ///
 /// Returns an error if the git directory cannot be resolved, a directory
 /// cannot be read, or a file path contains non-UTF-8 or unsafe components.
-pub fn collect_static_origin_files(
-    registry_dir: &Path,
-    cache_dir: Option<&Path>,
-) -> Result<Vec<StaticOriginFile>> {
+pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOriginFile>> {
     let git_dir = objectstore::repo_git_dir(registry_dir)?;
     let mut files = Vec::new();
 
@@ -104,19 +117,6 @@ pub fn collect_static_origin_files(
     push_dir(&mut files, &git_dir, "channels", |_| {
         Ok(StaticOriginClass::Mutable)
     })?;
-
-    if let Some(cache_dir) = cache_dir {
-        push_file(
-            &mut files,
-            cache_dir,
-            "nix-cache-info",
-            StaticOriginClass::Mutable,
-        )?;
-        push_cache_narinfos(&mut files, cache_dir)?;
-        push_dir(&mut files, cache_dir, "nar", |_| {
-            Ok(StaticOriginClass::Immutable)
-        })?;
-    }
 
     files.sort_by(|a, b| {
         a.class
@@ -150,16 +150,16 @@ pub fn collect_static_origin_files(
 /// those whose mutable phase was skipped).
 pub async fn upload_static_origin_to_all(
     registry_dir: &Path,
-    cache_dir: Option<&Path>,
     upload_urls: &[String],
     auth: &AuthOptions,
+    no_skip: bool,
     printer: &Printer,
 ) -> Result<StaticOriginUploadReport> {
     if upload_urls.is_empty() {
         bail!("at least one upload URL is required");
     }
 
-    let files = collect_static_origin_files(registry_dir, cache_dir)?;
+    let files = collect_static_origin_files(registry_dir)?;
     if files.is_empty() {
         bail!("static origin has no files to upload");
     }
@@ -168,10 +168,12 @@ pub async fn upload_static_origin_to_all(
     let report = StaticOriginUploadReport {
         files: files.len(),
         bytes,
+        skipped_files: 0,
     };
+    // Connect every destination first; a connect failure is a per-destination
+    // failure that excludes that mirror from both phases.
     let mut failures = Vec::new();
     let mut destinations: Vec<(&str, Box<dyn CacheBackend>)> = Vec::new();
-
     for upload_url in upload_urls {
         match backend::from_url(upload_url, auth).await {
             Ok(backend) => destinations.push((upload_url.as_str(), backend)),
@@ -179,7 +181,9 @@ pub async fn upload_static_origin_to_all(
         }
     }
 
-    failures.extend(upload_phase_major(&files, &destinations, printer).await);
+    let (phase_failures, skipped_files) =
+        upload_phase_major(&files, &destinations, no_skip, printer).await;
+    failures.extend(phase_failures);
 
     if !failures.is_empty() {
         bail!(
@@ -190,31 +194,41 @@ pub async fn upload_static_origin_to_all(
         );
     }
 
-    Ok(report)
+    Ok(StaticOriginUploadReport {
+        skipped_files,
+        ..report
+    })
 }
 
 /// Upload `files` to already-connected destinations in phase-major order.
 ///
 /// Phase 1 uploads every [`StaticOriginClass::Immutable`] file to every
-/// destination. Phase 2 uploads [`StaticOriginClass::Mutable`] files only
-/// to the destinations whose immutable phase fully succeeded; a
-/// destination that failed phase 1 is skipped with a warning, leaving it
-/// stale but consistent. Within each phase, the collected file order is
-/// preserved.
+/// destination; phase 2 uploads [`StaticOriginClass::Mutable`] files only to
+/// the destinations whose immutable phase fully succeeded (a phase-1 failure
+/// leaves that mirror stale but consistent, skipped with a warning). Within a
+/// phase, each destination's files upload concurrently (`UPLOAD_CONCURRENCY` in
+/// flight) and an already-present immutable object is skipped (unless
+/// `no_skip`).
 ///
-/// Returns at most one failure message per failed destination; an empty
-/// vector means every destination completed both phases.
+/// Returns the per-destination failure messages (empty when every destination
+/// completed both phases) and the total number of skipped (already-present)
+/// uploads across all destinations.
 async fn upload_phase_major(
     files: &[StaticOriginFile],
     destinations: &[(&str, Box<dyn CacheBackend>)],
+    no_skip: bool,
     printer: &Printer,
-) -> Vec<String> {
+) -> (Vec<String>, usize) {
     let mut failures = Vec::new();
+    let mut skipped_files = 0usize;
     let mut immutable_ok = Vec::with_capacity(destinations.len());
 
     for (upload_url, backend) in destinations {
-        match upload_class(backend.as_ref(), files, StaticOriginClass::Immutable).await {
-            Ok(()) => immutable_ok.push(true),
+        match upload_class(backend.as_ref(), files, StaticOriginClass::Immutable, no_skip).await {
+            Ok(skipped) => {
+                skipped_files += skipped;
+                immutable_ok.push(true);
+            }
             Err(err) => {
                 failures.push(format!("{upload_url}: {err:#}"));
                 immutable_ok.push(false);
@@ -230,36 +244,56 @@ async fn upload_phase_major(
             ));
             continue;
         }
-        match upload_class(backend.as_ref(), files, StaticOriginClass::Mutable).await {
-            Ok(()) => printer.success(&format!(
+        match upload_class(backend.as_ref(), files, StaticOriginClass::Mutable, no_skip).await {
+            Ok(_) => printer.success(&format!(
                 "Uploaded static registry origin files to {upload_url}"
             )),
             Err(err) => failures.push(format!("{upload_url}: {err:#}")),
         }
     }
 
-    failures
+    (failures, skipped_files)
 }
 
-/// Upload every file of one mutability class to a single backend,
-/// preserving the collected order; stops at the first failure.
+/// Upload every file of one mutability class to a single backend, concurrently
+/// (`UPLOAD_CONCURRENCY` in flight).
+///
+/// An already-present immutable object is skipped via an existence check
+/// (unless `no_skip`). Returns the count of skipped (already-present) files;
+/// errors on the first failed upload.
 async fn upload_class(
     backend: &dyn CacheBackend,
     files: &[StaticOriginFile],
     class: StaticOriginClass,
-) -> Result<()> {
-    for file in files.iter().filter(|file| file.class == class) {
-        backend
-            .put_static_file(
-                &file.relative_path,
-                &file.source,
-                Some(file.content_type),
-                Some(file.cache_control),
-            )
-            .await
-            .with_context(|| format!("uploading {}", file.relative_path))?;
-    }
-    Ok(())
+    no_skip: bool,
+) -> Result<usize> {
+    let results = futures_util::stream::iter(
+        files
+            .iter()
+            .filter(|file| file.class == class)
+            .map(|file| async move {
+                if !no_skip
+                    && file.class == StaticOriginClass::Immutable
+                    && backend.exists(&file.relative_path).await?
+                {
+                    return Ok::<bool, anyhow::Error>(true);
+                }
+                backend
+                    .put_static_file(
+                        &file.relative_path,
+                        &file.source,
+                        Some(file.content_type),
+                        Some(file.cache_control),
+                    )
+                    .await
+                    .with_context(|| format!("uploading {}", file.relative_path))?;
+                Ok::<bool, anyhow::Error>(false)
+            }),
+    )
+    .buffer_unordered(UPLOAD_CONCURRENCY)
+    .try_collect::<Vec<bool>>()
+    .await?;
+    Ok(results.into_iter().filter(|skipped| *skipped).count())
 }
 
 /// Sum the on-disk size of every collected file.
@@ -283,23 +317,6 @@ fn push_file(
     let source = root.join(relative_path);
     if source.is_file() {
         push_source(files, root, source, class)?;
-    }
-    Ok(())
-}
-
-/// Add every `*.narinfo` file at the top level of the static cache dir.
-fn push_cache_narinfos(files: &mut Vec<StaticOriginFile>, cache_dir: &Path) -> Result<()> {
-    if !cache_dir.is_dir() {
-        return Ok(());
-    }
-    for entry in
-        std::fs::read_dir(cache_dir).with_context(|| format!("reading {}", cache_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("narinfo") && path.is_file() {
-            push_source(files, cache_dir, path, StaticOriginClass::Immutable)?;
-        }
     }
     Ok(())
 }
@@ -411,16 +428,13 @@ fn cache_control(class: StaticOriginClass) -> &'static str {
     }
 }
 
-/// Pick a `Content-Type` for a static origin path by name and extension.
+/// Pick a `Content-Type` for a git-origin path by name and extension.
 fn content_type(relative_path: &str) -> &'static str {
-    if relative_path == "nix-cache-info"
-        || relative_path == "HEAD"
+    if relative_path == "HEAD"
         || relative_path == "info/refs"
         || relative_path.starts_with("objects/info/")
     {
         "text/plain"
-    } else if relative_path.ends_with(".narinfo") {
-        "text/x-nix-narinfo"
     } else if relative_path.ends_with(".pack") {
         "application/x-git-packed-objects"
     } else if relative_path.ends_with(".idx") {
@@ -451,10 +465,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
 
-        let files = collect_static_origin_files(&root, Some(&cache)).unwrap();
+        let files = collect_static_origin_files(&root).unwrap();
         let paths = files
             .iter()
             .map(|file| (file.relative_path.as_str(), file.class))
@@ -465,27 +477,19 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             StaticOriginClass::Immutable
         )));
-        assert!(paths.contains(&("abc123.narinfo", StaticOriginClass::Immutable)));
-        assert!(paths.contains(&("nar/demo.nar.zst", StaticOriginClass::Immutable)));
         assert!(paths.contains(&("HEAD", StaticOriginClass::Mutable)));
         assert!(paths.contains(&("info/refs", StaticOriginClass::Mutable)));
         assert!(paths.contains(&("objects/info/alternates", StaticOriginClass::Mutable)));
         assert!(paths.contains(&("channels/stable/00", StaticOriginClass::Mutable)));
 
-        let first_mutable = files
-            .iter()
-            .position(|file| file.class == StaticOriginClass::Mutable)
-            .unwrap();
-        assert!(
-            files[..first_mutable]
+        let pos = |needle: &str| {
+            files
                 .iter()
-                .all(|file| file.class == StaticOriginClass::Immutable)
-        );
-        assert!(
-            files[first_mutable..]
-                .iter()
-                .all(|file| file.class == StaticOriginClass::Mutable)
-        );
+                .position(|file| file.relative_path == needle)
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        };
+        assert!(pos("objects/aa/object") < pos("HEAD"));
+        assert!(pos("releases/1/0/0/objects/pack/pack-demo.pack") < pos("objects/info/alternates"));
     }
 
     #[test]
@@ -493,10 +497,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
 
-        let files = collect_static_origin_files(&root, Some(&cache)).unwrap();
+        let files = collect_static_origin_files(&root).unwrap();
         assert_static_metadata(&files, "HEAD", "text/plain", MUTABLE_CACHE_CONTROL);
         assert_static_metadata(&files, "info/refs", "text/plain", MUTABLE_CACHE_CONTROL);
         assert_static_metadata(
@@ -523,18 +525,6 @@ mod tests {
             "application/x-git-packed-objects",
             IMMUTABLE_CACHE_CONTROL,
         );
-        assert_static_metadata(
-            &files,
-            "abc123.narinfo",
-            "text/x-nix-narinfo",
-            IMMUTABLE_CACHE_CONTROL,
-        );
-        assert_static_metadata(
-            &files,
-            "nar/demo.nar.zst",
-            "application/zstd",
-            IMMUTABLE_CACHE_CONTROL,
-        );
     }
 
     #[tokio::test]
@@ -542,23 +532,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
         let dest = tmp.path().join("dest");
         let upload_urls = vec![format!("file://{}", dest.display())];
         let printer = Printer::new(0, true, false);
 
         let report = upload_static_origin_to_all(
             &root,
-            Some(&cache),
             &upload_urls,
             &AuthOptions::default(),
+            false,
             &printer,
         )
         .await
         .unwrap();
 
-        assert!(report.files >= 8);
+        assert!(report.files >= 6);
         assert_eq!(
             std::fs::read(dest.join("HEAD")).unwrap(),
             b"ref: refs/heads/stable\n"
@@ -572,10 +560,6 @@ mod tests {
             std::fs::read(dest.join("channels/stable/00")).unwrap(),
             b"channel"
         );
-        assert_eq!(
-            std::fs::read(dest.join("nar/demo.nar.zst")).unwrap(),
-            b"nar"
-        );
     }
 
     #[tokio::test]
@@ -583,8 +567,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let printer = Printer::new(0, true, false);
@@ -596,9 +578,9 @@ mod tests {
         ];
         let err = upload_static_origin_to_all(
             &root,
-            Some(&cache),
             &upload_urls,
             &AuthOptions::default(),
+            false,
             &printer,
         )
         .await
@@ -613,12 +595,8 @@ mod tests {
                 b"ref: refs/heads/stable\n"
             );
             assert_eq!(
-                std::fs::read(dest.join("abc123.narinfo")).unwrap(),
-                b"narinfo"
-            );
-            assert_eq!(
-                std::fs::read(dest.join("nar/demo.nar.zst")).unwrap(),
-                b"nar"
+                std::fs::read(dest.join("objects/aa/object")).unwrap(),
+                b"object"
             );
         }
     }
@@ -628,18 +606,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
         let printer = Printer::new(0, true, false);
 
-        let files = collect_static_origin_files(&root, Some(&cache)).unwrap();
+        let files = collect_static_origin_files(&root).unwrap();
         let log = UploadLog::default();
         let destinations: Vec<(&str, Box<dyn CacheBackend>)> = vec![
             ("dest-a", Box::new(RecordingBackend::new("dest-a", &log))),
             ("dest-b", Box::new(RecordingBackend::new("dest-b", &log))),
         ];
 
-        let failures = upload_phase_major(&files, &destinations, &printer).await;
+        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
         assert!(failures.is_empty(), "{failures:?}");
 
         let class_of = |path: &str| {
@@ -680,11 +656,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
         write_fixture_origin(&root);
-        let cache = tmp.path().join("cache");
-        write_fixture_cache(&cache);
         let printer = Printer::new(0, true, false);
 
-        let files = collect_static_origin_files(&root, Some(&cache)).unwrap();
+        let files = collect_static_origin_files(&root).unwrap();
         let log = UploadLog::default();
         let destinations: Vec<(&str, Box<dyn CacheBackend>)> = vec![
             ("healthy", Box::new(RecordingBackend::new("healthy", &log))),
@@ -694,7 +668,7 @@ mod tests {
             ),
         ];
 
-        let failures = upload_phase_major(&files, &destinations, &printer).await;
+        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("broken"), "{failures:?}");
         assert!(failures[0].contains("objects/aa/object"), "{failures:?}");
@@ -793,6 +767,13 @@ mod tests {
             unimplemented!("not used by static origin upload")
         }
 
+        async fn exists(&self, _relative_path: &str) -> Result<bool> {
+            // The recording backend treats every object as absent, so the
+            // skip-cached fast path never fires and the upload log records
+            // every file (the ordering invariant under test).
+            Ok(false)
+        }
+
         async fn put_static_file(
             &self,
             relative_path: &str,
@@ -831,13 +812,6 @@ mod tests {
             b"pack",
         )
         .unwrap();
-    }
-
-    fn write_fixture_cache(cache: &Path) {
-        std::fs::create_dir_all(cache.join("nar")).unwrap();
-        std::fs::write(cache.join("nix-cache-info"), b"StoreDir: /nix/store\n").unwrap();
-        std::fs::write(cache.join("abc123.narinfo"), b"narinfo").unwrap();
-        std::fs::write(cache.join("nar/demo.nar.zst"), b"nar").unwrap();
     }
 
     fn assert_static_metadata(

@@ -80,6 +80,7 @@
       varSizeMiB = m.varSizeMiB or 256;
       bootMode = m.bootMode or "kernel";
       imageDiskMiB = m.imageDiskMiB or 40960;
+      tpm = m.tpm or false;
       name = mname;
       ip = "192.168.50.${toString (i + 10)}";
       mac = mkMac 0 (i + 1);
@@ -283,7 +284,7 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system roles bootMode;
+          inherit (m) name ip mac debugMac index system roles bootMode tpm;
         }
         // (
           if m.bootMode == "image"
@@ -325,6 +326,7 @@
     # spec is already validated against fleetSpecType by the discoverer
     # — including the per-machine `roles` enum-against-`config.aos.roles`.
     inherit (spec) name testScript timeout machines;
+    bootTimeout = spec.bootTimeout or null;
 
     machinesWithIndex = mkMachinesWithIndex machines;
     hostsEntries = mkHostsEntries machinesWithIndex;
@@ -337,39 +339,47 @@
     # named after `mb.name` (e.g. controlplane, worker). v1 fleet QEMU
     # uniformly uses 2 GiB / 2 vCPU per machine — matching the previous
     # hardcoded `-m 2048 -smp 2`.
-    manifest = {
-      inherit name timeout;
-      machines =
-        builtins.map (
-          mb:
-            {
-              inherit (mb) name mac ip;
-              transport = "qemu";
-              memory_mib = 8192;
-              vcpu_count = 2;
-            }
-            // (
-              if mb.bootMode == "image"
-              then {
-                boot = "image";
-                disk = "${builtins.toString mb.image}/${mb.imageName}";
-                disk_size_mib = mb.imageDiskMiB;
-                fw_cfg = "${builtins.toString mb.ignitionConfigDrv}/config.json";
-                firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
-                firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
-                metadata = null;
+    manifest =
+      {
+        inherit name timeout;
+      }
+      // (lib.optionalAttrs (bootTimeout != null) {boot_timeout = bootTimeout;})
+      // {
+        machines =
+          builtins.map (
+            mb:
+              {
+                inherit (mb) name mac ip;
+                transport = "qemu";
+                memory_mib = 8192;
+                vcpu_count = 2;
+                # vTPM (RFC-0006 phase 3): when set, the driver launches a
+                # per-machine swtpm and wires QEMU's tpm-tis to it.
+                tpm = mb.tpm;
+                swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
-              else {
-                boot = "kernel";
-                kernel = builtins.toString mb.kernel;
-                initrd = "${builtins.toString mb.initrd}/initrd.img";
-                disk = "${builtins.toString mb.disk}/disk.img";
-                metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
-              }
-            )
-        )
-        machineBuilds;
-    };
+              // (
+                if mb.bootMode == "image"
+                then {
+                  boot = "image";
+                  disk = "${builtins.toString mb.image}/${mb.imageName}";
+                  disk_size_mib = mb.imageDiskMiB;
+                  fw_cfg = "${builtins.toString mb.ignitionConfigDrv}/config.json";
+                  firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
+                  firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
+                  metadata = null;
+                }
+                else {
+                  boot = "kernel";
+                  kernel = builtins.toString mb.kernel;
+                  initrd = "${builtins.toString mb.initrd}/initrd.img";
+                  disk = "${builtins.toString mb.disk}/disk.img";
+                  metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
+                }
+              )
+          )
+          machineBuilds;
+      };
     manifestFile = pkgs.writeTextFile {
       name = "aos-fleet-test-${name}-manifest.json";
       text = builtins.toJSON manifest;

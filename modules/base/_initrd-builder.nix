@@ -42,6 +42,7 @@
   kernel,
   kernelModules,
   initrdUnits,
+  initrdExtraPackages ? [],
   initrdNetworkDir ? null,
   maskedUnits ? [],
   ignitionRoles,
@@ -69,22 +70,26 @@
 
   # Packages whose full runtime closures are copied into the initrd's
   # /nix/store. See the docstring at the top of this file for why.
-  initrdPackages = [
-    aos-growfs
-    aos-platform-detect
-    bash
-    coreutils
-    cryptsetup
-    e2fsprogs
-    grep
-    gptfdisk
-    ignition
-    iproute2
-    kmod
-    less
-    systemd
-    util-linux
-  ];
+  initrdPackages =
+    [
+      aos-growfs
+      aos-platform-detect
+      bash
+      coreutils
+      cryptsetup
+      e2fsprogs
+      grep
+      gptfdisk
+      ignition
+      iproute2
+      kmod
+      less
+      systemd
+      util-linux
+    ]
+    # Feature-specific closures injected by modules (e.g. the measured-boot
+    # PCR-policy public key — RFC-0006 phase 3).
+    ++ initrdExtraPackages;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -625,11 +630,20 @@ in
                 #       (ignition fetch needs HTTPS to platform metadata),
                 #       systemd-fsck, shutdown, and the generator helpers
                 #       invoked by the initrd units.
+                # systemd-creds and systemd-cryptenroll are deliberately KEPT
+                # (RFC-0006 phase 3): first-boot sealing of /var runs in the
+                # initrd (aos-var-crypt, after ignition-disks) and uses
+                # systemd-cryptenroll --tpm2-*; the systemd-cryptsetup
+                # TPM2-token unlock on later boots also runs here.
+                # systemd-measure stays stripped: it is a build-time tool
+                # (predicting PCR-11 for the registry catalog), not needed
+                # inside the initrd. (No apostrophes in this comment — it
+                # lives inside a single-quoted sh -c block.)
                 for tool in systemd-homed systemd-homework systemd-portabled \
                             systemd-nspawn systemd-importd systemd-pull \
                             systemd-firstboot systemd-repart systemd-confext \
                             systemd-sysext systemd-mountfsd systemd-nsresourced \
-                            systemd-measure systemd-creds systemd-cryptenroll \
+                            systemd-measure \
                             systemd-analyze systemd-run systemd-stdio-bridge \
                             systemd-vmspawn systemd-vpick systemd-ssh-generator \
                             systemd-ssh-proxy systemd-update-utmp bootctl \
