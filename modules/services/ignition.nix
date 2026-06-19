@@ -89,8 +89,14 @@ in {
         description = "AOS platform auto-detect (ignition)";
         wantedBy = ["initrd-root-fs.target"];
         before = ["ignition-fetch.service"];
-        requires = ["systemd-udev-settle.service"];
-        after = ["systemd-udev-settle.service"];
+        requires = [
+          "systemd-udevd.service"
+          "systemd-udev-trigger.service"
+        ];
+        after = [
+          "systemd-udevd.service"
+          "systemd-udev-trigger.service"
+        ];
         unitConfig.DefaultDependencies = "no";
         serviceConfig = {
           Type = "oneshot";
@@ -174,8 +180,8 @@ in {
           "ignition-disks.service"
           "initrd-root-fs.target"
         ];
-        requires = ["systemd-udev-settle.service"];
-        after = ["systemd-udev-settle.service"];
+        requires = ["dev-disk-by\\x2dpartlabel-root\\x2da.device"];
+        after = ["dev-disk-by\\x2dpartlabel-root\\x2da.device"];
         unitConfig = {
           DefaultDependencies = "no";
           ConditionPathExists = "/dev/disk/by-partlabel/root-a";
