@@ -496,7 +496,7 @@ define_builtins! {
         const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const DOCS: &'static BuiltinDocs =
             builtin_docs!("Fetches and evaluates a flake reference when flakes are enabled.");
-        const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
+        const NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE: Option<NativeCliFallbackFeature> =
             Some(NativeCliFallbackFeature::Flakes);
     }
 
@@ -1689,11 +1689,8 @@ pub(crate) enum BuiltinNameScope {
 pub(crate) struct Builtin {
     name: &'static [u8],
     execution: BuiltinExecution,
-    direct: Option<BuiltinDirect>,
-    first_class_arity: Option<usize>,
     name_scope: BuiltinNameScope,
-    availability: BuiltinAvailability,
-    native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
+    native_cli_fallback_feature_override: Option<NativeCliFallbackFeature>,
     docs: &'static BuiltinDocs,
 }
 
@@ -1702,21 +1699,15 @@ impl Builtin {
     const fn new(
         name: &'static [u8],
         execution: BuiltinExecution,
-        direct: Option<BuiltinDirect>,
-        first_class_arity: Option<usize>,
         name_scope: BuiltinNameScope,
-        availability: BuiltinAvailability,
-        native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
+        native_cli_fallback_feature_override: Option<NativeCliFallbackFeature>,
         docs: &'static BuiltinDocs,
     ) -> Self {
         Self {
             name,
             execution,
-            direct,
-            first_class_arity,
             name_scope,
-            availability,
-            native_cli_fallback_feature,
+            native_cli_fallback_feature_override,
             docs,
         }
     }
@@ -1733,12 +1724,12 @@ impl Builtin {
 
     /// Returns direct-lowering behavior for the builtin, if any.
     pub(crate) const fn direct(&self) -> Option<BuiltinDirect> {
-        self.direct
+        self.execution.direct()
     }
 
     /// Returns the arity exposed when the builtin is selected as a first-class value.
     pub(crate) const fn first_class_arity(&self) -> Option<usize> {
-        self.first_class_arity
+        self.execution.first_class_arity()
     }
 
     /// Returns how this builtin's spelling participates in top-level name resolution.
@@ -1757,14 +1748,22 @@ impl Builtin {
 
     /// Returns when this builtin is visible through the reified `builtins` attrset.
     pub(crate) const fn availability(&self) -> BuiltinAvailability {
-        self.availability
+        self.execution.availability()
     }
 
     /// Returns the diagnostic feature label when native JSON evaluation must fall back.
     pub(crate) const fn native_cli_fallback_feature(&self) -> Option<&'static str> {
-        match self.native_cli_fallback_feature {
+        match self.native_cli_fallback_feature_kind() {
             Some(feature) => Some(feature.label()),
             None => None,
+        }
+    }
+
+    /// Returns the native JSON fallback class for this builtin.
+    const fn native_cli_fallback_feature_kind(&self) -> Option<NativeCliFallbackFeature> {
+        match self.native_cli_fallback_feature_override {
+            Some(feature) => Some(feature),
+            None => self.execution.native_cli_fallback_feature(),
         }
     }
 
@@ -1834,31 +1833,18 @@ trait BuiltinDefinition {
     /// Static documentation attached to this builtin.
     const DOCS: &'static BuiltinDocs;
 
-    /// Direct-lowering behavior attached to this builtin.
-    const DIRECT: Option<BuiltinDirect> = Self::EXECUTION.direct();
-
-    /// Arity exposed when this builtin is selected as a first-class value.
-    const FIRST_CLASS_ARITY: Option<usize> = Self::EXECUTION.first_class_arity();
-
     /// Scope behavior for this builtin's spelling.
     const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::BuiltinsAttrOnly;
 
-    /// Contextual availability of this builtin in the reified `builtins` set.
-    const AVAILABILITY: BuiltinAvailability = Self::EXECUTION.availability();
-
-    /// Native JSON fallback class for this builtin.
-    const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
-        Self::EXECUTION.native_cli_fallback_feature();
+    /// Override for the execution-derived native JSON fallback class.
+    const NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE: Option<NativeCliFallbackFeature> = None;
 
     /// Declaration shared by all evaluator tiers for this builtin.
     const DECLARATION: Builtin = Builtin::new(
         Self::NAME,
         Self::EXECUTION,
-        Self::DIRECT,
-        Self::FIRST_CLASS_ARITY,
         Self::NAME_SCOPE,
-        Self::AVAILABILITY,
-        Self::NATIVE_CLI_FALLBACK_FEATURE,
+        Self::NATIVE_CLI_FALLBACK_FEATURE_OVERRIDE,
         Self::DOCS,
     );
 }
@@ -2462,8 +2448,17 @@ mod tests {
                 "{builtin:?}",
             );
             if matches!(builtin.name(), b"getFlake") {
+                assert_eq!(
+                    builtin.native_cli_fallback_feature_override,
+                    Some(NativeCliFallbackFeature::Flakes),
+                    "{builtin:?}",
+                );
                 continue;
             }
+            assert_eq!(
+                builtin.native_cli_fallback_feature_override, None,
+                "{builtin:?}"
+            );
             assert_eq!(
                 builtin.native_cli_fallback_feature(),
                 execution
