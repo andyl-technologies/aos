@@ -610,11 +610,12 @@ registry plays three roles, one per artifact:
 **Key-custody separation (mandatory, inherited from RFC-0006).** The registry
 **publication key** (artifact 1) ≠ the **UEFI-db / verity key** (artifact 2) ≠
 the **TPM AK/EK** (artifact 3). A registry compromise lets an attacker publish a
-*new* signed package (caught by policy + provenance + transparency log +
-anti-rollback) but **cannot forge a TPM quote** or alter a node's measured
-state. Same blast-radius containment RFC-0006 designed for SB, extended to
-packages. See [`attestation.md`](attestation.md) §"Custody / separation of
-duties".
+*new* signed package, but that package is still constrained by policy +
+provenance checks, recorded in the same-history transparency hash chain, and
+bounded by anti-rollback; the attacker **cannot forge a TPM quote** or alter a
+node's measured state. Same blast-radius containment RFC-0006 designed for SB,
+extended to packages. See [`attestation.md`](attestation.md) §"Custody /
+separation of duties".
 
 ### 7.2 Registry / `PackageMeta` schema additions for attestation
 

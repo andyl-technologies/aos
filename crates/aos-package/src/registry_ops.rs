@@ -83,16 +83,16 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    AttestationMeta, CacheEntry, ConfinementClass, ExposeArtifactMeta, ExposeMeta,
-    FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
+    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfinementClass, ExposeArtifactMeta,
+    ExposeMeta, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_V1,
     FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
     FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
     FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
     RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
-    package_name_bucket, validate_attestation_meta, validate_branch_name, validate_channel_name,
-    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
-    validate_package_name, validate_permissions_meta, validate_platform_name,
-    validate_registry_name,
+    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
+    validate_branch_name, validate_channel_name, validate_expose_artifact_meta,
+    validate_expose_meta_for_package, validate_git_ref_name, validate_package_name,
+    validate_permissions_meta, validate_platform_name, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChannelCommand, KeysCommand, OriginCommand,
@@ -3349,6 +3349,18 @@ struct PackageTomlPlatformKey {
     platform: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct StagedPackageRfc0001Meta {
+    #[serde(default)]
+    expose: Option<ExposeMeta>,
+    #[serde(default)]
+    expose_artifact: Option<ExposeArtifactMeta>,
+    #[serde(default)]
+    permissions: PermissionsMeta,
+    #[serde(default, rename = "bpf_lsm")]
+    bpf_lsm: Option<BpfLsmPolicyMeta>,
+}
+
 fn publish_provenance_artifact(
     registry_name: &str,
     name: &str,
@@ -4078,16 +4090,18 @@ fn ensure_staged_package_rfc0001_provenance(
     key: &PackageTomlPlatformKey,
     entry: &toml::Value,
 ) -> Result<()> {
-    let requires_provenance = entry.get("expose").is_some()
-        || entry.get("expose_artifact").is_some()
-        || entry
-            .get("permissions")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|permissions| !permissions.is_empty())
-        || entry
-            .get("bpf_lsm")
-            .and_then(toml::Value::as_table)
-            .is_some_and(|bpf_lsm| !bpf_lsm.is_empty());
+    let meta: StagedPackageRfc0001Meta = entry.clone().try_into().with_context(|| {
+        format!(
+            "parsing staged package metadata {path} {} {} {} RFC-0001 fields",
+            key.package, key.version, key.platform
+        )
+    })?;
+    let requires_provenance = rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    );
     if !requires_provenance {
         return Ok(());
     }
@@ -4173,10 +4187,12 @@ fn package_toml_platform_entries<'a>(
         .and_then(|package| package.get("name"))
         .and_then(toml::Value::as_str)
         .with_context(|| format!("{source} package metadata {path} missing package.name"))?;
-    let versions = value
-        .get("versions")
-        .and_then(toml::Value::as_array)
-        .with_context(|| format!("{source} package metadata {path} missing versions"))?;
+    let Some(versions_value) = value.get("versions") else {
+        return Ok(entries);
+    };
+    let versions = versions_value
+        .as_array()
+        .with_context(|| format!("{source} package metadata {path} versions must be an array"))?;
     for version_entry in versions {
         let version = version_entry
             .get("version")
@@ -4184,12 +4200,12 @@ fn package_toml_platform_entries<'a>(
             .with_context(|| {
                 format!("{source} package metadata {path} has a version missing version")
             })?;
-        let platforms = version_entry
-            .get("platforms")
-            .and_then(toml::Value::as_table)
-            .with_context(|| {
-                format!("{source} package metadata {path} version {version} missing platforms")
-            })?;
+        let Some(platforms_value) = version_entry.get("platforms") else {
+            continue;
+        };
+        let platforms = platforms_value.as_table().with_context(|| {
+            format!("{source} package metadata {path} version {version} platforms must be a table")
+        })?;
         for (platform, platform_entry) in platforms {
             let key = PackageTomlPlatformKey {
                 package: package.to_string(),
@@ -14347,6 +14363,68 @@ mod tests {
             commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap_err();
 
         assert!(format!("{err:#}").contains("without attestation provenance"));
+    }
+
+    #[test]
+    fn commit_registry_paths_allows_package_toml_without_versions() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("s").join("stub.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"stub\"\n\
+             description = \"\"\n\
+             license = \"MIT\"\n\
+             maintainer = \"aos-team\"\n",
+        )
+        .unwrap();
+
+        commit_registry_paths(&repo, "publish stub", &[package_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
+    }
+
+    #[test]
+    fn commit_registry_paths_allows_semantically_empty_rfc0001_tables_without_provenance() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let package_toml = repo.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(package_toml.parent().unwrap()).unwrap();
+        fs::write(
+            &package_toml,
+            "[package]\n\
+             name = \"webapp\"\n\
+             description = \"\"\n\
+             license = \"MIT\"\n\
+             maintainer = \"aos-team\"\n\
+             \n\
+             [[versions]]\n\
+             version = \"1.0.0\"\n\
+             \n\
+             [versions.platforms.x86_64-linux]\n\
+             store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+             closure_size = 1\n\
+             source_drv = \"\"\n\
+             source_nar_hash = \"\"\n\
+             \n\
+             [versions.platforms.x86_64-linux.permissions]\n\
+             capabilities = []\n\
+             cgroup-delegate = false\n\
+             \n\
+             [versions.platforms.x86_64-linux.bpf_lsm]\n\
+             policies = []\n",
+        )
+        .unwrap();
+
+        commit_registry_paths(&repo, "publish webapp", &[package_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
     }
 
     #[test]
