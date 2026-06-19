@@ -1244,6 +1244,34 @@ register.
     mismatched QEMU builds until the later `gate:qemu-inert` proves full
     upstream-vs-patched inertness or scopes each intentional non-inert patch.
 
+- **RISK-17 / T-RISK-10 — S10 aarch64 doorbell**
+  - **Status:** PASS WITH FALLBACK; aarch64 white-box support is not available in
+    the current AOS QEMU/guest-emitter surface, so aarch64 remains black-box-only
+    until the aarch64 target and doorbell implementation land.
+  - **Check:** `checks.crucible.phase0.s10Aarch64Doorbell`.
+  - **Result:** `qemu_package=qemu-crucible`,
+    `qemu_target_list=x86_64-softmmu`,
+    `qemu_aarch64_softmmu_target=false`,
+    `qemu_system_aarch64_available=false`,
+    `crucible_guest_workspace_member=false`,
+    `production_aarch64_doorbell_trap_implemented=false`,
+    `whitebox_on_trap_tested=false`, `whitebox_off_inertness_tested=false`,
+    `marker_icount_reproducible=not_tested`,
+    `payload_read_result=not_tested`, `aarch64_whitebox_supported=false`,
+    `aarch64_blackbox_only_fallback=true`,
+    `fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`,
+    `s10_complete=true`.
+  - **Scope:** validates the Phase-0 S10 decision for the current repository
+    surface. The check proves the packaged QEMU target list is x86_64-only, the
+    `qemu-system-aarch64` binary is absent, `crucible-guest` is not a workspace
+    member, and the production trace plugin contains no aarch64 white-box
+    doorbell trap path. It therefore does not run an aarch64 guest and does not
+    prove any `HLT`/`BRK`/`hvc` immediate traps precisely.
+  - **Fallback:** ship aarch64 as black-box-only for Crucible until an AOS-built
+    aarch64 QEMU target, single-source aarch64 doorbell encoding, production
+    plugin trap, and `crucible-guest` emitter exist; rerun S10 before enabling
+    aarch64 white-box markers.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1443,7 +1471,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=16`, `retired_decision_entries=16`,
+  - **Result:** `checked_risk_tasks=17`, `retired_decision_entries=17`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike

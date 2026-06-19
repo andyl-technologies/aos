@@ -1531,6 +1531,23 @@ therefore retires silent QEMU rebuild drift by pinning the build id and forcing 
 re-gate on mismatch; full upstream-vs-patched inertness remains owned by the later
 `gate:qemu-inert`.
 
+**RISK-17** is resolved by `T-RISK-10` with the aarch64 black-box-only fallback:
+`checks.crucible.phase0.s10Aarch64Doorbell` inspected the current AOS QEMU and
+white-box surfaces and found the aarch64 doorbell cannot be tested yet. The active
+`qemu-crucible` package is built with `qemu_target_list=x86_64-softmmu` and reports
+`qemu_aarch64_softmmu_target=false`,
+`qemu_system_aarch64_available=false`,
+`crucible_guest_workspace_member=false`, and
+`production_aarch64_doorbell_trap_implemented=false`. The spike therefore records
+`whitebox_on_trap_tested=false`, `whitebox_off_inertness_tested=false`,
+`marker_icount_reproducible=not_tested`, `payload_read_result=not_tested`,
+`aarch64_whitebox_supported=false`, `aarch64_blackbox_only_fallback=true`, and
+`fallback_adopted=aarch64_black_box_only_until_qemu_target_and_doorbell`. This
+resolves the Phase-0 product decision by disabling aarch64 white-box support
+rather than treating it as available. It does not claim the chosen aarch64
+reserved-immediate instruction traps precisely; that remains gated on adding an
+AOS-built aarch64 QEMU target, implementing `crucible-guest`, and rerunning S10.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1573,8 +1590,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=16`,
-`retired_decision_entries=16`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=17`,
+`retired_decision_entries=17`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1677,10 +1694,14 @@ never tolerated). Results live in the decision register (31).
   forces re-gating; full upstream-vs-patched inertness remains a later
   `gate:qemu-inert` obligation because the current patch series intentionally
   changes icount behavior. — satisfies [RISK-16], [DET-35], [INV-7]; spec §30.10.
-- [ ] **T-RISK-10** Run **S10**: aarch64 doorbell traps synchronously at the exact
+- [x] **T-RISK-10** Run **S10**: aarch64 doorbell traps synchronously at the exact
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
-  instruction traps precisely. — satisfies [RISK-17], [GHC-16]; spec §30.11.
+  instruction traps precisely. Phase 0 found no aarch64 QEMU target, no
+  `crucible-guest` workspace member, and no production aarch64 doorbell trap, so
+  aarch64 white-box remains disabled and the architecture is black-box-only until
+  those surfaces land and S10 is rerun. — satisfies [RISK-17], [GHC-16]; spec
+  §30.11.
 - [x] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec
