@@ -2411,7 +2411,7 @@ mod tests {
                      name = "x";
                      system = "x86_64-linux";
                      builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                     src = builtins.fetchTree "github:NixOS/nixpkgs/main";
+                     src = builtins.fetchTree "gitlab:NixOS/nixpkgs/main";
                    }"#,
                 "forge reference resolution",
             ),

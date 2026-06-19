@@ -11098,15 +11098,81 @@ impl TreeWalk {
                 "forge reference resolution",
             ));
         }
-        if reference.is_some() {
+        let expected_nar_hash = self.optional_flake_ref_nar_hash_attr(id, span, attrs)?;
+        let expected_last_modified =
+            Self::optional_flake_ref_i64_attr(id, span, attrs, LAST_MODIFIED_ATTR)?;
+        if let Some(reference) = reference {
             let canonical_uri =
                 self.fetch_tree_unresolved_forge_canonical_uri(id, span, input_type, attrs)?;
             self.check_fetch_tree_forge_access(id, span, &canonical_uri)?;
-            return Err(Self::unsupported_fetch_tree_feature(
+            if self.options.eval_mode() == EvalMode::Pure && expected_nar_hash.is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                        id,
+                        input: canonical_uri,
+                        mode: EvalMode::Pure,
+                    },
+                    span,
+                ));
+            }
+            if input_type != b"github" {
+                return Err(Self::unsupported_fetch_tree_feature(
+                    id,
+                    span,
+                    "forge reference resolution",
+                ));
+            }
+            let owner = Self::required_flake_ref_string_attr(id, span, attrs, OWNER_ATTR)?;
+            let repo = Self::required_flake_ref_string_attr(id, span, attrs, REPO_ATTR)?;
+            Self::validate_forge_path_segment(id, span, owner, "fetchTree forge owner is invalid")?;
+            Self::validate_forge_path_segment(id, span, repo, "fetchTree forge repo is invalid")?;
+            if !Self::is_flake_ref_name(reference) {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    reference,
+                    "fetchTree forge ref is invalid",
+                ));
+            }
+            let host = Self::optional_flake_ref_string_attr(id, span, attrs, HOST_ATTR)?;
+            let check_archive_url_access = host.is_some_and(|host| {
+                Self::default_forge_host(input_type)
+                    .is_none_or(|default_host| host != default_host.as_bytes())
+            });
+            if let Some(host) = host {
+                if !Self::is_forge_host(host) {
+                    return Err(Self::fetch_tree_error(
+                        id,
+                        span,
+                        host,
+                        "fetchTree forge host is invalid",
+                    ));
+                }
+            }
+            let rev = self.resolve_fetch_tree_github_ref(
                 id,
                 span,
-                "forge reference resolution",
-            ));
+                &canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_archive_url_access,
+            )?;
+            let archive_url =
+                Self::fetch_tree_forge_archive_url(id, span, input_type, owner, repo, host, &rev)?;
+            let dir = Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)?
+                .map(ToOwned::to_owned);
+
+            return Ok(FetchTreeArguments::Forge {
+                canonical_uri,
+                archive_url,
+                dir,
+                check_archive_url_access,
+                expected_nar_hash,
+                expected_last_modified,
+                rev,
+            });
         }
         let Some(rev) = rev else {
             let canonical_uri =
@@ -11149,13 +11215,8 @@ impl TreeWalk {
             archive_url,
             dir,
             check_archive_url_access,
-            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
-            expected_last_modified: Self::optional_flake_ref_i64_attr(
-                id,
-                span,
-                attrs,
-                LAST_MODIFIED_ATTR,
-            )?,
+            expected_nar_hash,
+            expected_last_modified,
             rev,
         })
     }
@@ -11206,6 +11267,132 @@ impl TreeWalk {
         out.extend_from_slice(&Self::percent_encode_flake_ref_path(&path));
         Self::append_flake_ref_query(&mut out, &query);
         Ok(out)
+    }
+
+    fn resolve_fetch_tree_github_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url = Self::fetch_tree_github_ref_url(id, span, owner, repo, host, reference)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response = self.fetch_tree_github_api_bytes(id, span, &url, &parsed)?;
+        let rev =
+            Self::fetch_tree_github_rev_from_commit_response(id, span, canonical_uri, &response)?;
+        self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    fn fetch_tree_github_ref_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let reference = Self::percent_encode_flake_ref(reference, b"");
+        let mut url = match host {
+            None => b"https://api.github.com/repos/".to_vec(),
+            Some(host) if host == b"github.com" => b"https://api.github.com/repos/".to_vec(),
+            Some(host) => {
+                let host = std::str::from_utf8(host)
+                    .map_err(|source| Self::fetch_tree_error(id, span, host, source))?;
+                let mut url = b"https://".to_vec();
+                url.extend_from_slice(host.as_bytes());
+                url.extend_from_slice(b"/api/v3/repos/");
+                url
+            }
+        };
+        url.extend_from_slice(&owner);
+        url.push(b'/');
+        url.extend_from_slice(&repo);
+        url.extend_from_slice(b"/commits/");
+        url.extend_from_slice(&reference);
+        Ok(url)
+    }
+
+    fn fetch_tree_github_api_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match parsed.scheme() {
+            "http" | "https" => {
+                let client = reqwest::blocking::Client::builder()
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .build()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = client
+                    .get(parsed.as_str())
+                    .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                    .header(reqwest::header::USER_AGENT, "aos-nix")
+                    .send()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = response
+                    .error_for_status()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                response
+                    .bytes()
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))
+            }
+            scheme => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: url.to_vec(),
+                    message: format!("unsupported URL scheme {scheme:?}"),
+                },
+                span,
+            )),
+        }
+    }
+
+    fn fetch_tree_github_rev_from_commit_response(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        response: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = serde_json::from_slice::<JsonValue>(response).map_err(|source| {
+            Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                format!("invalid GitHub response: {source}"),
+            )
+        })?;
+        let sha = value
+            .get("sha")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                Self::fetch_tree_error(id, span, input, "GitHub response is missing commit sha")
+            })?;
+        if !Self::is_git_rev(sha.as_bytes()) {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "GitHub response commit sha is invalid",
+            ));
+        }
+        Ok(sha.as_bytes().to_vec())
     }
 
     fn fetch_tree_git_flake_ref_arguments(
@@ -48611,6 +48798,74 @@ mod tests {
                 .into_bytes()
         );
 
+        let github_ref_url = TreeWalk::fetch_tree_github_ref_url(
+            ir.root,
+            span,
+            b"NixOS",
+            b"nixpkgs",
+            None,
+            b"release/23.05",
+        )
+        .expect("GitHub ref resolution URL renders");
+        assert_eq!(
+            github_ref_url,
+            b"https://api.github.com/repos/NixOS/nixpkgs/commits/release%2F23.05"
+        );
+
+        let enterprise_ref_url = TreeWalk::fetch_tree_github_ref_url(
+            ir.root,
+            span,
+            b"NixOS",
+            b"nixpkgs",
+            Some(b"git.example"),
+            b"main",
+        )
+        .expect("GitHub Enterprise ref resolution URL renders");
+        assert_eq!(
+            enterprise_ref_url,
+            b"https://git.example/api/v3/repos/NixOS/nixpkgs/commits/main"
+        );
+
+        let resolved_rev = TreeWalk::fetch_tree_github_rev_from_commit_response(
+            ir.root,
+            span,
+            b"github:NixOS/nixpkgs/main",
+            br#"{"sha":"0123456789abcdef0123456789abcdef01234567"}"#,
+        )
+        .expect("GitHub commit response exposes a full rev");
+        assert_eq!(resolved_rev, b"0123456789abcdef0123456789abcdef01234567");
+
+        let error = TreeWalk::fetch_tree_github_rev_from_commit_response(
+            ir.root,
+            span,
+            b"github:NixOS/nixpkgs/main",
+            br#"{"sha":"main"}"#,
+        )
+        .expect_err("GitHub commit response requires a full rev");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let pure_attrs =
+            TreeWalk::parse_flake_ref_attrs(ir.root, span, b"github:NixOS/nixpkgs/main")
+                .expect("GitHub ref parses");
+        let pure_evaluator =
+            TreeWalk::with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure));
+        let error = pure_evaluator
+            .fetch_tree_flake_ref_arguments(
+                ir.root,
+                span,
+                b"github:NixOS/nixpkgs/main",
+                &pure_attrs,
+            )
+            .expect_err("pure GitHub ref rejects before resolver access without narHash");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeLockedInputRequired {
+                input,
+                mode: EvalMode::Pure,
+                ..
+            } if input == b"github:NixOS/nixpkgs/main"
+        ));
+
         let restricted_source = format!(
             r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; rev = "{rev}"; narHash = "{nar_hash}"; host = "git.example"; }}"#
         );
@@ -48748,16 +49003,6 @@ mod tests {
             }
         ));
 
-        let error = eval_whnf_owned(&lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#))
-            .expect_err("forge ref resolution stays pending");
-        assert!(matches!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
-                feature: "forge reference resolution",
-                ..
-            }
-        ));
-
         let error = eval_whnf_owned_with_options(
             &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#),
             TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
@@ -48774,10 +49019,10 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("github:NixOS/nixpkgs/main")
+            .add_allowed_uri("gitlab:NixOS/nixpkgs/main")
             .expect("unresolved forge URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#),
+            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main""#),
             options,
         )
         .expect_err("allowed unresolved forge ref still needs resolution support");
@@ -48791,10 +49036,10 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("github:NixOS/nixpkgs/main?dir=lib")
+            .add_allowed_uri("gitlab:NixOS/nixpkgs/main?dir=lib")
             .expect("dir-bearing forge URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib""#),
+            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main?dir=lib""#),
             options,
         )
         .expect_err("unresolved forge access drops dir metadata");
@@ -48804,15 +49049,15 @@ mod tests {
                 input,
                 mode: EvalMode::Restricted,
                 ..
-            } if input == b"github:NixOS/nixpkgs/main"
+            } if input == b"gitlab:NixOS/nixpkgs/main"
         ));
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("github:NixOS/nixpkgs/main")
+            .add_allowed_uri("gitlab:NixOS/nixpkgs/main")
             .expect("dir-stripped forge URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib""#),
+            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main?dir=lib""#),
             options,
         )
         .expect_err("allowed unresolved forge ref still needs resolution support");
@@ -48923,11 +49168,11 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("github:")
-            .expect("github URI prefix is a valid allowed URI");
+            .add_allowed_uri("gitlab:")
+            .expect("gitlab URI prefix is a valid allowed URI");
         for source in [
-            r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
-            r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
+            r#"builtins.fetchTree { type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
+            r#"builtins.fetchTree { type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
         ] {
             let error = eval_whnf_owned_with_options(&lower(source), options.clone())
                 .expect_err("allowed unresolved forge attrset still needs resolution support");
