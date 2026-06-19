@@ -1199,7 +1199,7 @@ RISK                                            LIKE  IMPACT  MITIGATION        
   aarch64 doorbell can't trap synchronously     L     L       black-box-only aarch64; defer white-box     S10 (RISK-17)
 ★ multi-vCPU RR-TCG NOT bit-identical            M     H       patch leak / IPI; else revert to -smp 1     S11 (RISK-25)
   (Phase-0 blocker for G-10) [G-10]
-  Decision::Preemption not reproducible/discrim  L     M       interrupt-timing-only exploration           S12 (RISK-26)
+  Decision::Preemption unavailable/not discrim   L     M       default-only until injection API lands      S12 (RISK-26)
   rr_switch_quantum default (perf vs races)      M     M(perf) coarser default + per-branch override       S13 (RISK-27)
   gdbstub attach/step disturbs icount            L     M       read-only attach + Crucible-driven step      S14 (RISK-28)
   shmem ABI drift passes silently               L     H       gen header + bilateral asserts + golden     RISK-18
@@ -1568,6 +1568,39 @@ diagnostic attempt produced a reproducible first-difference artifact and is
 treated as a separate device-path determinism concern, not as an `-smp 1`
 fallback for [G-10].
 
+**RISK-26** is resolved by `T-RISK-18` with the default deterministic interleaving fallback:
+`checks.crucible.phase0.s12PreemptionDecision` scanned the current QEMU Nix
+wiring, every local QEMU patch, the production trace plugin, and the Rust crates,
+and found no known commanded
+preemption-injection surface. The spike also required the decision-register
+entries for the green `checks.crucible.phase0.s1Fingerprint` and
+`checks.crucible.phase0.s11MultiVcpuFingerprint` prerequisites, then recorded
+`preemption_surface_scan_scope=qemu_nix_all_qemu_patches_trace_plugin_crates`,
+`known_preemption_injection_surface_found=false`,
+`preemption_injection_api_available=not_detected`,
+`preemption_patch_present=not_detected`,
+`plugin_preemption_surface_present=not_detected`,
+`vcpu_switch_injection_tested=false`,
+`interrupt_timing_injection_tested=false`,
+`commanded_preemption_choices_tested=0`,
+`commanded_preemption_reproducible=not_tested`,
+`commanded_preemption_discriminating=not_tested`,
+`known_race_manifested_under_one_choice=not_tested`,
+`known_race_absent_under_another_choice=not_tested`,
+`single_vcpu_interrupt_variation_distinct=not_tested`,
+`default_determinism_prereqs_green=true`,
+`default_determinism_prereqs_source=decision_register_s1_s11`,
+`s1_decision_entry_consumed=true`, `s11_decision_entry_consumed=true`,
+`s11_extended_fingerprint_match=true`,
+`s11_horizon_fingerprint_match=true`,
+`decision_preemption_exploration_enabled=false`, and
+`fallback_adopted=default_deterministic_interleaving_only_until_preemption_injection`.
+Phase 0 therefore does not enable `Decision::Preemption` exploration yet. It
+keeps only the default deterministic interleaving whose prerequisites are
+recorded by S1/S11 until the patch-series preemption-injection capability exists
+and S12 can be rerun as the real commanded vCPU-switch / interrupt-timing race
+test.
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1590,8 +1623,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=17`,
-`retired_decision_entries=17`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=18`,
+`retired_decision_entries=18`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1613,7 +1646,7 @@ Gated-but-not-blocking spikes:
   S8   TCG-exec coverage cheap enough for fuzzing (else cheaper representation)
   S9   determinism survives AOS QEMU build / version bumps (pin build id; re-gate)
   S10  multi-arch doorbell on aarch64 (else aarch64 black-box only)
-  S12  Decision::Preemption reproducible + discriminating (else interrupt-only)
+  S12  Decision::Preemption reproducible + discriminating (else default-only)
   S13  rr_switch_quantum default: perf vs races (D-25; coarser + per-branch o/r)
   S14  gdbstub attach/step doesn't disturb icount (else read-only + Crucible step)
 
@@ -1734,14 +1767,20 @@ never tolerated). Results live in the decision register (31).
   mismatch to the first differing node-icount + component. Block multi-vCPU
   foundation work until green; fall back to `-smp 1` if irrecoverable. —
   satisfies [RISK-25], [G-10], [DET-23], [SCHED-45], [PLUG-3]; spec §30.11a.
-- [ ] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for
+- [x] **T-RISK-18** Run **S12**: force a `Decision::Preemption` (vCPU switch for
   `N>1`, timer-interrupt timing for any `N`) at several commanded node-icounts in
   `[deadline, horizon]`, run each twice, and confirm each choice is reproducible,
   that ≥2 choices yield different horizon fingerprints, and that a known race
   manifests under one choice and not another; for `N=1` confirm interrupt-timing
   variation gives distinct reproducible trajectories. Fall back to
-  interrupt-timing-only exploration if vCPU-switch injection is unreliable. —
-  satisfies [RISK-26], [G-11], [SCHED-46], [DET-12]; spec §30.11b.
+  interrupt-timing-only exploration if that surface is reliable, or default-only
+  deterministic interleaving if no commanded surface is reliable. Phase 0 found
+  no commanded preemption-injection API, so neither vCPU-switch nor
+  interrupt-timing injection can be exercised yet; `Decision::Preemption`
+  exploration remains disabled and the system keeps the default deterministic
+  interleaving until the patch capability lands and S12 is rerun. — resolves
+  [RISK-26] by disabling the [G-11] exploration surface for now; does not yet
+  satisfy [SCHED-46] or [DET-12] for commanded preemption; spec §30.11b.
 - [ ] **T-RISK-19** Run **S13**: sweep `rr_switch_quantum`, reporting per value the
   multi-vCPU throughput against the [`25-performance-targets.md`](25-performance-targets.md)
   budget and the race-surfacing yield via the S12 explorer; record the resolved
