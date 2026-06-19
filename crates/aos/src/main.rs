@@ -142,7 +142,13 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::cache::run(&printer, command, &eval_config).await;
     }
 
-    if let Commands::NixDiff { attr, file, mode } = &cli.command {
+    if let Commands::NixDiff {
+        attr,
+        all,
+        file,
+        mode,
+    } = &cli.command
+    {
         let file = match file {
             Some(file) => file.clone(),
             None => NixRunner::find_root()?.join("default.nix"),
@@ -152,7 +158,8 @@ async fn run(cli: &Cli) -> Result<()> {
             cli.verbose,
             eval_config,
             &file,
-            attr,
+            attr.as_deref(),
+            *all,
             (*mode).into(),
         );
     }
@@ -293,7 +300,8 @@ mod tests {
     fn handle_error_suppresses_rendered_nix_diff_divergence() {
         let cli = Cli {
             command: Commands::NixDiff {
-                attr: "pkgs.hello".to_string(),
+                attr: Some("pkgs.hello".to_string()),
+                all: false,
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
             },

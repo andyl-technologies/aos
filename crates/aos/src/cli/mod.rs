@@ -152,8 +152,16 @@ pub enum Commands {
     /// Compare evaluator .drv output
     NixDiff {
         /// Attribute to instantiate
-        #[arg(short = 'A', long)]
-        attr: String,
+        #[arg(
+            short = 'A',
+            long,
+            conflicts_with = "all",
+            required_unless_present = "all"
+        )]
+        attr: Option<String>,
+        /// Compare every derivation in the pkgs set
+        #[arg(long)]
+        all: bool,
         /// Nix file to instantiate (default: repository default.nix)
         file: Option<std::path::PathBuf>,
         /// Comparison mode
@@ -251,8 +259,14 @@ mod tests {
         let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.hello"]);
 
         match cli.command {
-            Commands::NixDiff { attr, file, mode } => {
-                assert_eq!(attr, "pkgs.hello");
+            Commands::NixDiff {
+                attr,
+                all,
+                file,
+                mode,
+            } => {
+                assert_eq!(attr.as_deref(), Some("pkgs.hello"));
+                assert!(!all);
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
             }
@@ -273,8 +287,14 @@ mod tests {
         ]);
 
         match cli.command {
-            Commands::NixDiff { attr, file, mode } => {
-                assert_eq!(attr, "pkgs.busybox");
+            Commands::NixDiff {
+                attr,
+                all,
+                file,
+                mode,
+            } => {
+                assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
+                assert!(!all);
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
             }
@@ -302,6 +322,36 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_all_mode() {
+        let cli = parse_cli(["aos", "nix-diff", "--all", "--mode", "structural"]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr, all, mode, ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(all);
+                assert_eq!(mode, NixDiffMode::Structural);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_requires_attr_or_all() {
+        let err = parse_cli_error(["aos", "nix-diff"]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn nix_diff_rejects_attr_with_all() {
+        let err = parse_cli_error(["aos", "nix-diff", "--all", "--attr", "pkgs.hello"]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
     fn global_eval_system_is_accepted_after_subcommand() {
         let cli = parse_cli([
             "aos",
@@ -319,6 +369,18 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(8 * 1024 * 1024)
             .spawn(move || Cli::try_parse_from(args).expect("nix-diff argv should parse"))
+            .expect("parser test thread should spawn")
+            .join()
+            .expect("parser test thread should finish")
+    }
+
+    fn parse_cli_error<const N: usize>(args: [&'static str; N]) -> clap::Error {
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || match Cli::try_parse_from(args) {
+                Ok(_) => panic!("nix-diff argv should not parse"),
+                Err(err) => err,
+            })
             .expect("parser test thread should spawn")
             .join()
             .expect("parser test thread should finish")
