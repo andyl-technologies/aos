@@ -646,7 +646,7 @@ Crucible needs and marks the seam.
   and `crucible-qemu` supervision code, with a check that no value from these
   reaches `State` except via the `crucible-sim` decision source. — satisfies
   [CRATE-12]; spec §5.
-- [ ] **T-CRATE-9** Enforce the control-plane boundary: `crucible-cli` and
+- [x] **T-CRATE-9** Enforce the control-plane boundary: `crucible-cli` and
   `crucible-daemon` reach the engine only through `crucible-api` /
   `crucible-session`, never `step`/`reduce`/`instantiate` directly. — satisfies
   [CRATE-8]; spec §3.
