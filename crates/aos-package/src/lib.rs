@@ -873,7 +873,7 @@ pub enum RegistryCommand {
         /// Private key path used to sign the publish commit
         #[arg(long)]
         key: Option<String>,
-        /// Active key id whose configured private key signs the publish commit
+        /// Active key id whose configured private key signs the publish commit and provenance
         #[arg(long = "key-id")]
         key_id: Option<String>,
         /// Registry to operate on

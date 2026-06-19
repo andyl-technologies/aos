@@ -16,6 +16,8 @@
 //!
 //! [[revoked]]
 //! id = "release-2024"
+//! key = "aos-core:Ed25519:base64..."
+//! provenance-before-sequence = 42
 //! reason = "planned retirement"
 //! ```
 //!
@@ -48,6 +50,16 @@ pub struct RosterKey {
 pub struct RevokedKey {
     /// Identifier of the roster key being revoked.
     pub id: String,
+    /// Retired public key, retained for historical provenance verification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// First transparency sequence that must not trust this retired key.
+    #[serde(
+        default,
+        rename = "provenance-before-sequence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provenance_before_sequence: Option<u64>,
     /// Optional human-readable revocation reason.
     #[serde(default)]
     pub reason: Option<String>,
@@ -232,6 +244,16 @@ fn validate_roster(roster: &KeysToml) -> Result<()> {
         if entry.id.is_empty() {
             bail!("revoked key id is empty");
         }
+        if entry.key.is_some() != entry.provenance_before_sequence.is_some() {
+            bail!(
+                "revoked key '{}' must declare key and provenance-before-sequence together",
+                entry.id
+            );
+        }
+        if let Some(key) = &entry.key {
+            parse_signing_key(key)
+                .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
+        }
     }
     Ok(())
 }
@@ -264,6 +286,8 @@ mod tests {
             ],
             revoked: vec![RevokedKey {
                 id: "retired".into(),
+                key: Some(KEY1.into()),
+                provenance_before_sequence: Some(17),
                 reason: Some("planned retirement".into()),
             }],
             ..KeysToml::default()
@@ -319,6 +343,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -335,6 +361,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()
@@ -351,6 +379,8 @@ schema = 2
             }],
             revoked: vec![RevokedKey {
                 id: "old".into(),
+                key: None,
+                provenance_before_sequence: None,
                 reason: None,
             }],
             ..KeysToml::default()

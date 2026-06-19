@@ -686,22 +686,29 @@ pub struct AttestationMeta {
 Promoting the §7 TUF/in-toto note from *consider/audit* to *build* (full design
 in [`attestation.md`](attestation.md) §"Provenance & transparency"):
 
-- **in-toto / SLSA provenance — build.** Emit a SLSA provenance attestation
-  (current spec **v1.2**, with the Source Track) per package build, binding the
-  **NAR hash AND the `[permissions]` manifest hash** to the build inputs; serve
-  it from the registry alongside the narinfo (the `provenance` field, §7.2).
-  in-toto attestation framework **v1.2**.
-- **Transparency log — build.** Append every published binding to a
-  Merkle/append-only log — the **Trustix** multi-builder-consensus shape, or a
-  **Rekor**-style log (Sigstore GA 2022; Cosign 3.0 / Rekor v2, Oct 2025). This
-  removes the **single-Ed25519-key single point of failure** the homegrown chain
-  has today ("if the cache/tag key is compromised, all builds are tainted") and
-  makes equivocation detectable.
+- **in-toto / SLSA provenance — build.** Emit a DSSE-wrapped SLSA provenance
+  attestation (current spec **v1.2**, with the Source Track) per package build,
+  binding the **NAR hash AND the `[permissions]` manifest hash** to the build
+  inputs; serve it from the registry alongside the narinfo (the `provenance`
+  field, §7.2). The DSSE envelope is signed by an active `keys.toml` roster key,
+  and consumers verify the envelope signature plus builder id before checking
+  the SLSA subjects. Packages that declare RFC-0001 expose, permission, or
+  BPF-LSM policy metadata must declare provenance, and retired provenance keys
+  are accepted only for transparency entries below their recorded retirement
+  sequence.
+- **Transparency log — build.** Append every published binding to the
+  in-registry `transparency/package-provenance.jsonl` hash chain. Publish
+  rejects rewrites, missing entries, duplicate entries, mismatched DSSE artifact
+  hashes, and staged package/store changes that are reachable from a
+  provenance-bearing package but not covered by the log. The in-registry log
+  gives append-chain consistency for clients following the same registry
+  history; independent witness or Rekor-style compromise resistance is future
+  work.
 - **TUF — build the full roles, not just the rollback floor.** AOS already has
-  the TUF **rollback** defense (the anti-rollback semver floor, §7.4). Build out
-  the rest of TUF (**spec v1.0.34**): the role separation + **thresholds** +
-  **timestamping** that defend against freeze, mix-and-match, and fast-forward
-  attacks, plus key rotation.
+  the TUF **rollback** defense (the anti-rollback semver floor, §7.4). The
+  release path now writes and verifies `root`, `targets`, `snapshot`, and
+  `timestamp` metadata with role separation, thresholds, expiry, version floors,
+  and key-rotation continuity checks.
 - **Caveat (record, not a blocker):** cosign's OCI-1.1 *referrers* API is
   **selectable, not yet a hard default**, and **GHCR does not implement the
   referrers endpoint** — relevant only if AOS ever mirrors attestations into an

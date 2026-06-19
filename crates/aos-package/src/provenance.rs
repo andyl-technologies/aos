@@ -7,21 +7,37 @@
 //! standard in-toto `sha256` digests, while Nix SRI/base32 NAR hashes retain
 //! their original spelling under `nix:narHash`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::security;
 use crate::types::PackageMeta;
 
 const STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
 const PREDICATE_TYPE: &str = "https://slsa.dev/provenance/v1";
 const BUILD_TYPE: &str = "https://andyl.com/aos/apr-publish/v1";
+const DSSE_PAYLOAD_TYPE: &str = "application/vnd.in-toto+json";
+const DSSE_SIGNATURE_NAMESPACE: &str = "aos-package-provenance-dsse-v1";
 pub(crate) const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str =
     "transparency/package-provenance.jsonl";
 const PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA: &str =
     "https://andyl.com/aos/transparency/package-provenance/v1";
+
+/// A trusted key that may verify package provenance DSSE envelopes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrustedProvenanceKey {
+    /// Stable key id from the committed registry `keys.toml` roster.
+    pub key_id: String,
+    /// Public key in `registry:Ed25519:<base64>` trust-line form.
+    pub key: String,
+    /// First transparency sequence that must not trust this key, if retired.
+    pub retired_before_sequence: Option<u64>,
+}
 
 /// Returns an in-toto digest map for an AOS/Nix digest string.
 pub(crate) fn digest_map(digest: &str) -> serde_json::Value {
@@ -45,15 +61,126 @@ pub(crate) fn sha256_hex_payload(digest: &str) -> Option<String> {
     }
 }
 
-/// Verifies a package's registry-hosted in-toto/SLSA provenance statement.
+/// Return the builder identity URI for a registry provenance key.
+pub(crate) fn builder_id(registry_name: &str, key_id: &str) -> String {
+    format!("https://andyl.com/aos/builders/{registry_name}/{key_id}")
+}
+
+/// Sign an in-toto/SLSA statement as a single-line DSSE JSONL envelope.
 ///
 /// # Errors
 ///
-/// Returns an error when the JSONL does not contain exactly one valid
-/// statement, the statement has the wrong in-toto/SLSA type, or any subject,
-/// dependency, or external parameter fails to match the package metadata.
-pub(crate) fn verify_package_statement(meta: &PackageMeta, jsonl: &str) -> Result<()> {
-    let statement = parse_single_statement(jsonl)
+/// Returns an error when the statement cannot be serialized, the key id is
+/// empty, the DSSE payload cannot be signed, or the envelope cannot be
+/// serialized.
+pub(crate) fn sign_statement_dsse_jsonl(
+    statement: &serde_json::Value,
+    key_id: &str,
+    key_path: &Path,
+) -> Result<String> {
+    if key_id.is_empty() {
+        bail!("package provenance DSSE key id cannot be empty");
+    }
+    let payload =
+        serde_json::to_vec(statement).context("serializing package provenance statement")?;
+    let pae = dsse_pae(DSSE_PAYLOAD_TYPE, &payload);
+    let signature = security::sign_payload_signature(key_path, DSSE_SIGNATURE_NAMESPACE, &pae)
+        .with_context(|| format!("signing package provenance DSSE envelope with '{key_id}'"))?;
+    let envelope = DsseEnvelope {
+        payload_type: DSSE_PAYLOAD_TYPE.to_string(),
+        payload: base64::engine::general_purpose::STANDARD.encode(&payload),
+        signatures: vec![DsseSignature {
+            key_id: key_id.to_string(),
+            sig: base64::engine::general_purpose::STANDARD.encode(signature.as_bytes()),
+        }],
+    };
+    let mut jsonl =
+        serde_json::to_string(&envelope).context("serializing package provenance DSSE envelope")?;
+    jsonl.push('\n');
+    Ok(jsonl)
+}
+
+/// Decode and verify a DSSE-wrapped in-toto/SLSA statement.
+///
+/// Returns the decoded statement value and the roster key id whose signature
+/// verified the envelope.
+///
+/// # Errors
+///
+/// Returns an error when the JSONL does not contain exactly one DSSE envelope,
+/// the payload type is unsupported, the payload/signature encodings are invalid,
+/// or no signature verifies against a trusted provenance key.
+pub(crate) fn verify_statement_dsse_jsonl(
+    jsonl: &str,
+    trusted_keys: &[TrustedProvenanceKey],
+) -> Result<(serde_json::Value, String)> {
+    let envelope = parse_single_dsse_envelope(jsonl)?;
+    if envelope.payload_type != DSSE_PAYLOAD_TYPE {
+        bail!(
+            "package provenance DSSE envelope has unsupported payloadType '{}'",
+            envelope.payload_type
+        );
+    }
+    if trusted_keys.is_empty() {
+        bail!("package provenance DSSE verification has no trusted keys");
+    }
+    let payload = base64::engine::general_purpose::STANDARD
+        .decode(envelope.payload.as_bytes())
+        .context("decoding package provenance DSSE payload")?;
+    let pae = dsse_pae(&envelope.payload_type, &payload);
+    let trusted_by_id = trusted_provenance_keys_by_id(trusted_keys)?;
+    let mut attempted = HashSet::new();
+    for signature in &envelope.signatures {
+        if !attempted.insert(signature.key_id.as_str()) {
+            continue;
+        }
+        let Some(trusted) = trusted_by_id.get(signature.key_id.as_str()) else {
+            continue;
+        };
+        let signature_text = decode_dsse_signature(&signature.sig).with_context(|| {
+            format!(
+                "decoding package provenance signature '{}'",
+                signature.key_id
+            )
+        })?;
+        if security::verify_payload_signature(
+            &pae,
+            &signature_text,
+            &trusted.key,
+            DSSE_SIGNATURE_NAMESPACE,
+        )
+        .with_context(|| {
+            format!(
+                "verifying package provenance DSSE signature '{}'",
+                signature.key_id
+            )
+        })? {
+            let statement = serde_json::from_slice(&payload)
+                .context("deserializing package provenance DSSE payload")?;
+            return Ok((statement, signature.key_id.clone()));
+        }
+    }
+    bail!("package provenance DSSE envelope has no valid signature from a trusted key");
+}
+
+/// Verifies a package's registry-hosted DSSE in-toto/SLSA provenance statement.
+///
+/// # Errors
+///
+/// Returns an error when the JSONL does not contain exactly one valid DSSE
+/// envelope, the envelope is not signed by a trusted key, the statement has
+/// the wrong in-toto/SLSA type, the builder identity does not match the
+/// signing key, or any subject, dependency, or external parameter fails to
+/// match the package metadata.
+pub(crate) fn verify_package_statement(
+    meta: &PackageMeta,
+    registry_name: &str,
+    jsonl: &str,
+    trusted_keys: &[TrustedProvenanceKey],
+) -> Result<String> {
+    let (statement_value, key_id) = verify_statement_dsse_jsonl(jsonl, trusted_keys)
+        .with_context(|| format!("verifying provenance DSSE for package '{}'", meta.name))?;
+    let statement: ProvenanceStatement = serde_json::from_value(statement_value)
         .with_context(|| format!("parsing provenance for package '{}'", meta.name))?;
 
     if statement.statement_type != STATEMENT_TYPE {
@@ -75,6 +202,15 @@ pub(crate) fn verify_package_statement(meta: &PackageMeta, jsonl: &str) -> Resul
             "package '{}' provenance statement has unsupported buildType '{}'",
             meta.name,
             statement.predicate.build_definition.build_type
+        );
+    }
+    let expected_builder_id = builder_id(registry_name, &key_id);
+    if statement.predicate.run_details.builder.id != expected_builder_id {
+        bail!(
+            "package '{}' provenance builder id mismatch: expected '{}', got '{}'",
+            meta.name,
+            expected_builder_id,
+            statement.predicate.run_details.builder.id
         );
     }
 
@@ -182,7 +318,7 @@ pub(crate) fn verify_package_statement(meta: &PackageMeta, jsonl: &str) -> Resul
         )?;
     }
 
-    Ok(())
+    Ok(key_id)
 }
 
 /// Verifies that a package provenance statement appears in the registry log.
@@ -196,7 +332,7 @@ pub(crate) fn verify_transparency_log_inclusion(
     meta: &PackageMeta,
     jsonl: &str,
     transparency_log: &str,
-) -> Result<()> {
+) -> Result<u64> {
     let provenance = meta
         .attestation
         .provenance
@@ -293,6 +429,31 @@ pub(crate) fn verify_transparency_log_inclusion(
         &entry.body.statement.jsonl_sha256,
         &actual_statement_sha256,
     )?;
+    Ok(entry.body.sequence)
+}
+
+/// Verifies that a provenance key may be used for a transparency sequence.
+///
+/// # Errors
+///
+/// Returns an error when the key id is not trusted, the trusted key set is
+/// internally ambiguous, or the key was retired before the log entry sequence.
+pub(crate) fn verify_key_allowed_for_transparency_sequence(
+    trusted_keys: &[TrustedProvenanceKey],
+    key_id: &str,
+    sequence: u64,
+) -> Result<()> {
+    let trusted_by_id = trusted_provenance_keys_by_id(trusted_keys)?;
+    let trusted = trusted_by_id
+        .get(key_id)
+        .with_context(|| format!("package provenance key id '{key_id}' is not trusted"))?;
+    if let Some(retired_before_sequence) = trusted.retired_before_sequence {
+        if sequence >= retired_before_sequence {
+            bail!(
+                "package provenance key id '{key_id}' was retired before transparency sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -305,6 +466,24 @@ pub(crate) fn verify_transparency_log_inclusion(
 pub(crate) fn validate_transparency_log(transparency_log: &str) -> Result<()> {
     parse_transparency_log(transparency_log, PACKAGE_PROVENANCE_TRANSPARENCY_LOG)?;
     Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DsseEnvelope {
+    #[serde(rename = "payloadType")]
+    payload_type: String,
+    payload: String,
+    #[serde(default)]
+    signatures: Vec<DsseSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DsseSignature {
+    #[serde(rename = "keyid")]
+    key_id: String,
+    sig: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,6 +508,8 @@ struct ProvenanceSubject {
 struct ProvenancePredicate {
     #[serde(rename = "buildDefinition")]
     build_definition: ProvenanceBuildDefinition,
+    #[serde(rename = "runDetails")]
+    run_details: ProvenanceRunDetails,
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,13 +543,69 @@ struct ProvenanceDependency {
     digest: BTreeMap<String, String>,
 }
 
-fn parse_single_statement(jsonl: &str) -> Result<ProvenanceStatement> {
+#[derive(Debug, Deserialize)]
+struct ProvenanceRunDetails {
+    builder: ProvenanceBuilder,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProvenanceBuilder {
+    id: String,
+}
+
+fn parse_single_dsse_envelope(jsonl: &str) -> Result<DsseEnvelope> {
     let mut lines = jsonl.lines().filter(|line| !line.trim().is_empty());
-    let line = lines.next().context("provenance JSONL is empty")?;
+    let line = lines.next().context("provenance DSSE JSONL is empty")?;
     if lines.next().is_some() {
-        bail!("provenance JSONL must contain exactly one statement");
+        bail!("provenance DSSE JSONL must contain exactly one envelope");
     }
-    serde_json::from_str(line).context("deserializing provenance statement")
+    serde_json::from_str(line).context("deserializing provenance DSSE envelope")
+}
+
+fn dsse_pae(payload_type: &str, payload: &[u8]) -> Vec<u8> {
+    let mut pae = Vec::new();
+    pae.extend_from_slice(b"DSSEv1 ");
+    pae.extend_from_slice(payload_type.len().to_string().as_bytes());
+    pae.push(b' ');
+    pae.extend_from_slice(payload_type.as_bytes());
+    pae.push(b' ');
+    pae.extend_from_slice(payload.len().to_string().as_bytes());
+    pae.push(b' ');
+    pae.extend_from_slice(payload);
+    pae
+}
+
+fn trusted_provenance_keys_by_id<'a>(
+    trusted_keys: &'a [TrustedProvenanceKey],
+) -> Result<BTreeMap<&'a str, &'a TrustedProvenanceKey>> {
+    let mut by_id = BTreeMap::new();
+    let mut by_key = BTreeMap::new();
+    for key in trusted_keys {
+        if key.key_id.is_empty() {
+            bail!("package provenance trusted key id cannot be empty");
+        }
+        if by_id.insert(key.key_id.as_str(), key).is_some() {
+            bail!(
+                "package provenance trusted key id '{}' is declared more than once",
+                key.key_id
+            );
+        }
+        if let Some(existing_id) = by_key.insert(key.key.as_str(), key.key_id.as_str()) {
+            bail!(
+                "package provenance trusted key material is declared by both '{}' and '{}'",
+                existing_id,
+                key.key_id
+            );
+        }
+    }
+    Ok(by_id)
+}
+
+fn decode_dsse_signature(encoded: &str) -> Result<String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .context("decoding package provenance DSSE signature")?;
+    String::from_utf8(bytes).context("package provenance DSSE signature is not UTF-8")
 }
 
 fn subject_named<'a>(
@@ -590,12 +827,54 @@ fn sha256_digest_from_map(kind: &str, digest: &BTreeMap<String, String>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AttestationMeta, PackageMeta};
+    use std::fs;
 
+    use crate::types::{AttestationMeta, PackageMeta};
+    use tempfile::TempDir;
+
+    const REGISTRY: &str = "aos-core";
+    const KEY_ID: &str = "builder";
     const ROOT_HASH: &str =
         "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     const MANIFEST_DIGEST: &str =
         "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    struct TestProvenanceKey {
+        _tmp: TempDir,
+        private_key: std::path::PathBuf,
+        trusted_key: String,
+    }
+
+    impl TestProvenanceKey {
+        fn trusted(&self) -> Vec<TrustedProvenanceKey> {
+            vec![TrustedProvenanceKey {
+                key_id: KEY_ID.to_string(),
+                key: self.trusted_key.clone(),
+                retired_before_sequence: None,
+            }]
+        }
+    }
+
+    fn test_key() -> TestProvenanceKey {
+        let tmp = TempDir::new().unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+        let private_key = tmp.path().join("builder_ed25519");
+        fs::write(&private_key, keypair.to_openssh_private_key(REGISTRY)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&private_key, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        TestProvenanceKey {
+            _tmp: tmp,
+            private_key,
+            trusted_key: keypair.trust_key_line(REGISTRY),
+        }
+    }
+
+    fn signed_statement(statement: serde_json::Value, key: &TestProvenanceKey) -> String {
+        sign_statement_dsse_jsonl(&statement, KEY_ID, &key.private_key).unwrap()
+    }
 
     fn sample_meta() -> PackageMeta {
         let measurement = crate::package_attestation::package_measurement_digest(
@@ -641,7 +920,7 @@ mod tests {
         }
     }
 
-    fn statement_for(meta: &PackageMeta) -> String {
+    fn statement_for(meta: &PackageMeta) -> serde_json::Value {
         let attestation = &meta.attestation;
         let measurement = attestation.measurement.as_deref().unwrap();
         let provenance = attestation.provenance.as_deref().unwrap();
@@ -649,7 +928,7 @@ mod tests {
         let root_hash = attestation.root_hash.as_deref().unwrap();
         let root_hash_sig = attestation.root_hash_sig.as_deref().unwrap();
         let source_uri = format!("nix:{}", meta.source_drv);
-        let statement = serde_json::json!({
+        serde_json::json!({
             "_type": STATEMENT_TYPE,
             "subject": [
                 {
@@ -692,9 +971,13 @@ mod tests {
                         },
                     ],
                 },
+                "runDetails": {
+                    "builder": {
+                        "id": builder_id(REGISTRY, KEY_ID),
+                    },
+                },
             },
-        });
-        format!("{}\n", serde_json::to_string(&statement).unwrap())
+        })
     }
 
     fn non_verity_meta() -> PackageMeta {
@@ -719,12 +1002,12 @@ mod tests {
         meta
     }
 
-    fn non_verity_statement_for(meta: &PackageMeta) -> String {
+    fn non_verity_statement_for(meta: &PackageMeta) -> serde_json::Value {
         let attestation = &meta.attestation;
         let measurement = attestation.measurement.as_deref().unwrap();
         let provenance = attestation.provenance.as_deref().unwrap();
         let root_digest = attestation.root_digest.as_deref().unwrap();
-        let statement = serde_json::json!({
+        serde_json::json!({
             "_type": STATEMENT_TYPE,
             "subject": [
                 {
@@ -765,9 +1048,13 @@ mod tests {
                         },
                     ],
                 },
+                "runDetails": {
+                    "builder": {
+                        "id": builder_id(REGISTRY, KEY_ID),
+                    },
+                },
             },
-        });
-        format!("{}\n", serde_json::to_string(&statement).unwrap())
+        })
     }
 
     #[test]
@@ -795,29 +1082,95 @@ mod tests {
 
     #[test]
     fn verify_package_statement_accepts_bound_slsa_statement() {
+        let key = test_key();
         let meta = sample_meta();
-        let statement = statement_for(&meta);
+        let statement = signed_statement(statement_for(&meta), &key);
 
-        verify_package_statement(&meta, &statement).unwrap();
+        verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap();
+    }
+
+    #[test]
+    fn verify_statement_dsse_rejects_duplicate_trusted_key_material() {
+        let key = test_key();
+        let meta = sample_meta();
+        let statement = signed_statement(statement_for(&meta), &key);
+        let mut trusted = key.trusted();
+        trusted.push(TrustedProvenanceKey {
+            key_id: "alias".to_string(),
+            key: key.trusted_key.clone(),
+            retired_before_sequence: None,
+        });
+
+        let err = verify_statement_dsse_jsonl(&statement, &trusted).unwrap_err();
+
+        assert!(format!("{err:#}").contains("trusted key material"));
+    }
+
+    #[test]
+    fn retired_provenance_key_is_limited_by_transparency_sequence() {
+        let key = test_key();
+        let trusted = vec![TrustedProvenanceKey {
+            key_id: KEY_ID.to_string(),
+            key: key.trusted_key.clone(),
+            retired_before_sequence: Some(3),
+        }];
+
+        verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 2).unwrap();
+        let err = verify_key_allowed_for_transparency_sequence(&trusted, KEY_ID, 3).unwrap_err();
+
+        assert!(format!("{err:#}").contains("was retired before transparency sequence 3"));
     }
 
     #[test]
     fn verify_package_statement_accepts_non_verity_root_digest() {
+        let key = test_key();
         let meta = non_verity_meta();
-        let statement = non_verity_statement_for(&meta);
+        let statement = signed_statement(non_verity_statement_for(&meta), &key);
 
-        verify_package_statement(&meta, &statement).unwrap();
+        verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap();
+    }
+
+    #[test]
+    fn verify_package_statement_rejects_unsigned_statement() {
+        let key = test_key();
+        let meta = sample_meta();
+        let statement = format!(
+            "{}\n",
+            serde_json::to_string(&statement_for(&meta)).unwrap()
+        );
+
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
+
+        assert!(format!("{err:#}").contains("deserializing provenance DSSE envelope"));
+    }
+
+    #[test]
+    fn verify_package_statement_rejects_wrong_builder_identity() {
+        let key = test_key();
+        let meta = sample_meta();
+        let mut statement = statement_for(&meta);
+        statement["predicate"]["runDetails"]["builder"]["id"] =
+            serde_json::json!(builder_id(REGISTRY, "other-key"));
+        let statement = signed_statement(statement, &key);
+
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
+
+        assert!(err.to_string().contains("builder id mismatch"));
     }
 
     #[test]
     fn verify_package_statement_rejects_manifest_measurement_mismatch() {
+        let key = test_key();
         let meta = sample_meta();
-        let statement = statement_for(&meta).replace(
-            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-        );
+        let mut statement = statement_for(&meta);
+        statement["subject"][1]["digest"]["sha256"] =
+            serde_json::json!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        let statement = signed_statement(statement, &key);
 
-        let err = verify_package_statement(&meta, &statement).unwrap_err();
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
 
         assert!(
             err.to_string()
@@ -827,11 +1180,13 @@ mod tests {
 
     #[test]
     fn verify_package_statement_rejects_source_digest_mismatch() {
+        let key = test_key();
         let mut meta = sample_meta();
-        let statement = statement_for(&meta);
+        let statement = signed_statement(statement_for(&meta), &key);
         meta.source_nar_hash = "sha256-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC=".to_string();
 
-        let err = verify_package_statement(&meta, &statement).unwrap_err();
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
 
         assert!(
             err.to_string()
@@ -841,32 +1196,34 @@ mod tests {
 
     #[test]
     fn verify_package_statement_rejects_duplicate_subjects() {
+        let key = test_key();
         let meta = sample_meta();
-        let mut statement: serde_json::Value =
-            serde_json::from_str(statement_for(&meta).trim_end()).unwrap();
+        let mut statement = statement_for(&meta);
         let duplicate = statement["subject"][0].clone();
         statement["subject"].as_array_mut().unwrap().push(duplicate);
-        let statement = format!("{}\n", serde_json::to_string(&statement).unwrap());
+        let statement = signed_statement(statement, &key);
 
-        let err = verify_package_statement(&meta, &statement).unwrap_err();
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
 
         assert!(format!("{err:#}").contains("duplicate subject"));
     }
 
     #[test]
     fn verify_package_statement_rejects_duplicate_source_dependencies() {
+        let key = test_key();
         let meta = sample_meta();
-        let mut statement: serde_json::Value =
-            serde_json::from_str(statement_for(&meta).trim_end()).unwrap();
+        let mut statement = statement_for(&meta);
         let duplicate =
             statement["predicate"]["buildDefinition"]["resolvedDependencies"][0].clone();
         statement["predicate"]["buildDefinition"]["resolvedDependencies"]
             .as_array_mut()
             .unwrap()
             .push(duplicate);
-        let statement = format!("{}\n", serde_json::to_string(&statement).unwrap());
+        let statement = signed_statement(statement, &key);
 
-        let err = verify_package_statement(&meta, &statement).unwrap_err();
+        let err =
+            verify_package_statement(&meta, REGISTRY, &statement, &key.trusted()).unwrap_err();
 
         assert!(err.to_string().contains("duplicate source dependency"));
     }

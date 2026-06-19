@@ -51,14 +51,14 @@ use super::profile::meta::{
     delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
 };
 use super::provenance;
-use super::registry::{RegistrySet, store_path_hash};
+use super::registry::{RegistrySet, keys, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing, import_nar};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
-    ApmMeta, InstalledMeta, PackageMeta, validate_attestation_provenance_ref,
-    validate_registry_name,
+    ApmMeta, InstalledMeta, PackageMeta, package_requires_provenance,
+    validate_attestation_provenance_ref, validate_registry_name,
 };
 use super::verify::{verify_downloads, verify_nar_hash};
 use aos_core::error::AosError;
@@ -874,16 +874,34 @@ pub(crate) fn verify_package_provenance_entries_from_cache<'a>(
 ) -> Result<usize> {
     let mut verified = 0;
     let mut transparency_logs = HashMap::<String, String>::new();
+    let mut trusted_keys = HashMap::<String, Vec<provenance::TrustedProvenanceKey>>::new();
 
     for (registry_name, meta) in entries {
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
+            if package_requires_provenance(meta) {
+                anyhow::bail!(
+                    "package '{}' uses RFC-0001 exposed or permission metadata but does not declare provenance",
+                    meta.name
+                );
+            }
             continue;
         };
         ensure_safe_provenance_ref(provenance_ref)?;
         let (path, jsonl) =
             read_provenance_artifact(registry_cache_root, registry_name, provenance_ref)?;
-        provenance::verify_package_statement(meta, &jsonl)
-            .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
+        let registry_trusted_keys = match trusted_keys.entry(registry_name.to_string()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+                read_registry_provenance_trusted_keys(registry_cache_root, registry_name)?,
+            ),
+        };
+        let key_id = provenance::verify_package_statement(
+            meta,
+            registry_name,
+            &jsonl,
+            registry_trusted_keys,
+        )
+        .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
         let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
             std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -896,13 +914,20 @@ pub(crate) fn verify_package_provenance_entries_from_cache<'a>(
                 entry.insert(log)
             }
         };
-        provenance::verify_transparency_log_inclusion(meta, &jsonl, transparency_log)
-            .with_context(|| {
-                format!(
-                    "verifying transparency inclusion for provenance artifact {}",
-                    path.display()
-                )
-            })?;
+        let sequence =
+            provenance::verify_transparency_log_inclusion(meta, &jsonl, transparency_log)
+                .with_context(|| {
+                    format!(
+                        "verifying transparency inclusion for provenance artifact {}",
+                        path.display()
+                    )
+                })?;
+        provenance::verify_key_allowed_for_transparency_sequence(
+            registry_trusted_keys,
+            &key_id,
+            sequence,
+        )
+        .with_context(|| format!("verifying provenance key lifetime for {}", path.display()))?;
         verified += 1;
     }
 
@@ -921,6 +946,82 @@ fn read_provenance_artifact(
         provenance_ref,
         "provenance artifact",
     )
+}
+
+fn read_registry_provenance_trusted_keys(
+    registry_cache_root: &Path,
+    registry_name: &str,
+) -> Result<Vec<provenance::TrustedProvenanceKey>> {
+    let (path, content) =
+        read_registry_cache_artifact(registry_cache_root, registry_name, "keys.toml", "keys.toml")?;
+    let roster: keys::KeysToml =
+        toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
+    if roster.schema != keys::KEYS_TOML_SCHEMA {
+        anyhow::bail!(
+            "unsupported keys.toml schema {}: expected {}",
+            roster.schema,
+            keys::KEYS_TOML_SCHEMA
+        );
+    }
+    if roster.active.is_empty() {
+        anyhow::bail!(
+            "registry '{}' has provenance but no active keys in keys.toml",
+            registry_name
+        );
+    }
+    let mut trusted = Vec::with_capacity(roster.active.len());
+    for entry in &roster.active {
+        if keys::is_revoked(&roster, &entry.id) {
+            anyhow::bail!(
+                "registry '{}' key id '{}' is both active and revoked in keys.toml",
+                registry_name,
+                entry.id
+            );
+        }
+        let (entry_registry, _algorithm, _public_key) =
+            super::security::parse_signing_key(&entry.key)
+                .with_context(|| format!("invalid active key '{}'", entry.id))?;
+        if entry_registry != registry_name {
+            anyhow::bail!(
+                "active provenance key '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(provenance::TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: entry.key.clone(),
+            retired_before_sequence: None,
+        });
+    }
+    for entry in &roster.revoked {
+        let Some(key) = entry.key.as_ref() else {
+            continue;
+        };
+        let retired_before_sequence = entry.provenance_before_sequence.with_context(|| {
+            format!(
+                "revoked provenance key '{}' declares key material without provenance-before-sequence",
+                entry.id
+            )
+        })?;
+        let (entry_registry, _algorithm, _public_key) = super::security::parse_signing_key(key)
+            .with_context(|| format!("invalid revoked key '{}'", entry.id))?;
+        if entry_registry != registry_name {
+            anyhow::bail!(
+                "revoked provenance key '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(provenance::TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: key.clone(),
+            retired_before_sequence: Some(retired_before_sequence),
+        });
+    }
+    Ok(trusted)
 }
 
 fn read_registry_cache_artifact(
@@ -1729,6 +1830,8 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
 
+    const TEST_PROVENANCE_KEY_ID: &str = "builder";
+
     #[test]
     fn format_size_bytes() {
         assert_eq!(format_size(500), "500 B");
@@ -1917,6 +2020,23 @@ mod tests {
         meta
     }
 
+    fn write_test_provenance_keys(root: &Path, registry_name: &str) {
+        let registry_root = root.join(registry_name);
+        std::fs::create_dir_all(&registry_root).unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+        keys::write_keys_toml(
+            &registry_root,
+            &keys::KeysToml {
+                active: vec![keys::RosterKey {
+                    id: TEST_PROVENANCE_KEY_ID.to_string(),
+                    key: keypair.trust_key_line(registry_name),
+                }],
+                ..keys::KeysToml::default()
+            },
+        )
+        .unwrap();
+    }
+
     fn provenance_statement(meta: &PackageMeta) -> String {
         let root_digest = meta.attestation.root_digest.as_deref().unwrap();
         let root_hash = meta.attestation.root_hash.as_deref().unwrap();
@@ -1969,9 +2089,28 @@ mod tests {
                         },
                     ],
                 },
+                "runDetails": {
+                    "builder": {
+                        "id": crate::provenance::builder_id("test-reg", TEST_PROVENANCE_KEY_ID),
+                    },
+                },
             },
         });
-        format!("{}\n", serde_json::to_string(&statement).unwrap())
+        let tmp = TempDir::new().unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+        let private_key = tmp.path().join("builder_ed25519");
+        std::fs::write(&private_key, keypair.to_openssh_private_key("test-reg")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&private_key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        crate::provenance::sign_statement_dsse_jsonl(
+            &statement,
+            TEST_PROVENANCE_KEY_ID,
+            &private_key,
+        )
+        .unwrap()
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2118,6 +2257,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let jsonl = provenance_statement(&meta);
         std::fs::write(&path, &jsonl).unwrap();
+        write_test_provenance_keys(tmp.path(), "test-reg");
         write_transparency_log(tmp.path(), "test-reg", &meta, &jsonl);
 
         let count = verify_install_provenance_from_cache(
@@ -2220,6 +2360,28 @@ mod tests {
         .unwrap_err();
 
         assert!(err.to_string().contains("must not contain symlinks"));
+    }
+
+    #[test]
+    fn verify_install_provenance_from_cache_rejects_exposed_without_provenance() {
+        let mut meta = sample_package("web", "1.0.0", "/var/lib/store/root-web");
+        meta.expose = Some(ExposeMeta {
+            target: "web.target".to_string(),
+            units: vec!["web.service".to_string()],
+            images: Vec::new(),
+            requires: Vec::new(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
+        });
+
+        let err = verify_install_provenance_from_cache(
+            TempDir::new().unwrap().path(),
+            &[sample_closure(meta.clone(), vec![meta])],
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("does not declare provenance"));
     }
 
     #[test]

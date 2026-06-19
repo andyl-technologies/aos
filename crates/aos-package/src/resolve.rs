@@ -389,11 +389,14 @@ nar_size = 1
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/consumer.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-consumer.target"
@@ -417,11 +420,14 @@ nar_size = 1
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/consumer-uses.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "network-policy-v1", "capability-routes-v1"]
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "capability-routes-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-consumer-uses.target"
@@ -451,11 +457,14 @@ nar_size = 1
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/cycle-a.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-cycle-a.target"
@@ -479,11 +488,14 @@ nar_size = 1
 closure_size = 1
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/cycle-b.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "network-policy-v1", "requires-v1"]
+requires-features = ["attestation-v1", "expose-v1", "network-policy-v1", "requires-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-cycle-b.target"

@@ -202,19 +202,30 @@ SOURCE ──hermetic build──► .drv ──► NAR (content-addressed)     
 Promote the existing "audit against TUF, consider attestation" note in
 [apm-integration.md](apm-integration.md) from *consider* to *build*:
 
-- **in-toto / SLSA provenance.** Emit a SLSA provenance attestation (current
-  spec **v1.2**, with the Source Track) per package build, binding the NAR hash
-  **and the `[permissions]` manifest hash** to the build inputs; serve it from
-  the registry alongside the narinfo. in-toto attestation framework **v1.2**.
-- **Transparency log.** Append every published binding to a Merkle/append-only
-  log (the Trustix multi-builder-consensus shape, or a Rekor-style log; Sigstore
-  GA 2022, Cosign 3.0 / Rekor v2 Oct 2025). This removes the single-Ed25519-key
-  single-point-of-failure that default Nix binary caches have ("if the cache key
-  is compromised, all builds are tainted") and makes equivocation detectable.
-- **TUF hardening.** Audit the catalog against the TUF attack catalog (freeze,
-  mix-and-match, fast-forward, key rotation) — roles + thresholds + timestamping;
-  TUF spec v1.0.34. The anti-rollback semver floor AOS already enforces is the
-  TUF "rollback" defense; add the rest.
+- **in-toto / SLSA provenance.** Emit a DSSE-wrapped SLSA provenance
+  attestation (current spec **v1.2**, with the Source Track) per package build,
+  binding the NAR hash **and the `[permissions]` manifest hash** to the build
+  inputs; serve it from the registry alongside the narinfo. The DSSE signature
+  is made by an active `keys.toml` roster key and `apm install` verifies both
+  the envelope signature and the builder id before accepting the statement.
+  Packages that declare RFC-0001 expose, permission, or BPF-LSM policy
+  metadata are fail-closed: their package metadata must declare provenance.
+  Planned key retirement preserves the retired public key only for transparency
+  entries below the recorded retirement sequence, so old entries remain
+  verifiable without allowing new retired-key entries.
+- **Transparency log.** Append every published binding to the in-registry
+  `transparency/package-provenance.jsonl` hash chain. Publish validates that
+  the staged log extends the committed prefix, that every provenance-bearing
+  package has exactly one log entry, and that the logged artifact hash matches
+  the DSSE envelope bytes that install will verify. This catches rewrites and
+  unlogged changes for clients following the same registry history; independent
+  witness or Rekor-style compromise resistance is future work.
+- **TUF hardening.** Build the catalog against the TUF attack catalog (freeze,
+  mix-and-match, fast-forward, key rotation) with committed `tuf/root.json`,
+  `targets.json`, `snapshot.json`, and `timestamp.json` roles, role thresholds,
+  expiry checks, and version floors. The anti-rollback semver floor AOS already
+  enforces is the TUF "rollback" defense; the TUF metadata adds the remaining
+  role separation and freshness checks.
 - Caveat to record (not a blocker): cosign's OCI-1.1 *referrers* is selectable,
   not yet a hard default, and GHCR does not implement the referrers endpoint —
   relevant only if AOS ever mirrors attestations into an OCI registry.
