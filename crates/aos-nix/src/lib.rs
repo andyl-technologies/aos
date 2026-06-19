@@ -38,6 +38,7 @@
 pub mod attrs;
 pub mod cache;
 pub mod compile;
+mod drv_materialize;
 pub mod error;
 pub mod eval;
 pub mod heap;

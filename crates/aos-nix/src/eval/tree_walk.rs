@@ -55,6 +55,7 @@ use crate::compile::{
     IrChildSlice, IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShapeId, ResolvedAst,
     ResolverOptions, ScopeResolver, ScopeTables, lower, lower_with_options, resolve,
 };
+use crate::drv_materialize::materialize_drv;
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
@@ -5227,35 +5228,37 @@ impl TreeWalk {
         self.known_derivations
             .iter()
             .map(|(drv_path, known)| {
-                let aterm_bytes = match known.output_resolution {
-                    DerivationOutputResolution::StaticPaths => {
-                        Some(self.derivation_aterm_bytes(&known.derivation))
-                    }
-                    DerivationOutputResolution::FloatingCa(floating_ca_output) => {
-                        Some(self.floating_ca_derivation_aterm_bytes(
-                            &known.derivation,
-                            floating_ca_output,
-                            None,
-                        ))
-                    }
-                    DerivationOutputResolution::Impure(impure_output) => Some(
-                        self.impure_derivation_aterm_bytes(&known.derivation, impure_output, None),
-                    ),
-                    DerivationOutputResolution::DeferredPlaceholders => {
-                        Some(self.deferred_placeholder_derivation_aterm_bytes(
-                            known.id,
-                            known.span,
-                            drv_path,
-                            &known.derivation,
-                        )?)
-                    }
-                };
+                let aterm_bytes = Some(self.known_derivation_aterm_bytes(drv_path, known)?);
                 Ok(EvalDerivation::new(
                     self.store_path_absolute_display(drv_path),
                     aterm_bytes,
                 ))
             })
             .collect()
+    }
+
+    fn known_derivation_aterm_bytes(
+        &self,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        known: &KnownDerivation,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match known.output_resolution {
+            DerivationOutputResolution::StaticPaths => {
+                Ok(self.derivation_aterm_bytes(&known.derivation))
+            }
+            DerivationOutputResolution::FloatingCa(floating_ca_output) => Ok(self
+                .floating_ca_derivation_aterm_bytes(&known.derivation, floating_ca_output, None)),
+            DerivationOutputResolution::Impure(impure_output) => {
+                Ok(self.impure_derivation_aterm_bytes(&known.derivation, impure_output, None))
+            }
+            DerivationOutputResolution::DeferredPlaceholders => self
+                .deferred_placeholder_derivation_aterm_bytes(
+                    known.id,
+                    known.span,
+                    drv_path,
+                    &known.derivation,
+                ),
+        }
     }
 
     fn remember_derivation(
@@ -6348,6 +6351,7 @@ impl TreeWalk {
                             span,
                         ));
                     };
+                    self.materialize_ifd_derivation(id, span, path, element, op)?;
                     realizer.realize(request).map_err(|source| {
                         TreeWalkError::new(
                             TreeWalkErrorKind::ImportFromDerivation {
@@ -6368,6 +6372,102 @@ impl TreeWalk {
             }
         }
         Ok(())
+    }
+
+    fn materialize_ifd_derivation(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        element: &ContextElement,
+        op: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        let Some(path_in_store) = self.strip_configured_store_dir(element.path()) else {
+            return Ok(());
+        };
+        let Ok(drv_path) = nix_compat::store_path::StorePath::<String>::from_bytes(path_in_store)
+        else {
+            return Ok(());
+        };
+        if !self.known_derivations.contains_key(&drv_path) {
+            return Ok(());
+        }
+        let mut visited = BTreeSet::new();
+        self.materialize_known_derivation_closure(
+            id,
+            span,
+            path,
+            element,
+            op,
+            &drv_path,
+            &mut visited,
+        )
+    }
+
+    fn materialize_known_derivation_closure(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        element: &ContextElement,
+        op: &'static str,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        visited: &mut BTreeSet<nix_compat::store_path::StorePath<String>>,
+    ) -> Result<(), TreeWalkError> {
+        if !visited.insert(drv_path.clone()) {
+            return Ok(());
+        }
+        let Some(known) = self.known_derivations.get(drv_path) else {
+            return Ok(());
+        };
+        let input_derivations: Vec<_> =
+            known.derivation.input_derivations.keys().cloned().collect();
+        for input in input_derivations {
+            self.materialize_known_derivation_closure(
+                id, span, path, element, op, &input, visited,
+            )?;
+        }
+
+        let Some(known) = self.known_derivations.get(drv_path) else {
+            return Ok(());
+        };
+        let bytes = self
+            .known_derivation_aterm_bytes(drv_path, known)
+            .map_err(|source| {
+                self.ifd_materialization_error(id, span, path, element, op, source.to_string())
+            })?;
+        let absolute_path =
+            PathBuf::from(OsStr::from_bytes(&self.store_path_absolute_bytes(drv_path)));
+        materialize_drv(&absolute_path, &bytes).map_err(|source| {
+            self.ifd_materialization_error(id, span, path, element, op, source.to_string())
+        })
+    }
+
+    fn ifd_materialization_error(
+        &self,
+        id: IrId,
+        span: Span,
+        path: &NixString,
+        element: &ContextElement,
+        op: &'static str,
+        message: String,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::ImportFromDerivation {
+                id,
+                op,
+                detail: Box::new(IfdErrorDetail::new(
+                    path.bytes().to_vec(),
+                    element.path().to_vec(),
+                    element.output().map(<[u8]>::to_vec),
+                    element.kind(),
+                    Some(format!(
+                        "failed to materialize native derivation for IFD: {message}"
+                    )),
+                )),
+            },
+            span,
+        )
     }
 
     fn check_filesystem_path_access(

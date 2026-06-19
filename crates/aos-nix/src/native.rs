@@ -7,9 +7,6 @@
 //! Phase-1 subset.
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::fs;
-use std::io::{ErrorKind, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -18,6 +15,7 @@ use anyhow::Result;
 use crate::compile::{
     EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
 };
+use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
 use crate::eval::{
     EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
@@ -323,154 +321,11 @@ impl NixNative {
 
 fn materialize_drv_closure(closure: &NativeDrvClosure) -> Result<()> {
     for (path, bytes) in closure.drvs() {
-        materialize_drv(path, bytes)?;
-    }
-    Ok(())
-}
-
-fn materialize_drv(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| NativeEvalError::Internal {
-        message: format!(
-            "native derivation path has no parent directory: {}",
-            path.display()
-        ),
-    })?;
-    fs::create_dir_all(parent).map_err(|source| NativeEvalError::Internal {
-        message: format!(
-            "failed to create native derivation parent {}: {source}",
-            parent.display()
-        ),
-    })?;
-
-    match fs::read(path) {
-        Ok(existing) if existing == bytes => return Ok(()),
-        Ok(_) => {
-            return Err(NativeEvalError::Internal {
-                message: format!(
-                    "refusing to overwrite existing derivation {} with different contents",
-                    path.display()
-                ),
-            }
-            .into());
-        }
-        Err(source) if source.kind() == ErrorKind::NotFound => {}
-        Err(source) => {
-            return Err(NativeEvalError::Internal {
-                message: format!(
-                    "failed to read existing native derivation {}: {source}",
-                    path.display()
-                ),
-            }
-            .into());
-        }
-    }
-
-    let temp_path = write_temp_drv(parent, path, bytes)?;
-    match fs::hard_link(&temp_path, path) {
-        Ok(()) => fs::remove_file(&temp_path).map_err(|source| NativeEvalError::Internal {
-            message: format!(
-                "failed to remove temporary native derivation {}: {source}",
-                temp_path.display()
-            ),
-        })?,
-        Err(source) if source.kind() == ErrorKind::AlreadyExists => {
-            let existing = fs::read(path).map_err(|source| NativeEvalError::Internal {
-                message: format!(
-                    "failed to read concurrently-created native derivation {}: {source}",
-                    path.display()
-                ),
-            })?;
-            let remove_result = fs::remove_file(&temp_path);
-            if existing == bytes {
-                remove_result.map_err(|source| NativeEvalError::Internal {
-                    message: format!(
-                        "failed to remove temporary native derivation {}: {source}",
-                        temp_path.display()
-                    ),
-                })?;
-                return Ok(());
-            }
-            let _ = remove_result;
-            return Err(NativeEvalError::Internal {
-                message: format!(
-                    "refusing to overwrite concurrently-created derivation {} with different contents",
-                    path.display()
-                ),
-            }
-            .into());
-        }
-        Err(source) => {
-            let _ = fs::remove_file(&temp_path);
-            return Err(NativeEvalError::Internal {
-                message: format!(
-                    "failed to install native derivation {} from {}: {source}",
-                    path.display(),
-                    temp_path.display()
-                ),
-            }
-            .into());
-        }
-    }
-    Ok(())
-}
-
-fn write_temp_drv(parent: &Path, final_path: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    for attempt in 0..100 {
-        let temp_path = temp_drv_path(parent, final_path, attempt)?;
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(mut file) => {
-                if let Err(source) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-                    let _ = fs::remove_file(&temp_path);
-                    return Err(NativeEvalError::Internal {
-                        message: format!(
-                            "failed to write temporary native derivation {}: {source}",
-                            temp_path.display()
-                        ),
-                    }
-                    .into());
-                }
-                return Ok(temp_path);
-            }
-            Err(source) if source.kind() == ErrorKind::AlreadyExists => {}
-            Err(source) => {
-                return Err(NativeEvalError::Internal {
-                    message: format!(
-                        "failed to create temporary native derivation {}: {source}",
-                        temp_path.display()
-                    ),
-                }
-                .into());
-            }
-        }
-    }
-
-    Err(NativeEvalError::Internal {
-        message: format!(
-            "failed to allocate temporary native derivation path for {}",
-            final_path.display()
-        ),
-    }
-    .into())
-}
-
-fn temp_drv_path(parent: &Path, final_path: &Path, attempt: u32) -> Result<PathBuf> {
-    let file_name = final_path
-        .file_name()
-        .ok_or_else(|| NativeEvalError::Internal {
-            message: format!(
-                "native derivation path has no file name: {}",
-                final_path.display()
-            ),
+        materialize_drv(path, bytes).map_err(|source| NativeEvalError::Internal {
+            message: source.to_string(),
         })?;
-    let mut temp_name = Vec::new();
-    temp_name.push(b'.');
-    temp_name.extend_from_slice(file_name.as_bytes());
-    temp_name.extend_from_slice(format!(".{}.{}.tmp", std::process::id(), attempt).as_bytes());
-    Ok(parent.join(OsString::from_vec(temp_name)))
+    }
+    Ok(())
 }
 
 const JSON_WRAPPER_PREFIX: &str = "builtins.toJSON (\n";
@@ -1055,6 +910,105 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].0, import_path.as_os_str().as_bytes());
         assert_eq!(requests[0].1, drv_path.as_os_str().as_bytes());
+        assert_eq!(requests[0].2.as_deref(), Some(b"out".as_slice()));
+        assert_eq!(requests[0].3, crate::string::ContextKind::SingleOutput);
+        assert_eq!(requests[0].4, "import");
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_ifd_materializes_known_drv_before_realizer() -> Result<()> {
+        use std::ffi::OsStr;
+
+        let root = unique_temp_dir("native-ifd-known-drv");
+        fs::create_dir_all(&root)?;
+        let root = fs::canonicalize(root)?;
+        let store = root.join("store");
+        fs::create_dir(&store)?;
+        let builder = store.join("cccccccccccccccccccccccccccccccc-builder");
+        let store_for_realizer = store.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_for_realizer = Arc::clone(&requests);
+        let realizer = IfdRealizer::new(move |request| {
+            let drv_path = PathBuf::from(OsStr::from_bytes(request.drv_path()));
+            let drv_bytes = fs::read(&drv_path)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            if !drv_bytes.starts_with(b"Derive(") {
+                return Err(IfdRealizationError::new(
+                    "materialized IFD derivation is not an ATerm derivation",
+                ));
+            }
+            let materialized_drvs = fs::read_dir(&store_for_realizer)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?
+                .map(|entry| {
+                    entry
+                        .map_err(|source| IfdRealizationError::new(source.to_string()))
+                        .map(|entry| entry.path())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let materialized_drv_count = materialized_drvs
+                .iter()
+                .filter(|path| path.extension() == Some(OsStr::new("drv")))
+                .count();
+            if materialized_drv_count < 2 {
+                return Err(IfdRealizationError::new(
+                    "native IFD did not materialize the input derivation closure",
+                ));
+            }
+            requests_for_realizer
+                .lock()
+                .expect("request log lock")
+                .push((
+                    request.path().to_vec(),
+                    request.drv_path().to_vec(),
+                    request.output_name().map(<[u8]>::to_vec),
+                    request.context_kind(),
+                    request.op(),
+                ));
+            let import_path = PathBuf::from(OsStr::from_bytes(request.path()));
+            let Some(output_dir) = import_path.parent() else {
+                return Err(IfdRealizationError::new("IFD import path has no parent"));
+            };
+            fs::create_dir_all(output_dir)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            fs::write(&import_path, br#""from-native-ifd""#)
+                .map_err(|source| IfdRealizationError::new(source.to_string()))?;
+            Ok(())
+        });
+        let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+        let native = NixNative::with_options(0, options)?.with_ifd_realizer(realizer);
+        let source = format!(
+            r#"let
+                 base = builtins.derivationStrict {{
+                   name = "base";
+                   system = "x86_64-linux";
+                   builder = {builder};
+                 }};
+                 producer = builtins.derivationStrict {{
+                   name = "producer";
+                   system = "x86_64-linux";
+                   builder = {builder};
+                   input = base.out;
+                 }};
+                 consumer = builtins.derivationStrict {{
+                   name = "consumer";
+                   system = "x86_64-linux";
+                   builder = {builder};
+                   args = [ (import "${{producer.out}}/imported.nix") ];
+                 }};
+               in consumer.drvPath"#,
+            builder = nix_string_literal(&path_bytes(&builder)?)?,
+        );
+
+        let path = native.eval_derivation_path_source(&source, None)?;
+
+        assert!(path.to_string_lossy().ends_with("-consumer.drv"));
+        let requests = requests.lock().expect("request log lock");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].0.ends_with(b"/imported.nix"));
+        assert!(requests[0].1.starts_with(store.as_os_str().as_bytes()));
         assert_eq!(requests[0].2.as_deref(), Some(b"out".as_slice()));
         assert_eq!(requests[0].3, crate::string::ContextKind::SingleOutput);
         assert_eq!(requests[0].4, "import");
