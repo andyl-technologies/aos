@@ -64,6 +64,46 @@ static NATIVE_FALLBACK_UNSUPPORTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "native-eval")]
 static NATIVE_FALLBACK_INTERNAL: AtomicU64 = AtomicU64::new(0);
 
+/// Native evaluator fallback counters captured for the current process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeFallbackStats {
+    unsupported: u64,
+    internal: u64,
+}
+
+impl NativeFallbackStats {
+    /// Returns fallbacks caused by explicitly unsupported native-evaluator features.
+    pub const fn unsupported(&self) -> u64 {
+        self.unsupported
+    }
+
+    /// Returns fallbacks caused by native-evaluator internal failures.
+    pub const fn internal(&self) -> u64 {
+        self.internal
+    }
+
+    /// Returns the total number of native-evaluator fallbacks.
+    pub const fn total(&self) -> u64 {
+        self.unsupported.saturating_add(self.internal)
+    }
+}
+
+/// Returns native evaluator fallback counters captured for the current process.
+pub fn native_fallback_stats() -> NativeFallbackStats {
+    #[cfg(feature = "native-eval")]
+    {
+        NativeFallbackStats {
+            unsupported: NATIVE_FALLBACK_UNSUPPORTED.load(Ordering::Relaxed),
+            internal: NATIVE_FALLBACK_INTERNAL.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    {
+        NativeFallbackStats::default()
+    }
+}
+
 /// An evaluator that reduces Nix source to derivations or JSON-rendered values.
 ///
 /// Implementations must produce byte-identical `.drv` files and store paths to
@@ -840,16 +880,6 @@ fn record_native_cli_fallback(reason: NativeCliFallbackReason) -> u64 {
 }
 
 #[cfg(feature = "native-eval")]
-#[cfg(test)]
-fn native_cli_fallback_count(reason: NativeCliFallbackReason) -> u64 {
-    let counter = match reason {
-        NativeCliFallbackReason::Unsupported => &NATIVE_FALLBACK_UNSUPPORTED,
-        NativeCliFallbackReason::Internal => &NATIVE_FALLBACK_INTERNAL,
-    };
-    counter.load(Ordering::Relaxed)
-}
-
-#[cfg(feature = "native-eval")]
 fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptions> {
     let mut options = TreeWalkOptions::new();
     if let Some(store_dir) = config.store_dir() {
@@ -1093,25 +1123,34 @@ mod tests {
         assert_eq!(native_cli_fallback_reason(&other), None);
     }
 
+    #[test]
+    fn native_fallback_stats_total_sums_reason_counts() {
+        let stats = NativeFallbackStats {
+            unsupported: 2,
+            internal: 3,
+        };
+
+        assert_eq!(stats.unsupported(), 2);
+        assert_eq!(stats.internal(), 3);
+        assert_eq!(stats.total(), 5);
+    }
+
     #[cfg(feature = "native-eval")]
     #[test]
     fn native_fallback_recording_counts_by_reason() {
-        let unsupported_before = native_cli_fallback_count(NativeCliFallbackReason::Unsupported);
-        let internal_before = native_cli_fallback_count(NativeCliFallbackReason::Internal);
+        let before = native_fallback_stats();
 
         let unsupported_after = record_native_cli_fallback(NativeCliFallbackReason::Unsupported);
-        assert!(unsupported_after > unsupported_before);
-        let unsupported_count = native_cli_fallback_count(NativeCliFallbackReason::Unsupported);
-        assert!(unsupported_count >= unsupported_after);
-        assert_eq!(
-            native_cli_fallback_count(NativeCliFallbackReason::Internal),
-            internal_before
-        );
+        assert!(unsupported_after > before.unsupported());
+        let unsupported_stats = native_fallback_stats();
+        assert!(unsupported_stats.unsupported() >= unsupported_after);
+        assert!(unsupported_stats.internal() >= before.internal());
 
         let internal_after = record_native_cli_fallback(NativeCliFallbackReason::Internal);
-        assert!(internal_after > internal_before);
-        let internal_count = native_cli_fallback_count(NativeCliFallbackReason::Internal);
-        assert!(internal_count >= internal_after);
+        assert!(internal_after > unsupported_stats.internal());
+        let internal_stats = native_fallback_stats();
+        assert!(internal_stats.internal() >= internal_after);
+        assert!(internal_stats.total() >= unsupported_after.saturating_add(internal_after));
     }
 
     #[cfg(feature = "native-eval")]
