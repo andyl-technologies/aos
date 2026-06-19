@@ -19,11 +19,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Result;
 
 use super::env::aos_nix_env;
+#[cfg(feature = "native-eval")]
+use super::store::read_drv_closure;
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
 use aos_nix::{
-    NativeCliFallbackReason, NativeEvalError, NixNative,
+    NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
     eval::{IfdRealizationError, IfdRealizer, TreeWalkOptions},
 };
 
@@ -647,55 +649,23 @@ impl ShadowEval {
 impl NixEval for ShadowEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let fallback = self.fallback.instantiate(file, attr)?;
-        match self.native.instantiate(file, attr) {
-            Ok(native) if native != fallback => {
-                tracing::error!(
-                    fallback = %fallback.display(),
-                    native = %native.display(),
-                    "shadow native eval diverged from nix-cli"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(error = %error, "shadow native eval did not complete");
-            }
-        }
+        compare_shadow_file_drv_closure(&self.native, file, attr, &fallback);
         Ok(fallback)
     }
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
         let fallback = self.fallback.instantiate_expr(expr)?;
-        match self.native.instantiate_expr(expr) {
-            Ok(native) if native != fallback => {
-                tracing::error!(
-                    fallback = %fallback.display(),
-                    native = %native.display(),
-                    "shadow native eval diverged from nix-cli"
-                );
-            }
-            Ok(_) => {}
-            Err(error) => {
-                tracing::warn!(error = %error, "shadow native eval did not complete");
-            }
-        }
+        compare_shadow_expr_drv_closure(&self.native, expr, &fallback);
         Ok(fallback)
     }
 
     fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
         let fallback = self.fallback.instantiate_closure(file, attr)?;
-        match self.native.instantiate_closure(file, attr) {
-            Ok(native) => {
-                let (root, drvs) = native.into_parts();
-                let native = DrvClosure::new(root, drvs);
-                let divergences = compare_shadow_drv_closure(&fallback, &native);
-                if divergences == 0 {
-                    tracing::debug!("shadow native eval drv closure matched nix-cli");
-                }
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "shadow native eval drv closure did not complete");
-            }
-        }
+        compare_shadow_native_drv_closure(
+            &fallback,
+            self.native.instantiate_closure(file, attr),
+            "file instantiation",
+        );
         Ok(Some(fallback))
     }
 
@@ -715,6 +685,71 @@ impl NixEval for ShadowEval {
 
     fn name(&self) -> &'static str {
         "shadow(aos-nix,nix-cli)"
+    }
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_shadow_file_drv_closure(native: &NixNative, file: &Path, attr: &str, fallback: &Path) {
+    compare_shadow_drv_closure_from_fallback_root(
+        fallback,
+        native.instantiate_closure(file, attr),
+        "file instantiation",
+    );
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_shadow_expr_drv_closure(native: &NixNative, expr: &str, fallback: &Path) {
+    compare_shadow_drv_closure_from_fallback_root(
+        fallback,
+        native.instantiate_expr_closure(expr),
+        "expression instantiation",
+    );
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_shadow_drv_closure_from_fallback_root(
+    fallback_root: &Path,
+    native: Result<NativeDrvClosure>,
+    operation: &'static str,
+) {
+    let fallback = match read_drv_closure(fallback_root.to_path_buf()) {
+        Ok(fallback) => fallback,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                fallback = %fallback_root.display(),
+                operation,
+                "shadow nix-cli drv closure could not be read"
+            );
+            return;
+        }
+    };
+
+    compare_shadow_native_drv_closure(&fallback, native, operation);
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_shadow_native_drv_closure(
+    fallback: &DrvClosure,
+    native: Result<NativeDrvClosure>,
+    operation: &'static str,
+) {
+    match native {
+        Ok(native) => {
+            let (root, drvs) = native.into_parts();
+            let native = DrvClosure::new(root, drvs);
+            let divergences = compare_shadow_drv_closure(fallback, &native);
+            if divergences == 0 {
+                tracing::debug!(operation, "shadow native eval drv closure matched nix-cli");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                operation,
+                "shadow native eval drv closure did not complete"
+            );
+        }
     }
 }
 

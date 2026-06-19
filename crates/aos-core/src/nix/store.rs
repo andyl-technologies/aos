@@ -568,7 +568,7 @@ impl NixEval for NixCli {
     }
 }
 
-fn read_drv_closure(root: PathBuf) -> Result<DrvClosure> {
+pub(crate) fn read_drv_closure(root: PathBuf) -> Result<DrvClosure> {
     let mut drvs = BTreeMap::new();
     let mut visiting = BTreeSet::new();
     read_drv_closure_at(&root, &mut visiting, &mut drvs)?;
