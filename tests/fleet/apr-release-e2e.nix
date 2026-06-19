@@ -4,7 +4,7 @@
 # consumer install across the fleet's multicast L2:
 #
 #   registry (192.168.50.11): aos-registry-server (gitd :9418) +
-#     test-http-server (:8000, serving %S = /var/lib). The producer
+#     test-static-cache-server (:8000, serving /var/lib). The producer
 #     fabricates a store path, `apr create`s a signed registry, and runs a
 #     SINGLE `apr release` that publishes the package, stages + uploads the
 #     static binary cache to a served directory, advertises the `[[caches]]`
@@ -32,7 +32,7 @@
     version = "1.0.0";
     storeHash = "cccccccccccccccccccccccccccccccc";
   };
-  # The aos-registry-server role exports AOS_ROOT here, so the fabricated path
+  # The aos-registry-server package exports AOS_ROOT here, so the fabricated path
   # lives at $AOS_ROOT/store/<hash>-name-version and apr reads it via the same
   # AOS_ROOT-aware nix environment.
   serverStoreRoot = "/var/lib/aos-registry-server/store-root";
@@ -53,7 +53,7 @@ in {
 
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       # The static cache and origin land under /var/lib (served on :8000);
       # the default 256 MiB /var is tight once the NAR is compressed in.
       varSizeMiB = 1024;
@@ -65,9 +65,15 @@ in {
     ''
       import textwrap
 
-      # ── 1. Registry roles up; cache reachable from the client over L2 ──
+      # ── 1. Registry packages up; cache reachable from the client over L2 ──
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
+      registry.succeed("mkdir -p /var/lib/sysreg-cache && chmod a+rX /var/lib/sysreg-cache")
       registry.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
       client.wait_until_succeeds(
           "curl -sf --max-time 5 http://registry:8000/ -o /dev/null", timeout=120
@@ -80,6 +86,7 @@ in {
       # Python f-string → literal `{`/`}` in the embedded shell must be doubled.
       release = registry.succeed(textwrap.dedent(f"""
           set -euo pipefail
+          exec 2>&1
           export HOME=/tmp AOS_ROOT=${serverStoreRoot}
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
@@ -124,6 +131,7 @@ in {
             "INSERT INTO ValidPaths (path, hash, registrationTime, narSize, ultimate, sigs, ca) VALUES ('${storePath}', 'sha256:$NAR_HASH', 1000000, $NAR_SIZE, 1, ''', 'fixed:r:sha256:$NAR_HASH');"
 
           # 2.2 Signed registry + a bare gitd origin the consumer clones from.
+          ${pkgs.aos}/bin/apr create relreg
           ${pkgs.aos}/bin/apr keys generate release --registry relreg
           PUBKEY=$(${pkgs.aos}/bin/apr keys list --registry relreg \\
             | awk '/Ed25519/ {{print $NF; exit}}')
@@ -146,9 +154,9 @@ in {
             --license MIT \\
             --maintainer test \\
             --key "$KEY" \\
-            --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache
-          chmod -R a+rX /var/lib/relreg-cache
+            --cache-url http://registry:8000/sysreg-cache \\
+            --upload-url file:///var/lib/sysreg-cache
+          chmod -R a+rX /var/lib/sysreg-cache
 
           # 2.4 Push the released registry (package, pointer, tag) to gitd.
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
@@ -160,8 +168,8 @@ in {
       assert "Released relreg ${pkg.version}" in release, release
 
       # The static cache landed at the served directory.
-      registry.succeed("test -d /var/lib/relreg-cache/nar")
-      target_url = "http://registry:8000/relreg-cache/nix-cache-info"
+      registry.succeed("test -d /var/lib/sysreg-cache/nar")
+      target_url = "http://registry:8000/sysreg-cache/nix-cache-info"
       client.wait_until_succeeds(f"curl -sf --max-time 5 {target_url}", timeout=60)
 
       # ── 3. Consumer adds the registry and installs from the cache ──────
@@ -189,12 +197,13 @@ in {
       )
 
       # The registry's static cache server logged a NAR GET from the client.
-      journal = registry.succeed("journalctl -u test-http-server --no-pager")
-      assert "GET /relreg-cache/nar/" in journal, journal
+      journal = registry.succeed("journalctl -u test-static-cache-server --no-pager")
+      assert "GET /sysreg-cache/nar/" in journal, journal
 
       # ── 4. Skip path: re-releasing the same closure regenerates nothing ──
       second = registry.succeed(textwrap.dedent("""
           set -euo pipefail
+          exec 2>&1
           export HOME=/tmp AOS_ROOT=${serverStoreRoot}
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
@@ -210,8 +219,8 @@ in {
             --license MIT \\
             --maintainer test \\
             --key "$KEY" \\
-            --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache
+            --cache-url http://registry:8000/sysreg-cache \\
+            --upload-url file:///var/lib/sysreg-cache
       """), timeout=300)
       print("=== second apr release output ===\n" + second)
       assert "Generated static cache: 0 narinfos, 0 NARs" in second, second
