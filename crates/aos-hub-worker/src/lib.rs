@@ -215,7 +215,10 @@ mod entry {
     /// Returns an error if a binding is missing, the `HUB_JWT_SECRET` or
     /// `HUB_SEAL_KEY` secret is absent or empty, or the rate-limiter table cannot
     /// be ensured.
-    async fn router_from(env: &Env, request_origin: &str) -> Result<(Router, Arc<RpcService>)> {
+    async fn router_from(
+        env: &Env,
+        request_origin: &str,
+    ) -> Result<(Router, Arc<RpcService>, ConsoleDeps)> {
         let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
             env.d1(crate::handlers::bindings::D1)?,
         ))));
@@ -328,10 +331,14 @@ mod entry {
 
         // The service is returned alongside the router so the bridge can run the
         // shared frontend domain-routing decision before dispatch (the Worker's
-        // `!Send` services preclude the native `from_fn` middleware).
-        let router =
-            aos_hub_core::connect::router(Arc::clone(&service)).merge(console_router(console_deps));
-        Ok((router, service))
+        // `!Send` services preclude the native `from_fn` middleware). The
+        // `ConsoleDeps` are cloned out before being moved into `console_router`
+        // so the bridge can also run the shared nested-canonical console
+        // dispatcher (the console routes capture only a single-segment slug, so
+        // a nested registry's `/-/` pages need the explicit dispatcher).
+        let router = aos_hub_core::connect::router(Arc::clone(&service))
+            .merge(console_router(console_deps.clone()));
+        Ok((router, service, console_deps))
     }
 
     /// The HTTP entry point: bridge every request to the shared router.
@@ -366,8 +373,8 @@ mod entry {
                 }
             })
             .unwrap_or_default();
-        let (router, service) = router_from(&env, &request_origin).await?;
-        crate::bridge::dispatch(router, &service, req).await
+        let (router, service, console_deps) = router_from(&env, &request_origin).await?;
+        crate::bridge::dispatch(router, &service, console_deps, req).await
     }
 
     /// The Cron-triggered indexer: re-walk every public registry's R2 surface

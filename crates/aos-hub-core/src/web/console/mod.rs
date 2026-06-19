@@ -17,9 +17,11 @@
 //! fetch go through the [`HttpClient`](ports::HttpClient) port.
 
 pub mod handlers;
+pub mod nested;
 pub mod ports;
 pub mod router;
 
 pub use handlers::CLIENT_IP_HEADER;
+pub use nested::dispatch_nested;
 pub use ports::{ConsoleDeps, HttpClient};
 pub use router::console_router;

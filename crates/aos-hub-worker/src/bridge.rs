@@ -128,6 +128,17 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 /// router with [`tower::ServiceExt::oneshot`], and converts the
 /// [`http::Response`] back to a [`worker::Response`].
 ///
+/// Before the normal router dispatch, a `GET`/`POST` request is offered to the
+/// shared nested-canonical console dispatcher
+/// ([`aos_hub_core::web::console::dispatch_nested`]): the shared console routes
+/// capture only a single-segment `{slug}`, so a registry whose canonical path
+/// has slashes (`andyl/demo`) never matches them and would otherwise 404 at the
+/// facade wildcard. When the dispatcher recognizes a nested console page it
+/// returns the rendered response; otherwise the request flows on to the router
+/// unchanged. The request body is buffered once (in [`to_axum`]) and reused for
+/// both the nested check and the fall-through dispatch, so the request is never
+/// read twice.
+///
 /// # Errors
 ///
 /// Returns an error if either conversion fails or the router itself errors (the
@@ -136,9 +147,39 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 pub async fn dispatch(
     router: axum::Router,
     svc: &aos_hub_core::service::RpcService,
+    console_deps: aos_hub_core::web::console::ConsoleDeps,
     req: Request,
 ) -> Result<Response> {
     let axum_req = to_axum(req).await?;
+
+    // Buffer the body once: the nested-console check needs it for POST form
+    // parsing, and the fall-through router dispatch needs it too. Decompose into
+    // parts + bytes, run the check, then reassemble so the body is read only
+    // once (a GET carries empty bytes). The body was already fully buffered in
+    // `to_axum`, so `to_bytes` cannot exceed a real limit here.
+    let (parts, body) = axum_req.into_parts();
+    let body_bytes = axum::body::to_bytes(body, usize::MAX)
+        .await
+        .map_err(|err| worker::Error::RustError(format!("buffering request body: {err}")))?;
+
+    // Nested-canonical producer-console pages: only GET/POST can be console
+    // pages, so skip the check for any other method.
+    if parts.method == http::Method::GET || parts.method == http::Method::POST {
+        if let Some(resp) = aos_hub_core::web::console::dispatch_nested(
+            console_deps,
+            parts.method.clone(),
+            parts.uri.clone(),
+            parts.headers.clone(),
+            body_bytes.clone(),
+        )
+        .await
+        {
+            return to_worker(resp).await;
+        }
+    }
+
+    let axum_req = http::Request::from_parts(parts, Body::from(body_bytes));
+
     // Shared frontend domain-routing: rewrite the request to its bound
     // `/{slug}/…` identity by `Host` (or short-circuit a `404`) before dispatch.
     let axum_resp = match aos_hub_core::connect::rewrite_for_frontend(svc, axum_req).await {
