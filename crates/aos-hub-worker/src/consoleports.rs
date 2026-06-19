@@ -6,10 +6,13 @@
 //! native hub satisfies those ports from its `coreports` module; this module is
 //! the Worker's mirror, satisfying the same ports from the Workers runtime:
 //!
-//! - [`WorkerMailer`] — the magic-link [`Mailer`] (now an `async` port). When
-//!   `HUB_EMAIL_API_URL` is configured it `POST`s the link to that email relay
-//!   over the Fetch API (optional `HUB_EMAIL_API_TOKEN` bearer); otherwise it
-//!   logs the link via [`worker::console_log!`] (the dev/unconfigured path).
+//! - [`WorkerMailer`] — the transactional [`Mailer`] (an `async` port). When the
+//!   Cloudflare Email Service binding (`EMAIL`) and a `HUB_EMAIL_FROM` address are
+//!   present it sends through `EMAIL.send({ from, to, subject, html, text })`; else
+//!   when `HUB_EMAIL_API_URL` is configured it `POST`s the structured message to
+//!   that email relay over the Fetch API (optional `HUB_EMAIL_API_TOKEN` bearer);
+//!   otherwise it logs the message via [`worker::console_log!`] (the
+//!   dev/unconfigured path).
 //! - [`WorkerHttpClient`] — the OIDC outbound [`HttpClient`], over the Workers
 //!   global Fetch API. It applies the literal-IP SSRF rejection
 //!   ([`url_guard::is_safe_remote_url`](aos_hub_core::url_guard::is_safe_remote_url))
@@ -34,6 +37,7 @@
 use aos_hub_core::auth::magic::Mailer;
 use aos_hub_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
 use aos_hub_core::db::RegistryRecord;
+use aos_hub_core::email::EmailContent;
 use aos_hub_core::url_guard;
 use aos_hub_core::reindex::Reindexer;
 use aos_hub_core::web::console::ports::HttpClient;
@@ -42,6 +46,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use futures_util::StreamExt;
+use wasm_bindgen::{JsCast, JsValue};
 use worker::{Fetch, Headers, Method, Request, RequestInit};
 
 /// Maximum response-body size for an OIDC outbound call: 1 MiB.
@@ -75,48 +80,116 @@ pub fn sealer_from_secret(secret: &str) -> Result<Arc<dyn SecretSealer>> {
     Ok(Arc::new(AesGcmSealer::new(&key)?))
 }
 
-/// The Worker's magic-link [`Mailer`]: delivers via an HTTP email relay, or
-/// logs the link when no relay is configured.
+/// The Worker's transactional [`Mailer`], with three delivery tiers.
 ///
-/// When `HUB_EMAIL_API_URL` is set, [`send_magic_link`](Mailer::send_magic_link)
-/// `POST`s `{"to","link"}` JSON to it (with an optional `Bearer` token from
-/// `HUB_EMAIL_API_TOKEN`) over the Workers Fetch API — the operator points it at
-/// a relay that adapts to their provider (Cloudflare Email Routing worker,
-/// Resend, SendGrid, …). When the URL is unset, it falls back to emitting the
-/// link via [`worker::console_log!`] (the dev/unconfigured path), so a
-/// magic-link login still works from the Worker's tail logs. The endpoint is
-/// operator-controlled, so the relay URL itself is not SSRF-guarded here.
+/// [`send_email`](Mailer::send_email) renders nothing itself — it receives a
+/// fully-rendered [`EmailContent`] from the shared [`aos_hub_core::email`]
+/// helpers — and routes it through the first available transport:
+///
+/// 1. **Cloudflare Email Service** — when the `EMAIL` `[[send_email]]` binding is
+///    present *and* a `HUB_EMAIL_FROM` sender address is set, it calls the
+///    binding's JS API `EMAIL.send({ from, to, subject, html, text })` over
+///    wasm-bindgen interop (workers-rs 0.4 has no typed wrapper for this binding).
+///    The sender domain must be onboarded in the Cloudflare dashboard first.
+/// 2. **HTTP relay** — else when `HUB_EMAIL_API_URL` is set, it `POST`s
+///    `{from,to,subject,html,text}` JSON to it (optional `Bearer` token from
+///    `HUB_EMAIL_API_TOKEN`) over the Workers Fetch API, for an operator who
+///    fronts their own provider (Resend, SendGrid, a Routing worker, …). The
+///    endpoint is operator-controlled, so the relay URL is not SSRF-guarded here.
+/// 3. **Log** — else it emits the subject + recipient via [`worker::console_log!`]
+///    (the dev/unconfigured path), so a magic-link login still works from the
+///    Worker's tail logs.
 pub struct WorkerMailer {
-    /// The email-relay endpoint (`HUB_EMAIL_API_URL`); `None` logs instead.
+    /// The Cloudflare Email Service binding (`EMAIL`), as the raw JS object
+    /// exposing a `send` method; `None` when the binding is absent.
+    email_binding: Option<js_sys::Object>,
+    /// The verified sender address (`HUB_EMAIL_FROM`) the Email Service requires;
+    /// `None` disables tier 1 even when the binding is present.
+    from: Option<String>,
+    /// The email-relay endpoint (`HUB_EMAIL_API_URL`) for tier 2; `None` skips it.
     api_url: Option<String>,
     /// An optional `Bearer` token (`HUB_EMAIL_API_TOKEN`) for the relay.
     api_token: Option<String>,
 }
 
 impl WorkerMailer {
-    /// Build a mailer from the relay endpoint and optional bearer token.
+    /// Build a mailer from the Email Service binding, sender address, relay
+    /// endpoint, and optional bearer token.
     ///
     /// Empty strings are treated as absent, so an unset Wrangler var/secret
-    /// falls back to the logging path.
+    /// falls back to the next tier (ultimately the logging path).
     #[must_use]
-    pub fn new(api_url: Option<String>, api_token: Option<String>) -> WorkerMailer {
+    pub fn new(
+        email_binding: Option<js_sys::Object>,
+        from: Option<String>,
+        api_url: Option<String>,
+        api_token: Option<String>,
+    ) -> WorkerMailer {
         let clean = |v: Option<String>| v.filter(|s| !s.is_empty());
         WorkerMailer {
+            email_binding,
+            from: clean(from),
             api_url: clean(api_url),
             api_token: clean(api_token),
         }
     }
-}
 
-#[async_trait(?Send)]
-impl Mailer for WorkerMailer {
-    async fn send_magic_link(&self, email: &str, link_url: &str) -> Result<()> {
-        let Some(url) = self.api_url.as_deref() else {
-            // No relay configured: emit the link to the tail log (dev path).
-            worker::console_log!("magic link for {email}: {link_url} (HUB_EMAIL_API_URL unset; not emailed)");
-            return Ok(());
+    /// Sends `content` to `to` via the Cloudflare Email Service binding.
+    ///
+    /// Builds the structured payload and awaits the promise returned by the
+    /// binding's `send` method. `from` is the verified sender address.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any field cannot be set on the JS payload, the
+    /// binding has no callable `send`, or the `EMAIL.send` promise rejects.
+    async fn send_via_binding(
+        binding: &js_sys::Object,
+        from: &str,
+        to: &str,
+        content: &EmailContent,
+    ) -> Result<()> {
+        let payload = js_sys::Object::new();
+        let set = |key: &str, value: &str| -> Result<()> {
+            js_sys::Reflect::set(&payload, &JsValue::from_str(key), &JsValue::from_str(value))
+                .map_err(|e| anyhow::anyhow!("EMAIL payload set {key}: {e:?}"))?;
+            Ok(())
         };
-        let body = serde_json::json!({ "to": email, "link": link_url }).to_string();
+        set("from", from)?;
+        set("to", to)?;
+        set("subject", &content.subject)?;
+        set("html", &content.html)?;
+        set("text", &content.text)?;
+        let send = js_sys::Reflect::get(binding, &JsValue::from_str("send"))
+            .map_err(|e| anyhow::anyhow!("EMAIL binding has no send: {e:?}"))?
+            .dyn_into::<js_sys::Function>()
+            .map_err(|e| anyhow::anyhow!("EMAIL.send is not callable: {e:?}"))?;
+        let promise = send
+            .call1(binding, &payload)
+            .map_err(|e| anyhow::anyhow!("EMAIL.send call failed: {e:?}"))?
+            .dyn_into::<js_sys::Promise>()
+            .map_err(|e| anyhow::anyhow!("EMAIL.send did not return a promise: {e:?}"))?;
+        wasm_bindgen_futures::JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("EMAIL.send failed: {e:?}"))?;
+        Ok(())
+    }
+
+    /// Sends `content` to `to` by `POST`ing structured JSON to the HTTP relay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request cannot be built/sent or the relay returns
+    /// a non-2xx status.
+    async fn send_via_relay(&self, url: &str, to: &str, content: &EmailContent) -> Result<()> {
+        let body = serde_json::json!({
+            "from": self.from,
+            "to": to,
+            "subject": content.subject,
+            "html": content.html,
+            "text": content.text,
+        })
+        .to_string();
         let mut headers = Headers::new();
         headers
             .set("Content-Type", "application/json")
@@ -140,6 +213,26 @@ impl Mailer for WorkerMailer {
         if !(200..300).contains(&status) {
             bail!("email relay returned HTTP {status}");
         }
+        Ok(())
+    }
+}
+
+#[async_trait(?Send)]
+impl Mailer for WorkerMailer {
+    async fn send_email(&self, to: &str, content: &EmailContent) -> Result<()> {
+        // Tier 1: Cloudflare Email Service binding (requires a verified sender).
+        if let (Some(binding), Some(from)) = (&self.email_binding, &self.from) {
+            return WorkerMailer::send_via_binding(binding, from, to, content).await;
+        }
+        // Tier 2: operator-fronted HTTP relay.
+        if let Some(url) = self.api_url.as_deref() {
+            return self.send_via_relay(url, to, content).await;
+        }
+        // Tier 3: nothing configured — log so a dev can still follow the link.
+        worker::console_log!(
+            "email for {to}: {} (no EMAIL binding / HUB_EMAIL_API_URL; not sent)",
+            content.subject
+        );
         Ok(())
     }
 }

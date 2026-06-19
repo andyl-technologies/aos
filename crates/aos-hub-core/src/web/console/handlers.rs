@@ -427,7 +427,11 @@ pub(crate) async fn login_submit(
         "{}/auth/magic?token={secret}",
         deps.external_url.trim_end_matches('/'),
     );
-    if let Err(err) = deps.mailer.send_magic_link(&email, &link).await {
+    // Render with the configured brand so the email reads "Sign in to <brand>"
+    // rather than the generic fallback; the transport differs per shell but the
+    // copy is shared (see `crate::email`).
+    let content = crate::email::magic_link_email(console::brand(), &link);
+    if let Err(err) = deps.mailer.send_email(&email, &content).await {
         tracing::warn!(error = %format!("{err:#}"), "magic link delivery failed");
     }
     // In `--dev` mode the mailer only logs, so surface the link on the page so a
@@ -1675,7 +1679,32 @@ pub(crate) async fn org_invite_member(
             role,
         )
         .await?;
-        let _ = org;
+        // The grant is committed; now notify the invitee. Mint a single-use
+        // magic link (same construction as the login handler) so the email
+        // carries a working sign-in URL to the console, and render the shared
+        // invite copy. Delivery failure must NOT fail the invite — the role
+        // grant already stands and the person can still sign in normally — so a
+        // send error is logged and swallowed rather than propagated.
+        match deps.db.create_magic_link(&email).await {
+            Ok(secret) => {
+                let link = format!(
+                    "{}/auth/magic?token={secret}",
+                    deps.external_url.trim_end_matches('/'),
+                );
+                let content = crate::email::invite_email(
+                    console::brand(),
+                    &org.slug,
+                    role.as_str(),
+                    &link,
+                );
+                if let Err(err) = deps.mailer.send_email(&email, &content).await {
+                    tracing::warn!(error = %format!("{err:#}"), "invite email delivery failed");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %format!("{err:#}"), "invite magic-link creation failed");
+            }
+        }
         Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
     }
     .await;

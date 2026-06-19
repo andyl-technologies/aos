@@ -363,6 +363,7 @@ dependencies = [
  "tower",
  "tracing",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "worker",
 ]
 

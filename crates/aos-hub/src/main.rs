@@ -316,6 +316,12 @@ struct WorkerArgs {
     /// Bearer token for the email relay (HUB_EMAIL_API_TOKEN).
     #[arg(long)]
     email_api_token: Option<String>,
+    /// Verified sender address for Cloudflare Email Service (HUB_EMAIL_FROM).
+    /// Setting this adds the `EMAIL` [[send_email]] binding so transactional
+    /// email is delivered through Email Service. The sender domain must already
+    /// be onboarded in the Cloudflare dashboard (Email -> Email Sending) first.
+    #[arg(long)]
+    email_from: Option<String>,
     /// Disable Workers Observability (persistent Workers Logs + metrics).
     /// Observability is on by default so production errors are queryable.
     #[arg(long)]
@@ -2309,6 +2315,8 @@ async fn provision_worker(
     cfg.observability = !args.no_observability;
     cfg.head_sampling_rate = args.head_sampling_rate;
     cfg.logpush = args.logpush;
+    // Email Service binding: emitted only when a verified sender is supplied.
+    cfg.email_from = args.email_from.clone();
     Ok(cfg)
 }
 
