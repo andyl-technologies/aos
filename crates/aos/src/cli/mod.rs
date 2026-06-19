@@ -58,6 +58,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub eval_system: Option<String>,
 
+    /// Evaluate with normal impure Nix semantics
+    #[arg(long, global = true, conflicts_with_all = ["pure_eval", "restrict_eval"])]
+    pub impure_eval: bool,
+
     /// Evaluate with Nix pure-eval semantics
     #[arg(long, global = true, conflicts_with = "restrict_eval")]
     pub pure_eval: bool,
@@ -71,7 +75,8 @@ pub struct Cli {
         long = "eval-allow-path",
         value_name = "PATH",
         global = true,
-        requires = "restrict_eval"
+        requires = "restrict_eval",
+        conflicts_with_all = ["impure_eval", "pure_eval"]
     )]
     pub eval_allowed_paths: Vec<String>,
 
@@ -80,7 +85,8 @@ pub struct Cli {
         long = "eval-allow-uri",
         value_name = "URI",
         global = true,
-        requires = "restrict_eval"
+        requires = "restrict_eval",
+        conflicts_with_all = ["impure_eval", "pure_eval"]
     )]
     pub eval_allowed_uris: Vec<String>,
 }
@@ -462,6 +468,15 @@ mod tests {
     }
 
     #[test]
+    fn global_impure_eval_policy_is_accepted_after_subcommand() {
+        let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.bc", "--impure-eval"]);
+
+        assert!(cli.impure_eval);
+        assert!(!cli.pure_eval);
+        assert!(!cli.restrict_eval);
+    }
+
+    #[test]
     fn global_eval_policy_flags_are_accepted_after_subcommand() {
         let cli = parse_cli([
             "aos",
@@ -476,6 +491,7 @@ mod tests {
         ]);
 
         assert!(cli.restrict_eval);
+        assert!(!cli.impure_eval);
         assert!(!cli.pure_eval);
         assert_eq!(cli.eval_allowed_paths, ["/aos/src"]);
         assert_eq!(cli.eval_allowed_uris, ["https://cache.example/"]);
@@ -493,6 +509,126 @@ mod tests {
         ]);
 
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn global_impure_eval_conflicts_with_pure_eval() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--impure-eval",
+            "--pure-eval",
+        ]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn global_impure_eval_conflicts_with_restricted_eval() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--attr",
+            "pkgs.bc",
+            "--impure-eval",
+            "--restrict-eval",
+        ]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn global_impure_eval_conflicts_with_restricted_allowlists() {
+        for args in [
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--impure-eval",
+                "--eval-allow-path",
+                "/aos/src",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--eval-allow-path",
+                "/aos/src",
+                "--impure-eval",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--impure-eval",
+                "--eval-allow-uri",
+                "https://cache.example/",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--eval-allow-uri",
+                "https://cache.example/",
+                "--impure-eval",
+            ],
+        ] {
+            let err = parse_cli_error(args);
+
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn global_pure_eval_conflicts_with_restricted_allowlists() {
+        for args in [
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--pure-eval",
+                "--eval-allow-path",
+                "/aos/src",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--eval-allow-path",
+                "/aos/src",
+                "--pure-eval",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--pure-eval",
+                "--eval-allow-uri",
+                "https://cache.example/",
+            ],
+            [
+                "aos",
+                "nix-diff",
+                "--attr",
+                "pkgs.bc",
+                "--eval-allow-uri",
+                "https://cache.example/",
+                "--pure-eval",
+            ],
+        ] {
+            let err = parse_cli_error(args);
+
+            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]

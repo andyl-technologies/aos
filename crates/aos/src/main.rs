@@ -108,22 +108,7 @@ async fn main() {
 /// directory is not a repo root.
 async fn run(cli: &Cli) -> Result<()> {
     let printer = Printer::new(cli.verbose, cli.quiet, cli.json);
-    let mut eval_config = NixEvalConfig::new();
-    if cli.pure_eval {
-        eval_config.set_eval_mode(NixEvalMode::Pure);
-    } else if cli.restrict_eval {
-        eval_config.set_eval_mode(NixEvalMode::Restricted);
-    }
-    if let Some(system) = &cli.eval_system {
-        eval_config.set_current_system(system)?;
-    }
-    for path in &cli.eval_allowed_paths {
-        eval_config.add_allowed_path(path.clone())?;
-    }
-    for uri in &cli.eval_allowed_uris {
-        eval_config.add_allowed_uri(uri.clone())?;
-    }
-    eval_config.set_trace_verbose(cli.trace_verbose);
+    let eval_config = eval_config_from_cli(cli)?;
 
     // Shell completions can be generated without a Nix installation or
     // project root, so handle them before constructing the NixRunner.
@@ -274,6 +259,28 @@ async fn run(cli: &Cli) -> Result<()> {
     }
 }
 
+fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
+    let mut eval_config = NixEvalConfig::new();
+    if cli.impure_eval {
+        eval_config.set_eval_mode(NixEvalMode::Impure);
+    } else if cli.pure_eval {
+        eval_config.set_eval_mode(NixEvalMode::Pure);
+    } else if cli.restrict_eval {
+        eval_config.set_eval_mode(NixEvalMode::Restricted);
+    }
+    if let Some(system) = &cli.eval_system {
+        eval_config.set_current_system(system)?;
+    }
+    for path in &cli.eval_allowed_paths {
+        eval_config.add_allowed_path(path.clone())?;
+    }
+    for uri in &cli.eval_allowed_uris {
+        eval_config.add_allowed_uri(uri.clone())?;
+    }
+    eval_config.set_trace_verbose(cli.trace_verbose);
+    Ok(eval_config)
+}
+
 /// Map an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.  The exit-code conventions are:
 ///
@@ -312,8 +319,70 @@ mod tests {
     use super::*;
 
     #[test]
-    fn handle_error_suppresses_rendered_nix_diff_divergence() {
+    fn eval_config_from_cli_sets_explicit_impure_mode() -> Result<()> {
         let cli = Cli {
+            impure_eval: true,
+            ..base_nix_diff_cli()
+        };
+
+        let config = eval_config_from_cli(&cli)?;
+
+        assert_eq!(config.eval_mode(), NixEvalMode::Impure);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_config_from_cli_sets_pure_mode() -> Result<()> {
+        let cli = Cli {
+            pure_eval: true,
+            ..base_nix_diff_cli()
+        };
+
+        let config = eval_config_from_cli(&cli)?;
+
+        assert_eq!(config.eval_mode(), NixEvalMode::Pure);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_config_from_cli_sets_restricted_mode_options() -> Result<()> {
+        let cli = Cli {
+            restrict_eval: true,
+            eval_system: Some("aos-test-target".to_string()),
+            trace_verbose: true,
+            eval_allowed_paths: vec!["/aos/src".to_string()],
+            eval_allowed_uris: vec!["https://cache.example/".to_string()],
+            ..base_nix_diff_cli()
+        };
+
+        let config = eval_config_from_cli(&cli)?;
+
+        assert_eq!(config.eval_mode(), NixEvalMode::Restricted);
+        assert_eq!(config.current_system(), Some("aos-test-target"));
+        assert_eq!(config.allowed_paths(), ["/aos/src"]);
+        assert_eq!(config.allowed_uris(), ["https://cache.example/"]);
+        assert!(config.trace_verbose());
+        Ok(())
+    }
+
+    #[test]
+    fn eval_config_from_cli_keeps_ambient_mode_without_policy_flags() -> Result<()> {
+        let config = eval_config_from_cli(&base_nix_diff_cli())?;
+
+        assert_eq!(config.eval_mode(), NixEvalMode::Ambient);
+        Ok(())
+    }
+
+    #[test]
+    fn handle_error_suppresses_rendered_nix_diff_divergence() {
+        let cli = base_nix_diff_cli();
+        let error: anyhow::Error = commands::nix_diff::NixDiffReportedFailure::diverged(1).into();
+
+        assert_eq!(handle_error(&cli, error), 1);
+    }
+
+    fn base_nix_diff_cli() -> Cli {
+        Cli {
             command: Commands::NixDiff {
                 attr: Some("pkgs.hello".to_string()),
                 all: false,
@@ -327,13 +396,11 @@ mod tests {
             json: true,
             trace_verbose: false,
             eval_system: None,
+            impure_eval: false,
             pure_eval: false,
             restrict_eval: false,
             eval_allowed_paths: Vec::new(),
             eval_allowed_uris: Vec::new(),
-        };
-        let error: anyhow::Error = commands::nix_diff::NixDiffReportedFailure::diverged(1).into();
-
-        assert_eq!(handle_error(&cli, error), 1);
+        }
     }
 }
