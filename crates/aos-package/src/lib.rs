@@ -2304,8 +2304,10 @@ fn run_verify_package_attestation(
             (quote.quoted_pcr15, trust)
         }
     };
-    let log = fs::read_to_string(event_log)
+    let log = fs::read(event_log)
         .with_context(|| format!("reading package event log {}", event_log.display()))?;
+    let log = package_attestation::decode_package_event_log_bytes(&log)
+        .with_context(|| format!("decoding package event log {}", event_log.display()))?;
     let catalog = load_package_attestation_catalog(config, catalog_files)?;
     let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
         &log,
