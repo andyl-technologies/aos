@@ -322,9 +322,10 @@ overrides it.
   EventClass = property of the payload kind (§19.7), set at the typed append site
   ─────────────────────────────────────────────────────────────────────────────
   CAUSAL (deterministic backbone, compared by the gates §19.5):
-    state_transition · message_delivered · message_dropped · fault_activated ·
-    fault_healed · node_started · node_crashed · node_completed · timer_fired ·
-    tick · savepoint · fork · assertion_evaluated · assertion_state_changed
+    state_transition · trigger_fired · message_delivered · message_dropped ·
+    fault_activated · fault_healed · node_started · node_crashed ·
+    node_completed · timer_armed · timer_fired · timer_cancelled · tick ·
+    savepoint · fork · assertion_evaluated · assertion_state_changed
   OBSERVATIONAL (descriptive, excluded from the comparison §19.5):
     diagnostic · coverage · guest_marker · (host-runtime internals, poll counts)
 
@@ -648,10 +649,25 @@ An **I/O completion** (block/9p response, 15) is recorded as a
 `deliver_icount` exactly like a frame delivery — rather than as a separate
 `io_completed` kind, so no distinct catalog kind is needed for it.
 
+A **trigger firing** (a scenario event's trigger condition became true and its
+action ran, [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md)
+§17a.3.3 [TRIG-19]) is recorded as a **causal** entry — `trigger_fired`, together
+with the action's own causal entries (`fault_activated`/`fault_healed`,
+`timer_armed`/`timer_fired`/`timer_cancelled`, `node_started`/`node_completed`,
+`savepoint`/`fork`). A trigger firing is deterministic engine behavior, **not** a
+`Decision` ([TRIG-19]): given the log prefix, whether a condition is true at an
+evaluation point is *computed*, never *chosen*, so the firing belongs on the
+deterministic backbone the gates compare (§19.5), distinct from an observational
+entry. **Conditions are evaluated, not logged**: the engine evaluates the shared
+17a `Condition` vocabulary at deterministic evaluation points ([TRIG-16]) over the
+log prefix, but only a *firing* (and its action) is appended as a causal entry —
+the per-point truth of every standing condition is not itself a log entry.
+
 | `kind` | class | source(s) | typed attributes (sketch) |
 | --- | --- | --- | --- |
 | `state_transition` | Causal | Engine, Node | `node`, `from_state`, `to_state`, `cause` |
 | `event_activated` | Causal | Scenario | `event`, `summary` (a Plan event/fault fired, 17) |
+| `trigger_fired` | Causal | Engine, Scenario | `event`, `condition` (summary), `action` (a trigger's condition became true and its action ran, 17a §17a.3.3) |
 | `fault_activated` | Causal | Scenario, Engine | `tag`, `kind` (partition/crash/loss/…), `targets`, `description` (17) |
 | `fault_healed` | Causal | Scenario, Engine | `tag` (the fault deactivated, 17) |
 | `node_started` | Causal | Engine, Node | `node`, `ready_point` (icount) |
@@ -681,6 +697,8 @@ pub enum EventPayload {
     // ── Causal: the deterministic backbone (§19.3, [OBS-14]) ──────────────
     StateTransition { node: NodeId, from_state: StateId, to_state: StateId, cause: CauseId },
     EventActivated { event: ScenarioEventId, summary: Str },
+    TriggerFired { event: ScenarioEventId, condition: Str, action: Str }, // 17a §17a.3.3
+
     FaultActivated { tag: FaultTag, kind: FaultKind, targets: SmallVec<[NodeId; 2]>, description: Str },
     FaultHealed { tag: FaultTag },
     NodeStarted { node: NodeId, ready_point: u64 /* icount */ },
@@ -705,13 +723,14 @@ pub enum EventPayload {
 ```
 
 - **[OBS-34]** The event-kind catalog MUST include at least the kinds of the
-  §19.7 table — state transitions; event/fault activation and heal; node lifecycle
-  (started/crashed/completed); timers (armed/fired/cancelled); message
-  delivered/dropped; assertion evaluated and state-changed; savepoint and fork
-  structural markers; scheduler tick/quantum; and the observational `diagnostic`,
-  `coverage`, and `guest_marker` kinds — with each kind's `EventClass` fixed as in
-  the table ([OBS-13], [OBS-14], [OBS-15]). The catalog is open and versioned
-  ([OBS-10]). *Gate:* `gate:harness-lint`, `gate:content-address`. *Spec:* §19.7.
+  §19.7 table — state transitions; event/fault activation and heal; trigger
+  firing (`trigger_fired`); node lifecycle (started/crashed/completed); timers
+  (armed/fired/cancelled); message delivered/dropped; assertion evaluated and
+  state-changed; savepoint and fork structural markers; scheduler tick/quantum;
+  and the observational `diagnostic`, `coverage`, and `guest_marker` kinds — with
+  each kind's `EventClass` fixed as in the table ([OBS-13], [OBS-14], [OBS-15]).
+  The catalog is open and versioned ([OBS-10]). *Gate:* `gate:harness-lint`,
+  `gate:content-address`. *Spec:* §19.7.
 
 - **[OBS-35]** The catalog of §19.7 MUST be the single source of truth that 18, 20,
   21, 22, and 24 reference for kinds and their classes: assertion kinds for the
@@ -720,6 +739,20 @@ pub enum EventPayload {
   and bisection of 24. A consumer MUST NOT define a parallel kind vocabulary; it
   MUST read this catalog's kinds and classes. *Gate:* `gate:harness-lint`. *Spec:*
   §19.7; cross-ref 18, 20, 21, 22, 24.
+
+- **[OBS-36]** A **trigger firing** ([`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md)
+  §17a.3.3, [TRIG-19]) MUST be recorded as a **causal** entry — a `trigger_fired`
+  kind together with the action's own causal kinds (`fault_activated`/`fault_healed`,
+  `timer_armed`/`timer_fired`/`timer_cancelled`, `node_started`/`node_completed`,
+  `savepoint`/`fork`) — and MUST NOT be appended to the `Schedule` as a `Decision`,
+  because a firing is *computed* from the log prefix, not *chosen* ([TRIG-19]).
+  Conditions MUST be evaluated, not logged: the engine evaluates the shared 17a
+  `Condition` vocabulary at deterministic evaluation points ([TRIG-16]), but only a
+  firing (and its action) is appended; the per-point truth of a standing condition
+  is not itself a log entry. Only the *probabilistic outcomes of a fired action*
+  (e.g. a probabilistic fault's per-frame draws) are `Decision`s ([TRIG-20]), never
+  the firing. *Gate:* `gate:e2e-determinism`, `gate:replay-oracle`. *Spec:* §19.7,
+  §19.3; cross-ref 17a §17a.3.3.
 
 ## 19.8 Summary
 

@@ -444,9 +444,18 @@ The `Plan` is the declarative schedule of injected faults and events over
 **virtual time** (not wall-clock, not host time). It is the scenario's *what is
 done to the world and when* layer. Its full taxonomy — fault kinds (partition,
 crash, loss, latency, corruption, reorder, duplicate, clock-skew, block-device,
-9p), triggers (timer-fired, event-fired, assertion-satisfied/violated, compound
-all-of/any-of), tags for healing, and the virtual-time schedule — is defined in
-[`17-fault-injection.md`](17-fault-injection.md). What matters here is its place
+9p) and tags for healing is defined in
+[`17-fault-injection.md`](17-fault-injection.md); the trigger/condition vocabulary
+(timer-fired, event-fired, assertion-satisfied/violated, compound all-of/any-of)
+and the event-graph model the `Plan` is an instance of are defined in
+[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) — the real home
+of the trigger taxonomy this section forward-references. The `Plan` is, in full
+generality, a **set of events** (a `(trigger, action)` graph,
+[`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.1); its
+declarative time-scheduled entries (`At` / `PermanentAt` / `Heal`, §5.1 below and
+17 §17.6.1) are the **degenerate case** whose every trigger is a pure `At`
+condition (17a §17a.7), and a richer scenario adds events with observation-anchored
+triggers without changing that model. What matters here is its place
 in the tuple: the `Plan` is a content-addressed component, orthogonal to the
 `World` and reusable across worlds, and it is part of the `ScenarioDef`'s identity
 (a different fault campaign is a different scenario).
@@ -459,18 +468,22 @@ in the tuple: the `Plan` is a content-addressed component, orthogonal to the
 pub struct Plan {
     /// Scheduled faults/events, canonically ordered (§8). Each references the
     /// `World`'s nodes/links by `NodeId`; references are validated at build
-    /// time (§9). Defined in 17.
+    /// time (§9). Each entry is an event whose trigger is a pure `At` condition
+    /// (17a §17a.7); fault kinds in 17, the event/trigger model in 17a.
     pub schedule: Vec<PlanEntry>,
 }
 ```
 
-- **[SPAT-19]** The `Plan` MUST be a declarative schedule of faults/events over
-  virtual time, defined in [`17-fault-injection.md`](17-fault-injection.md),
-  carried as an independently content-addressed component of the `ScenarioDef`
-  (§2). It MUST be orthogonal to the `World` (faults are not topology) and reusable
-  across worlds. All node/link references in the `Plan` MUST be validated against
-  the `World` at build time (§9). *Gate:* `gate:content-address`. *Spec:* §5.1;
-  forward-ref 17.
+- **[SPAT-19]** The `Plan` MUST be a set of `(trigger, action)` events — the event
+  graph defined in [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md)
+  (§17a.1), with fault kinds/tags defined in
+  [`17-fault-injection.md`](17-fault-injection.md) — of which the declarative
+  time-scheduled entries (`At` / `PermanentAt` / `Heal`) are the degenerate
+  pure-`At`-trigger case (17a §17a.7). It MUST be carried as an independently
+  content-addressed component of the `ScenarioDef` (§2), MUST be orthogonal to the
+  `World` (faults are not topology) and reusable across worlds, and all node/link
+  references in it MUST be validated against the `World` at build time (§9).
+  *Gate:* `gate:content-address`. *Spec:* §5.1; forward-ref 17, 17a.
 
 - **[SPAT-20]** The `Plan` MUST schedule its entries against virtual time (09),
   never host wall-clock. A `Plan` entry's firing MUST be a function of virtual

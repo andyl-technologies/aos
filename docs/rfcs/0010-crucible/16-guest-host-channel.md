@@ -362,8 +362,11 @@ evaluation.
   marker families, and the host decoder MUST map each to the corresponding
   event-log entry and assertion semantics in 18/19:
   - **Assertion markers**, carrying an assertion `id` (length-prefixed UTF-8), a
-    human-readable `message`, a boolean `condition`, and a `flavor` distinguishing
-    at least:
+    human-readable `message`, a boolean `condition`, a `flavor`, and the
+    finalize-driving fields of [GHC-36] (a `must_hit`/catalog-declaration flag, a
+    structured `details` body, and the source `location`) so a never-reached
+    assertion can still be finalized (18 §18.8, [ASRT-32]). The `flavor`
+    distinguishes at least:
     - **always** — the condition MUST hold on every evaluation (invariant);
     - **sometimes** — the condition MUST hold on at least one evaluation
       (liveness witness);
@@ -382,6 +385,23 @@ evaluation.
   [`18-assertions-properties.md`](18-assertions-properties.md),
   [`19-observability-event-log.md`](19-observability-event-log.md).
 
+- **[GHC-36]** An **assertion marker** body MUST carry enough to drive the
+  assertion-finalize semantics of [`18-assertions-properties.md`](18-assertions-properties.md)
+  §18.8 ([ASRT-32]): the assertion **id** (length-prefixed UTF-8, the id space of
+  [GHC-20], [ASRT-5]); the **kind** (always/sometimes/reachable/unreachable, the
+  `flavor` of [GHC-22] mirroring §18.2); a `must_hit` / **catalog-declaration**
+  flag, so a `reachable`/`always` assertion whose in-guest instruction is **never
+  reached** can still be finalized as never-reached (warn/fail) rather than silently
+  dropped ([ASRT-21], [ASRT-22]); a structured **details** body (length-prefixed
+  key/value, feeding the violation record of [ASRT-27]); and the source
+  **location** (length-prefixed UTF-8). These fields MUST be a fixed or
+  length-prefixed binary layout ([GHC-20]) and a change to them MUST bump the
+  protocol `version` ([GHC-21]). The marker remains **observational and OPTIONAL**
+  ([GHC-24], [GHC-28]) — it never gates the black-box path — but when present its
+  payload MUST let the host finalize Always/Sometimes/Reachable/unreachable
+  identically online and offline ([ASRT-15], [ASRT-32]). *Gate:*
+  `gate:abi-conformance`. *Spec:* §16.5.1; cross-ref 18 §18.8, [ASRT-32].
+
 - **[GHC-23]** The marker `kind` enumeration MUST be a closed, versioned set: a
   decoder MUST treat an unknown `kind` (within a recognized header magic/version)
   as a decode diagnostic, and adding a `kind` MUST bump the protocol version
@@ -394,13 +414,16 @@ Illustrative kind table (closed, versioned set; numbers are sketches):
 
   kind  name              body
   ----  ----------------  -----------------------------------------------
-   1    assert            flavor:u8, condition:u8, lp_str id, lp_str msg
+   1    assert            flavor:u8, condition:u8, must_hit:u8, lp_str id,
+                          lp_str msg, lp_str location, lp_kv[] details
    2    lifecycle         event:u16 (setup_complete | test_done)
    3    event             lp_str name, lp_kv[] details
    4    coverage          lp_str point
 
   flavor (kind=assert): 0=always  1=sometimes  2=reachable  3=unreachable
+  must_hit (kind=assert): 0=not catalog-declared  1=declared (finalize never-reached)
   lp_str: u16 LE length-prefix + that many UTF-8 bytes
+  lp_kv: u16 LE count, then that many (lp_str key, lp_str value) pairs
 ```
 
 ### 16.5.2 Markers are observational, not part of the determinism comparison

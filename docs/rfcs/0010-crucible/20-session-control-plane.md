@@ -475,38 +475,49 @@ deferral queue needed beyond that.
 
 ## 6. Breakpoints: predicate-based suspension at event-log entries
 
-A breakpoint is a **predicate over the event-log entries** (19) the run produces.
-When the predicate matches an entry the scheduler is about to emit, the breakpoint
-fires; its **disposition** decides what firing does. Breakpoints are how an
-operator (or the search driver, 22) says "stop when X happens" without polling.
-Because they are evaluated against the same totally-ordered event log the
-determinism oracle uses, a breakpoint fires at the same entry on every run — it is
-an observation, never a perturbation ([SESS-17]).
+A breakpoint is a **`Condition` over the run** plus a **disposition**. The
+predicate it matches on is *not* a separate, narrow breakpoint-only vocabulary: it
+is the **shared 17a `Condition` predicate vocabulary**
+([`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2) that
+triggers and assertions also consume, evaluated over the same totally-ordered
+event log (19) at the **same deterministic evaluation points** ([TRIG-16]). A
+breakpoint is thus a Condition with a disposition (Suspend/Trace/Action): the same
+predicate the scenario uses to *steer* the run (a trigger) and to *grade* it (an
+assertion) is the one an operator uses to *stop on* it. When the Condition first
+becomes true at an evaluation point, the breakpoint fires; its **disposition**
+decides what firing does. Breakpoints are how an operator (or the search driver,
+22) says "stop when X happens" without polling. Because they are evaluated against
+the same event log the determinism oracle uses, at the same evaluation points, a
+breakpoint fires at the same point on every run — it is an observation, never a
+perturbation ([SESS-17]).
 
 ```rust,illustrative
-/// A breakpoint: a predicate over event-log entries (19) plus a disposition.
+/// A breakpoint: the SHARED 17a `Condition` predicate vocabulary (§17a.2) plus a
+/// disposition and a fire policy. The predicate is NOT a breakpoint-only set; it
+/// is the same `Condition` triggers and assertions consume, evaluated at the same
+/// deterministic evaluation points ([TRIG-16]).
 pub struct BreakpointSpec {
-    /// What to match. Closed over the event-log entry schema (19).
-    pub predicate: BreakpointPredicate,
+    /// What to match: a 17a `Condition` (§17a.2), evaluated over the event log
+    /// (19) at deterministic evaluation points. Every 17a leaf is available for
+    /// free — `Time`/`At`, `NetworkMatch`, `ConsoleMatch`, `NodeState`
+    /// (Started/Crashed/Exited), `AssertionState` (Satisfied/Violated — covers
+    /// fault-activated/healed via the fault's assertion/state condition),
+    /// `Quiescent`, … — composed with `AllOf`/`AnyOf`/`Once`/`Not`.
+    pub predicate: Condition, // = 17a Condition (§17a.2)
     /// What firing does (§6.1).
     pub disposition: Disposition,
+    /// One-shot (auto-removed after its first fire) or repeatable. `StepMode`
+    /// internally relies on the one-shot primitive (§6).
+    pub policy: BreakpointPolicy,
 }
 
-/// The match predicate. Each variant is a pure test over an event-log entry.
-pub enum BreakpointPredicate {
-    /// Fire when virtual time reaches or passes `at` (09).
-    Time { at: VirtualTime },
-    /// Fire on a specific event-log event kind/selector (19): a frame
-    /// delivery to a node, an I/O completion, a fault activation, a console
-    /// marker, a node lifecycle change.
-    Event { selector: EventSelector },
-    /// Fire on an assertion state change (18): a named Always flips false, an
-    /// Eventually is witnessed, a Sometimes is hit.
-    Assertion { selector: AssertionSelector },
-    /// Fire when all of / any of a small set of sub-predicates match
-    /// (deterministic, fixed-order evaluation — no host-order dependence).
-    All(Vec<BreakpointPredicate>),
-    Any(Vec<BreakpointPredicate>),
+/// Whether a breakpoint persists after firing (§6).
+pub enum BreakpointPolicy {
+    /// Auto-remove after the first fire. The primitive `StepMode` (§4.3) is
+    /// built on: a step is a one-shot breakpoint on the mode's stop Condition.
+    OneShot,
+    /// Persist; fire on each false→true transition of the Condition.
+    Repeatable,
 }
 
 /// What a firing breakpoint does.
@@ -522,13 +533,20 @@ pub enum Disposition {
 }
 ```
 
-- **[SESS-15]** A breakpoint MUST be a **predicate over event-log entries** (19),
-  evaluated by the scheduler/session as entries are emitted at quantum boundaries.
-  The predicate vocabulary MUST cover at least: virtual-time reach (`Time`),
-  event-kind match (`Event`), assertion-state change (`Assertion`), and
-  deterministic `All`/`Any` composition. Predicate evaluation MUST be a pure
-  function of the entry and MUST NOT read host wall-clock or unordered state
-  ([INV-9]). *Gate:* `gate:control-responsive`, `gate:harness-lint`. *Spec:* §6.
+- **[SESS-15]** A breakpoint MUST be a **17a `Condition`**
+  ([`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2) plus
+  a disposition — the **same shared predicate vocabulary** triggers and assertions
+  consume, **not** a separate breakpoint-only predicate set. It MUST be evaluated by
+  the scheduler/session over the event log (19) at the **same deterministic
+  evaluation points** as triggers and assertions ([TRIG-16], [TRIG-17]). Because it
+  is a 17a `Condition`, the vocabulary MUST cover every 17a leaf — including
+  virtual-time reach (`At`), `NetworkMatch`/`ConsoleMatch`/`CoveragePoint`,
+  `NodeState` (Started/Crashed/Exited), `AssertionState` (Satisfied/Violated),
+  `Quiescent`, and the optional white-box `GuestMarker` — composed with the 17a
+  combinators (`AllOf`/`AnyOf`/`Once`/`Not`). Predicate evaluation MUST be a pure
+  function of the log prefix and MUST NOT read host wall-clock or unordered state
+  ([INV-9]). *Gate:* `gate:control-responsive`, `gate:harness-lint`. *Spec:* §6;
+  cross-ref 17a §17a.2, §17a.3.
 
 - **[SESS-16]** A breakpoint MUST carry a **disposition**: `Suspend`
   (Running → Paused with `PauseReason::Breakpoint`), `Trace` (emit a marker, keep
@@ -545,6 +563,27 @@ pub enum Disposition {
   fault, savepoint) MUST be recorded in the control log (§8) exactly as an
   operator command would be, so the run remains reproducible. *Gate:*
   `gate:replay-oracle`. *Spec:* §6, §8; cross-ref 19 (canonical vs observational).
+
+- **[SESS-30]** A breakpoint MUST carry a fire **policy**: `OneShot` (auto-removed
+  after its first fire) or `Repeatable` (persists, fires on each false→true
+  transition of its `Condition`). The session's `step` (§4.3) MUST be expressible
+  on the `OneShot` primitive — each `StepMode` resolves to a stop `Condition` whose
+  one-shot breakpoint suspends the run on first fire, then is removed — so step and
+  breakpoints share one mechanism rather than two. A `OneShot` breakpoint's removal
+  MUST itself be observation-only ([SESS-17]) for `Suspend`/`Trace` dispositions.
+  *Gate:* `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §6, §4.3.
+
+- **[SESS-31]** Because a breakpoint is a 17a `Condition` ([SESS-15]), the
+  vocabulary MUST include — at no extra cost — the richer condition kinds: a
+  `NodeState` leaf (Started/Crashed/Exited,
+  [`17a-conditions-and-triggers.md`](17a-conditions-and-triggers.md) §17a.2.7) so an
+  operator MAY stop when a node starts, crashes, or exits; and an `AssertionState`
+  leaf (Satisfied/Violated, §17a.2.8) so an operator MAY stop the instant a fault
+  becomes active or is healed (the fault's state surfaced as an assertion/state
+  Condition) or an invariant flips. These MUST be ordinary 17a leaves, not
+  breakpoint-special cases, and MUST evaluate at the same deterministic evaluation
+  points as all other Conditions ([TRIG-16]). *Gate:* `gate:control-responsive`,
+  `gate:harness-lint`. *Spec:* §6; cross-ref 17a §17a.2.7, §17a.2.8.
 
 ---
 
@@ -939,11 +978,14 @@ pub enum SessionError {
   commands (apply at the next quantum boundary, record the boundary in the
   control log) and immediate-at-boundary pause/stop with clean
   scheduler/backend shutdown. — satisfies [SESS-13], [SESS-14]; spec §5.
-- [ ] **T-SESS-7** Implement predicate-based breakpoints over event-log entries
-  (Time/Event/Assertion/All/Any) with dispositions Suspend/Trace/Action, fired at
-  the matching entry's quantum boundary, observation-only for Suspend/Trace and
-  control-logged for mutating Actions. — satisfies [SESS-15], [SESS-16],
-  [SESS-17]; spec §6.
+- [ ] **T-SESS-7** Implement breakpoints as the shared 17a `Condition` predicate
+  vocabulary (§17a.2, including `NodeState` and `AssertionState` leaves and
+  `AllOf`/`AnyOf`/`Once`/`Not`) evaluated at the same deterministic evaluation
+  points as triggers/assertions, with dispositions Suspend/Trace/Action and a
+  OneShot/Repeatable policy (step built on the one-shot primitive), fired at the
+  matching evaluation point's quantum boundary, observation-only for Suspend/Trace
+  and control-logged for mutating Actions. — satisfies [SESS-15], [SESS-16],
+  [SESS-17], [SESS-30], [SESS-31]; spec §6; cross-ref 17a §17a.2.
 - [ ] **T-SESS-8** Wire save/resume/fork at the session level purely as
   execution-model/temporal-graph operations (fat-checkpoint materialize keyed by
   config.id with oracle validation; instantiate-from-checkpoint; instantiate a
