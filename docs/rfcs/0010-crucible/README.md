@@ -5,7 +5,7 @@
   ships until the phased plan in [`32-implementation-plan.md`](32-implementation-plan.md)
   is worked through and each phase's gate is green.
 - **Date:** 2026-06-18
-- **PR:** _(none yet)_
+- **PR:** [#112](https://github.com/andyl-technologies/aos/pull/112) (draft)
 - **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU package
   (`pkgs/emulation/qemu*`) and its patch series, the AOS kernel/rootfs builders,
   or CI determinism gates.
