@@ -814,6 +814,17 @@ impl AttestationMeta {
     }
 }
 
+/// Returns whether package metadata must be backed by DSSE provenance.
+pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
+    meta.expose.is_some()
+        || meta.expose_artifact.is_some()
+        || !meta.permissions.is_empty()
+        || meta
+            .bpf_lsm
+            .as_ref()
+            .is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+}
+
 /// One BPF-LSM policy artifact carried by a signed package.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1190,6 +1201,12 @@ pub fn validate_supported_package_meta_with(
         require_feature(meta, FEATURE_ATTESTATION_V1)?;
         validate_attestation_meta(&meta.attestation)
             .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
+    }
+    if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
+        bail!(
+            "package '{}' uses RFC-0001 exposed or permission metadata without attestation provenance",
+            meta.name
+        );
     }
 
     if let Some(expose) = &meta.expose {
@@ -3086,6 +3103,20 @@ pub struct SystemGenerationState {
 mod tests {
     use super::*;
 
+    fn test_attestation() -> AttestationMeta {
+        AttestationMeta {
+            root_digest: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash: None,
+            root_hash_sig: None,
+            provenance: Some("attestation/test.provenance.jsonl".into()),
+            measurement: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+        }
+    }
+
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {
         for name in ["core", "aos-core", "aos_core", "AOS2026_core-1"] {
@@ -3848,6 +3879,7 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
                 FEATURE_EXPOSE_V1.into(),
                 FEATURE_EXPOSE_ARTIFACT_V1.into(),
                 FEATURE_PERMISSIONS_V1.into(),
@@ -3902,7 +3934,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         validate_supported_package_meta(&meta).unwrap();
@@ -3974,7 +4006,7 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
             expose: None,
             expose_artifact: None,
             permissions: PermissionsMeta {
@@ -3982,7 +4014,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err =
@@ -4011,7 +4043,7 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
             permissions: PermissionsMeta {
@@ -4019,7 +4051,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4051,7 +4083,7 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into()],
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_EXPOSE_V1.into()],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
                 units: vec!["webapp.service".into()],
@@ -4064,7 +4096,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4096,7 +4128,11 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-other.target".into(),
                 units: vec!["webapp.service".into()],
@@ -4109,7 +4145,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4141,6 +4177,7 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
                 FEATURE_PERMISSIONS_V1.into(),
                 FEATURE_NETWORK_POLICY_V1.into(),
             ],
@@ -4151,7 +4188,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4183,7 +4220,7 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_PERMISSIONS_V1.into()],
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
             expose: None,
             expose_artifact: None,
             permissions: PermissionsMeta {
@@ -4196,7 +4233,7 @@ last_update = "2026-02-13T10:30:00Z"
                 ..PermissionsMeta::default()
             },
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4232,6 +4269,7 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
                 FEATURE_EXPOSE_V1.into(),
                 FEATURE_CONFIG_V1.into(),
                 FEATURE_NETWORK_POLICY_V1.into(),
@@ -4259,7 +4297,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4291,6 +4329,7 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
                 FEATURE_EXPOSE_V1.into(),
                 FEATURE_NETWORK_POLICY_V1.into(),
                 FEATURE_CONFIG_V1.into(),
@@ -4319,7 +4358,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4460,7 +4499,11 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-consumer.target".into(),
                 units: vec!["consumer.service".into()],
@@ -4478,7 +4521,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4510,7 +4553,11 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
                 units: vec![
@@ -4527,7 +4574,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4570,24 +4617,41 @@ last_update = "2026-02-13T10:30:00Z"
                     programs: vec!["aos_lsm_file_mprotect".into()],
                 }],
             }),
-            attestation: Default::default(),
+            attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash: None,
+                root_hash_sig: None,
+                provenance: Some("attestation/aos-ebpf-lsm-policy.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
         }
     }
 
     #[test]
     fn package_meta_requires_bpf_lsm_policy_feature_gate() {
-        let mut meta = bpf_lsm_package_meta(vec![FEATURE_EBPF_NET_POLICY_V1]);
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_EBPF_NET_POLICY_V1]);
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
         assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
 
-        meta.requires_features = vec![FEATURE_BPF_LSM_POLICY_V1.into()];
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.into(),
+            FEATURE_BPF_LSM_POLICY_V1.into(),
+        ];
         validate_supported_package_meta(&meta).unwrap();
     }
 
     #[test]
     fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
-        let mut meta = bpf_lsm_package_meta(vec![FEATURE_BPF_LSM_POLICY_V1]);
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_BPF_LSM_POLICY_V1]);
         meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4843,7 +4907,11 @@ last_update = "2026-02-13T10:30:00Z"
             previous: None,
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
-            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
             expose: Some(ExposeMeta {
                 target: "aos-pkg-webapp.target".into(),
                 units: vec![
@@ -4860,7 +4928,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();
@@ -4892,6 +4960,7 @@ last_update = "2026-02-13T10:30:00Z"
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
                 FEATURE_EXPOSE_V1.into(),
                 FEATURE_NETWORK_POLICY_V1.into(),
                 FEATURE_CAPABILITY_ROUTES_V1.into(),
@@ -4913,7 +4982,7 @@ last_update = "2026-02-13T10:30:00Z"
             expose_artifact: None,
             permissions: PermissionsMeta::default(),
             bpf_lsm: None,
-            attestation: Default::default(),
+            attestation: test_attestation(),
         };
 
         let err = validate_supported_package_meta(&meta).unwrap_err();

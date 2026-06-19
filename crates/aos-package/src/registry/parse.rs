@@ -643,11 +643,14 @@ nar_size = 1024
 closure_size = 1024
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/webapp.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
+requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-webapp.target"
@@ -692,11 +695,14 @@ nar_size = 1024
 closure_size = 1024
 source_drv = ""
 source_nar_hash = ""
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/aos-ebpf-lsm-policy.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["bpf-lsm-policy-v1"]
+requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
 
 [versions.platforms.x86_64-linux.bpf_lsm]
 
@@ -863,6 +869,7 @@ mod tests {
         assert_eq!(
             meta.requires_features,
             vec![
+                "attestation-v1",
                 "expose-v1",
                 "network-policy-v1",
                 "permissions-v1",
@@ -965,7 +972,10 @@ root_hash_sig = "root.roothash.p7s"
             .unwrap();
 
         assert_eq!(meta.min_format, Some(1));
-        assert_eq!(meta.requires_features, vec!["bpf-lsm-policy-v1"]);
+        assert_eq!(
+            meta.requires_features,
+            vec!["attestation-v1", "bpf-lsm-policy-v1"]
+        );
         let bpf_lsm = meta.bpf_lsm.as_ref().unwrap();
         assert_eq!(bpf_lsm.policies.len(), 1);
         assert_eq!(bpf_lsm.policies[0].name, "aos-lsm-task-audit");
@@ -982,11 +992,11 @@ root_hash_sig = "root.roothash.p7s"
             r#"[versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["bpf-lsm-policy-v1"]
+requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
 "#,
             r#"references = []
 min-format = 1
-requires-features = ["bpf-lsm-policy-v1"]
+requires-features = ["attestation-v1", "bpf-lsm-policy-v1"]
 "#,
         );
 
@@ -1084,11 +1094,11 @@ requires-features = ["attestation-v1"]
             r#"[versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
+requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 "#,
             r#"references = []
 min-format = 1
-requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
+requires-features = ["attestation-v1", "expose-v1", "permissions-v1", "requires-v1", "network-policy-v1"]
 "#,
         );
 
@@ -1118,8 +1128,8 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-poli
     #[test]
     fn parse_expose_requires_feature_gate() {
         let content = EXPOSED_TOML.replace(
-            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
-            "requires-features = [\"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"attestation-v1\", \"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"attestation-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
         );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
@@ -1129,8 +1139,8 @@ requires-features = ["expose-v1", "permissions-v1", "requires-v1", "network-poli
     #[test]
     fn parse_permissions_requires_feature_gate() {
         let content = EXPOSED_TOML.replace(
-            "requires-features = [\"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
-            "requires-features = [\"expose-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"attestation-v1\", \"expose-v1\", \"permissions-v1\", \"requires-v1\", \"network-policy-v1\"]",
+            "requires-features = [\"attestation-v1\", \"expose-v1\", \"requires-v1\", \"network-policy-v1\"]",
         );
 
         let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();

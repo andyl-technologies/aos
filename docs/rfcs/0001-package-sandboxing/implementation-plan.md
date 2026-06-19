@@ -752,23 +752,31 @@ beyond the single registry signing key. ([`apm-integration.md`](apm-integration.
 
 **Deliverables.**
 
-- [x] **in-toto/SLSA provenance (D23).** Emit a SLSA v1.2 provenance attestation
-      per build binding the NAR hash **and the manifest hash** to the build
-      inputs (`.drv`/source); serve from the registry alongside the narinfo;
-      `apm install` verifies it.
-- [x] **Transparency log (D23).** Append every published binding to a
-      Merkle/append-only log (Trustix-style multi-builder consensus or a
-      Rekor-style log) so a compromised registry key cannot silently taint or
-      equivocate.
+- [x] **in-toto/SLSA provenance (D23).** Emit a DSSE-wrapped SLSA v1.2
+      provenance attestation per build binding the NAR hash **and the manifest
+      hash** to the build inputs (`.drv`/source); serve from the registry
+      alongside the narinfo; `apm install` verifies the DSSE signature against
+      an active or sequence-valid retired `keys.toml` roster key, checks the
+      builder id, and then verifies the SLSA subjects. RFC-0001 expose,
+      permission, and BPF-LSM policy packages fail closed when provenance is
+      absent.
+- [x] **Transparency log (D23).** Append every published binding to the
+      in-registry `transparency/package-provenance.jsonl` hash chain. Publish
+      and install both verify that the logged statement digest matches the DSSE
+      artifact bytes; this gives append-chain consistency for clients following
+      the same registry history, while independent witness/Rekor-style
+      compromise resistance remains future work.
 - [x] **TUF hardening (D23).** Roles + thresholds + timestamping over the catalog
-      (the anti-rollback floor is the TUF rollback defense already; add the rest);
-      audit against freeze / mix-and-match / fast-forward / key-rotation.
+      via committed `tuf/root.json`, `targets.json`, `snapshot.json`, and
+      `timestamp.json`; verify expiry, version floors, catalog hashes, and
+      key-rotation continuity against freeze / mix-and-match / fast-forward /
+      rollback attempts.
 
 **Closes.** D23.
 
-**EXIT CRITERIA.** A package fetched via `apm install` carries a verifiable SLSA
-provenance binding its NAR + manifest to its build; the publication appears in
-the transparency log; a rollback/mix-and-match attempt is refused.
+**EXIT CRITERIA.** A package fetched via `apm install` carries a DSSE-verifiable
+SLSA provenance binding its NAR + manifest to its build; the publication appears
+in the transparency log; a rollback/mix-and-match attempt is refused.
 
 ---
 

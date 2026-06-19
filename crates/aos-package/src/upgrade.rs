@@ -1346,11 +1346,14 @@ nar_size = 3100000
 closure_size = 52000000
 source_drv = "/var/lib/store/oldsrc-curl-8.5.0.drv"
 source_nar_hash = "sha256:oldsrc"
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/curl.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "expose-artifact-v1", "network-policy-v1"]
+requires-features = ["attestation-v1", "expose-v1", "expose-artifact-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-curl.target"
@@ -1380,11 +1383,14 @@ nar_size = 3100000
 closure_size = 52000000
 source_drv = "/var/lib/store/oldsrc-curl-8.5.0.drv"
 source_nar_hash = "sha256:oldsrc"
+root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+provenance = "attestation/curl.provenance.jsonl"
+measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 [versions.platforms.x86_64-linux.references]
 hashes = []
 min-format = 1
-requires-features = ["expose-v1", "expose-artifact-v1", "network-policy-v1"]
+requires-features = ["attestation-v1", "expose-v1", "expose-artifact-v1", "network-policy-v1"]
 
 [versions.platforms.x86_64-linux.expose]
 target = "aos-pkg-curl.target"

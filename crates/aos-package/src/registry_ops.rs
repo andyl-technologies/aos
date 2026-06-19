@@ -62,7 +62,10 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
-use crate::provenance::{digest_map as provenance_digest_map, sha256_hex_payload};
+use crate::provenance::{
+    TrustedProvenanceKey, builder_id as provenance_builder_id, digest_map as provenance_digest_map,
+    sha256_hex_payload, sign_statement_dsse_jsonl,
+};
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::membership::{CacheMembership, HeadMembership};
@@ -1395,7 +1398,9 @@ description = ""
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
 /// `--expose-manifest` records the RFC-0001 expose and permission metadata
-/// rendered by the package builder.
+/// rendered by the package builder. Exposed packages also emit DSSE-wrapped
+/// provenance, so they must be published with `--key-id`; a raw `--key` has
+/// no stable roster id for the DSSE builder identity.
 ///
 /// # Errors
 ///
@@ -1502,6 +1507,16 @@ pub async fn publish(
     let expose_manifest_digest = expose_manifest_path
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
+    let provenance_signer = if expose_manifest_path.is_some() {
+        Some(resolve_package_provenance_signer(
+            &dir,
+            &name,
+            signing_key.as_ref(),
+            key_id,
+        )?)
+    } else {
+        None
+    };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
@@ -1539,6 +1554,7 @@ pub async fn publish(
     )?;
     let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
         (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+            &name,
             pkg_name,
             pkg_version,
             &platform,
@@ -1546,6 +1562,9 @@ pub async fn publish(
             source_info.as_ref(),
             manifest,
             manifest_digest,
+            provenance_signer
+                .as_ref()
+                .context("provenance signer missing for exposed package")?,
         )?,
         _ => None,
     };
@@ -3254,6 +3273,11 @@ struct PublishProvenanceArtifact {
     attestation: AttestationMeta,
 }
 
+struct PackageProvenanceSigner {
+    key_id: String,
+    key_path: PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackageProvenanceTransparencyLogEntry {
@@ -3325,6 +3349,7 @@ struct PackageTomlPlatformKey {
 }
 
 fn publish_provenance_artifact(
+    registry_name: &str,
     name: &str,
     version: &str,
     platform: &str,
@@ -3332,6 +3357,7 @@ fn publish_provenance_artifact(
     source_info: Option<&StorePathInfo>,
     manifest: &PublishExposeManifest,
     manifest_digest: &str,
+    signer: &PackageProvenanceSigner,
 ) -> Result<Option<PublishProvenanceArtifact>> {
     let Some(attestation) = publish_attestation_meta(
         name,
@@ -3349,6 +3375,7 @@ fn publish_provenance_artifact(
         return Ok(None);
     };
     let statement = publish_provenance_statement(
+        registry_name,
         name,
         version,
         platform,
@@ -3356,15 +3383,114 @@ fn publish_provenance_artifact(
         source_info,
         manifest_digest,
         &attestation,
+        &signer.key_id,
     )?;
-    let mut jsonl =
-        serde_json::to_string(&statement).context("serializing package provenance statement")?;
-    jsonl.push('\n');
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
     Ok(Some(PublishProvenanceArtifact {
         path: provenance,
         jsonl,
         attestation,
     }))
+}
+
+fn resolve_package_provenance_signer(
+    dir: &Path,
+    registry_name: &str,
+    signing_key: Option<&ResolvedSigningKey>,
+    key_id: Option<&str>,
+) -> Result<PackageProvenanceSigner> {
+    let key_id = key_id.context(
+        "publishing RFC-0001 exposed package provenance requires --key-id so the DSSE builder \
+         identity is tied to keys.toml",
+    )?;
+    validate_roster_key_id(key_id)?;
+    let signing_key = signing_key.context(
+        "publishing RFC-0001 exposed package provenance requires a resolved signing key",
+    )?;
+    let roster = load_committed_roster(dir)?;
+    if keys::is_revoked(&roster, key_id) {
+        bail!("provenance signing key id '{key_id}' is revoked in keys.toml");
+    }
+    let active = keys::active_key_by_id(&roster, key_id).ok_or_else(|| {
+        anyhow::anyhow!("provenance signing key id '{key_id}' is not active in keys.toml")
+    })?;
+    let derived = derive_trust_key(registry_name, signing_key.path())?;
+    if derived != active.key {
+        bail!(
+            "provenance signing key id '{key_id}' derives '{derived}', but keys.toml declares '{}'",
+            active.key
+        );
+    }
+    Ok(PackageProvenanceSigner {
+        key_id: key_id.to_string(),
+        key_path: PathBuf::from(signing_key.path()),
+    })
+}
+
+fn package_provenance_trusted_keys(dir: &Path) -> Result<(String, Vec<TrustedProvenanceKey>)> {
+    let registry_name = read_registry_toml(dir)?
+        .map(|config| config.registry.name)
+        .context("package provenance DSSE verification requires registry.toml [registry].name")?;
+    let roster = load_committed_roster(dir)?;
+    if roster.active.is_empty() {
+        bail!("package provenance DSSE verification requires at least one active key in keys.toml");
+    }
+    let mut trusted = Vec::with_capacity(roster.active.len());
+    for entry in &roster.active {
+        if keys::is_revoked(&roster, &entry.id) {
+            bail!(
+                "package provenance DSSE key id '{}' is both active and revoked in keys.toml",
+                entry.id
+            );
+        }
+        let (entry_registry, _algorithm, _public_key) = parse_signing_key(&entry.key)
+            .with_context(|| format!("invalid package provenance DSSE key id '{}'", entry.id))?;
+        if entry_registry != registry_name {
+            bail!(
+                "package provenance DSSE key id '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: entry.key.clone(),
+            retired_before_sequence: None,
+        });
+    }
+    for entry in &roster.revoked {
+        let Some(key) = entry.key.as_ref() else {
+            continue;
+        };
+        let retired_before_sequence = entry.provenance_before_sequence.with_context(|| {
+            format!(
+                "revoked package provenance DSSE key id '{}' declares key material without provenance-before-sequence",
+                entry.id
+            )
+        })?;
+        let (entry_registry, _algorithm, _public_key) =
+            parse_signing_key(key).with_context(|| {
+                format!(
+                    "invalid revoked package provenance DSSE key id '{}'",
+                    entry.id
+                )
+            })?;
+        if entry_registry != registry_name {
+            bail!(
+                "revoked package provenance DSSE key id '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                entry_registry,
+                registry_name
+            );
+        }
+        trusted.push(TrustedProvenanceKey {
+            key_id: entry.id.clone(),
+            key: key.clone(),
+            retired_before_sequence: Some(retired_before_sequence),
+        });
+    }
+    Ok((registry_name, trusted))
 }
 
 fn append_package_provenance_transparency_log(
@@ -3670,16 +3796,17 @@ fn validate_staged_package_provenance_transparency_log(dir: &Path) -> Result<()>
     )?;
     validate_staged_package_toml_provenance_entries(dir, &entries)?;
     validate_staged_store_provenance_entries(dir, &entries)?;
+    let (registry_name, trusted_keys) = package_provenance_trusted_keys(dir)?;
     for entry in &entries {
         ensure_safe_package_provenance_statement_path(&entry.body.statement.path)?;
-        let statement =
+        let statement_bytes =
             git_index_file_bytes(dir, &entry.body.statement.path)?.with_context(|| {
                 format!(
                     "staged package provenance statement '{}' is missing",
                     entry.body.statement.path
                 )
             })?;
-        let actual = format!("sha256:{}", sha256_hex(&statement));
+        let actual = format!("sha256:{}", sha256_hex(&statement_bytes));
         if actual != entry.body.statement.jsonl_sha256 {
             bail!(
                 "staged package provenance statement '{}' digest mismatch: expected '{}', got '{}'",
@@ -3688,7 +3815,37 @@ fn validate_staged_package_provenance_transparency_log(dir: &Path) -> Result<()>
                 actual
             );
         }
-        validate_package_provenance_transparency_statement(entry, &statement)?;
+        let statement_text = std::str::from_utf8(&statement_bytes).with_context(|| {
+            format!(
+                "decoding package provenance statement '{}' as UTF-8",
+                entry.body.statement.path
+            )
+        })?;
+        let (statement, key_id) =
+            crate::provenance::verify_statement_dsse_jsonl(statement_text, &trusted_keys)
+                .with_context(|| {
+                    format!(
+                        "verifying package provenance DSSE envelope '{}'",
+                        entry.body.statement.path
+                    )
+                })?;
+        crate::provenance::verify_key_allowed_for_transparency_sequence(
+            &trusted_keys,
+            &key_id,
+            entry.body.sequence,
+        )
+        .with_context(|| {
+            format!(
+                "verifying package provenance key lifetime for '{}'",
+                entry.body.statement.path
+            )
+        })?;
+        validate_package_provenance_transparency_statement(
+            entry,
+            &statement,
+            &registry_name,
+            &key_id,
+        )?;
     }
     Ok(())
 }
@@ -4363,7 +4520,9 @@ fn ensure_staged_package_optional_field(
 
 fn validate_package_provenance_transparency_statement(
     entry: &PackageProvenanceTransparencyLogEntry,
-    statement_bytes: &[u8],
+    statement: &Value,
+    registry_name: &str,
+    key_id: &str,
 ) -> Result<()> {
     if entry.body.statement.path != entry.body.provenance {
         bail!(
@@ -4373,16 +4532,14 @@ fn validate_package_provenance_transparency_statement(
             entry.body.provenance
         );
     }
-    let statement =
-        parse_package_provenance_statement_value(statement_bytes, &entry.body.statement.path)?;
     ensure_json_string(
-        &statement,
+        statement,
         "_type",
         PACKAGE_PROVENANCE_STATEMENT_TYPE,
         "statement _type",
     )?;
     ensure_json_string(
-        &statement,
+        statement,
         "predicateType",
         PACKAGE_PROVENANCE_PREDICATE_TYPE,
         "statement predicateType",
@@ -4390,6 +4547,14 @@ fn validate_package_provenance_transparency_statement(
 
     let predicate = json_object(&statement, "predicate")?;
     let build_definition = json_object(predicate, "buildDefinition")?;
+    let run_details = json_object(predicate, "runDetails")?;
+    let builder = json_object(run_details, "builder")?;
+    ensure_json_string(
+        builder,
+        "id",
+        &provenance_builder_id(registry_name, key_id),
+        "runDetails.builder.id",
+    )?;
     ensure_json_string(
         build_definition,
         "buildType",
@@ -4452,7 +4617,7 @@ fn validate_package_provenance_transparency_statement(
     )?;
 
     let package_subject = provenance_statement_named_object(
-        json_array(&statement, "subject")?,
+        json_array(statement, "subject")?,
         &entry.body.store_path,
     )
     .with_context(|| {
@@ -4473,7 +4638,7 @@ fn validate_package_provenance_transparency_statement(
         entry.body.package, entry.body.version, entry.body.platform
     );
     let manifest_subject = provenance_statement_named_object(
-        json_array(&statement, "subject")?,
+        json_array(statement, "subject")?,
         &manifest_subject_name,
     )
     .with_context(|| {
@@ -4511,7 +4676,7 @@ fn validate_package_provenance_transparency_statement(
         entry.body.package, entry.body.version, entry.body.platform
     );
     let measurement_subject = provenance_statement_named_object(
-        json_array(&statement, "subject")?,
+        json_array(statement, "subject")?,
         &measurement_subject_name,
     )
     .with_context(|| {
@@ -4546,20 +4711,6 @@ fn validate_package_provenance_transparency_statement(
     }
 
     Ok(())
-}
-
-fn parse_package_provenance_statement_value(bytes: &[u8], path: &str) -> Result<Value> {
-    let text = std::str::from_utf8(bytes)
-        .with_context(|| format!("decoding package provenance statement '{path}' as UTF-8"))?;
-    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
-    let line = lines
-        .next()
-        .with_context(|| format!("package provenance statement '{path}' is empty"))?;
-    if lines.next().is_some() {
-        bail!("package provenance statement '{path}' must contain exactly one JSONL record");
-    }
-    serde_json::from_str(line)
-        .with_context(|| format!("deserializing package provenance statement '{path}'"))
 }
 
 fn provenance_statement_named_object<'a>(objects: &'a [Value], name: &str) -> Result<&'a Value> {
@@ -4707,6 +4858,7 @@ fn package_provenance_transparency_entry_hash(
 }
 
 fn publish_provenance_statement(
+    registry_name: &str,
     name: &str,
     version: &str,
     platform: &str,
@@ -4714,6 +4866,7 @@ fn publish_provenance_statement(
     source_info: Option<&StorePathInfo>,
     manifest_digest: &str,
     attestation: &AttestationMeta,
+    key_id: &str,
 ) -> Result<serde_json::Value> {
     let root_digest = attestation
         .root_digest
@@ -4785,7 +4938,7 @@ fn publish_provenance_statement(
             },
             "runDetails": {
                 "builder": {
-                    "id": "https://andyl.com/aos/apr-publish",
+                    "id": provenance_builder_id(registry_name, key_id),
                 },
                 "metadata": {
                     "invocationId": format!("apr-publish:{name}:{version}:{platform}"),
@@ -8013,7 +8166,17 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
             let dir = config.scope.registries_path().join(&registry_name);
             let mut roster = load_committed_roster(&dir)?;
             let roster_before = roster.clone();
-            let vouching_id = retire_roster_key(&mut roster, id, reason.as_deref(), vouched_by)?;
+            let provenance_before_sequence = read_package_provenance_transparency_log_state(
+                &dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
+            )?
+            .0;
+            let vouching_id = retire_roster_key(
+                &mut roster,
+                id,
+                reason.as_deref(),
+                vouched_by,
+                provenance_before_sequence,
+            )?;
             // The vouching survivor signs the retirement by default; the
             // key resolution runs against the pre-retire roster, where the
             // voucher is still active. Re-signing also needs this key, so
@@ -9050,6 +9213,7 @@ fn retire_roster_key(
     id: &str,
     reason: Option<&str>,
     vouched_by: &Option<String>,
+    provenance_before_sequence: u64,
 ) -> Result<String> {
     validate_roster_key_id(id)?;
     let Some(position) = roster.active.iter().position(|entry| entry.id == id) else {
@@ -9087,20 +9251,30 @@ fn retire_roster_key(
         ),
     };
 
-    roster.active.remove(position);
-    upsert_revoked_key(roster, id, reason);
+    let retired_key = roster.active.remove(position).key;
+    upsert_revoked_key(roster, id, retired_key, provenance_before_sequence, reason);
     Ok(vouching_id)
 }
 
 /// Record `id` in the revoked list, updating the reason if it is already
 /// there.
-fn upsert_revoked_key(roster: &mut KeysToml, id: &str, reason: Option<&str>) {
+fn upsert_revoked_key(
+    roster: &mut KeysToml,
+    id: &str,
+    key: String,
+    provenance_before_sequence: u64,
+    reason: Option<&str>,
+) {
     let reason = reason.map(str::to_string);
     if let Some(entry) = roster.revoked.iter_mut().find(|entry| entry.id == id) {
+        entry.key = Some(key);
+        entry.provenance_before_sequence = Some(provenance_before_sequence);
         entry.reason = reason;
     } else {
         roster.revoked.push(RevokedKey {
             id: id.to_string(),
+            key: Some(key),
+            provenance_before_sequence: Some(provenance_before_sequence),
             reason,
         });
     }
@@ -12242,6 +12416,55 @@ mod tests {
         }
     }
 
+    struct TestProvenanceSigner {
+        _tmp: TempDir,
+        signer: PackageProvenanceSigner,
+        trusted_key: String,
+    }
+
+    const TEST_PROVENANCE_REGISTRY: &str = "test";
+    const TEST_PROVENANCE_KEY_ID: &str = "builder";
+
+    fn test_provenance_signer() -> TestProvenanceSigner {
+        let tmp = TempDir::new().unwrap();
+        let key = write_seeded_signing_key(
+            tmp.path(),
+            TEST_PROVENANCE_REGISTRY,
+            [42_u8; 32],
+            TEST_PROVENANCE_KEY_ID,
+        );
+        TestProvenanceSigner {
+            signer: PackageProvenanceSigner {
+                key_id: TEST_PROVENANCE_KEY_ID.to_string(),
+                key_path: key.private_key.clone(),
+            },
+            trusted_key: key.trusted_key,
+            _tmp: tmp,
+        }
+    }
+
+    fn signed_provenance_statement(artifact: &PublishProvenanceArtifact) -> serde_json::Value {
+        let trusted = vec![TrustedProvenanceKey {
+            key_id: TEST_PROVENANCE_KEY_ID.to_string(),
+            key: test_provenance_signer().trusted_key,
+            retired_before_sequence: None,
+        }];
+        let (statement, key_id) =
+            crate::provenance::verify_statement_dsse_jsonl(&artifact.jsonl, &trusted).unwrap();
+        assert_eq!(key_id, TEST_PROVENANCE_KEY_ID);
+        statement
+    }
+
+    fn sign_test_provenance_statement(statement: &Value) -> String {
+        let signer = test_provenance_signer();
+        sign_statement_dsse_jsonl(
+            statement,
+            TEST_PROVENANCE_KEY_ID,
+            signer.signer.key_path.as_path(),
+        )
+        .unwrap()
+    }
+
     fn write_test_roster(
         dir: &Path,
         key_id: &str,
@@ -12257,6 +12480,8 @@ mod tests {
                 .iter()
                 .map(|id| RevokedKey {
                     id: (*id).to_string(),
+                    key: None,
+                    provenance_before_sequence: None,
                     reason: Some("test".into()),
                 })
                 .collect(),
@@ -12288,6 +12513,36 @@ mod tests {
             trusted_key: keypair.trust_key_line(registry),
             private_key,
         }
+    }
+
+    #[test]
+    fn retire_roster_key_preserves_provenance_key_cutoff() {
+        let mut roster = KeysToml {
+            active: vec![
+                RosterKey {
+                    id: "old".to_string(),
+                    key: "aos-core:Ed25519:YWJjZA==".to_string(),
+                },
+                RosterKey {
+                    id: "new".to_string(),
+                    key: "aos-core:Ed25519:ZWZnaA==".to_string(),
+                },
+            ],
+            ..KeysToml::default()
+        };
+
+        let vouching_id =
+            retire_roster_key(&mut roster, "old", Some("planned"), &None, 4).expect("retire key");
+
+        assert_eq!(vouching_id, "new");
+        assert!(roster.active.iter().all(|entry| entry.id != "old"));
+        assert_eq!(roster.revoked.len(), 1);
+        assert_eq!(roster.revoked[0].id, "old");
+        assert_eq!(
+            roster.revoked[0].key.as_deref(),
+            Some("aos-core:Ed25519:YWJjZA==")
+        );
+        assert_eq!(roster.revoked[0].provenance_before_sequence, Some(4));
     }
 
     #[test]
@@ -13433,7 +13688,9 @@ mod tests {
         let expected_provenance =
             publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
 
+        let signer = test_provenance_signer();
         let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
             "webapp",
             "1.0.0",
             "x86_64-linux",
@@ -13441,13 +13698,14 @@ mod tests {
             Some(&source),
             &manifest,
             manifest_digest,
+            &signer.signer,
         )
         .unwrap()
         .expect("provenance artifact");
 
         assert_eq!(artifact.path, expected_provenance);
         assert!(artifact.path.contains("/x86_64-linux/"));
-        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        let statement = signed_provenance_statement(&artifact);
         assert_eq!(statement["_type"], "https://in-toto.io/Statement/v1");
         assert_eq!(statement["predicateType"], "https://slsa.dev/provenance/v1");
         assert_eq!(
@@ -13527,7 +13785,9 @@ mod tests {
             manifest_digest,
         );
 
+        let signer = test_provenance_signer();
         let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
             "webapp",
             "1.0.0",
             "x86_64-linux",
@@ -13535,6 +13795,7 @@ mod tests {
             None,
             &manifest,
             manifest_digest,
+            &signer.signer,
         )
         .unwrap()
         .expect("provenance artifact");
@@ -13549,7 +13810,7 @@ mod tests {
             artifact.attestation.measurement.as_deref(),
             Some(measurement.as_str())
         );
-        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        let statement = signed_provenance_statement(&artifact);
         let params = &statement["predicate"]["buildDefinition"]["externalParameters"];
         assert_eq!(
             params["root_digest"].as_str(),
@@ -13613,7 +13874,9 @@ mod tests {
         let manifest_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
+        let signer = test_provenance_signer();
         let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
             "webapp",
             "1.0.0",
             "x86_64-linux",
@@ -13621,11 +13884,12 @@ mod tests {
             Some(&source),
             &manifest,
             manifest_digest,
+            &signer.signer,
         )
         .unwrap()
         .expect("provenance artifact");
 
-        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        let statement = signed_provenance_statement(&artifact);
         assert_eq!(
             statement["subject"][0]["digest"]["nix:narHash"].as_str(),
             Some(package_nar_hash)
@@ -14094,7 +14358,7 @@ mod tests {
             &provenance_path,
         )
         .unwrap();
-        let mut statement: Value = serde_json::from_str(artifact.jsonl.trim()).unwrap();
+        let mut statement = signed_provenance_statement(&artifact);
         let subjects = statement
             .get_mut("subject")
             .and_then(Value::as_array_mut)
@@ -14107,7 +14371,7 @@ mod tests {
             })
             .unwrap();
         manifest_subject["digest"]["sha256"] = Value::String("e".repeat(64));
-        let statement_jsonl = format!("{}\n", serde_json::to_string(&statement).unwrap());
+        let statement_jsonl = sign_test_provenance_statement(&statement);
         fs::write(&provenance_path, &statement_jsonl).unwrap();
 
         let content = fs::read_to_string(&log_path).unwrap();
@@ -14718,7 +14982,9 @@ mod tests {
         let manifest = verity_expose_manifest(root_hash);
         let manifest_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let signer = test_provenance_signer();
         let artifact = publish_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
             "webapp",
             "1.0.0",
             "x86_64-linux",
@@ -14726,6 +14992,7 @@ mod tests {
             Some(&source),
             &manifest,
             manifest_digest,
+            &signer.signer,
         )
         .unwrap()
         .unwrap();
@@ -14843,6 +15110,23 @@ mod tests {
         git(repo, &["config", "user.name", "AOS Registry"]).unwrap();
         git(repo, &["config", "user.email", "registry@example.com"]).unwrap();
         git(repo, &["config", "commit.gpgsign", "false"]).unwrap();
+        fs::write(
+            repo.join("registry.toml"),
+            format!("[registry]\nname = \"{TEST_PROVENANCE_REGISTRY}\"\n"),
+        )
+        .unwrap();
+        let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
+        keys::write_keys_toml(
+            repo,
+            &KeysToml {
+                active: vec![RosterKey {
+                    id: TEST_PROVENANCE_KEY_ID.to_string(),
+                    key: keypair.trust_key_line(TEST_PROVENANCE_REGISTRY),
+                }],
+                ..KeysToml::default()
+            },
+        )
+        .unwrap();
     }
 
     #[test]
