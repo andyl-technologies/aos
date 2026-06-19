@@ -46,8 +46,7 @@ options *in* modules, not *as* modules… problems with composability, reuse,
 and portability" — is this doc set's problem statement verbatim. The AOS
 difference: their service values are consumed by host-side eval; ours must
 render to **eval-free, signable artifacts**, because of the forcing function
-above. Its still-open future work — typed cross-service connections — is
-exactly our Decision 18.
+above. Its typed cross-service connection work mirrors our Decision 18.
 
 ## Verified mechanics in the AOS tree
 

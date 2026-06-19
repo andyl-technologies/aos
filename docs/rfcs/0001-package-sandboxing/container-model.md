@@ -1,23 +1,20 @@
-# The systemd-nspawn container model
+# Package execution substrate
 
 Status: planning
 Audience: anyone working on `modules/roles/`,
 `lib/build/`, `pkgs/system/systemd.nix`, `modules/services/ignition.nix`, and the
 `apm`/registry surface in `crates/aos-package/`.
 
-This doc plans how a **package** runs inside a real `systemd-nspawn(1)`
-container. Under the unified model **every** package is an nspawn container; what
-differs is *privilege*, declared in a signed `[permissions]` manifest — see
+This doc records how a **package** is materialized as a systemd-managed unit
+with sandbox directives generated from a signed `[permissions]` manifest — see
 [permissions.md](permissions.md) for that manifest and the full permission
-surface. This doc covers the per-package root image, the `aos-package@.service`
-template, the namespace/networking/cgroup choices, the ephemeral overlay that
-gives us a cheap fs-revert, teardown semantics, and the host→container PID1
-credential boundary. It is deliberately honest that **k3s is a high-privilege
-container** whose isolation is *nominal* — it declares host network, broad
-capabilities, cgroup delegation, and host paths, and that privilege is
-visible in its manifest, not behind a "not really a container"
-carve-out. Config delivery across the boundary is **left open** — see
-[config.md](config.md). Sibling docs: [README.md](README.md),
+surface. The MVP substrate is per-unit sandboxing; the retained nspawn sections
+are a future template for a package that genuinely needs its own init tree. It
+is deliberately honest that **k3s is a high-privilege package** whose isolation
+is *nominal* — it declares host network, broad capabilities, cgroup delegation,
+and host paths, and that privilege is visible in its manifest, not behind a "not
+really a container" carve-out. Config delivery across the boundary is layered —
+see [config.md](config.md). Sibling docs: [README.md](README.md),
 [permissions.md](permissions.md),
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [migration.md](migration.md), [open-questions.md](open-questions.md). The
@@ -69,12 +66,12 @@ specific `systemd-nspawn` / unit knob. The full surface, the manifest examples
 [permissions.md](permissions.md). The nspawn-flag mechanics below are the *how*;
 the manifest is the *what*.
 
-## Substrate decision (RESOLVED — direction): per-unit default, nspawn deferred
+## Substrate decision (RESOLVED): per-unit default, nspawn skipped
 
-The substrate decision is **resolved in direction** (Decision 17 in
+The substrate decision is **resolved** (Decision 17 in
 [open-questions.md](open-questions.md)): **per-unit sandboxing is the default
-materialization, and nspawn is deferred** — not built for MVP, reserved for a
-future package that genuinely needs its own init tree. systemd offers this
+materialization, and nspawn is skipped for MVP** — reserved for a future package
+that genuinely needs its own init tree. systemd offers this
 substrate purpose-built for the niche: **per-unit sandboxing**
 — `RootImage=`/`RootDirectory=` plus the unit-level isolation directives
 (`PrivateNetwork=`, `PrivateUsers=`, `CapabilityBoundingSet=`, `DeviceAllow=`,
@@ -87,7 +84,7 @@ same host-authoritative grant shape as [permissions.md](permissions.md).
 service-manager features, and the attach logic is reimplemented by `apm`'s
 expose phase either way.
 
-Why this must be evaluated head-to-head before implementation:
+Why this wins for the MVP:
 
 - **The `[permissions]` manifest is substrate-independent.** Every manifest
   field maps onto a per-unit directive at least as cleanly as onto an nspawn
@@ -136,7 +133,7 @@ precedent for "module system generates nspawn units," and it is widely
 considered one of NixOS's weaker subsystems (machined coupling,
 restart-on-switch semantics, networking friction); much of that ecosystem moved
 to podman-systemd (quadlet) or per-unit hardening. The landing (Decision 17):
-**per-unit sandboxing as the default materialization, nspawn deferred** until
+**per-unit sandboxing as the default materialization, nspawn skipped** until
 a package genuinely needs an init tree. The simple **default** "container root" is a
 **store path consumed via `RootDirectory=`** — no image build, no loop
 device, no udev ordering — and stays the default for early-boot and minimal
@@ -156,7 +153,7 @@ materializing `expose-minimal`'s default manifest (the
 test-http-server-equivalent proving package before the P7 role migration),
 `expose-smoke`'s side-effect manifest, and k3s's manifest as per-unit services,
 including teardown semantics and the private-outbound netns plumbing cost.
-Everything below specifies the **deferred nspawn materialization** —
+Everything below specifies the **future nspawn materialization** —
 retained as the spec for if/when a package needs an init tree; the *boundary
 semantics* (what an empty manifest isolates, what a grant opens) stand either
 way.
@@ -541,11 +538,13 @@ sandbox — and we must not pretend otherwise. The value is that the privilege i
 least-by-default, declared, signed, and visible in the manifest, not that
 everything is isolated.
 
-## The host→container PID1 credential boundary
+## The host→package credential boundary
 
-Crossing config/secrets into the container's PID1 is **explicitly open** —
-fully treated in [config.md](config.md); this section only states the boundary
-mechanics, not a decision.
+Crossing config/secrets into the package's service boundary is resolved by the
+layered model in [config.md](config.md): TPM2-sealed systemd credentials for
+secrets, schema-validated apm config artifacts for structured config, and
+`EnvironmentFile=` for simple config. This section only states the substrate
+boundary mechanics.
 
 systemd's native path is `LoadCredential=`/`ImportCredential=`: the host unit
 loads a credential, nspawn exposes it to the container PID1 under
@@ -650,7 +649,7 @@ This is the **privilege gradient**, not a shape split: the same one-shape
 container model spans "full sandbox" (empty manifest) to "packaging wrapper"
 (k3s), and the manifest is what places a package on it. See
 [permissions.md](permissions.md) for the gradient and k3s's full (still
-`needs verification`) permission set.
+high-privilege) permission set.
 
 ## Relation to the target-sandbox invariants
 

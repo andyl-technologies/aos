@@ -24,27 +24,24 @@ This is one of the package docs. Siblings:
 [apm-integration.md](apm-integration.md), [boot-activation.md](boot-activation.md),
 [activation.md](activation.md), [open-questions.md](open-questions.md).
 
-> **Unified model.** Every package is a systemd-nspawn container; what differs is
-> *privilege*, declared in a signed `[permissions]` manifest (see
-> [permissions.md](permissions.md)). So config delivery **always** crosses the
-> nspawn host→container boundary — there is no "host-gated, not a container"
-> shape. k3s is a high-privilege container (host network, host paths), which is
-> why its config naturally arrives as host paths bound into a nominal container
-> rather than injected across an isolation boundary.
+> **Unified model.** Every service package exposes a target plus generated
+> systemd units; what differs is *privilege*, declared in a signed
+> `[permissions]` manifest (see [permissions.md](permissions.md)). Config
+> delivery crosses a package-owned systemd boundary, not necessarily an nspawn
+> boundary. k3s is a high-privilege package (host network, host paths), which is
+> why its simple config naturally arrives through `EnvironmentFile=`.
 
 ## Summary
 
-A "package" is the registry-installable unit (`apm install`); some packages
-additionally expose a systemd-nspawn container and an `aos-pkg-<name>.target`
-handle (see [container-model.md](container-model.md)). Every such package
-needs configuration — non-secret settings (node IP, feature flags, a join
-URL) and secrets (a join token, a TLS key) — delivered to the workload, and
-for containerized packages that delivery must **cross the nspawn host→container
-PID1 boundary**. This doc surveys seven delivery mechanisms against six criteria
+A "package" is the registry-installable unit (`apm install`); service packages
+expose an `aos-pkg-<name>.target` handle plus generated units (see
+[container-model.md](container-model.md)). Every such package needs
+configuration — non-secret settings (node IP, feature flags, a join URL) and
+secrets (a join token, a TLS key) — delivered to the workload. This doc surveys
+seven delivery mechanisms against six criteria
 (boundary crossing, reloadability, secret-safety, per-instance override,
-introspection, maturity), grounds each in what AOS ships today, and is honest
-about where nothing fits well yet (hot-reload is uniformly weak; k3s wants
-host-shared paths, not isolation). The decision stays open.
+introspection, maturity), grounds each in what AOS ships today, and records the
+chosen layered model.
 
 ## What we have today (the k3s baseline)
 
@@ -127,13 +124,15 @@ Relevant AOS surfaces, for grounding:
   then those land under `/var/etc/*` in stage 2
   (`modules/services/ignition.nix`).
 
-## The boundary that makes this hard
+## Future nspawn boundary analysis
 
-For a non-containerized package, config delivery is "write a file on the host,
-point a unit at it" — the baseline. For a **containerized** package the
-workload's PID1 is `systemd-nspawn`'s child, in its own mount namespace, and
-the config has to cross from the host into that namespace. Concretely a host
-unit launches the container roughly as:
+The selected MVP does not require a container boundary: per-unit services read
+host config artifacts or credentials directly. The historical nspawn design
+below is retained to document how the same tiers would cross a full-init
+container boundary if nspawn returns. In that future path the workload's PID1 is
+`systemd-nspawn`'s child, in its own mount namespace, and the config has to
+cross from the host into that namespace. Concretely a host unit launches the
+container roughly as:
 
 ```ini
 [Service]
@@ -155,8 +154,10 @@ host-side then bind in, or be re-done inside the container).
 
 ## The options
 
-Each option is described, then scored against the criteria in the matrix.
-None is endorsed.
+Each option is described, then scored against the criteria in the matrix. The
+selected layered model uses Option 1T for secrets, Option 3 for structured
+config, and Option 2 for simple/non-secret config; the others remain as recorded
+alternatives.
 
 ### Option 1 — systemd credentials / credstore / `--load-credential`
 
@@ -238,7 +239,7 @@ Instance overrides arrive as Ignition-written JSON (e.g.
 - **Introspection:** `apm show <pkg> --schema`; `cat /etc/aos/<pkg>/config.*`;
   potentially `apm status <pkg>`.
 - **Maturity:** AOS-specific; no ecosystem. New code in `crates/aos-package`
-  (a schema/validation module) plus an Ignition→apm bridge. needs design.
+  (a schema/validation module) plus an Ignition→apm bridge.
 
 ### Option 4 — kernel cmdline / SMBIOS / fw_cfg
 
@@ -553,40 +554,40 @@ plugin.
 
 ## Where this does not fit: k3s
 
-The boundary framing assumes config flows *into an isolated namespace*. k3s
-violates the premise. As [container-model.md](container-model.md) spells out,
-k3s is an **infrastructure** package: it wants the host network namespace,
-host cgroups, host `/sys`, and global kernel modules. Its container is nominal.
+The boundary framing assumes config flows *into an isolated workload boundary*.
+k3s violates the premise. As [container-model.md](container-model.md) spells
+out, k3s is an **infrastructure** package: it wants the host network namespace,
+host cgroups, host `/sys`, and global kernel modules. Its package target is
+therefore high-privilege by design.
 
-For config that means k3s's natural shape is **host paths shared into a
-nominal container**, not config injected across an isolation boundary:
+For config that means k3s's natural shape is **host paths shared with the
+service**, not config injected across an isolation boundary:
 
 - `/etc/rancher/k3s/k3s.env`, `/etc/rancher/k3s/config.yaml` are written on the
-  host by Ignition and bind-mounted (rw or ro) into the nominal container —
-  i.e. Option 2/6 in their simplest form.
-- systemd credentials (Option 1) are an awkward fit here: they shine for an
-  isolated full-init container with its own PID1, which is exactly *not* what
-  k3s is. Using them for k3s would be ceremony without the isolation payoff.
+  host by Ignition and consumed by the package service — i.e. Option 2/6 in
+  their simplest form.
+- systemd credentials (Option 1) are still an awkward fit here: they shine for
+  isolated workloads, which is exactly *not* what k3s is. Using them for k3s
+  would be ceremony without the isolation payoff.
 
-So whatever the eventual decision for **workload** packages, k3s likely keeps
-the plain Ignition-file + bind-mount path. A single mechanism may not serve
-both "isolated workload" and "host-privileged infrastructure" packages equally
-well, and the design should not pretend otherwise. needs verification of the
-exact bind set k3s requires once the nominal container exists.
+So k3s keeps the plain Ignition-file + host-path path. A single mechanism need
+not serve both "isolated workload" and "host-privileged infrastructure"
+packages equally well, and the design should not pretend otherwise. The current
+package spike validated the high-privilege per-unit shape; a future nspawn path
+would need its own bind-set check.
 
 ## Decision criteria
 
-When the decision is eventually made, weigh options against these, roughly in
-priority order. The right answer depends on which of these are hard
-requirements vs. nice-to-haves — that prioritization is itself open.
+The chosen layered model should continue to be judged against these criteria as
+the first real packages exercise it:
 
 1. **Clean boundary crossing.** Does config reach the container PID1 without
    special-casing per package? (Favors a clean bind or a credential.)
 2. **Offline / air-gapped.** Must installs work with no config server
    reachable? If yes, Option 5 is out as a *primary* path.
 3. **Secret handling.** What's the bar — runtime isolation only, or at-rest
-   encryption too? The latter needs a backend AOS does not yet have, and is
-   arguably orthogonal to the delivery choice.
+   encryption too? AOS now has the TPM2-backed substrate for the latter, while
+   credential lifecycle and audit remain follow-up questions.
 4. **Per-instance override ergonomics.** All the Ignition-based options give
    this; the differentiator is whether overrides are schema-checked (Option 3)
    or free-form (Options 2/6).
@@ -601,20 +602,14 @@ requirements vs. nice-to-haves — that prioritization is itself open.
    (Options 2/6) vs. build new apm/registry machinery (Options 3/5) vs. adopt a
    recent, thinly-trodden systemd feature (Option 1).
 
-## Open questions
+## Follow-up questions
 
-1. **One mechanism or two?** Does AOS pick a single config path for all
-   packages, or explicitly allow workload packages (isolated, maybe credentials)
-   and infrastructure packages (k3s, host-shared files) to differ?
-2. **Hot-reload — in scope for v1?** If yes, which shape: watch-file reloader,
-   registry push, or a systemd reload path? If no, document restart-to-apply as
-   the contract.
-3. **Sealing-key custody.** Desired-file `/etc` and `/run` credstore
+1. **Sealing-key custody.** Desired-file `/etc` and `/run` credstore
    provisioning, inline metadata from `apm credential encrypt`, and
    package-time `encryptedFile` declarations all use the signed-PCR-11 policy.
    TPM2 sealing itself still requires target/runtime key material. How is
    sealing-key custody surfaced for fleet operators?
-4. **Credential provisioning.** Desired-file provisioning covers host-authored
+2. **Credential provisioning.** Desired-file provisioning covers host-authored
    plaintext and system-credential references consumed by `apm` and sealed into
    credstore payloads. The first-boot SMBIOS/system-credential ingress path is
    now `credentials.<package>.<name> = { system-credential = "<name>" }`, read
@@ -622,21 +617,22 @@ requirements vs. nice-to-haves — that prioritization is itself open.
    `desired.toml`; plaintext persistence after that depends on whether the
    package declares a plaintext or encrypted credstore source. Is one-time
    consumption / deletion needed after `apm` has sealed the secret?
-5. **Credential read audit.** Do we need to log which process read which
+3. **Credential read audit.** Do we need to log which process read which
    secret? systemd credentials don't provide it natively; a registry/apm path
    could.
-6. **nspawn config-share shape for k3s.** Host `/etc/rancher/k3s` bind-mounted
-   rw into the nominal container, a copied-in isolated `/etc`, or a distinct
-   path? (Ties to [container-model.md](container-model.md).)
-7. **apm config schema format**, if Option 3: JSON Schema (standard, heavy),
+4. **Future nspawn config-share shape.** If nspawn returns to scope, should
+   host `/etc/rancher/k3s` stay host-shared, move into a copied isolated
+   `/etc`, or use a distinct path? (Ties to
+   [container-model.md](container-model.md).)
+5. **apm config schema format**, if Option 3: JSON Schema (standard, heavy),
    TOML with simple types (AOS-native, limited), or Nix types (eval-time
    safe, non-portable)?
-8. **Ignition enrichment.** Should AOS extend its Ignition handling to mark
+6. **Ignition enrichment.** Should AOS extend its Ignition handling to mark
    files secret (force `0600`), declare a schema, or pull config from a
    registry without baking it into instance metadata?
-9. **Registry scope.** Does the registry stay packages-only, or grow to serve
+7. **Registry scope.** Does the registry stay packages-only, or grow to serve
    config schemas (Option 3 partial) or per-instance config + audit (Option 5)?
-10. **Backward compatibility.** k3s expects `/etc/rancher/k3s/k3s.env` today.
+8. **Backward compatibility.** k3s expects `/etc/rancher/k3s/k3s.env` today.
     If the model shifts, keep the old path as a fallback, migrate to a
     per-package path, or support both? (Ties to [activation.md](activation.md).)
 
@@ -655,6 +651,7 @@ simple/non-secret config stays on `EnvironmentFile=`.
 
 Remaining follow-up work (not decisions): complete the full-init nspawn handoff
 test if nspawn returns to scope, decide whether credential read audit is needed,
-and carry the outcome into [apm-integration.md](apm-integration.md),
+and keep [apm-integration.md](apm-integration.md),
 [container-model.md](container-model.md), and the TPM substrate in
-[../0006-secure-boot/README.md](../0006-secure-boot/README.md).
+[../0006-secure-boot/README.md](../0006-secure-boot/README.md) aligned as the
+first packages exercise the model.

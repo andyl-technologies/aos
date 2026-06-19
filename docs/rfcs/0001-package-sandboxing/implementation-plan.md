@@ -77,8 +77,8 @@ reframes how the phases below are read:
   package version, substrate-independent ([`permissions.md`](permissions.md)).
 - **Honest labeling.** k3s is *not* a sandbox; the computed confinement label
   must say so on operator surfaces, not only in docs (D1, D10).
-- **Default Off / additive.** Image ships `disable *`; install-at-boot is
-  additive-only; removal is an explicit operation.
+- **Default Off / declarative.** Image ships `disable *`; install-at-boot
+  reconciles the desired package set, including removals.
 - **Fail closed.** Old clients refuse permission-bearing packages they cannot
   fully parse (D19), before any such package is published.
 
@@ -99,7 +99,7 @@ reframes how the phases below are read:
 | **P8** | Layered enforcement: Landlock + generated MAC + eBPF-LSM, full systemd hardening baseline, per-package `systemd-analyze security` CI gate, per-package UID identity | P3 | D2, D10, D20 | ☑ |
 | **P9** | Runtime integrity & attestation: dm-verity package roots (`RootImage=`+`RootHashSignature=` vs the `.platform` keyring), measure package+manifest into PCR 15, TPM quote + registry golden-measurements catalog | P6, P8 (+ RFC-0006) | D5, D6, D21, D22 | ☑ |
 | **P10** | Supply-chain provenance: in-toto/SLSA attestation (NAR + manifest), transparency log, TUF roles/thresholds | P0 | D23 | ☑ |
-| **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☐ |
+| **P11** | Out of scope **on merit** (not cost): nspawn (dominated), microVM tier (planned future effort — untrusted workloads), machined/portabled/importd (attack surface), L2 zones, perf measurement | — (merit / scheduled later) | D7, D13, D17 | ☑ |
 
 Legend: ☐ not started · ◐ in progress · ☑ exit criterion met. Phases 8–10 are
 the state-of-the-art additions under the [budget mandate](#budget-mandate);
@@ -356,9 +356,9 @@ apm at first boot; define upgrade/rollback.
 - [x] **Attach dir (D16).** Materialize runtime-installed units as **gc-rooted
       store-path symlinks** under `/var/etc/systemd/system.attached/` (apm-owned,
       portablectl-attach shape) + the enable line in `30-aos-apm.preset`. Both
-      surface through the overlay each boot. (Verify `system.attached` is in the
-      unit search path with portabled disabled; else use
-      `/var/etc/systemd/system/` — same mechanism. See register.)
+      surface through the overlay each boot. Verified by the
+      `package-expose-lifecycle` VM check, including `system.attached` lookup
+      with portabled disabled.
 - [x] **Install-at-boot oneshot.** `aos-install-packages.service`:
       `After=nix-overlay-setup.service aos-seed-profiles.service ignition-files.service`,
       `Before=aos-preset.service multi-user.target`,
@@ -774,12 +774,12 @@ building it would make the OS *worse*. Everything cost-deferred moved into Phase
 8–10; what remains is justified on merit, and the genuinely-open items below are
 **maintainer decisions**, not engineering deferrals.
 
-- [ ] **nspawn substrate (D17) — *dominated*, skipped.** Lighter than per-unit
+- [x] **nspawn substrate (D17) — *dominated*, skipped.** Lighter than per-unit
       for every package we have, weaker than a microVM tier for untrusted code; a
       second service manager with zero consumer. Not built. The deferred template
       in [`container-model.md`](container-model.md) is the spec *if* a multi-unit-
       init package ever appears.
-- [ ] **microVM isolation tier (Firecracker/Kata) — *planned future effort*.** The
+- [x] **microVM isolation tier (Firecracker/Kata) — *planned future effort*.** The
       genuinely-stronger-than-namespace boundary. **Decided (2026-06): not yet** —
       the current threat model is first-party confinement, for which the per-unit +
       Landlock + MAC + attestation stack is sufficient. Built when untrusted /
@@ -788,10 +788,10 @@ building it would make the OS *worse*. Everything cost-deferred moved into Phase
       `substrate = "microvm"`), **not** nspawn. The substrate gradient (per-unit
       now → microVM later) is the recorded direction; only the timing is deferred,
       on a real future need.
-- [ ] **machined / portabled / importd stay disabled (D7) — *attack surface*.**
+- [x] **machined / portabled / importd stay disabled (D7) — *attack surface*.**
       Enabling unused daemons enlarges the TCB for no capability; introspection via
       `systemctl`.
-- [ ] **Zone-style multi-container L2 (D3); performance/init measurement (D13) —
+- [x] **Zone-style multi-container L2 (D3); performance/init measurement (D13) —
       *no consumer / mooted*.** The netns/veth capability exists (P6); a zone is a
       topology to add on a concrete need. Per-unit removes per-package PID-1
       overhead, so there is nothing to measure.
@@ -824,32 +824,32 @@ Every tracked decision and where it is discharged. Statuses are from
 | Decision | Disposition | Phase |
 |---|---|---|
 | D1(a) policy enforcement model / file format | RESOLVED (`/etc/aos/policy.toml`) | P0 |
-| D1(b) validated k3s permission set | BEFORE-MVP | P3 (in the spike) |
-| D2 kernel-modules as allowlisted permission | DECIDE-EARLY | P0 (schema) + P3 (load) |
-| D3 networking modes | resolved (direction) | P0 (schema) + P3 (validate) + P6 (build) |
-| D4 nspawn-in-VM / lifecycle test | mooted; per-unit test remains | P3 |
+| D1(b) validated k3s permission set | RESOLVED | P3 (in the spike) |
+| D2 kernel-modules as allowlisted permission | RESOLVED | P0 (schema) + P3 (load) |
+| D3 networking modes | RESOLVED | P0 (schema) + P3 (validate) + P6 (build) |
+| D4 nspawn-in-VM / lifecycle test | RESOLVED (mooted; per-unit test remains) | P3 |
 | D5 container roots = `RootDirectory=` store path | RESOLVED | P6 |
 | D6 bake vs fetch | RESOLVED by D5 | P6 |
 | D7 machined/portabled/importd disabled | RESOLVED (stay) | P11 |
-| D8 install-at-boot + enable | enable resolved (presets) | P4 (enable) + P5 (install) |
+| D8 install-at-boot + enable | RESOLVED (presets + install/reconcile) | P4 (enable) + P5 (install) |
 | D9 config & credential delivery | RESOLVED (direction): layered — TPM2 creds (sign-off) / schema'd artifact / EnvironmentFile | P5 |
 | D10 boundary labeling | RESOLVED (computed label); now also attestable | P3 + P8 + P9 |
 | D11 upgrade/rollback | RESOLVED (direction) | P5 |
 | D12 package metadata (hybrid) | RESOLVED | P0 |
-| D13 performance / init strategy | DEFER | P11 |
+| D13 performance / init strategy | RESOLVED (mooted by per-unit substrate) | P11 |
 | D14 module-tree dissolve | RESOLVED | P7 |
 | D15 unit naming `aos-pkg-<name>` | RESOLVED | P2 |
 | D16 runtime unit placement (`/var/etc` attach) | RESOLVED | P5 |
-| D17 execution substrate (per-unit default); nspawn skipped (dominated); microVM tier threat-model-gated | RESOLVED (direction); spike = validation | P3 (gate); P11 (microVM/nspawn) |
+| D17 execution substrate (per-unit default); nspawn skipped (dominated); microVM tier threat-model-gated | RESOLVED; spike = validation | P3 (gate); P11 (microVM/nspawn) |
 | D18 cross-package deps | RESOLVED (direction): flat ordering → typed capability routing | P0 + P5 + P8 |
-| D19 registry capability gate (fail-closed) | DECIDE-BEFORE-MVP | P0 (first) |
+| D19 registry capability gate (fail-closed) | RESOLVED | P0 (first) |
 | D20 layered enforcement (Landlock + MAC + eBPF-LSM) | committed (budget mandate) | P8 |
 | D21 dm-verity package roots | committed (budget mandate; un-deferred) | P9 |
 | D22 runtime attestation (PCR measure + quote + registry golden catalog) | committed (budget mandate); extends RFC-0006 | P9 |
 | D23 supply-chain provenance + transparency (in-toto/SLSA, TUF) | committed (budget mandate) | P10 |
 | D24 declarative reconciliation (install + prune) | committed (budget mandate) | P5 |
 | D25 hot-reload plumbing | committed (budget mandate) | P5 |
-| — microVM isolation tier (stronger-than-namespace) | maintainer decision (threat model) | P11 |
+| — microVM isolation tier (stronger-than-namespace) | RESOLVED (not yet; threat-model-gated) | P11 |
 
 ---
 
@@ -897,9 +897,11 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       packages, verify the image NAR against signed registry metadata, and
       reject image NARs that declare unsigned runtime references
       (`crates/aos-package/src/install.rs`, `upgrade.rs`).
-- [ ] **nspawn feature checks (P8, only if nspawn lands).** cgroup-v2 delegation
-      depth, `--private-users` mapping, custom seccomp support on the built
-      `systemd-nspawn`.
+- [x] **nspawn feature checks (P8, only if nspawn lands).** Not applicable to
+      the MVP because the nspawn substrate did not land (D17/P11). If a future
+      multi-unit-init package reopens nspawn, that implementation must check
+      cgroup-v2 delegation depth, `--private-users` mapping, and custom seccomp
+      support on the built `systemd-nspawn`.
 - [x] **`CAP_SYS_MODULE` policy (P0/P3).** Confirm module loading is *always*
       host-side via `kernel-modules` and `CAP_SYS_MODULE` is never granted into a
       container (lean: always host-side).

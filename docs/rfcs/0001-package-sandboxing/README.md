@@ -6,7 +6,7 @@
   D9 (config) secrets path signed off (TPM2-sealed creds), and the microVM tier
   is a planned future effort (current threat model is first-party confinement).
   The phased build is in [`implementation-plan.md`](implementation-plan.md);
-  implementation is gated on the Decision 17 validation spike (Phase 3).
+  the Decision 17 validation spike is closed in Phase 3.
 - **Mandate:** unlimited engineering budget, no corners cut — the target is the
   state of the art ([`state-of-the-art.md`](state-of-the-art.md)). Cost-based
   deferrals are lifted; what stays out is out **on merit** (dominated, no
@@ -34,7 +34,9 @@ from its own store-path root (`RootDirectory=`) with `PrivateNetwork=`,
 tightly-confined sandbox; a package gets only what it declares. High-privilege
 software (k3s) is the same mechanism with a long, explicit manifest — its
 privilege is visible and signed, not a special case. Config delivery is
-**explicitly open / TBD** — see [`config.md`](config.md).
+layered: TPM2-sealed systemd credentials for secrets, schema-validated apm
+config artifacts for structured config, and `EnvironmentFile=` for simple
+settings — see [`config.md`](config.md).
 
 ## Where this sits in the tree
 
@@ -145,7 +147,7 @@ In scope:
   side-effects — [`activation.md`](activation.md).
 - A declared, signed `[permissions]` privilege manifest per package, generating
   the package's sandbox directives — [`permissions.md`](permissions.md).
-- Per-unit sandboxing as the default substrate (nspawn deferred) —
+- Per-unit sandboxing as the default substrate (nspawn skipped for MVP) —
   [`container-model.md`](container-model.md).
 - Install-at-boot: Ignition lists packages; apm installs them; the target is
   enabled — [`boot-activation.md`](boot-activation.md),
@@ -157,17 +159,13 @@ In scope:
 
 ## Non-goals
 
-- **Choosing a config/secret mechanism.** Explicitly deferred; do not settle on
-  credstore. [`config.md`](config.md) surveys options and criteria only.
 - **An OCI runtime / containerd / cri-o.** Native packages are Nix store paths,
   not OCI tarballs.
 - **Enabling `machined`/`portabled`/`importd`.** They stay disabled; lifecycle is
   via `systemctl` + explicit units, not `machinectl`.
 - **Building full `systemd-nspawn` containers for MVP.** Per-unit sandboxing is
-  the default substrate; nspawn is deferred to a future package that genuinely
+  the default substrate; nspawn is skipped until a future package genuinely
   needs its own multi-unit init tree (Decision 17).
-- **Hot config reload.** Out of scope; the current systemd model requires
-  `systemctl restart` for config changes (see [`config.md`](config.md)).
 
 ## Document index
 
@@ -197,7 +195,7 @@ In scope:
   package roots are delivered as store paths, networking modes, cgroup
   delegation, cross-package **composition rules** (flat siblings, no permission
   inheritance, no nesting, `aos.slice` hierarchy), the honest
-  k3s-as-high-privilege case, and the deferred nspawn path.
+  k3s-as-high-privilege case, and the future nspawn path.
 - [`apm-integration.md`](apm-integration.md) — how a package declares its
   target/manifest in the registry: the `PackageMeta`/`ExposeMeta` schema, the
   signed `[permissions]` block, how `apm install` materializes and enables the
@@ -207,16 +205,15 @@ In scope:
   today's system-profile-only `aos-seed-profiles`), then enables the target via
   presets; idempotency via profile/state.json; ordering after `nix-overlay-setup`
   / `network-online.target`.
-- [`config.md`](config.md) — the **open** config-delivery design space:
-  `EnvironmentFile` + Ignition (today's k3s pattern), systemd credentials, per-
-  package `/etc/aos/<pkg>/` overlays, apm config artifacts, kernel cmdline,
-  registry-hosted config, confext — with a tradeoffs matrix and decision
-  criteria. **No decision made.**
+- [`config.md`](config.md) — layered package config and credential delivery:
+  TPM2-sealed systemd credentials for secrets, schema-validated apm artifacts
+  for structured config, `EnvironmentFile=` for simple config, and the
+  hot-reload/restart contract.
 - [`migration.md`](migration.md) — the cutover: dissolved `modules/roles/`
   machinery into `pkgs/` `expose` blocks + a thin policy module, the legacy
   touchpoints, and the validation gates (`aos fmt --check`, `checks.eval`,
   `systems.server.checks.system-boot`, package/fleet tests).
-- [`open-questions.md`](open-questions.md) — the decision register: all 23
+- [`open-questions.md`](open-questions.md) — the decision register: all 25
   tracked decisions with disposition, evidence, and owner.
 - [`state-of-the-art.md`](state-of-the-art.md) — the comparison against other
   operating systems (Fuchsia/Genode/seL4, Android/iOS, Flatpak/Snap, Talos/
@@ -237,8 +234,7 @@ In scope:
 
 The findings behind these docs were gathered by read-only investigation of the
 current tree (apm/registry, the role machinery, ignition/boot, substrate
-feasibility, container-image build, config space, and testing). Where a claim
-rests on a design choice not yet in the tree (install-at-boot bridge, manifest
-schema, package-root delivery), the sibling docs say so explicitly rather than
-implying it already exists — collected in the implementation plan's
-needs-verification register.
+feasibility, package-root build, config space, and testing). Where a claim rests
+on planned future work or partially implemented machinery, the sibling docs say
+so explicitly rather than implying it is already complete; verified facts are
+collected in the implementation plan's evidence register.

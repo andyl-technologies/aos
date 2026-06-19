@@ -6,16 +6,17 @@ Sibling docs: [README.md](README.md) · [container-model.md](container-model.md)
 [config.md](config.md) · [migration.md](migration.md) ·
 [open-questions.md](open-questions.md)
 
-Summary: **every package is a systemd-nspawn container** — there is no
-"workload vs. infrastructure" shape split. What differs between packages is
-*privilege*, and privilege is a **declared, signed, auditable manifest** on the
-package, exactly like an Android/iOS app's permission list. The default is a
-tightly-sandboxed container; a package receives only the permissions it
-declares. k3s is not a special case — it is a container that requests a long
-permission list. This doc defines the permission surface, how it maps onto
-systemd-nspawn, how it is generated/enforced, and the honest limits.
+Summary: **every package exposes a target plus generated systemd units** — there
+is no "workload vs. infrastructure" shape split. What differs between packages
+is *privilege*, and privilege is a **declared, signed, auditable manifest** on
+the package, exactly like an Android/iOS app's permission list. The default is a
+tightly-sandboxed per-unit service; a package receives only the permissions it
+declares. k3s is not a special case — it is a high-privilege package that
+requests a long permission list. This doc defines the permission surface, how it
+maps onto systemd unit directives, how it is generated/enforced, and the honest
+limits.
 
-There is one shape (container) with a permission gradient — not a
+There is one package target shape with a permission gradient — not a
 `workload` vs `infrastructure` *class* split, and not an
 `expose.kind = "container" | "host"` distinction (see
 [apm-integration.md](apm-integration.md) and Decision 1 in
@@ -35,10 +36,10 @@ Two things fall out of making privilege declarative:
    **signed** metadata, so it cannot escalate after publish.
 
 The reframe this forces (and it is a feature, not a fudge): the value is no
-longer "everything is isolated." A maximally-privileged container is **not** a
+longer "everything is isolated." A maximally-privileged package is **not** a
 security boundary. The value is that privilege is **least-by-default, declared,
-signed, and enforceable** — a privileged package is still a container with a
-manifest, just as a privileged Android app is still an app with a manifest.
+signed, and enforceable** — a privileged package is still a package target with
+a manifest, just as a privileged Android app is still an app with a manifest.
 
 ## The permission surface
 
@@ -71,12 +72,10 @@ pinned against the per-unit substrate:
 | `syscalls` | `SystemCallFilter=` using the named profiles `restricted`, `system-service`, or `privileged`, pinned to systemd syscall groups (`@system-service`, `@privileged`, …); never free-form filters | default seccomp | — |
 | `security-label` | Generated SELinux/AppArmor profile name, `aos-pkg-<name>` by default, applied through the selected MAC backend | generated default-deny | — |
 
-`needs verification`: which of these the AOS systemd build's `systemd-nspawn`
-actually supports end-to-end (the investigation found nspawn is shipped but
-`machined`/`portabled`/`importd` are disabled — see
-[open-questions.md](open-questions.md) Decision 7). cgroup-v2 delegation,
-`--private-users` mapping, and custom seccomp profiles each need a feature
-check on the built `systemd-nspawn`.
+The per-unit MVP maps these permissions to systemd service directives and
+host-side gated services. If the future nspawn substrate is reopened, it must
+re-check cgroup-v2 delegation, `--private-users` mapping, and custom seccomp
+support against the exact `systemd-nspawn` binary AOS ships.
 
 ## Layered enforcement (defense in depth)
 
@@ -177,21 +176,20 @@ kernel-modules   = ["br_netfilter", "vxlan", "ip_set"]   # request; host loads i
 syscalls         = "privileged"  # a named profile (pinned set of systemd syscall groups), not an adjective
 ```
 
-`needs verification`: the exact capability/device/mount set k3s requires under
-nspawn — the list above is a strawman derived from the known k3s-in-privileged-
-container patterns (k3d, k3s-in-docker), not yet validated against a running
-AOS nspawn k3s. k3s is the **proving case** for this whole model: if it runs,
-the manifest schema is complete enough.
+The exact k3s permission set is validated under the per-unit package spike and
+desk-checked against kind/k3d/Incus patterns. k3s remains the high-privilege
+proving case for the manifest: if the generated unit matches the current k3s
+unit shape while making its host grants explicit, the schema is complete enough.
 
-## From manifest to running container
+## From manifest to running unit
 
 The manifest is the single source of truth. The package module **generates**,
 from it:
 
-1. the nspawn launch unit `aos-pkg-<name>@.service` (or a concrete
-   `aos-pkg-<name>.service`) with the corresponding `--capability=`,
-   `--bind=`/`--bind-ro=`, `--network-*`, `--private-users=`,
-   `--property=Delegate=`/`DeviceAllow=`, `--system-call-filter=` flags;
+1. the launch unit `aos-pkg-<name>.service` with the corresponding
+   `CapabilityBoundingSet=`, `BindPaths=`/`BindReadOnlyPaths=`,
+   `PrivateNetwork=`, `PrivateUsers=`, `Delegate=`, `DeviceAllow=`, and
+   `SystemCallFilter=` directives;
 2. the host-side gated services for permissions that cannot live inside the
    container — today that is `aos-pkg-<name>-modules.service` (host `modprobe`
    of the declared `kernel-modules`), wired `WantedBy`/`PartOf` the package
@@ -338,7 +336,7 @@ policy* actually grant or deny at install/run.
 Two properties make this robust:
 
 1. **Enforcement is mechanical, not trust-based.** The host **materializes
-   exactly the granted set**: the generated nspawn unit contains *only* the flags
+   exactly the granted set**: the generated unit contains *only* the directives
    for granted permissions, and `aos-pkg-<name>-modules.service` loads *only*
    allowlisted modules. A package that declared more than was granted simply runs
    with less — the surplus is never put in the unit. Even a policy-check bug
@@ -360,11 +358,11 @@ modules** (see [open-questions.md](open-questions.md) Decision 1).
 ## What this changes elsewhere
 
 - [container-model.md](container-model.md): the "three shapes" table collapses
-  to one shape (container) plus this permission gradient; k3s moves from "stays
-  host-gated" to "high-privilege container."
+  to one package target shape plus this permission gradient; k3s moves from
+  "stays host-gated" to "high-privilege package."
 - [apm-integration.md](apm-integration.md): `expose` no longer carries a
-  `kind = container|host` field; instead every exposing package is a container
-  and carries a `[permissions]` block.
+  `kind = container|host` field; instead every exposing package is a target plus
+  generated units and carries a `[permissions]` block.
 - [open-questions.md](open-questions.md): Decision 1 (workload vs
   infrastructure class) is resolved by this manifest; the *policy enforcement
   point* is now answered by the Enforcement section above (three-layer,
@@ -388,5 +386,6 @@ modules** (see [open-questions.md](open-questions.md) Decision 1).
 - The k3s `kernel-modules` allowlist is still a concrete host-policy value to
   validate in Phase 3, but the file format and allowlist location are resolved:
   `/etc/aos/policy.toml`.
-- Config delivery into the container is a separate, still-open question — see
-  [config.md](config.md) (do not assume credstore).
+- Config delivery is layered — see [config.md](config.md): TPM2-sealed
+  credentials for secrets, schema-validated apm artifacts for structured config,
+  and `EnvironmentFile=` for simple config.

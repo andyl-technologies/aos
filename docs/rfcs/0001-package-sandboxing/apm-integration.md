@@ -1,30 +1,28 @@
 # Packages in the apm/registry system
 
-> **Status:** planning. This document is part of the packages doc set and
-> describes how a *package* that exposes a systemd-nspawn container is declared,
-> delivered, signed, and registered through AOS's existing `apm`/registry
-> machinery. It is forward-looking: most of the schema additions below do **not**
-> exist yet. Where a claim could not be verified against the current code, it is
-> marked *needs verification*.
+> **Status:** implemented direction. This document is part of the packages doc
+> set and describes how a package that exposes generated systemd units,
+> permissions, config, and optional future roots is declared, delivered, signed,
+> and registered through AOS's existing `apm`/registry machinery.
 
-This doc traces the "package exposes a container" idea against the **real**
-`apm install` path. A package is the registry-installable unit (`apm install
-<name>`). Some packages additionally expose a `systemd-nspawn` container plus an
+This doc traces the "package exposes system integration" idea against the
+**real** `apm install` path. A package is the registry-installable unit
+(`apm install <name>`). Some packages additionally expose generated units plus an
 `aos-pkg-<name>.target` handle. The questions answered here: what manifest field(s)
-declare an exposed service/container; how the container root is *delivered*
-(baked into the closure vs. fetched as a registry artifact / NAR); how
-generations and upgrades work for a containerized package; how `apm` "exposes"
-the container at install time (drops the template instance + target); and how
-container roots are signed/trusted. Under the unified model **every** package is
-an nspawn container; what differs is *privilege*, declared in a signed
+declare an exposed service; how the package root is *delivered* (baked into the
+closure vs. fetched as a registry artifact / NAR); how generations and upgrades
+work for an exposed service package; how `apm` "exposes" the package at install
+time (drops the generated units + target); and how package roots are
+signed/trusted. Under the unified model every exposing package has a target plus
+generated units; what differs is *privilege*, declared in a signed
 `[permissions]` manifest — so the manifest carries no "container vs host" kind,
 just the package's permission grants (see [`permissions.md`](permissions.md)).
 Sibling docs cover the rest:
 [`README.md`](README.md) (overview), [`permissions.md`](permissions.md)
 (the permission manifest), [`container-model.md`](container-model.md)
-(nspawn shape, k3s as a high-privilege container), [`boot-activation.md`](boot-activation.md)
+(per-unit substrate, future nspawn shape, k3s as high-privilege), [`boot-activation.md`](boot-activation.md)
 (Ignition + first-boot install), [`config.md`](config.md) (config delivery,
-explicitly open), [`migration.md`](migration.md), and
+layered), [`migration.md`](migration.md), and
 [`open-questions.md`](open-questions.md). For the supply-chain side — runtime
 integrity (dm-verity), hardware-rooted attestation (TPM), and the registry's
 provenance role that §7 below records — the authoritative design is
@@ -229,7 +227,7 @@ pub struct ExposeMeta {
     pub config: ExposeConfigMeta,       // config artifacts and credentials
     pub provides: Vec<ProvidedCapabilityMeta>,
     pub uses: Vec<RequiredCapabilityMeta>,
-    // no `kind` — every exposing package is a container; see PermissionsMeta
+    // no `kind` — every exposing package is a target plus units; see PermissionsMeta
 }
 // added to PackageMeta as:
 //   pub expose: Option<ExposeMeta>,
@@ -263,7 +261,8 @@ the image NAR against signed registry metadata before generation activation.
 ### 2.3 The runtime nspawn shape (Option B sketch)
 
 The fine-grained launch parameters belong with the artifact, e.g.
-`<container-root>/.aos-nspawn.toml`, read by the launch unit generator, not by
+`<container-root>/.aos-nspawn.toml`, read by the future nspawn launch unit
+generator, not by
 the registry resolver:
 
 ```toml
@@ -272,30 +271,30 @@ network   = "veth"          # "veth" | "host"  (k3s: "host", see container-model
 boot      = true            # run the container's own systemd PID1
 bind_ro   = ["/nix/store"]
 bind_rw   = []
-env_files = ["/etc/aos/myapp/config.env"]   # config delivery: see config.md (OPEN)
+env_files = ["/etc/aos/myapp/config.env"]   # config delivery: see config.md
 ```
 
 These fine-grained nspawn parameters are **generated from the package's
 `[permissions]` manifest** (see [`permissions.md`](permissions.md)), not authored
 by hand — `network`, the bind sets, capabilities, and so on each map onto a
 manifest field. See [`container-model.md`](container-model.md) for the full
-nspawn semantics and why a default package gets real isolation while k3s, having
-declared a long permission list, gets only a nominal container.
+nspawn semantics and why the current k3s package remains host-privileged while a
+future default nspawn package would get real isolation.
 
 ---
 
-## 3. How the container root is delivered
+## 3. How the package root is delivered
 
 There are two delivery models. They are not mutually exclusive — a package can
 prefer one and fall back to the other.
 
 ### 3.1 Baked into the host image (build-time)
 
-For infrastructure that ships on every machine (k3s today), the container root
-is a Nix derivation built alongside the host image and referenced from the
-system closure. The build pattern is the same `exportReferencesGraph` +
-`mkfs.ext4 -d` + `fakeroot` flow that `lib/build/rootfs.nix` already uses for the
-host rootfs — see [`container-model.md`](container-model.md) for the proposed
+For infrastructure that ships on every machine (k3s today), the package root is
+a Nix derivation built alongside the host image and referenced from the system
+closure. The build pattern is the same `exportReferencesGraph`,
+`mkfs.ext4 -d`, and `fakeroot` flow that `lib/build/rootfs.nix` already uses
+for the host rootfs — see [`container-model.md`](container-model.md) for the proposed
 `lib/build/container-root.nix`. Delivery is then "free": the artifact is already
 in `/nix/store` because it is in the system closure. No registry fetch happens.
 
@@ -351,16 +350,15 @@ expose phase runs:
 
 1. **Resolve the handle.** Read `expose.target`, `expose.units`,
    `expose.images`, and the package's `[permissions]` manifest (every exposing
-   package is a container, so the launch unit is always generated; the manifest
+   service package gets a launch unit; the manifest
    decides its privilege — see [`permissions.md`](permissions.md)).
-2. **Drop the template instance + launch unit.** Generate the nspawn launch
-   service — with the `--capability=`/`--bind=`/`--network-*`/`--private-users=`
-   flags derived from the `[permissions]` manifest — that mounts the resolved
-   container-root image and points at the resolved closure, e.g.
-   `aos-pkg-myapp@.service` (a template) plus the
-   `aos-pkg-myapp@default.service` instance, or a non-templated
-   `aos-pkg-myapp.service`. *Needs verification:* whether AOS prefers
-   `systemd-nspawn@.service` templating or one explicit unit per package — note
+2. **Drop the launch unit.** Generate the per-unit launch service — with
+   `CapabilityBoundingSet=`, `BindPaths=`, `PrivateNetwork=`,
+   `PrivateUsers=`, and related directives derived from the `[permissions]`
+   manifest — that points at the resolved closure/root, e.g.
+   `aos-pkg-myapp.service`. **Resolved for the MVP:** AOS uses one explicit
+   `aos-pkg-<name>.service` per package; the nspawn template remains only for
+   the future multi-unit-init substrate. Note
    that `systemd-machined`/`machinectl` is **disabled** in the AOS systemd build
    (`pkgs/system/systemd.nix`: `-Dmachined=false`), so the
    `systemd-nspawn@.service` multiplexing that normally depends on `machined`
@@ -388,15 +386,16 @@ This produces two distinct exposure paths:
 
 | Install timing | Where units land | How enabled |
 |---|---|---|
-| **Baked / first boot** | EROFS lower (inert) + Ignition `systemd.units[]` target | Ignition files stage writes the wants symlink |
-| **Runtime `apm install`** | `/var/etc/systemd/system/...` (writable upper) | `apm` runs `systemctl enable --now` |
+| **Baked / first boot** | EROFS lower (inert) plus `aos-install-packages.service` materialization for declared packages | Ignition writes desired packages and preset policy; `aos-preset.service` derives enablement |
+| **Runtime `apm install`** | `/var/etc/systemd/system.attached/...` (gc-rooted store-path symlink surfaced through the overlay) | `apm` records the preset line and starts the target |
 
-*Needs verification:* the exact writable path and whether `apm` is permitted to
-write systemd units into the `/etc` overlay at runtime, and whether a generation
-swap of the *package* profile should also re-materialize these units (so a
-rollback of the package also rolls back its units). This is the single biggest
-unresolved mechanism; tracked as Decision 16 in
-[`open-questions.md`](open-questions.md).
+Resolved: runtime-installed package units are materialized as gc-rooted
+store-path symlinks under `/var/etc/systemd/system.attached/`, with enablement
+recorded in `/var/etc/systemd/system-preset/30-aos-apm.preset`. The
+`package-expose-lifecycle` VM check verifies that `system.attached` is in the
+unit search path even with `portabled` disabled; package-generation switches
+re-materialize the symlink and preset set, so rollback rolls units back with the
+package profile.
 
 Upstream precedent for the materialization shape: `portablectl attach` copies
 matching units out of the image into a dedicated search-path directory —
@@ -413,47 +412,50 @@ Because exposure writes files keyed by package name, re-running `apm install`
 (or an upgrade, §5) must overwrite-in-place. The natural anchor is the profile
 generation: the launch unit and target are regenerated for `gen-N`, and
 `switch_to(gen-N)` makes them current. A rollback to `gen-(N-1)` should restore
-the previous unit text. *Needs verification:* whether unit files should be
-gc-rooted store paths symlinked from the generation (clean rollback) or rendered
-text in `/var/etc` (simpler, but rollback must re-render).
+the previous attached symlink and preset set. Unit files are gc-rooted store
+paths symlinked from the generation, not rendered text in `/var/etc`; rollback
+switches the package generation, rewrites the symlinks, reloads systemd, and
+restarts the target.
 
 ---
 
-## 5. Generations and upgrades of a containerized package
+## 5. Generations and upgrades of a service package
 
-Containerized packages ride the **existing** generation model (§1.2) with the
-container root treated as one more gc-rooted closure member. (The `{scope}`
-parameter in the profile path distinguishes the runtime apm package
-profile/scope from the system profile that holds the toplevel + baked packages;
-that relationship is *needs verification* against
-`crates/aos-package/src/profile/mod.rs` — see
-[`boot-activation.md`](boot-activation.md) §4.3.)
+Service packages ride the **existing** generation model (§1.2) with the package
+root treated as one more gc-rooted closure member. (The `{scope}` parameter in
+the profile path distinguishes the runtime apm package profile/scope from the
+system profile that holds the toplevel + baked packages; verified in
+`crates/aos-package/src/types.rs` and
+`crates/aos-package/src/profile/mod.rs`: system-scope runtime package
+generations use `/var/lib/profiles/system-packages/`, separate from the sysroot
+`/var/lib/profiles/system/` — see [`boot-activation.md`](boot-activation.md)
+§4.3.)
 
 1. `apm install myapp@2.0` resolves the new `store_path` **and** the new
    `expose.images[].store_path`.
 2. Both NARs are downloaded, verified, imported.
 3. A new generation `gen-(N+1)` is created; `create_gc_roots()` roots both the
-   package closure and the new container-root image.
+   package closure and the new package-root image.
 4. The expose phase (§4) regenerates `aos-pkg-myapp.target` and the launch unit to
-   point at the **new** container-root store path.
+   point at the **new** package-root store path.
 5. `switch_to(gen-(N+1))` flips `current`.
-6. *Activation of the new root:* the running container must be restarted to pick
-   up the new immutable root. This is `systemctl restart aos-pkg-myapp.target` (or
-   the launch unit). **There is no live, in-place container-root swap** — the
-   nspawn root is immutable per the container model, so an upgrade is a
+6. *Activation of the new root:* the running service must be restarted to pick
+   up the new immutable package root. This is `systemctl restart
+   aos-pkg-myapp.target` (or the launch unit). **There is no live, in-place root
+   swap** — the package root is immutable per the substrate model, so an upgrade is a
    stop-old-root / start-new-root cycle. For a workload this is a clean restart;
    for k3s it drains the node (honest cost, see §6).
 
 **Rollback** is the inverse: `switch_to(gen-(N-1))` restores the prior generation
 (both store paths are still gc-rooted there) and the prior unit text, then a
 restart brings the old root back. This reuses `copy_roots`/`copy_roots_for_upgrade`
-(`install.rs`) — *needs verification* that the expose-phase artifacts are carried
-across generations by `copy_roots` or regenerated each time.
+(`install.rs`); expose-phase artifacts are generation-rooted and re-materialized
+when the package generation switches.
 
 **Held / explicit flags.** `ApmMeta` already records `held` (pin from upgrade)
-and `explicit` (user-requested). A held containerized package must not be
-auto-upgraded — including its container root — which the existing `held` check
-covers for free, since the container root is just another member of the same
+and `explicit` (user-requested). A held service package must not be
+auto-upgraded — including its package root — which the existing `held` check
+covers for free, since the package root is just another member of the same
 generation.
 
 ---
@@ -490,9 +492,9 @@ Honest consequences for the package/container model:
   cgroup management. So k3s gets only a *nominal* container (mount/UTS isolation
   at most), and that must be labeled as such — it is **not** a security boundary.
 - **Config is host-side.** k3s reads `/etc/rancher/k3s/k3s.env` via
-  `EnvironmentFile`. Whatever container it runs in must bind-mount that host path
-  in. Config delivery itself is **explicitly open** — see
-  [`config.md`](config.md); do not assume a credstore.
+  `EnvironmentFile`. Under the layered config model, simple non-secret config
+  can stay in an `EnvironmentFile=`, while secrets use TPM2-sealed credentials
+  and structured config uses schema-validated apm artifacts.
 - **Upgrades kill pods under the nspawn materialization — a regression.**
   Today's bare unit sets `KillMode=process` (upstream k3s packaging), so a k3s
   restart/upgrade kills only the supervisor; containerd, the shims, and all pod
@@ -712,14 +714,14 @@ in [`attestation.md`](attestation.md) §"Provenance & transparency"):
 The whole feature is a small, well-bounded addition to a path that already
 works:
 
-| Stage | Today | Change for containerized packages |
+| Stage | Today | Change for exposed service packages |
 |---|---|---|
 | Registry metadata | `PackageMeta` | + `min-format`/`requires-features`, `expose` (target/units/images/requires/config/provides/uses), `expose_artifact`, and signed `[permissions]` manifest (permissions.md), all `#[serde(default)]` |
 | Resolve | `resolve_multiple()` | also pull `expose.requires` and provider packages named by `expose.uses` |
 | Download / verify / import | NAR path | also fetch and verify `expose_artifact` plus `expose.images[]` as signed secondary artifacts |
-| Profile generation | gc-root + meta + FHS | also gc-root the expose artifact and container-root image |
-| **Expose phase** | *(does not exist)* | materialize rendered units/drop-ins + `aos-pkg-<name>.target` into the package generation, then enable |
-| Activation | n/a | `systemctl enable --now` (runtime) or Ignition `systemd.units[]` (first boot) |
+| Profile generation | gc-root + meta + FHS | also gc-root the expose artifact and any package root image |
+| **Expose phase** | package install without units | materialize rendered units/drop-ins + `aos-pkg-<name>.target` into the package generation, then preset/start |
+| Activation | n/a | preset-driven enablement through `30-aos-apm.preset` / `aos-preset.service` |
 | Trust | tag-signed metadata + NAR hash + cache sig | **unchanged** for delivery — roots ride the same chain |
 | Attestation / provenance | tag-sig + anti-rollback floor only | + `root_digest`/`root_hash`/`root_hash_sig`/`provenance`/`measurement` (§7.2); registry hosts provenance + golden values, never a runtime signer (§7.1); full TUF + transparency log (§7.3); design in [`attestation.md`](attestation.md) |
 
