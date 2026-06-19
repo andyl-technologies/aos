@@ -529,7 +529,7 @@ the current spec. Phases are orderable; A lands first, E last.
       the path; `serves_cache=false` 404s; case-insensitive host; base_path segment
       boundary; the percent-encoded `serves_git` bypass is gated).
       **Remaining (own follow-up, RFC-sized):** multi-domain TLS/cert
-      *provisioning* — the Worker can now bind several `--custom-domain` routes;
+      *provisioning* — the Worker can now bind several `--domain` routes;
       the native hub serving N custom domains needs a fronting SNI proxy or
       in-hub ACME, which is environment-coupled and out of this subsystem's scope.
 - [x] `aos-hub-core` cache domain types + `Database` methods: create/get/list/

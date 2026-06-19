@@ -33,7 +33,6 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use aos_cache::backend::{self, AuthOptions, CacheBackend};
 use aos_core::output::Printer;
-use futures_util::future::join_all;
 use futures_util::stream::{StreamExt, TryStreamExt};
 
 use crate::registry::objectstore;

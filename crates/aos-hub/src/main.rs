@@ -268,37 +268,43 @@ struct WorkerArgs {
     /// The hosting provider.
     #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
     provider: Provider,
-    /// The Worker name (also the default D1 database name).
+    /// The Worker name. Also the default stem for the provisioned resource names
+    /// (D1 database, R2 bucket, KV namespace), so one `--name` namespaces a whole
+    /// install — important because those names are unique per Cloudflare account.
     #[arg(long, default_value = "aos-hub")]
     name: String,
-    /// The D1 database name.
-    #[arg(long, default_value = "aos-hub")]
-    d1_name: String,
-    /// The R2 bucket holding the registry surfaces.
-    #[arg(long, default_value = "aos-registry-surfaces")]
-    bucket: String,
-    /// The KV namespace title for sessions.
-    #[arg(long, default_value = "SESSIONS")]
-    kv_title: String,
-    /// The hub's canonical public base URL (scheme + host), e.g.
-    /// https://aos.andyl.org. This is the origin the hub emits about *itself*:
-    /// the `{external_url}/{slug}` push/pull URL in setup snippets, the OIDC
-    /// redirect_uri base (must match what's registered with your IdP), the
-    /// WebAuthn relying-party ID passkeys bind to, and absolute links on browse
-    /// pages. Clients, browsers, and your IdP all reach the hub here — it is not
-    /// a Cloudflare identifier. Set it to one of your --custom-domain values (or
-    /// the *.workers.dev URL if you bind none).
+    /// The D1 database name (default: the Worker `--name`).
     #[arg(long)]
-    external_url: String,
-    /// Bind the Worker to a custom domain (repeatable: pass once per domain).
-    /// Each domain's zone must be on the same Cloudflare account; `wrangler
-    /// deploy` provisions its DNS record + edge cert and emits one
-    /// `custom_domain` route so Cloudflare sends that hostname to this Worker.
-    /// Omit to serve only on *.workers.dev. Bind the hub's own domain plus any
-    /// per-registry/per-cache frontend domains here; the hub dispatches them
+    d1_name: Option<String>,
+    /// The R2 bucket holding the registry surfaces (default: `<name>-surfaces`).
+    /// R2 bucket names are unique per account, so the default is derived from
+    /// `--name` rather than a fixed string that would collide across installs.
+    #[arg(long)]
+    bucket: Option<String>,
+    /// The KV namespace title for sessions (default: `<name>-sessions`).
+    #[arg(long)]
+    kv_title: Option<String>,
+    /// A hostname Cloudflare routes to the Worker (repeatable: pass once per
+    /// domain). Each is bound as a `custom_domain` route — `wrangler deploy`
+    /// provisions its DNS record + edge cert — and its zone must be on the same
+    /// Cloudflare account.
+    ///
+    /// The FIRST `--domain` is the hub's canonical public URL: it auto-fills the
+    /// origin the hub emits about itself (the `{url}/{slug}` push URL in setup
+    /// snippets, the OIDC redirect_uri base, the WebAuthn relying-party ID, and
+    /// absolute browse links), so you do not pass it twice. Additional `--domain`
+    /// values are extra per-registry/per-cache frontend routes the hub dispatches
     /// internally by Host header.
-    #[arg(long = "custom-domain")]
-    custom_domains: Vec<String>,
+    ///
+    /// The Worker is also always reachable at the free `<name>.<subdomain>.workers.dev`
+    /// URL; that's auto-derived (not configured here) and can be ignored.
+    #[arg(long = "domain")]
+    domains: Vec<String>,
+    /// Override the hub's canonical public URL when it is NOT `https://<first
+    /// --domain>` — e.g. a `*.workers.dev`-only deploy, or the Worker sitting
+    /// behind another CDN. Normally unset: the first `--domain` supplies it.
+    #[arg(long)]
+    canonical_url: Option<String>,
     /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
@@ -320,6 +326,48 @@ struct WorkerArgs {
     /// Bearer token for the email relay (HUB_EMAIL_API_TOKEN).
     #[arg(long)]
     email_api_token: Option<String>,
+}
+
+impl WorkerArgs {
+    /// The D1 database name, defaulting to the Worker `--name`.
+    fn d1_name(&self) -> String {
+        self.d1_name.clone().unwrap_or_else(|| self.name.clone())
+    }
+
+    /// The R2 bucket name, defaulting to `<name>-surfaces` (R2 bucket names are
+    /// unique per account, so the default is per-install).
+    fn bucket(&self) -> String {
+        self.bucket
+            .clone()
+            .unwrap_or_else(|| format!("{}-surfaces", self.name))
+    }
+
+    /// The KV namespace title, defaulting to `<name>-sessions`.
+    fn kv_title(&self) -> String {
+        self.kv_title
+            .clone()
+            .unwrap_or_else(|| format!("{}-sessions", self.name))
+    }
+
+    /// The hub's canonical public URL: `--canonical-url` if given, else
+    /// `https://<first --domain>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when neither `--canonical-url` nor any `--domain` is set,
+    /// so the hub has no canonical origin to emit in its links.
+    fn external_url(&self) -> Result<String> {
+        if let Some(url) = &self.canonical_url {
+            return Ok(url.clone());
+        }
+        if let Some(domain) = self.domains.first() {
+            return Ok(format!("https://{domain}"));
+        }
+        anyhow::bail!(
+            "no canonical URL: pass --domain <host> (the first is the hub's canonical \
+             URL) or --canonical-url <url>"
+        )
+    }
 }
 
 #[derive(Subcommand)]
@@ -2103,7 +2151,7 @@ async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> R
             deploy_worker(&assets, args).await?;
             // Migrate + bootstrap root over D1 via the CLI (no public endpoint),
             // exactly as `init --target d1:<name>` would.
-            let target = format!("d1:{}", args.d1_name);
+            let target = format!("d1:{}", args.d1_name());
             let db = open_db(root, &target).await?;
             println!("schema migrated ({target})");
             if let Some(email) = &args.root_email {
@@ -2111,7 +2159,7 @@ async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> R
                 let (email, id) = ensure_root(&db, email, &plaintext).await?;
                 println!("root admin '{email}' ready (user id {id})");
             }
-            println!("install complete: {}", args.external_url);
+            println!("install complete: {}", args.external_url()?);
         }
     }
     Ok(())
@@ -2125,12 +2173,12 @@ async fn provision_worker(
     aos_hub::cloudflare::provision(
         assets,
         &args.name,
-        &args.d1_name,
-        &args.bucket,
-        &args.kv_title,
-        &args.external_url,
+        &args.d1_name(),
+        &args.bucket(),
+        &args.kv_title(),
+        &args.external_url()?,
         args.email_relay_url.as_deref(),
-        &args.custom_domains,
+        &args.domains,
     )
     .await
 }
@@ -2156,7 +2204,7 @@ async fn deploy_worker(
         println!("  HUB_JWT_SECRET={}", applied.jwt_secret);
         println!("  HUB_SEAL_KEY={}", applied.seal_key);
     }
-    println!("deployed: {}", args.external_url);
+    println!("deployed: {}", args.external_url()?);
     Ok(())
 }
 
