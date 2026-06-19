@@ -734,12 +734,14 @@ private futex would only work within one address space and is forbidden here.
 
 The protocol is the standard race-free futex idiom: the waiter publishes its
 precondition (sets `idle_wake_icount`, sets `status = STATUS_IDLE`), reads the
-current `wake_signal` value `v`, then `FUTEX_WAIT(&wake_signal, v)`. The waker
-increments `wake_signal` (so a wait that started after the increment returns
-`EAGAIN` immediately) and issues `FUTEX_WAKE`. There is no lost-wake window: if
-the waker bumps the counter between the waiter's read of `v` and its
-`FUTEX_WAIT`, the wait returns at once because the observed word no longer equals
-`v`.
+current `wake_signal` value `v`, re-checks whether the wake condition is already
+visible, then `FUTEX_WAIT(&wake_signal, v)` only if it still has nothing to do.
+The waker increments `wake_signal` (so a wait that started after the increment
+returns `EAGAIN` immediately) and issues `FUTEX_WAKE`. There is no lost-wake
+window: if the waker bumps the counter before the waiter's read, the re-check
+observes the actionable state and skips the wait; if it bumps the counter between
+the read of `v` and `FUTEX_WAIT`, the wait returns at once because the observed
+word no longer equals `v`.
 
 ```text
   waiter (node)                      waker (scheduler)
@@ -747,6 +749,7 @@ the waker bumps the counter between the waiter's read of `v` and its
   publish idle_wake_icount
   status := STATUS_IDLE  (release)
   v := load(wake_signal)             store max_advance_icount (release)
+  if runnable: skip wait
   FUTEX_WAIT(&wake_signal, v) -----> fetch_add(wake_signal, 1) (release)
                             <-------- FUTEX_WAKE(&wake_signal, 1)
   status := STATUS_RUNNING
@@ -755,10 +758,10 @@ the waker bumps the counter between the waiter's read of `v` and its
 
 - **[SHM-26]** A node parked at its ceiling MUST park via `FUTEX_WAIT` on the
   slot's `wake_signal` word, using the race-free publish-precondition /
-  read-counter / wait idiom in §13.7 so there is no lost-wake window. The futex
-  MUST be the **non-private** (cross-process) variant, because the waiter and
-  waker are different processes sharing the word through the mapping. The
-  `wake_signal` futex is the **source of truth** for the wake; an auxiliary
+  read-counter / re-check / wait idiom in §13.7 so there is no lost-wake window.
+  The futex MUST be the **non-private** (cross-process) variant, because the
+  waiter and waker are different processes sharing the word through the mapping.
+  The `wake_signal` futex is the **source of truth** for the wake; an auxiliary
   primitive (e.g. the wake eventfd of [`14-protocol.md`](14-protocol.md) §3.4) MAY
   be used to integrate the wait with a host event loop but MUST NOT replace it —
   a futex-only waiter and an eventfd-driven waiter rendezvous on the same

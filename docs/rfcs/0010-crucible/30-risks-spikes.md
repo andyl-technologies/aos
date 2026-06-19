@@ -1133,10 +1133,10 @@ each is gated before the dependent feature.
 
 - **[RISK-19]** The **cross-process non-private futex** wake/wait idiom ([SHM-26],
   [SHM-27]) MUST be validated by a spike that exercises the publish-precondition /
-  read-counter / wait race under host scheduling jitter and confirms **no lost
-  wake** and **no spurious advance** across millions of park/wake cycles, before
-  the scheduler hot path relies on it. *Gate:* `gate:layer1-injection`. *Spec:*
-  §30.12; satisfies [SHM-26]; back-ref §13.7.
+  read-counter / re-check / wait race under host scheduling jitter and confirms
+  **no lost wake** and **no spurious advance** across millions of park/wake
+  cycles, before the scheduler hot path relies on it. *Gate:*
+  `gate:layer1-injection`. *Spec:* §30.12; satisfies [SHM-26]; back-ref §13.7.
 
 - **[RISK-20]** The **no-leak process lifecycle** ([QEMU-29], [QEMU-31]) MUST be
   validated by a spike that induces every termination path (clean stop,
@@ -1200,6 +1200,15 @@ RISK                                            LIKE  IMPACT  MITIGATION        
   search-tree explosion                         H     M       CAS dedup + bounded frontier + cov-guided   RISK-21
   multi-VM parallelism < target (lookahead)     M     M(perf) latency floor + lookahead budget tuning     RISK-22
 ```
+
+Recorded retirements: **RISK-19** is retired by `T-RISK-12`:
+`checks.crucible.phase0.futexStress` completed 2,000,000 actionable
+cross-process non-private futex wake cycles and 2,000,000 wake-without-action
+cycles under yield-based host jitter. The run required at least 1,000,000
+successful futex returns in each phase and reported `lost_wakes=0`,
+`timed_out_after_wake=0`, and `spurious_advances=0`. The row remains listed as a
+regression risk; future shmem work must keep the same publish-precondition /
+read-counter / re-check / wait idiom and non-private futex operation.
 
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
@@ -1307,7 +1316,7 @@ never tolerated). Results live in the decision register (31).
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec
   §30.12.
-- [ ] **T-RISK-12** Run the **cross-process futex** stress spike: millions of
+- [x] **T-RISK-12** Run the **cross-process futex** stress spike: millions of
   park/wake cycles under host jitter with no lost wake and no spurious advance. —
   satisfies [RISK-19], [SHM-26]; spec §30.12.
 - [ ] **T-RISK-13** Run the **no-leak lifecycle** spike: induce every termination

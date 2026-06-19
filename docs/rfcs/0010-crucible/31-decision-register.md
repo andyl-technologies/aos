@@ -911,6 +911,30 @@ These are owned by the determinism contract and tracked in
 [`30-risks-spikes.md`](30-risks-spikes.md); they are noted here so the register is
 a complete map of what is unsettled.
 
+## Spike Results
+
+These entries record risk-spike outcomes required by
+[`30-risks-spikes.md`](30-risks-spikes.md) §30.1. They are not `D-n` design
+decisions; they retire, reclassify, or adopt fallbacks for rows in the risk
+register.
+
+- **RISK-19 / T-RISK-12 — cross-process futex stress**
+  - **Status:** PASS; risk retired for the non-private futex wake/wait idiom in
+    [SHM-26].
+  - **Check:** `checks.crucible.phase0.futexStress`.
+  - **Result:** `iterations=2000000`, `jitter_workers=2`,
+    `futex_private=false`, `lost_wakes=0`, `spurious_advances=0`,
+    `timed_out_after_wake=0`, `successful_wait_returns=1999954`,
+    `minimum_successful_returns=1000000`,
+    `successful_spurious_wait_returns=1999999`, `race_returns=30`,
+    `futex_wait_calls=1999983`, `futex_wake_calls=2000000`,
+    `spurious_wake_calls=2000000`.
+  - **Scope:** validates the publish-precondition / read-counter / re-check /
+    wait race across separate processes sharing one futex word. The future shmem
+    hot path must use the same non-private futex pattern; replacing it with a
+    private futex or an auxiliary event primitive alone reopens [RISK-19].
+  - **Fallback:** none adopted.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed

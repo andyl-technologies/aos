@@ -343,7 +343,7 @@ a Lamport single-producer/single-consumer ring whose head and tail sit on
 separate cache lines; the producer publishes an entry with a *release* store of
 the tail and the consumer reads the tail with *acquire* before touching the entry.
 A node that reaches its scheduler-set ceiling parks on its slot's futex word using
-the race-free publish-precondition / read-counter / wait idiom.
+the race-free publish-precondition / read-counter / re-check / wait idiom.
 
 **Invariants.** One producer, one consumer per ring; neither endpoint writes the
 other's index ([SHM-19]); `release` on publish / `acquire` on observe, no
@@ -405,15 +405,19 @@ impl RingHeader {
 }
 
 /// Park a node at its ceiling on the slot's `wake_signal` word with the
-/// race-free idiom: publish the precondition, read the counter, then wait on
-/// that exact value — if the waker bumps it in between, the wait returns at
-/// once, so there is no lost-wake window ([SHM-26]). The futex is non-private
-/// (cross-process): waiter and waker are different processes sharing the word.
+/// race-free idiom: publish the precondition, read the counter, re-check for
+/// actionable work, then wait on that exact value. If the waker bumps it before
+/// the read, the re-check skips the wait; if it bumps it between the read and
+/// wait, the wait returns at once, so there is no lost-wake window ([SHM-26]).
+/// The futex is non-private (cross-process): waiter and waker are different
+/// processes sharing the word.
 fn park_at_ceiling(slot: &NodeSlot, wake_icount: u64) {
     slot.idle_wake_icount.store(wake_icount, Ordering::Release);
     slot.status.store(STATUS_IDLE, Ordering::Release);
     let observed = slot.wake_signal.load(Ordering::Acquire);
-    futex_wait_shared(&slot.wake_signal, observed); // FUTEX_WAIT, non-private
+    if slot.max_advance_icount.load(Ordering::Acquire) < wake_icount {
+        futex_wait_shared(&slot.wake_signal, observed); // FUTEX_WAIT, non-private
+    }
     slot.status.store(STATUS_RUNNING, Ordering::Release);
 }
 
@@ -438,7 +442,7 @@ fn is_deliverable(frame: &FrameEntry, consumer_current_icount: u64) -> bool {
 
 Two things make this correct and not merely fast: the *release/acquire* pairing
 (publish the entry, then the index; read the index, then the entry) and the
-*publish-precondition-then-read-counter-then-wait* futex idiom. Off-Linux the
+*publish-precondition-then-read-counter-then-re-check-then-wait* futex idiom. Off-Linux the
 futex calls compile to no-ops so the pure atomic/SPSC logic still unit-tests
 ([SHM-28]); the blocking path is never exercised off a simulation host.
 
