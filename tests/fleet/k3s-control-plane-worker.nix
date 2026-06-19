@@ -16,6 +16,7 @@
 #      registration covers the round trip: token ok, TLS ok, agent
 #      pulled flannel config from the API server, kubelet started.
 {
+  dataUrl,
   mkSystem,
   pkgs,
   ...
@@ -34,30 +35,11 @@
   # 0600 — the file holds K3S_TOKEN and shouldn't be world-readable
   # even on a test VM.
   #
-  # The encoder replaces `\n` with `%0A` and ` ` (space) with `%20`,
-  # so any leading whitespace in `body` ends up encoded into the
-  # decoded file. systemd's `EnvironmentFile=` parser does NOT
-  # strip leading whitespace per `systemd.exec(5)`, so an indented
-  # body like `''  K3S_TOKEN=…''` would produce the (invalid) line
-  # `  K3S_TOKEN=…` and the preflight unit would fail at parse
-  # time. Always pass fully de-indented Nix indented strings into
-  # `envFile`.
-  #
-  # TODO(spec follow-up): replace this inline encoder with a public
-  # `lib.testing.dataUrl` once `lib/testing/fleet.nix`'s `uriEncode`
-  # is exported. Two copies in two test files is the status quo;
-  # documenting the duplication so the next test author doesn't get
-  # a third drift.
-  uriEncode =
-    builtins.replaceStrings
-    ["%" "\n" " " "&" "+" "=" "[" "]" "#" "?"]
-    ["%25" "%0A" "%20" "%26" "%2B" "%3D" "%5B" "%5D" "%23" "%3F"];
-
   envFile = body: {
     path = "/etc/rancher/k3s/k3s.env";
     mode = 384;
     overwrite = true;
-    contents.source = "data:," + uriEncode body;
+    contents.source = dataUrl body;
   };
 
   # /etc/rancher/k3s/config.yaml is k3s's default config-file
@@ -95,12 +77,10 @@
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
-    contents.source =
-      "data:,"
-      + uriEncode ''
-        node-ip: ${ip}
-        flannel-iface: eth0
-      '';
+    contents.source = dataUrl ''
+      node-ip: ${ip}
+      flannel-iface: eth0
+    '';
   };
 
   controlPlaneSystem = mkSystem [

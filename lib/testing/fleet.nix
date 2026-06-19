@@ -796,5 +796,5 @@
       ];
     };
 in {
-  inherit mkFleetTest mkFleetTestInteractive;
+  inherit mkFleetTest mkFleetTestInteractive uriEncode dataUrl;
 }

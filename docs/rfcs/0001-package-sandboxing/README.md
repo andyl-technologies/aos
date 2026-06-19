@@ -154,7 +154,8 @@ In scope:
   [`apm-integration.md`](apm-integration.md).
 - Dissolved `modules/roles/` machinery into `pkgs/` `expose` blocks +
   policy — [`migration.md`](migration.md).
-- Surveying config-delivery options without choosing one —
+- Layered config delivery: TPM2-sealed credentials, schema-validated apm
+  config artifacts, and `EnvironmentFile=` for simple settings —
   [`config.md`](config.md).
 
 ## Non-goals

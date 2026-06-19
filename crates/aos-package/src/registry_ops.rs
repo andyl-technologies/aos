@@ -3159,11 +3159,7 @@ fn publish_attestation_meta(
         &root_digest,
         manifest_digest,
     );
-    let provenance = if root_hash.is_some() {
-        Some(publish_provenance_ref(name, platform, &measurement)?)
-    } else {
-        None
-    };
+    let provenance = Some(publish_provenance_ref(name, platform, &measurement)?);
     let meta = AttestationMeta {
         root_digest: Some(root_digest),
         root_hash,
@@ -3278,8 +3274,12 @@ struct PackageProvenanceTransparencyLogBody {
     store_path: String,
     nar_hash: String,
     nar_size: u64,
-    root_hash: String,
-    root_hash_sig: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_hash_sig: Option<String>,
     provenance: String,
     measurement: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3310,8 +3310,9 @@ struct StagedPackageProvenanceMeta {
     store_path: String,
     source_drv: String,
     source_nar_hash: String,
-    root_hash: String,
-    root_hash_sig: String,
+    root_digest: String,
+    root_hash: Option<String>,
+    root_hash_sig: Option<String>,
     provenance: String,
     measurement: String,
 }
@@ -3379,16 +3380,16 @@ fn append_package_provenance_transparency_log(
     let path = dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
     ensure_package_provenance_transparency_log_extends_head(dir, &path)?;
     let (sequence, previous_entry_hash) = read_package_provenance_transparency_log_state(&path)?;
-    let root_hash = artifact
+    let root_digest = artifact
         .attestation
-        .root_hash
+        .root_digest
         .as_deref()
-        .context("package transparency entry missing root_hash")?;
-    let root_hash_sig = artifact
-        .attestation
-        .root_hash_sig
-        .as_deref()
-        .context("package transparency entry missing root_hash_sig")?;
+        .context("package transparency entry missing root_digest")?;
+    let root_hash = artifact.attestation.root_hash.clone();
+    let root_hash_sig = artifact.attestation.root_hash_sig.clone();
+    if root_hash.is_some() != root_hash_sig.is_some() {
+        bail!("package transparency entry root_hash and root_hash_sig must be declared together");
+    }
     let provenance = artifact
         .attestation
         .provenance
@@ -3431,8 +3432,9 @@ fn append_package_provenance_transparency_log(
         store_path: info.path.clone(),
         nar_hash: info.nar_hash.clone(),
         nar_size: info.nar_size,
-        root_hash: root_hash.to_string(),
-        root_hash_sig: root_hash_sig.to_string(),
+        root_digest: Some(root_digest.to_string()),
+        root_hash,
+        root_hash_sig,
         provenance: provenance.to_string(),
         measurement: measurement.to_string(),
         source: source_info.map(|source| PackageProvenanceTransparencySource {
@@ -3759,7 +3761,15 @@ fn head_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageP
                     platform_entry,
                     "source_nar_hash",
                 )?,
-                root_hash: staged_package_string_field(
+                root_digest: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_digest",
+                )?,
+                root_hash: staged_package_optional_string_field(
                     &path,
                     &key.package,
                     &key.version,
@@ -3767,7 +3777,7 @@ fn head_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageP
                     platform_entry,
                     "root_hash",
                 )?,
-                root_hash_sig: staged_package_string_field(
+                root_hash_sig: staged_package_optional_string_field(
                     &path,
                     &key.package,
                     &key.version,
@@ -3847,7 +3857,15 @@ fn package_toml_provenance_entries_from_paths(
                     platform_entry,
                     "source_nar_hash",
                 )?,
-                root_hash: staged_package_string_field(
+                root_digest: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_digest",
+                )?,
+                root_hash: staged_package_optional_string_field(
                     &path,
                     &key.package,
                     &key.version,
@@ -3855,7 +3873,7 @@ fn package_toml_provenance_entries_from_paths(
                     platform_entry,
                     "root_hash",
                 )?,
-                root_hash_sig: staged_package_string_field(
+                root_hash_sig: staged_package_optional_string_field(
                     &path,
                     &key.package,
                     &key.version,
@@ -4171,12 +4189,24 @@ fn ensure_staged_package_matches_transparency_entry(
     ensure_staged_package_field(meta, "version", &entry.body.version, &meta.version)?;
     ensure_staged_package_field(meta, "platform", &entry.body.platform, &meta.platform)?;
     ensure_staged_package_field(meta, "store_path", &entry.body.store_path, &meta.store_path)?;
-    ensure_staged_package_field(meta, "root_hash", &entry.body.root_hash, &meta.root_hash)?;
-    ensure_staged_package_field(
+    let entry_root_digest = entry
+        .body
+        .root_digest
+        .as_deref()
+        .or(entry.body.root_hash.as_deref())
+        .context("package transparency entry missing root_digest")?;
+    ensure_staged_package_field(meta, "root_digest", entry_root_digest, &meta.root_digest)?;
+    ensure_staged_package_optional_field(
+        meta,
+        "root_hash",
+        entry.body.root_hash.as_deref(),
+        meta.root_hash.as_deref(),
+    )?;
+    ensure_staged_package_optional_field(
         meta,
         "root_hash_sig",
-        &entry.body.root_hash_sig,
-        &meta.root_hash_sig,
+        entry.body.root_hash_sig.as_deref(),
+        meta.root_hash_sig.as_deref(),
     )?;
     ensure_staged_package_field(
         meta,
@@ -4270,6 +4300,27 @@ fn staged_package_string_field(
         })
 }
 
+fn staged_package_optional_string_field(
+    path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    entry: &toml::Value,
+    field: &str,
+) -> Result<Option<String>> {
+    match entry.get(field) {
+        Some(value) => value
+            .as_str()
+            .map(|value| Some(value.to_string()))
+            .with_context(|| {
+                format!(
+                    "staged package metadata {path} {package} {version} {platform} {field} must be a string"
+                )
+            }),
+        None => Ok(None),
+    }
+}
+
 fn ensure_staged_package_field(
     meta: &StagedPackageProvenanceMeta,
     field: &str,
@@ -4285,6 +4336,26 @@ fn ensure_staged_package_field(
             meta.platform,
             expected,
             actual
+        );
+    }
+    Ok(())
+}
+
+fn ensure_staged_package_optional_field(
+    meta: &StagedPackageProvenanceMeta,
+    field: &str,
+    expected: Option<&str>,
+    actual: Option<&str>,
+) -> Result<()> {
+    if expected != actual {
+        bail!(
+            "staged package metadata {} {} {} {} {field} mismatch: expected '{}', got '{}'",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform,
+            expected.unwrap_or("<absent>"),
+            actual.unwrap_or("<absent>")
         );
     }
     Ok(())
@@ -4352,14 +4423,25 @@ fn validate_package_provenance_transparency_statement(
     )?;
     ensure_json_string(
         params,
+        "root_digest",
+        entry
+            .body
+            .root_digest
+            .as_deref()
+            .or(entry.body.root_hash.as_deref())
+            .context("package transparency entry missing root_digest")?,
+        "externalParameters.root_digest",
+    )?;
+    ensure_json_optional_string(
+        params,
         "root_hash",
-        &entry.body.root_hash,
+        entry.body.root_hash.as_deref(),
         "externalParameters.root_hash",
     )?;
-    ensure_json_string(
+    ensure_json_optional_string(
         params,
         "root_hash_sig",
-        &entry.body.root_hash_sig,
+        entry.body.root_hash_sig.as_deref(),
         "externalParameters.root_hash_sig",
     )?;
     ensure_json_string(
@@ -4409,7 +4491,12 @@ fn validate_package_provenance_transparency_statement(
     let expected_measurement = crate::package_attestation::package_measurement_digest(
         &entry.body.package,
         &entry.body.version,
-        &entry.body.root_hash,
+        entry
+            .body
+            .root_digest
+            .as_deref()
+            .or(entry.body.root_hash.as_deref())
+            .context("package transparency entry missing root_digest")?,
         &manifest_digest,
     );
     if expected_measurement != entry.body.measurement {
@@ -4533,6 +4620,23 @@ fn ensure_json_string(object: &Value, key: &str, expected: &str, label: &str) ->
     Ok(())
 }
 
+fn ensure_json_optional_string(
+    object: &Value,
+    key: &str,
+    expected: Option<&str>,
+    label: &str,
+) -> Result<()> {
+    let actual = object.get(key).and_then(Value::as_str);
+    if actual != expected {
+        bail!(
+            "provenance statement {label} mismatch: expected '{}', got '{}'",
+            expected.unwrap_or("<absent>"),
+            actual.unwrap_or("<absent>")
+        );
+    }
+    Ok(())
+}
+
 fn ensure_json_value(object: &Value, key: &str, expected: &Value, label: &str) -> Result<()> {
     let actual = object
         .get(key)
@@ -4611,22 +4715,21 @@ fn publish_provenance_statement(
     manifest_digest: &str,
     attestation: &AttestationMeta,
 ) -> Result<serde_json::Value> {
-    let root_hash = attestation
-        .root_hash
+    let root_digest = attestation
+        .root_digest
         .as_deref()
-        .context("package attestation root_hash missing")?;
+        .context("package attestation root_digest missing")?;
     let measurement = attestation
         .measurement
         .as_deref()
         .context("package attestation measurement missing")?;
-    let root_hash_sig = attestation
-        .root_hash_sig
-        .as_deref()
-        .context("package attestation root_hash_sig missing")?;
     let provenance = attestation
         .provenance
         .as_deref()
         .context("package attestation provenance missing")?;
+    if attestation.root_hash.is_some() != attestation.root_hash_sig.is_some() {
+        bail!("package attestation root_hash and root_hash_sig must be declared together");
+    }
     let resolved_dependencies = source_info
         .into_iter()
         .map(|source| {
@@ -4636,6 +4739,25 @@ fn publish_provenance_statement(
             })
         })
         .collect::<Vec<_>>();
+    let mut external_parameters = serde_json::Map::new();
+    external_parameters.insert("package".to_string(), serde_json::json!(name));
+    external_parameters.insert("version".to_string(), serde_json::json!(version));
+    external_parameters.insert("platform".to_string(), serde_json::json!(platform));
+    external_parameters.insert(
+        "store_path".to_string(),
+        serde_json::json!(info.path.as_str()),
+    );
+    external_parameters.insert("root_digest".to_string(), serde_json::json!(root_digest));
+    if let Some(root_hash) = attestation.root_hash.as_deref() {
+        external_parameters.insert("root_hash".to_string(), serde_json::json!(root_hash));
+    }
+    if let Some(root_hash_sig) = attestation.root_hash_sig.as_deref() {
+        external_parameters.insert(
+            "root_hash_sig".to_string(),
+            serde_json::json!(root_hash_sig),
+        );
+    }
+    external_parameters.insert("provenance".to_string(), serde_json::json!(provenance));
 
     Ok(serde_json::json!({
         "_type": PACKAGE_PROVENANCE_STATEMENT_TYPE,
@@ -4657,15 +4779,7 @@ fn publish_provenance_statement(
         "predicate": {
             "buildDefinition": {
                 "buildType": PACKAGE_PROVENANCE_BUILD_TYPE,
-                "externalParameters": {
-                    "package": name,
-                    "version": version,
-                    "platform": platform,
-                    "store_path": info.path.as_str(),
-                    "root_hash": root_hash,
-                    "root_hash_sig": root_hash_sig,
-                    "provenance": provenance,
-                },
+                "externalParameters": external_parameters,
                 "internalParameters": {},
                 "resolvedDependencies": resolved_dependencies,
             },
@@ -13144,7 +13258,12 @@ mod tests {
         );
         assert_eq!(platform.get("root_hash"), None);
         assert_eq!(platform.get("root_hash_sig"), None);
-        assert_eq!(platform.get("provenance"), None);
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
+        assert_eq!(
+            platform.get("provenance").and_then(toml::Value::as_str),
+            Some(expected_provenance.as_str())
+        );
         assert_eq!(
             platform.get("measurement").and_then(toml::Value::as_str),
             Some(expected_measurement.as_str())
@@ -13163,6 +13282,10 @@ mod tests {
         assert_eq!(
             parsed.attestation.root_digest.as_deref(),
             Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            parsed.attestation.provenance.as_deref(),
+            Some(expected_provenance.as_str())
         );
         assert_eq!(
             parsed.attestation.measurement.as_deref(),
@@ -13344,6 +13467,10 @@ mod tests {
             measurement.trim_start_matches("sha256:")
         );
         assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["root_digest"].as_str(),
+            Some(root_hash)
+        );
+        assert_eq!(
             statement["predicate"]["buildDefinition"]["externalParameters"]["root_hash"].as_str(),
             Some(root_hash)
         );
@@ -13362,6 +13489,74 @@ mod tests {
                 .as_str(),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_binds_non_verity_root_digest() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let manifest = PublishExposeManifest {
+            expose: ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            },
+            permissions: PermissionsMeta::default(),
+            mac: None,
+            _kernel: None,
+            _firewall: None,
+            _confinement: None,
+        };
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let expected_root_digest = package_nar_root_digest(&info.nar_hash);
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            &expected_root_digest,
+            manifest_digest,
+        );
+
+        let artifact = publish_provenance_artifact(
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            None,
+            &manifest,
+            manifest_digest,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        assert_eq!(artifact.attestation.root_hash, None);
+        assert_eq!(artifact.attestation.root_hash_sig, None);
+        assert_eq!(
+            artifact.attestation.root_digest.as_deref(),
+            Some(expected_root_digest.as_str())
+        );
+        assert_eq!(
+            artifact.attestation.measurement.as_deref(),
+            Some(measurement.as_str())
+        );
+        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        let params = &statement["predicate"]["buildDefinition"]["externalParameters"];
+        assert_eq!(
+            params["root_digest"].as_str(),
+            Some(expected_root_digest.as_str())
+        );
+        assert!(params.get("root_hash").is_none());
+        assert!(params.get("root_hash_sig").is_none());
     }
 
     #[test]
@@ -13495,6 +13690,14 @@ mod tests {
         assert_eq!(entries[0].body.version, "1.0.0");
         assert_eq!(entries[0].body.platform, "x86_64-linux");
         assert_eq!(entries[0].body.store_path, info.path);
+        assert_eq!(
+            entries[0].body.root_digest.as_deref(),
+            artifact.attestation.root_digest.as_deref()
+        );
+        assert_eq!(
+            entries[0].body.root_hash.as_deref(),
+            artifact.attestation.root_hash.as_deref()
+        );
         assert_eq!(
             entries[0].body.statement.jsonl_sha256,
             format!("sha256:{}", sha256_hex(artifact.jsonl.as_bytes()))
@@ -14590,6 +14793,7 @@ mod tests {
     ) -> PathBuf {
         let path = root.join("packages").join("w").join("webapp.toml");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let root_digest = artifact.attestation.root_digest.as_deref().unwrap();
         let root_hash = artifact.attestation.root_hash.as_deref().unwrap();
         let root_hash_sig = artifact.attestation.root_hash_sig.as_deref().unwrap();
         let provenance = artifact.attestation.provenance.as_deref().unwrap();
@@ -14611,6 +14815,7 @@ mod tests {
                  closure_size = 1\n\
                  source_drv = \"{}\"\n\
                  source_nar_hash = \"{}\"\n\
+                 root_digest = \"{}\"\n\
                  root_hash = \"{}\"\n\
                  root_hash_sig = \"{}\"\n\
                  provenance = \"{}\"\n\
@@ -14618,6 +14823,7 @@ mod tests {
                 info.path,
                 source.path,
                 source.nar_hash,
+                root_digest,
                 root_hash,
                 root_hash_sig,
                 provenance,

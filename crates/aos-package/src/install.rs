@@ -857,23 +857,53 @@ fn verify_install_provenance_from_cache(
     registry_cache_root: &Path,
     closures: &[ResolvedClosure],
 ) -> Result<usize> {
-    let mut verified = 0;
+    verify_package_provenance_entries_from_cache(
+        registry_cache_root,
+        closures.iter().flat_map(|closure| {
+            closure
+                .closure
+                .iter()
+                .map(|meta| (closure.registry_name.as_str(), meta))
+        }),
+    )
+}
 
-    for closure in closures {
-        for meta in &closure.closure {
-            let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
-                continue;
-            };
-            ensure_safe_provenance_ref(provenance_ref)?;
-            let (path, jsonl) = read_provenance_artifact(
-                registry_cache_root,
-                &closure.registry_name,
-                provenance_ref,
-            )?;
-            provenance::verify_package_statement(meta, &jsonl)
-                .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
-            verified += 1;
-        }
+pub(crate) fn verify_package_provenance_entries_from_cache<'a>(
+    registry_cache_root: &Path,
+    entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
+) -> Result<usize> {
+    let mut verified = 0;
+    let mut transparency_logs = HashMap::<String, String>::new();
+
+    for (registry_name, meta) in entries {
+        let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
+            continue;
+        };
+        ensure_safe_provenance_ref(provenance_ref)?;
+        let (path, jsonl) =
+            read_provenance_artifact(registry_cache_root, registry_name, provenance_ref)?;
+        provenance::verify_package_statement(meta, &jsonl)
+            .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
+        let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let (_, log) = read_registry_cache_artifact(
+                    registry_cache_root,
+                    registry_name,
+                    provenance::PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                    "package transparency log",
+                )?;
+                entry.insert(log)
+            }
+        };
+        provenance::verify_transparency_log_inclusion(meta, &jsonl, transparency_log)
+            .with_context(|| {
+                format!(
+                    "verifying transparency inclusion for provenance artifact {}",
+                    path.display()
+                )
+            })?;
+        verified += 1;
     }
 
     Ok(verified)
@@ -883,6 +913,21 @@ fn read_provenance_artifact(
     registry_cache_root: &Path,
     registry_name: &str,
     provenance_ref: &str,
+) -> Result<(PathBuf, String)> {
+    ensure_safe_provenance_ref(provenance_ref)?;
+    read_registry_cache_artifact(
+        registry_cache_root,
+        registry_name,
+        provenance_ref,
+        "provenance artifact",
+    )
+}
+
+fn read_registry_cache_artifact(
+    registry_cache_root: &Path,
+    registry_name: &str,
+    artifact_ref: &str,
+    label: &str,
 ) -> Result<(PathBuf, String)> {
     validate_registry_name(registry_name)?;
     let registry_root = registry_cache_root.join(registry_name);
@@ -901,35 +946,27 @@ fn read_provenance_artifact(
         );
     }
     let mut path = registry_root.clone();
-    let mut components = Path::new(provenance_ref).components().peekable();
+    let mut components = Path::new(artifact_ref).components().peekable();
     while let Some(component) = components.next() {
         let Component::Normal(part) = component else {
-            anyhow::bail!(
-                "attestation provenance path '{provenance_ref}' must not contain '.', '..', or prefixes"
-            );
+            anyhow::bail!("{label} path '{artifact_ref}' must not contain '.', '..', or prefixes");
         };
         path.push(part);
         let meta = std::fs::symlink_metadata(&path)
-            .with_context(|| format!("reading provenance artifact {}", path.display()))?;
+            .with_context(|| format!("reading {label} {}", path.display()))?;
         if meta.file_type().is_symlink() {
             anyhow::bail!(
-                "attestation provenance path '{}' must not contain symlinks: {}",
-                provenance_ref,
+                "{label} path '{}' must not contain symlinks: {}",
+                artifact_ref,
                 path.display()
             );
         }
         if components.peek().is_some() {
             if !meta.is_dir() {
-                anyhow::bail!(
-                    "attestation provenance parent '{}' is not a directory",
-                    path.display()
-                );
+                anyhow::bail!("{label} parent '{}' is not a directory", path.display());
             }
         } else if !meta.is_file() {
-            anyhow::bail!(
-                "attestation provenance artifact '{}' is not a regular file",
-                path.display()
-            );
+            anyhow::bail!("{label} '{}' is not a regular file", path.display());
         }
     }
 
@@ -938,10 +975,10 @@ fn read_provenance_artifact(
         .with_context(|| format!("canonicalizing registry cache {}", registry_root.display()))?;
     let canonical_path = path
         .canonicalize()
-        .with_context(|| format!("canonicalizing provenance artifact {}", path.display()))?;
+        .with_context(|| format!("canonicalizing {label} {}", path.display()))?;
     if !canonical_path.starts_with(&registry_root) {
         anyhow::bail!(
-            "attestation provenance artifact '{}' escapes registry cache '{}'",
+            "{label} '{}' escapes registry cache '{}'",
             canonical_path.display(),
             registry_root.display()
         );
@@ -951,11 +988,11 @@ fn read_provenance_artifact(
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(&path)
-        .with_context(|| format!("reading provenance artifact {}", path.display()))?;
-    let mut jsonl = String::new();
-    file.read_to_string(&mut jsonl)
-        .with_context(|| format!("reading provenance artifact {}", path.display()))?;
-    Ok((path, jsonl))
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .with_context(|| format!("reading {label} {}", path.display()))?;
+    Ok((path, content))
 }
 
 fn ensure_safe_provenance_ref(path: &str) -> Result<()> {
@@ -1689,6 +1726,8 @@ mod tests {
 
     use crate::profile::Generation;
     use crate::types::{AttestationMeta, ExposeArtifactMeta, ExposeMeta, SysrootImageEntry};
+    use serde::{Deserialize, Serialize};
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn format_size_bytes() {
@@ -1879,6 +1918,7 @@ mod tests {
     }
 
     fn provenance_statement(meta: &PackageMeta) -> String {
+        let root_digest = meta.attestation.root_digest.as_deref().unwrap();
         let root_hash = meta.attestation.root_hash.as_deref().unwrap();
         let root_hash_sig = meta.attestation.root_hash_sig.as_deref().unwrap();
         let provenance = meta.attestation.provenance.as_deref().unwrap();
@@ -1917,6 +1957,7 @@ mod tests {
                         "version": meta.version.as_str(),
                         "platform": meta.platform.as_str(),
                         "store_path": meta.store_path.as_str(),
+                        "root_digest": root_digest,
                         "root_hash": root_hash,
                         "root_hash_sig": root_hash_sig,
                         "provenance": provenance,
@@ -1931,6 +1972,96 @@ mod tests {
             },
         });
         format!("{}\n", serde_json::to_string(&statement).unwrap())
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestTransparencyLogEntry {
+        body: TestTransparencyLogBody,
+        entry_hash: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestTransparencyLogBody {
+        schema: String,
+        sequence: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_entry_hash: Option<String>,
+        package: String,
+        version: String,
+        platform: String,
+        store_path: String,
+        nar_hash: String,
+        nar_size: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_digest: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_hash_sig: Option<String>,
+        provenance: String,
+        measurement: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<TestTransparencySource>,
+        statement: TestTransparencyStatement,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestTransparencySource {
+        store_path: String,
+        nar_hash: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestTransparencyStatement {
+        path: String,
+        jsonl_sha256: String,
+    }
+
+    fn write_transparency_log(root: &Path, registry_name: &str, meta: &PackageMeta, jsonl: &str) {
+        let provenance_ref = meta.attestation.provenance.as_deref().unwrap();
+        let body = TestTransparencyLogBody {
+            schema: "https://andyl.com/aos/transparency/package-provenance/v1".to_string(),
+            sequence: 0,
+            previous_entry_hash: None,
+            package: meta.name.clone(),
+            version: meta.version.clone(),
+            platform: meta.platform.clone(),
+            store_path: meta.store_path.clone(),
+            nar_hash: meta.nar_hash.clone(),
+            nar_size: meta.nar_size,
+            root_digest: meta.attestation.root_digest.clone(),
+            root_hash: meta.attestation.root_hash.clone(),
+            root_hash_sig: meta.attestation.root_hash_sig.clone(),
+            provenance: provenance_ref.to_string(),
+            measurement: meta.attestation.measurement.clone().unwrap(),
+            source: Some(TestTransparencySource {
+                store_path: meta.source_drv.clone(),
+                nar_hash: meta.source_nar_hash.clone(),
+            }),
+            statement: TestTransparencyStatement {
+                path: provenance_ref.to_string(),
+                jsonl_sha256: format!("sha256:{}", test_sha256_hex(jsonl.as_bytes())),
+            },
+        };
+        let payload = serde_json::to_vec(&body).unwrap();
+        let entry = TestTransparencyLogEntry {
+            body,
+            entry_hash: format!("sha256:{}", test_sha256_hex(&payload)),
+        };
+        let path = root
+            .join(registry_name)
+            .join(provenance::PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+    }
+
+    fn test_sha256_hex(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
     #[test]
@@ -1985,7 +2116,9 @@ mod tests {
         let provenance = meta.attestation.provenance.as_deref().unwrap();
         let path = tmp.path().join("test-reg").join(provenance);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, provenance_statement(&meta)).unwrap();
+        let jsonl = provenance_statement(&meta);
+        std::fs::write(&path, &jsonl).unwrap();
+        write_transparency_log(tmp.path(), "test-reg", &meta, &jsonl);
 
         let count = verify_install_provenance_from_cache(
             tmp.path(),

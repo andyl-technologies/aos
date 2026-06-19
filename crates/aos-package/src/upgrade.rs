@@ -174,6 +174,14 @@ pub async fn run(
             upgrade_closures.push((closure.registry_name, closure.closure));
         }
     }
+    super::install::verify_package_provenance_entries_from_cache(
+        &config.cache_path(),
+        upgrade_closures
+            .iter()
+            .flat_map(|(registry_name, closure)| {
+                closure.iter().map(|meta| (registry_name.as_str(), meta))
+            }),
+    )?;
     let needed_hashes = needed_hashes_after_upgrade(&installed, &to_upgrade, &all_new_metas)
         .await
         .context("computing post-upgrade profile roots")?;
