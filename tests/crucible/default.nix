@@ -39,6 +39,7 @@ in {
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
+    rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
     gates = {
       layer0Determinism = redGate {

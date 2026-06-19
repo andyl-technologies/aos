@@ -384,7 +384,7 @@ ordered** (07 §1, [INV-9]), never host map-iteration order.
        each cluster's members ORDERED by artifact content hash (never map order).
 ```
 
-- **[TRI-9]** *(reserved — see §34.4 for the signature-preservation invariant.)*
+> `TRI-9` is reserved here; see §34.4 for the signature-preservation invariant.
 
 - **[TRI-10]** Clustering MUST be a deterministic equivalence-class partition of
   the findings keyed by the **signature key** (the key fields under the active

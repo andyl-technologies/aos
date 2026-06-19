@@ -723,7 +723,8 @@ the transport layer by construction.
   fuzzed under conformance. — satisfies [GHC-23], [GHC-35]; spec §16.5, §16.7.
 - [ ] **T-GHC-15** Wire `gate:any-guest` and `gate:single-vm-fingerprint` to cover
   the channel: black-box sufficiency, opt-in additivity, and fingerprint-equality
-  with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30]; spec §16.1, §16.7.
+  with white-box on/off. — satisfies [GHC-1], [GHC-2], [GHC-30], [G-3]; spec
+  §16.1, §16.7.
 - [ ] **T-GHC-16** Implement the OPTIONAL app-controlled-randomness `random_request`
   doorbell kind (kind=5, bumps the protocol version, golden-vectored): serve from
   the single seeded decision source forked per `(node, stream_tag)` by name-hash,

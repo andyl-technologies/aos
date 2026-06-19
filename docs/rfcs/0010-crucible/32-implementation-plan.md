@@ -235,7 +235,7 @@ acceptance gate.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28`): `T-PERF-1 … T-PERF-28` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
-- Open-decision spikes that gate release: `T-D-1 … T-D-3` ([`31`](31-decision-register.md)).
+- Open-decision spikes that gate release: `T-D-1 … T-D-4` ([`31`](31-decision-register.md)).
 
 **Exit gates.** `gate:perf-bench` (cost-model metrics meet baselines, no
 regression), `gate:e2e-determinism` (final acceptance: a representative multi-VM,
@@ -278,19 +278,23 @@ maintained two ways:
    every `**[X-n]**` requirement and every `**T-X-n**` task across the RFC and
    reports (a) any `MUST` requirement with no satisfying task, and (b) any task
    citing a non-existent requirement ID. **This report MUST be empty** for the
-   RFC to be considered internally complete. The same lint enforces [PLAN-3]
-   (per-file checklist task IDs/text match this plan) and the gate-name
-   consistency (every `gate:*` referenced is in the [`24`](24-determinism-harness-testing.md) catalog).
+   RFC to be considered internally complete. The same lint enforces the gate-name
+   consistency (every `gate:*` referenced is in the [`24`](24-determinism-harness-testing.md)
+   catalog), banned-name policy, and task-inventory/file-ownership consistency.
+   The stricter per-file checklist ordering/text-sync lint remains [PLAN-3] /
+   `T-PLAN-2`.
 
 ## Implementation checklist (this file's own tasks)
 
-- [ ] **T-PLAN-1** Implement the RFC coverage/consistency doc-lint: every `MUST`
+- [x] **T-PLAN-1** Implement the RFC coverage/consistency doc-lint: every `MUST`
   requirement has ≥1 satisfying task; every task cites existing requirement IDs;
-  every `gate:*` is in the 24 catalog; per-file checklists match this plan; and no
-  banned names (prior internal exploration / third-party commercial products)
-  appear in the RFC or Crucible code/comments/docs. Wire it as a CI doc check. —
-  satisfies [PLAN-1], [PLAN-2], [PLAN-3], [CONV-1]; spec §coverage.
+  every `gate:*` is in the 24 catalog; per-file checklist task IDs have known
+  ownership and are present in the phase inventory; and no banned names (prior
+  internal exploration / third-party commercial products) appear in the RFC or
+  Crucible code/comments/docs. Wire it as a CI doc check. — satisfies [PLAN-1],
+  [PLAN-2], [CONV-1]; spec §coverage.
 - [ ] **T-PLAN-2** Keep the per-file checklist copies in sync with this plan's
-  ordering (the lint from T-PLAN-1 fails on drift). — satisfies [PLAN-3]; spec §"How to use".
+  ordering (a follow-on ordering/text lint fails on drift). — satisfies [PLAN-3];
+  spec §"How to use".
 - [ ] **T-PLAN-3** Maintain the phase-gate wiring: each phase's exit gate (24) is
   a CI target that blocks the next phase. — satisfies [PLAN-4], [G-5]; spec §"The phase ladder".

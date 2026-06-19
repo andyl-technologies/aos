@@ -887,10 +887,10 @@ first ([G-5], [PLAN-4]):
   wall-clock). — satisfies [HARN-19]; spec §1.2.
 - [ ] **T-HARN-16** Implement `gate:any-guest` (matrix of unmodified guests boot
   deterministically; base image byte-unchanged; no required in-guest agent). —
-  satisfies [HARN-6]; spec §1.2.
+  satisfies [HARN-6], [G-2]; spec §1.2.
 - [ ] **T-HARN-17** Freeze the boundary-ABI golden vectors (shmem layout,
   protocol frames, RPC messages) and implement `gate:abi-conformance` with version
-  checks and the bump-on-change rule. — satisfies [HARN-32]; spec §8.1.
+  checks and the bump-on-change rule. — satisfies [HARN-32], [G-8]; spec §8.1.
 - [ ] **T-HARN-18** Implement the SPSC queue concurrency model-checker + property
   tests (no loss/dup, FIFO, full/empty, wraparound). — satisfies [HARN-33];
   spec §8.2.

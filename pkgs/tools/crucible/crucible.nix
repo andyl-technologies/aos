@@ -23,8 +23,9 @@ in
     cargoTestFlags = packageFlags;
     doCheck = true;
 
-    # The source root includes docs/ so harness lints can read RFC-0010, while
-    # Cargo's virtual workspace remains rooted at crates/.
+    # The source root includes docs/, pkgs/tools/crucible/, and tests/crucible/
+    # so harness lints can read RFC-0010 and AOS check wiring, while Cargo's
+    # virtual workspace remains rooted at crates/.
     preBuild = ''
       cd crates
     '';
