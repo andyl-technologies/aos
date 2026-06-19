@@ -11089,14 +11089,29 @@ impl TreeWalk {
                 DIR_ATTR,
             ],
         )?;
-        if Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?.is_some() {
+        let reference = Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?;
+        let rev = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?;
+        if reference.is_some() && rev.is_some() {
             return Err(Self::unsupported_fetch_tree_feature(
                 id,
                 span,
                 "forge reference resolution",
             ));
         }
-        let Some(rev) = Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)? else {
+        if reference.is_some() {
+            let canonical_uri =
+                self.fetch_tree_unresolved_forge_canonical_uri(id, span, input_type, attrs)?;
+            self.check_fetch_tree_forge_access(id, span, &canonical_uri)?;
+            return Err(Self::unsupported_fetch_tree_feature(
+                id,
+                span,
+                "forge reference resolution",
+            ));
+        }
+        let Some(rev) = rev else {
+            let canonical_uri =
+                self.fetch_tree_unresolved_forge_canonical_uri(id, span, input_type, attrs)?;
+            self.check_fetch_tree_forge_access(id, span, &canonical_uri)?;
             return Err(Self::unsupported_fetch_tree_feature(
                 id,
                 span,
@@ -11123,12 +11138,7 @@ impl TreeWalk {
                 ));
             }
         }
-        let mut extra_query = BTreeMap::new();
-        if let Some(dir) = Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)? {
-            extra_query.insert(DIR_ATTR.to_vec(), dir.to_vec());
-        }
-        let canonical_uri =
-            self.forge_flake_ref_to_string(id, span, attrs, input_type, extra_query)?;
+        let canonical_uri = self.fetch_tree_forge_canonical_uri(id, span, input_type, attrs)?;
         let archive_url =
             Self::fetch_tree_forge_archive_url(id, span, input_type, owner, repo, host, &rev)?;
         let dir =
@@ -11148,6 +11158,54 @@ impl TreeWalk {
             )?,
             rev,
         })
+    }
+
+    fn fetch_tree_forge_canonical_uri(
+        &self,
+        id: IrId,
+        span: Span,
+        input_type: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut extra_query = BTreeMap::new();
+        if let Some(dir) = Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)? {
+            extra_query.insert(DIR_ATTR.to_vec(), dir.to_vec());
+        }
+        self.forge_flake_ref_to_string(id, span, attrs, input_type, extra_query)
+    }
+
+    fn fetch_tree_unresolved_forge_canonical_uri(
+        &self,
+        id: IrId,
+        span: Span,
+        input_type: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::required_flake_ref_string_attr(id, span, attrs, OWNER_ATTR)?;
+        let repo = Self::required_flake_ref_string_attr(id, span, attrs, REPO_ATTR)?;
+        let mut path = Vec::new();
+        path.extend_from_slice(owner);
+        path.push(b'/');
+        path.extend_from_slice(repo);
+        if let Some(reference) = Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)? {
+            path.push(b'/');
+            path.extend_from_slice(reference);
+        }
+
+        let mut query = BTreeMap::new();
+        if let Some(nar_hash) =
+            Self::optional_flake_ref_string_attr(id, span, attrs, NAR_HASH_ATTR)?
+        {
+            query.insert(
+                NAR_HASH_ATTR.to_vec(),
+                self.canonical_flake_ref_nar_hash(id, span, nar_hash)?,
+            );
+        }
+        let mut out = input_type.to_vec();
+        out.push(b':');
+        out.extend_from_slice(&Self::percent_encode_flake_ref_path(&path));
+        Self::append_flake_ref_query(&mut out, &query);
+        Ok(out)
     }
 
     fn fetch_tree_git_flake_ref_arguments(
@@ -37180,6 +37238,83 @@ mod tests {
     }
 
     #[test]
+    fn configured_cpp_nix_restricted_unresolved_forge_fetch_tree_access_matches_tree_walk() {
+        let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+            eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix fetchTree access check");
+            return;
+        };
+        assert_pinned_cpp_nix_oracle(&oracle);
+
+        for (source, expected_uri) in [
+            (
+                r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#,
+                "github:NixOS/nixpkgs/main",
+            ),
+            (
+                r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib""#,
+                "github:NixOS/nixpkgs/main",
+            ),
+            (
+                r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib&narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D""#,
+                "github:NixOS/nixpkgs/main?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D",
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
+                "github:NixOS/nixpkgs/",
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
+                "github:NixOS/nixpkgs/bad%3Fref",
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = ""; repo = "nixpkgs"; }"#,
+                "github:/nixpkgs",
+            ),
+            (
+                r#"builtins.fetchTree { type = "gitlab"; owner = "group"; repo = "project/private"; }"#,
+                "gitlab:group/project/private",
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; host = "bad host"; }"#,
+                "github:NixOS/nixpkgs",
+            ),
+        ] {
+            let stderr = cpp_nix_eval_failure_stderr_with_nix_options(
+                &oracle,
+                source,
+                &[
+                    (
+                        "experimental-features",
+                        PINNED_BUILTIN_SURFACE_EXPERIMENTAL_FEATURES,
+                    ),
+                    ("restrict-eval", "true"),
+                    ("allowed-uris", ""),
+                ],
+            );
+            assert!(
+                String::from_utf8_lossy(&stderr)
+                    .contains(&format!("access to URI '{expected_uri}' is forbidden")),
+                "{}",
+                String::from_utf8_lossy(&stderr)
+            );
+
+            let error = eval_whnf_owned_with_options(
+                &lower(source),
+                TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+            )
+            .expect_err("restricted unresolved forge fetchTree denies the canonical URI");
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::FetchTreeAccessDenied {
+                    input,
+                    mode: EvalMode::Restricted,
+                    ..
+                } if input == expected_uri.as_bytes()
+            ));
+        }
+    }
+
+    #[test]
     fn parse_flake_ref_parses_github_example() {
         assert_eq!(
             eval_string_bytes(
@@ -48578,6 +48713,72 @@ mod tests {
                 ..
             }
         ));
+
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted unresolved forge ref denies its canonical URI");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == b"github:NixOS/nixpkgs/main"
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri("github:NixOS/nixpkgs/main")
+            .expect("unresolved forge URI is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main""#),
+            options,
+        )
+        .expect_err("allowed unresolved forge ref still needs resolution support");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "forge reference resolution",
+                ..
+            }
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri("github:NixOS/nixpkgs/main?dir=lib")
+            .expect("dir-bearing forge URI is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib""#),
+            options,
+        )
+        .expect_err("unresolved forge access drops dir metadata");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == b"github:NixOS/nixpkgs/main"
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri("github:NixOS/nixpkgs/main")
+            .expect("dir-stripped forge URI is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(
+            &lower(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?dir=lib""#),
+            options,
+        )
+        .expect_err("allowed unresolved forge ref still needs resolution support");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                feature: "forge reference resolution",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -48626,6 +48827,74 @@ mod tests {
                 ..
             }
         ));
+
+        for (source, expected_uri) in [
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; }"#,
+                b"github:NixOS/nixpkgs".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; dir = "lib"; }"#,
+                b"github:NixOS/nixpkgs/main".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; dir = "lib"; narHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; }"#,
+                b"github:NixOS/nixpkgs/main?narHash=sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%3D".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
+                b"github:NixOS/nixpkgs/".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
+                b"github:NixOS/nixpkgs/bad%3Fref".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = ""; repo = "nixpkgs"; }"#,
+                b"github:/nixpkgs".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "gitlab"; owner = "group"; repo = "project/private"; }"#,
+                b"gitlab:group/project/private".as_slice(),
+            ),
+            (
+                r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; host = "bad host"; }"#,
+                b"github:NixOS/nixpkgs".as_slice(),
+            ),
+        ] {
+            let error = eval_whnf_owned_with_options(
+                &lower(source),
+                TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+            )
+            .expect_err("restricted unresolved forge attrset denies its canonical URI");
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::FetchTreeAccessDenied {
+                    input,
+                    mode: EvalMode::Restricted,
+                    ..
+                } if input == expected_uri
+            ));
+        }
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri("github:")
+            .expect("github URI prefix is a valid allowed URI");
+        for source in [
+            r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
+            r#"builtins.fetchTree { type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
+        ] {
+            let error = eval_whnf_owned_with_options(&lower(source), options.clone())
+                .expect_err("allowed unresolved forge attrset still needs resolution support");
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::UnsupportedFetchTreeFeature {
+                    feature: "forge reference resolution",
+                    ..
+                }
+            ));
+        }
 
         let error = eval_whnf_owned(&lower(
             r#"builtins.fetchTree { type = "git"; url = "file:///no-such-repo"; verifyCommit = true; }"#,
