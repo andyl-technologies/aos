@@ -145,6 +145,7 @@ async fn run(cli: &Cli) -> Result<()> {
     if let Commands::NixDiff {
         attr,
         all,
+        systems,
         file,
         mode,
     } = &cli.command
@@ -160,6 +161,7 @@ async fn run(cli: &Cli) -> Result<()> {
             &file,
             attr.as_deref(),
             *all,
+            *systems,
             (*mode).into(),
         );
     }
@@ -302,6 +304,7 @@ mod tests {
             command: Commands::NixDiff {
                 attr: Some("pkgs.hello".to_string()),
                 all: false,
+                systems: false,
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
             },

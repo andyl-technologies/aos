@@ -155,13 +155,16 @@ pub enum Commands {
         #[arg(
             short = 'A',
             long,
-            conflicts_with = "all",
-            required_unless_present = "all"
+            conflicts_with_all = ["all", "systems"],
+            required_unless_present_any = ["all", "systems"]
         )]
         attr: Option<String>,
         /// Compare every derivation in the pkgs set
         #[arg(long)]
         all: bool,
+        /// Compare every system toplevel
+        #[arg(long)]
+        systems: bool,
         /// Nix file to instantiate (default: repository default.nix)
         file: Option<std::path::PathBuf>,
         /// Comparison mode
@@ -262,11 +265,13 @@ mod tests {
             Commands::NixDiff {
                 attr,
                 all,
+                systems,
                 file,
                 mode,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.hello"));
                 assert!(!all);
+                assert!(!systems);
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
             }
@@ -290,11 +295,13 @@ mod tests {
             Commands::NixDiff {
                 attr,
                 all,
+                systems,
                 file,
                 mode,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
                 assert!(!all);
+                assert!(!systems);
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
             }
@@ -338,6 +345,43 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_parses_systems_mode() {
+        let cli = parse_cli(["aos", "nix-diff", "--systems", "--mode", "path"]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr,
+                all,
+                systems,
+                mode,
+                ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(!all);
+                assert!(systems);
+                assert_eq!(mode, NixDiffMode::Path);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_can_combine_package_and_system_corpora() {
+        let cli = parse_cli(["aos", "nix-diff", "--all", "--systems"]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr, all, systems, ..
+            } => {
+                assert_eq!(attr, None);
+                assert!(all);
+                assert!(systems);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
     fn nix_diff_requires_attr_or_all() {
         let err = parse_cli_error(["aos", "nix-diff"]);
 
@@ -347,6 +391,13 @@ mod tests {
     #[test]
     fn nix_diff_rejects_attr_with_all() {
         let err = parse_cli_error(["aos", "nix-diff", "--all", "--attr", "pkgs.hello"]);
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn nix_diff_rejects_attr_with_systems() {
+        let err = parse_cli_error(["aos", "nix-diff", "--systems", "--attr", "pkgs.hello"]);
 
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }

@@ -1,5 +1,6 @@
 //! `aos nix-diff` -- compare evaluator `.drv` output.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -73,6 +74,7 @@ pub fn run(
     file: &Path,
     attr: Option<&str>,
     all: bool,
+    systems: bool,
     mode: DiffMode,
 ) -> Result<()> {
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
@@ -80,19 +82,21 @@ pub fn run(
     let oracle = NixCli::with_eval_config(verbose, eval_config);
     let candidate_name = candidate.name();
 
-    if all {
+    if all || systems {
         return run_all(
             printer,
             &oracle,
             candidate.as_ref(),
             candidate_name,
             file,
+            all,
+            systems,
             mode,
         );
     }
 
     let attr = attr.ok_or_else(|| AosError::InvalidArgument {
-        message: "provide --attr <ATTR> or --all".to_string(),
+        message: "provide --attr <ATTR>, --all, or --systems".to_string(),
     })?;
 
     let report = diff_closure(&oracle, candidate.as_ref(), file, attr, mode)?;
@@ -136,18 +140,20 @@ fn run_all(
     candidate: &dyn NixEval,
     candidate_name: &str,
     file: &Path,
+    include_packages: bool,
+    include_systems: bool,
     mode: DiffMode,
 ) -> Result<()> {
-    let attrs = package_attrs(oracle, file)?;
+    let attrs = corpus_attrs(oracle, file, include_packages, include_systems)?;
     if attrs.is_empty() {
         return Err(AosError::InvalidArgument {
-            message: "nix-diff --all found no derivations under pkgs".to_string(),
+            message: "nix-diff corpus selection found no derivations".to_string(),
         }
         .into());
     }
 
     printer.info(&format!(
-        "Comparing {} package derivation(s)...",
+        "Comparing {} selected derivation(s)...",
         attrs.len()
     ));
 
@@ -191,7 +197,7 @@ fn run_all(
 
     let Some(failure) = failure else {
         printer.success(&format!(
-            "drv diff matched {} package derivation(s): nix-cli vs {candidate_name} ({mode:?})",
+            "drv diff matched {} selected derivation(s): nix-cli vs {candidate_name} ({mode:?})",
             reports.len()
         ));
         return Ok(());
@@ -205,7 +211,7 @@ fn run_all(
             .filter(|report| report.failure.is_some())
             .count();
         printer.warning(&format!(
-            "drv diff failed for {failed} of {} package derivation(s): nix-cli vs {candidate_name}",
+            "drv diff failed for {failed} of {} selected derivation(s): nix-cli vs {candidate_name}",
             reports.len()
         ));
         for attr_report in reports.iter().filter(|report| report.failure.is_some()) {
@@ -233,6 +239,33 @@ struct AttrDiffReport {
     failure: Option<NixDiffReportedFailure>,
 }
 
+fn corpus_attrs(
+    oracle: &NixCli,
+    file: &Path,
+    include_packages: bool,
+    include_systems: bool,
+) -> Result<Vec<String>> {
+    let mut attrs = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    if include_packages {
+        extend_unique(&mut attrs, &mut seen, package_attrs(oracle, file)?);
+    }
+    if include_systems {
+        extend_unique(&mut attrs, &mut seen, system_attrs(oracle, file)?);
+    }
+
+    Ok(attrs)
+}
+
+fn extend_unique(attrs: &mut Vec<String>, seen: &mut BTreeSet<String>, new_attrs: Vec<String>) {
+    for attr in new_attrs {
+        if seen.insert(attr.clone()) {
+            attrs.push(attr);
+        }
+    }
+}
+
 fn package_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
     let expr = package_attr_expr(file)?;
     let raw = oracle.eval_expr(&expr)?;
@@ -243,6 +276,12 @@ fn package_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
         .into_iter()
         .map(|name| format!("pkgs.{name}"))
         .collect())
+}
+
+fn system_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
+    let expr = system_attr_expr(file)?;
+    let raw = oracle.eval_expr(&expr)?;
+    serde_json::from_str(&raw).context("parsing nix-diff system attribute list")
 }
 
 fn package_attr_expr(file: &Path) -> Result<String> {
@@ -266,6 +305,27 @@ let
     in if probe.success then probe.value else true;
 in
   builtins.filter shouldCheck (builtins.attrNames pkgs)
+"#,
+        nix_string_literal(file)
+    ))
+}
+
+fn system_attr_expr(file: &Path) -> Result<String> {
+    let file = absolute_path_for_nix(file)?;
+    let file = file
+        .to_str()
+        .with_context(|| format!("nix file path is not valid UTF-8: {}", file.display()))?;
+    Ok(format!(
+        r#"
+let
+  loaded = import (builtins.toPath {});
+  root = if builtins.isFunction loaded then loaded {{}} else loaded;
+  systems =
+    if builtins.isAttrs root && (root ? systems)
+    then root.systems
+    else throw "nix-diff --systems requires the imported file to expose systems";
+in
+  builtins.map (name: "systems.${{name}}.build.toplevel") (builtins.attrNames systems)
 "#,
         nix_string_literal(file)
     ))
@@ -859,6 +919,40 @@ mod tests {
         assert!(!expr.contains("builtins.toPath \"default.nix\""));
 
         Ok(())
+    }
+
+    #[test]
+    fn system_attr_expr_absolutizes_relative_file_and_selects_toplevels() -> Result<()> {
+        let expr = system_attr_expr(Path::new("default.nix"))?;
+
+        assert!(expr.contains("root ? systems"));
+        assert!(expr.contains("systems.${name}.build.toplevel"));
+        assert!(!expr.contains("builtins.toPath \"default.nix\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn extend_unique_preserves_first_seen_order() {
+        let mut attrs = vec!["pkgs.hello".to_string()];
+        let mut seen = attrs.iter().cloned().collect::<BTreeSet<_>>();
+
+        extend_unique(
+            &mut attrs,
+            &mut seen,
+            vec![
+                "pkgs.hello".to_string(),
+                "systems.server.build.toplevel".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            attrs,
+            vec![
+                "pkgs.hello".to_string(),
+                "systems.server.build.toplevel".to_string()
+            ]
+        );
     }
 
     #[test]
