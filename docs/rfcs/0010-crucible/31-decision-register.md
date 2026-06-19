@@ -1041,6 +1041,43 @@ register.
     scenario corpus still own the permanent implementation.
   - **Fallback:** none adopted.
 
+- **RISK-22 / T-RISK-15 — lookahead budget yields multi-VM parallelism**
+  - **Status:** PASS; risk retired for the Phase-0 deterministic scheduler
+    cost-model surface.
+  - **Check:** `checks.crucible.phase0.multiVmParallelism`.
+  - **Result:** `scenario=conservative-lookahead-cost-model`,
+    `topology=uniform-full-mesh`, `host_core_parallelism_kind=modeled`,
+    `vm_nodes=4`, `host_cores=4`, `simulated_horizon_vt=1048576`,
+    `min_link_latency_floor=512`, `sync_cost_units=48`,
+    `dispatch_cost_units=2`, `target_parallelism_x1000=3500`,
+    `declared_zero_latency_rejected=1`,
+    `declared_subfloor_latency_rejected=1`,
+    `subfloor_fault_input_latency=128`,
+    `subfloor_fault_effective_latency=512`,
+    `raised_fault_input_latency=2048`,
+    `raised_fault_effective_latency=2048`,
+    `unfloored_latency_64_parallelism_x1000=2133`,
+    `monotonic_parallelism=1`, `halving_sync_frequency=1`,
+    `sample_0_latency=512`, `sample_0_windows=2048`,
+    `sample_0_parallelism_x1000=3605`, `sample_1_latency=1024`,
+    `sample_1_windows=1024`, `sample_1_parallelism_x1000=3792`,
+    `sample_2_latency=2048`, `sample_2_windows=512`,
+    `sample_2_parallelism_x1000=3893`, `sample_3_latency=4096`,
+    `sample_3_windows=256`, `sample_3_parallelism_x1000=3946`,
+    `floor_parallelism_x1000=3605`, `modeled_recommended_latency=1024`,
+    `modeled_recommended_parallelism_x1000=3792`,
+    `max_latency_parallelism_x1000=3946`,
+    `floor_vs_unfloored_subfloor_ratio_x1000=1690`.
+  - **Scope:** validates the conservative lookahead cost model before the
+    production scheduler exists: link latency is the per-node lookahead budget,
+    declared zero/sub-floor base latencies fail, sub-floor latency faults clamp to
+    the floor, raised latency faults widen the budget, synchronization frequency
+    falls as latency rises, and the modeled floor already clears the four-node
+    parallelism target. Real threaded host measurements, perf baselines, and
+    critical-path workload corpus coverage still belong to the production
+    scheduler and `gate:perf-bench`.
+  - **Fallback:** none adopted.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed
