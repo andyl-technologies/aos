@@ -361,6 +361,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tower",
+ "tracing",
  "wasm-bindgen",
  "worker",
 ]
