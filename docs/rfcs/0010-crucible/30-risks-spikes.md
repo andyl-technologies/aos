@@ -1295,6 +1295,15 @@ real host-core perf measurement, and `gate:perf-bench` land.
   [PLAN-4]). *Gate:* `gate:layer0-determinism`, `gate:layer1-injection`,
   `gate:replay-oracle`. *Spec:* §30.13, §30.1.
 
+**RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by `T-RISK-16`:
+`checks.crucible.phase0.riskRegisterGate` verifies that every completed Phase-0
+risk spike has a decision-register entry and a concrete check name, that the four
+foundational Phase-0 blockers remain unchecked until their own PASS/fallback
+evidence exists, and that no non-risk checklist item is marked complete while
+those blockers remain open. The run reported `checked_risk_tasks=7`,
+`retired_decision_entries=7`, `phase0_foundational_blockers_open=4`,
+`unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
+
 ## 30.14 Summary
 
 ```text
@@ -1398,7 +1407,7 @@ never tolerated). Results live in the decision register (31).
 - [x] **T-RISK-15** Run the **multi-VM-parallelism** spike: vary link latency,
   report modeled host-core parallelism, and confirm the latency floor + lookahead
   budget meet the multi-VM-parallelism target. — satisfies [RISK-22]; spec §30.12.
-- [ ] **T-RISK-16** Maintain the **risk register** ([RISK-23]) and enforce the
+- [x] **T-RISK-16** Maintain the **risk register** ([RISK-23]) and enforce the
   Phase-0 gate ([RISK-24]): record each spike result in the decision register,
   block dependent Phase-1 work on the four ★ blockers, and add a new `RISK-n` row
   with an owning spike for any newly-discovered load-bearing assumption. —
