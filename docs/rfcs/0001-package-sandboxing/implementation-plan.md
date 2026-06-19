@@ -702,8 +702,11 @@ package, including non-verity `RootDirectory=` packages, by using
 seeded bundled metadata derives a stable package-root digest before writing the
 golden catalog. Quote verification can also require an explicit quote-identity
 pin catalog; without one, quote mode remains explicitly marked as
-self-consistent but untrusted. Remaining P9 blockers are AK/EK enrollment and
-credential activation, canonical TCG CEL compatibility, and verifier hosting.
+self-consistent but untrusted. The verifier-hosting decision is implemented as
+the standalone `aos.services.attestationVerifier` role, which consumes delivered
+quote/event-log/catalog evidence and writes the verifier result without sharing
+registry signing custody. Remaining P9 blockers are AK/EK enrollment and
+credential activation, and canonical TCG CEL compatibility.
 
 **Tracks.** D5 (verity variant), D6, D21, D22. The current slice closes the
 D22 registry golden-catalog coverage gap; D22 itself remains open until the
@@ -902,9 +905,11 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
 - [ ] **TPM AK/EK enrollment workflow (P9).** Define and automate how fleet
       trust catalogs are populated from credential activation, a privacy CA, or
       equivalent out-of-band TPM enrollment proof.
-- [ ] **Verifier hosting (P9).** Whether the fleet attestation verifier is a
-      registry-adjacent service or standalone — it is a *separate role* from the
-      registry catalog and must not hold the registry key.
+- [x] **Verifier hosting (P9).** The fleet attestation verifier is a standalone
+      AOS service role (`aos.services.attestationVerifier`) that runs
+      `apm attest verify` over delivered evidence. It is separate from the
+      registry catalog/provenance plane and does not hold the registry signing
+      key.
 - [x] **Transparency-log substrate (P10).** Build the first substrate in-registry as
       `transparency/package-provenance.jsonl`: an append-only JSONL hash chain
       committed alongside package provenance, with staged validation rejecting
