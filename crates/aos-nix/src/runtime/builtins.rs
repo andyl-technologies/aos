@@ -1249,6 +1249,7 @@ impl BuiltinExecution {
             | Self::FetchMercurial
             | Self::FetchTarball
             | Self::FetchTree
+            | Self::GetFlake
             | Self::Fetchurl => Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
             }),
@@ -1282,8 +1283,7 @@ impl BuiltinExecution {
             | Self::StoreDirValue
             | Self::NixVersionValue
             | Self::LangVersionValue
-            | Self::NixPathValue
-            | Self::GetFlake => None,
+            | Self::NixPathValue => None,
         }
     }
 
@@ -2283,6 +2283,18 @@ mod tests {
             })
         );
         assert_eq!(
+            direct_builtin(b"fetchMercurial"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
+            direct_builtin(b"getFlake"),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
+        assert_eq!(
             direct_builtin(b"readDir"),
             Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful
@@ -2787,7 +2799,12 @@ mod tests {
             .lookup(b"getFlake")
             .expect("getFlake builtin is registered");
         assert_eq!(get_flake.execution(), BuiltinExecution::GetFlake);
-        assert_eq!(get_flake.direct(), None);
+        assert_eq!(
+            get_flake.direct(),
+            Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Effectful
+            })
+        );
         assert_eq!(get_flake.first_class_arity(), Some(1));
         assert_eq!(get_flake.native_cli_fallback_feature(), Some("flakes"));
         assert_eq!(

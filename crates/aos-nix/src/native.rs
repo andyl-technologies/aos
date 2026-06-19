@@ -478,6 +478,13 @@ fn ensure_native_json_subset(
 ) -> Result<(), NativeEvalError> {
     for (index, node) in ir.arena.nodes().iter().enumerate() {
         if node.effect == EffectClass::Effectful {
+            if let IrKind::PrimOp = node.kind
+                && let IrData::PrimOp { symbol, .. } = node.data
+                && let Some(name) = ir.symbols.resolve(symbol)
+                && let Some(feature) = builtin_native_cli_fallback_feature(name)
+            {
+                return Err(unsupported_native_node(feature, node.span, expr_len));
+            }
             return Err(unsupported_native_node(
                 "effectful expression evaluation",
                 node.span,

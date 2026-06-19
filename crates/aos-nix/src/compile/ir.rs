@@ -2163,6 +2163,7 @@ mod tests {
                 "builtins.fetchurl \"file:///tmp/aos-fetchurl-test\"",
                 b"fetchurl".as_slice(),
             ),
+            (r#"builtins.getFlake "nixpkgs""#, b"getFlake".as_slice()),
             ("builtins.readFileType ./foo", b"readFileType".as_slice()),
             ("builtins.getEnv \"HOME\"", b"getEnv".as_slice()),
             (
