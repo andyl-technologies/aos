@@ -1326,6 +1326,39 @@ QEMU device migration state, block-device determinism, fat snapshot restore,
 broader DET-38 host coverage, and QEMU-version gating remain owned by later
 gates/spikes.
 
+**RISK-6 / RISK-7** are retired by `T-RISK-2`:
+`checks.crucible.phase0.s2HltBusyPoll` booted the target stock Linux kernel plus
+initramfs under `-accel tcg,thread=single` and
+`-icount shift=0,sleep=off,align=off`, attached a synchronous virtio block read
+device with `throttling.iops-read=20`, attached a virtio-9p tree with
+`throttling.iops-read=20`, and bracketed 32 reads from each path with
+observation-only guest markers. The plugin counted retired instructions, `HLT`
+opcodes, and MMIO events inside each bracket, and the gate requires every
+bracketed operation to include device I/O events. The run reported
+`block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
+`ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
+`idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
+`block_busy_poll_fraction_requirement=le_100000`,
+`block_idled_operations=32`, `block_busy_polled_operations=0`,
+`block_idle_fraction_ppm=1000000`,
+`block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
+`block_busy_poll_instruction_distribution=empty`, `block_hlt_observed=true`,
+`block_io_events_observed_per_operation=true`,
+`block_idle_threshold_met=true`, `ninep_idle_fraction_requirement=ge_900000`,
+`ninep_busy_poll_fraction_requirement=le_100000`,
+`ninep_idled_operations=32`, `ninep_busy_polled_operations=0`,
+`ninep_idle_fraction_ppm=1000000`,
+`ninep_operations_with_io_events=32`, `ninep_operations_without_io_events=0`,
+`ninep_busy_poll_instruction_distribution=empty`, `ninep_hlt_observed=true`,
+`ninep_io_events_observed_per_operation=true`,
+`ninep_idle_threshold_met=true`, `fallback_adopted=false`, and
+`busy_poll_mitigation_decision=not_needed_for_measured_delayed_sync_read_path`.
+The guest workload completed all 64 synchronous reads and printed
+`TEST_RESULT:PASS`. This retires the S2 performance risk for delayed synchronous
+virtio-block and virtio-9p reads on the target Linux guest: idle fast-forward is
+valid for the measured blocking-read path, and the exactness-preserving busy-poll
+fallback remains specified by [IO-30] but is not adopted for this path.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1368,8 +1401,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 remaining foundational Phase-0 blockers stay unchecked until their own
 PASS/fallback evidence exists, and that no non-risk checklist item is marked
 complete while those blockers remain open. The run reported
-`checked_risk_tasks=9`,
-`retired_decision_entries=9`, `phase0_foundational_blockers_open=3`,
+`checked_risk_tasks=10`,
+`retired_decision_entries=10`, `phase0_foundational_blockers_open=2`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1379,7 +1412,7 @@ Foundation-first (G-5): measure the load-bearing bets BEFORE building on them.
 
 Phase-0 blockers (run/pass first, in priority order):
   S1  ★  icount + entropy elimination => bit-identical single-VM (FATAL if false)
-  S2  ★  guest HLTs during blocking I/O (perf: fast-forward; correct either way)
+  S2  ★  guest HLTs during blocking I/O (idle fast-forward applies to measured path)
   S4  ★  producer→consumer visibility is icount-not-wallclock (Contract B)
   S3  ★  savevm/loadvm complete (else thin/replay checkpoints — clean fallback)
   S11 ★  deterministic multi-vCPU under RR-TCG + icount (G-10; else revert -smp 1)
@@ -1419,11 +1452,11 @@ never tolerated). Results live in the decision register (31).
   host conditions, and diff; bisect any mismatch to the leaking entropy source
   (rr-as-diagnostic only). — satisfies [RISK-4], [RISK-5], [DET-1], [DET-5]; spec
   §30.2.
-- [ ] **T-RISK-2** Run **S2** (Phase-0 blocker ★): characterize the HLT-vs-busy-poll
+- [x] **T-RISK-2** Run **S2** (Phase-0 blocker ★): characterize the HLT-vs-busy-poll
   fraction and busy-poll instruction cost for synchronous block/9p reads on the
-  target guests; confirm idle fast-forward ([SCHED-28]) applies often enough for
-  the perf budget; record the busy-poll mitigation decision. — satisfies [RISK-6],
-  [RISK-7], [IO-29], [IO-30]; spec §30.3.
+  target guests; determine whether idle fast-forward ([SCHED-28]) applies often
+  enough for the perf budget; record the busy-poll mitigation decision. —
+  satisfies [RISK-6], [RISK-7], [IO-29], [IO-30]; spec §30.3.
 - [ ] **T-RISK-3** Run **S4** (Phase-0 blocker ★): two-VM fixed-schedule
   run-twice-and-diff under artificially skewed producer/consumer timing, asserting
   identical per-frame consumer-visibility icounts and `(delivery_icount, src_node,

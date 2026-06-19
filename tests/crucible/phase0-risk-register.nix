@@ -39,6 +39,7 @@ pkgs.mkDerivation {
 
         {
           printf '%s\n' T-RISK-1
+          printf '%s\n' T-RISK-2
           printf '%s\n' T-RISK-8
           printf '%s\n' T-RISK-11
           printf '%s\n' T-RISK-12
@@ -59,7 +60,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 9 ] || fail "expected 9 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 10 ] || fail "expected 10 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -67,11 +68,11 @@ pkgs.mkDerivation {
           grep -F -x -q -- "$task" expected-checked-tasks.sorted || fail "unexpected checked task $task"
         done < checked-tasks.txt
 
-        require_fixed "$risk_doc" "- [ ] **T-RISK-2**"
         require_fixed "$risk_doc" "- [ ] **T-RISK-3**"
         require_fixed "$risk_doc" "- [ ] **T-RISK-4**"
 
         require_fixed "$risk_doc" "**RISK-4 / RISK-5** are retired by \`T-RISK-1\`"
+        require_fixed "$risk_doc" "**RISK-6 / RISK-7** are retired by \`T-RISK-2\`:"
         require_fixed "$risk_doc" "**RISK-15** is retired by \`T-RISK-8\`"
         require_fixed "$risk_doc" "**RISK-18** is retired by \`T-RISK-11\`"
         require_fixed "$risk_doc" "**RISK-19** is retired by \`T-RISK-12\`"
@@ -82,6 +83,7 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "**RISK-25** is retired by \`T-RISK-17\`"
 
         require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
+        require_fixed "$decision_doc" "RISK-6 / RISK-7 / T-RISK-2"
         require_fixed "$decision_doc" "RISK-15 / T-RISK-8"
         require_fixed "$decision_doc" "RISK-18 / T-RISK-11"
         require_fixed "$decision_doc" "RISK-19 / T-RISK-12"
@@ -92,6 +94,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
 
         require_fixed "$decision_doc" "checks.crucible.phase0.s1Fingerprint"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s2HltBusyPoll"
         require_fixed "$decision_doc" "checks.crucible.phase0.coverageOverhead"
         require_fixed "$decision_doc" "checks.crucible.phase0.abiDrift"
         require_fixed "$decision_doc" "checks.crucible.phase0.futexStress"
@@ -105,9 +108,9 @@ pkgs.mkDerivation {
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=9
-          echo retired_decision_entries=9
-          echo phase0_foundational_blockers_open=3
+          echo checked_risk_tasks=10
+          echo retired_decision_entries=10
+          echo phase0_foundational_blockers_open=2
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0
         } > "$out/result"

@@ -980,6 +980,45 @@ register.
     pass signal; S1 is green for the scoped Phase-0 execution-fingerprint proof
     path.
 
+- **RISK-6 / RISK-7 / T-RISK-2 — S2 block/9p HLT-vs-busy-poll**
+  - **Status:** PASS; delayed synchronous virtio-block and virtio-9p reads idle
+    in the measured target Linux guest, so idle fast-forward applies to this
+    blocking-read path.
+  - **Check:** `checks.crucible.phase0.s2HltBusyPoll`.
+  - **Result:** `target_guest=stock_linux_initramfs`,
+    `qemu_accel=tcg_thread_single`, `icount=shift0_sleep_off_align_off`,
+    `workload_block_reads=32`, `workload_9p_reads=32`,
+    `block_outstanding_wait_source=qemu_block_read_throttle_iops_20`,
+    `ninep_outstanding_wait_source=qemu_9p_read_throttle_iops_20`,
+    `idle_threshold_ppm=900000`, `block_idle_fraction_requirement=ge_900000`,
+    `block_busy_poll_fraction_requirement=le_100000`,
+    `block_idled_operations=32`, `block_busy_polled_operations=0`,
+    `block_idle_fraction_ppm=1000000`,
+    `block_operations_with_io_events=32`, `block_operations_without_io_events=0`,
+    `block_busy_poll_instruction_distribution=empty`,
+    `block_hlt_observed=true`, `block_io_events_observed_per_operation=true`,
+    `block_idle_threshold_met=true`,
+    `ninep_idle_fraction_requirement=ge_900000`,
+    `ninep_busy_poll_fraction_requirement=le_100000`,
+    `ninep_idled_operations=32`, `ninep_busy_polled_operations=0`,
+    `ninep_idle_fraction_ppm=1000000`,
+    `ninep_operations_with_io_events=32`, `ninep_operations_without_io_events=0`,
+    `ninep_busy_poll_instruction_distribution=empty`,
+    `ninep_hlt_observed=true`, `ninep_io_events_observed_per_operation=true`,
+    `ninep_idle_threshold_met=true`, `fallback_adopted=false`,
+    `correctness_dependency=none_busy_poll_remains_bit_correct`,
+    `busy_poll_mitigation_decision=not_needed_for_measured_delayed_sync_read_path`,
+    `s2_complete=true`.
+  - **Scope:** validates the Phase-0 S2 measurement path for one stock Linux
+    kernel plus initramfs under TCG/icount with QEMU-throttled virtio-block and
+    QEMU-throttled virtio-9p reads. The throttles create an outstanding device
+    completion interval, the guest workload completes all 64 reads and prints
+    `TEST_RESULT:PASS`, and the plugin verifies every bracketed operation
+    included device I/O events before the idle/busy classification is accepted.
+  - **Fallback:** none adopted for the measured delayed synchronous read path;
+    the exactness-preserving busy-poll fast-forward of [IO-30] remains the
+    specified fallback if a future target path commonly busy-polls.
+
 - **RISK-15 / T-RISK-8 — TCG-exec coverage overhead**
   - **Status:** PASS; risk retired for the Phase-0 basic-block coverage
     extraction overhead spike in [GHC-7].
@@ -1144,12 +1183,12 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=9`, `retired_decision_entries=9`,
-    `phase0_foundational_blockers_open=3`, `unexpected_checked_nonrisk_tasks=0`,
+  - **Result:** `checked_risk_tasks=10`, `retired_decision_entries=10`,
+    `phase0_foundational_blockers_open=2`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
     has a retirement record and a decision-register check name, the remaining
-    foundational blockers S2/S4/S3 are still visibly open, and no non-risk
+    foundational blockers S4/S3 are still visibly open, and no non-risk
     checklist item is marked complete while those blockers remain open. The full
     RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this check is
     the narrower RISK-23/RISK-24 guard.
