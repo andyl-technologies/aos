@@ -1099,6 +1099,65 @@ register.
     physical / pinned identity-mapped page remains a specified fallback if a later
     production channel path invalidates this spike.
 
+- **RISK-13 / T-RISK-6 — S6 KASLR/ASLR determinism**
+  - **Status:** PASS; KASLR/userspace ASLR are deterministic under the measured
+    seeded diskless stock-Linux proof path and may be recorded as a per-image
+    capability.
+  - **Check:** `checks.crucible.phase0.s6KaslrAslr`.
+  - **Result:** `scenario=stock-linux-diskless-initramfs-kaslr-aslr`,
+    `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
+    `cadence=200000000`, `horizon_icount=3400000000`,
+    `host_adversary=jitter-load`, `qemu_internal_seed=0x0010c006`,
+    `guest_entropy_seed=fw_cfg_and_deterministic_virtio_rng`,
+    `control_cmdline_has_nokaslr_norandmaps=true`,
+    `randomized_cmdline_has_nokaslr_norandmaps=false`,
+    `control_fingerprint_match=true`, `control_bases_identical=true`,
+    `control_samples=18`, `randomized_fingerprint_match=true`,
+    `randomized_sample_count_match=true`, `randomized_bases_identical=true`,
+    `randomized_samples_a=18`, `randomized_samples_b=18`,
+    `control_randomize_va_space=0`, `randomized_randomize_va_space=2`,
+    `kernel_text_nonzero=true`, `kernel_base_identical=true`,
+    `stack_base_identical=true`, `heap_base_identical=true`,
+    `brk_base_identical=true`, `mmap_base_identical=true`,
+    `vdso_base_identical=true`, `kernel_base_differs_from_control=true`,
+    `stack_base_differs_from_control=true`,
+    `heap_base_differs_from_control=true`,
+    `brk_base_differs_from_control=true`,
+    `mmap_base_differs_from_control=true`,
+    `vdso_base_differs_from_control=true`,
+    `control_kernel_text=ffffffff81000000`,
+    `randomized_kernel_text=ffffffffb9600000`,
+    `control_stack=00007fffffffd748`,
+    `randomized_stack=00007ffe6ae895a8`,
+    `control_heap=0000555555559890`,
+    `randomized_heap=000055c0ee4c2890`,
+    `control_brk=000055555557a000`,
+    `randomized_brk=000055c0ee4e3000`,
+    `control_mmap=00007ffff7dcd000`,
+    `randomized_mmap=00007f9f1b1b8000`,
+    `control_vdso=00007ffff7fc6000`,
+    `randomized_vdso=00007f9f1b3b1000`,
+    `final_extended_hash=e870395413c66341`,
+    `final_register_hash=46cc2a780110c1fc`,
+    `final_ram_hash=76c52fb94c593648`, `final_ram_bytes=268967936`,
+    `register_read_failures=0`, `device_event_capture=false`,
+    `block_device_assertion=launch_argv_scan`,
+    `first_differing_line=none`, `first_differing_component=none`,
+    `randomization_reenabled_capability=true`,
+    `default_decision=randomization_may_be_enabled_per_image`,
+    `fallback_adopted=none`, `s6_complete=true`.
+  - **Scope:** validates the Phase-0 S6 opportunity spike for one stock Linux
+    kernel plus diskless initramfs under deterministic QEMU seeding. The control
+    keeps `nokaslr norandmaps`; the randomized run removes them, confirms
+    userspace ASLR is enabled through `/proc/sys/kernel/randomize_va_space`,
+    reads a nonzero kernel text base from `/proc/kallsyms`, samples user address
+    bases, and compares two randomized extended fingerprints plus explicit base
+    reports under host jitter. The proof uses QMP only to stop at a fixed icount
+    after the guest reports PASS; it does not flip the global launch default.
+  - **Fallback:** none adopted. Randomization may be enabled only when recorded
+    as an image capability; the conservative flags remain valid for images that
+    have not passed the same gate.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1298,7 +1357,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=13`, `retired_decision_entries=13`,
+  - **Result:** `checked_risk_tasks=14`, `retired_decision_entries=14`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike

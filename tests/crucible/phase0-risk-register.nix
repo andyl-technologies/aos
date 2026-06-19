@@ -43,6 +43,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-3
           printf '%s\n' T-RISK-4
           printf '%s\n' T-RISK-5
+          printf '%s\n' T-RISK-6
           printf '%s\n' T-RISK-8
           printf '%s\n' T-RISK-11
           printf '%s\n' T-RISK-12
@@ -63,7 +64,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 13 ] || fail "expected 13 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 14 ] || fail "expected 14 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -81,6 +82,10 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "**RISK-12** is retired by \`T-RISK-5\`"
         require_fixed "$risk_doc" "\`virtual_address_read_result=pass\`"
         require_fixed "$risk_doc" "\`production_whitebox_channel_implemented=false\`"
+        require_fixed "$risk_doc" "**RISK-13** is retired by \`T-RISK-6\`"
+        require_fixed "$risk_doc" "\`randomization_reenabled_capability=true\`"
+        require_fixed "$risk_doc" "\`default_decision=randomization_may_be_enabled_per_image\`"
+        require_fixed "$risk_doc" "\`fallback_adopted=none\`"
         require_fixed "$risk_doc" "**RISK-15** is retired by \`T-RISK-8\`"
         require_fixed "$risk_doc" "**RISK-18** is retired by \`T-RISK-11\`"
         require_fixed "$risk_doc" "**RISK-19** is retired by \`T-RISK-12\`"
@@ -95,6 +100,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-10 / RISK-11 / T-RISK-3"
         require_fixed "$decision_doc" "RISK-8 / RISK-9 / T-RISK-4"
         require_fixed "$decision_doc" "RISK-12 / T-RISK-5"
+        require_fixed "$decision_doc" "RISK-13 / T-RISK-6"
         require_fixed "$decision_doc" "RISK-15 / T-RISK-8"
         require_fixed "$decision_doc" "RISK-18 / T-RISK-11"
         require_fixed "$decision_doc" "RISK-19 / T-RISK-12"
@@ -116,6 +122,9 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.s5VirtualMemory"
         require_fixed "$decision_doc" "qemu_plugin_read_memory_vaddr_available=true"
         require_fixed "$decision_doc" "physical_pinned_fallback_adopted=false"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s6KaslrAslr"
+        require_fixed "$decision_doc" "randomized_fingerprint_match=true"
+        require_fixed "$decision_doc" "randomized_bases_identical=true"
         require_fixed "$decision_doc" "checks.crucible.phase0.coverageOverhead"
         require_fixed "$decision_doc" "checks.crucible.phase0.abiDrift"
         require_fixed "$decision_doc" "checks.crucible.phase0.futexStress"
@@ -129,8 +138,8 @@ pkgs.mkDerivation {
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=13
-          echo retired_decision_entries=13
+          echo checked_risk_tasks=14
+          echo retired_decision_entries=14
           echo phase0_foundational_blockers_open=0
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0
