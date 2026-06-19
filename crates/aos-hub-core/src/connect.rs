@@ -612,8 +612,10 @@ async fn resolve_frontend_route(
     None
 }
 
-/// Domain-routing middleware: dispatch a request arriving on a frontend domain
-/// to the registry/cache that frontend binds.
+/// Apply frontend domain-routing to `request`, returning the request to
+/// continue with (its URI rewritten to the bound `/{slug}/…` identity when the
+/// `Host` is a serving frontend domain) or an early [`Response`] (a `404` when
+/// the frontend does not serve the requested surface class).
 ///
 /// When the request `Host` matches a serving frontend (a *proxied* per-registry
 /// or per-cache domain — a Direct frontend CNAMEs straight to the origin and
@@ -621,19 +623,14 @@ async fn resolve_frontend_route(
 /// `serves_git`/`serves_cache`/`serves_web` subset gate (a `404` for a surface
 /// the frontend does not advertise), and rewrites the request to the internal
 /// `/{slug}/{surface_path}` form so every existing handler (the cache/git
-/// facade, the browse pages) serves it unchanged. A request on the instance's
-/// own domain (or any unrecognized host) passes straight through to slug
-/// routing.
-/// Apply frontend domain-routing to `request`, returning the request to
-/// continue with (its URI rewritten to the bound `/{slug}/…` identity when the
-/// `Host` is a serving frontend domain) or an early [`Response`] (a `404` when
-/// the frontend does not serve the requested surface class).
+/// facade, the browse pages) serves it unchanged. A request whose host is not a
+/// frontend (the instance's own domain, or any unrecognized host) is returned
+/// unchanged for normal slug routing.
 ///
 /// This is the shared decision both shells run: the native hub wraps it in a
 /// [`with_frontend_dispatch`] middleware (its services are `Send`), and the
 /// Worker calls it directly from its request bridge (its services are `!Send`,
-/// which `axum::middleware::from_fn` would reject). A request on the instance's
-/// own domain, or any unrecognized host, is returned unchanged.
+/// which `axum::middleware::from_fn` would reject).
 ///
 /// # Errors
 ///
@@ -646,11 +643,6 @@ pub async fn rewrite_for_frontend(
     let Some(host) = request_host(request.headers(), request.uri()) else {
         return Ok(request);
     };
-    // Fast path: the instance's own domain is never a frontend, so skip the
-    // lookup (and the per-request DB hit) for it.
-    if Some(host.as_str()) == instance_host(&svc.external_url).as_deref() {
-        return Ok(request);
-    }
     let path = request.uri().path().to_string();
     let Some(route) = resolve_frontend_route(svc, &host, &path).await else {
         return Ok(request);
@@ -684,14 +676,6 @@ async fn dispatch_frontend_domain(svc: Arc<RpcService>, request: Request, next: 
         Ok(request) => next.run(request).await,
         Err(response) => response,
     }
-}
-
-/// The host of the instance's canonical `external_url`, lowercased, or `None`
-/// when it cannot be parsed.
-fn instance_host(external_url: &str) -> Option<String> {
-    url::Url::parse(external_url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
 }
 
 /// Wrap `router` with the [`dispatch_frontend_domain`] middleware so requests on

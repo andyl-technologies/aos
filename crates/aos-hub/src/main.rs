@@ -284,27 +284,17 @@ struct WorkerArgs {
     /// The KV namespace title for sessions (default: `<name>-sessions`).
     #[arg(long)]
     kv_title: Option<String>,
-    /// A hostname Cloudflare routes to the Worker (repeatable: pass once per
-    /// domain). Each is bound as a `custom_domain` route — `wrangler deploy`
-    /// provisions its DNS record + edge cert — and its zone must be on the same
-    /// Cloudflare account.
+    /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
+    /// deploy` provisions its DNS record + edge cert, and its zone must be on the
+    /// same Cloudflare account. Omit to serve only on the free
+    /// `<name>.<subdomain>.workers.dev` URL.
     ///
-    /// The FIRST `--domain` is the hub's canonical public URL: it auto-fills the
-    /// origin the hub emits about itself (the `{url}/{slug}` push URL in setup
-    /// snippets, the OIDC redirect_uri base, the WebAuthn relying-party ID, and
-    /// absolute browse links), so you do not pass it twice. Additional `--domain`
-    /// values are extra per-registry/per-cache frontend routes the hub dispatches
-    /// internally by Host header.
-    ///
-    /// The Worker is also always reachable at the free `<name>.<subdomain>.workers.dev`
-    /// URL; that's auto-derived (not configured here) and can be ignored.
-    #[arg(long = "domain")]
-    domains: Vec<String>,
-    /// Override the hub's canonical public URL when it is NOT `https://<first
-    /// --domain>` — e.g. a `*.workers.dev`-only deploy, or the Worker sitting
-    /// behind another CDN. Normally unset: the first `--domain` supplies it.
+    /// The hub takes its canonical public URL (the `{url}/{slug}` push URL, the
+    /// OIDC redirect_uri base, the WebAuthn relying-party ID, browse links) from
+    /// whatever domain a request arrives on, so you do not configure it
+    /// separately — set this and you're done.
     #[arg(long)]
-    canonical_url: Option<String>,
+    domain: Option<String>,
     /// Bootstrap root admin email (paired with --root-password); install only.
     #[arg(long)]
     root_email: Option<String>,
@@ -349,24 +339,9 @@ impl WorkerArgs {
             .unwrap_or_else(|| format!("{}-sessions", self.name))
     }
 
-    /// The hub's canonical public URL: `--canonical-url` if given, else
-    /// `https://<first --domain>`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when neither `--canonical-url` nor any `--domain` is set,
-    /// so the hub has no canonical origin to emit in its links.
-    fn external_url(&self) -> Result<String> {
-        if let Some(url) = &self.canonical_url {
-            return Ok(url.clone());
-        }
-        if let Some(domain) = self.domains.first() {
-            return Ok(format!("https://{domain}"));
-        }
-        anyhow::bail!(
-            "no canonical URL: pass --domain <host> (the first is the hub's canonical \
-             URL) or --canonical-url <url>"
-        )
+    /// The custom domains to bind (zero or one), derived from `--domain`.
+    fn domains(&self) -> Vec<String> {
+        self.domain.clone().into_iter().collect()
     }
 }
 
@@ -2159,7 +2134,12 @@ async fn run_worker_command(root: &Option<PathBuf>, command: WorkerCommand) -> R
                 let (email, id) = ensure_root(&db, email, &plaintext).await?;
                 println!("root admin '{email}' ready (user id {id})");
             }
-            println!("install complete: {}", args.external_url()?);
+            match &args.domain {
+                Some(domain) => println!("install complete: bound to {domain}"),
+                None => println!(
+                    "install complete: serving on the Worker's *.workers.dev URL"
+                ),
+            }
         }
     }
     Ok(())
@@ -2170,15 +2150,18 @@ async fn provision_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
 ) -> Result<aos_hub::cloudflare::DeployConfig> {
+    // No canonical URL is baked: the Worker derives it from each request's
+    // origin (its `*.workers.dev` URL or a bound `--domain`), so it is passed
+    // empty here and the `HUB_EXTERNAL_URL` var is omitted from the config.
     aos_hub::cloudflare::provision(
         assets,
         &args.name,
         &args.d1_name(),
         &args.bucket(),
         &args.kv_title(),
-        &args.external_url()?,
+        "",
         args.email_relay_url.as_deref(),
-        &args.domains,
+        &args.domains(),
     )
     .await
 }
@@ -2204,7 +2187,10 @@ async fn deploy_worker(
         println!("  HUB_JWT_SECRET={}", applied.jwt_secret);
         println!("  HUB_SEAL_KEY={}", applied.seal_key);
     }
-    println!("deployed: {}", args.external_url()?);
+    match &args.domain {
+        Some(domain) => println!("deployed: bound to {domain}"),
+        None => println!("deployed: serving on the Worker's *.workers.dev URL"),
+    }
     Ok(())
 }
 
