@@ -67,6 +67,8 @@ impl DrvClosure {
 
 static NATIVE_MODE: OnceLock<NativeMode> = OnceLock::new();
 #[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_MODE: OnceLock<NativeVerifyMode> = OnceLock::new();
+#[cfg(feature = "native-eval")]
 static NATIVE_FALLBACK_UNSUPPORTED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "native-eval")]
 static NATIVE_FALLBACK_INTERNAL: AtomicU64 = AtomicU64::new(0);
@@ -88,6 +90,18 @@ static NATIVE_SHADOW_EXPRESSION_MATCH: AtomicU64 = AtomicU64::new(0);
 static NATIVE_SHADOW_EXPRESSION_DIVERGENCE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "native-eval")]
 static NATIVE_SHADOW_EXPRESSION_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_DRV_MATCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_DRV_DIVERGENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_DRV_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_EXPRESSION_MATCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_EXPRESSION_DIVERGENCE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "native-eval")]
+static NATIVE_VERIFY_EXPRESSION_INCOMPLETE: AtomicU64 = AtomicU64::new(0);
 
 /// Native evaluator fallback counters captured for the current process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -212,12 +226,80 @@ impl NativeShadowStats {
     }
 }
 
+/// Verify-mode native evaluator comparison counters captured for the current process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeVerifyStats {
+    drv_matches: u64,
+    drv_divergences: u64,
+    drv_incomplete: u64,
+    expression_matches: u64,
+    expression_divergences: u64,
+    expression_incomplete: u64,
+}
+
+impl NativeVerifyStats {
+    /// Returns sampled `.drv` closure comparisons that matched C++ Nix.
+    pub const fn drv_matches(&self) -> u64 {
+        self.drv_matches
+    }
+
+    /// Returns sampled `.drv` closure comparisons that diverged from C++ Nix.
+    pub const fn drv_divergences(&self) -> u64 {
+        self.drv_divergences
+    }
+
+    /// Returns sampled `.drv` closure comparisons where either side could not be compared.
+    pub const fn drv_incomplete(&self) -> u64 {
+        self.drv_incomplete
+    }
+
+    /// Returns sampled strict JSON expression comparisons that matched C++ Nix.
+    pub const fn expression_matches(&self) -> u64 {
+        self.expression_matches
+    }
+
+    /// Returns sampled strict JSON expression comparisons that diverged from C++ Nix.
+    pub const fn expression_divergences(&self) -> u64 {
+        self.expression_divergences
+    }
+
+    /// Returns sampled strict JSON expression comparisons where C++ Nix could not be checked.
+    pub const fn expression_incomplete(&self) -> u64 {
+        self.expression_incomplete
+    }
+
+    /// Returns the total number of completed verify comparisons that matched.
+    pub const fn matches(&self) -> u64 {
+        self.drv_matches.saturating_add(self.expression_matches)
+    }
+
+    /// Returns the total number of completed verify comparisons that diverged.
+    pub const fn divergences(&self) -> u64 {
+        self.drv_divergences
+            .saturating_add(self.expression_divergences)
+    }
+
+    /// Returns the total number of verify comparisons that could not complete.
+    pub const fn incomplete(&self) -> u64 {
+        self.drv_incomplete
+            .saturating_add(self.expression_incomplete)
+    }
+
+    /// Returns the total number of verify comparison attempts.
+    pub const fn total(&self) -> u64 {
+        self.matches()
+            .saturating_add(self.divergences())
+            .saturating_add(self.incomplete())
+    }
+}
+
 /// Native evaluator counters captured for the current process.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NativeEvalStats {
     successes: NativeSuccessStats,
     fallbacks: NativeFallbackStats,
     shadow: NativeShadowStats,
+    verify: NativeVerifyStats,
 }
 
 impl NativeEvalStats {
@@ -234,6 +316,11 @@ impl NativeEvalStats {
     /// Returns shadow-mode native comparisons against C++ Nix.
     pub const fn shadow(&self) -> NativeShadowStats {
         self.shadow
+    }
+
+    /// Returns verify-mode native comparisons against C++ Nix.
+    pub const fn verify(&self) -> NativeVerifyStats {
+        self.verify
     }
 }
 
@@ -291,12 +378,33 @@ pub fn native_shadow_stats() -> NativeShadowStats {
     }
 }
 
+/// Returns verify-mode native evaluator comparison counters captured for the current process.
+pub fn native_verify_stats() -> NativeVerifyStats {
+    #[cfg(feature = "native-eval")]
+    {
+        NativeVerifyStats {
+            drv_matches: NATIVE_VERIFY_DRV_MATCH.load(Ordering::Relaxed),
+            drv_divergences: NATIVE_VERIFY_DRV_DIVERGENCE.load(Ordering::Relaxed),
+            drv_incomplete: NATIVE_VERIFY_DRV_INCOMPLETE.load(Ordering::Relaxed),
+            expression_matches: NATIVE_VERIFY_EXPRESSION_MATCH.load(Ordering::Relaxed),
+            expression_divergences: NATIVE_VERIFY_EXPRESSION_DIVERGENCE.load(Ordering::Relaxed),
+            expression_incomplete: NATIVE_VERIFY_EXPRESSION_INCOMPLETE.load(Ordering::Relaxed),
+        }
+    }
+
+    #[cfg(not(feature = "native-eval"))]
+    {
+        NativeVerifyStats::default()
+    }
+}
+
 /// Returns native evaluator counters captured for the current process.
 pub fn native_eval_stats() -> NativeEvalStats {
     NativeEvalStats {
         successes: native_success_stats(),
         fallbacks: native_fallback_stats(),
         shadow: native_shadow_stats(),
+        verify: native_verify_stats(),
     }
 }
 
@@ -558,6 +666,7 @@ impl NixEvalConfig {
             command.env(name, value);
         }
         command.env_remove("AOS_NIX_NATIVE");
+        command.env_remove("AOS_NIX_NATIVE_VERIFY");
         if let Some(working_dir) = self.working_dir() {
             command.current_dir(working_dir);
         }
@@ -849,7 +958,7 @@ impl NixEvalConfig {
     }
 
     fn set_eval_env_var_bytes(&mut self, name: Vec<u8>, value: Vec<u8>) {
-        if name.as_slice() != b"AOS_NIX_NATIVE" {
+        if !is_evaluator_control_env_var(&name) {
             self.eval_env_vars.insert(name, value);
         }
     }
@@ -962,13 +1071,17 @@ fn eval_env_vars_from_process() -> BTreeMap<Vec<u8>, Vec<u8>> {
     std::env::vars_os()
         .filter_map(|(name, value)| {
             let name = env_bytes_from_os_string(name);
-            if name.as_slice() == b"AOS_NIX_NATIVE" {
+            if is_evaluator_control_env_var(&name) {
                 None
             } else {
                 Some((name, env_bytes_from_os_string(value)))
             }
         })
         .collect()
+}
+
+fn is_evaluator_control_env_var(name: &[u8]) -> bool {
+    matches!(name, b"AOS_NIX_NATIVE" | b"AOS_NIX_NATIVE_VERIFY")
 }
 
 #[cfg(unix)]
@@ -1076,6 +1189,48 @@ pub fn native_mode_from_env() -> NativeMode {
             tracing::warn!(
                 value = raw,
                 "unknown AOS_NIX_NATIVE value; using nix-cli fallback"
+            );
+        }
+        mode
+    })
+}
+
+#[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVerifyMode {
+    Off,
+    Always,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeVerifyMode {
+    const fn enabled(self) -> bool {
+        matches!(self, Self::Always)
+    }
+}
+
+#[cfg(feature = "native-eval")]
+fn parse_native_verify_mode(value: Option<&str>) -> (NativeVerifyMode, Option<String>) {
+    let Some(raw) = value else {
+        return (NativeVerifyMode::Off, None);
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "0" | "false" | "no" | "off" => (NativeVerifyMode::Off, None),
+        "1" | "true" | "yes" | "on" | "always" => (NativeVerifyMode::Always, None),
+        _ => (NativeVerifyMode::Off, Some(raw.to_string())),
+    }
+}
+
+#[cfg(feature = "native-eval")]
+fn native_verify_mode_from_env() -> NativeVerifyMode {
+    *NATIVE_VERIFY_MODE.get_or_init(|| {
+        let value = std::env::var("AOS_NIX_NATIVE_VERIFY").ok();
+        let (mode, unknown) = parse_native_verify_mode(value.as_deref());
+        if let Some(raw) = unknown {
+            tracing::warn!(
+                value = raw,
+                "unknown AOS_NIX_NATIVE_VERIFY value; disabling native verification"
             );
         }
         mode
@@ -1191,7 +1346,14 @@ impl NativeFallbackEval {
 impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let file = self.config.resolve_eval_file_path(file);
-        match self.native.instantiate(&file, attr) {
+        match self
+            .native
+            .instantiate_closure(&file, attr)
+            .and_then(|closure| {
+                verify_native_file_drv_closure(&self.fallback, &file, attr, &closure)?;
+                self.native.materialize_closure(&closure)?;
+                Ok(closure.root().to_path_buf())
+            }) {
             Ok(path) => {
                 observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
                 Ok(path)
@@ -1207,7 +1369,14 @@ impl NixEval for NativeFallbackEval {
     }
 
     fn instantiate_expr(&self, expr: &str) -> Result<PathBuf> {
-        match self.native.instantiate_expr(expr) {
+        match self
+            .native
+            .instantiate_expr_closure(expr)
+            .and_then(|closure| {
+                verify_native_expr_drv_closure(&self.fallback, expr, &closure)?;
+                self.native.materialize_closure(&closure)?;
+                Ok(closure.root().to_path_buf())
+            }) {
             Ok(path) => {
                 observe_native_eval_success(NativeSuccessOperation::ExpressionInstantiation);
                 Ok(path)
@@ -1225,6 +1394,7 @@ impl NixEval for NativeFallbackEval {
     fn eval_expr(&self, expr: &str) -> Result<String> {
         match self.native.eval_expr(expr) {
             Ok(value) => {
+                verify_native_eval_expr(&self.fallback, expr, &value)?;
                 observe_native_eval_success(NativeSuccessOperation::ExpressionEvaluation);
                 Ok(value)
             }
@@ -1507,6 +1677,239 @@ fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usi
 }
 
 #[cfg(feature = "native-eval")]
+fn verify_native_file_drv_closure(
+    fallback: &NixCli,
+    file: &Path,
+    attr: &str,
+    native: &NativeDrvClosure,
+) -> Result<()> {
+    if !native_verify_mode_from_env().enabled() {
+        return Ok(());
+    }
+
+    let fallback_root = match fallback.instantiate(file, attr) {
+        Ok(path) => path,
+        Err(error) => {
+            observe_native_verify_result(
+                NativeVerifyOperation::DrvClosure,
+                NativeVerifyOutcome::Incomplete,
+            );
+            tracing::error!(
+                error = %error,
+                file = %file.display(),
+                attr,
+                "native verify oracle file instantiation failed"
+            );
+            return Err(anyhow::anyhow!(
+                "native verify oracle file instantiation failed for {} -A {attr}: {error}",
+                file.display()
+            ));
+        }
+    };
+
+    verify_native_drv_closure_from_fallback_root(
+        &fallback_root,
+        native,
+        "file instantiation",
+        Some(file),
+        Some(attr),
+    )
+}
+
+#[cfg(feature = "native-eval")]
+fn verify_native_expr_drv_closure(
+    fallback: &NixCli,
+    expr: &str,
+    native: &NativeDrvClosure,
+) -> Result<()> {
+    if !native_verify_mode_from_env().enabled() {
+        return Ok(());
+    }
+
+    let fallback_root = match fallback.instantiate_expr(expr) {
+        Ok(path) => path,
+        Err(error) => {
+            observe_native_verify_result(
+                NativeVerifyOperation::DrvClosure,
+                NativeVerifyOutcome::Incomplete,
+            );
+            tracing::error!(
+                error = %error,
+                "native verify oracle expression instantiation failed"
+            );
+            return Err(anyhow::anyhow!(
+                "native verify oracle expression instantiation failed: {error}"
+            ));
+        }
+    };
+
+    verify_native_drv_closure_from_fallback_root(
+        &fallback_root,
+        native,
+        "expression instantiation",
+        None,
+        None,
+    )
+}
+
+#[cfg(feature = "native-eval")]
+fn verify_native_drv_closure_from_fallback_root(
+    fallback_root: &Path,
+    native: &NativeDrvClosure,
+    operation: &'static str,
+    file: Option<&Path>,
+    attr: Option<&str>,
+) -> Result<()> {
+    let fallback = match read_drv_closure(fallback_root.to_path_buf()) {
+        Ok(closure) => closure,
+        Err(error) => {
+            observe_native_verify_result(
+                NativeVerifyOperation::DrvClosure,
+                NativeVerifyOutcome::Incomplete,
+            );
+            tracing::error!(
+                error = %error,
+                fallback = %fallback_root.display(),
+                native = %native.root().display(),
+                operation,
+                "native verify could not read nix-cli drv closure"
+            );
+            return Err(anyhow::anyhow!(
+                "native verify could not read nix-cli drv closure {}: {error}",
+                fallback_root.display()
+            ));
+        }
+    };
+
+    let divergences = compare_verify_drv_closure(&fallback, &native, operation, file, attr);
+    if divergences == 0 {
+        observe_native_verify_result(
+            NativeVerifyOperation::DrvClosure,
+            NativeVerifyOutcome::Match,
+        );
+        tracing::debug!(operation, "native verify drv closure matched nix-cli");
+        Ok(())
+    } else {
+        observe_native_verify_result(
+            NativeVerifyOperation::DrvClosure,
+            NativeVerifyOutcome::Divergence,
+        );
+        Err(anyhow::anyhow!(
+            "native verify found {divergences} drv closure divergence(s) for {operation}"
+        ))
+    }
+}
+
+#[cfg(feature = "native-eval")]
+fn compare_verify_drv_closure(
+    fallback: &DrvClosure,
+    native: &NativeDrvClosure,
+    operation: &'static str,
+    file: Option<&Path>,
+    attr: Option<&str>,
+) -> usize {
+    let mut divergences = 0;
+    if fallback.root() != native.root() {
+        divergences += 1;
+        tracing::error!(
+            fallback = %fallback.root().display(),
+            native = %native.root().display(),
+            operation,
+            file = ?file.map(tracing_path),
+            attr,
+            "native verify drv closure root diverged from nix-cli"
+        );
+    }
+
+    for (path, fallback_bytes) in fallback.drvs() {
+        match native.drvs().get(path) {
+            Some(native_bytes) if native_bytes == fallback_bytes => {}
+            Some(_) => {
+                divergences += 1;
+                tracing::error!(
+                    drv = %path.display(),
+                    operation,
+                    file = ?file.map(tracing_path),
+                    attr,
+                    "native verify drv bytes diverged from nix-cli"
+                );
+            }
+            None => {
+                divergences += 1;
+                tracing::error!(
+                    drv = %path.display(),
+                    operation,
+                    file = ?file.map(tracing_path),
+                    attr,
+                    "native verify omitted nix-cli drv from closure"
+                );
+            }
+        }
+    }
+
+    for path in native.drvs().keys() {
+        if !fallback.drvs().contains_key(path) {
+            divergences += 1;
+            tracing::error!(
+                drv = %path.display(),
+                operation,
+                file = ?file.map(tracing_path),
+                attr,
+                "native verify produced extra drv outside nix-cli closure"
+            );
+        }
+    }
+
+    divergences
+}
+
+#[cfg(feature = "native-eval")]
+fn verify_native_eval_expr(fallback: &NixCli, expr: &str, native: &str) -> Result<()> {
+    if !native_verify_mode_from_env().enabled() {
+        return Ok(());
+    }
+
+    let fallback = match fallback.eval_expr(expr) {
+        Ok(value) => value,
+        Err(error) => {
+            observe_native_verify_result(
+                NativeVerifyOperation::ExpressionEvaluation,
+                NativeVerifyOutcome::Incomplete,
+            );
+            tracing::error!(
+                error = %error,
+                "native verify oracle expression evaluation failed"
+            );
+            return Err(anyhow::anyhow!(
+                "native verify oracle expression evaluation failed: {error}"
+            ));
+        }
+    };
+    if fallback == native {
+        observe_native_verify_result(
+            NativeVerifyOperation::ExpressionEvaluation,
+            NativeVerifyOutcome::Match,
+        );
+        tracing::debug!("native verify expression evaluation matched nix-cli");
+        Ok(())
+    } else {
+        observe_native_verify_result(
+            NativeVerifyOperation::ExpressionEvaluation,
+            NativeVerifyOutcome::Divergence,
+        );
+        tracing::error!("native verify expression evaluation diverged from nix-cli");
+        Err(anyhow::anyhow!(
+            "native verify expression evaluation diverged from nix-cli"
+        ))
+    }
+}
+
+#[cfg(feature = "native-eval")]
+fn tracing_path(path: &Path) -> String {
+    path.display().to_string()
+}
+
+#[cfg(feature = "native-eval")]
 #[derive(Debug, Clone, Copy)]
 enum NativeSuccessOperation {
     FileInstantiation,
@@ -1552,6 +1955,42 @@ enum NativeShadowOutcome {
 
 #[cfg(feature = "native-eval")]
 impl NativeShadowOutcome {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Match => "match",
+            Self::Divergence => "divergence",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
+
+#[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy)]
+enum NativeVerifyOperation {
+    DrvClosure,
+    ExpressionEvaluation,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeVerifyOperation {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::DrvClosure => "drv closure",
+            Self::ExpressionEvaluation => "expression evaluation",
+        }
+    }
+}
+
+#[cfg(feature = "native-eval")]
+#[derive(Debug, Clone, Copy)]
+enum NativeVerifyOutcome {
+    Match,
+    Divergence,
+    Incomplete,
+}
+
+#[cfg(feature = "native-eval")]
+impl NativeVerifyOutcome {
     const fn label(self) -> &'static str {
         match self {
             Self::Match => "match",
@@ -1615,6 +2054,17 @@ fn observe_native_shadow_result(operation: NativeShadowOperation, outcome: Nativ
 }
 
 #[cfg(feature = "native-eval")]
+fn observe_native_verify_result(operation: NativeVerifyOperation, outcome: NativeVerifyOutcome) {
+    let count = record_native_verify_result(operation, outcome);
+    tracing::debug!(
+        operation = operation.label(),
+        verify_outcome = outcome.label(),
+        verify_count = count,
+        "native verify comparison recorded"
+    );
+}
+
+#[cfg(feature = "native-eval")]
 fn record_native_shadow_result(
     operation: NativeShadowOperation,
     outcome: NativeShadowOutcome,
@@ -1635,6 +2085,32 @@ fn record_native_shadow_result(
         }
         (NativeShadowOperation::ExpressionEvaluation, NativeShadowOutcome::Incomplete) => {
             &NATIVE_SHADOW_EXPRESSION_INCOMPLETE
+        }
+    };
+    counter.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+#[cfg(feature = "native-eval")]
+fn record_native_verify_result(
+    operation: NativeVerifyOperation,
+    outcome: NativeVerifyOutcome,
+) -> u64 {
+    let counter = match (operation, outcome) {
+        (NativeVerifyOperation::DrvClosure, NativeVerifyOutcome::Match) => &NATIVE_VERIFY_DRV_MATCH,
+        (NativeVerifyOperation::DrvClosure, NativeVerifyOutcome::Divergence) => {
+            &NATIVE_VERIFY_DRV_DIVERGENCE
+        }
+        (NativeVerifyOperation::DrvClosure, NativeVerifyOutcome::Incomplete) => {
+            &NATIVE_VERIFY_DRV_INCOMPLETE
+        }
+        (NativeVerifyOperation::ExpressionEvaluation, NativeVerifyOutcome::Match) => {
+            &NATIVE_VERIFY_EXPRESSION_MATCH
+        }
+        (NativeVerifyOperation::ExpressionEvaluation, NativeVerifyOutcome::Divergence) => {
+            &NATIVE_VERIFY_EXPRESSION_DIVERGENCE
+        }
+        (NativeVerifyOperation::ExpressionEvaluation, NativeVerifyOutcome::Incomplete) => {
+            &NATIVE_VERIFY_EXPRESSION_INCOMPLETE
         }
     };
     counter.fetch_add(1, Ordering::Relaxed) + 1
@@ -2022,6 +2498,7 @@ mod tests {
         config.eval_env_vars.clear();
         config.set_eval_env_var_bytes(b"AOS_ARBITRARY_ENV".to_vec(), b"present".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE".to_vec(), b"1".to_vec());
+        config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE_VERIFY".to_vec(), b"1".to_vec());
         config.set_nix_path_env("nixpkgs=/aos/nixpkgs");
         config.set_working_dir(working_dir.path())?;
 
@@ -2037,7 +2514,18 @@ mod tests {
             command_env_bytes(&command, b"NIX_PATH").as_deref(),
             Some(b"nixpkgs=/aos/nixpkgs".as_slice())
         );
+        assert!(!is_evaluator_control_env_var(b"AOS_ARBITRARY_ENV"));
+        assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE"));
+        assert!(is_evaluator_control_env_var(b"AOS_NIX_NATIVE_VERIFY"));
+        assert_eq!(config.eval_env_vars.get(b"AOS_NIX_NATIVE".as_slice()), None);
+        assert_eq!(
+            config
+                .eval_env_vars
+                .get(b"AOS_NIX_NATIVE_VERIFY".as_slice()),
+            None
+        );
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE"), None);
+        assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE_VERIFY"), None);
         assert_eq!(command_env_bytes(&command, b"STALE_COMMAND_ENV"), None);
         assert_eq!(command.get_current_dir(), Some(working_dir.path()));
         Ok(())
@@ -2273,6 +2761,52 @@ mod tests {
         assert_eq!(NativeMode::parse(Some("yes")), NativeMode::On);
     }
 
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_verify_mode_defaults_off() {
+        assert_eq!(
+            parse_native_verify_mode(None),
+            (NativeVerifyMode::Off, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("")),
+            (NativeVerifyMode::Off, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("0")),
+            (NativeVerifyMode::Off, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("false")),
+            (NativeVerifyMode::Off, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("bad")),
+            (NativeVerifyMode::Off, Some("bad".to_string()))
+        );
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_verify_mode_recognizes_always_values() {
+        assert_eq!(
+            parse_native_verify_mode(Some("1")),
+            (NativeVerifyMode::Always, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("true")),
+            (NativeVerifyMode::Always, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some("always")),
+            (NativeVerifyMode::Always, None)
+        );
+        assert_eq!(
+            parse_native_verify_mode(Some(" ON ")),
+            (NativeVerifyMode::Always, None)
+        );
+    }
+
     #[cfg(not(feature = "native-eval"))]
     #[test]
     fn native_diff_candidate_requires_native_feature() {
@@ -2438,6 +2972,29 @@ mod tests {
     }
 
     #[test]
+    fn native_verify_stats_total_sums_comparison_counts() {
+        let stats = NativeVerifyStats {
+            drv_matches: 2,
+            drv_divergences: 3,
+            drv_incomplete: 5,
+            expression_matches: 7,
+            expression_divergences: 11,
+            expression_incomplete: 13,
+        };
+
+        assert_eq!(stats.drv_matches(), 2);
+        assert_eq!(stats.drv_divergences(), 3);
+        assert_eq!(stats.drv_incomplete(), 5);
+        assert_eq!(stats.expression_matches(), 7);
+        assert_eq!(stats.expression_divergences(), 11);
+        assert_eq!(stats.expression_incomplete(), 13);
+        assert_eq!(stats.matches(), 9);
+        assert_eq!(stats.divergences(), 14);
+        assert_eq!(stats.incomplete(), 18);
+        assert_eq!(stats.total(), 41);
+    }
+
+    #[test]
     fn native_eval_stats_groups_success_and_fallback_counts() {
         let stats = NativeEvalStats {
             successes: NativeSuccessStats {
@@ -2457,11 +3014,20 @@ mod tests {
                 expression_divergences: 10,
                 expression_incomplete: 11,
             },
+            verify: NativeVerifyStats {
+                drv_matches: 12,
+                drv_divergences: 13,
+                drv_incomplete: 14,
+                expression_matches: 15,
+                expression_divergences: 16,
+                expression_incomplete: 17,
+            },
         };
 
         assert_eq!(stats.successes().total(), 6);
         assert_eq!(stats.fallbacks().total(), 9);
         assert_eq!(stats.shadow().total(), 51);
+        assert_eq!(stats.verify().total(), 87);
     }
 
     #[cfg(feature = "native-eval")]
@@ -2541,6 +3107,61 @@ mod tests {
         let stats = native_eval_stats();
         assert!(stats.shadow().expression_incomplete() >= expression_incomplete);
         assert!(stats.shadow().total() >= expression_incomplete);
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_verify_recording_counts_by_operation_and_outcome() {
+        let before = native_verify_stats();
+
+        let drv_match = record_native_verify_result(
+            NativeVerifyOperation::DrvClosure,
+            NativeVerifyOutcome::Match,
+        );
+        assert!(drv_match > before.drv_matches());
+        let after_drv_match = native_verify_stats();
+        assert!(after_drv_match.drv_matches() >= drv_match);
+
+        let drv_divergence = record_native_verify_result(
+            NativeVerifyOperation::DrvClosure,
+            NativeVerifyOutcome::Divergence,
+        );
+        assert!(drv_divergence > after_drv_match.drv_divergences());
+        let after_drv_divergence = native_verify_stats();
+        assert!(after_drv_divergence.drv_divergences() >= drv_divergence);
+
+        let drv_incomplete = record_native_verify_result(
+            NativeVerifyOperation::DrvClosure,
+            NativeVerifyOutcome::Incomplete,
+        );
+        assert!(drv_incomplete > after_drv_divergence.drv_incomplete());
+        let after_drv_incomplete = native_verify_stats();
+        assert!(after_drv_incomplete.drv_incomplete() >= drv_incomplete);
+
+        let expression_match = record_native_verify_result(
+            NativeVerifyOperation::ExpressionEvaluation,
+            NativeVerifyOutcome::Match,
+        );
+        assert!(expression_match > after_drv_incomplete.expression_matches());
+        let after_expression_match = native_verify_stats();
+        assert!(after_expression_match.expression_matches() >= expression_match);
+
+        let expression_divergence = record_native_verify_result(
+            NativeVerifyOperation::ExpressionEvaluation,
+            NativeVerifyOutcome::Divergence,
+        );
+        assert!(expression_divergence > after_expression_match.expression_divergences());
+        let after_expression_divergence = native_verify_stats();
+        assert!(after_expression_divergence.expression_divergences() >= expression_divergence);
+
+        let expression_incomplete = record_native_verify_result(
+            NativeVerifyOperation::ExpressionEvaluation,
+            NativeVerifyOutcome::Incomplete,
+        );
+        assert!(expression_incomplete > after_expression_divergence.expression_incomplete());
+        let stats = native_eval_stats();
+        assert!(stats.verify().expression_incomplete() >= expression_incomplete);
+        assert!(stats.verify().total() >= expression_incomplete);
     }
 
     #[cfg(feature = "native-eval")]

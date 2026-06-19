@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use aos_core::nix::diff::{DiffMode, DrvDiff, diff_closure};
 use aos_core::nix::{
-    DrvClosure, NixCli, NixEval, NixEvalConfig, aos_nix_command,
+    DrvClosure, NixCli, NixEval, NixEvalConfig, NixEvalMode, aos_nix_command,
     select_native_diff_candidate_with_config,
 };
 
@@ -146,7 +146,7 @@ impl DrvDiffFixture {
         "#,
         )?;
 
-        let config = NixEvalConfig::with_store_dirs(
+        let mut config = NixEvalConfig::with_store_dirs(
             temp.path()
                 .join("store")
                 .to_str()
@@ -160,6 +160,7 @@ impl DrvDiffFixture {
                 .to_str()
                 .context("log path is not utf-8")?,
         )?;
+        config.set_eval_mode(NixEvalMode::Impure);
 
         Ok(Self {
             _temp: temp,

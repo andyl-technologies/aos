@@ -144,6 +144,20 @@ impl NixNative {
         self.eval_file_attr_derivation_closure(file, attr)
     }
 
+    /// Writes an in-memory derivation closure to the configured Nix store.
+    ///
+    /// Existing `.drv` files are accepted only when their bytes are identical to
+    /// the closure bytes. Differing existing files are treated as internal
+    /// native-evaluator failures rather than overwritten.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NativeEvalError::Internal`] when a `.drv` file cannot be
+    /// safely installed into the store.
+    pub fn materialize_closure(&self, closure: &NativeDrvClosure) -> Result<()> {
+        materialize_drv_closure(closure)
+    }
+
     /// Evaluates a raw expression to a derivation path.
     ///
     /// # Errors
