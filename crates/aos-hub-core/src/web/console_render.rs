@@ -263,7 +263,16 @@ pub fn page_with_session(
     }
     statline.push_str(app_version());
     if let Some(started) = state.started {
-        let _ = write!(statline, " · rendered {}ms", started.elapsed().as_millis());
+        // A page that does no I/O renders in sub-millisecond time — and on the
+        // Cloudflare Worker the wall clock (`Date.now()`) only advances across
+        // I/O, so an I/O-free page always measures exactly 0. Render that as
+        // "<1ms" so the footer reads as "instant" rather than looking broken.
+        let ms = started.elapsed().as_millis();
+        if ms == 0 {
+            statline.push_str(" · rendered <1ms");
+        } else {
+            let _ = write!(statline, " · rendered {ms}ms");
+        }
     }
 
     // The brand is operator-configurable (default empty): when set it
