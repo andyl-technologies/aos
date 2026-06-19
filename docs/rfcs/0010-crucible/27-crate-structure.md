@@ -663,7 +663,7 @@ Crucible needs and marks the seam.
 - [x] **T-CRATE-13** Author the crate→spec-file index (the §6 table) into each
   crate's `//!` doc and a workspace-level doc lint that keeps it in sync. —
   satisfies [CRATE-13]; spec §6.
-- [ ] **T-CRATE-14** Build the whole workspace hermetically from source inside AOS,
+- [x] **T-CRATE-14** Build the whole workspace hermetically from source inside AOS,
   compiling `crucible-qemu-plugin` against the AOS QEMU package's plugin headers,
   with no upstream binary dependency. — satisfies [CRATE-17]; spec §7,
   [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md).
