@@ -797,6 +797,14 @@ genuinely unresolved and is tracked as a spike in
     artifact without redefining the oracle.
 - **Affects:** file 36 ([DBG-*]), [SESS-32], [SESS-33], [CLI-27]; references
   [ADV-33], [INV-2], D-8.
+- **Phase-0 S14 outcome:** `checks.crucible.phase0.s14GdbstubFallback` found no
+  hermetic gdb client package, no implemented session/CLI `open_gdbstub` path,
+  and no known gdbstub single-step mediation hook in the scanned AOS QEMU
+  patch/plugin integration surface. D-30 remains the target architecture
+  decision, but Phase 0 enables only the conservative policy fallback:
+  `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`.
+  Live read-only attach neutrality and gdb single-step routing are not claimed
+  until the debug surface is implemented and S14 passes without fallback.
 
 ---
 
@@ -1484,7 +1492,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=19`, `retired_decision_entries=19`,
+  - **Result:** `checked_risk_tasks=20`, `retired_decision_entries=20`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
@@ -1601,6 +1609,45 @@ register.
     interleaving based on the modeled overhead check until commanded preemption
     injection lands; rerun S12 and S13 before closing D-25 or enabling per-branch
     explorer quantum overrides.
+
+- **RISK-28 / T-RISK-20 — S14 gdbstub attach/step**
+  - **Status:** PASS WITH FALLBACK; the live gdbstub attach/step measurement is
+    not runnable yet because the current repository has no hermetic gdb client,
+    backend `open_gdbstub` implementation, CLI debug command, or AOS QEMU gdbstub
+    mediation hook/gate.
+  - **Check:** `checks.crucible.phase0.s14GdbstubFallback`.
+  - **Result:** `scan_scope=pkgs_emulation_crates_rfc_debug_specs`,
+    `hermetic_gdb_client_available=false`,
+    `qemu_gdbstub_mediation_scan_scope=aos_qemu_nix_patches_plugin`,
+    `known_aos_qemu_gdbstub_step_hook_detected=false`,
+    `aos_qemu_gdbstub_mediation_patch_implemented=false`,
+    `session_open_gdbstub_implemented=false`,
+    `cli_debug_command_implemented=false`,
+    `read_only_gdbstub_ops_tested=false`,
+    `read_only_fingerprint_neutral=not_tested`,
+    `read_only_icount_neutral=not_tested`, `gdb_single_step_tested=false`,
+    `gdb_single_step_routed_through_scheduler=not_tested`,
+    `gdb_single_step_policy=disabled_until_s14_green`,
+    `raw_gdb_single_step_allowed_by_crucible_policy=false`,
+    `policy_enforcement_runtime=not_implemented`,
+    `default_debug_policy=read_only_attach_crucible_driven_step_reverse_step`,
+    `live_gdbstub_attach_gate_status=fallback_pending_debug_surface`,
+    `s1_decision_entry_consumed=true`, `s1_result_status=PASS`,
+    `s1_horizon_extended_hash=9d1e61606ac54920`,
+    `s1_pause_retired=3200000005`,
+    `fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate`,
+    `s14_complete=true`.
+  - **Scope:** validates only the Phase-0 fallback decision for the current
+    source surface. The check proves the debug specs define the conservative
+    read-only/Crucible-driven-step posture and that the scanned AOS integration
+    files do not currently add a Crucible-owned gdb single-step hook. It does not
+    inspect upstream QEMU internals, attach gdb, read registers or memory through
+    a live gdbstub, set breakpoints, or prove scheduler-routed single-step.
+  - **Fallback:** keep raw gdb single-step disabled by Crucible policy and require
+    future debug advancement to use Crucible-driven step/reverse-step until a
+    hermetic debug client, backend/CLI gdbstub implementation, and mediation gate
+    land; rerun S14 before treating [DBG-1] or [SCHED-46] as satisfied for live
+    debugging.
 
 ## Implementation checklist
 
