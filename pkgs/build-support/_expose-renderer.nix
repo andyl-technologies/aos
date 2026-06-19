@@ -80,15 +80,18 @@
     "${field} must reference a service unit, got '${builtins.toString unit}'"
     checked;
 
-  validateTargetName = target:
+  validateTargetName = packageName: target: let
+    expected = "aos-pkg-${packageName}.target";
+  in
     throwIfNot
     (
       validateUnitName target
       == target
       && lib.hasPrefix "aos-pkg-" target
       && lib.hasSuffix ".target" target
+      && target == expected
     )
-    "expose.target must be named aos-pkg-<name>.target: ${builtins.toString target}"
+    "expose.target for package '${packageName}' must equal ${expected}: ${builtins.toString target}"
     target;
 
   validatePackageName = package:
@@ -1098,7 +1101,10 @@ in rec {
       "mkDerivation expose.units for package '${packageName}' must be an attrset"
       (checkedExpose.units or {});
     authoredUnitNames = builtins.map validateUnitName (builtins.attrNames units);
-    target = validateTargetName (checkedExpose.target or "aos-pkg-${packageName}.target");
+    target =
+      validateTargetName
+      packageName
+      (checkedExpose.target or "aos-pkg-${packageName}.target");
     hostPathsUnit = "aos-pkg-${packageName}-host-paths.service";
     modulesUnit = "aos-pkg-${packageName}-modules.service";
     sysctlUnit = "aos-pkg-${packageName}-sysctl.service";

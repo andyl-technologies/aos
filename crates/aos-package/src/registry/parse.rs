@@ -908,6 +908,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_expose_rejects_target_bound_to_other_package() {
+        let content = EXPOSED_TOML.replace(
+            r#"target = "aos-pkg-webapp.target""#,
+            r#"target = "aos-pkg-other.target""#,
+        );
+
+        let err = parse_package_toml(&content, "x86_64-linux").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
     fn parse_expose_verity_image_metadata() {
         let content = EXPOSED_TOML.replace(
             r#"[[versions.platforms.x86_64-linux.expose.images]]
