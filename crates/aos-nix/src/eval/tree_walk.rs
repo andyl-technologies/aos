@@ -11149,6 +11149,7 @@ impl TreeWalk {
                 LAST_MODIFIED_ATTR,
                 HOST_ATTR,
                 b"treeHash",
+                DIR_ATTR,
             ],
         )?;
 
@@ -11210,6 +11211,9 @@ impl TreeWalk {
         }
         if let Some(host) = self.optional_fetch_tree_string_attr(id, span, value, HOST_ATTR)? {
             attrs.insert(HOST_ATTR.to_vec(), FlakeRefAttrValue::String(host));
+        }
+        if let Some(dir) = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)? {
+            attrs.insert(DIR_ATTR.to_vec(), FlakeRefAttrValue::String(dir));
         }
 
         self.fetch_tree_forge_flake_ref_arguments(id, span, input_type, &attrs)
@@ -46831,8 +46835,20 @@ mod tests {
                 ),
             ),
             (
+                format!("gitlab:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+                format!("gitlab:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+                format!(
+                    "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={rev}"
+                ),
+            ),
+            (
                 format!("sourcehut:~andyl/aos/{rev}?narHash={nar_hash_query}"),
                 format!("sourcehut:~andyl/aos/{rev}?narHash={nar_hash_query}"),
+                format!("https://git.sr.ht/~andyl/aos/archive/{rev}.tar.gz"),
+            ),
+            (
+                format!("sourcehut:~andyl/aos/{rev}?dir=lib&narHash={nar_hash_query}"),
+                format!("sourcehut:~andyl/aos/{rev}?dir=lib&narHash={nar_hash_query}"),
                 format!("https://git.sr.ht/~andyl/aos/archive/{rev}.tar.gz"),
             ),
         ] {
@@ -46941,6 +46957,46 @@ mod tests {
                 ..
             } if input == format!("github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}").as_bytes()
         ));
+
+        for (source, allowed_uri, denied_uri) in [
+            (
+                format!(
+                    r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; rev = "{rev}"; narHash = "{nar_hash}"; dir = "lib"; }}"#
+                ),
+                format!("github:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!("github:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+            ),
+            (
+                format!(
+                    r#"builtins.fetchTree {{ type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; rev = "{rev}"; narHash = "{nar_hash}"; dir = "lib"; }}"#
+                ),
+                format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"),
+                format!("gitlab:NixOS/nixpkgs/{rev}?dir=lib&narHash={nar_hash_query}"),
+            ),
+            (
+                format!(
+                    r#"builtins.fetchTree {{ type = "sourcehut"; owner = "~andyl"; repo = "aos"; rev = "{rev}"; narHash = "{nar_hash}"; dir = "lib"; }}"#
+                ),
+                format!("sourcehut:~andyl/aos/{rev}?narHash={nar_hash_query}"),
+                format!("sourcehut:~andyl/aos/{rev}?dir=lib&narHash={nar_hash_query}"),
+            ),
+        ] {
+            let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+            options
+                .add_allowed_uri(allowed_uri)
+                .expect("forge URI without dir is a valid allowed URI prefix");
+            let error = eval_whnf_owned_with_options(&lower(&source), options).expect_err(
+                "restricted attrset forge fetchTree canonical URI includes dir metadata",
+            );
+            assert!(matches!(
+                error.kind(),
+                TreeWalkErrorKind::FetchTreeAccessDenied {
+                    input,
+                    mode: EvalMode::Restricted,
+                    ..
+                } if input == denied_uri.as_bytes()
+            ));
+        }
 
         for source in [
             format!(
