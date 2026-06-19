@@ -3317,110 +3317,82 @@ impl TreeWalk {
 
         self.validate_derivation_strict_before_paths(id, span, &derivation)?;
         let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
-        let (known_hash, drv_path, output_resolution) = if let Some(output_resolution) =
-            deferred_output_resolution
-        {
-            match output_resolution {
-                DerivationOutputResolution::FloatingCa(floating_ca_output) => {
-                    if self.options.store_dir() != DEFAULT_STORE_DIR {
-                        return Err(TreeWalkError::new(
-                            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                id,
-                                feature: "floating content-addressed derivations with custom store directory",
-                            },
+        let (known_hash, drv_path, output_resolution) =
+            if let Some(output_resolution) = deferred_output_resolution {
+                match output_resolution {
+                    DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                        let known_hash = self.hash_floating_ca_derivation_modulo_with_inputs(
+                            &derivation,
+                            floating_ca_output,
+                            &input_hashes.hashes,
+                        );
+                        let drv_path = self.calculate_floating_ca_derivation_path(
+                            id,
                             span,
-                        ));
+                            &name,
+                            &derivation,
+                            floating_ca_output,
+                        )?;
+                        (
+                            known_hash,
+                            drv_path,
+                            DerivationOutputResolution::FloatingCa(floating_ca_output),
+                        )
                     }
-                    let known_hash = Self::hash_floating_ca_derivation_modulo_with_inputs(
-                        &derivation,
-                        floating_ca_output,
-                        &input_hashes.hashes,
-                    );
-                    let drv_path = Self::calculate_floating_ca_derivation_path(
-                        id,
-                        span,
-                        &name,
-                        &derivation,
-                        floating_ca_output,
-                    )?;
-                    (
-                        known_hash,
-                        drv_path,
-                        DerivationOutputResolution::FloatingCa(floating_ca_output),
-                    )
-                }
-                DerivationOutputResolution::Impure(impure_output) => {
-                    if self.options.store_dir() != DEFAULT_STORE_DIR {
-                        return Err(TreeWalkError::new(
-                            TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                id,
-                                feature: "impure derivations with custom store directory",
-                            },
+                    DerivationOutputResolution::Impure(impure_output) => {
+                        let known_hash = Self::impure_derivation_hash_modulo();
+                        let drv_path = self.calculate_impure_derivation_path(
+                            id,
                             span,
-                        ));
+                            &name,
+                            &derivation,
+                            impure_output,
+                        )?;
+                        (
+                            known_hash,
+                            drv_path,
+                            DerivationOutputResolution::Impure(impure_output),
+                        )
                     }
-                    let known_hash = Self::impure_derivation_hash_modulo();
-                    let drv_path = Self::calculate_impure_derivation_path(
-                        id,
-                        span,
-                        &name,
-                        &derivation,
-                        impure_output,
-                    )?;
-                    (
-                        known_hash,
-                        drv_path,
-                        DerivationOutputResolution::Impure(impure_output),
-                    )
+                    DerivationOutputResolution::StaticPaths
+                    | DerivationOutputResolution::DeferredPlaceholders => unreachable!(
+                        "deferred derivation output setup only produces floating or impure outputs"
+                    ),
                 }
-                DerivationOutputResolution::StaticPaths
-                | DerivationOutputResolution::DeferredPlaceholders => unreachable!(
-                    "deferred derivation output setup only produces floating or impure outputs"
-                ),
-            }
-        } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
-            if self.options.store_dir() != DEFAULT_STORE_DIR {
-                return Err(TreeWalkError::new(
-                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                        id,
-                        feature: "deferred placeholder derivations with custom store directory",
-                    },
+            } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
+                let known_hash = self.hash_derivation_modulo_with_inputs(
+                    id,
                     span,
-                ));
-            }
-            let known_hash = self.hash_derivation_modulo_with_inputs(
-                id,
-                span,
-                &derivation,
-                &input_hashes.hashes,
-            )?;
-            let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
-            (
-                known_hash,
-                drv_path,
-                DerivationOutputResolution::DeferredPlaceholders,
-            )
-        } else {
-            let hash = self.hash_derivation_modulo_with_inputs(
-                id,
-                span,
-                &derivation,
-                &input_hashes.hashes,
-            )?;
-            self.calculate_output_paths(id, span, &name, &mut derivation, &hash)?;
-            let known_hash = self.hash_derivation_modulo_with_inputs(
-                id,
-                span,
-                &derivation,
-                &input_hashes.hashes,
-            )?;
-            let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
-            (
-                known_hash,
-                drv_path,
-                DerivationOutputResolution::StaticPaths,
-            )
-        };
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
+                (
+                    known_hash,
+                    drv_path,
+                    DerivationOutputResolution::DeferredPlaceholders,
+                )
+            } else {
+                let hash = self.hash_derivation_modulo_with_inputs(
+                    id,
+                    span,
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                self.calculate_output_paths(id, span, &name, &mut derivation, &hash)?;
+                let known_hash = self.hash_derivation_modulo_with_inputs(
+                    id,
+                    span,
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
+                (
+                    known_hash,
+                    drv_path,
+                    DerivationOutputResolution::StaticPaths,
+                )
+            };
         self.remember_derivation(
             id,
             span,
@@ -4093,11 +4065,12 @@ impl TreeWalk {
         derivation: &nix_compat::derivation::Derivation,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
         let drv_name = format!("{name}.drv");
-        let references = derivation
+        let references: BTreeSet<Vec<u8>> = derivation
             .input_sources
             .iter()
             .chain(derivation.input_derivations.keys())
-            .map(|path| self.store_path_absolute_bytes(path));
+            .map(|path| self.store_path_absolute_bytes(path))
+            .collect();
         let aterm = self.derivation_aterm_bytes(derivation);
         self.build_text_path(id, span, &drv_name, &aterm, references)
     }
@@ -4350,11 +4323,12 @@ impl TreeWalk {
     }
 
     fn hash_floating_ca_derivation_modulo_with_inputs(
+        &self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
     ) -> [u8; 32] {
-        let aterm = Self::floating_ca_derivation_aterm_bytes(
+        let aterm = self.floating_ca_derivation_aterm_bytes(
             derivation,
             floating_ca_output,
             Some(input_hashes),
@@ -4367,60 +4341,45 @@ impl TreeWalk {
     }
 
     fn calculate_floating_ca_derivation_path(
+        &self,
         id: IrId,
         span: Span,
         name: &str,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let aterm = Self::floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None);
-        let references: BTreeSet<String> = derivation
+        let aterm = self.floating_ca_derivation_aterm_bytes(derivation, floating_ca_output, None);
+        let references: BTreeSet<Vec<u8>> = derivation
             .input_sources
             .iter()
             .chain(derivation.input_derivations.keys())
-            .map(nix_compat::store_path::StorePath::to_absolute_path)
+            .map(|path| self.store_path_absolute_bytes(path))
             .collect();
         let drv_name = format!("{name}.drv");
-        nix_compat::store_path::build_text_path(&drv_name, &aterm, references).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::DerivationStrict {
-                    id,
-                    message: format!(
-                        "invalid floating content-addressed derivation path: {source}"
-                    ),
-                },
-                span,
-            )
-        })
+        self.build_text_path(id, span, &drv_name, &aterm, references)
     }
 
     fn calculate_impure_derivation_path(
+        &self,
         id: IrId,
         span: Span,
         name: &str,
         derivation: &nix_compat::derivation::Derivation,
         impure_output: FloatingCaOutput,
     ) -> Result<nix_compat::store_path::StorePath<String>, TreeWalkError> {
-        let aterm = Self::impure_derivation_aterm_bytes(derivation, impure_output, None);
-        let references: BTreeSet<String> = derivation
+        let aterm = self.impure_derivation_aterm_bytes(derivation, impure_output, None);
+        let references: BTreeSet<Vec<u8>> = derivation
             .input_sources
             .iter()
             .chain(derivation.input_derivations.keys())
-            .map(nix_compat::store_path::StorePath::to_absolute_path)
+            .map(|path| self.store_path_absolute_bytes(path))
             .collect();
         let drv_name = format!("{name}.drv");
-        nix_compat::store_path::build_text_path(&drv_name, &aterm, references).map_err(|source| {
-            TreeWalkError::new(
-                TreeWalkErrorKind::DerivationStrict {
-                    id,
-                    message: format!("invalid impure derivation path: {source}"),
-                },
-                span,
-            )
-        })
+        self.build_text_path(id, span, &drv_name, &aterm, references)
     }
 
     fn floating_ca_derivation_aterm_bytes(
+        &self,
         derivation: &nix_compat::derivation::Derivation,
         floating_ca_output: FloatingCaOutput,
         input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
@@ -4429,9 +4388,9 @@ impl TreeWalk {
         out.extend_from_slice(b"Derive(");
         Self::write_floating_ca_outputs(&mut out, derivation, floating_ca_output);
         out.push(b',');
-        Self::write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
+        self.write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
         out.push(b',');
-        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
+        self.write_aterm_input_sources(&mut out, &derivation.input_sources);
         out.push(b',');
         Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
         out.push(b',');
@@ -4465,6 +4424,7 @@ impl TreeWalk {
     }
 
     fn impure_derivation_aterm_bytes(
+        &self,
         derivation: &nix_compat::derivation::Derivation,
         impure_output: FloatingCaOutput,
         input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
@@ -4473,9 +4433,9 @@ impl TreeWalk {
         out.extend_from_slice(b"Derive(");
         Self::write_impure_outputs(&mut out, derivation, impure_output);
         out.push(b',');
-        Self::write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
+        self.write_floating_ca_input_derivations(&mut out, derivation, input_hashes);
         out.push(b',');
-        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
+        self.write_aterm_input_sources(&mut out, &derivation.input_sources);
         out.push(b',');
         Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
         out.push(b',');
@@ -4627,6 +4587,7 @@ impl TreeWalk {
     }
 
     fn deferred_placeholder_derivation_aterm_bytes(
+        &self,
         id: IrId,
         span: Span,
         drv_path: &nix_compat::store_path::StorePath<String>,
@@ -4636,9 +4597,9 @@ impl TreeWalk {
         out.extend_from_slice(b"Derive(");
         Self::write_deferred_placeholder_outputs(id, span, &mut out, drv_path, derivation)?;
         out.push(b',');
-        Self::write_floating_ca_input_derivations(&mut out, derivation, None);
+        self.write_floating_ca_input_derivations(&mut out, derivation, None);
         out.push(b',');
-        Self::write_aterm_input_sources(&mut out, &derivation.input_sources);
+        self.write_aterm_input_sources(&mut out, &derivation.input_sources);
         out.push(b',');
         Self::write_aterm_field(&mut out, derivation.system.as_bytes(), true);
         out.push(b',');
@@ -4769,6 +4730,7 @@ impl TreeWalk {
     }
 
     fn write_floating_ca_input_derivations(
+        &self,
         out: &mut Vec<u8>,
         derivation: &nix_compat::derivation::Derivation,
         input_hashes: Option<&BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>>,
@@ -4800,8 +4762,8 @@ impl TreeWalk {
                         out.push(b',');
                     }
                     out.push(b'(');
-                    let path = drv_path.to_absolute_path();
-                    Self::write_aterm_field(out, path.as_bytes(), false);
+                    let path = self.store_path_absolute_bytes(drv_path);
+                    Self::write_aterm_field(out, &path, false);
                     out.push(b',');
                     Self::write_aterm_string_array(out, output_names.iter().map(String::as_bytes));
                     out.push(b')');
@@ -4812,6 +4774,7 @@ impl TreeWalk {
     }
 
     fn write_aterm_input_sources(
+        &self,
         out: &mut Vec<u8>,
         input_sources: &BTreeSet<nix_compat::store_path::StorePath<String>>,
     ) {
@@ -4820,8 +4783,8 @@ impl TreeWalk {
             if index > 0 {
                 out.push(b',');
             }
-            let path = source.to_absolute_path();
-            Self::write_aterm_field(out, path.as_bytes(), true);
+            let path = self.store_path_absolute_bytes(source);
+            Self::write_aterm_field(out, &path, true);
         }
         out.push(b']');
     }
@@ -5274,17 +5237,17 @@ impl TreeWalk {
                         Some(self.derivation_aterm_bytes(&known.derivation))
                     }
                     DerivationOutputResolution::FloatingCa(floating_ca_output) => {
-                        Some(Self::floating_ca_derivation_aterm_bytes(
+                        Some(self.floating_ca_derivation_aterm_bytes(
                             &known.derivation,
                             floating_ca_output,
                             None,
                         ))
                     }
                     DerivationOutputResolution::Impure(impure_output) => Some(
-                        Self::impure_derivation_aterm_bytes(&known.derivation, impure_output, None),
+                        self.impure_derivation_aterm_bytes(&known.derivation, impure_output, None),
                     ),
                     DerivationOutputResolution::DeferredPlaceholders => {
-                        Some(Self::deferred_placeholder_derivation_aterm_bytes(
+                        Some(self.deferred_placeholder_derivation_aterm_bytes(
                             known.id,
                             known.span,
                             drv_path,
@@ -53582,6 +53545,182 @@ mod tests {
             eval_json_bytes(source),
             br#"{"baseDrv":"/nix/store/sycp28psd9pmlky6a4jpcb5lijdfjw6g-base.drv","baseOut":"/12b6k9m59nmk4z3mpbpi60a9626jbcihnxmydd980k8jvgwsb8ry","ctx":{"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv":{"outputs":["out"]}},"drvPath":"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv","out":"/0dgqgrnsrgzgjvxqfag1i449qjkl8fixagz9dlj6arf2py6m7mz5"}"#.to_vec()
         );
+    }
+
+    #[test]
+    fn derivation_strict_deferred_derivation_paths_sort_and_dedupe_references() {
+        let ir = lower("null");
+        let eval = TreeWalk::new(&ir);
+        let id = IrId::new(0);
+        let span = Span::new(0, 0);
+        let output = FloatingCaOutput {
+            method: FloatingCaMethod::Recursive,
+            hash_algo: nix_compat::nixhash::HashAlgo::Sha256,
+        };
+        let low_drv = nix_compat::store_path::StorePath::<String>::from_bytes(
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-low.drv",
+        )
+        .expect("low drv store path parses");
+        let high_drv = nix_compat::store_path::StorePath::<String>::from_bytes(
+            b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-high.drv",
+        )
+        .expect("high drv store path parses");
+        let mut derivation = nix_compat::derivation::Derivation::default();
+        derivation
+            .outputs
+            .insert("out".to_owned(), nix_compat::derivation::Output::default());
+        derivation.input_sources.insert(high_drv.clone());
+        derivation
+            .input_derivations
+            .insert(low_drv.clone(), BTreeSet::from(["out".to_owned()]));
+        derivation
+            .input_derivations
+            .insert(high_drv.clone(), BTreeSet::from(["out".to_owned()]));
+        let references = BTreeSet::from([low_drv.to_absolute_path(), high_drv.to_absolute_path()]);
+
+        let static_aterm = eval.derivation_aterm_bytes(&derivation);
+        let expected =
+            nix_compat::store_path::build_text_path("mixed.drv", &static_aterm, references.clone())
+                .expect("expected ordinary path builds");
+        let actual = eval
+            .calculate_derivation_path(id, span, "mixed", &derivation)
+            .expect("ordinary path builds");
+        assert_eq!(actual, expected);
+
+        let floating_aterm = eval.floating_ca_derivation_aterm_bytes(&derivation, output, None);
+        let expected = nix_compat::store_path::build_text_path(
+            "mixed.drv",
+            &floating_aterm,
+            references.clone(),
+        )
+        .expect("expected floating path builds");
+        let actual = eval
+            .calculate_floating_ca_derivation_path(id, span, "mixed", &derivation, output)
+            .expect("floating path builds");
+        assert_eq!(actual, expected);
+
+        let impure_aterm = eval.impure_derivation_aterm_bytes(&derivation, output, None);
+        let expected =
+            nix_compat::store_path::build_text_path("mixed.drv", &impure_aterm, references)
+                .expect("expected impure path builds");
+        let actual = eval
+            .calculate_impure_derivation_path(id, span, "mixed", &derivation, output)
+            .expect("impure path builds");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn derivation_strict_deferred_forms_use_configured_store_dir() {
+        let store_dir = unique_temp_dir("derivation-strict-deferred-store");
+        let store_root = path_source(&store_dir);
+        let store_prefix = format!("{store_root}/");
+        let src_path = format!("{store_root}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src");
+        let options = TreeWalkOptions::with_store_dir(store_root.as_bytes().to_vec())
+            .expect("temporary store root configures");
+        let src_path_literal = nix_string_literal(&src_path);
+        let source = format!(
+            r#"let
+                 opaque = builtins.appendContext "src" {{
+                   {src_path_literal} = {{ path = true; }};
+                 }};
+                 floating = derivationStrict {{
+                   name = "floating";
+                   system = ":";
+                   builder = ":";
+                   __contentAddressed = true;
+                   outputHashAlgo = "sha256";
+                   outputHashMode = "recursive";
+                   input = opaque;
+                 }};
+                 impure = derivationStrict {{
+                   name = "impure";
+                   system = ":";
+                   builder = ":";
+                   __impure = true;
+                   input = opaque;
+                 }};
+                 downstream = derivationStrict {{
+                   name = "user";
+                   system = ":";
+                   builder = ":";
+                   input = floating.out;
+                 }};
+               in {{
+                 downstreamCtx = builtins.getContext downstream.out;
+                 downstreamDrv = downstream.drvPath;
+                 floatingDrv = floating.drvPath;
+                 impureDrv = impure.drvPath;
+               }}"#
+        );
+        let outcome =
+            eval_whnf_owned_with_options(&lower(&format!("builtins.toJSON ({source})")), options)
+                .expect("custom-store deferred derivations evaluate");
+        let json = outcome
+            .heap()
+            .get_string(outcome.value())
+            .expect("result is JSON string")
+            .bytes()
+            .to_vec();
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("custom-store result JSON parses");
+        let floating_drv = value["floatingDrv"]
+            .as_str()
+            .expect("floating drv path is a string");
+        let impure_drv = value["impureDrv"]
+            .as_str()
+            .expect("impure drv path is a string");
+        let downstream_drv = value["downstreamDrv"]
+            .as_str()
+            .expect("downstream drv path is a string");
+
+        for drv_path in [floating_drv, impure_drv, downstream_drv] {
+            assert!(drv_path.starts_with(&store_prefix), "{drv_path}");
+            assert!(drv_path.ends_with(".drv"), "{drv_path}");
+            assert!(!drv_path.starts_with("/nix/store/"), "{drv_path}");
+        }
+        assert_eq!(
+            value["downstreamCtx"][downstream_drv],
+            serde_json::json!({ "outputs": ["out"] })
+        );
+
+        let floating_aterm = outcome
+            .derivations()
+            .iter()
+            .find(|derivation| derivation.absolute_path() == floating_drv)
+            .and_then(EvalDerivation::aterm_bytes)
+            .expect("floating derivation has a materialized ATerm");
+        let floating_aterm = std::str::from_utf8(floating_aterm).expect("floating ATerm is UTF-8");
+        assert!(floating_aterm.contains(&src_path), "{floating_aterm}");
+        assert!(!floating_aterm.contains("/nix/store"), "{floating_aterm}");
+
+        let impure_aterm = outcome
+            .derivations()
+            .iter()
+            .find(|derivation| derivation.absolute_path() == impure_drv)
+            .and_then(EvalDerivation::aterm_bytes)
+            .expect("impure derivation has a materialized ATerm");
+        let impure_aterm = std::str::from_utf8(impure_aterm).expect("impure ATerm is UTF-8");
+        assert!(impure_aterm.contains(&src_path), "{impure_aterm}");
+        assert!(!impure_aterm.contains("/nix/store"), "{impure_aterm}");
+
+        let downstream_aterm = outcome
+            .derivations()
+            .iter()
+            .find(|derivation| derivation.absolute_path() == downstream_drv)
+            .and_then(EvalDerivation::aterm_bytes)
+            .expect("downstream derivation has a materialized ATerm");
+        let downstream_aterm =
+            std::str::from_utf8(downstream_aterm).expect("downstream ATerm is UTF-8");
+        assert!(
+            downstream_aterm.contains(floating_drv),
+            "{downstream_aterm}"
+        );
+        assert!(
+            !downstream_aterm.contains("/nix/store"),
+            "{downstream_aterm}"
+        );
+
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
     }
 
     #[test]
