@@ -10,6 +10,9 @@
 //! `aos-nix` crate so `aos-core` stays lightweight.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -367,6 +370,7 @@ pub struct NixEvalConfig {
     eval_mode: NixEvalMode,
     allowed_paths: Vec<String>,
     allowed_uris: Vec<String>,
+    eval_env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Option<String>,
     current_system: Option<String>,
     store_dir: Option<String>,
@@ -525,7 +529,17 @@ impl NixEvalConfig {
 
     /// Applies C++ Nix environment bindings to a command.
     pub(crate) fn apply_cli_env(&self, command: &mut Command) {
-        command.envs(self.cli_env_vars());
+        command.env_clear();
+        for (name, value) in &self.eval_env_vars {
+            command.env(
+                os_string_from_env_bytes(name.clone()),
+                os_string_from_env_bytes(value.clone()),
+            );
+        }
+        for (name, value) in self.cli_env_vars() {
+            command.env(name, value);
+        }
+        command.env_remove("AOS_NIX_NATIVE");
     }
 
     /// Replaces the configured evaluation impurity mode.
@@ -607,12 +621,13 @@ impl NixEvalConfig {
     /// maps filesystem-style entries and falls back to C++ Nix for URL,
     /// channel, and flake-style entries it cannot represent faithfully.
     pub fn set_nix_path_env(&mut self, nix_path: impl Into<String>) {
-        self.nix_path = Some(nix_path.into());
+        self.set_cli_env_var("NIX_PATH", nix_path.into());
     }
 
     /// Clears the configured `NIX_PATH` environment value.
     pub fn clear_nix_path_env(&mut self) {
         self.nix_path = None;
+        self.clear_eval_env_var(b"NIX_PATH");
     }
 
     /// Replaces the configured Nix `system` value.
@@ -645,15 +660,12 @@ impl NixEvalConfig {
         state_dir: impl Into<String>,
         log_dir: impl Into<String>,
     ) -> Result<()> {
-        self.store_dir = Some(validate_absolute_env_path(
-            "NIX_STORE_DIR",
-            store_dir.into(),
-        )?);
-        self.state_dir = Some(validate_absolute_env_path(
-            "NIX_STATE_DIR",
-            state_dir.into(),
-        )?);
-        self.log_dir = Some(validate_absolute_env_path("NIX_LOG_DIR", log_dir.into())?);
+        let store_dir = validate_absolute_env_path("NIX_STORE_DIR", store_dir.into())?;
+        let state_dir = validate_absolute_env_path("NIX_STATE_DIR", state_dir.into())?;
+        let log_dir = validate_absolute_env_path("NIX_LOG_DIR", log_dir.into())?;
+        self.set_cli_env_var("NIX_STORE_DIR", store_dir);
+        self.set_cli_env_var("NIX_STATE_DIR", state_dir);
+        self.set_cli_env_var("NIX_LOG_DIR", log_dir);
         Ok(())
     }
 
@@ -662,6 +674,9 @@ impl NixEvalConfig {
         self.store_dir = None;
         self.state_dir = None;
         self.log_dir = None;
+        self.clear_eval_env_var(b"NIX_STORE_DIR");
+        self.clear_eval_env_var(b"NIX_STATE_DIR");
+        self.clear_eval_env_var(b"NIX_LOG_DIR");
     }
 
     /// Replaces the native evaluator cache root.
@@ -695,6 +710,7 @@ impl NixEvalConfig {
             eval_mode: NixEvalMode::Ambient,
             allowed_paths: Vec::new(),
             allowed_uris: Vec::new(),
+            eval_env_vars: eval_env_vars_from_process(),
             nix_path: None,
             current_system: None,
             store_dir: None,
@@ -739,6 +755,7 @@ impl NixEvalConfig {
     }
 
     fn set_cli_env_var(&mut self, name: &'static str, value: String) {
+        self.set_eval_env_var_bytes(name.as_bytes().to_vec(), value.as_bytes().to_vec());
         match name {
             "NIX_STORE_DIR" => self.store_dir = Some(value),
             "NIX_STATE_DIR" => self.state_dir = Some(value),
@@ -746,6 +763,16 @@ impl NixEvalConfig {
             "NIX_PATH" => self.nix_path = Some(value),
             _ => {}
         }
+    }
+
+    fn set_eval_env_var_bytes(&mut self, name: Vec<u8>, value: Vec<u8>) {
+        if name.as_slice() != b"AOS_NIX_NATIVE" {
+            self.eval_env_vars.insert(name, value);
+        }
+    }
+
+    fn clear_eval_env_var(&mut self, name: &[u8]) {
+        self.eval_env_vars.remove(name);
     }
 }
 
@@ -805,6 +832,39 @@ fn native_cache_root_from_env_value(value: &str) -> Option<PathBuf> {
 
 fn nix_env_from_process(name: &'static str) -> Option<(&'static str, String)> {
     std::env::var(name).ok().map(|value| (name, value))
+}
+
+fn eval_env_vars_from_process() -> BTreeMap<Vec<u8>, Vec<u8>> {
+    std::env::vars_os()
+        .filter_map(|(name, value)| {
+            let name = env_bytes_from_os_string(name);
+            if name.as_slice() == b"AOS_NIX_NATIVE" {
+                None
+            } else {
+                Some((name, env_bytes_from_os_string(value)))
+            }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
+fn env_bytes_from_os_string(value: OsString) -> Vec<u8> {
+    value.into_vec()
+}
+
+#[cfg(not(unix))]
+fn env_bytes_from_os_string(value: OsString) -> Vec<u8> {
+    value.to_string_lossy().into_owned().into_bytes()
+}
+
+#[cfg(unix)]
+fn os_string_from_env_bytes(value: Vec<u8>) -> OsString {
+    OsString::from_vec(value)
+}
+
+#[cfg(not(unix))]
+fn os_string_from_env_bytes(value: Vec<u8>) -> OsString {
+    OsString::from(String::from_utf8_lossy(&value).into_owned())
 }
 
 fn validate_absolute_config_path(name: &str, value: PathBuf) -> Result<PathBuf> {
@@ -1473,6 +1533,9 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
             options.add_allowed_uri(uri.as_bytes().to_vec())?;
         }
     }
+    for (name, value) in &config.eval_env_vars {
+        options.set_env_var(name.clone(), value.clone());
+    }
     if let Some(nix_path) = config.nix_path_env() {
         if let Some(entries) = native_nix_path_entries_from_env_value(nix_path) {
             let entries = entries
@@ -1504,6 +1567,24 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
+    #[cfg(unix)]
+    fn command_env_bytes(command: &Command, name: &[u8]) -> Option<Vec<u8>> {
+        command.get_envs().find_map(|(key, value)| {
+            (key.as_bytes() == name).then(|| value.map(|value| value.as_bytes().to_vec()))?
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn command_env_bytes(command: &Command, name: &[u8]) -> Option<Vec<u8>> {
+        let name = String::from_utf8_lossy(name);
+        command.get_envs().find_map(|(key, value)| {
+            (key.to_string_lossy() == name)
+                .then(|| value.map(|value| value.to_string_lossy().into_owned().into_bytes()))?
+        })
+    }
 
     #[test]
     fn eval_config_rejects_empty_current_system() {
@@ -1719,17 +1800,87 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_keeps_nix_env_bindings_in_get_env_snapshot() -> Result<()> {
+        let mut config =
+            NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+
+        assert_eq!(
+            config.eval_env_vars.get(b"NIX_STORE_DIR".as_slice()),
+            Some(&b"/aos/store".to_vec())
+        );
+        assert_eq!(
+            config.eval_env_vars.get(b"NIX_STATE_DIR".as_slice()),
+            Some(&b"/aos/var/nix".to_vec())
+        );
+        assert_eq!(
+            config.eval_env_vars.get(b"NIX_LOG_DIR".as_slice()),
+            Some(&b"/aos/var/nix/log/nix".to_vec())
+        );
+
+        config.clear_store_dirs();
+        assert_eq!(config.eval_env_vars.get(b"NIX_STORE_DIR".as_slice()), None);
+        assert_eq!(config.eval_env_vars.get(b"NIX_STATE_DIR".as_slice()), None);
+        assert_eq!(config.eval_env_vars.get(b"NIX_LOG_DIR".as_slice()), None);
+        Ok(())
+    }
+
+    #[test]
+    fn eval_config_applies_get_env_snapshot_to_cpp_command() {
+        let mut config = NixEvalConfig::new();
+        config.eval_env_vars.clear();
+        config.set_eval_env_var_bytes(b"AOS_ARBITRARY_ENV".to_vec(), b"present".to_vec());
+        config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE".to_vec(), b"1".to_vec());
+        config.set_nix_path_env("nixpkgs=/aos/nixpkgs");
+
+        let mut command = Command::new("nix-instantiate");
+        command.env("STALE_COMMAND_ENV", "stale");
+        config.apply_cli_env(&mut command);
+
+        assert_eq!(
+            command_env_bytes(&command, b"AOS_ARBITRARY_ENV").as_deref(),
+            Some(b"present".as_slice())
+        );
+        assert_eq!(
+            command_env_bytes(&command, b"NIX_PATH").as_deref(),
+            Some(b"nixpkgs=/aos/nixpkgs".as_slice())
+        );
+        assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE"), None);
+        assert_eq!(command_env_bytes(&command, b"STALE_COMMAND_ENV"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn eval_config_applies_non_utf8_get_env_snapshot_to_cpp_command() {
+        let mut config = NixEvalConfig::new();
+        config.eval_env_vars.clear();
+        config.set_eval_env_var_bytes(b"AOS_NON_UTF8_ENV".to_vec(), b"value-\xff".to_vec());
+
+        let mut command = Command::new("nix-instantiate");
+        config.apply_cli_env(&mut command);
+
+        assert_eq!(
+            command_env_bytes(&command, b"AOS_NON_UTF8_ENV").as_deref(),
+            Some(b"value-\xff".as_slice())
+        );
+    }
+
+    #[test]
     fn eval_config_renders_cpp_nix_path_env_var() {
         let mut config = NixEvalConfig::new();
         config.clear_store_dirs();
         config.set_nix_path_env("nixpkgs=/aos/nixpkgs:/aos/channels");
 
         assert_eq!(
+            config.eval_env_vars.get(b"NIX_PATH".as_slice()),
+            Some(&b"nixpkgs=/aos/nixpkgs:/aos/channels".to_vec())
+        );
+        assert_eq!(
             config.cli_env_vars(),
             vec![("NIX_PATH", "nixpkgs=/aos/nixpkgs:/aos/channels".to_string())]
         );
 
         config.clear_nix_path_env();
+        assert_eq!(config.eval_env_vars.get(b"NIX_PATH".as_slice()), None);
         assert_eq!(config.cli_env_vars(), Vec::<(&'static str, String)>::new());
     }
 
@@ -1762,6 +1913,21 @@ mod tests {
             options.allowed_uris(),
             &[b"github:".to_vec(), b"https://cache.example/".to_vec()]
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_get_env_snapshot_to_native_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.eval_env_vars.clear();
+        config.set_eval_env_var_bytes(b"HOME".to_vec(), b"/home/aos".to_vec());
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(options.env_var(b"HOME"), Some(b"/home/aos".as_slice()));
+        assert_eq!(options.env_var(b"MISSING"), None);
         Ok(())
     }
 
