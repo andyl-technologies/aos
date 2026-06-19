@@ -55,7 +55,7 @@ use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
 use clap::ValueEnum as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use aos_core::output::{OutputMode, Printer};
@@ -1042,6 +1042,11 @@ fn registry_relative_path(dir: &Path, path: &Path) -> Result<String> {
 /// Commit whatever is currently staged, SSH-signing the commit when
 /// `signing_key` points at an OpenSSH private key.
 fn commit_staged_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
+    if staged_package_provenance_transparency_validation_needed(dir)? {
+        validate_staged_package_provenance_transparency_log(dir)?;
+    }
+
     match signing_key {
         Some(key) => {
             let signing_key_config = format!("user.signingkey={key}");
@@ -1081,6 +1086,7 @@ fn commit_registry_paths(
         bail!("no registry paths supplied for commit");
     }
 
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     ensure_commit_identity(dir)?;
 
     let relative_paths = paths
@@ -1118,6 +1124,7 @@ fn commit_registry_paths(
 /// commits on registries with a non-empty trust roster should always be
 /// signed.
 fn commit_registry(dir: &Path, message: &str, signing_key: Option<&str>) -> Result<()> {
+    let _commit_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
     ensure_commit_identity(dir)?;
     git(dir, &["add", "-A"])?;
     commit_staged_registry(dir, message, signing_key)
@@ -1495,6 +1502,8 @@ pub async fn publish(
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
 
+    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
+
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
     let pkg_dir = dir.join("packages").join(&letter);
@@ -1572,6 +1581,23 @@ pub async fn publish(
     } else {
         None
     };
+    let transparency_log_path = if let Some(artifact) = &provenance_artifact {
+        let provenance_file_path = provenance_path
+            .as_ref()
+            .context("provenance artifact path missing before transparency log append")?;
+        Some(append_package_provenance_transparency_log(
+            &dir,
+            pkg_name,
+            pkg_version,
+            &platform,
+            &info,
+            source_info.as_ref(),
+            artifact,
+            provenance_file_path,
+        )?)
+    } else {
+        None
+    };
 
     printer.step(4, 4, "Done.");
     printer.kv("Package", pkg_name);
@@ -1590,6 +1616,16 @@ pub async fn publish(
     }
     if let Some(artifact) = &provenance_artifact {
         printer.kv("Provenance", &artifact.path);
+    }
+    if let Some(path) = &transparency_log_path {
+        printer.kv(
+            "Transparency log",
+            &path
+                .strip_prefix(&dir)
+                .unwrap_or(path)
+                .display()
+                .to_string(),
+        );
     }
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
@@ -1614,6 +1650,9 @@ pub async fn publish(
         let msg = message.unwrap_or(&default_msg);
         let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
         if let Some(path) = &provenance_path {
+            staged_paths.push(path.clone());
+        }
+        if let Some(path) = &transparency_log_path {
             staged_paths.push(path.clone());
         }
         commit_registry_paths(
@@ -1684,6 +1723,12 @@ pub async fn publish(
                 "content_addressed": report.content_addressed,
             })),
             "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
+            "transparency_log": transparency_log_path.as_ref().map(|path| {
+                path.strip_prefix(&dir)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+            }),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -3116,9 +3161,144 @@ fn publish_attestation_meta(
     Ok(Some(meta))
 }
 
+const PACKAGE_PROVENANCE_TRANSPARENCY_LOG: &str = "transparency/package-provenance.jsonl";
+const PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA: &str =
+    "https://andyl.com/aos/transparency/package-provenance/v1";
+const PACKAGE_PROVENANCE_STATEMENT_TYPE: &str = "https://in-toto.io/Statement/v1";
+const PACKAGE_PROVENANCE_PREDICATE_TYPE: &str = "https://slsa.dev/provenance/v1";
+const PACKAGE_PROVENANCE_BUILD_TYPE: &str = "https://andyl.com/aos/apr-publish/v1";
+
+/// Exclusive on-disk lock (`.git/apr-publish.lock`) serializing publication
+/// critical sections that update append-only registry state.
+struct RegistryPublishLock {
+    path: PathBuf,
+    owned: bool,
+}
+
+impl RegistryPublishLock {
+    fn acquire(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, false)
+    }
+
+    fn acquire_or_join_current_process(dir: &Path) -> Result<Self> {
+        Self::acquire_inner(dir, true)
+    }
+
+    fn acquire_inner(dir: &Path, join_current_process: bool) -> Result<Self> {
+        let git_dir = objectstore::repo_git_dir(dir)?;
+        let path = git_dir.join("apr-publish.lock");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .or_else(|err| {
+                if join_current_process && err.kind() == std::io::ErrorKind::AlreadyExists {
+                    let content = fs::read_to_string(&path)?;
+                    if content
+                        .lines()
+                        .any(|line| line.trim() == format!("pid={}", std::process::id()))
+                    {
+                        return Ok(OpenOptions::new().read(true).open(&path)?);
+                    }
+                }
+                Err(err)
+            })
+            .with_context(|| {
+                format!(
+                    "acquiring publish lock {}; another publisher may be running",
+                    path.display()
+                )
+            })?;
+        let owned = file
+            .metadata()
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(false);
+        if !owned {
+            return Ok(Self { path, owned });
+        }
+        writeln!(file, "pid={}", std::process::id())
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(Self { path, owned })
+    }
+}
+
+impl Drop for RegistryPublishLock {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
 struct PublishProvenanceArtifact {
     path: String,
     jsonl: String,
+    attestation: AttestationMeta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyLogEntry {
+    body: PackageProvenanceTransparencyLogBody,
+    entry_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyLogBody {
+    schema: String,
+    sequence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_entry_hash: Option<String>,
+    package: String,
+    version: String,
+    platform: String,
+    store_path: String,
+    nar_hash: String,
+    nar_size: u64,
+    root_hash: String,
+    root_hash_sig: String,
+    provenance: String,
+    measurement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<PackageProvenanceTransparencySource>,
+    statement: PackageProvenanceTransparencyStatement,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencySource {
+    store_path: String,
+    nar_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageProvenanceTransparencyStatement {
+    path: String,
+    jsonl_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StagedPackageProvenanceMeta {
+    path: String,
+    package: String,
+    version: String,
+    platform: String,
+    store_path: String,
+    source_drv: String,
+    source_nar_hash: String,
+    root_hash: String,
+    root_hash_sig: String,
+    provenance: String,
+    measurement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PackageTomlPlatformKey {
+    package: String,
+    version: String,
+    platform: String,
 }
 
 fn publish_provenance_artifact(
@@ -3154,7 +3334,1244 @@ fn publish_provenance_artifact(
     Ok(Some(PublishProvenanceArtifact {
         path: provenance.to_string(),
         jsonl,
+        attestation,
     }))
+}
+
+fn append_package_provenance_transparency_log(
+    dir: &Path,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    artifact: &PublishProvenanceArtifact,
+    provenance_file_path: &Path,
+) -> Result<PathBuf> {
+    let path = dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+    ensure_package_provenance_transparency_log_extends_head(dir, &path)?;
+    let (sequence, previous_entry_hash) = read_package_provenance_transparency_log_state(&path)?;
+    let root_hash = artifact
+        .attestation
+        .root_hash
+        .as_deref()
+        .context("package transparency entry missing root_hash")?;
+    let root_hash_sig = artifact
+        .attestation
+        .root_hash_sig
+        .as_deref()
+        .context("package transparency entry missing root_hash_sig")?;
+    let provenance = artifact
+        .attestation
+        .provenance
+        .as_deref()
+        .context("package transparency entry missing provenance")?;
+    if artifact.path != provenance {
+        bail!(
+            "package transparency entry provenance path mismatch: expected '{}', got '{}'",
+            provenance,
+            artifact.path
+        );
+    }
+    let provenance_file_ref = registry_relative_path(dir, provenance_file_path)?;
+    if provenance_file_ref != artifact.path {
+        bail!(
+            "package transparency entry provenance file mismatch: expected '{}', got '{}'",
+            artifact.path,
+            provenance_file_ref
+        );
+    }
+    ensure_safe_package_provenance_statement_path(&provenance_file_ref)?;
+    let provenance_file = fs::read(provenance_file_path).with_context(|| {
+        format!(
+            "reading provenance artifact {}",
+            provenance_file_path.display()
+        )
+    })?;
+    let measurement = artifact
+        .attestation
+        .measurement
+        .as_deref()
+        .context("package transparency entry missing measurement")?;
+    let body = PackageProvenanceTransparencyLogBody {
+        schema: PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA.to_string(),
+        sequence,
+        previous_entry_hash,
+        package: name.to_string(),
+        version: version.to_string(),
+        platform: platform.to_string(),
+        store_path: info.path.clone(),
+        nar_hash: info.nar_hash.clone(),
+        nar_size: info.nar_size,
+        root_hash: root_hash.to_string(),
+        root_hash_sig: root_hash_sig.to_string(),
+        provenance: provenance.to_string(),
+        measurement: measurement.to_string(),
+        source: source_info.map(|source| PackageProvenanceTransparencySource {
+            store_path: source.path.clone(),
+            nar_hash: source.nar_hash.clone(),
+        }),
+        statement: PackageProvenanceTransparencyStatement {
+            path: artifact.path.clone(),
+            jsonl_sha256: format!("sha256:{}", sha256_hex(&provenance_file)),
+        },
+    };
+    let entry_hash = package_provenance_transparency_entry_hash(&body)?;
+    let entry = PackageProvenanceTransparencyLogEntry { body, entry_hash };
+    let parent = path
+        .parent()
+        .with_context(|| format!("transparency log path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    let line =
+        serde_json::to_string(&entry).context("serializing package transparency log entry")?;
+    writeln!(file, "{line}").with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+fn read_package_provenance_transparency_log_state(path: &Path) -> Result<(u64, Option<String>)> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok((0, None));
+        }
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    let (next_sequence, previous_entry_hash, _) =
+        parse_package_provenance_transparency_log(&content, &path.display().to_string())?;
+    Ok((next_sequence, previous_entry_hash))
+}
+
+fn parse_package_provenance_transparency_log(
+    content: &str,
+    source: &str,
+) -> Result<(
+    u64,
+    Option<String>,
+    Vec<PackageProvenanceTransparencyLogEntry>,
+)> {
+    let mut next_sequence = 0u64;
+    let mut previous_entry_hash: Option<String> = None;
+    let mut entries = Vec::new();
+    for (line_index, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let entry: PackageProvenanceTransparencyLogEntry = serde_json::from_str(line)
+            .with_context(|| {
+                format!(
+                    "deserializing package transparency log entry {} in {}",
+                    line_index + 1,
+                    source
+                )
+            })?;
+        if entry.body.schema != PACKAGE_PROVENANCE_TRANSPARENCY_SCHEMA {
+            bail!(
+                "package transparency log entry {} has unsupported schema '{}'",
+                line_index + 1,
+                entry.body.schema
+            );
+        }
+        if entry.body.sequence != next_sequence {
+            bail!(
+                "package transparency log entry {} sequence mismatch: expected {}, got {}",
+                line_index + 1,
+                next_sequence,
+                entry.body.sequence
+            );
+        }
+        if entry.body.previous_entry_hash != previous_entry_hash {
+            bail!(
+                "package transparency log entry {} previous hash mismatch",
+                line_index + 1
+            );
+        }
+        let expected_entry_hash = package_provenance_transparency_entry_hash(&entry.body)
+            .with_context(|| {
+                format!(
+                    "hashing package transparency log entry {} in {}",
+                    line_index + 1,
+                    source
+                )
+            })?;
+        if entry.entry_hash != expected_entry_hash {
+            bail!(
+                "package transparency log entry {} hash mismatch: expected '{}', got '{}'",
+                line_index + 1,
+                expected_entry_hash,
+                entry.entry_hash
+            );
+        }
+        previous_entry_hash = Some(entry.entry_hash.clone());
+        next_sequence = next_sequence
+            .checked_add(1)
+            .context("package transparency log sequence overflow")?;
+        entries.push(entry);
+    }
+    Ok((next_sequence, previous_entry_hash, entries))
+}
+
+fn ensure_package_provenance_transparency_log_extends_head(dir: &Path, path: &Path) -> Result<()> {
+    let Some(head_log) = head_package_provenance_transparency_log(dir)? else {
+        return Ok(());
+    };
+    let current = match fs::read(path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
+    ensure_package_provenance_transparency_bytes_extend_head(
+        dir,
+        &current,
+        &head_log,
+        &path.display().to_string(),
+    )
+}
+
+fn ensure_package_provenance_transparency_bytes_extend_head(
+    dir: &Path,
+    current: &[u8],
+    head_log: &[u8],
+    source: &str,
+) -> Result<()> {
+    if !current.starts_with(head_log) {
+        bail!(
+            "package transparency log {source} does not extend committed HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}; restore the committed prefix before publishing"
+        );
+    }
+    let head_text = std::str::from_utf8(head_log)
+        .with_context(|| format!("decoding HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG} as UTF-8"))?;
+    parse_package_provenance_transparency_log(
+        head_text,
+        &format!("HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+    )
+    .with_context(|| {
+        format!(
+            "validating HEAD:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG} in {}",
+            dir.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn head_package_provenance_transparency_log(dir: &Path) -> Result<Option<Vec<u8>>> {
+    let (is_repo, _, _) = git_try(dir, &["rev-parse", "--is-inside-work-tree"])?;
+    if !is_repo {
+        return Ok(None);
+    }
+    let (has_head, _, _) = git_try(dir, &["rev-parse", "--verify", "HEAD"])?;
+    if !has_head {
+        return Ok(None);
+    }
+    git_tree_file_bytes(dir, "HEAD", PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+}
+
+fn git_index_file_bytes(dir: &Path, path: &str) -> Result<Option<Vec<u8>>> {
+    ensure_safe_git_jsonl_index_path(path)?;
+    git_index_safe_file_bytes(dir, path)
+}
+
+fn git_index_safe_file_bytes(dir: &Path, path: &str) -> Result<Option<Vec<u8>>> {
+    ensure_safe_git_index_path(path)?;
+    git_tree_file_bytes(dir, "", path)
+}
+
+fn git_tree_file_bytes(dir: &Path, treeish: &str, path: &str) -> Result<Option<Vec<u8>>> {
+    let spec = if treeish.is_empty() {
+        format!(":{path}")
+    } else {
+        format!("{treeish}:{path}")
+    };
+    let (exists, _, _) = git_try(dir, &["cat-file", "-e", &spec])?;
+    if !exists {
+        return Ok(None);
+    }
+    git_raw(dir, &["show", &spec]).map(Some)
+}
+
+fn staged_package_provenance_transparency_validation_needed(dir: &Path) -> Result<bool> {
+    let changed = git(dir, &["diff", "--cached", "--name-only"])?;
+    let log_changed = changed
+        .lines()
+        .any(|line| line.trim() == PACKAGE_PROVENANCE_TRANSPARENCY_LOG);
+    if log_changed {
+        return Ok(true);
+    }
+    if !staged_package_toml_provenance_entries(dir)?.is_empty() {
+        return Ok(true);
+    }
+    let provenance_statement_changed = changed.lines().any(|line| {
+        let path = line.trim();
+        path.starts_with("provenance/") && path.ends_with(".intoto.jsonl")
+    });
+    if provenance_statement_changed {
+        return Ok(true);
+    }
+    let store_record_changed = changed
+        .lines()
+        .any(|line| line.trim().starts_with("store/"));
+    if store_record_changed && !indexed_package_toml_provenance_entries(dir)?.is_empty() {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn validate_staged_package_provenance_transparency_log(dir: &Path) -> Result<()> {
+    let log = git_index_file_bytes(dir, PACKAGE_PROVENANCE_TRANSPARENCY_LOG)?
+        .context("staged package provenance transparency log is missing")?;
+    if let Some(head_log) = head_package_provenance_transparency_log(dir)? {
+        ensure_package_provenance_transparency_bytes_extend_head(
+            dir,
+            &log,
+            &head_log,
+            &format!("index:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+        )?;
+    }
+    let log_text = std::str::from_utf8(&log)
+        .context("decoding staged package provenance transparency log as UTF-8")?;
+    let (_, _, entries) = parse_package_provenance_transparency_log(
+        log_text,
+        &format!("index:{PACKAGE_PROVENANCE_TRANSPARENCY_LOG}"),
+    )?;
+    validate_staged_package_toml_provenance_entries(dir, &entries)?;
+    validate_staged_store_provenance_entries(dir, &entries)?;
+    for entry in &entries {
+        ensure_safe_package_provenance_statement_path(&entry.body.statement.path)?;
+        let statement =
+            git_index_file_bytes(dir, &entry.body.statement.path)?.with_context(|| {
+                format!(
+                    "staged package provenance statement '{}' is missing",
+                    entry.body.statement.path
+                )
+            })?;
+        let actual = format!("sha256:{}", sha256_hex(&statement));
+        if actual != entry.body.statement.jsonl_sha256 {
+            bail!(
+                "staged package provenance statement '{}' digest mismatch: expected '{}', got '{}'",
+                entry.body.statement.path,
+                entry.body.statement.jsonl_sha256,
+                actual
+            );
+        }
+        validate_package_provenance_transparency_statement(entry, &statement)?;
+    }
+    Ok(())
+}
+
+fn validate_staged_package_toml_provenance_entries(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+) -> Result<()> {
+    for meta in staged_package_toml_provenance_entries(dir)? {
+        let entry = unique_staged_package_transparency_entry(log_entries, &meta)?;
+        ensure_staged_package_matches_transparency_entry(&meta, entry)?;
+    }
+    Ok(())
+}
+
+fn staged_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    package_toml_provenance_entries_from_paths(dir, staged_changed_paths(dir)?, true)
+}
+
+fn indexed_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    package_toml_provenance_entries_from_paths(dir, git_ls_files(dir, "packages")?, false)
+}
+
+fn head_package_toml_provenance_entries(dir: &Path) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    let mut metas = Vec::new();
+    for path in git_ls_tree_files(dir, "HEAD", "packages")? {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_tree_file_bytes(dir, "HEAD", &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding HEAD package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing HEAD package metadata {path}"))?;
+        for (key, platform_entry) in package_toml_platform_entries(&path, &value, "HEAD")? {
+            let Some(provenance) = platform_entry
+                .get("provenance")
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            metas.push(StagedPackageProvenanceMeta {
+                path: path.clone(),
+                package: key.package.clone(),
+                version: key.version.clone(),
+                platform: key.platform.clone(),
+                store_path: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "store_path",
+                )?,
+                source_drv: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_drv",
+                )?,
+                source_nar_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_nar_hash",
+                )?,
+                root_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash",
+                )?,
+                root_hash_sig: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash_sig",
+                )?,
+                provenance: provenance.to_string(),
+                measurement: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "measurement",
+                )?,
+            });
+        }
+    }
+    Ok(metas)
+}
+
+fn package_toml_provenance_entries_from_paths(
+    dir: &Path,
+    paths: Vec<String>,
+    check_downgrade: bool,
+) -> Result<Vec<StagedPackageProvenanceMeta>> {
+    let mut metas = Vec::new();
+    for path in paths {
+        if !is_package_toml_path(&path) {
+            continue;
+        }
+        let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+            continue;
+        };
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("decoding staged package metadata {path} as UTF-8"))?;
+        let value: toml::Value = toml::from_str(text)
+            .with_context(|| format!("parsing staged package metadata {path}"))?;
+        let staged_entries = package_toml_platform_entries(&path, &value, "staged")?;
+        if check_downgrade {
+            ensure_staged_package_provenance_not_downgraded(dir, &path, &staged_entries)?;
+        }
+        for (key, platform_entry) in staged_entries {
+            let Some(provenance) = platform_entry
+                .get("provenance")
+                .and_then(toml::Value::as_str)
+            else {
+                continue;
+            };
+            metas.push(StagedPackageProvenanceMeta {
+                path: path.clone(),
+                package: key.package.clone(),
+                version: key.version.clone(),
+                platform: key.platform.clone(),
+                store_path: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "store_path",
+                )?,
+                source_drv: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_drv",
+                )?,
+                source_nar_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "source_nar_hash",
+                )?,
+                root_hash: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash",
+                )?,
+                root_hash_sig: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "root_hash_sig",
+                )?,
+                provenance: provenance.to_string(),
+                measurement: staged_package_string_field(
+                    &path,
+                    &key.package,
+                    &key.version,
+                    &key.platform,
+                    platform_entry,
+                    "measurement",
+                )?,
+            });
+        }
+    }
+    Ok(metas)
+}
+
+fn ensure_staged_package_provenance_not_downgraded(
+    dir: &Path,
+    path: &str,
+    staged_entries: &[(PackageTomlPlatformKey, &toml::Value)],
+) -> Result<()> {
+    let staged_by_key = staged_entries
+        .iter()
+        .map(|(key, entry)| (key.clone(), *entry))
+        .collect::<BTreeMap<_, _>>();
+    for (key, entry) in &staged_by_key {
+        if let Some(provenance) = entry.get("provenance")
+            && !provenance.is_str()
+        {
+            bail!(
+                "staged package metadata {path} {} {} {} provenance must be a string",
+                key.package,
+                key.version,
+                key.platform
+            );
+        }
+    }
+    let Some(head_bytes) = git_tree_file_bytes(dir, "HEAD", path)? else {
+        return Ok(());
+    };
+    let head_text = std::str::from_utf8(&head_bytes)
+        .with_context(|| format!("decoding HEAD package metadata {path} as UTF-8"))?;
+    let head_value: toml::Value = toml::from_str(head_text)
+        .with_context(|| format!("parsing HEAD package metadata {path}"))?;
+    for (key, head_entry) in package_toml_platform_entries(path, &head_value, "HEAD")? {
+        let Some(head_provenance) = head_entry.get("provenance").and_then(toml::Value::as_str)
+        else {
+            continue;
+        };
+        let Some(staged_entry) = staged_by_key.get(&key) else {
+            continue;
+        };
+        if staged_entry
+            .get("provenance")
+            .and_then(toml::Value::as_str)
+            .is_none()
+        {
+            bail!(
+                "staged package metadata {path} {} {} {} removes committed provenance '{}'",
+                key.package,
+                key.version,
+                key.platform,
+                head_provenance
+            );
+        }
+    }
+    Ok(())
+}
+
+fn package_toml_platform_entries<'a>(
+    path: &str,
+    value: &'a toml::Value,
+    source: &str,
+) -> Result<Vec<(PackageTomlPlatformKey, &'a toml::Value)>> {
+    let mut entries = Vec::new();
+    let mut seen = HashSet::new();
+    let package = value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("{source} package metadata {path} missing package.name"))?;
+    let versions = value
+        .get("versions")
+        .and_then(toml::Value::as_array)
+        .with_context(|| format!("{source} package metadata {path} missing versions"))?;
+    for version_entry in versions {
+        let version = version_entry
+            .get("version")
+            .and_then(toml::Value::as_str)
+            .with_context(|| {
+                format!("{source} package metadata {path} has a version missing version")
+            })?;
+        let platforms = version_entry
+            .get("platforms")
+            .and_then(toml::Value::as_table)
+            .with_context(|| {
+                format!("{source} package metadata {path} version {version} missing platforms")
+            })?;
+        for (platform, platform_entry) in platforms {
+            let key = PackageTomlPlatformKey {
+                package: package.to_string(),
+                version: version.to_string(),
+                platform: platform.to_string(),
+            };
+            if !seen.insert(key.clone()) {
+                bail!(
+                    "{source} package metadata {path} has duplicate {} {} {} platform entries",
+                    key.package,
+                    key.version,
+                    key.platform
+                );
+            }
+            entries.push((key, platform_entry));
+        }
+    }
+    Ok(entries)
+}
+
+fn validate_staged_store_provenance_entries(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+) -> Result<()> {
+    let changed_ias = staged_store_record_ia_hashes(dir)?;
+    let package_metas = indexed_package_toml_provenance_entries(dir)?;
+    for meta in &package_metas {
+        validate_staged_store_record_for_package(dir, log_entries, meta)?;
+    }
+
+    if changed_ias.is_empty() {
+        return Ok(());
+    }
+
+    let protected_roots = head_package_toml_provenance_entries(dir)?
+        .into_iter()
+        .map(|meta| extract_hash(&meta.store_path).to_string())
+        .collect::<HashSet<_>>();
+    for root_meta in &package_metas {
+        let root_ia = extract_hash(&root_meta.store_path);
+        if !protected_roots.contains(root_ia) {
+            continue;
+        }
+        let reachable = staged_store_reachable_ias(dir, root_ia)?;
+        for changed_ia in changed_ias.intersection(&reachable) {
+            let mut bound = false;
+            for meta in package_metas
+                .iter()
+                .filter(|meta| extract_hash(&meta.store_path) == changed_ia.as_str())
+            {
+                bound = true;
+                validate_staged_store_record_for_package(dir, log_entries, meta)?;
+            }
+            if !bound {
+                let record_path =
+                    registry_relative_path(dir, &store::entry_path(dir, changed_ia)?)?;
+                bail!(
+                    "staged store record {record_path} changes a reachable dependency of provenanced package {} {} {} without its own package provenance transparency binding",
+                    root_meta.package,
+                    root_meta.version,
+                    root_meta.platform
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_staged_store_record_for_package(
+    dir: &Path,
+    log_entries: &[PackageProvenanceTransparencyLogEntry],
+    meta: &StagedPackageProvenanceMeta,
+) -> Result<()> {
+    let ia_hash = extract_hash(&meta.store_path);
+    let entry = unique_staged_package_transparency_entry(log_entries, meta)?;
+    ensure_staged_package_matches_transparency_entry(meta, entry)?;
+    let record_path = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    let bytes = git_index_safe_file_bytes(dir, &record_path)?.with_context(|| {
+        format!(
+            "staged store record {record_path} for provenanced package {} {} {} is missing",
+            meta.package, meta.version, meta.platform
+        )
+    })?;
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("decoding staged store record {record_path} as UTF-8"))?;
+    let store_entry = store::parse_entry(text)
+        .with_context(|| format!("parsing staged store record {record_path}"))?;
+    let expected_nar = NarBytes::from_hash(&entry.body.nar_hash, entry.body.nar_size)
+        .with_context(|| {
+            format!(
+                "normalizing transparency log NAR hash for {} {} {}",
+                meta.package, meta.version, meta.platform
+            )
+        })?;
+    let mut matched = false;
+    for nar in store_entry.blessed_nars() {
+        if nar == expected_nar {
+            matched = true;
+            continue;
+        }
+        bail!(
+            "staged store record {record_path} blesses NAR sha256:{}:{} for provenanced package {} {} {}, but transparency log entry {} covers '{}:{}'",
+            nar.sha256_nix32,
+            nar.size,
+            meta.package,
+            meta.version,
+            meta.platform,
+            entry.body.sequence,
+            entry.body.nar_hash,
+            entry.body.nar_size
+        );
+    }
+    if !matched {
+        bail!(
+            "staged store record {record_path} for provenanced package {} {} {} is missing transparency-log NAR '{}:{}'",
+            meta.package,
+            meta.version,
+            meta.platform,
+            entry.body.nar_hash,
+            entry.body.nar_size
+        );
+    }
+    Ok(())
+}
+
+fn staged_store_reachable_ias(dir: &Path, root_ia: &str) -> Result<HashSet<String>> {
+    let mut reachable = HashSet::new();
+    let mut stack = vec![root_ia.to_string()];
+    while let Some(ia_hash) = stack.pop() {
+        if !reachable.insert(ia_hash.clone()) {
+            continue;
+        }
+        let Some(entry) = staged_store_entry(dir, &ia_hash)? else {
+            continue;
+        };
+        stack.extend(entry.dep_ias());
+    }
+    Ok(reachable)
+}
+
+fn staged_store_entry(dir: &Path, ia_hash: &str) -> Result<Option<store::StoreEntry>> {
+    let path = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    let Some(bytes) = git_index_safe_file_bytes(dir, &path)? else {
+        return Ok(None);
+    };
+    let text = std::str::from_utf8(&bytes)
+        .with_context(|| format!("decoding staged store record {path} as UTF-8"))?;
+    store::parse_entry(text)
+        .map(Some)
+        .with_context(|| format!("parsing staged store record {path}"))
+}
+
+fn staged_store_record_ia_hashes(dir: &Path) -> Result<HashSet<String>> {
+    let mut hashes = HashSet::new();
+    for path in staged_changed_paths(dir)? {
+        let Some(ia_hash) = store_record_ia_hash_from_index_path(dir, &path)? else {
+            continue;
+        };
+        hashes.insert(ia_hash);
+    }
+    Ok(hashes)
+}
+
+fn store_record_ia_hash_from_index_path(dir: &Path, path: &str) -> Result<Option<String>> {
+    if !path.starts_with("store/") {
+        return Ok(None);
+    }
+    ensure_safe_git_index_path(path)?;
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!("staged store record path '{path}' must use store/<shard>/<hash>");
+    }
+    let ia_hash = parts[2];
+    let expected = registry_relative_path(dir, &store::entry_path(dir, ia_hash)?)?;
+    if path != expected {
+        bail!("staged store record path '{path}' is misfiled; expected '{expected}'");
+    }
+    Ok(Some(ia_hash.to_string()))
+}
+
+fn unique_staged_package_transparency_entry<'a>(
+    log_entries: &'a [PackageProvenanceTransparencyLogEntry],
+    meta: &StagedPackageProvenanceMeta,
+) -> Result<&'a PackageProvenanceTransparencyLogEntry> {
+    let mut matches = log_entries
+        .iter()
+        .filter(|entry| entry.body.provenance == meta.provenance);
+    let entry = matches.next().with_context(|| {
+        format!(
+            "staged package metadata {} declares provenance '{}' with no transparency log entry",
+            meta.path, meta.provenance
+        )
+    })?;
+    if matches.next().is_some() {
+        bail!(
+            "staged package metadata {} declares provenance '{}' with duplicate transparency log entries",
+            meta.path,
+            meta.provenance
+        );
+    }
+    Ok(entry)
+}
+
+fn ensure_staged_package_matches_transparency_entry(
+    meta: &StagedPackageProvenanceMeta,
+    entry: &PackageProvenanceTransparencyLogEntry,
+) -> Result<()> {
+    ensure_staged_package_field(meta, "package", &entry.body.package, &meta.package)?;
+    ensure_staged_package_field(meta, "version", &entry.body.version, &meta.version)?;
+    ensure_staged_package_field(meta, "platform", &entry.body.platform, &meta.platform)?;
+    ensure_staged_package_field(meta, "store_path", &entry.body.store_path, &meta.store_path)?;
+    ensure_staged_package_field(meta, "root_hash", &entry.body.root_hash, &meta.root_hash)?;
+    ensure_staged_package_field(
+        meta,
+        "root_hash_sig",
+        &entry.body.root_hash_sig,
+        &meta.root_hash_sig,
+    )?;
+    ensure_staged_package_field(
+        meta,
+        "measurement",
+        &entry.body.measurement,
+        &meta.measurement,
+    )?;
+    ensure_staged_package_source(meta, entry)
+}
+
+fn ensure_staged_package_source(
+    meta: &StagedPackageProvenanceMeta,
+    entry: &PackageProvenanceTransparencyLogEntry,
+) -> Result<()> {
+    if let Some(source) = &entry.body.source {
+        ensure_staged_package_field(meta, "source_drv", &source.store_path, &meta.source_drv)?;
+        ensure_staged_package_field(
+            meta,
+            "source_nar_hash",
+            &source.nar_hash,
+            &meta.source_nar_hash,
+        )?;
+        return Ok(());
+    }
+    if !meta.source_drv.is_empty() || !meta.source_nar_hash.is_empty() {
+        bail!(
+            "staged package metadata {} {} {} {} declares source metadata but transparency log entry has no source dependency",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform
+        );
+    }
+    Ok(())
+}
+
+fn staged_changed_paths(dir: &Path) -> Result<Vec<String>> {
+    Ok(git(dir, &["diff", "--cached", "--name-only"])?
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn git_ls_files(dir: &Path, pathspec: &str) -> Result<Vec<String>> {
+    Ok(git(dir, &["ls-files", "--", pathspec])?
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn git_ls_tree_files(dir: &Path, treeish: &str, pathspec: &str) -> Result<Vec<String>> {
+    let (ok, stdout, _) = git_try(
+        dir,
+        &["ls-tree", "-r", "--name-only", treeish, "--", pathspec],
+    )?;
+    if !ok {
+        return Ok(Vec::new());
+    }
+    Ok(stdout
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn is_package_toml_path(path: &str) -> bool {
+    path.starts_with("packages/")
+        && path.ends_with(".toml")
+        && ensure_safe_git_index_path(path).is_ok()
+}
+
+fn staged_package_string_field(
+    path: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    entry: &toml::Value,
+    field: &str,
+) -> Result<String> {
+    entry
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(ToString::to_string)
+        .with_context(|| {
+            format!("staged package metadata {path} {package} {version} {platform} missing {field}")
+        })
+}
+
+fn ensure_staged_package_field(
+    meta: &StagedPackageProvenanceMeta,
+    field: &str,
+    expected: &str,
+    actual: &str,
+) -> Result<()> {
+    if expected != actual {
+        bail!(
+            "staged package metadata {} {} {} {} {field} mismatch: expected '{}', got '{}'",
+            meta.path,
+            meta.package,
+            meta.version,
+            meta.platform,
+            expected,
+            actual
+        );
+    }
+    Ok(())
+}
+
+fn validate_package_provenance_transparency_statement(
+    entry: &PackageProvenanceTransparencyLogEntry,
+    statement_bytes: &[u8],
+) -> Result<()> {
+    if entry.body.statement.path != entry.body.provenance {
+        bail!(
+            "package transparency log entry {} statement path '{}' does not match provenance '{}'",
+            entry.body.sequence,
+            entry.body.statement.path,
+            entry.body.provenance
+        );
+    }
+    let statement =
+        parse_package_provenance_statement_value(statement_bytes, &entry.body.statement.path)?;
+    ensure_json_string(
+        &statement,
+        "_type",
+        PACKAGE_PROVENANCE_STATEMENT_TYPE,
+        "statement _type",
+    )?;
+    ensure_json_string(
+        &statement,
+        "predicateType",
+        PACKAGE_PROVENANCE_PREDICATE_TYPE,
+        "statement predicateType",
+    )?;
+
+    let predicate = json_object(&statement, "predicate")?;
+    let build_definition = json_object(predicate, "buildDefinition")?;
+    ensure_json_string(
+        build_definition,
+        "buildType",
+        PACKAGE_PROVENANCE_BUILD_TYPE,
+        "statement buildType",
+    )?;
+    let params = json_object(build_definition, "externalParameters")?;
+    ensure_json_string(
+        params,
+        "package",
+        &entry.body.package,
+        "externalParameters.package",
+    )?;
+    ensure_json_string(
+        params,
+        "version",
+        &entry.body.version,
+        "externalParameters.version",
+    )?;
+    ensure_json_string(
+        params,
+        "platform",
+        &entry.body.platform,
+        "externalParameters.platform",
+    )?;
+    ensure_json_string(
+        params,
+        "store_path",
+        &entry.body.store_path,
+        "externalParameters.store_path",
+    )?;
+    ensure_json_string(
+        params,
+        "root_hash",
+        &entry.body.root_hash,
+        "externalParameters.root_hash",
+    )?;
+    ensure_json_string(
+        params,
+        "root_hash_sig",
+        &entry.body.root_hash_sig,
+        "externalParameters.root_hash_sig",
+    )?;
+    ensure_json_string(
+        params,
+        "provenance",
+        &entry.body.provenance,
+        "externalParameters.provenance",
+    )?;
+
+    let package_subject = provenance_statement_named_object(
+        json_array(&statement, "subject")?,
+        &entry.body.store_path,
+    )
+    .with_context(|| {
+        format!(
+            "locating package subject '{}' for transparency log entry {}",
+            entry.body.store_path, entry.body.sequence
+        )
+    })?;
+    ensure_json_value(
+        package_subject,
+        "digest",
+        &provenance_digest_map(&entry.body.nar_hash),
+        "package subject digest",
+    )?;
+
+    let manifest_subject_name = format!(
+        "aos:permissions-manifest:{}:{}:{}",
+        entry.body.package, entry.body.version, entry.body.platform
+    );
+    let manifest_subject = provenance_statement_named_object(
+        json_array(&statement, "subject")?,
+        &manifest_subject_name,
+    )
+    .with_context(|| {
+        format!(
+            "locating permissions manifest subject '{}' for transparency log entry {}",
+            manifest_subject_name, entry.body.sequence
+        )
+    })?;
+    let manifest_digest = sha256_digest_from_statement_digest(
+        manifest_subject.get("digest").with_context(|| {
+            format!("permissions manifest subject '{manifest_subject_name}' missing digest")
+        })?,
+        "permissions manifest subject digest",
+    )?;
+    let expected_measurement = crate::package_attestation::package_measurement_digest(
+        &entry.body.package,
+        &entry.body.version,
+        &entry.body.root_hash,
+        &manifest_digest,
+    );
+    if expected_measurement != entry.body.measurement {
+        bail!(
+            "package transparency log entry {} measurement does not match permissions manifest digest",
+            entry.body.sequence
+        );
+    }
+
+    let measurement_subject_name = format!(
+        "aos:package-measurement:{}:{}:{}",
+        entry.body.package, entry.body.version, entry.body.platform
+    );
+    let measurement_subject = provenance_statement_named_object(
+        json_array(&statement, "subject")?,
+        &measurement_subject_name,
+    )
+    .with_context(|| {
+        format!(
+            "locating measurement subject '{}' for transparency log entry {}",
+            measurement_subject_name, entry.body.sequence
+        )
+    })?;
+    ensure_json_value(
+        measurement_subject,
+        "digest",
+        &provenance_digest_map(&entry.body.measurement),
+        "measurement subject digest",
+    )?;
+
+    if let Some(source) = &entry.body.source {
+        let source_uri = format!("nix:{}", source.store_path);
+        let dependencies = json_array(build_definition, "resolvedDependencies")?;
+        let dependency =
+            provenance_statement_named_uri(dependencies, &source_uri).with_context(|| {
+                format!(
+                    "locating source dependency '{}' for transparency log entry {}",
+                    source_uri, entry.body.sequence
+                )
+            })?;
+        ensure_json_value(
+            dependency,
+            "digest",
+            &provenance_digest_map(&source.nar_hash),
+            "source dependency digest",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn parse_package_provenance_statement_value(bytes: &[u8], path: &str) -> Result<Value> {
+    let text = std::str::from_utf8(bytes)
+        .with_context(|| format!("decoding package provenance statement '{path}' as UTF-8"))?;
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let line = lines
+        .next()
+        .with_context(|| format!("package provenance statement '{path}' is empty"))?;
+    if lines.next().is_some() {
+        bail!("package provenance statement '{path}' must contain exactly one JSONL record");
+    }
+    serde_json::from_str(line)
+        .with_context(|| format!("deserializing package provenance statement '{path}'"))
+}
+
+fn provenance_statement_named_object<'a>(objects: &'a [Value], name: &str) -> Result<&'a Value> {
+    let mut matches = objects.iter().filter(|object| {
+        object
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual == name)
+    });
+    let value = matches
+        .next()
+        .with_context(|| format!("provenance statement missing object named '{name}'"))?;
+    if matches.next().is_some() {
+        bail!("provenance statement has duplicate object named '{name}'");
+    }
+    Ok(value)
+}
+
+fn provenance_statement_named_uri<'a>(objects: &'a [Value], uri: &str) -> Result<&'a Value> {
+    let mut matches = objects.iter().filter(|object| {
+        object
+            .get("uri")
+            .and_then(Value::as_str)
+            .is_some_and(|actual| actual == uri)
+    });
+    let value = matches
+        .next()
+        .with_context(|| format!("provenance statement missing dependency uri '{uri}'"))?;
+    if matches.next().is_some() {
+        bail!("provenance statement has duplicate dependency uri '{uri}'");
+    }
+    Ok(value)
+}
+
+fn json_object<'a>(value: &'a Value, key: &str) -> Result<&'a Value> {
+    value
+        .get(key)
+        .filter(|value| value.is_object())
+        .with_context(|| format!("provenance statement missing object field '{key}'"))
+}
+
+fn json_array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value]> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .with_context(|| format!("provenance statement missing array field '{key}'"))
+}
+
+fn ensure_json_string(object: &Value, key: &str, expected: &str, label: &str) -> Result<()> {
+    let actual = object
+        .get(key)
+        .and_then(Value::as_str)
+        .with_context(|| format!("provenance statement missing string field '{label}'"))?;
+    if actual != expected {
+        bail!("provenance statement {label} mismatch: expected '{expected}', got '{actual}'");
+    }
+    Ok(())
+}
+
+fn ensure_json_value(object: &Value, key: &str, expected: &Value, label: &str) -> Result<()> {
+    let actual = object
+        .get(key)
+        .with_context(|| format!("provenance statement missing field '{label}'"))?;
+    if actual != expected {
+        bail!("provenance statement {label} mismatch");
+    }
+    Ok(())
+}
+
+fn sha256_digest_from_statement_digest(digest: &Value, label: &str) -> Result<String> {
+    let sha256 = digest
+        .get("sha256")
+        .and_then(Value::as_str)
+        .with_context(|| format!("provenance statement {label} missing sha256"))?;
+    if sha256.len() != 64 || !sha256.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("provenance statement {label} has invalid sha256 digest '{sha256}'");
+    }
+    Ok(format!("sha256:{}", sha256.to_ascii_lowercase()))
+}
+
+fn ensure_safe_package_provenance_statement_path(path: &str) -> Result<()> {
+    ensure_safe_git_jsonl_index_path(path)?;
+    if !path.starts_with("provenance/") || !path.ends_with(".intoto.jsonl") {
+        bail!(
+            "package provenance statement path '{path}' must use the generated provenance/*.intoto.jsonl layout"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_safe_git_jsonl_index_path(path: &str) -> Result<()> {
+    ensure_safe_git_index_path(path)?;
+    if !path.ends_with(".jsonl") {
+        bail!("package provenance statement path '{path}' must be a relative *.jsonl path");
+    }
+    Ok(())
+}
+
+fn ensure_safe_git_index_path(path: &str) -> Result<()> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.contains(':')
+        || path.bytes().any(|byte| byte.is_ascii_control())
+    {
+        bail!("git index path '{path}' must be relative and must not contain revspec punctuation");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => {
+                bail!(
+                    "package provenance statement path '{path}' must not contain '.', '..', or prefixes"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn package_provenance_transparency_entry_hash(
+    body: &PackageProvenanceTransparencyLogBody,
+) -> Result<String> {
+    let payload = serde_json::to_vec(body)
+        .context("serializing package transparency log entry body for hashing")?;
+    Ok(format!("sha256:{}", sha256_hex(&payload)))
 }
 
 fn publish_provenance_statement(
@@ -3193,7 +4610,7 @@ fn publish_provenance_statement(
         .collect::<Vec<_>>();
 
     Ok(serde_json::json!({
-        "_type": "https://in-toto.io/Statement/v1",
+        "_type": PACKAGE_PROVENANCE_STATEMENT_TYPE,
         "subject": [
             {
                 "name": info.path.as_str(),
@@ -3208,10 +4625,10 @@ fn publish_provenance_statement(
                 "digest": provenance_digest_map(measurement),
             },
         ],
-        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicateType": PACKAGE_PROVENANCE_PREDICATE_TYPE,
         "predicate": {
             "buildDefinition": {
-                "buildType": "https://andyl.com/aos/apr-publish/v1",
+                "buildType": PACKAGE_PROVENANCE_BUILD_TYPE,
                 "externalParameters": {
                     "package": name,
                     "version": version,
@@ -3488,6 +4905,7 @@ pub async fn unpublish(
     } else {
         None
     };
+    let _publish_lock = RegistryPublishLock::acquire(&dir)?;
     let letter = first_letter(package);
     let toml_path = dir
         .join("packages")
@@ -5338,6 +6756,7 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             // Bless the whole closure of the path (records every member).
             let report = write_store_files(&dir, store_path, content_addressed, true, printer)
@@ -5392,6 +6811,7 @@ pub async fn run_store(
             ensure_writable_registry_clone(&registry_name, &dir)?;
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let ia_hash = extract_hash(store_path);
             if !store::remove_realisations(&dir, ia_hash, realisation.as_deref())? {
@@ -5450,6 +6870,7 @@ pub async fn run_store(
             let signing_key =
                 resolve_optional_signing_key(config, &dir, &registry_name, key, key_id)?;
             let content_addressed = registry_content_addressed(&dir);
+            let _publish_lock = RegistryPublishLock::acquire(&dir)?;
 
             let roots = collect_package_store_paths(&dir)?;
             if roots.is_empty() {
@@ -11787,6 +13208,1196 @@ mod tests {
                 .get("sha256")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_records_hash_chain() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+
+        assert_eq!(
+            log_path,
+            tmp.path().join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+        );
+        let content = fs::read_to_string(&log_path).unwrap();
+        let entries = content
+            .lines()
+            .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].body.sequence, 0);
+        assert_eq!(entries[0].body.previous_entry_hash, None);
+        assert_eq!(entries[0].body.package, "webapp");
+        assert_eq!(entries[0].body.version, "1.0.0");
+        assert_eq!(entries[0].body.platform, "x86_64-linux");
+        assert_eq!(entries[0].body.store_path, info.path);
+        assert_eq!(
+            entries[0].body.statement.jsonl_sha256,
+            format!("sha256:{}", sha256_hex(artifact.jsonl.as_bytes()))
+        );
+        assert_eq!(
+            entries[0].entry_hash,
+            package_provenance_transparency_entry_hash(&entries[0].body).unwrap()
+        );
+        assert_eq!(entries[1].body.sequence, 1);
+        assert_eq!(
+            entries[1].body.previous_entry_hash.as_deref(),
+            Some(entries[0].entry_hash.as_str())
+        );
+        assert_eq!(
+            read_package_provenance_transparency_log_state(&log_path).unwrap(),
+            (2, Some(entries[1].entry_hash.clone()))
+        );
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_corrupt_history() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.entry_hash = format!("sha256:{}", "0".repeat(64));
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+
+        let err = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("hash mismatch"));
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_broken_previous_link() {
+        let tmp = TempDir::new().unwrap();
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(tmp.path(), &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        append_package_provenance_transparency_log(
+            tmp.path(),
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entries = content
+            .lines()
+            .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries[1].body.previous_entry_hash = Some(format!("sha256:{}", "1".repeat(64)));
+        entries[1].entry_hash =
+            package_provenance_transparency_entry_hash(&entries[1].body).unwrap();
+        let rewritten = entries
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        fs::write(&log_path, format!("{rewritten}\n")).unwrap();
+
+        let err = read_package_provenance_transparency_log_state(&log_path).unwrap_err();
+
+        assert!(format!("{err:#}").contains("previous hash mismatch"));
+    }
+
+    #[test]
+    fn append_package_provenance_transparency_log_rejects_head_rewrite() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+        fs::write(&log_path, "").unwrap();
+
+        let err = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap_err();
+
+        assert!(format!("{err:#}").contains("does not extend committed HEAD"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_statement_digest_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        fs::write(&provenance_path, "{}\n").unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_prestaged_bad_transparency_log() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.entry_hash = format!("sha256:{}", "0".repeat(64));
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(&repo, &["add", PACKAGE_PROVENANCE_TRANSPARENCY_LOG]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("does not extend committed HEAD"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_prestaged_statement_change_without_log_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        fs::write(&provenance_path, "{}\n").unwrap();
+        git(&repo, &["add", artifact.path.as_str()]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("digest mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_first_provenance_statement_without_log() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (_, _, artifact) = sample_transparency_provenance();
+        write_sample_provenance_artifact(&repo, &artifact);
+        git(&repo, &["add", artifact.path.as_str()]).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("transparency log is missing"));
+    }
+
+    #[test]
+    fn commit_registry_paths_joins_current_process_publish_lock() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let _publish_lock = RegistryPublishLock::acquire(&repo).unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap();
+
+        assert!(current_git_head(&repo).is_ok());
+    }
+
+    #[test]
+    fn commit_registry_paths_fails_before_staging_when_publish_lock_is_foreign() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        fs::write(repo.join(".git").join("apr-publish.lock"), "pid=999999\n").unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("another publisher may be running"));
+        assert_eq!(
+            git(&repo, &["diff", "--cached", "--name-only"]).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_statement_body_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.body.package = "other".to_string();
+        entry.entry_hash = package_provenance_transparency_entry_hash(&entry.body).unwrap();
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("externalParameters.package mismatch"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_manifest_measurement_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        let log_path = append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let mut statement: Value = serde_json::from_str(artifact.jsonl.trim()).unwrap();
+        let subjects = statement
+            .get_mut("subject")
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        let manifest_subject = subjects
+            .iter_mut()
+            .find(|subject| {
+                subject.get("name").and_then(Value::as_str)
+                    == Some("aos:permissions-manifest:webapp:1.0.0:x86_64-linux")
+            })
+            .unwrap();
+        manifest_subject["digest"]["sha256"] = Value::String("e".repeat(64));
+        let statement_jsonl = format!("{}\n", serde_json::to_string(&statement).unwrap());
+        fs::write(&provenance_path, &statement_jsonl).unwrap();
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        let mut entry: PackageProvenanceTransparencyLogEntry =
+            serde_json::from_str(content.trim()).unwrap();
+        entry.body.statement.jsonl_sha256 =
+            format!("sha256:{}", sha256_hex(statement_jsonl.as_bytes()));
+        entry.entry_hash = package_provenance_transparency_entry_hash(&entry.body).unwrap();
+        fs::write(
+            &log_path,
+            format!("{}\n", serde_json::to_string(&entry).unwrap()),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("measurement does not match permissions manifest"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_accepts_matching_package_toml() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        validate_staged_package_provenance_transparency_log(&repo).unwrap();
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_package_toml_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let bad_measurement = format!("sha256:{}", "f".repeat(64));
+        let package_toml =
+            write_sample_package_toml(&repo, &info, &source, &artifact, Some(&bad_measurement));
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("measurement mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_provenance_removal() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&package_toml).unwrap();
+        let without_provenance = content
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("provenance = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&package_toml, format!("{without_provenance}\n")).unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("removes committed provenance"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_provenance_type_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let provenance = artifact.attestation.provenance.as_deref().unwrap();
+        let content = fs::read_to_string(&package_toml).unwrap();
+        fs::write(
+            &package_toml,
+            content.replace(&format!("provenance = \"{provenance}\""), "provenance = []"),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("provenance must be a string"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_package_toml_source_nar_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let content = fs::read_to_string(&package_toml).unwrap();
+        fs::write(
+            &package_toml,
+            content.replace(
+                &format!("source_nar_hash = \"{}\"", source.nar_hash),
+                &format!("source_nar_hash = \"sha256:{}\"", "f".repeat(64)),
+            ),
+        )
+        .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("source_nar_hash mismatch"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_unlogged_provenanced_store_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let bad_nar_hash = format!("sha256:{}", "e".repeat(64));
+        write_sample_store_record(&repo, &info, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_new_provenanced_root_unlogged_store_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let bad_nar_hash = format!("sha256:{}", "e".repeat(64));
+        let store_record = write_sample_store_record(&repo, &info, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_new_provenanced_root_without_store_record() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("store record"));
+    }
+
+    #[test]
+    fn validate_staged_package_provenance_transparency_log_rejects_duplicate_package_platform() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&package_toml)
+            .unwrap()
+            .write_all(
+                b"\n[[versions]]\n\
+                  version = \"1.0.0\"\n\
+                  \n\
+                  [versions.platforms.x86_64-linux]\n\
+                  store_path = \"/nix/store/abc123-webapp-1.0.0\"\n\
+                  closure_size = 1\n\
+                  source_drv = \"\"\n\
+                  source_nar_hash = \"\"\n",
+            )
+            .unwrap();
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+
+        let err = validate_staged_package_provenance_transparency_log(&repo).unwrap_err();
+
+        assert!(format!("{err:#}").contains("duplicate webapp 1.0.0 x86_64-linux"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_provenanced_store_nar_size_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let store_record = write_sample_store_record(&repo, &info, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        write_sample_store_record(&repo, &info, Some(&info.nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                store_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("blesses NAR"));
+    }
+
+    #[test]
+    fn commit_registry_paths_rejects_reachable_dependency_store_change() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        init_test_transparency_repo(&repo);
+        let (info, source, artifact) = sample_transparency_provenance();
+        let dep = StorePathInfo {
+            path: "/nix/store/lib123-runtime-1.0".into(),
+            nar_hash: format!("sha256:{}", "1".repeat(64)),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let provenance_path = write_sample_provenance_artifact(&repo, &artifact);
+        append_package_provenance_transparency_log(
+            &repo,
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &artifact,
+            &provenance_path,
+        )
+        .unwrap();
+        let package_toml = write_sample_package_toml(&repo, &info, &source, &artifact, None);
+        let root_record = write_sample_store_record_with_deps(&repo, &info, &[&dep.path], None);
+        let dep_record = write_sample_store_record(&repo, &dep, None);
+        git(
+            &repo,
+            &[
+                "add",
+                PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+                artifact.path.as_str(),
+                package_toml.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                root_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+                dep_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        git(&repo, &["commit", "-m", "publish webapp"]).unwrap();
+
+        let bad_nar_hash = format!("sha256:{}", "2".repeat(64));
+        write_sample_store_record(&repo, &dep, Some(&bad_nar_hash));
+        git(
+            &repo,
+            &[
+                "add",
+                dep_record.strip_prefix(&repo).unwrap().to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        let registry_toml = repo.join("registry.toml");
+        fs::write(&registry_toml, "[registry]\nname = \"test\"\n").unwrap();
+
+        let err =
+            commit_registry_paths(&repo, "metadata change", &[registry_toml], None).unwrap_err();
+
+        assert!(format!("{err:#}").contains("reachable dependency"));
+    }
+
+    #[test]
+    fn package_provenance_statement_path_rejects_git_revspec_punctuation() {
+        assert!(ensure_safe_package_provenance_statement_path("0:foo.intoto.jsonl").is_err());
+        assert!(
+            ensure_safe_package_provenance_statement_path(
+                "provenance/w/web/x86_64-linux/bad:path.intoto.jsonl"
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_safe_package_provenance_statement_path(
+                "provenance/w/web/x86_64-linux/good.intoto.jsonl"
+            )
+            .is_ok()
+        );
+    }
+
+    fn sample_transparency_provenance() -> (StorePathInfo, StorePathInfo, PublishProvenanceArtifact)
+    {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let artifact = publish_provenance_artifact(
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+        )
+        .unwrap()
+        .unwrap();
+        (info, source, artifact)
+    }
+
+    fn write_sample_provenance_artifact(
+        root: &Path,
+        artifact: &PublishProvenanceArtifact,
+    ) -> PathBuf {
+        let path = root.join(&artifact.path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, &artifact.jsonl).unwrap();
+        path
+    }
+
+    fn write_sample_store_record(
+        root: &Path,
+        info: &StorePathInfo,
+        extra_nar_hash: Option<&str>,
+    ) -> PathBuf {
+        write_sample_store_record_with_deps(root, info, &[], extra_nar_hash)
+    }
+
+    fn write_sample_store_record_with_deps(
+        root: &Path,
+        info: &StorePathInfo,
+        deps: &[&str],
+        extra_nar_hash: Option<&str>,
+    ) -> PathBuf {
+        let ia_hash = extract_hash(&info.path);
+        let path = store::entry_path(root, ia_hash).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let dep_edges = deps
+            .iter()
+            .map(|dep| DepEdge {
+                dep_ia: extract_hash(dep).to_string(),
+                dep_ca: None,
+            })
+            .collect::<Vec<_>>();
+        let mut entry = store::StoreEntry {
+            realisations: vec![Realisation {
+                nar: NarBytes::from_hash(&info.nar_hash, info.nar_size).unwrap(),
+                ca: None,
+                deps: dep_edges,
+            }],
+        };
+        if let Some(nar_hash) = extra_nar_hash {
+            entry.realisations.push(Realisation {
+                nar: NarBytes::from_hash(nar_hash, info.nar_size + 1).unwrap(),
+                ca: Some(store::normalize_digest(nar_hash).unwrap()),
+                deps: Vec::new(),
+            });
+        }
+        fs::write(&path, store::serialize_entry(&entry)).unwrap();
+        path
+    }
+
+    fn write_sample_package_toml(
+        root: &Path,
+        info: &StorePathInfo,
+        source: &StorePathInfo,
+        artifact: &PublishProvenanceArtifact,
+        measurement_override: Option<&str>,
+    ) -> PathBuf {
+        let path = root.join("packages").join("w").join("webapp.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let root_hash = artifact.attestation.root_hash.as_deref().unwrap();
+        let root_hash_sig = artifact.attestation.root_hash_sig.as_deref().unwrap();
+        let provenance = artifact.attestation.provenance.as_deref().unwrap();
+        let measurement = measurement_override
+            .or(artifact.attestation.measurement.as_deref())
+            .unwrap();
+        fs::write(
+            &path,
+            format!(
+                "[package]\n\
+                 name = \"webapp\"\n\
+                 description = \"\"\n\
+                 \n\
+                 [[versions]]\n\
+                 version = \"1.0.0\"\n\
+                 \n\
+                 [versions.platforms.x86_64-linux]\n\
+                 store_path = \"{}\"\n\
+                 closure_size = 1\n\
+                 source_drv = \"{}\"\n\
+                 source_nar_hash = \"{}\"\n\
+                 root_hash = \"{}\"\n\
+                 root_hash_sig = \"{}\"\n\
+                 provenance = \"{}\"\n\
+                 measurement = \"{}\"\n",
+                info.path,
+                source.path,
+                source.nar_hash,
+                root_hash,
+                root_hash_sig,
+                provenance,
+                measurement
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    fn init_test_transparency_repo(repo: &Path) {
+        git(
+            repo,
+            &["init", "--object-format=sha256", "--initial-branch=main"],
+        )
+        .unwrap();
+        git(repo, &["config", "user.name", "AOS Registry"]).unwrap();
+        git(repo, &["config", "user.email", "registry@example.com"]).unwrap();
+        git(repo, &["config", "commit.gpgsign", "false"]).unwrap();
     }
 
     #[test]
