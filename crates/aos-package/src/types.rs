@@ -4,7 +4,7 @@
 //! writes, grouped by where they live on disk:
 //!
 //! - **Registry metadata** — [`PackageMeta`] (a package version entry from a
-//!   registry's package TOML), [`ClosureMeta`] (the `closures/{hash}`
+//!   registry's package TOML), the `store/` realisation graph (the `store/{hash}`
 //!   adjacency-list files), and [`SysrootImageEntry`].
 //! - **Registry configuration** — [`RegistryConfig`] / [`RegistryFile`]
 //!   (`registries.d/*.toml`), with [`TrackingMode`], [`Transport`],
@@ -446,90 +446,6 @@ pub struct PackageMeta {
 }
 
 // ---------------------------------------------------------------------------
-// Closure metadata — parsed from `closures/{hash}` adjacency list files
-// ---------------------------------------------------------------------------
-
-/// Precomputed transitive closure for a store path.
-///
-/// Loaded from the registry's `closures/{hash}` file.  The file format is an
-/// adjacency list: one line per store path in the closure, with the first
-/// token being the node and remaining whitespace-separated tokens being its
-/// direct dependencies.  The first line is always the root.
-///
-/// ```text
-/// h7j3k8l2m9n4 r4q1m2kp8v3x xr5is7by89v3q
-/// r4q1m2kp8v3x
-/// xr5is7by89v3q q8mn2pv73w0x
-/// q8mn2pv73w0x
-/// ```
-#[derive(Debug, Clone)]
-pub struct ClosureMeta {
-    /// The store path hash this closure belongs to (filename).
-    pub root: String,
-    /// All store path hashes in the transitive closure (self-inclusive),
-    /// in the order they appear in the file.
-    pub members: Vec<String>,
-    /// Adjacency list: node → direct dependencies.
-    pub deps: std::collections::HashMap<String, Vec<String>>,
-}
-
-impl ClosureMeta {
-    /// Parse a closure file from its text content.
-    ///
-    /// Each non-empty line is `node [dep1 dep2 ...]`.  Blank lines and
-    /// lines starting with `#` are skipped.
-    pub fn parse(root_hash: &str, content: &str) -> Self {
-        let mut members = Vec::new();
-        let mut deps = std::collections::HashMap::new();
-
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let mut tokens = line.split_whitespace();
-            if let Some(node) = tokens.next() {
-                let node_deps: Vec<String> = tokens.map(|s| s.to_string()).collect();
-                members.push(node.to_string());
-                deps.insert(node.to_string(), node_deps);
-            }
-        }
-
-        Self {
-            root: root_hash.to_string(),
-            members,
-            deps,
-        }
-    }
-
-    /// Serialize the closure to the adjacency list text format.
-    pub fn serialize(&self) -> String {
-        let mut out = String::new();
-        for member in &self.members {
-            out.push_str(member);
-            if let Some(member_deps) = self.deps.get(member) {
-                for dep in member_deps {
-                    out.push(' ');
-                    out.push_str(dep);
-                }
-            }
-            out.push('\n');
-        }
-        out
-    }
-
-    /// Get the direct dependencies of a node in this closure.
-    pub fn direct_deps(&self, hash: &str) -> &[String] {
-        self.deps.get(hash).map(|v| v.as_slice()).unwrap_or(&[])
-    }
-
-    /// Check whether a store path hash is a member of this closure.
-    pub fn contains(&self, hash: &str) -> bool {
-        self.deps.contains_key(hash)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Installed metadata — per-path JSON in profile `meta/{hash}.json`
 // ---------------------------------------------------------------------------
 
@@ -631,6 +547,9 @@ pub struct RegistryConfig {
     /// with the committed root registry.toml caches, then sorted by priority.
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    /// Producer-side internal cache staging policy.
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     /// Producer-side defaults for `apr cache generate --upload-url` backend auth.
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
@@ -713,6 +632,26 @@ fn default_priority() -> u32 {
 /// Serde default for boolean fields that default to `true`.
 fn default_true() -> bool {
     true
+}
+
+/// Default retention for producer-side static-cache staging.
+pub const DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS: u64 = 30;
+
+/// Producer-side internal static-cache staging policy.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryCacheConfig {
+    /// Number of days to retain unused staged narinfo/NAR pairs. When unset,
+    /// `apr cache gc` and automatic successful-run GC use 30 days.
+    #[serde(default)]
+    pub max_age_days: Option<u64>,
+}
+
+impl RegistryCacheConfig {
+    /// Returns the configured retention period, defaulting to 30 days.
+    pub fn max_age_days(&self) -> u64 {
+        self.max_age_days
+            .unwrap_or(DEFAULT_REGISTRY_CACHE_MAX_AGE_DAYS)
+    }
 }
 
 /// Signing configuration embedded in a registry config.
@@ -1052,6 +991,29 @@ pub enum ProfileScope {
 }
 
 impl ProfileScope {
+    /// Lowercase human name for this scope (`"system"` or `"user"`).
+    ///
+    /// Used in diagnostics that name the scope a command searched, such as the
+    /// unsynced-registry warning emitted by query commands.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProfileScope::User => "user",
+            ProfileScope::System => "system",
+        }
+    }
+
+    /// The opposite scope.
+    ///
+    /// System scope returns [`ProfileScope::User`] and vice versa. Used to
+    /// point an operator at the scope they probably meant when a query finds a
+    /// registry unsynced in the current one.
+    pub fn other(&self) -> ProfileScope {
+        match self {
+            ProfileScope::User => ProfileScope::System,
+            ProfileScope::System => ProfileScope::User,
+        }
+    }
+
     /// Base path for profiles of this scope.
     ///
     /// User scope resolves to `<profiles>/per-user/$USER` (with `"unknown"`
@@ -1083,11 +1045,66 @@ impl ProfileScope {
         }
     }
 
+    /// Path for producer-side static-cache staging for one registry.
+    ///
+    /// Rooted under [`nar_cache_path`](Self::nar_cache_path) — the scope's
+    /// regenerable-bytes location (`~/.cache/apm` for user,
+    /// `/var/lib/apm/cache` for system) — with a `registry-static/` infix that
+    /// keeps producer staging separate from the consumer NAR download cache.
+    /// The per-registry leaf preserves the one-`StoreDir`-per-cache invariant.
+    pub fn registry_cache_path(&self, registry: &str) -> PathBuf {
+        self.nar_cache_path().join("registry-static").join(registry)
+    }
+
     /// Path for registry config files.
+    ///
+    /// This is the read-only `/etc/apm` image seed (system) or `~/.config/apm`
+    /// (user) — the lowest configuration layer. Use [`config_layers`] for the
+    /// full ordered read set and [`writable_config_dir`] for the mutation
+    /// target.
+    ///
+    /// [`config_layers`]: ProfileScope::config_layers
+    /// [`writable_config_dir`]: ProfileScope::writable_config_dir
     pub fn config_dir(&self) -> PathBuf {
         match self {
             ProfileScope::User => xdg_config_home().join("apm"),
             ProfileScope::System => apm_system_config_dir().to_path_buf(),
+        }
+    }
+
+    /// Ordered configuration layers, from lowest to highest precedence.
+    ///
+    /// `apm` loads `apm.conf` and `registries.d/*.toml` from each layer and
+    /// merges them field by field, with higher layers overriding lower ones
+    /// (see [`crate::config`]). The lowest layer is the read-only `/etc/apm`
+    /// seed baked into the system image; the highest is the writable layer
+    /// returned by [`ProfileScope::writable_config_dir`].
+    ///
+    /// - System scope: `[/etc/apm, /var/lib/apm/config]`.
+    /// - User scope: `[/etc/apm, /var/lib/apm/config, ~/.config/apm]` — a user
+    ///   invocation also sees system runtime deltas before applying its own.
+    pub fn config_layers(&self) -> Vec<PathBuf> {
+        let mut layers = vec![
+            apm_system_config_dir().to_path_buf(),
+            apm_state_dir().join("config"),
+        ];
+        if matches!(self, ProfileScope::User) {
+            layers.push(xdg_config_home().join("apm"));
+        }
+        layers
+    }
+
+    /// Writable configuration layer where `apm` persists runtime config and
+    /// state deltas.
+    ///
+    /// This is the highest-precedence entry of [`ProfileScope::config_layers`]:
+    /// `/var/lib/apm/config` for system scope and `~/.config/apm` for user
+    /// scope. The `/etc/apm` seed is never written — it is a read-only image
+    /// layer whose tmpfs `/etc` upper is discarded on reboot.
+    pub fn writable_config_dir(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => xdg_config_home().join("apm"),
+            ProfileScope::System => apm_state_dir().join("config"),
         }
     }
 
@@ -1101,8 +1118,13 @@ impl ProfileScope {
 
     /// Directories searched for pinned trusted keys, in precedence order.
     ///
-    /// The first directory is also where new pins are written; the system
-    /// `trusted-keys.d` is shared by both scopes so user installs can trust
+    /// The first directory is the writable store where new pins are persisted
+    /// ([`crate::security::KeyStore`] writes its `.first()`); the rest are
+    /// read-only anchors searched in order. For system scope the writable
+    /// store is the persistent `/var/lib/apm/trusted-keys.d`, placed ahead of
+    /// the read-only `/etc/apm/trusted-keys.d` image seed, so runtime pins
+    /// survive a reboot while the seed still contributes trust anchors. The
+    /// `/etc` seed is shared with user scope so user installs can trust
     /// system-provisioned keys.
     pub fn trusted_keys_dirs(&self) -> Vec<PathBuf> {
         match self {
@@ -1111,8 +1133,28 @@ impl ProfileScope {
                 apm_system_config_dir().join("trusted-keys.d"),
             ],
             ProfileScope::System => vec![
-                apm_system_config_dir().join("trusted-keys.d"),
                 apm_state_dir().join("trusted-keys.d"),
+                apm_system_config_dir().join("trusted-keys.d"),
+            ],
+        }
+    }
+
+    /// Directories searched for provisioned Secure Boot db certificates, in
+    /// precedence order.
+    ///
+    /// Mirrors [`ProfileScope::trusted_keys_dirs`]: a deployment bakes
+    /// `trusted-sb-certs.d/<registry>.pem` alongside `trusted-keys.d`, giving
+    /// `apm` the db cert to re-verify cataloged UKIs against at download time
+    /// (RFC-0006 phase 4 trust-bootstrap symmetry).
+    pub fn trusted_sb_certs_dirs(&self) -> Vec<PathBuf> {
+        match self {
+            ProfileScope::User => vec![
+                xdg_config_home().join("apm/trusted-sb-certs.d"),
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+            ],
+            ProfileScope::System => vec![
+                apm_system_config_dir().join("trusted-sb-certs.d"),
+                apm_state_dir().join("trusted-sb-certs.d"),
             ],
         }
     }
@@ -1136,8 +1178,19 @@ pub struct RegistryFile {
 /// `apm update` appends — config loading splits the two apart.
 #[derive(Debug, Deserialize)]
 pub struct RegistryFileInner {
-    pub name: String,
-    pub url: String,
+    /// Registry name. Optional because a registry's identity is its config
+    /// file name (`<stem>.toml`): the loader defaults `name` to the stem and,
+    /// when this field is present, requires it to match. A minimal `/var`
+    /// overlay (a `[registry.state]` or `enabled` delta on a seeded registry)
+    /// carries no `name`.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Registry URL. Optional at the schema level so the loader can merge
+    /// layered fragments before validation: a pure `/var` overlay omits it and
+    /// inherits the seed's `url`, while a merged result that still lacks a
+    /// `url` is an orphaned delta the loader drops (see [`crate::config`]).
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_true")]
@@ -1159,6 +1212,8 @@ pub struct RegistryFileInner {
     pub max_staleness_seconds: Option<u64>,
     #[serde(default)]
     pub caches: Vec<CacheEntry>,
+    #[serde(default)]
+    pub cache: RegistryCacheConfig,
     #[serde(default)]
     pub upload_auth: Option<RegistryUploadAuthConfig>,
     #[serde(default)]
@@ -1188,14 +1243,27 @@ pub struct ApmConfFile {
 // and the Cloudflare Worker can deserialize a committed root config without
 // pulling `aos-package` (which is native-only). Re-exported here so
 // `aos_package::types::{RegistryRootConfig, RegistryRootMeta, CacheEntry}` paths
-// are unchanged.
+// are unchanged. The `content_addressed` flag (RFC-0005/0009) lives on the
+// canonical `RegistryRootMeta` in that crate.
 pub use aos_registry_surface::manifest::{CacheEntry, RegistryRootConfig, RegistryRootMeta};
 
 // ---------------------------------------------------------------------------
 // Sysroot image entry — a pre-compiled image attached to a sysroot package
 // ---------------------------------------------------------------------------
 
+// `SbatEntry` (the UKI `.sbat` component/generation record) moved to the
+// wasm-clean `aos-registry-surface` crate alongside the manifest `ImageEntry`
+// that carries it (RFC-0004 Phase 5 / RFC-0006), so the parse path and the
+// runtime `SysrootImageEntry` share one type. Re-exported here so
+// `aos_package::types::SbatEntry` is unchanged.
+pub use aos_registry_surface::manifest::SbatEntry;
+
 /// A pre-compiled image format entry within a sysroot package version.
+///
+/// The trailing Secure Boot fields are populated only for signed UKIs/images
+/// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
+/// publishes continue to parse: an entry with none of them set is treated as
+/// "no Secure Boot claims recorded" and skips download-time SB validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
@@ -1207,6 +1275,22 @@ pub struct SysrootImageEntry {
     pub nar_hash: String,
     /// Size of the image's uncompressed NAR in bytes.
     pub nar_size: u64,
+    /// Lowercase hex SHA-256 of the signer leaf certificate found in the
+    /// PE's Authenticode certificate table; the db cert this image must
+    /// chain to. `None` for unsigned/legacy images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs read from the PE `.sbat` section.
+    /// Empty when the image carries no `.sbat` section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sbat: Vec<SbatEntry>,
+    /// ukify/`systemd-measure`-predicted TPM PCR-11 value for this UKI
+    /// (hex). See [`SysrootImageEntry`] callers and RFC-0006
+    /// `registry-catalog.md` for the prediction-scope caveat: this records
+    /// the UKI's own contribution, not the full sd-boot phase sequence.
+    /// `None` when `systemd-measure` was unavailable at publish time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1527,6 +1611,59 @@ mod tests {
     }
 
     #[test]
+    fn config_layers_run_seed_to_writable() {
+        // Independent of the env-cached resolver values, the lowest layer is
+        // always the read-only `/etc` seed and the highest is the scope's
+        // writable layer.
+        for scope in [ProfileScope::System, ProfileScope::User] {
+            let layers = scope.config_layers();
+            assert_eq!(
+                layers.first(),
+                Some(&ProfileScope::System.config_dir()),
+                "lowest config layer must be the /etc seed",
+            );
+            assert_eq!(
+                layers.last(),
+                Some(&scope.writable_config_dir()),
+                "highest config layer must be the writable dir",
+            );
+        }
+    }
+
+    #[test]
+    fn system_config_layers_are_etc_then_var() {
+        let layers = ProfileScope::System.config_layers();
+        assert_eq!(layers.len(), 2);
+        assert_ne!(layers[0], layers[1]);
+    }
+
+    #[test]
+    fn user_config_layers_share_the_system_var_layer() {
+        let layers = ProfileScope::User.config_layers();
+        assert_eq!(layers.len(), 3);
+        // The shared /var system layer sits between the /etc seed and the
+        // user's own writable dir, so a user invocation sees system runtime
+        // deltas.
+        assert_eq!(layers[1], ProfileScope::System.writable_config_dir());
+    }
+
+    #[test]
+    fn system_trusted_keys_writable_store_precedes_seed() {
+        let dirs = ProfileScope::System.trusted_keys_dirs();
+        assert_eq!(dirs.len(), 2);
+        // The writable store is a sibling of the writable config dir (both
+        // under /var/lib/apm) and precedes the read-only /etc seed anchor.
+        assert_eq!(
+            dirs[0].parent(),
+            ProfileScope::System.writable_config_dir().parent(),
+        );
+        assert_eq!(
+            dirs[1],
+            ProfileScope::System.config_dir().join("trusted-keys.d"),
+        );
+    }
+
+    #[test]
     fn system_config_dir_falls_back_when_unset() {
         assert_eq!(resolve_system_config_dir(None), PathBuf::from("/etc/apm"));
     }
@@ -1599,6 +1736,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1621,6 +1759,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1643,6 +1782,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1665,6 +1805,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1687,6 +1828,7 @@ mod tests {
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -1702,6 +1844,10 @@ mod tests {
             PathBuf::from("/var/lib/profiles/system")
         );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
+        assert_eq!(
+            scope.registry_cache_path("core"),
+            PathBuf::from("/var/lib/apm/cache/registry-static/core"),
+        );
         assert_eq!(scope.config_dir(), PathBuf::from("/etc/apm"));
     }
 
@@ -1728,6 +1874,20 @@ auto_gc = false
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
+    }
+
+    #[test]
+    fn parse_registry_cache_config() {
+        let toml_str = r#"
+[registry]
+url = "https://registry.example.com/core"
+
+[registry.cache]
+max_age_days = 7
+"#;
+        let file: RegistryFile = toml::from_str(toml_str).unwrap();
+        assert_eq!(file.registry.cache.max_age_days, Some(7));
+        assert_eq!(RegistryCacheConfig::default().max_age_days(), 30);
     }
 
     #[test]
@@ -1770,7 +1930,7 @@ required = true
 public_key = "aos-core:Ed25519:base64keyhere"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
-        assert_eq!(rf.registry.name, "aos-core");
+        assert_eq!(rf.registry.name.as_deref(), Some("aos-core"));
         assert_eq!(rf.registry.priority, 500);
         assert_eq!(rf.registry.max_staleness_seconds, Some(604800));
         assert_eq!(rf.registry.caches.len(), 1);
@@ -1918,6 +2078,7 @@ last_update = "2026-02-13T10:30:00Z"
             pin: None,
             max_staleness_seconds: None,
             caches: Vec::new(),
+            cache: Default::default(),
             upload_auth: None,
             signing_keys: Default::default(),
             signing: None,
@@ -2178,5 +2339,13 @@ pin = "v2026.02"
 "#;
         let rf: RegistryFile = toml::from_str(toml_str).unwrap();
         assert_eq!(rf.registry.pin.as_deref(), Some("v2026.02"));
+    }
+
+    #[test]
+    fn profile_scope_name_and_other() {
+        assert_eq!(ProfileScope::User.name(), "user");
+        assert_eq!(ProfileScope::System.name(), "system");
+        assert_eq!(ProfileScope::User.other(), ProfileScope::System);
+        assert_eq!(ProfileScope::System.other(), ProfileScope::User);
     }
 }

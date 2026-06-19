@@ -80,7 +80,8 @@ argon2 = "0.5"
 p256 = { version = "0.13", features = ["ecdsa"] }
 rsa = { version = "0.9", features = ["sha2"] }
 ciborium = "0.2"
-zstd = "0.13"
+# `zstdmt` enables multi-threaded compression for apr's parallel NAR generation.
+zstd = { version = "0.13", features = ["zstdmt"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["io"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }

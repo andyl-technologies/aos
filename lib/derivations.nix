@@ -369,7 +369,8 @@
       phases;
   in ''
     #!${shell}
-    set -euo pipefail
+    set -eu
+    set -o pipefail 2>/dev/null || true
 
     # Restore env-var attrs when running with __structuredAttrs = true.
     # Idempotent: when NIX_ATTRS_SH_FILE isn't set (the default), this

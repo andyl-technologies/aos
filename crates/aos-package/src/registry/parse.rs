@@ -17,12 +17,12 @@
 //!
 //! [versions.platforms.x86_64-linux]
 //! store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
-//! nar_hash = "sha256:..."
-//! nar_size = 3145728
 //! closure_size = 52428800
 //! source_drv = "/var/lib/store/...-curl-8.5.0.drv"
 //! source_nar_hash = "sha256:..."
 //! references = ["r4q1m2kp8v3x"]
+//! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
+//! # publish the output's content binding in the store/ graph instead.
 //! ```
 //!
 //! [`parse_registry`] walks the whole cache directory and flattens it into
@@ -36,7 +36,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::types::{PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name};
+use crate::types::{
+    PackageMeta, SbatEntry, SysrootImageEntry, package_name_bucket, validate_package_name,
+};
 
 // ---------------------------------------------------------------------------
 // Package TOML schema (registry format)
@@ -46,7 +48,10 @@ use crate::types::{PackageMeta, SysrootImageEntry, package_name_bucket, validate
 // crate (RFC-0004 Phase 5) so the registry hub's `Database`/indexer and the
 // Cloudflare Worker can share them without pulling `aos-package` (which is
 // native-only). Re-exported here so `aos_package::registry::parse::{PackageToml,
-// …}` paths are unchanged.
+// …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
+// graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`)
+// and the RFC-0006 Secure Boot image facts (`sb_signer_cert_sha256`/`sbat`/
+// `expected_pcr11`).
 pub use aos_registry_surface::manifest::{
     ImageEntry, PackageHeader, PackageToml, PlatformEntry, VersionEntry,
 };
@@ -231,6 +236,9 @@ fn package_metas_for_platform(toml: &PackageToml, platform: &str) -> Vec<Package
                     store_path: img.store_path.clone(),
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
+                    sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
+                    sbat: img.sbat.clone(),
+                    expected_pcr11: img.expected_pcr11.clone(),
                 })
                 .collect();
 

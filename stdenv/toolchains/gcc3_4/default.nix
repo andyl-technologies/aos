@@ -41,24 +41,65 @@
     gzip = bootstrap.gzip;
   };
 
+  lib = import ../../../lib {
+    system = buildPlatform.system;
+    bash = prev.bash;
+  };
+
+  phases = import ../../phases.nix;
+
+  mkTierStdenv = import ../../tier-stdenv.nix {
+    inherit
+      lib
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+  };
+
+  mkManifestTools = import ../lib/mk-manifest-tools.nix;
+
   # callPackage: import a file, auto-fill `prev` and platform attrs, pass `this`
   # for intra-tier references, plus any overrides.
   callPackage = path: overrides: let
     fn = import path;
+    auto = builtins.intersectAttrs (builtins.functionArgs fn) this;
   in
     fn (
       {
-        inherit prev;
-        inherit this;
-        inherit buildPlatform hostPlatform targetPlatform;
+        inherit prev this buildPlatform hostPlatform targetPlatform;
       }
+      // auto
       // overrides
     );
 
-  # Recursive attrset for intra-tier dependencies.
-  # Phase 1-3 tools can reference each other; Phase 4-5 tools reference
-  # earlier phases through `this`.
-  this = {
+  phase4ToolNames = [
+    "tar"
+    "gzip"
+  ];
+
+  phase5ToolNames = [
+    "bash"
+    "coreutils"
+    "gnumake"
+    "sed"
+    "grep"
+    "gawk"
+    "findutils"
+    "diffutils"
+    "patch"
+  ];
+
+  # Recursive attrset for intra-tier dependencies. Phase 1-3 tools can
+  # reference each other; manifest-built Phase 4-5 tools are merged below.
+  baseThis = {
+    inherit
+      prev
+      buildPlatform
+      hostPlatform
+      targetPlatform
+      ;
+
     # Phase 1: GCC 3.4.6
     gcc = callPackage ./gcc.nix {};
 
@@ -69,21 +110,87 @@
     linuxHeaders = callPackage ./linux-headers.nix {};
     glibc = callPackage ./glibc.nix {};
 
-    # Phase 4: tar + gzip (enables tarball extraction)
-    tar = callPackage ./tar.nix {};
-    gzip = callPackage ./gzip.nix {};
+    # Phase 4 still needs bootstrap tar/gzip to unpack and build the first
+    # rebuilt tar/gzip pair. Phase 5 can then use this tier's tar/gzip.
+    phase4Stdenv = mkTierStdenv {
+      tc = {
+        inherit (this) gcc binutils glibc;
+        inherit
+          (prev)
+          bash
+          coreutils
+          gnumake
+          sed
+          grep
+          gawk
+          findutils
+          tar
+          gzip
+          diffutils
+          patch
+          ;
+      };
+      staticDefault = true;
+    };
 
-    # Phase 5: all remaining POSIX tools
-    bash = callPackage ./bash.nix {};
-    coreutils = callPackage ./coreutils.nix {};
-    gnumake = callPackage ./gnumake.nix {};
-    sed = callPackage ./sed.nix {};
-    grep = callPackage ./grep.nix {};
-    gawk = callPackage ./gawk.nix {};
-    findutils = callPackage ./findutils.nix {};
-    diffutils = callPackage ./diffutils.nix {};
-    patch = callPackage ./patch.nix {};
+    phase5Stdenv = mkTierStdenv {
+      tc = {
+        inherit (this) gcc binutils glibc tar gzip;
+        inherit
+          (prev)
+          bash
+          coreutils
+          gnumake
+          sed
+          grep
+          gawk
+          findutils
+          diffutils
+          patch
+          ;
+      };
+      staticDefault = true;
+    };
+
+    mkPhase4Tool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = this.phase4Stdenv;
+    };
+
+    mkPhase5Tool = import ../lib/mk-autotools-tool.nix {
+      inherit
+        lib
+        phases
+        buildPlatform
+        hostPlatform
+        ;
+      tierStdenv = this.phase5Stdenv;
+    };
+
+    manifest = import ./manifest.nix {
+      inherit buildPlatform hostPlatform;
+      inherit (this) gcc binutils glibc;
+    };
   };
+
+  phase4Tools = mkManifestTools {
+    manifest = baseThis.manifest;
+    mkTool = baseThis.mkPhase4Tool;
+    names = phase4ToolNames;
+  };
+
+  phase5Tools = mkManifestTools {
+    manifest = baseThis.manifest;
+    mkTool = baseThis.mkPhase5Tool;
+    names = phase5ToolNames;
+  };
+
+  this = baseThis // phase4Tools // phase5Tools;
 in
   # Export complete toolchain with unversioned names
   {

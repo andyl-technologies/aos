@@ -6,6 +6,9 @@
 //! - HeadObject, DeleteObject
 //! - Custom endpoints (MinIO, B2, Wasabi)
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,6 +24,22 @@ const MULTIPART_THRESHOLD: u64 = 5 * 1024 * 1024;
 /// Default part size for multi-part uploads (5 MB).
 const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 
+/// Resolved [`Credential::AwsSigV4`] configuration that distinguishes one
+/// cached S3 client from another.
+///
+/// Used as `Option<S3ClientConfig>`: `None` is the SDK default credential
+/// chain, `Some(_)` an explicit SigV4 configuration. Two requests with an
+/// equal key share one [`aws_sdk_s3::Client`].
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct S3ClientConfig {
+    /// AWS region used for signing.
+    region: String,
+    /// Optional named AWS profile to load credentials from.
+    profile: Option<String>,
+    /// Optional custom endpoint URL for S3-compatible services.
+    endpoint: Option<String>,
+}
+
 /// S3 protocol handler.
 ///
 /// URLs use the `s3://bucket/key` form. SigV4 signing is delegated to
@@ -28,9 +47,15 @@ const MULTIPART_PART_SIZE: u64 = 5 * 1024 * 1024;
 /// profile, and endpoint, otherwise the SDK's default credential chain
 /// (environment, profile, IMDS) is used. File uploads larger than
 /// 5 MB automatically use multi-part upload.
+///
+/// Built clients are cached by configuration so the credential chain is
+/// resolved once per distinct `(region, profile, endpoint)` rather than
+/// on every request.
 pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
+    /// Clients cached by their resolved configuration.
+    clients: Mutex<HashMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
 }
 
 impl S3Protocol {
@@ -38,22 +63,69 @@ impl S3Protocol {
     pub fn new() -> Self {
         Self {
             part_size: MULTIPART_PART_SIZE,
+            clients: Mutex::new(HashMap::new()),
         }
     }
 
     /// Create a new S3 protocol handler with a custom part size
     /// (in bytes) for multi-part uploads.
     pub fn with_part_size(part_size: u64) -> Self {
-        Self { part_size }
+        Self {
+            part_size,
+            clients: Mutex::new(HashMap::new()),
+        }
     }
 
-    /// Build an S3 client from credentials.
+    /// Returns an S3 client for the given credentials, building and
+    /// caching one on first use for each distinct configuration.
     ///
     /// With a [`Credential::AwsSigV4`], the region (and optionally a
     /// named profile) configure the SDK loader, and a custom endpoint
     /// switches the client to path-style addressing for S3-compatible
     /// services. Without credentials, the SDK default chain is used.
+    /// Subsequent calls with the same `(region, profile, endpoint)`
+    /// reuse the cached client (a cheap `Arc` clone) instead of
+    /// re-running the credential chain.
     async fn build_client(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
+        let key = match auth {
+            Some(Credential::AwsSigV4 {
+                region,
+                profile,
+                endpoint,
+            }) => Some(S3ClientConfig {
+                region: region.clone(),
+                profile: profile.clone(),
+                endpoint: endpoint.clone(),
+            }),
+            _ => None,
+        };
+
+        // A poisoned cache lock is harmless here (the map holds only
+        // clonable clients), so recover the guard rather than panicking.
+        if let Some(client) = self
+            .clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Ok(client);
+        }
+
+        // Build outside the lock: the credential chain resolution is
+        // async and must not be held across the std Mutex. A benign
+        // race may build the same client twice; the last insert wins.
+        let client = self.build_client_uncached(auth).await?;
+        self.clients
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(key, client.clone());
+        Ok(client)
+    }
+
+    /// Builds a fresh S3 client, resolving the credential chain. Callers
+    /// should prefer [`build_client`](Self::build_client), which caches.
+    async fn build_client_uncached(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
         if let Some(Credential::AwsSigV4 {

@@ -45,6 +45,25 @@
         );
     in
       builtins.foldl' (acc: name: acc // forSystem name) {} sysNames;
+
+    # Expose every individual aos package as `pkg-<name>` so a single
+    # component (e.g. `pkg-zlib`, `pkg-gcc`) can be built/benchmarked in
+    # isolation rather than only the whole OS. Filtered to derivations
+    # so the non-package helpers in the set (lib, mkDerivation, fetchurl,
+    # …) don't leak into the flake outputs and break `nix flake check`.
+    pkgPackages = aos: let
+      p = aos.pkgs;
+      isDrv = name: let
+        r = builtins.tryEval p.${name};
+      in
+        r.success && builtins.isAttrs r.value && (r.value.type or null) == "derivation";
+      names = builtins.filter isDrv (builtins.attrNames p);
+    in
+      builtins.listToAttrs (map (name: {
+          name = "pkg-${name}";
+          value = p.${name};
+        })
+        names);
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
@@ -57,6 +76,7 @@
           aos = aos.pkgs.aos;
         }
         // systemPackages aos
+        // pkgPackages aos
     );
 
     devShells = genAttrs systems (

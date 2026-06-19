@@ -1,0 +1,41 @@
+# Keep the aos-bench build context (`COPY . /opt/aos`) small. Without
+# this, the context streams the whole repo (tens of GB — dominated by a
+# 3.5 GB crates/target Rust artifact dir, a large .claude agent-worktree
+# dir, .git, and build outputs), which makes the build take 20+ min on
+# macOS Docker and bloats the image.
+#
+# Mirrors .gitignore: everything here is a build artifact / cache /
+# local-only path that the Nix flake never reads. NOTE we deliberately
+# keep crates/ itself (the vendored Rust *sources* under crates/<name>/)
+# because flake.nix references ./crates during `pkgPackages` /
+# `systemPackages` enumeration — dropping the whole dir makes even a
+# pure-C target like pkg-zlib fail eval with "path '.../crates' does not
+# exist". Only the generated crates/target/ (3.5 GB) is excluded.
+#
+# Anchored (leading /) where root-only so BuildKit doesn't walk pruned
+# subtrees (the documented unanchored-negation cost); the **/target and
+# cache patterns intentionally match at any depth.
+/.claude
+/.git
+/.direnv
+/.idea
+/.jj
+
+# Built images, QEMU artifacts, cached tarballs, Nix results (gitignored)
+/output
+/mirror
+/result
+result-*
+
+# Rust build artifacts — the bulk of the context (gitignored). Keep the
+# crate sources, drop only the compiled target trees.
+crates/target/
+cli/target/
+
+# Python + doc caches (gitignored)
+__pycache__/
+*.pyc
+.aos-doc-cache.json
+
+# Per-operator ignition config (gitignored; bakes in an SSH key)
+/tests/ignition-test.json

@@ -2081,7 +2081,6 @@ in {
         --license MIT \
         --maintainer origin-default@example.invalid \
         --key /tmp/origin-default-release-key \
-        --cache-output /tmp/origin-default-cache \
         --cache-url "$HTTP_ORIGIN_URL" \
         > /tmp/origin-default-release.json 2>&1 || {
         cat /tmp/origin-default-release.json
@@ -2420,7 +2419,6 @@ in {
         --registry maint-reg \
         --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18084 \
-        --cache-output /tmp/maint-release-cache-dry-run \
         --channel stable \
         --init-channel \
         --upload-url file:///tmp/maint-origin-dry-run \
@@ -2436,7 +2434,7 @@ in {
           and .version == "1.0.0"
           and .dry_run == true
           and .cache_url == "http://127.0.0.1:18084"
-          and .cache_output == "/tmp/maint-release-cache-dry-run"
+          and (.cache_dir | endswith("/apm/registry-static/maint-reg"))
           and .upload_urls == ["file:///tmp/maint-origin-dry-run"]
           and .channel.name == "stable"
           and .channel.action == "init"
@@ -2993,7 +2991,6 @@ in {
         --maintainer static-release@example.invalid \
         --source-drv "$ROOT_SOURCE_STORE" \
         --key /tmp/static-release-key \
-        --cache-output /tmp/static-release-cache \
         --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \
@@ -3303,7 +3300,6 @@ in {
         --previous 1.0.0 \
         --source-drv "$ROOT_V2_SOURCE_STORE" \
         --key /tmp/static-release-key \
-        --cache-output /tmp/static-release-cache \
         --cache-key /tmp/static-release-cache.sec \
         --cache-url http://127.0.0.1:18120 \
         --upload-url file:///tmp/static-release-origin \
@@ -3567,7 +3563,6 @@ in {
         --license MIT \
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
-        --cache-output /tmp/channel-cache \
         --cache-url http://127.0.0.1:18091 \
         --channel stable \
         --init-channel \
@@ -3603,7 +3598,6 @@ in {
         --license MIT \
         --maintainer channel@example.invalid \
         --key /tmp/channel-release-key \
-        --cache-output /tmp/channel-cache \
         --cache-url http://127.0.0.1:18091 \
         --channel stable \
         --init-channel \
@@ -3750,7 +3744,6 @@ in {
         --maintainer channel@example.invalid \
         --previous 1.0.0 \
         --key /tmp/channel-release-key \
-        --cache-output /tmp/channel-cache \
         --cache-url http://127.0.0.1:18091 \
         --channel stable \
         --partitions "$BUCKET" \
@@ -3844,7 +3837,6 @@ in {
         --maintainer channel@example.invalid \
         --previous 2.0.0 \
         --key /tmp/channel-release-key \
-        --cache-output /tmp/channel-cache \
         --cache-url http://127.0.0.1:18091 \
         > /tmp/channel-release-v3.out 2>&1 || {
         cat /tmp/channel-release-v3.out

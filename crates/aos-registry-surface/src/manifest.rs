@@ -97,7 +97,24 @@ pub struct PlatformEntry {
     pub images: Vec<ImageEntry>,
 }
 
+/// An SBAT component/generation pair from a UKI's PE `.sbat` section
+/// (RFC-0006).
+///
+/// Each line of the `.sbat` CSV names a boot component and the *generation*
+/// number an `sbat` revocation compares against; the registry records these so
+/// the fleet can enforce a per-component revocation floor at download time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SbatEntry {
+    /// SBAT component identifier (the first CSV column, e.g. `aos`).
+    pub component: String,
+    /// SBAT generation number; a higher number supersedes a lower one.
+    pub generation: u32,
+}
+
 /// A pre-compiled image entry within a platform entry.
+///
+/// The trailing Secure Boot fields (RFC-0006) are populated only for signed
+/// UKIs/images and are optional so legacy/unsigned publishes still parse.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageEntry {
     /// Image format identifier (e.g. `qcow2`).
@@ -108,6 +125,15 @@ pub struct ImageEntry {
     pub nar_hash: String,
     /// Uncompressed NAR size of the image in bytes.
     pub nar_size: u64,
+    /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
+    #[serde(default)]
+    pub sb_signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs from the image's `.sbat` section.
+    #[serde(default)]
+    pub sbat: Vec<SbatEntry>,
+    /// Predicted PCR-11 for the image's UKI, when measured.
+    #[serde(default)]
+    pub expected_pcr11: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +181,17 @@ pub struct RegistryRootMeta {
     /// above the registry home. Blank lines separate paragraphs.
     #[serde(default)]
     pub readme: Option<String>,
+    /// Whether the producer records content addresses in the `store/`
+    /// realisation graph (RFC-0005), so the registry serves both
+    /// input-addressed and content-addressed consumers. Default `true`;
+    /// set `false` for a pure input-addressed registry.
+    #[serde(default = "default_content_addressed")]
+    pub content_addressed: bool,
+}
+
+/// Serde default for [`RegistryRootMeta::content_addressed`].
+fn default_content_addressed() -> bool {
+    true
 }
 
 /// A binary cache entry in `registry.toml`.

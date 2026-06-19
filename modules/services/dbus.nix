@@ -138,6 +138,23 @@ in {
     systemd.services."dbus" = {
       description = "D-Bus System Message Bus";
       wantedBy = ["multi-user.target"];
+      # Reload, never restart, on a live generation switch. A `systemctl
+      # restart dbus.service` tears down the system bus, which severs every
+      # connected client — including the apm reconciler that is *driving the
+      # switch over that very bus* (it talks to systemd via
+      # /run/dbus/system_bus_socket). The reconciler then waits forever for a
+      # JobRemoved it can no longer receive. dbus-daemon's ExecReload
+      # (ReloadConfig, below) re-reads policy without dropping connections, so
+      # the diff engine schedules a reload (X-ReloadIfChanged) instead of a
+      # restart. This matches nixpkgs (services.system.dbus sets
+      # reloadIfChanged = true). Tradeoff: a changed --config-file store path is
+      # not picked up until the next reboot, since the running daemon keeps its
+      # original argv; acceptable and identical to NixOS's behaviour. The
+      # reconciler is additionally hardened against any bus-drop mid-reconcile
+      # (aos-systemd drops parked waiters when the signal stream closes, and
+      # connects over systemd's private socket), but not restarting the bus in
+      # the first place is the primary, upstream-blessed fix.
+      reloadIfChanged = true;
       requires = [
         "dbus.socket"
         "systemd-tmpfiles-setup.service"

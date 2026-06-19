@@ -96,13 +96,54 @@ pub async fn run_verify(config: &ApmConfig, package: &str, printer: &Printer) ->
     let reg_set = RegistrySet::load(&config.cache_path(), &enabled, current_platform())?;
     let pkg_meta = resolve_installed_package_meta(&reg_set, package, installed)?;
 
-    let expected_hash = &pkg_meta.nar_hash;
+    // Prefer the signed store/ graph: a path may have multiple blessed NARs,
+    // and an honest install matching any of them is intact. Fall back to the
+    // (legacy or enriched) single TOML nar_hash only when the registry
+    // publishes no graph for this path.
+    let installed_hash = store_path_hash(&pkg_meta.store_path);
+    let source_graph_present = reg_set
+        .get_registry(&installed_apm.registry)
+        .map(|reg| reg.store_map().is_present())
+        .unwrap_or(false);
+    let blessed = reg_set
+        .get_registry(&installed_apm.registry)
+        .map(|reg| reg.store_map().blessed_nars(installed_hash))
+        .unwrap_or_default();
+
+    // The source registry publishes a graph but has no record for this path:
+    // same stripped/malformed condition the install path rejects
+    // (verify_downloads) - surface it clearly rather than verifying against an
+    // empty enriched hash.
+    if blessed.is_empty() && source_graph_present {
+        bail!(
+            "no store/ record for installed '{package}' ({installed_hash}); the registry \
+             '{}' may be malformed or its realisation graph stripped",
+            installed_apm.registry,
+        );
+    }
 
     printer.kv("Store path", store_path);
-    printer.kv("Expected NAR hash", expected_hash);
+    let expected_hash = pkg_meta.nar_hash.clone();
+    if blessed.is_empty() {
+        printer.kv("Expected NAR hash", &expected_hash);
+    } else {
+        printer.kv(
+            "Expected NAR hash",
+            &blessed
+                .iter()
+                .map(|nar| nar.nar_hash())
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
 
     // 3-4. Run nix-store --dump and hash the output.
-    match hash_verify::verify_installed(store_path, expected_hash).await {
+    let verify_result = if blessed.is_empty() {
+        hash_verify::verify_installed(store_path, &expected_hash).await
+    } else {
+        hash_verify::verify_installed_blessed(store_path, &blessed).await
+    };
+    match verify_result {
         Ok(actual_hash) => {
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
@@ -620,6 +661,7 @@ priority = 500
                     pin: None,
                     max_staleness_seconds: None,
                     caches: Vec::new(),
+                    cache: Default::default(),
                     upload_auth: None,
                     signing_keys: Default::default(),
                     signing: None,

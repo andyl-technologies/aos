@@ -44,6 +44,10 @@ impl FsBackend {
 
 #[async_trait]
 impl CacheBackend for FsBackend {
+    async fn exists(&self, relative_path: &str) -> Result<bool> {
+        Ok(self.root.join(relative_path).exists())
+    }
+
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.narinfo_url(store_hash);
         let result = self.engine.head(&url).await?;
