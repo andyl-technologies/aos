@@ -142,27 +142,23 @@ pub struct DeployConfig {
     pub bucket: String,
     /// The provisioned KV namespace id.
     pub kv_id: String,
-    /// The hub's canonical public base URL (`HUB_EXTERNAL_URL` `[vars]` entry),
-    /// e.g. `https://aos.andyl.org`.
+    /// The hub's canonical public base URL, baked into the `HUB_EXTERNAL_URL`
+    /// `[vars]` entry — or **empty** to omit it, in which case the Worker derives
+    /// its canonical URL from each request's origin (its `*.workers.dev` URL or a
+    /// bound [`custom_domains`](Self::custom_domains) entry).
     ///
-    /// The single origin the hub emits about *itself*: the `{external_url}/{slug}`
-    /// push/pull URL in setup snippets, the OIDC `redirect_uri` base, the WebAuthn
-    /// relying-party ID, and absolute browse links. Clients/browsers/IdP reach the
-    /// hub here — not a Cloudflare identifier. Normally one of
-    /// [`custom_domains`](Self::custom_domains) (or the `*.workers.dev` URL when
-    /// none are bound).
+    /// When set, it's the origin the hub emits about itself (the `{url}/{slug}`
+    /// push URL in setup snippets, the OIDC `redirect_uri` base, the WebAuthn
+    /// relying-party ID, browse links). The `worker` CLI leaves it empty by
+    /// default and relies on the request-origin fallback.
     pub external_url: String,
     /// The magic-link email relay endpoint (`HUB_EMAIL_API_URL` `[vars]`).
     pub email_relay_url: Option<String>,
-    /// Custom domains to bind the Worker to (e.g. `aos.andyl.org`), each emitted
-    /// as its own `custom_domain` route so Cloudflare sends that hostname to this
-    /// Worker. Empty serves on `*.workers.dev` only. Every domain's zone must be
-    /// on the same Cloudflare account.
-    ///
-    /// Distinct from [`external_url`](Self::external_url): these are the
-    /// hostnames Cloudflare *routes to the Worker* (the hub's own domain plus any
-    /// per-registry/per-cache frontend domains it dispatches by `Host`), whereas
-    /// `external_url` is the single canonical URL the hub *emits about itself*.
+    /// Custom domains to bind the Worker to (e.g. `aos.example.com`), each
+    /// emitted as its own `custom_domain` route so Cloudflare sends that hostname
+    /// to this Worker. Empty serves on `*.workers.dev` only. Every domain's zone
+    /// must be on the same Cloudflare account. Bind the hub's own domain plus any
+    /// per-registry/per-cache frontend domains it dispatches by `Host`.
     pub custom_domains: Vec<String>,
 }
 
@@ -171,20 +167,28 @@ pub struct DeployConfig {
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
 /// staged). There is intentionally **no** `[build]` command — the hermetic dist
 /// is deployed as-is rather than rebuilt on the operator's machine. The non-
-/// secret configuration (`HUB_EXTERNAL_URL`, optional `HUB_EMAIL_API_URL`) is
+/// secret configuration (optional `HUB_EXTERNAL_URL` / `HUB_EMAIL_API_URL`) is
 /// baked into `[vars]`; secrets are applied separately with [`secret_put_args`].
+///
+/// `HUB_EXTERNAL_URL` is omitted when [`DeployConfig::external_url`] is empty —
+/// the Worker then derives its canonical URL from each request's origin (its
+/// `*.workers.dev` URL or a bound domain), so a no-custom-domain deploy needs no
+/// URL configuration.
 #[must_use]
 pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
-    let mut vars = format!(
-        "[vars]\nHUB_EXTERNAL_URL = {}\n",
-        toml_string(&cfg.external_url)
-    );
+    let mut vars = String::from("[vars]\n");
+    if !cfg.external_url.is_empty() {
+        vars.push_str(&format!(
+            "HUB_EXTERNAL_URL = {}\n",
+            toml_string(&cfg.external_url)
+        ));
+    }
     if let Some(relay) = &cfg.email_relay_url {
         vars.push_str(&format!("HUB_EMAIL_API_URL = {}\n", toml_string(relay)));
     }
     // Each custom-domain route binds the Worker to one hostname (e.g.
-    // aos.andyl.org); `wrangler deploy` provisions the domain (DNS record + cert)
-    // when the zone is on the account. With none, the Worker serves on
+    // aos.example.com); `wrangler deploy` provisions the domain (DNS record +
+    // cert) when the zone is on the account. With none, the Worker serves on
     // *.workers.dev only. Multiple routes let one Worker serve the hub's own
     // domain plus per-registry/per-cache frontend domains it dispatches by Host.
     let routes: String = cfg
@@ -1114,28 +1118,24 @@ mod tests {
             name: "aos-hub".into(),
             d1_name: "aos-hub".into(),
             d1_id: "d1-uuid".into(),
-            bucket: "aos-registry-surfaces".into(),
+            bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
-            external_url: "https://aos.andyl.org".into(),
+            external_url: String::new(),
             email_relay_url: None,
-            custom_domains: vec!["aos.andyl.org".into(), "cache.andyl.org".into()],
+            custom_domains: vec!["aos.example.com".into()],
         };
         let toml = render_wrangler_toml(&cfg);
         // Parses as valid TOML.
         let parsed: toml::Value = toml::from_str(&toml).expect("valid TOML");
         assert_eq!(parsed["name"].as_str(), Some("aos-hub"));
         assert_eq!(parsed["main"].as_str(), Some("shim.mjs"));
-        assert_eq!(
-            parsed["vars"]["HUB_EXTERNAL_URL"].as_str(),
-            Some("https://aos.andyl.org")
-        );
+        // No canonical URL is baked: the Worker derives it from the request.
+        assert!(parsed["vars"].get("HUB_EXTERNAL_URL").is_none());
         // Root bootstrap is CLI-driven now; the worker no longer reads it.
         assert!(parsed["vars"].get("HUB_ROOT_EMAIL").is_none());
-        // Each custom domain is bound via its own custom_domain route.
-        assert_eq!(parsed["routes"][0]["pattern"].as_str(), Some("aos.andyl.org"));
+        // The custom domain is bound via a custom_domain route.
+        assert_eq!(parsed["routes"][0]["pattern"].as_str(), Some("aos.example.com"));
         assert_eq!(parsed["routes"][0]["custom_domain"].as_bool(), Some(true));
-        assert_eq!(parsed["routes"][1]["pattern"].as_str(), Some("cache.andyl.org"));
-        assert_eq!(parsed["routes"][1]["custom_domain"].as_bool(), Some(true));
         assert_eq!(parsed["d1_databases"][0]["binding"].as_str(), Some(D1_BINDING));
         assert_eq!(parsed["d1_databases"][0]["database_id"].as_str(), Some("d1-uuid"));
         assert_eq!(parsed["kv_namespaces"][0]["id"].as_str(), Some("kv-id"));

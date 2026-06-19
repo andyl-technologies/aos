@@ -193,10 +193,17 @@ mod entry {
     ///
     /// # Errors
     ///
-    /// Returns an error if a binding is missing, the `HUB_JWT_SECRET`,
-    /// `HUB_SEAL_KEY`, or `HUB_EXTERNAL_URL` secret/var is absent or empty, or
-    /// the rate-limiter table cannot be ensured.
-    async fn router_from(env: &Env) -> Result<(Router, Arc<RpcService>)> {
+    /// `request_origin` (`scheme://host` of the incoming request) is the
+    /// fallback canonical URL when `HUB_EXTERNAL_URL` is unset, so a deploy with
+    /// no custom domain simply serves at — and emits links for — whatever domain
+    /// the Worker is reached on (its `*.workers.dev` URL or a bound domain).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a binding is missing, the `HUB_JWT_SECRET` or
+    /// `HUB_SEAL_KEY` secret is absent or empty, or the rate-limiter table cannot
+    /// be ensured.
+    async fn router_from(env: &Env, request_origin: &str) -> Result<(Router, Arc<RpcService>)> {
         let db = Arc::new(Database::attach(Box::new(crate::d1backend::D1Backend::new(
             env.d1(crate::handlers::bindings::D1)?,
         ))));
@@ -209,7 +216,15 @@ mod entry {
         }
         let jwt_keys = JwtKeys::from_secret(secret.as_bytes());
 
-        let external_url = env.var(HUB_EXTERNAL_URL)?.to_string();
+        // The canonical URL is `HUB_EXTERNAL_URL` when set, else the request's
+        // own origin — so a no-custom-domain deploy "just works" at its
+        // `*.workers.dev` URL with no configuration.
+        let external_url = env
+            .var(HUB_EXTERNAL_URL)
+            .ok()
+            .map(|v| v.to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| request_origin.to_string());
 
         let seal_secret = env.secret(HUB_SEAL_KEY)?.to_string();
         if seal_secret.is_empty() {
@@ -305,7 +320,21 @@ mod entry {
     /// returned as a `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-        let (router, service) = router_from(&env).await?;
+        // The request's own `scheme://host`, the fallback canonical URL when
+        // `HUB_EXTERNAL_URL` is unset (a no-custom-domain deploy).
+        let request_origin = req
+            .url()
+            .ok()
+            .map(|u| {
+                let scheme = u.scheme();
+                match (u.host_str(), u.port()) {
+                    (Some(host), Some(port)) => format!("{scheme}://{host}:{port}"),
+                    (Some(host), None) => format!("{scheme}://{host}"),
+                    (None, _) => String::new(),
+                }
+            })
+            .unwrap_or_default();
+        let (router, service) = router_from(&env, &request_origin).await?;
         crate::bridge::dispatch(router, &service, req).await
     }
 

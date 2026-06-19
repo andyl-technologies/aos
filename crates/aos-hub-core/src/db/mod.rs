@@ -296,7 +296,7 @@
 //! the index/derived set rather than the system of record.
 //!
 //! ```text
-//! cache_probes  registry_id 1  cache_url "https://cdn.aos.andyl.org"
+//! cache_probes  registry_id 1  cache_url "https://cdn.example.com"
 //!               status "ok"  observed_nix_cache_info 1
 //!               latency_ms 42  checked_at 1730000000
 //! ```
