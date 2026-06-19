@@ -935,6 +935,21 @@ register.
     private futex or an auxiliary event primitive alone reopens [RISK-19].
   - **Fallback:** none adopted.
 
+- **RISK-20 / T-RISK-13 — no-leak QEMU lifecycle**
+  - **Status:** PASS; risk retired for the modeled QEMU child lifecycle paths in
+    [QEMU-29] and [QEMU-31].
+  - **Check:** `checks.crucible.phase0.lifecycle`.
+  - **Result:** `clean_stop=1`, `control_stop=1`, `guest_crash=1`,
+    `plugin_hang=1`, `setup_failure=1`, `host_sigkill=1`, `parent_death=1`,
+    `survivors=0`, `reaped=7`.
+  - **Scope:** validates lifecycle mechanics against real AOS-built QEMU
+    children: QMP quit, SIGTERM stop, SysRq-triggered guest kernel panic under
+    `panic=1 -no-reboot`, a hanging QEMU plugin, setup failure, direct SIGKILL,
+    and parent death without unwind using `PR_SET_PDEATHSIG=SIGKILL` under a
+    subreaper. The future production `QemuNode` wrapper must preserve the same
+    die-with-parent and unconditional reap behavior.
+  - **Fallback:** none adopted.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed
