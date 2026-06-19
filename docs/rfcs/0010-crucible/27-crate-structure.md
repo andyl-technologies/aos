@@ -660,7 +660,7 @@ Crucible needs and marks the seam.
 - [x] **T-CRATE-12** Map each per-layer determinism gate to a named, isolable test
   target in its owning crate(s) per the §7 table; run the engine gates under
   `--features test-double`. — satisfies [CRATE-16], [CRATE-7]; spec §7.
-- [ ] **T-CRATE-13** Author the crate→spec-file index (the §6 table) into each
+- [x] **T-CRATE-13** Author the crate→spec-file index (the §6 table) into each
   crate's `//!` doc and a workspace-level doc lint that keeps it in sync. —
   satisfies [CRATE-13]; spec §6.
 - [ ] **T-CRATE-14** Build the whole workspace hermetically from source inside AOS,
