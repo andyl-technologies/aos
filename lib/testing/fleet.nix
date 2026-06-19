@@ -137,19 +137,50 @@
   # whether or not interactive mode is enabled — it's cheap (string
   # interpolation only) and keeping it as a stable per-machine field
   # avoids parameterising downstream helpers on the mode.
+  #
+  # The guest agent reaches every fleet machine one of two ways: baked
+  # into the /var seed (kernel boot + `varProvisioning = "baked"`, the
+  # default), or delivered through the bundled `aos-test-agent` package
+  # fragment (image boot, or `varProvisioning = "ignition"` — neither
+  # ships a baked seed). The driver waits on *every* machine's agent, so a
+  # machine that bakes no seed always needs that package. Inject it here
+  # rather than making each test name it: agent delivery is a harness
+  # concern, not a property of the machine under test.
   mkMachinesWithIndex = machines: let
     machineNames = builtins.attrNames machines;
   in
     lib.imap (i: mname: let
       m = machines.${mname};
+      bootMode = m.bootMode or "kernel";
+      varProvisioning = m.varProvisioning or "baked";
+      packages = m.packages or [];
+      # `baked` /var seeds the agent at build time; every other shape
+      # relies on the package ignition fragment.
+      bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
+      agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
+      packagesWithAgent =
+        if bakesAgent || builtins.elem "aos-test-agent" packages
+        then packages
+        else if agentBundled
+        then packages ++ ["aos-test-agent"]
+        else
+          throw ''
+            fleet: machine "${mname}" boots without a baked /var seed
+            (bootMode = "${bootMode}", varProvisioning = "${varProvisioning}"),
+            so the test guest agent must arrive via the aos-test-agent package
+            — but that package is not bundled on its system. Set
+            `aos.packages.aos-test-agent.bundle = true` on the machine's system
+            (the server profile already does).
+          '';
     in {
-      inherit (m) system packages instanceMetadata;
-      # `extraClosures` / `varSizeMiB` / `bootMode` / `imageDiskMiB`
-      # default on the fleet machine type, so the `or` fallbacks only
-      # matter for callers bypassing fleet-spec validation.
+      inherit (m) system instanceMetadata;
+      inherit bootMode varProvisioning;
+      packages = packagesWithAgent;
+      # `extraClosures` / `varSizeMiB` / `imageDiskMiB` default on the
+      # fleet machine type, so the `or` fallbacks only matter for callers
+      # bypassing fleet-spec validation.
       extraClosures = m.extraClosures or [];
       varSizeMiB = m.varSizeMiB or 256;
-      bootMode = m.bootMode or "kernel";
       imageDiskMiB = m.imageDiskMiB or 40960;
       tpm = m.tpm or false;
       name = mname;
@@ -310,6 +341,40 @@
       ++ builtins.map (l: {inherit (l) path;}) userLinks
       ++ builtins.map (d: {inherit (d) path;}) userDirs;
 
+    # Kernel-boot "ignition" var: the base disk ships boot+root-a+swap
+    # only; ignition creates and formats /var (partition 4) on first boot
+    # in the trailing free space the driver makes by growing the per-run
+    # copy. Mirrors production (modules/services/ignition.nix) and lets
+    # machines differing only in /var size share one base image. sizeMiB=0
+    # fills the grown tail; the agent then arrives via the aos-test-agent
+    # package fragment rather than a baked /var seed.
+    varStorage =
+      if (m.varProvisioning or "baked") == "ignition"
+      then {
+        disks = [
+          {
+            device = "/dev/vda";
+            wipeTable = false;
+            partitions = [
+              {
+                number = 4;
+                label = "var";
+                sizeMiB = 0;
+              }
+            ];
+          }
+        ];
+        filesystems = [
+          {
+            device = "/dev/disk/by-partlabel/var";
+            format = "ext4";
+            label = "aos-var";
+            wipeFilesystem = false;
+          }
+        ];
+      }
+      else {};
+
     collisions =
       builtins.filter
       (f: builtins.elem f.path reservedPaths)
@@ -338,6 +403,7 @@
           };
         storage =
           userStorage
+          // varStorage
           // {
             files =
               mIdentity.storage.files
@@ -365,8 +431,7 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system bootMode tpm;
-          inherit (m) packages;
+          inherit (m) name ip mac debugMac index system packages bootMode tpm varProvisioning varSizeMiB;
         }
         // (
           if m.bootMode == "image"
@@ -390,11 +455,15 @@
             initrd = m.system.config.system.build.initrd;
             disk = vmLib.mkTestDisk {
               system = m.system;
-              inherit (m) extraClosures varSizeMiB;
+              inherit (m) extraClosures varSizeMiB varProvisioning;
             };
+            # "ignition" var provisioning emits storage.disks/filesystems
+            # in composeIgnition, which the restrictive metadata profile
+            # rejects — accept the full profile for those machines.
             metadataISO = metadataLib.mkMetadataIso {
               name = "${name}-${m.name}";
               ignitionConfig = composeIgnition {inherit name identity debug;} m;
+              allowStorageHardware = m.varProvisioning == "ignition";
             };
           }
         )
@@ -451,13 +520,20 @@
                   firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
                   metadata = null;
                 }
-                else {
-                  boot = "kernel";
-                  kernel = builtins.toString mb.kernel;
-                  initrd = "${builtins.toString mb.initrd}/initrd.img";
-                  disk = "${builtins.toString mb.disk}/disk.img";
-                  metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
-                }
+                else
+                  {
+                    boot = "kernel";
+                    kernel = builtins.toString mb.kernel;
+                    initrd = "${builtins.toString mb.initrd}/initrd.img";
+                    disk = "${builtins.toString mb.disk}/disk.img";
+                    metadata = "${builtins.toString mb.metadataISO}/metadata.iso";
+                  }
+                  // (lib.optionalAttrs (mb.varProvisioning == "ignition") {
+                    # Base disk ships no /var; grow the per-run copy by this
+                    # many MiB so ignition has room to create+format /var on
+                    # first boot (driver: aos_test_driver/qemu.py).
+                    var_size_mib = mb.varSizeMiB;
+                  })
               )
           )
           machineBuilds;
