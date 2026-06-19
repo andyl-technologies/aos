@@ -614,7 +614,7 @@ pub enum AttestCommand {
         #[arg(long)]
         output_dir: PathBuf,
     },
-    /// Verify a package event log against a quoted PCR 15 value
+    /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
         #[arg(long)]
@@ -624,7 +624,16 @@ pub enum AttestCommand {
         event_log: PathBuf,
         /// Quoted PCR 15 value as SHA-256 hex
         #[arg(long)]
-        pcr15: String,
+        pcr15: Option<String>,
+        /// Directory containing an unauthenticated quote bundle
+        #[arg(long)]
+        quote_dir: Option<PathBuf>,
+        /// Verifier nonce as an even-length hex string
+        #[arg(long)]
+        nonce: Option<String>,
+        /// File containing the verifier nonce as hex
+        #[arg(long)]
+        nonce_file: Option<PathBuf>,
         /// Expected PCR 15 value before package measurements
         #[arg(long)]
         pcr15_baseline: Option<String>,
@@ -2028,10 +2037,16 @@ pub async fn run(
                 AttestCommand::Verify {
                     event_log,
                     pcr15,
+                    quote_dir,
+                    nonce,
+                    nonce_file,
                     pcr15_baseline,
                     ..
                 },
-        } => run_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer),
+        } => {
+            let measurement = read_attestation_measurement(pcr15, quote_dir, nonce, nonce_file)?;
+            run_verify_package_attestation(&config, event_log, measurement, pcr15_baseline, printer)
+        }
         PackageCommand::Attest {
             command: AttestCommand::Quote { .. },
         } => unreachable!("AttestCommand::Quote is handled before ApmConfig::load"),
@@ -2087,7 +2102,13 @@ pub async fn run(
             pcr15,
             pcr15_baseline,
             ..
-        } => run_verify_package_attestation(&config, event_log, pcr15, pcr15_baseline, printer),
+        } => run_verify_package_attestation(
+            &config,
+            event_log,
+            AttestationMeasurement::Pcr15(pcr15.clone()),
+            pcr15_baseline,
+            printer,
+        ),
         PackageCommand::TestProducePackageAttestationQuote { .. } => {
             unreachable!("TestProducePackageAttestationQuote is handled before ApmConfig::load")
         }
@@ -2107,13 +2128,54 @@ pub async fn run(
     }
 }
 
+#[derive(Debug)]
+enum AttestationMeasurement {
+    Pcr15(String),
+    Quote { quote_dir: PathBuf, nonce: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttestationQuoteTrust {
+    PcrValueOnly,
+    BundleSelfConsistent,
+}
+
+fn read_attestation_measurement(
+    pcr15: &Option<String>,
+    quote_dir: &Option<PathBuf>,
+    nonce: &Option<String>,
+    nonce_file: &Option<PathBuf>,
+) -> Result<AttestationMeasurement> {
+    match (pcr15, quote_dir) {
+        (Some(_), Some(_)) => bail!("use either --pcr15 or --quote-dir, not both"),
+        (Some(pcr15), None) => {
+            if nonce.is_some() || nonce_file.is_some() {
+                bail!("--nonce and --nonce-file require --quote-dir");
+            }
+            Ok(AttestationMeasurement::Pcr15(pcr15.clone()))
+        }
+        (None, Some(quote_dir)) => Ok(AttestationMeasurement::Quote {
+            quote_dir: quote_dir.clone(),
+            nonce: read_attestation_nonce(nonce, nonce_file)?,
+        }),
+        (None, None) => bail!("attest verify requires --pcr15 or --quote-dir"),
+    }
+}
+
 fn run_verify_package_attestation(
     config: &config::ApmConfig,
     event_log: &PathBuf,
-    pcr15: &str,
+    measurement: AttestationMeasurement,
     pcr15_baseline: &Option<String>,
     printer: &Printer,
 ) -> Result<()> {
+    let (pcr15, trust) = match measurement {
+        AttestationMeasurement::Pcr15(pcr15) => (pcr15, AttestationQuoteTrust::PcrValueOnly),
+        AttestationMeasurement::Quote { quote_dir, nonce } => (
+            package_attestation::verify_attestation_quote_bundle(&quote_dir, &nonce)?,
+            AttestationQuoteTrust::BundleSelfConsistent,
+        ),
+    };
     let log = fs::read_to_string(event_log)
         .with_context(|| format!("reading package event log {}", event_log.display()))?;
     let registries = install::load_registries(config)?;
@@ -2142,21 +2204,30 @@ fn run_verify_package_attestation(
     }
     let verified = package_attestation::verify_package_event_log_against_measurement_catalog(
         &log,
-        pcr15,
+        &pcr15,
         pcr15_baseline.as_deref(),
         &catalog,
     )?;
 
     if printer.mode() == OutputMode::Json {
-        printer.json(&serde_json::json!({
+        let mut output = serde_json::json!({
             "pcr15": verified.pcr15,
             "package_count": verified.package_count,
-        }));
+        });
+        if trust == AttestationQuoteTrust::BundleSelfConsistent {
+            output["quote_bundle_verified"] = serde_json::json!(true);
+            output["ak_ek_trusted"] = serde_json::json!(false);
+        }
+        printer.json(&output);
     } else {
-        printer.success(&format!(
+        let mut message = format!(
             "Package attestation event log verified ({} package events, PCR 15 {}).",
             verified.package_count, verified.pcr15
-        ));
+        );
+        if trust == AttestationQuoteTrust::BundleSelfConsistent {
+            message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
+        }
+        printer.success(&message);
     }
     Ok(())
 }
@@ -3471,7 +3542,10 @@ mod tests {
                 command: AttestCommand::Verify {
                     system: true,
                     event_log: "/run/log/aos-packages.cel".into(),
-                    pcr15: "00".repeat(32),
+                    pcr15: Some("00".repeat(32)),
+                    quote_dir: None,
+                    nonce: None,
+                    nonce_file: None,
                     pcr15_baseline: None,
                 },
             }
@@ -3508,6 +3582,35 @@ mod tests {
             read_attestation_nonce(&Some("0011".into()), &Some(tmp.path().join("nonce")))
                 .unwrap_err();
         assert!(format!("{conflict:#}").contains("either --nonce or --nonce-file"));
+    }
+
+    #[test]
+    fn attest_verify_measurement_args_require_one_source() {
+        let pcr15 = Some("00".repeat(32));
+        let quote_dir = Some(PathBuf::from("/run/aos-attest/quote"));
+        let nonce = Some("0011".to_string());
+        let no_nonce = None;
+        let no_nonce_file = None;
+
+        let pcr = read_attestation_measurement(&pcr15, &None, &no_nonce, &no_nonce_file)
+            .expect("pcr15 source");
+        assert!(matches!(pcr, AttestationMeasurement::Pcr15(_)));
+
+        let quote = read_attestation_measurement(&None, &quote_dir, &nonce, &no_nonce_file)
+            .expect("quote source");
+        assert!(matches!(quote, AttestationMeasurement::Quote { .. }));
+
+        let conflict =
+            read_attestation_measurement(&pcr15, &quote_dir, &nonce, &no_nonce_file).unwrap_err();
+        assert!(format!("{conflict:#}").contains("either --pcr15 or --quote-dir"));
+
+        let missing =
+            read_attestation_measurement(&None, &None, &no_nonce, &no_nonce_file).unwrap_err();
+        assert!(format!("{missing:#}").contains("requires --pcr15 or --quote-dir"));
+
+        let stray_nonce =
+            read_attestation_measurement(&pcr15, &None, &nonce, &no_nonce_file).unwrap_err();
+        assert!(format!("{stray_nonce:#}").contains("require --quote-dir"));
     }
 
     #[test]

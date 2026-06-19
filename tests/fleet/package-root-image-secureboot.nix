@@ -430,13 +430,16 @@ in {
           service_verified_raw = target.succeed(
               f"{APM} --json attest verify --system "
               f"--event-log {event_log_path} "
-              f"--pcr15 {service_quote['quoted_pcr15']}{baseline_arg}"
+              f"--quote-dir /var/lib/aos-attest/quote "
+              f"--nonce {nonce}{baseline_arg}"
           )
           print("=== aos-attest service package attestation verification ===")
           print(service_verified_raw)
           service_verified = json.loads(service_verified_raw)
           assert service_verified["pcr15"] == service_quote["quoted_pcr15"]
           assert service_verified["package_count"] >= 2
+          assert service_verified["quote_bundle_verified"] is True
+          assert service_verified["ak_ek_trusted"] is False
 
           raw = target.succeed(
               f"{APM} --json attest quote "
@@ -461,13 +464,15 @@ in {
           verified_raw = target.succeed(
               f"{APM} --json attest verify --system "
               f"--event-log {event_log_path} "
-              f"--pcr15 {quote['quoted_pcr15']}{baseline_arg}"
+              f"--quote-dir {out_dir} --nonce {nonce}{baseline_arg}"
           )
           print("=== package attestation verification ===")
           print(verified_raw)
           verified = json.loads(verified_raw)
           assert verified["pcr15"] == quote["quoted_pcr15"]
           assert verified["package_count"] >= 2
+          assert verified["quote_bundle_verified"] is True
+          assert verified["ak_ek_trusted"] is False
           if baseline_value is not None:
               out = target.fail(
                   f"{APM} --json attest verify --system "
