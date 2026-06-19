@@ -339,11 +339,6 @@ define_builtins! {
     impl BuiltinDefinition for FetchGitBuiltin {
         const NAME: &'static [u8] = b"fetchGit";
         const EXECUTION: BuiltinExecution = BuiltinExecution::FetchGit;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Effectful,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FETCH_GIT_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
@@ -361,11 +356,6 @@ define_builtins! {
     impl BuiltinDefinition for FetchTarballBuiltin {
         const NAME: &'static [u8] = b"fetchTarball";
         const EXECUTION: BuiltinExecution = BuiltinExecution::FetchTarball;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Effectful,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FETCH_TARBALL_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
@@ -374,11 +364,6 @@ define_builtins! {
     impl BuiltinDefinition for FetchTreeBuiltin {
         const NAME: &'static [u8] = b"fetchTree";
         const EXECUTION: BuiltinExecution = BuiltinExecution::FetchTree;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Effectful,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FETCH_TREE_DOCS;
         const NAME_SCOPE: BuiltinNameScope = BuiltinNameScope::UnshadowableGlobal;
     }
@@ -387,11 +372,6 @@ define_builtins! {
     impl BuiltinDefinition for FetchurlBuiltin {
         const NAME: &'static [u8] = b"fetchurl";
         const EXECUTION: BuiltinExecution = BuiltinExecution::Fetchurl;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Effectful,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FETCHURL_DOCS;
     }
 
@@ -423,11 +403,6 @@ define_builtins! {
     impl BuiltinDefinition for FlakeRefToStringBuiltin {
         const NAME: &'static [u8] = b"flakeRefToString";
         const EXECUTION: BuiltinExecution = BuiltinExecution::FlakeRefToString;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Pure,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &FLAKE_REF_TO_STRING_DOCS;
     }
 
@@ -521,6 +496,8 @@ define_builtins! {
         const EXECUTION: BuiltinExecution = BuiltinExecution::unsupported(1);
         const DOCS: &'static BuiltinDocs =
             builtin_docs!("Fetches and evaluates a flake reference when flakes are enabled.");
+        const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
+            Some(NativeCliFallbackFeature::Flakes);
     }
 
     pub(crate) struct GroupByBuiltin;
@@ -767,11 +744,6 @@ define_builtins! {
     impl BuiltinDefinition for ParseFlakeRefBuiltin {
         const NAME: &'static [u8] = b"parseFlakeRef";
         const EXECUTION: BuiltinExecution = BuiltinExecution::ParseFlakeRef;
-        const DIRECT: Option<BuiltinDirect> = Some(BuiltinDirect::StrictUnary {
-            effect: BuiltinEffect::Pure,
-        });
-        const FIRST_CLASS_ARITY: Option<usize> = Some(1);
-        const REQUIRES_NATIVE_CLI_FALLBACK: bool = true;
         const DOCS: &'static BuiltinDocs = &PARSE_FLAKE_REF_DOCS;
     }
 
@@ -1289,11 +1261,16 @@ impl BuiltinExecution {
             | Self::PathExists
             | Self::ReadDir
             | Self::ReadFile
-            | Self::ReadFileType => Some(BuiltinDirect::StrictUnary {
+            | Self::ReadFileType
+            | Self::FetchGit
+            | Self::FetchMercurial
+            | Self::FetchTarball
+            | Self::FetchTree
+            | Self::Fetchurl => Some(BuiltinDirect::StrictUnary {
                 effect: BuiltinEffect::Effectful,
             }),
-            Self::FetchMercurial => Some(BuiltinDirect::StrictUnary {
-                effect: BuiltinEffect::Effectful,
+            Self::FlakeRefToString | Self::ParseFlakeRef => Some(BuiltinDirect::StrictUnary {
+                effect: BuiltinEffect::Pure,
             }),
             Self::FilterSource => Some(BuiltinDirect::StrictBinary {
                 effect: BuiltinEffect::Effectful,
@@ -1314,12 +1291,6 @@ impl BuiltinExecution {
                 effect: BuiltinEffect::Effectful,
             }),
             Self::Unsupported { .. }
-            | Self::FetchGit
-            | Self::FetchTarball
-            | Self::FetchTree
-            | Self::Fetchurl
-            | Self::FlakeRefToString
-            | Self::ParseFlakeRef
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1348,6 +1319,12 @@ impl BuiltinExecution {
             | Self::ReadDir
             | Self::ReadFile
             | Self::ReadFileType
+            | Self::FetchGit
+            | Self::FetchTarball
+            | Self::FetchTree
+            | Self::Fetchurl
+            | Self::FlakeRefToString
+            | Self::ParseFlakeRef
             | Self::FetchMercurial => Some(1),
             Self::StrictBinary { .. }
             | Self::ScopedImport
@@ -1364,12 +1341,6 @@ impl BuiltinExecution {
             Self::DirectTernary(_) => Some(3),
             Self::Unsupported { arity } => Some(arity),
             Self::BuiltinsValue
-            | Self::FetchGit
-            | Self::FetchTarball
-            | Self::FetchTree
-            | Self::Fetchurl
-            | Self::FlakeRefToString
-            | Self::ParseFlakeRef
             | Self::TrueValue
             | Self::FalseValue
             | Self::NullValue
@@ -1391,8 +1362,8 @@ impl BuiltinExecution {
         }
     }
 
-    /// Returns whether native JSON evaluation must fall back to C++ Nix.
-    const fn requires_native_cli_fallback(self) -> bool {
+    /// Returns the native JSON fallback class implied by this execution strategy.
+    const fn native_cli_fallback_feature(self) -> Option<NativeCliFallbackFeature> {
         match self {
             Self::Unsupported { .. }
             | Self::Derivation
@@ -1411,12 +1382,20 @@ impl BuiltinExecution {
             | Self::ReadFileType
             | Self::ToFile
             | Self::FindFile
+            | Self::FetchGit
             | Self::FetchMercurial
+            | Self::FetchTarball
+            | Self::FetchTree
+            | Self::Fetchurl
             | Self::Trace { .. }
-            | Self::Warn => true,
-            Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => {
-                matches!(effect, BuiltinEffect::Effectful)
-            }
+            | Self::Warn => Some(NativeCliFallbackFeature::CliSensitiveBuiltinEvaluation),
+            Self::FlakeRefToString | Self::ParseFlakeRef => Some(NativeCliFallbackFeature::Flakes),
+            Self::StrictUnary { effect, .. } | Self::StrictBinary { effect, .. } => match effect {
+                BuiltinEffect::Pure => None,
+                BuiltinEffect::Effectful => {
+                    Some(NativeCliFallbackFeature::CliSensitiveBuiltinEvaluation)
+                }
+            },
             Self::LazyUnary
             | Self::DirectBinary(_)
             | Self::DirectTernary(_)
@@ -1424,12 +1403,6 @@ impl BuiltinExecution {
             | Self::TryEval
             | Self::AddErrorContext
             | Self::GenericClosure
-            | Self::FetchGit
-            | Self::FetchTarball
-            | Self::FetchTree
-            | Self::Fetchurl
-            | Self::FlakeRefToString
-            | Self::ParseFlakeRef
             | Self::Seq
             | Self::DeepSeq
             | Self::TrueValue
@@ -1437,7 +1410,26 @@ impl BuiltinExecution {
             | Self::NullValue
             | Self::BuiltinsValue
             | Self::NixVersionValue
-            | Self::LangVersionValue => false,
+            | Self::LangVersionValue => None,
+        }
+    }
+}
+
+/// User-facing native evaluator fallback classes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeCliFallbackFeature {
+    /// Evaluation must defer because the builtin can observe CLI/runtime state.
+    CliSensitiveBuiltinEvaluation,
+    /// Evaluation must defer because the builtin belongs to flake evaluation.
+    Flakes,
+}
+
+impl NativeCliFallbackFeature {
+    /// Returns the diagnostic feature label for this fallback class.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::CliSensitiveBuiltinEvaluation => "CLI-sensitive builtin evaluation",
+            Self::Flakes => "flakes",
         }
     }
 }
@@ -1700,7 +1692,7 @@ pub(crate) struct Builtin {
     first_class_arity: Option<usize>,
     name_scope: BuiltinNameScope,
     availability: BuiltinAvailability,
-    requires_native_cli_fallback: bool,
+    native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
     docs: &'static BuiltinDocs,
 }
 
@@ -1713,7 +1705,7 @@ impl Builtin {
         first_class_arity: Option<usize>,
         name_scope: BuiltinNameScope,
         availability: BuiltinAvailability,
-        requires_native_cli_fallback: bool,
+        native_cli_fallback_feature: Option<NativeCliFallbackFeature>,
         docs: &'static BuiltinDocs,
     ) -> Self {
         Self {
@@ -1723,7 +1715,7 @@ impl Builtin {
             first_class_arity,
             name_scope,
             availability,
-            requires_native_cli_fallback,
+            native_cli_fallback_feature,
             docs,
         }
     }
@@ -1767,9 +1759,12 @@ impl Builtin {
         self.availability
     }
 
-    /// Returns whether native JSON evaluation must fall back for this builtin.
-    pub(crate) const fn requires_native_cli_fallback(&self) -> bool {
-        self.requires_native_cli_fallback
+    /// Returns the diagnostic feature label when native JSON evaluation must fall back.
+    pub(crate) const fn native_cli_fallback_feature(&self) -> Option<&'static str> {
+        match self.native_cli_fallback_feature {
+            Some(feature) => Some(feature.label()),
+            None => None,
+        }
     }
 
     /// Returns the static documentation attached to the builtin.
@@ -1850,8 +1845,9 @@ trait BuiltinDefinition {
     /// Contextual availability of this builtin in the reified `builtins` set.
     const AVAILABILITY: BuiltinAvailability = Self::EXECUTION.availability();
 
-    /// Whether native JSON evaluation must defer this builtin to C++ Nix.
-    const REQUIRES_NATIVE_CLI_FALLBACK: bool = Self::EXECUTION.requires_native_cli_fallback();
+    /// Native JSON fallback class for this builtin.
+    const NATIVE_CLI_FALLBACK_FEATURE: Option<NativeCliFallbackFeature> =
+        Self::EXECUTION.native_cli_fallback_feature();
 
     /// Declaration shared by all evaluator tiers for this builtin.
     const DECLARATION: Builtin = Builtin::new(
@@ -1861,7 +1857,7 @@ trait BuiltinDefinition {
         Self::FIRST_CLASS_ARITY,
         Self::NAME_SCOPE,
         Self::AVAILABILITY,
-        Self::REQUIRES_NATIVE_CLI_FALLBACK,
+        Self::NATIVE_CLI_FALLBACK_FEATURE,
         Self::DOCS,
     );
 }
@@ -2400,7 +2396,8 @@ mod tests {
                 BUILTINS
                     .lookup(name)
                     .unwrap()
-                    .requires_native_cli_fallback(),
+                    .native_cli_fallback_feature()
+                    .is_some(),
                 "{} should require CLI fallback",
                 String::from_utf8_lossy(name),
             );
@@ -2416,27 +2413,45 @@ mod tests {
                 !BUILTINS
                     .lookup(name)
                     .unwrap()
-                    .requires_native_cli_fallback(),
+                    .native_cli_fallback_feature()
+                    .is_some(),
                 "{} should stay native-evaluable",
                 String::from_utf8_lossy(name),
             );
         }
+
+        for name in [
+            b"getFlake".as_slice(),
+            b"parseFlakeRef".as_slice(),
+            b"flakeRefToString".as_slice(),
+        ] {
+            assert_eq!(
+                BUILTINS.lookup(name).unwrap().native_cli_fallback_feature(),
+                Some("flakes"),
+                "{} should report flakes as the fallback feature",
+                String::from_utf8_lossy(name),
+            );
+        }
+
+        assert_eq!(
+            BUILTINS
+                .lookup(b"fetchurl")
+                .unwrap()
+                .native_cli_fallback_feature(),
+            Some("CLI-sensitive builtin evaluation")
+        );
+        assert_eq!(
+            BUILTINS
+                .lookup(b"length")
+                .unwrap()
+                .native_cli_fallback_feature(),
+            None
+        );
     }
 
     #[test]
     fn default_builtin_declarations_stay_derived_from_execution_strategy() {
         for builtin in BUILTINS.iter() {
-            if matches!(
-                builtin.name(),
-                b"fetchurl"
-                    | b"fetchGit"
-                    | b"fetchTarball"
-                    | b"fetchTree"
-                    | b"flakeRefToString"
-                    | b"parseFlakeRef"
-            ) {
-                continue;
-            }
             let execution = builtin.execution();
             assert_eq!(builtin.direct(), execution.direct(), "{builtin:?}");
             assert_eq!(
@@ -2449,9 +2464,14 @@ mod tests {
                 execution.availability(),
                 "{builtin:?}",
             );
+            if matches!(builtin.name(), b"getFlake") {
+                continue;
+            }
             assert_eq!(
-                builtin.requires_native_cli_fallback(),
-                execution.requires_native_cli_fallback(),
+                builtin.native_cli_fallback_feature(),
+                execution
+                    .native_cli_fallback_feature()
+                    .map(NativeCliFallbackFeature::label),
                 "{builtin:?}",
             );
         }
@@ -2471,7 +2491,10 @@ mod tests {
             })
         );
         assert_eq!(fetchurl.first_class_arity(), Some(1));
-        assert!(fetchurl.requires_native_cli_fallback());
+        assert_eq!(
+            fetchurl.native_cli_fallback_feature(),
+            Some("CLI-sensitive builtin evaluation")
+        );
         assert_eq!(
             fetchurl.docs().summary(),
             "Fetches a URL as a fixed-output store path."
@@ -2489,7 +2512,10 @@ mod tests {
             })
         );
         assert_eq!(fetch_git.first_class_arity(), Some(1));
-        assert!(fetch_git.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_git.native_cli_fallback_feature(),
+            Some("CLI-sensitive builtin evaluation")
+        );
         assert_eq!(
             fetch_git.docs().summary(),
             "Fetches a pinned Git repository as a recursive fixed-output store path."
@@ -2507,7 +2533,10 @@ mod tests {
             })
         );
         assert_eq!(fetch_tarball.first_class_arity(), Some(1));
-        assert!(fetch_tarball.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_tarball.native_cli_fallback_feature(),
+            Some("CLI-sensitive builtin evaluation")
+        );
         assert_eq!(
             fetch_tarball.docs().summary(),
             "Fetches and unpacks a tarball as a recursive fixed-output store path."
@@ -2525,7 +2554,10 @@ mod tests {
             })
         );
         assert_eq!(fetch_tree.first_class_arity(), Some(1));
-        assert!(fetch_tree.requires_native_cli_fallback());
+        assert_eq!(
+            fetch_tree.native_cli_fallback_feature(),
+            Some("CLI-sensitive builtin evaluation")
+        );
         assert_eq!(
             fetch_tree.docs().summary(),
             "Fetches supported typed tree inputs as fixed-output store paths."
@@ -2542,7 +2574,10 @@ mod tests {
             })
         );
         assert_eq!(parse_flake_ref.first_class_arity(), Some(1));
-        assert!(parse_flake_ref.requires_native_cli_fallback());
+        assert_eq!(
+            parse_flake_ref.native_cli_fallback_feature(),
+            Some("flakes")
+        );
         assert_eq!(
             parse_flake_ref.docs().summary(),
             "Parses flake-reference URL syntax into attrs."
@@ -2562,7 +2597,10 @@ mod tests {
             })
         );
         assert_eq!(flake_ref_to_string.first_class_arity(), Some(1));
-        assert!(flake_ref_to_string.requires_native_cli_fallback());
+        assert_eq!(
+            flake_ref_to_string.native_cli_fallback_feature(),
+            Some("flakes")
+        );
         assert_eq!(
             flake_ref_to_string.docs().summary(),
             "Converts flake-reference attrs to URL syntax."

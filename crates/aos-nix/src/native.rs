@@ -418,25 +418,17 @@ fn ensure_native_json_subset(
                     expr_len,
                 ));
             }
-            if builtin_requires_cli_fallback(name) {
-                return Err(unsupported_native_node(
-                    native_fallback_feature(name),
-                    node.span,
-                    expr_len,
-                ));
+            if let Some(feature) = builtin_native_cli_fallback_feature(name) {
+                return Err(unsupported_native_node(feature, node.span, expr_len));
             }
         }
 
         if node.kind == IrKind::PrimOp
             && let IrData::PrimOp { symbol, .. } = node.data
             && let Some(name) = ir.symbols.resolve(symbol)
-            && builtin_requires_cli_fallback(name)
+            && let Some(feature) = builtin_native_cli_fallback_feature(name)
         {
-            return Err(unsupported_native_node(
-                native_fallback_feature(name),
-                node.span,
-                expr_len,
-            ));
+            return Err(unsupported_native_node(feature, node.span, expr_len));
         }
 
         if node.kind == IrKind::SearchPath {
@@ -702,23 +694,12 @@ fn builtins_global_cli_fallback_feature(
         if name == b"currentSystem" && options.eval_mode() != EvalMode::Pure {
             return None;
         }
-        builtin_requires_cli_fallback(name).then(|| native_fallback_feature(name))
+        builtin_native_cli_fallback_feature(name)
     })
 }
 
-fn builtin_requires_cli_fallback(name: &[u8]) -> bool {
-    let Some(builtin) = lookup_builtin(name) else {
-        return false;
-    };
-
-    builtin.requires_native_cli_fallback()
-}
-
-const fn native_fallback_feature(name: &[u8]) -> &'static str {
-    match name {
-        b"getFlake" | b"parseFlakeRef" | b"flakeRefToString" => "flakes",
-        _ => "CLI-sensitive builtin evaluation",
-    }
+fn builtin_native_cli_fallback_feature(name: &[u8]) -> Option<&'static str> {
+    lookup_builtin(name).and_then(|builtin| builtin.native_cli_fallback_feature())
 }
 
 fn builtins_global_is_configured_current_system_select(
