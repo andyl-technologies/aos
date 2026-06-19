@@ -900,13 +900,39 @@ pub(crate) fn package_measurement_catalog_from_package_meta(
         .collect::<Vec<_>>())
 }
 
+/// Returns a sorted, deduplicated, and digest-normalized golden measurement catalog.
+///
+/// # Errors
+///
+/// Returns an error if any digest is malformed or two entries for the same
+/// package/version disagree on the expected measurement.
+pub(crate) fn canonical_package_measurement_catalog(
+    catalog: &[PackageMeasurementCatalogEntry],
+) -> Result<Vec<PackageMeasurementCatalogEntry>> {
+    let measurements = package_measurement_catalog(catalog)?;
+    Ok(measurements
+        .into_iter()
+        .map(
+            |((name, version), (measurement, root_digest))| PackageMeasurementCatalogEntry {
+                name,
+                version,
+                root_digest,
+                measurement: format!("sha256:{measurement}"),
+            },
+        )
+        .collect())
+}
+
 fn package_measurement_catalog(
     catalog: &[PackageMeasurementCatalogEntry],
 ) -> Result<BTreeMap<(String, String), (String, String)>> {
     let mut measurements = BTreeMap::new();
     for entry in catalog {
         let measurement = parse_sha256_hex("registry package measurement", &entry.measurement)?;
-        let root_digest = canonical_digest(&entry.root_digest);
+        let root_digest = format!(
+            "sha256:{}",
+            parse_sha256_hex("registry package root digest", &entry.root_digest)?
+        );
         let key = (entry.name.clone(), entry.version.clone());
         let value = (measurement, root_digest);
         if let Some(existing) = measurements.insert(key.clone(), value.clone())
@@ -1804,6 +1830,52 @@ mod tests {
                 .expect("verify seed catalog");
 
         assert_eq!(verified.package_count, 1);
+    }
+
+    #[test]
+    fn canonical_package_measurement_catalog_dedupes_matching_entries() {
+        let entry = PackageMeasurementCatalogEntry {
+            name: "web".into(),
+            version: "1.0".into(),
+            root_digest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                .into(),
+            measurement: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                .into(),
+        };
+
+        let catalog = canonical_package_measurement_catalog(&[entry.clone(), entry])
+            .expect("canonical catalog");
+
+        assert_eq!(catalog.len(), 1);
+        assert_eq!(
+            catalog[0].root_digest,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            catalog[0].measurement,
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn canonical_package_measurement_catalog_rejects_conflicts() {
+        let first = PackageMeasurementCatalogEntry {
+            name: "web".into(),
+            version: "1.0".into(),
+            root_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            measurement: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+        };
+        let second = PackageMeasurementCatalogEntry {
+            measurement: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .into(),
+            ..first.clone()
+        };
+
+        let err = canonical_package_measurement_catalog(&[first, second]).unwrap_err();
+
+        assert!(format!("{err:#}").contains("conflicting golden measurements"));
     }
 
     #[test]
