@@ -11214,7 +11214,7 @@ impl TreeWalk {
                 span,
             ));
         }
-        if self.options.eval_mode() == EvalMode::Restricted {
+        if self.options.eval_mode() != EvalMode::Impure {
             self.check_filesystem_path_access(id, span, path)?;
         }
         Ok(())
@@ -44965,9 +44965,32 @@ mod tests {
                 .starts_with(path_source(&store_dir).as_str())
         );
 
+        let nar_hash = value["narHash"].as_str().expect("narHash is a string");
+        let denied_pure_error = eval_whnf_owned_with_options(
+            &lower(&format!(
+                r#"builtins.fetchTree {{ type = "path"; path = {path}; narHash = "{nar_hash}"; }}"#
+            )),
+            {
+                let mut options = options.clone();
+                options.set_eval_mode(EvalMode::Pure);
+                options
+            },
+        )
+        .expect_err("pure fetchTree path requires an allowed source path");
+        assert!(matches!(
+            denied_pure_error.kind(),
+            TreeWalkErrorKind::PathAccessDenied {
+                path: denied,
+                mode: EvalMode::Pure,
+                ..
+            } if denied.as_slice() == source_dir.as_os_str().as_bytes()
+        ));
+
         let mut pure_options = options.clone();
         pure_options.set_eval_mode(EvalMode::Pure);
-        let nar_hash = value["narHash"].as_str().expect("narHash is a string");
+        pure_options
+            .add_allowed_path(source_dir.as_os_str().as_bytes().to_vec())
+            .expect("pure fetchTree source path configures as allowed");
         let pure_json = eval_json_bytes_with_options(
             &format!(
                 r#"
