@@ -4401,15 +4401,7 @@ impl TreeWalk {
         derivation: &nix_compat::derivation::Derivation,
         input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
     ) -> Vec<u8> {
-        let replacements: BTreeMap<[u8; 32], BTreeSet<String>> = derivation
-            .input_derivations
-            .iter()
-            .filter_map(|(drv_path, outputs)| {
-                input_hashes
-                    .get(drv_path)
-                    .map(|hash| (*hash, outputs.clone()))
-            })
-            .collect();
+        let replacements = Self::input_hash_replacements(derivation, input_hashes);
         let mut out = Vec::new();
         out.extend_from_slice(b"Derive(");
         self.write_derivation_outputs(&mut out, derivation);
@@ -4427,6 +4419,23 @@ impl TreeWalk {
         Self::write_aterm_environment(&mut out, &derivation.environment);
         out.push(b')');
         out
+    }
+
+    fn input_hash_replacements(
+        derivation: &nix_compat::derivation::Derivation,
+        input_hashes: &BTreeMap<nix_compat::store_path::StorePath<String>, [u8; 32]>,
+    ) -> BTreeMap<[u8; 32], BTreeSet<String>> {
+        let mut replacements: BTreeMap<[u8; 32], BTreeSet<String>> = BTreeMap::new();
+        for (drv_path, outputs) in &derivation.input_derivations {
+            let Some(hash) = input_hashes.get(drv_path) else {
+                continue;
+            };
+            replacements
+                .entry(*hash)
+                .or_default()
+                .extend(outputs.iter().cloned());
+        }
+        replacements
     }
 
     fn write_derivation_outputs(
@@ -4674,15 +4683,7 @@ impl TreeWalk {
     ) {
         match input_hashes {
             Some(input_hashes) => {
-                let replacements: BTreeMap<[u8; 32], BTreeSet<String>> = derivation
-                    .input_derivations
-                    .iter()
-                    .filter_map(|(drv_path, outputs)| {
-                        input_hashes
-                            .get(drv_path)
-                            .map(|hash| (*hash, outputs.clone()))
-                    })
-                    .collect();
+                let replacements = Self::input_hash_replacements(derivation, input_hashes);
                 out.push(b'[');
                 for (index, (hash, output_names)) in replacements.iter().enumerate() {
                     if index > 0 {
@@ -29843,7 +29844,7 @@ mod tests {
     use super::super::ThunkState;
     use super::*;
     use std::{
-        collections::BTreeSet,
+        collections::{BTreeMap, BTreeSet},
         fs,
         path::{Path, PathBuf},
         process::Command,
@@ -53288,6 +53289,45 @@ mod tests {
         assert_eq!(
             eval_json_bytes(source),
             br#"{"baseDrv":"/nix/store/sycp28psd9pmlky6a4jpcb5lijdfjw6g-base.drv","baseOut":"/12b6k9m59nmk4z3mpbpi60a9626jbcihnxmydd980k8jvgwsb8ry","ctx":{"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv":{"outputs":["out"]}},"drvPath":"/nix/store/l6n89w9r2i5pn8p9asx7zkxpbqwwgi2y-user.drv","out":"/0dgqgrnsrgzgjvxqfag1i449qjkl8fixagz9dlj6arf2py6m7mz5"}"#.to_vec()
+        );
+    }
+
+    #[test]
+    fn derivation_strict_unions_input_hash_replacement_outputs() {
+        let first = nix_compat::store_path::StorePath::<String>::from_bytes(
+            b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-first.drv",
+        )
+        .expect("first store path parses");
+        let second = nix_compat::store_path::StorePath::<String>::from_bytes(
+            b"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-second.drv",
+        )
+        .expect("second store path parses");
+        let missing = nix_compat::store_path::StorePath::<String>::from_bytes(
+            b"cccccccccccccccccccccccccccccccc-missing.drv",
+        )
+        .expect("missing store path parses");
+
+        let mut derivation = nix_compat::derivation::Derivation::default();
+        derivation
+            .input_derivations
+            .insert(first.clone(), BTreeSet::from(["out".to_owned()]));
+        derivation
+            .input_derivations
+            .insert(second.clone(), BTreeSet::from(["dev".to_owned()]));
+        derivation
+            .input_derivations
+            .insert(missing, BTreeSet::from(["ignored".to_owned()]));
+
+        let shared_hash = [42_u8; 32];
+        let mut input_hashes = BTreeMap::new();
+        input_hashes.insert(first, shared_hash);
+        input_hashes.insert(second, shared_hash);
+
+        let replacements = TreeWalk::input_hash_replacements(&derivation, &input_hashes);
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(
+            replacements.get(&shared_hash),
+            Some(&BTreeSet::from(["dev".to_owned(), "out".to_owned()]))
         );
     }
 
