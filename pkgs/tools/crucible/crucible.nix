@@ -10,6 +10,8 @@
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") packages);
   docPackages = builtins.filter (package: package != "crucible-cli") packages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
+  doctestPackages = builtins.filter (package: package != "crucible-cli" && package != "crucible-qemu-plugin") packages;
+  doctestPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") doctestPackages);
 in
   mkCargoPackage {
     pname = "crucible";
@@ -49,6 +51,13 @@ in
         --target-dir target/crucible-doc-cli \
         -p crucible-cli \
         --bin crucible
+      cargo test \
+        --doc \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        --target-dir target/crucible-doctest-libs \
+        ${doctestPackageFlags}
     '';
 
     postInstall = ''
@@ -62,6 +71,7 @@ in
       cargo_workspace=crates
       cargo_packages=${packageFlags}
       cargo_doc=warning-free
+      cargo_doctest=hermetic
       rustdocflags=-D warnings -D missing_docs
       INFO
     '';
