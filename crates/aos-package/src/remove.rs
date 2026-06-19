@@ -66,6 +66,37 @@ pub async fn run(
     yes: bool,
     printer: &Printer,
 ) -> Result<RemoveOutcome> {
+    run_inner(config, packages, auto_remove, dry_run, yes, printer, true).await
+}
+
+/// Run `apm remove <packages>` without reconciling exposed systemd units.
+///
+/// This is used by higher-level workflows that perform multiple profile or
+/// artifact updates and reconcile the exposed unit surface once at the end.
+///
+/// # Errors
+///
+/// Returns the same errors as [`run`].
+pub(crate) async fn run_deferred_expose_reconcile(
+    config: &ApmConfig,
+    packages: &[String],
+    auto_remove: bool,
+    dry_run: bool,
+    yes: bool,
+    printer: &Printer,
+) -> Result<RemoveOutcome> {
+    run_inner(config, packages, auto_remove, dry_run, yes, printer, false).await
+}
+
+async fn run_inner(
+    config: &ApmConfig,
+    packages: &[String],
+    auto_remove: bool,
+    dry_run: bool,
+    yes: bool,
+    printer: &Printer,
+    reconcile_exposed_units: bool,
+) -> Result<RemoveOutcome> {
     if packages.is_empty() {
         printer.info("No packages specified.");
         return Ok(RemoveOutcome::default());
@@ -143,7 +174,9 @@ pub async fn run(
 
     // Step 10: Switch to the new generation.
     profile.switch_to(&new_gen)?;
-    reconcile_system_profile(config, printer).await?;
+    if reconcile_exposed_units {
+        reconcile_system_profile(config, printer).await?;
+    }
 
     // Step 11: Report success.
     printer.step(3, 3, "Done!");

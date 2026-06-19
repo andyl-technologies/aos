@@ -423,7 +423,10 @@ Offline/package-time vendor blobs now build through `encryptedFile` metadata
 for already sealed ciphertext and are projected by `apm` under the AOS-owned
 runtime credstore namespace at `/run/credstore.encrypted/aos/...`. Inline
 ciphertext production is handled by `apm credential encrypt`, so the P5
-implementation surface is complete.
+implementation surface is complete. Desired reconciliation defers intermediate
+install/remove exposed-unit reconciliation until after package-scoped config and
+credentials are materialized, so an add+prune converge cannot start a newly
+added config-gated package before its desired artifacts exist.
 
 **Closes.** D8 (install half), D9, D11, D16, D18, D24, D25.
 
