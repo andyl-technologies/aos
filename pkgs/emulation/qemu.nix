@@ -13,11 +13,17 @@
   pixman,
   zlib,
   libslirp,
+  pname ? "qemu",
+  enablePlugins ? false,
 }: let
   version = "9.2.4";
+  pluginFlag =
+    if enablePlugins
+    then "--enable-plugins"
+    else "--disable-plugins";
 in
   mkDerivation {
-    pname = "qemu";
+    inherit pname;
     inherit version;
 
     src = fetchurl {
@@ -68,6 +74,7 @@ in
             --prefix=$out \
             --target-list=x86_64-softmmu \
             --enable-kvm \
+            ${pluginFlag} \
             --enable-slirp \
             --enable-virtfs \
             --disable-bsd-user \

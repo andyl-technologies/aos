@@ -271,6 +271,7 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    crucible = import ./tests/crucible {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
