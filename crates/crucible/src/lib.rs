@@ -11,6 +11,12 @@
 use std::error::Error;
 use std::fmt;
 
+#[cfg(feature = "test-double")]
+mod sim_backend;
+
+#[cfg(feature = "test-double")]
+pub use sim_backend::{SimBackend, SimBackendState};
+
 /// A stable content address used by the execution-model spine.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContentHash {

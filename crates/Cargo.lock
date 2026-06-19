@@ -1499,6 +1499,9 @@ dependencies = [
 [[package]]
 name = "crucible"
 version = "0.1.0"
+dependencies = [
+ "crucible-sim",
+]
 
 [[package]]
 name = "crucible-api"
