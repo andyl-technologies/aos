@@ -1158,6 +1158,45 @@ register.
     as an image capability; the conservative flags remain valid for images that
     have not passed the same gate.
 
+- **RISK-14 / T-RISK-7 — S7 exact deadline and ceiling**
+  - **Status:** PASS WITH FALLBACK; the required exact deadline export is absent
+    in the measured QEMU build and the current plugin pause surface overshoots,
+    so scheduler fast-forward/lookahead through this path stays disabled until
+    the patch-series capability lands.
+  - **Check:** `checks.crucible.phase0.s7DeadlineCeiling`.
+  - **Result:** `scenario=stock-linux-diskless-initramfs-ceiling-probe`,
+    `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
+    `qemu_internal_seed=0x0010c007`,
+    `deadline_symbol=qemu_plugin_clock_deadline_ns`,
+    `deadline_api_available=false`,
+    `idle_wake_icount_reported=unavailable`,
+    `actual_timer_fire_icount=not_measured_missing_deadline_api`,
+    `exact_deadline_match=false`, `request_exact_all=true`,
+    `zero_overshoot_all=false`, `max_pause_overshoot=9`,
+    `fixed_a_target=180000000`, `fixed_a_exit_retired=180000001`,
+    `fixed_a_pause_overshoot=1`, `fixed_b_target=180000037`,
+    `fixed_b_exit_retired=180000046`, `fixed_b_pause_overshoot=9`,
+    `interior_target=180000004`, `interior_exit_retired=180000013`,
+    `interior_pause_overshoot=9`, `interior_target_tb_index=2`,
+    `interior_target_tb_insns=12`, `interior_target_inside_tb=true`,
+    `exact_next_deadline_capability=false`,
+    `max_advance_exact_capability=false`,
+    `layer1_scheduler_fast_forward_enabled=false`,
+    `fallback_adopted=clock_deadline_export_and_tb_split_required`,
+    `s7_complete=true`.
+  - **Scope:** validates the Phase-0 S7 decision for the current QEMU/plugin
+    surface. The probe checks for the exact deadline export as a runtime
+    capability and records that it is unavailable, which is enough to reject
+    production exact-deadline use in this build. It also runs two fixed ceilings
+    and one dynamically selected interior-TB ceiling, proving the plugin can
+    request a pause at the requested instruction but the VM-visible stop still
+    occurs after that instruction. This does not measure a real timer-fire
+    `idle_wake_icount` because the required deadline API is missing.
+  - **Fallback:** require the `qemu_plugin_clock_deadline_ns` export and a
+    TB-split/max-advance implementation that stops exactly at the authorized
+    ceiling before enabling Layer-1 scheduler fast-forward or conservative
+    lookahead through this surface.
+
 - **RISK-10 / RISK-11 / T-RISK-3 — S4 shmem visibility is icount-not-wallclock**
   - **Status:** PASS; the measured §13.9 shared-memory visibility discipline
     makes delivery a function of `delivery_icount` and consumer `current_icount`,
@@ -1357,7 +1396,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=14`, `retired_decision_entries=14`,
+  - **Result:** `checked_risk_tasks=15`, `retired_decision_entries=15`,
     `phase0_foundational_blockers_open=0`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike

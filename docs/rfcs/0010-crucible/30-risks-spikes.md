@@ -1481,6 +1481,30 @@ the randomized bases are reproducible across runs and genuinely differ from the
 conservative control. The result permits randomization to be recorded as a
 per-image capability; it is not a global default flip.
 
+**RISK-14** is resolved by `T-RISK-7` with the exact-deadline/TB-split fallback:
+`checks.crucible.phase0.s7DeadlineCeiling` booted a diskless stock Linux guest
+under the deterministic S1 launch controls and loaded a throwaway ceiling probe
+plugin. The plugin checked for the `qemu_plugin_clock_deadline_ns` symbol and
+found `deadline_api_available=false`, so no exact `idle_wake_icount` could be
+reported or compared against a timer-fire icount. The same run commanded two
+fixed instruction ceilings plus one dynamically chosen ceiling inside a
+translation block. The probe requested the pause exactly at each commanded
+ceiling (`request_exact_all=true`) but QEMU stopped after the request point
+(`zero_overshoot_all=false`). The run reported
+`idle_wake_icount_reported=unavailable`,
+`actual_timer_fire_icount=not_measured_missing_deadline_api`,
+`exact_deadline_match=false`, `max_pause_overshoot=9`,
+`fixed_a_pause_overshoot=1`, `fixed_b_pause_overshoot=9`,
+`interior_pause_overshoot=9`, `interior_target_tb_index=2`,
+`interior_target_tb_insns=12`, `interior_target_inside_tb=true`,
+`exact_next_deadline_capability=false`, `max_advance_exact_capability=false`,
+`layer1_scheduler_fast_forward_enabled=false`, and
+`fallback_adopted=clock_deadline_export_and_tb_split_required`. Phase 0 therefore
+does not rely on fast-forward/lookahead scheduling through this surface. The
+production path remains gated on the patch-series exact virtual-clock deadline
+export plus a ceiling mechanism that stops at `max_advance_icount` exactly,
+including interior-TB ceilings.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1523,8 +1547,8 @@ risk spike has a decision-register entry and a concrete check name, that the
 foundational Phase-0 blockers are either passed or fallback-adopted before
 dependent work proceeds, and that no non-risk checklist item is marked complete
 while those blockers remain open. The run reported
-`checked_risk_tasks=14`,
-`retired_decision_entries=14`, `phase0_foundational_blockers_open=0`,
+`checked_risk_tasks=15`,
+`retired_decision_entries=15`, `phase0_foundational_blockers_open=0`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1608,10 +1632,13 @@ never tolerated). Results live in the decision register (31).
   and explicit kernel/user base probes; randomization may be recorded as a
   per-image capability, with no fallback adopted. — satisfies [RISK-13],
   [DET-33]; spec §30.7.
-- [ ] **T-RISK-7** Run **S7**: plugin reports the exact next virtual-clock deadline
+- [x] **T-RISK-7** Run **S7**: plugin reports the exact next virtual-clock deadline
   at idle and advances to exactly `max_advance_icount` with zero overshoot (incl.
   mid-TB ceilings); adopt TB-split-at-ceiling or conservative-ceiling fallback if
-  not. — satisfies [RISK-14], [DET-12]; spec §30.8.
+  not. Phase 0 found the exact deadline export absent and the current pause
+  surface overshoots after exact pause requests, so fast-forward/lookahead remain
+  disabled until the exact-deadline export and TB-split/max-advance patch land. —
+  satisfies [RISK-14], [DET-12]; spec §30.8.
 - [x] **T-RISK-8** Run **S8**: measure TCG-exec coverage overhead (no-plugin /
   hook-registered / coverage-on) and confirm coverage-enabled throughput meets the
   fuzzing budget; adopt a cheaper coverage representation if over budget. —
