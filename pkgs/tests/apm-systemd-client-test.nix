@@ -1,12 +1,46 @@
 {
   mkDerivation,
   coreutils,
+  systemd,
+  writeShellScriptBin,
 }: let
   manualService = unit:
     unit
     // {
       onlyManualStart = true;
     };
+  notifyReloadHelper = writeShellScriptBin "apm-test-notify-reload" ''
+    set -euo pipefail
+
+    state_dir=/var/lib/aos-pkg-apm-systemd-client-test
+    state=$state_dir/apm-test-notify-reload.count
+    notify=${systemd}/bin/systemd-notify
+
+    reload() {
+      local count
+      if [ -r "$state" ]; then
+        count="$(cat "$state")"
+      else
+        count=0
+      fi
+      count="$((count + 1))"
+      printf '%s\n' "$count" > "$state"
+      "$notify" --reloading "--status=reload $count started"
+      sleep 2
+      "$notify" --ready "--status=reload $count done"
+    }
+
+    trap reload HUP
+
+    mkdir -p "$state_dir"
+    printf '0\n' > "$state"
+    "$notify" --ready "--status=started"
+
+    while true; do
+      sleep 86400 &
+      wait "$!" || true
+    done
+  '';
 in
   mkDerivation {
     pname = "apm-systemd-client-test";
@@ -57,6 +91,16 @@ in
             Type = "simple";
             ExecStart = "${coreutils}/bin/sleep infinity";
             ExecReload = "${coreutils}/bin/true";
+          };
+        };
+
+        "apm-test-notify-reload.service" = manualService {
+          description = "apm systemd-client test: notify-reload service";
+          serviceConfig = {
+            Type = "notify-reload";
+            NotifyAccess = "all";
+            ReloadSignal = "SIGHUP";
+            ExecStart = "${notifyReloadHelper}/bin/apm-test-notify-reload";
           };
         };
 
