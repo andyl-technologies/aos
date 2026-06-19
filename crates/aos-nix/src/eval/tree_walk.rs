@@ -12627,7 +12627,17 @@ impl TreeWalk {
                 fs::read(&path).map_err(|source| Self::fetch_tree_error(id, span, url, source))
             }
             "http" | "https" => {
-                let response = reqwest::blocking::get(parsed.as_str())
+                let client = reqwest::blocking::Client::builder()
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .build()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = client
+                    .get(parsed.as_str())
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                    .send()
                     .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
                 let response = response
                     .error_for_status()
@@ -31762,6 +31772,57 @@ mod tests {
         (dir, archive_path)
     }
 
+    fn gzip_encoded_http_fixture(
+        url_path: &str,
+        plain_body: &[u8],
+    ) -> (String, String, thread::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
+        let address = listener
+            .local_addr()
+            .expect("HTTP fixture address resolves");
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, plain_body).expect("HTTP fixture gzip writes");
+        let body = encoder.finish().expect("HTTP fixture gzip finalizes");
+        let body_hash = format!("{:x}", Sha256::digest(&body));
+        let response_header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("HTTP fixture accepts request");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            loop {
+                let read = std::io::Read::read(&mut stream, &mut buffer)
+                    .expect("HTTP fixture reads request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            std::io::Write::write_all(&mut stream, response_header.as_bytes())
+                .expect("HTTP fixture writes response header");
+            std::io::Write::write_all(&mut stream, &body)
+                .expect("HTTP fixture writes response body");
+            request
+        });
+
+        (format!("http://{address}{url_path}"), body_hash, handle)
+    }
+
+    fn assert_http_fixture_requested_identity(request: Vec<u8>, operation: &str) {
+        let request = String::from_utf8(request).expect("HTTP request is UTF-8");
+        assert!(
+            request
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case("accept-encoding: identity")),
+            "{operation} HTTP request should ask for raw identity bytes, got: {request:?}"
+        );
+    }
+
     fn path_source(path: &Path) -> String {
         path.to_str().expect("temp path is UTF-8").to_owned()
     }
@@ -46501,41 +46562,8 @@ mod tests {
 
     #[test]
     fn fetchurl_primop_fetches_http_urls_as_identity_bytes() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("HTTP fixture binds");
-        let address = listener
-            .local_addr()
-            .expect("HTTP fixture address resolves");
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        std::io::Write::write_all(&mut encoder, b"abc").expect("HTTP fixture gzip writes");
-        let body = encoder.finish().expect("HTTP fixture gzip finalizes");
-        let body_hash = format!("{:x}", Sha256::digest(&body));
-        let response_header = format!(
-            "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("HTTP fixture accepts request");
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 1024];
-            loop {
-                let read = std::io::Read::read(&mut stream, &mut buffer)
-                    .expect("HTTP fixture reads request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            std::io::Write::write_all(&mut stream, response_header.as_bytes())
-                .expect("HTTP fixture writes response header");
-            std::io::Write::write_all(&mut stream, &body)
-                .expect("HTTP fixture writes response body");
-            request
-        });
-
-        let url = nix_string_literal(&format!("http://{address}/data.txt"));
+        let (url, body_hash, handle) = gzip_encoded_http_fixture("/data.txt", b"abc");
+        let url = nix_string_literal(&url);
         let store_dir = unique_temp_dir("fetchurl-http-store");
         let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
             .expect("temporary store root configures");
@@ -46557,13 +46585,9 @@ mod tests {
         );
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
 
-        let request = handle.join().expect("HTTP fixture thread completes");
-        let request = String::from_utf8(request).expect("HTTP request is UTF-8");
-        assert!(
-            request
-                .lines()
-                .any(|line| line.eq_ignore_ascii_case("accept-encoding: identity")),
-            "fetchurl HTTP request should ask for raw identity bytes, got: {request:?}"
+        assert_http_fixture_requested_identity(
+            handle.join().expect("HTTP fixture thread completes"),
+            "fetchurl",
         );
     }
 
@@ -47492,6 +47516,34 @@ mod tests {
         fs::remove_dir_all(file_dir).expect("file temp directory removes");
         fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
         fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_file_http_input_uses_identity_bytes() {
+        let (url, body_hash, handle) = gzip_encoded_http_fixture("/tree-data.bin", b"abc");
+        let url = nix_string_literal(&url);
+        let store_dir = unique_temp_dir("fetch-tree-http-store");
+        let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures");
+
+        assert_eq!(
+            eval_string_bytes_with_options(
+                &format!(
+                    r#"
+                    let x = builtins.fetchTree {{ type = "file"; url = {url}; }};
+                    in builtins.hashFile "sha256" x.outPath
+                    "#
+                ),
+                options,
+            ),
+            body_hash.as_bytes()
+        );
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+
+        assert_http_fixture_requested_identity(
+            handle.join().expect("HTTP fixture thread completes"),
+            "fetchTree",
+        );
     }
 
     #[test]
