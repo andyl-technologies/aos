@@ -4,6 +4,8 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crucible_harness::spec_index::crate_spec_index;
+
 #[test]
 fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>> {
     let mut findings = Vec::new();
@@ -18,6 +20,48 @@ fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn 
     assert!(
         findings.is_empty(),
         "gate:harness-lint findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<dyn Error>> {
+    let mut findings = Vec::new();
+    let root = workspace_root();
+
+    for spec in crate_spec_index() {
+        let package_dir = root.join(spec.package);
+        let manifest = fs::read_to_string(package_dir.join("Cargo.toml"))?;
+        let is_library = spec.package != BINARY_BOUNDARY_PACKAGE;
+        let mut has_typed_error =
+            !is_library || manifest_declares_dependency(&manifest, "thiserror");
+
+        findings.extend(manifest_error_dependency_failures(
+            spec.package,
+            &manifest,
+            is_library,
+        ));
+
+        for source in rust_sources(&package_dir.join("src"))? {
+            let content = fs::read_to_string(&source)?;
+            has_typed_error |= source_declares_typed_error(&content);
+            findings.extend(error_logging_failures(
+                &source,
+                &content,
+                is_binary_boundary_source(spec.package, &package_dir, &source),
+            ));
+        }
+
+        if !has_typed_error {
+            findings.push(missing_typed_error_finding(spec.package));
+        }
+    }
+
+    assert!(
+        findings.is_empty(),
+        "gate:harness-lint error/logging findings:\n{}",
         findings.join("\n")
     );
 
@@ -95,6 +139,154 @@ fn harness_lint_ignores_comments_and_strings() {
     assert!(findings.is_empty(), "{findings:?}");
 }
 
+#[test]
+fn harness_lint_rejects_error_and_logging_drift() {
+    let library_findings = error_logging_failures(
+        Path::new("crucible-sim/src/lib.rs"),
+        r#"
+            pub fn bad() -> Result<(), Box<dyn Error>> {
+                let value = maybe().unwrap();
+                let other = maybe().expect /* comment */ ("value exists");
+                println!("library diagnostic");
+                eprintln!("library diagnostic");
+                print!("library diagnostic");
+                anyhow::bail!("erased error");
+            }
+        "#,
+        false,
+    );
+
+    assert_contains(&library_findings, "panic shortcut");
+    assert_contains(&library_findings, "direct stdout/stderr diagnostic");
+    assert_contains(&library_findings, "erased error");
+
+    let binary_findings = error_logging_failures(
+        Path::new("crucible-cli/src/main.rs"),
+        r#"
+            fn main() -> anyhow::Result<()> {
+                println!("cli output is allowed");
+                Ok(())
+            }
+        "#,
+        true,
+    );
+
+    assert!(binary_findings.is_empty(), "{binary_findings:?}");
+
+    let cli_module_findings = error_logging_failures(
+        Path::new("crucible-cli/src/command.rs"),
+        r#"
+            pub fn command() -> anyhow::Result<()> {
+                println!("command module output crosses the binary boundary");
+                Ok(())
+            }
+        "#,
+        false,
+    );
+
+    assert_contains(&cli_module_findings, "direct stdout/stderr diagnostic");
+    assert_contains(&cli_module_findings, "erased error");
+}
+
+#[test]
+fn harness_lint_rejects_erased_error_dependencies_in_libraries() {
+    let findings = manifest_error_dependency_failures(
+        "crucible-sim",
+        r#"
+            [package]
+            name = "crucible-sim"
+
+            [dependencies]
+            thiserror = { workspace = true }
+            anyhow = { workspace = true }
+        "#,
+        true,
+    );
+
+    assert_contains(&findings, "erased error dependency");
+
+    let cli_findings = manifest_error_dependency_failures(
+        "crucible-cli",
+        r#"
+            [package]
+            name = "crucible-cli"
+
+            [dependencies]
+            anyhow = { workspace = true }
+        "#,
+        false,
+    );
+
+    assert!(cli_findings.is_empty(), "{cli_findings:?}");
+}
+
+#[test]
+fn harness_lint_rejects_missing_typed_error_signal_in_libraries() {
+    let findings = typed_error_policy_failures(
+        "crucible-sim",
+        r#"
+            [package]
+            name = "crucible-sim"
+
+            [dependencies]
+        "#,
+        &[],
+        true,
+    );
+
+    assert_contains(&findings, "missing typed error");
+
+    let thiserror_findings = typed_error_policy_failures(
+        "crucible-sim",
+        r#"
+            [package]
+            name = "crucible-sim"
+
+            [dependencies]
+            thiserror = { workspace = true }
+        "#,
+        &[],
+        true,
+    );
+
+    assert!(thiserror_findings.is_empty(), "{thiserror_findings:?}");
+
+    let hand_rolled_findings = typed_error_policy_failures(
+        "crucible-harness",
+        r#"
+            [package]
+            name = "crucible-harness"
+
+            [dependencies]
+        "#,
+        &[r#"
+            use std::error::Error;
+
+            pub struct HarnessError;
+
+            impl Error for HarnessError {}
+        "#],
+        true,
+    );
+
+    assert!(hand_rolled_findings.is_empty(), "{hand_rolled_findings:?}");
+
+    let cli_findings = typed_error_policy_failures(
+        "crucible-cli",
+        r#"
+            [package]
+            name = "crucible-cli"
+
+            [dependencies]
+            anyhow = { workspace = true }
+        "#,
+        &[],
+        false,
+    );
+
+    assert!(cli_findings.is_empty(), "{cli_findings:?}");
+}
+
 const REDUCTION_PATH_PACKAGES: &[&str] = &[
     "crucible-sim",
     "crucible-assert",
@@ -103,6 +295,8 @@ const REDUCTION_PATH_PACKAGES: &[&str] = &[
     "crucible-device",
     "crucible-session",
 ];
+const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
+const BINARY_BOUNDARY_ROOT: &str = "src/main.rs";
 
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -130,6 +324,14 @@ fn collect_rust_sources(dir: &Path, sources: &mut Vec<PathBuf>) -> Result<(), Bo
         }
     }
     Ok(())
+}
+
+fn is_binary_boundary_source(package: &str, package_dir: &Path, source: &Path) -> bool {
+    package == BINARY_BOUNDARY_PACKAGE
+        && matches!(
+            source.strip_prefix(package_dir),
+            Ok(relative) if relative == Path::new(BINARY_BOUNDARY_ROOT)
+        )
 }
 
 fn scan_content(path: &Path, content: &str) -> Vec<String> {
@@ -184,6 +386,262 @@ fn scan_content(path: &Path, content: &str) -> Vec<String> {
     findings
 }
 
+fn manifest_error_dependency_failures(
+    package: &str,
+    manifest: &str,
+    is_library: bool,
+) -> Vec<String> {
+    if !is_library {
+        return Vec::new();
+    }
+
+    let scrubbed = scrub_comments_and_strings(manifest);
+    let tokens = tokenize(&scrubbed);
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenKind::Ident(identifier) = &token.kind else {
+            continue;
+        };
+
+        if matches!(identifier.as_str(), "anyhow" | "eyre" | "miette") {
+            findings.push(format!(
+                "{package}/Cargo.toml:{}: banned erased error dependency `{identifier}` in library crate",
+                token.line
+            ));
+        }
+
+        if identifier == "workspace" && previous_key_identifier(&tokens, index) == Some("anyhow") {
+            findings.push(format!(
+                "{package}/Cargo.toml:{}: banned erased error dependency `anyhow` in library crate",
+                token.line
+            ));
+        }
+    }
+
+    findings
+}
+
+fn typed_error_policy_failures(
+    package: &str,
+    manifest: &str,
+    sources: &[&str],
+    is_library: bool,
+) -> Vec<String> {
+    if !is_library
+        || manifest_declares_dependency(manifest, "thiserror")
+        || sources
+            .iter()
+            .any(|source| source_declares_typed_error(source))
+    {
+        return Vec::new();
+    }
+
+    vec![missing_typed_error_finding(package)]
+}
+
+fn missing_typed_error_finding(package: &str) -> String {
+    format!(
+        "{package}/Cargo.toml:1: missing typed error signal `thiserror` dependency or `impl Error for ...` in library crate"
+    )
+}
+
+fn manifest_declares_dependency(manifest: &str, dependency: &str) -> bool {
+    let scrubbed = scrub_comments_and_strings(manifest);
+    let tokens = tokenize(&scrubbed);
+    tokens.iter().enumerate().any(|(index, token)| {
+        token.kind.as_ident() == Some(dependency)
+            && matches!(
+                tokens.get(index + 1),
+                Some(Token {
+                    kind: TokenKind::Punct('='),
+                    ..
+                })
+            )
+    })
+}
+
+fn source_declares_typed_error(content: &str) -> bool {
+    let scrubbed = scrub_comments_and_strings(content);
+    let tokens = tokenize(&scrubbed);
+
+    tokens.iter().enumerate().any(|(index, token)| {
+        matches!(
+            token.kind.as_ident(),
+            Some("impl") if impl_error_for_follows(&tokens, index)
+        ) || matches!(
+            token.kind.as_ident(),
+            Some("derive") if derive_error_follows(&tokens, index)
+        )
+    })
+}
+
+fn impl_error_for_follows(tokens: &[Token], index: usize) -> bool {
+    let mut saw_error = false;
+
+    for token in tokens[index + 1..]
+        .iter()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct('{') | TokenKind::Punct(';')))
+    {
+        match token.kind.as_ident() {
+            Some("Error") => saw_error = true,
+            Some("for") if saw_error => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn derive_error_follows(tokens: &[Token], index: usize) -> bool {
+    if !matches!(
+        tokens.get(index + 1),
+        Some(Token {
+            kind: TokenKind::Punct('('),
+            ..
+        })
+    ) {
+        return false;
+    }
+
+    let mut depth = 0usize;
+    for token in &tokens[index + 1..] {
+        match &token.kind {
+            TokenKind::Punct('(') => depth += 1,
+            TokenKind::Punct(')') => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return false;
+                }
+            }
+            TokenKind::Ident(identifier) if depth > 0 && identifier == "Error" => return true,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn error_logging_failures(path: &Path, content: &str, is_binary_boundary: bool) -> Vec<String> {
+    let scrubbed = scrub_comments_and_strings(content);
+    let tokens = tokenize(&scrubbed);
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenKind::Ident(identifier) = &token.kind else {
+            continue;
+        };
+
+        if matches!(identifier.as_str(), "unwrap" | "expect")
+            && previous_is_punct(&tokens, index, '.')
+        {
+            findings.push(finding(
+                path,
+                token.line,
+                "panic shortcut",
+                &format!(".{identifier}()"),
+            ));
+        }
+
+        if !is_binary_boundary
+            && matches!(identifier.as_str(), "println" | "eprintln" | "print")
+            && next_is_bang(&tokens, index)
+        {
+            findings.push(finding(
+                path,
+                token.line,
+                "direct stdout/stderr diagnostic",
+                &format!("{identifier}!"),
+            ));
+        }
+
+        if !is_binary_boundary && matches!(identifier.as_str(), "anyhow" | "eyre" | "miette") {
+            findings.push(finding(path, token.line, "erased error", identifier));
+        }
+
+        if !is_binary_boundary && identifier == "bail" && next_is_bang(&tokens, index) {
+            findings.push(finding(path, token.line, "erased error", "bail!"));
+        }
+
+        if !is_binary_boundary && identifier == "dyn" && dyn_error_follows(&tokens, index) {
+            findings.push(finding(path, token.line, "erased error", "dyn Error"));
+        }
+    }
+
+    findings.extend(result_string_error_failures(
+        path,
+        &tokens,
+        is_binary_boundary,
+    ));
+
+    findings
+}
+
+fn result_string_error_failures(
+    path: &Path,
+    tokens: &[Token],
+    is_binary_boundary: bool,
+) -> Vec<String> {
+    if is_binary_boundary {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+    let mut index = 0usize;
+
+    while index < tokens.len() {
+        if tokens[index].kind.as_ident() != Some("Result")
+            || !matches!(
+                tokens.get(index + 1),
+                Some(Token {
+                    kind: TokenKind::Punct('<'),
+                    ..
+                })
+            )
+        {
+            index += 1;
+            continue;
+        }
+
+        let start_line = tokens[index].line;
+        let mut depth = 0usize;
+        let mut comma_at_depth_one = false;
+        let mut error_uses_string = false;
+
+        index += 1;
+        while index < tokens.len() {
+            match &tokens[index].kind {
+                TokenKind::Punct('<') => depth += 1,
+                TokenKind::Punct('>') => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                TokenKind::Punct(',') if depth == 1 => comma_at_depth_one = true,
+                TokenKind::Ident(identifier) if comma_at_depth_one && identifier == "String" => {
+                    error_uses_string = true;
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+
+        if error_uses_string {
+            findings.push(finding(
+                path,
+                start_line,
+                "stringly error",
+                "Result<_, String>",
+            ));
+        }
+
+        index += 1;
+    }
+
+    findings
+}
+
 fn finding(path: &Path, line: usize, reason: &str, pattern: &str) -> String {
     format!(
         "{}:{line}: banned {reason} pattern `{pattern}`",
@@ -213,7 +671,10 @@ fn tokenize(content: &str) -> Vec<Token> {
                 line,
             });
         } else {
-            if matches!(ch, ':' | '!' | '<' | '>' | '{' | '}' | '(' | ')' | ',') {
+            if matches!(
+                ch,
+                ':' | '!' | '<' | '>' | '{' | '}' | '(' | ')' | ',' | '.' | '='
+            ) {
                 tokens.push(Token {
                     kind: TokenKind::Punct(ch),
                     line,
@@ -245,6 +706,39 @@ fn previous_path_identifier(tokens: &[Token], index: usize) -> Option<&str> {
         ) => Some(identifier),
         _ => None,
     }
+}
+
+fn previous_key_identifier(tokens: &[Token], index: usize) -> Option<&str> {
+    match (
+        tokens.get(index.checked_sub(2)?)?.kind.as_ident(),
+        tokens.get(index - 1),
+    ) {
+        (
+            Some(identifier),
+            Some(Token {
+                kind: TokenKind::Punct('='),
+                ..
+            }),
+        ) => Some(identifier),
+        _ => None,
+    }
+}
+
+fn previous_is_punct(tokens: &[Token], index: usize, punctuation: char) -> bool {
+    matches!(
+        index.checked_sub(1).and_then(|previous| tokens.get(previous)),
+        Some(Token {
+            kind: TokenKind::Punct(actual),
+            ..
+        }) if *actual == punctuation
+    )
+}
+
+fn dyn_error_follows(tokens: &[Token], index: usize) -> bool {
+    tokens[index + 1..]
+        .iter()
+        .take_while(|token| !matches!(token.kind, TokenKind::Punct('>') | TokenKind::Punct(',')))
+        .any(|token| token.kind.as_ident() == Some("Error"))
 }
 
 fn next_is_bang(tokens: &[Token], index: usize) -> bool {

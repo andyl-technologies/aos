@@ -11,6 +11,7 @@ qemu-backend = []
 
 [dependencies]
 crucible-sim = { path = "../crucible-sim", optional = true }
+thiserror = { workspace = true }
 
 [[test]]
 name = "gate_layer0_determinism"

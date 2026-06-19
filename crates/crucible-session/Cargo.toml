@@ -6,3 +6,4 @@ publish = false
 
 [dependencies]
 crucible = { path = "../crucible" }
+thiserror = { workspace = true }

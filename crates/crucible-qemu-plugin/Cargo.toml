@@ -8,3 +8,4 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+thiserror = { workspace = true }

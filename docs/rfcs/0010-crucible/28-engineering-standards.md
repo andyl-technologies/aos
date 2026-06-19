@@ -533,7 +533,7 @@ the conditions under which feature code can be trusted to stay deterministic
 - [x] **T-STD-2** Enforce tagged-fence doctests (untagged fence = build failure),
   apply the clap-derive caveat to the `crucible` CLI, and wire doctests into the
   hermetic AOS doc build. — satisfies [STD-4], [STD-5], [STD-24]; spec §1.1, §4.5.
-- [ ] **T-STD-3** Establish the error/logging conventions: deny
+- [x] **T-STD-3** Establish the error/logging conventions: deny
   `.unwrap()`/`.expect()` in production, typed (`thiserror`) errors in every
   library crate, `anyhow` only at the binary boundary, and `tracing`-only
   diagnostics from libraries (no `println!`/`eprintln!`). — satisfies [STD-7],
