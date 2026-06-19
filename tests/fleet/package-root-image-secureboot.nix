@@ -419,6 +419,12 @@ in {
           event_log_path = "/tmp/aos-packages-combined.cel"
           target.succeed(f"printf %s {shlex.quote(event_log)} > {event_log_path}")
           records = [json.loads(line) for line in event_log.splitlines() if line.strip()]
+          for record in records:
+              assert record["pcr_index"] == 15
+              assert record["event_size"] == len(record["event"].encode())
+              assert record["digests"] == [
+                  {"algorithm": "sha256", "digest": record["digest"]}
+              ]
           baseline_value = None
           baseline_arg = ""
           if records and records[0]["event_type"] == "aos-pcr-baseline":
@@ -501,6 +507,14 @@ in {
           def digest_word(word):
               return hashlib.sha256(word.encode()).hexdigest()
 
+          def refresh_pcr_event_fields(record):
+              if "event_size" in record:
+                  record["event_size"] = len(record["event"].encode())
+              if "digests" in record:
+                  record["digests"] = [
+                      {"algorithm": record.get("bank", "sha256"), "digest": record["digest"]}
+                  ]
+
           def replay_pcr15(records):
               pcr = bytes(32)
               for record in records:
@@ -532,6 +546,7 @@ in {
                       ],
                   )
                   record["digest"] = f"sha256:{digest_word(record['event'])}"
+                  refresh_pcr_event_fields(record)
                   index += package_count + 1
 
           changed = False
@@ -551,6 +566,7 @@ in {
                       ],
                   )
                   record["digest"] = f"sha256:{digest_word(record['event'])}"
+                  refresh_pcr_event_fields(record)
                   changed = True
                   break
           assert changed, "expected package-root-image-good in package event log"
