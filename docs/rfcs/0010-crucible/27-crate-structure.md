@@ -626,7 +626,7 @@ Crucible needs and marks the seam.
   each crate's `[dependencies]` and rejects any upward edge or cycle, including
   the L2-in-VM-crates-depend-only-on-L1 rule. — satisfies [CRATE-2], [CRATE-3];
   spec §1.
-- [ ] **T-CRATE-4** Declare the `Backend` trait in `crucible` (advance-to-horizon,
+- [x] **T-CRATE-4** Declare the `Backend` trait in `crucible` (advance-to-horizon,
   fingerprint, deliver-input, snapshot, restore, shutdown), object-safe or single
   generic, with no QEMU/FFI types named in the engine. — satisfies [CRATE-6],
   [CRATE-10]; spec §3, §4.
