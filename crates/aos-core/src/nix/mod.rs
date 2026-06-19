@@ -8,7 +8,7 @@
 //!   `nix-build`, `nix-instantiate`, garbage collection, repl).
 //! - [`store`] -- [`NixCli`], a thinner per-path wrapper around
 //!   `nix-store` queries, realisation, dump/export/import, plus the
-//!   [`PathInfo`] metadata record.
+//!   [`PathInfo`] metadata record and [`NixInstantiateStats`] capture.
 //! - [`eval`] -- [`NixEval`], the narrow evaluation seam that defaults to
 //!   [`NixCli`] and can be implemented by the native `aos-nix` crate.
 //! - [`drv`] -- a hand-rolled parser for `.drv` files (ATerm format)
@@ -30,4 +30,4 @@ pub use eval::{
     select_evaluator_with_config, select_native_diff_candidate_with_config,
 };
 pub use runner::NixRunner;
-pub use store::{NixCli, PathInfo};
+pub use store::{NixCli, NixInstantiateStats, PathInfo};

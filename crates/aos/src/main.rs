@@ -148,6 +148,7 @@ async fn run(cli: &Cli) -> Result<()> {
         systems,
         file,
         mode,
+        oracle_stats,
     } = &cli.command
     {
         let file = match file {
@@ -163,6 +164,7 @@ async fn run(cli: &Cli) -> Result<()> {
             *all,
             *systems,
             (*mode).into(),
+            *oracle_stats,
         );
     }
 
@@ -307,6 +309,7 @@ mod tests {
                 systems: false,
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
+                oracle_stats: false,
             },
             verbose: 0,
             quiet: false,

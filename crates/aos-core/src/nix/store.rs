@@ -42,6 +42,15 @@ pub struct PathInfo {
     pub signatures: Vec<String>,
 }
 
+/// Instantiation output plus raw C++ Nix evaluation statistics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NixInstantiateStats {
+    /// The `.drv` path emitted by `nix-instantiate`.
+    pub drv_path: PathBuf,
+    /// The raw `NIX_SHOW_STATS=1` JSON object emitted by C++ Nix.
+    pub stats: serde_json::Value,
+}
+
 /// Portable classic Nix command wrapper.
 ///
 /// Wraps `nix-instantiate`, `nix-build`, `nix-store` — works on any Nix
@@ -94,6 +103,39 @@ impl NixCli {
             .trim()
             .to_string();
         Ok(PathBuf::from(drv))
+    }
+
+    /// Instantiates an attribute and captures `NIX_SHOW_STATS` output.
+    ///
+    /// Runs `NIX_SHOW_STATS=1 nix-instantiate <file> -A <attr>` and returns both
+    /// the emitted `.drv` path and the raw stats JSON object. This intentionally
+    /// performs a separate oracle instantiation so normal evaluator parity checks
+    /// are not affected by the altered stdout shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `nix-instantiate` cannot be spawned, exits non-zero,
+    /// prints invalid UTF-8, or its output does not contain exactly one `.drv`
+    /// path line plus a parseable `NIX_SHOW_STATS` JSON object.
+    pub fn instantiate_with_stats(&self, file: &Path, attr: &str) -> Result<NixInstantiateStats> {
+        let mut cmd = self.nix_command("nix-instantiate");
+        cmd.arg(file).arg("-A").arg(attr);
+        cmd.env("NIX_SHOW_STATS", "1");
+        self.append_eval_options(&mut cmd);
+        if self.verbose > 0 {
+            cmd.arg("--show-trace");
+        }
+        let output = cmd
+            .stderr(Stdio::piped())
+            .output()
+            .context("failed to run nix-instantiate with stats")?;
+        if !output.status.success() {
+            return Err(command_status_error(
+                format!("nix-instantiate with stats failed for {attr}"),
+                &output,
+            ));
+        }
+        parse_instantiate_stats_output(&output.stdout, &output.stderr)
     }
 
     /// Instantiates a raw Nix expression, returning the `.drv` path.
@@ -436,6 +478,74 @@ impl NixCli {
     }
 }
 
+fn parse_instantiate_stats_output(stdout: &[u8], stderr: &[u8]) -> Result<NixInstantiateStats> {
+    let text = String::from_utf8(stdout.to_vec())
+        .context("invalid utf-8 from nix-instantiate with stats")?;
+    let stderr = String::from_utf8(stderr.to_vec())
+        .context("invalid utf-8 from nix-instantiate with stats stderr")?;
+    let mut path_line_index = None;
+    let mut path_line = None;
+    for (index, line) in text.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && trimmed.ends_with(".drv") {
+            if path_line.is_some() {
+                anyhow::bail!("nix-instantiate with stats emitted multiple .drv path lines");
+            }
+            path_line_index = Some(index);
+            path_line = Some(trimmed.to_string());
+        }
+    }
+
+    let path_line_index =
+        path_line_index.context("nix-instantiate with stats emitted no .drv path line")?;
+    let drv_path = PathBuf::from(path_line.context("missing .drv path line")?);
+    let stats_text = text
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| (index != path_line_index).then_some(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stats = parse_nix_show_stats_json(&stderr)
+        .or_else(|_| parse_nix_show_stats_json(&stats_text))
+        .context("parsing NIX_SHOW_STATS JSON from nix-instantiate")?;
+
+    Ok(NixInstantiateStats { drv_path, stats })
+}
+
+fn parse_nix_show_stats_json(text: &str) -> Result<serde_json::Value> {
+    let mut parsed = Vec::new();
+    let mut consumed_until = 0;
+    for (start, _) in text.match_indices('{') {
+        if start < consumed_until {
+            continue;
+        }
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<serde_json::Value>();
+        let Some(Ok(value)) = stream.next() else {
+            continue;
+        };
+        if is_nix_show_stats_object(&value) {
+            consumed_until = start + stream.byte_offset();
+            parsed.push(value);
+        }
+    }
+
+    match parsed.len() {
+        1 => Ok(parsed.remove(0)),
+        0 => anyhow::bail!("NIX_SHOW_STATS output contained no JSON object"),
+        count => anyhow::bail!("NIX_SHOW_STATS output contained {count} JSON objects"),
+    }
+}
+
+fn is_nix_show_stats_object(value: &serde_json::Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("cpuTime")
+        || object.contains_key("nrThunks")
+        || object.contains_key("nrExprs")
+}
+
 impl NixEval for NixCli {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         Self::instantiate(self, file, attr)
@@ -581,6 +691,77 @@ mod tests {
             Some("/aos/var/nix/log/nix")
         );
         Ok(())
+    }
+
+    #[test]
+    fn parse_instantiate_stats_output_accepts_stderr_stats_and_stdout_drv_path() -> Result<()> {
+        let stdout = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv\n";
+        let stderr = br#"warning: you did not specify '--add-root'
+{
+  "cpuTime": 0.125,
+  "nrThunks": 7,
+  "time": {
+    "cpu": 0.125
+  }
+}
+"#;
+
+        let parsed = parse_instantiate_stats_output(stdout, stderr)?;
+
+        assert_eq!(
+            parsed.drv_path,
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv")
+        );
+        assert_eq!(parsed.stats["nrThunks"], 7);
+        assert_eq!(parsed.stats["time"]["cpu"], 0.125);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_instantiate_stats_output_accepts_stdout_fallback() -> Result<()> {
+        let stdout = br#"{
+  "cpuTime": 0.125,
+  "nrThunks": 7
+}
+/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv
+"#;
+
+        let parsed = parse_instantiate_stats_output(stdout, b"")?;
+
+        assert_eq!(
+            parsed.drv_path,
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv")
+        );
+        assert_eq!(parsed.stats["nrThunks"], 7);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_instantiate_stats_output_ignores_json_warning() -> Result<()> {
+        let stdout = b"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-demo.drv\n";
+        let stderr = br#"warning: {"x":true}
+{
+  "cpuTime": 0.125,
+  "nrThunks": 7
+}
+"#;
+
+        let parsed = parse_instantiate_stats_output(stdout, stderr)?;
+
+        assert_eq!(parsed.stats["nrThunks"], 7);
+        assert_eq!(parsed.stats.get("x"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn parse_instantiate_stats_output_rejects_missing_drv_path() {
+        let error = parse_instantiate_stats_output(b"", br#"{"nrThunks":0}"#)
+            .expect_err("stats without a drv path should fail");
+
+        assert!(
+            error.to_string().contains("emitted no .drv path line"),
+            "{error:#}"
+        );
     }
 
     #[test]

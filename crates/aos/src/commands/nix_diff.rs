@@ -8,7 +8,8 @@ use anyhow::{Context, Result};
 use aos_core::error::AosError;
 use aos_core::nix::diff::{DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure};
 use aos_core::nix::{
-    NixCli, NixEval, NixEvalConfig, NixRunner, select_native_diff_candidate_with_config,
+    NixCli, NixEval, NixEvalConfig, NixInstantiateStats, NixRunner,
+    select_native_diff_candidate_with_config,
 };
 use aos_core::output::{OutputMode, Printer};
 
@@ -76,6 +77,7 @@ pub fn run(
     all: bool,
     systems: bool,
     mode: DiffMode,
+    oracle_stats: bool,
 ) -> Result<()> {
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
     NixRunner::ensure_nix_instantiate_available()?;
@@ -92,6 +94,7 @@ pub fn run(
             all,
             systems,
             mode,
+            oracle_stats,
         );
     }
 
@@ -99,10 +102,24 @@ pub fn run(
         message: "provide --attr <ATTR>, --all, or --systems".to_string(),
     })?;
 
+    let oracle_stats = if oracle_stats {
+        Some(
+            oracle
+                .instantiate_with_stats(file, attr)
+                .with_context(|| format!("capturing nix-cli stats for {attr}"))?,
+        )
+    } else {
+        None
+    };
     let report = diff_closure(&oracle, candidate.as_ref(), file, attr, mode)?;
     let failure = report_failure(&report);
 
-    if printer.json_if_active(&report_json(&report, candidate_name, failure.as_ref())) {
+    if printer.json_if_active(&report_json(
+        &report,
+        candidate_name,
+        failure.as_ref(),
+        oracle_stats.as_ref(),
+    )) {
         if let Some(failure) = failure {
             return Err(failure.into());
         } else {
@@ -114,6 +131,7 @@ pub fn run(
         printer.success(&format!(
             "drv diff matched: nix-cli vs {candidate_name} ({mode:?})"
         ));
+        render_single_oracle_stats(printer, oracle_stats.as_ref());
         return Ok(());
     };
 
@@ -121,6 +139,7 @@ pub fn run(
         printer.error(&failure.to_string());
     } else if report.divergences.is_empty() {
         printer.warning(&failure.to_string());
+        render_single_oracle_stats(printer, oracle_stats.as_ref());
     } else {
         printer.warning(&format!(
             "drv diff found {} divergence(s): nix-cli vs {candidate_name}",
@@ -130,6 +149,7 @@ pub fn run(
             printer.plain(&format!("  - {}", render_diff(divergence)));
         }
         render_divergence_classes(printer, &report, "  ");
+        render_single_oracle_stats(printer, oracle_stats.as_ref());
     }
     Err(failure.into())
 }
@@ -143,6 +163,7 @@ fn run_all(
     include_packages: bool,
     include_systems: bool,
     mode: DiffMode,
+    oracle_stats: bool,
 ) -> Result<()> {
     let attrs = corpus_attrs(oracle, file, include_packages, include_systems)?;
     if attrs.is_empty() {
@@ -159,6 +180,25 @@ fn run_all(
 
     let mut reports = Vec::with_capacity(attrs.len());
     for attr in attrs {
+        let stats = if oracle_stats {
+            match oracle
+                .instantiate_with_stats(file, &attr)
+                .with_context(|| format!("capturing nix-cli stats for {attr}"))
+            {
+                Ok(stats) => Some(stats),
+                Err(error) => {
+                    reports.push(AttrDiffReport {
+                        attr,
+                        report: None,
+                        failure: Some(NixDiffReportedFailure::attr_error(format!("{error:#}"))),
+                        oracle_stats: None,
+                    });
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
         match diff_closure(oracle, candidate, file, &attr, mode)
             .with_context(|| format!("diffing {attr}"))
         {
@@ -168,6 +208,7 @@ fn run_all(
                     attr,
                     report: Some(report),
                     failure,
+                    oracle_stats: stats,
                 });
             }
             Err(error) => {
@@ -175,6 +216,7 @@ fn run_all(
                     attr,
                     report: None,
                     failure: Some(NixDiffReportedFailure::attr_error(format!("{error:#}"))),
+                    oracle_stats: stats,
                 });
             }
         }
@@ -200,6 +242,7 @@ fn run_all(
             "drv diff matched {} selected derivation(s): nix-cli vs {candidate_name} ({mode:?})",
             reports.len()
         ));
+        render_corpus_oracle_stats_summary(printer, &reports);
         return Ok(());
     };
 
@@ -228,6 +271,7 @@ fn run_all(
                 render_divergence_classes(printer, report, "      ");
             }
         }
+        render_corpus_oracle_stats_summary(printer, &reports);
     }
     Err(failure.into())
 }
@@ -237,6 +281,7 @@ struct AttrDiffReport {
     attr: String,
     report: Option<DrvDiffReport>,
     failure: Option<NixDiffReportedFailure>,
+    oracle_stats: Option<NixInstantiateStats>,
 }
 
 fn corpus_attrs(
@@ -400,8 +445,9 @@ fn report_json(
     report: &DrvDiffReport,
     candidate_name: &str,
     failure: Option<&NixDiffReportedFailure>,
+    oracle_stats: Option<&NixInstantiateStats>,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut value = serde_json::json!({
         "mode": mode_name(report.mode),
         "oracle": "nix-cli",
         "candidate": candidate_name,
@@ -412,7 +458,9 @@ fn report_json(
         "root_divergences": report.root_divergences.iter().map(pair_json).collect::<Vec<_>>(),
         "contaminated_divergences": report.contaminated_divergences.iter().map(pair_json).collect::<Vec<_>>(),
         "divergences": report.divergences.iter().map(diff_json).collect::<Vec<_>>(),
-    })
+    });
+    insert_oracle_stats(&mut value, oracle_stats);
+    value
 }
 
 fn corpus_json(
@@ -450,7 +498,7 @@ fn attr_report_json(
     mode: DiffMode,
 ) -> serde_json::Value {
     let Some(diff_report) = &report.report else {
-        return serde_json::json!({
+        let mut value = serde_json::json!({
             "attr": report.attr,
             "mode": mode_name(mode),
             "oracle": "nix-cli",
@@ -463,9 +511,16 @@ fn attr_report_json(
             "contaminated_divergences": [],
             "divergences": [],
         });
+        insert_oracle_stats(&mut value, report.oracle_stats.as_ref());
+        return value;
     };
 
-    let mut value = report_json(diff_report, candidate_name, report.failure.as_ref());
+    let mut value = report_json(
+        diff_report,
+        candidate_name,
+        report.failure.as_ref(),
+        report.oracle_stats.as_ref(),
+    );
     if let serde_json::Value::Object(object) = &mut value {
         object.insert(
             "attr".to_string(),
@@ -473,6 +528,22 @@ fn attr_report_json(
         );
     }
     value
+}
+
+fn insert_oracle_stats(value: &mut serde_json::Value, stats: Option<&NixInstantiateStats>) {
+    let Some(stats) = stats else {
+        return;
+    };
+    if let serde_json::Value::Object(object) = value {
+        object.insert("oracle_stats".to_string(), oracle_stats_json(stats));
+    }
+}
+
+fn oracle_stats_json(stats: &NixInstantiateStats) -> serde_json::Value {
+    serde_json::json!({
+        "drv_path": stats.drv_path.to_string_lossy(),
+        "raw": stats.stats,
+    })
 }
 
 fn pair_json(pair: &DrvDiffPair) -> serde_json::Value {
@@ -570,6 +641,54 @@ fn render_divergence_classes(printer: &Printer, report: &DrvDiffReport, indent: 
                 pair.candidate.display()
             ));
         }
+    }
+}
+
+fn render_single_oracle_stats(printer: &Printer, stats: Option<&NixInstantiateStats>) {
+    let Some(stats) = stats else {
+        return;
+    };
+    if printer.mode() == OutputMode::Quiet {
+        return;
+    }
+    printer.plain(&format!(
+        "  nix-cli stats: drv={}{}",
+        stats.drv_path.display(),
+        stats_summary_suffix(&stats.stats)
+    ));
+}
+
+fn render_corpus_oracle_stats_summary(printer: &Printer, reports: &[AttrDiffReport]) {
+    if printer.mode() == OutputMode::Quiet {
+        return;
+    }
+    let captured = reports
+        .iter()
+        .filter(|report| report.oracle_stats.is_some())
+        .count();
+    if captured == 0 {
+        return;
+    }
+    printer.plain(&format!(
+        "  captured nix-cli stats for {captured} selected derivation(s); use --json for raw NIX_SHOW_STATS"
+    ));
+}
+
+fn stats_summary_suffix(stats: &serde_json::Value) -> String {
+    let mut fields = Vec::new();
+    if let Some(cpu_time) = stats.get("cpuTime").and_then(serde_json::Value::as_f64) {
+        fields.push(format!("cpuTime={cpu_time:.6}s"));
+    }
+    if let Some(thunks) = stats.get("nrThunks").and_then(serde_json::Value::as_u64) {
+        fields.push(format!("nrThunks={thunks}"));
+    }
+    if let Some(exprs) = stats.get("nrExprs").and_then(serde_json::Value::as_u64) {
+        fields.push(format!("nrExprs={exprs}"));
+    }
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", fields.join(", "))
     }
 }
 
@@ -671,13 +790,14 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref());
+        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
 
         assert_eq!(value["mode"], "byte");
         assert_eq!(value["oracle"], "nix-cli");
         assert_eq!(value["candidate"], "aos-nix");
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
+        assert!(value.get("oracle_stats").is_none());
         assert_eq!(value["divergences"][0]["kind"], "root_path");
         assert_eq!(
             value["root_divergences"][0]["oracle"],
@@ -688,6 +808,35 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn report_json_renders_oracle_stats() {
+        let report = DrvDiffReport {
+            mode: DiffMode::Byte,
+            oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
+            candidate_root: Some(PathBuf::from("/nix/store/candidate.drv")),
+            divergences: Vec::new(),
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
+        };
+        let stats = NixInstantiateStats {
+            drv_path: PathBuf::from("/nix/store/stats.drv"),
+            stats: serde_json::json!({
+                "cpuTime": 0.125,
+                "nrThunks": 7,
+                "nrExprs": 55,
+            }),
+        };
+
+        let value = report_json(&report, "aos-nix", None, Some(&stats));
+
+        assert_eq!(value["oracle_stats"]["drv_path"], "/nix/store/stats.drv");
+        assert_eq!(value["oracle_stats"]["raw"]["nrThunks"], 7);
+        assert_eq!(
+            stats_summary_suffix(&stats.stats),
+            " (cpuTime=0.125000s, nrThunks=7, nrExprs=55)"
         );
     }
 
@@ -714,7 +863,7 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref());
+        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
 
         assert_eq!(value["mode"], "structural");
         assert_eq!(value["divergences"][0]["kind"], "structural");
@@ -737,7 +886,7 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref());
+        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
 
         assert_eq!(value["divergences"][0]["kind"], "structural_parse");
         assert_eq!(value["divergences"][0]["side"], "candidate");
@@ -759,7 +908,7 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref());
+        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
 
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
@@ -783,7 +932,7 @@ mod tests {
         };
 
         let failure = report_failure(&report).expect("empty comparison should fail");
-        let value = report_json(&report, "aos-nix", Some(&failure));
+        let value = report_json(&report, "aos-nix", Some(&failure), None);
 
         assert_eq!(
             failure.to_string(),
@@ -832,6 +981,7 @@ mod tests {
             attr: "pkgs.hello".to_string(),
             failure: report_failure(&report),
             report: Some(report),
+            oracle_stats: None,
         };
         let reports = vec![attr_report];
         let failure = corpus_failure(&reports);
@@ -865,6 +1015,7 @@ mod tests {
             attr: "pkgs.empty".to_string(),
             failure: report_failure(&report),
             report: Some(report),
+            oracle_stats: None,
         };
 
         let failure = corpus_failure(&[attr_report]).expect("empty comparison should fail");
@@ -880,6 +1031,7 @@ mod tests {
             failure: Some(NixDiffReportedFailure::attr_error(
                 "diffing pkgs.bad: missing in-memory drv bytes".to_string(),
             )),
+            oracle_stats: None,
         };
         let reports = vec![attr_report];
         let failure = corpus_failure(&reports);
@@ -898,6 +1050,7 @@ mod tests {
         assert_eq!(value["error"], "drv diff failed for 1 attribute(s)");
         assert_eq!(value["reports"][0]["attr"], "pkgs.bad");
         assert_eq!(value["reports"][0]["mode"], "structural");
+        assert!(value["reports"][0].get("oracle_stats").is_none());
         assert_eq!(
             value["reports"][0]["error"],
             "diffing pkgs.bad: missing in-memory drv bytes"

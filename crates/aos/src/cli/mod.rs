@@ -170,6 +170,9 @@ pub enum Commands {
         /// Comparison mode
         #[arg(long, value_enum, default_value_t = NixDiffMode::Byte)]
         mode: NixDiffMode,
+        /// Capture raw NIX_SHOW_STATS JSON from the C++ Nix oracle
+        #[arg(long)]
+        oracle_stats: bool,
     },
     /// Show repository info
     Describe,
@@ -268,12 +271,14 @@ mod tests {
                 systems,
                 file,
                 mode,
+                oracle_stats,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.hello"));
                 assert!(!all);
                 assert!(!systems);
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
+                assert!(!oracle_stats);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -298,12 +303,14 @@ mod tests {
                 systems,
                 file,
                 mode,
+                oracle_stats,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
                 assert!(!all);
                 assert!(!systems);
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
+                assert!(!oracle_stats);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -323,6 +330,18 @@ mod tests {
         match cli.command {
             Commands::NixDiff { mode, .. } => {
                 assert_eq!(mode, NixDiffMode::Structural);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_oracle_stats() {
+        let cli = parse_cli(["aos", "nix-diff", "--attr", "pkgs.hello", "--oracle-stats"]);
+
+        match cli.command {
+            Commands::NixDiff { oracle_stats, .. } => {
+                assert!(oracle_stats);
             }
             _ => panic!("expected nix-diff command"),
         }
