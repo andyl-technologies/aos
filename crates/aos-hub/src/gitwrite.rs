@@ -18,8 +18,9 @@
 //!
 //! [`SurfaceWrite`]: aos_hub_core::surface_write::SurfaceWrite
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
+use aos_hub_core::binding::BindingKind;
 use aos_hub_core::db::{Database, RegistryRecord};
 
 // The git-backed change-request write flow (relocated to core over the ports).
@@ -44,14 +45,37 @@ pub use aos_hub_core::git::{
 /// ([`crate::fetch::LocalFsFetch`], [`crate::fetch::fetch_for_url`]), which do
 /// not compile to wasm.
 ///
+/// Object-store kinds (`s3`, `r2`) have no native fetcher yet and are rejected
+/// with a clear error.
+///
 /// # Errors
 ///
-/// Returns an error on database failure resolving the surface root, or for an
-/// unsupported `source_url` scheme.
+/// Returns an error on database failure resolving the surface root, for a
+/// storage binding of a kind not yet implemented on the native hub (`s3`/`r2`),
+/// or for an unsupported `source_url` scheme.
 pub async fn fetcher_for_registry(
     db: &Database,
     registry: &RegistryRecord,
 ) -> Result<Box<dyn crate::fetch::SurfaceFetch>> {
+    // A storage-bound registry's surface comes from its binding. Only `local_fs`
+    // has a native fetcher; object-store kinds are gated here so an s3/r2 binding
+    // gives a clear error instead of being read as a bogus filesystem path.
+    if let Some(binding_id) = registry.storage_binding_id {
+        if let Some(binding) = db.storage_binding(binding_id).await? {
+            match BindingKind::parse(&binding.kind) {
+                Some(BindingKind::LocalFs) => {}
+                // TODO(RFC-0004): implement S3/R2 binding fetch.
+                Some(kind @ (BindingKind::S3 | BindingKind::R2)) => bail!(
+                    "storage binding kind '{}' is not yet implemented on the native hub",
+                    kind.as_str()
+                ),
+                None => bail!(
+                    "storage binding {binding_id} has unknown kind '{}'",
+                    binding.kind
+                ),
+            }
+        }
+    }
     if let Some(root) = db.registry_surface_root(registry.id).await? {
         return Ok(Box::new(crate::fetch::LocalFsFetch::new(root)));
     }

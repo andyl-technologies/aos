@@ -359,16 +359,21 @@ message ListProjectsResponse {
 message Binding {
   string org_slug = 1;
   string name = 2;
-  // Backend kind; "local_fs" is the only kind supported this phase.
+  // Backend kind: "local_fs" | "s3" | "r2". The serving runtime gates which
+  // kinds are usable (the native hub serves local_fs/s3; the Worker serves
+  // r2/s3).
   string kind = 3;
-  // Backend root: a filesystem path for local_fs.
+  // Backend root: a filesystem path for local_fs, a bucket/prefix for s3/r2.
   string root = 4;
 }
 
 message CreateBindingRequest {
   string org_slug = 1;
   string name = 2;
+  // Backend kind: "local_fs" | "s3" | "r2" (defaults to local_fs when empty).
+  // The serving runtime gates which kinds are usable; see Binding.kind.
   string kind = 3;
+  // Backend root: a filesystem path for local_fs, a bucket/prefix for s3/r2.
   string root = 4;
 }
 

@@ -6050,12 +6050,18 @@ impl Database {
 
     /// Create a storage binding under an org; returns its new id.
     ///
-    /// Only `local_fs` is a valid `kind` this phase (where `root` is a
-    /// filesystem path); other kinds are rejected up front.
+    /// `kind` must be a known [`BindingKind`](crate::binding::BindingKind)
+    /// (`local_fs`, `s3`, or `r2`); the kind string is stored verbatim. This
+    /// shared layer validates only that the kind is *known* — whether the kind
+    /// is *usable* depends on the serving runtime (see
+    /// [`RuntimeKind`](crate::binding::RuntimeKind)) and is enforced at the
+    /// serving surfaces (the `create_binding` RPC and the WebUI handler), not
+    /// here, because the offline CLI writes through this method without knowing
+    /// the deployment runtime.
     ///
     /// # Errors
     ///
-    /// Returns an error for an unsupported `kind`, on a unique-constraint
+    /// Returns an error for an unknown `kind`, on a unique-constraint
     /// violation when `(org_id, name)` already exists, or on database
     /// failure.
     pub async fn create_storage_binding(
@@ -6065,9 +6071,9 @@ impl Database {
         kind: &str,
         root: &str,
     ) -> Result<i64> {
-        if kind != "local_fs" {
-            bail!("unsupported storage binding kind '{kind}' (only 'local_fs' is supported)");
-        }
+        crate::binding::BindingKind::parse(kind).ok_or_else(|| {
+            anyhow::anyhow!("unknown storage binding kind '{kind}' (expected local_fs, s3, or r2)")
+        })?;
         self.backend
             .execute_insert(
                 "INSERT INTO storage_bindings (org_id, name, kind, root, created_at)

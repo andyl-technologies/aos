@@ -26,6 +26,7 @@
 
 use std::fmt::Write as _;
 use std::sync::OnceLock;
+use crate::binding::RuntimeKind;
 use crate::clock::Instant;
 
 use crate::db::{
@@ -1296,19 +1297,33 @@ pub fn org_dashboard(
     }
     if can_configure {
         body.push_str("<h3>Create a storage binding</h3>\n");
+        // Offer only the kinds the serving runtime supports (the native hub
+        // rejects r2; the Worker rejects local_fs).
+        let mut kind_options = String::new();
+        for kind in RuntimeKind::current().supported_binding_kinds() {
+            let _ = write!(
+                kind_options,
+                "<option value=\"{value}\">{label}</option>",
+                value = escape(kind.as_str()),
+                label = escape(kind.label()),
+            );
+        }
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\">\n{csrf}\
              <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
-             <label>root path <input type=\"text\" name=\"root\" required \
+             <label>kind <select name=\"kind\">{kinds}</select></label>\n\
+             <label>root <input type=\"text\" name=\"root\" required \
              placeholder=\"/srv/registries/acme\"></label>\n\
              <button>create binding</button>\n</form>\n",
             org = escape(slug),
             csrf = csrf_field(csrf),
+            kinds = kind_options,
         );
         body.push_str(
-            "<p class=\"dim\">A binding is a named <code>local_fs</code> backend; its root must be \
-             an absolute path with no <code>..</code> components. Managed registries place their \
+            "<p class=\"dim\">A binding is a named storage backend. Its root is kind-dependent: \
+             for <code>local_fs</code> an absolute path with no <code>..</code> components; for \
+             <code>s3</code>/<code>r2</code> a bucket/prefix. Managed registries place their \
              surfaces under it.</p>\n",
         );
     }

@@ -716,13 +716,20 @@ enum ProjectCommand {
 
 #[derive(Subcommand)]
 enum BindingCommand {
-    /// Create a local_fs storage binding under an org.
+    /// Create a storage binding under an org.
     Add {
         /// Owning org slug.
         org: String,
         /// Binding name, unique within the org.
         name: String,
-        /// Filesystem path the binding roots at.
+        /// Backend kind: local_fs, s3, or r2.
+        ///
+        /// The deployment's serving runtime must support the kind (the native
+        /// hub serves local_fs/s3; the Worker serves r2/s3). This offline CLI
+        /// only validates that the kind is known.
+        #[arg(long, default_value = "local_fs")]
+        kind: String,
+        /// Filesystem path or bucket/prefix the binding roots at.
         ///
         /// Spelled `--path` (not `--root`) so it never collides with the global
         /// `--root` hub-state-directory flag, which is `global = true` and would
@@ -1494,16 +1501,20 @@ async fn main() -> Result<()> {
                 BindingCommand::Add {
                     org,
                     name,
+                    kind,
                     path: binding_root,
                 } => {
+                    aos_hub_core::binding::BindingKind::parse(&kind).with_context(|| {
+                        format!("unknown storage binding kind '{kind}' (expected local_fs, s3, or r2)")
+                    })?;
                     let org_record = db
                         .org_by_slug(&org)
                         .await?
                         .with_context(|| format!("no org '{org}'"))?;
                     let id = db
-                        .create_storage_binding(org_record.id, &name, "local_fs", &binding_root)
+                        .create_storage_binding(org_record.id, &name, &kind, &binding_root)
                         .await?;
-                    println!("created binding '{org}/{name}' (id {id}) -> {binding_root}");
+                    println!("created binding '{org}/{name}' (id {id}, kind {kind}) -> {binding_root}");
                 }
                 BindingCommand::List { org } => {
                     let org_record = db

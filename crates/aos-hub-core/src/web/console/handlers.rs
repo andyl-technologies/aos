@@ -50,6 +50,7 @@ use axum::Json;
 use base64::Engine as _;
 
 use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
+use crate::binding::{BindingKind, RuntimeKind};
 use crate::config::{self, MembershipChange};
 use crate::db::{Database, OrgRecord, RegistryRecord, SessionAuth as DbSession};
 use crate::domain::{iam, Permission, Principal, Role, Scope};
@@ -2200,16 +2201,19 @@ pub(crate) async fn org_delete_binding(
     }
 }
 
-/// `POST /-/org/{org}/bindings` form: a name and an absolute root path.
+/// `POST /-/org/{org}/bindings` form: a name, a backend `kind`, and a root.
 #[derive(serde::Deserialize)]
 pub(crate) struct NewBindingForm {
     #[serde(default)]
     csrf: String,
     name: String,
+    /// Backend kind (`local_fs`, `s3`, or `r2`); defaults to `local_fs`.
+    #[serde(default)]
+    kind: String,
     root: String,
 }
 
-/// `POST /-/org/{org}/bindings` — create a `local_fs` storage binding.
+/// `POST /-/org/{org}/bindings` — create a storage binding.
 pub(crate) async fn org_create_binding(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -2236,24 +2240,61 @@ pub(crate) async fn org_create_binding(
         )
             .into_response();
     }
-    let path = std::path::Path::new(root);
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
+    let kind_str = form.kind.trim();
+    let kind_str = if kind_str.is_empty() {
+        "local_fs"
+    } else {
+        kind_str
+    };
+    let Some(kind) = BindingKind::parse(kind_str) else {
         return (
             StatusCode::BAD_REQUEST,
-            "root must be an absolute path with no '..' components",
+            format!("unknown storage binding kind '{kind_str}' (expected local_fs, s3, or r2)"),
         )
             .into_response();
+    };
+    // The serving runtime gates which kinds are usable; `current()` reflects
+    // this process (native hub vs. Worker).
+    let runtime = RuntimeKind::current();
+    if !runtime.supports(kind) {
+        let supported = runtime
+            .supported_binding_kinds()
+            .iter()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "storage binding kind '{kind_str}' is not supported on the {} runtime; \
+                 supported kinds: [{supported}]",
+                runtime.name(),
+            ),
+        )
+            .into_response();
+    }
+    // A `local_fs` root is a host path (validated); for object stores the root
+    // is a bucket/prefix and is taken as-is.
+    if kind == BindingKind::LocalFs {
+        let path = std::path::Path::new(root);
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                "root must be an absolute path with no '..' components",
+            )
+                .into_response();
+        }
     }
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(false);
         };
         deps.db
-            .create_storage_binding(org.id, name, "local_fs", root)
+            .create_storage_binding(org.id, name, kind_str, root)
             .await?;
         deps.db
             .record_audit(
