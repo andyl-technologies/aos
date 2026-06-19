@@ -121,6 +121,7 @@ pub struct NixEvalConfig {
     store_dir: Option<String>,
     state_dir: Option<String>,
     log_dir: Option<String>,
+    native_cache_root: Option<PathBuf>,
     trace_verbose: bool,
 }
 
@@ -181,6 +182,13 @@ impl NixEvalConfig {
     /// Returns the configured Nix store directory, if one was provided.
     pub fn store_dir(&self) -> Option<&str> {
         self.store_dir.as_deref()
+    }
+
+    /// Returns the native evaluator cache root, if one was provided.
+    ///
+    /// The parse cache stores entries below this root's `parse/` child.
+    pub fn native_cache_root(&self) -> Option<&Path> {
+        self.native_cache_root.as_deref()
     }
 
     /// Returns whether `builtins.traceVerbose` should emit trace output.
@@ -277,6 +285,27 @@ impl NixEvalConfig {
         self.log_dir = None;
     }
 
+    /// Replaces the native evaluator cache root.
+    ///
+    /// The parse cache stores entries below this root's `parse/` child. Use
+    /// [`Self::clear_native_cache_root`] for uncached native evaluation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `native_cache_root` is empty or relative.
+    pub fn set_native_cache_root(&mut self, native_cache_root: impl Into<PathBuf>) -> Result<()> {
+        self.native_cache_root = Some(validate_absolute_config_path(
+            "AOS_NIX_CACHE",
+            native_cache_root.into(),
+        )?);
+        Ok(())
+    }
+
+    /// Clears the native evaluator cache root.
+    pub fn clear_native_cache_root(&mut self) {
+        self.native_cache_root = None;
+    }
+
     /// Configures whether `builtins.traceVerbose` should emit trace output.
     pub fn set_trace_verbose(&mut self, trace_verbose: bool) {
         self.trace_verbose = trace_verbose;
@@ -288,6 +317,7 @@ impl NixEvalConfig {
             store_dir: None,
             state_dir: None,
             log_dir: None,
+            native_cache_root: None,
             trace_verbose: false,
         };
 
@@ -300,8 +330,26 @@ impl NixEvalConfig {
         for (name, value) in env {
             config.set_cli_env_var(name, value);
         }
+        if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
+            config.set_aos_nix_cache_env_var(value);
+        }
 
         config
+    }
+
+    fn set_aos_nix_cache_env_var(&mut self, value: String) {
+        let Some(root) = native_cache_root_from_env_value(&value) else {
+            self.clear_native_cache_root();
+            return;
+        };
+        if let Err(error) = self.set_native_cache_root(root) {
+            tracing::warn!(
+                error = %error,
+                value,
+                "invalid AOS_NIX_CACHE value; disabling native evaluator cache"
+            );
+            self.clear_native_cache_root();
+        }
     }
 
     fn set_cli_env_var(&mut self, name: &'static str, value: String) {
@@ -314,8 +362,27 @@ impl NixEvalConfig {
     }
 }
 
+fn native_cache_root_from_env_value(value: &str) -> Option<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed == "0" {
+        None
+    } else {
+        Some(PathBuf::from(value))
+    }
+}
+
 fn nix_env_from_process(name: &'static str) -> Option<(&'static str, String)> {
     std::env::var(name).ok().map(|value| (name, value))
+}
+
+fn validate_absolute_config_path(name: &str, value: PathBuf) -> Result<PathBuf> {
+    if value.as_os_str().is_empty() {
+        anyhow::bail!("{name} must not be empty");
+    }
+    if !value.is_absolute() {
+        anyhow::bail!("{name} must be absolute: {}", value.display());
+    }
+    Ok(value)
 }
 
 fn validate_absolute_env_path(name: &str, value: String) -> Result<String> {
@@ -756,6 +823,9 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     if let Some(current_system) = config.current_system() {
         options.set_current_system(current_system.as_bytes().to_vec())?;
     }
+    if let Some(cache_root) = config.native_cache_root() {
+        options.set_parse_cache_root(cache_root.join("parse"));
+    }
     options.set_trace_verbose(config.trace_verbose());
     Ok(options)
 }
@@ -778,6 +848,33 @@ mod tests {
             .expect_err("relative store dir should be invalid");
 
         assert!(error.to_string().contains("NIX_STORE_DIR"));
+    }
+
+    #[test]
+    fn eval_config_rejects_relative_native_cache_root() {
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .set_native_cache_root("relative/cache")
+            .expect_err("relative native cache root should be invalid");
+
+        assert!(error.to_string().contains("AOS_NIX_CACHE"));
+    }
+
+    #[test]
+    fn eval_config_parses_aos_nix_cache_env_values() {
+        assert_eq!(native_cache_root_from_env_value("0"), None);
+        assert_eq!(native_cache_root_from_env_value(" 0 "), None);
+        assert_eq!(native_cache_root_from_env_value(""), None);
+        assert_eq!(
+            native_cache_root_from_env_value("/aos/cache"),
+            Some(PathBuf::from("/aos/cache"))
+        );
+
+        let mut config = NixEvalConfig::new();
+        config.set_aos_nix_cache_env_var("/aos/cache".to_owned());
+        assert_eq!(config.native_cache_root(), Some(Path::new("/aos/cache")));
+        config.set_aos_nix_cache_env_var("0".to_owned());
+        assert_eq!(config.native_cache_root(), None);
     }
 
     #[test]
@@ -841,6 +938,21 @@ mod tests {
         let options = tree_walk_options_from_config(&config)?;
 
         assert_eq!(options.store_dir(), b"/aos/store");
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_native_cache_root_to_parse_cache_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_native_cache_root("/aos/cache")?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        assert_eq!(
+            options.parse_cache_root(),
+            Some(Path::new("/aos/cache/parse"))
+        );
         Ok(())
     }
 
