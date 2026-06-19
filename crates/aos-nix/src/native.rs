@@ -817,8 +817,10 @@ fn ambient_builtin_constant_available_for_native_json(
     options: &TreeWalkOptions,
 ) -> bool {
     match builtin.availability() {
-        BuiltinAvailability::ImpureCurrentSystem => builtin_available_in_options(builtin, options),
-        BuiltinAvailability::Always | BuiltinAvailability::ImpureCurrentTime => false,
+        BuiltinAvailability::Always => false,
+        BuiltinAvailability::ImpureCurrentSystem | BuiltinAvailability::ImpureCurrentTime => {
+            builtin_available_in_options(builtin, options)
+        }
     }
 }
 
@@ -2549,6 +2551,7 @@ mod tests {
             r#"builtins.getEnv "HOME""#,
             "builtins.nixPath",
             "builtins.builtins",
+            "builtins.currentTime",
             "builtins ? currentSystem",
             "builtins.attrNames builtins",
             "builtins.fetchMercurial",
@@ -2640,7 +2643,7 @@ mod tests {
     }
 
     #[test]
-    fn native_expression_eval_uses_configured_current_system() -> Result<()> {
+    fn native_expression_eval_uses_configured_current_system_and_time() -> Result<()> {
         let native = NixNative::with_options(
             0,
             TreeWalkOptions::with_current_system(b"aos-test-target".to_vec())?,
@@ -2653,6 +2656,14 @@ mod tests {
         assert_eq!(
             native.eval_expr(r#"builtins.currentSystem or "fallback""#)?,
             "\"aos-test-target\""
+        );
+
+        let native =
+            NixNative::with_options(0, TreeWalkOptions::with_current_time(1_700_000_000)?)?;
+        assert_eq!(native.eval_expr("builtins.currentTime")?, "1700000000");
+        assert_eq!(
+            native.eval_expr("builtins.currentTime or 42")?,
+            "1700000000"
         );
         Ok(())
     }
