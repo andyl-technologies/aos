@@ -76,7 +76,8 @@ the XZ backdoor disabled — evidence it is worth enforcing.
   generated package wrappers currently fail closed below ABI 4. ABI→kernel:
   v1/5.13 (fs), v2/5.19 (`FS_REFER`), v3/6.2 (`FS_TRUNCATE`), v4/6.7
   (`NET_BIND/CONNECT_TCP`), v5/6.10 (`FS_IOCTL_DEV`), v6/6.12 (`SCOPE_*`). AOS
-  targets at least ABI 4 (network rules); record the built kernel's max ABI.
+  targets at least ABI 4 (network rules); `aos-landlock --print-abi` records
+  the built kernel's max ABI in the `security-aos-landlock-fs` VM check.
 - **Known limits (document, don't fight):** TCP-port granularity only (no
   UDP/raw/per-IP — those stay on the nftables/eBPF layer); does not restrict
   identity (combine with DAC/MAC); 16-layer stack cap; `IOCTL_DEV` covers only

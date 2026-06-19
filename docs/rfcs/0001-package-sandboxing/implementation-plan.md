@@ -571,6 +571,9 @@ Full spec: [`enforcement.md`](enforcement.md).
       wrapper, the helper requires ABI 4 and probes
       `LANDLOCK_CREATE_RULESET_VERSION`, and `apm` validates the exact trusted
       wrapper path and arguments before attaching a unit artifact. Current
+      coverage records the built kernel's max Landlock ABI in the
+      `security-aos-landlock-fs` VM check with `aos-landlock --print-abi` and
+      fails closed below ABI 4. Current
       coverage also maps declared `host-paths` to `LANDLOCK_ACCESS_FS_*` rules
       for `sandboxed-with-holes` packages and applies default filesystem
       confinement (`/` read-only plus writable package temp/state roots) for
@@ -908,10 +911,14 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       machined/portabled/importd disable flags, the kernel namespace configs, and
       the exact `aos-seed-profiles` ordering were read once and should be
       re-confirmed against the tree before the MVP lands.
-- [ ] **Landlock apply mechanism (P8).** The TCP policy apply point uses the
+- [x] **Landlock apply mechanism (P8).** The TCP policy apply point uses the
       AOS-built `aos-landlock` service exec wrapper rather than waiting for an
-      upstream systemd directive; still verify the built kernel's max Landlock
-      ABI in a VM and extend the wrapper/policy to filesystem rules.
+      upstream systemd directive. The wrapper now exposes `--print-abi`; the
+      `security-aos-landlock-fs` VM check records the built kernel's max
+      Landlock ABI, asserts it is at least ABI 4, and proves filesystem rules
+      deny writes outside the declared `--fs-rw` path. The renderer and APM
+      validation derive matching wrapper `--fs-ro` / `--fs-rw` arguments from
+      signed `host-paths`, package temp, and state-directory policy.
       ([`enforcement.md`](enforcement.md))
 - [x] **MAC backend choice (P8).** The generated per-package profile uses
       SELinux because the AOS kernel, systemd, dbus, and SELinux policy tools are

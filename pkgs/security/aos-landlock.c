@@ -126,7 +126,8 @@ static const __u64 FS_WRITE_ACCESS = LANDLOCK_ACCESS_FS_WRITE_FILE
 static void usage(FILE *stream)
 {
     fprintf(stream,
-        "usage: aos-landlock [--require-abi N] [--fs-ro PATH] [--fs-rw PATH] "
+        "usage: aos-landlock --print-abi\n"
+        "       aos-landlock [--require-abi N] [--fs-ro PATH] [--fs-rw PATH] "
         "[--tcp-bind PORT] [--tcp-connect PORT] -- COMMAND [ARG...]\n");
 }
 
@@ -243,6 +244,11 @@ static int landlock_restrict_self_raw(int ruleset_fd, __u32 flags)
     return (int)syscall(__NR_landlock_restrict_self, ruleset_fd, flags);
 }
 
+static long probe_landlock_abi(void)
+{
+    return landlock_create_ruleset_raw(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+}
+
 static int add_net_rules(int ruleset_fd, const struct port_list *ports,
     __u64 access)
 {
@@ -305,7 +311,7 @@ static int apply_landlock(unsigned int require_abi, const struct port_list *bind
             | LANDLOCK_ACCESS_NET_CONNECT_TCP,
     };
 
-    abi = landlock_create_ruleset_raw(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    abi = probe_landlock_abi();
     if (abi < 0) {
         fprintf(stderr, "aos-landlock: Landlock ABI probe failed: %s\n",
             strerror(errno));
@@ -365,6 +371,17 @@ int main(int argc, char **argv)
     unsigned int require_abi = 4;
     int command_index = -1;
     int i;
+
+    if (argc == 2 && strcmp(argv[1], "--print-abi") == 0) {
+        long abi = probe_landlock_abi();
+        if (abi < 0) {
+            fprintf(stderr, "aos-landlock: Landlock ABI probe failed: %s\n",
+                strerror(errno));
+            return 1;
+        }
+        printf("%ld\n", abi);
+        return 0;
+    }
 
     for (i = 1; i < argc; i++) {
         uint16_t port;
