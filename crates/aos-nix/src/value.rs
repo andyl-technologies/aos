@@ -244,12 +244,20 @@ impl Value {
     }
 
     /// Returns this value's tag.
+    ///
+    /// In debug builds this asserts that the payload is valid for the tag so
+    /// raw representation observers catch corrupted values at the boundary.
     pub const fn tag(self) -> ValueTag {
+        self.debug_assert_payload_invariant();
         self.tag
     }
 
     /// Returns the raw payload bits.
+    ///
+    /// In debug builds this asserts that the payload is valid for the tag so
+    /// callers do not accidentally treat malformed values as trusted bits.
     pub const fn payload_bits(self) -> u64 {
+        self.debug_assert_payload_invariant();
         self.payload
     }
 
@@ -259,17 +267,67 @@ impl Value {
     /// recursively compares lists, attrsets, and string contexts. This method is
     /// only for representation-level tests, caches, and runtime invariants.
     pub const fn raw_eq(self, other: Self) -> bool {
+        self.debug_assert_payload_invariant();
+        other.debug_assert_payload_invariant();
         self.tag as u64 == other.tag as u64 && self.payload == other.payload
     }
 
     /// Returns whether this value is already in weak head normal form.
     pub const fn is_whnf(self) -> bool {
+        self.debug_assert_payload_invariant();
         self.tag.is_whnf()
     }
 
     /// Returns whether this value is a thunk.
     pub const fn is_thunk(self) -> bool {
+        self.debug_assert_payload_invariant();
         matches!(self.tag, ValueTag::Thunk)
+    }
+
+    /// Checks that the payload is valid for this value's tag.
+    ///
+    /// Inline integer and floating-point tags accept every bit pattern. Boolean
+    /// values must be encoded as `0` or `1`, null must use a zero payload, and
+    /// heap tags must carry a non-null aligned heap pointer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload does not satisfy the tag's
+    /// representation invariant.
+    pub fn validate_payload(self) -> Result<(), ValueError> {
+        match self.tag {
+            ValueTag::Int | ValueTag::Float => Ok(()),
+            ValueTag::Bool => match self.payload {
+                0 | 1 => Ok(()),
+                payload => Err(ValueError::InvalidBoolPayload { payload }),
+            },
+            ValueTag::Null => {
+                if self.payload == 0 {
+                    Ok(())
+                } else {
+                    Err(ValueError::InvalidNullPayload {
+                        payload: self.payload,
+                    })
+                }
+            }
+            tag @ (ValueTag::String
+            | ValueTag::Path
+            | ValueTag::List
+            | ValueTag::Attrs
+            | ValueTag::Lambda
+            | ValueTag::Primop
+            | ValueTag::External
+            | ValueTag::Thunk) => {
+                let address = self.payload as usize;
+                if address == 0 {
+                    Err(ValueError::NullHeapPointer { tag })
+                } else if address & HEAP_POINTER_MASK != 0 {
+                    Err(ValueError::UnalignedHeapPointer { tag, address })
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 
     /// Returns the inline integer payload.
@@ -311,9 +369,18 @@ impl Value {
     ///
     /// # Errors
     ///
-    /// Returns [`ValueError::Type`] when this value is not tagged as null.
+    /// Returns [`ValueError::Type`] when this value is not tagged as null, or
+    /// [`ValueError::InvalidNullPayload`] when a null value carries non-zero
+    /// payload bits.
     pub fn as_null(self) -> Result<(), ValueError> {
-        self.expect_tag(ValueTag::Null, "null")
+        self.expect_tag(ValueTag::Null, "null")?;
+        if self.payload == 0 {
+            Ok(())
+        } else {
+            Err(ValueError::InvalidNullPayload {
+                payload: self.payload,
+            })
+        }
     }
 
     /// Returns the heap pointer payload for any heap-backed value.
@@ -431,6 +498,31 @@ impl Value {
         self.expect_tag(expected, expected_name)?;
         self.as_heap_ptr()
     }
+
+    const fn debug_assert_payload_invariant(self) {
+        if cfg!(debug_assertions) {
+            assert!(self.payload_invariant_holds(), "invalid Value payload");
+        }
+    }
+
+    const fn payload_invariant_holds(self) -> bool {
+        match self.tag {
+            ValueTag::Int | ValueTag::Float => true,
+            ValueTag::Bool => self.payload <= 1,
+            ValueTag::Null => self.payload == 0,
+            ValueTag::String
+            | ValueTag::Path
+            | ValueTag::List
+            | ValueTag::Attrs
+            | ValueTag::Lambda
+            | ValueTag::Primop
+            | ValueTag::External
+            | ValueTag::Thunk => {
+                let address = self.payload as usize;
+                address != 0 && address & HEAP_POINTER_MASK == 0
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Value {
@@ -477,6 +569,12 @@ pub enum ValueError {
     /// A boolean payload was neither `0` nor `1`.
     #[error("invalid boolean payload {payload}")]
     InvalidBoolPayload {
+        /// The invalid raw payload.
+        payload: u64,
+    },
+    /// A null value carried a non-zero payload.
+    #[error("invalid null payload {payload}")]
+    InvalidNullPayload {
         /// The invalid raw payload.
         payload: u64,
     },
@@ -554,6 +652,46 @@ mod tests {
             invalid_bool.as_bool(),
             Err(ValueError::InvalidBoolPayload { payload: 2 })
         );
+        let invalid_null = Value {
+            tag: ValueTag::Null,
+            payload: 1,
+        };
+        assert_eq!(
+            invalid_null.as_null(),
+            Err(ValueError::InvalidNullPayload { payload: 1 })
+        );
+    }
+
+    #[test]
+    fn validate_payload_reports_tag_payload_invariants() {
+        let ptr = NonNull::<HeapObject>::dangling();
+        assert_eq!(Value::int(1).validate_payload(), Ok(()));
+        assert_eq!(Value::float(f64::NAN).validate_payload(), Ok(()));
+        assert_eq!(Value::bool(false).validate_payload(), Ok(()));
+        assert_eq!(Value::null().validate_payload(), Ok(()));
+        assert_eq!(
+            Value::thunk(ptr)
+                .expect("aligned thunk pointer")
+                .validate_payload(),
+            Ok(())
+        );
+
+        assert_eq!(
+            (Value {
+                tag: ValueTag::Bool,
+                payload: 2,
+            })
+            .validate_payload(),
+            Err(ValueError::InvalidBoolPayload { payload: 2 })
+        );
+        assert_eq!(
+            (Value {
+                tag: ValueTag::Null,
+                payload: 1,
+            })
+            .validate_payload(),
+            Err(ValueError::InvalidNullPayload { payload: 1 })
+        );
     }
 
     #[test]
@@ -622,6 +760,18 @@ mod tests {
                 address: 1,
             }
         );
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "invalid Value payload")]
+    fn raw_getters_assert_payload_invariants_in_debug_builds() {
+        let invalid_bool = Value {
+            tag: ValueTag::Bool,
+            payload: 2,
+        };
+
+        let _ = invalid_bool.tag();
     }
 
     #[test]
