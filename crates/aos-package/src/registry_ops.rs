@@ -62,6 +62,7 @@ use aos_core::output::{OutputMode, Printer};
 
 use crate::config::ApmConfig;
 use crate::gitcmd;
+use crate::provenance::{digest_map as provenance_digest_map, sha256_hex_payload};
 use crate::registry::channel::{self, PartitionMap};
 use crate::registry::keys::{self, KeysToml, RevokedKey, RosterKey};
 use crate::registry::membership::{CacheMembership, HeadMembership};
@@ -3245,26 +3246,6 @@ fn publish_provenance_ref(name: &str, platform: &str, measurement: &str) -> Resu
         "provenance/{}/{name}/{platform}/{measurement_hex}.intoto.jsonl",
         package_name_bucket(name)
     ))
-}
-
-fn provenance_digest_map(digest: &str) -> serde_json::Value {
-    if let Some(hex) = sha256_hex_payload(digest) {
-        serde_json::json!({ "sha256": hex })
-    } else {
-        serde_json::json!({ "nix:narHash": digest })
-    }
-}
-
-fn sha256_hex_payload(digest: &str) -> Option<String> {
-    let payload = digest
-        .strip_prefix("sha256:")
-        .or_else(|| digest.strip_prefix("sha256-"))
-        .unwrap_or(digest);
-    if payload.len() == 64 && payload.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        Some(payload.to_ascii_lowercase())
-    } else {
-        None
-    }
 }
 
 fn package_platform_table(
