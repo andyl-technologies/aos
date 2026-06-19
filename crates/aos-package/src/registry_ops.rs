@@ -1526,8 +1526,33 @@ pub async fn publish(
         expose_artifact_info.as_ref(),
         expose_manifest_digest.as_deref(),
     )?;
+    let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
+        (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+            pkg_name,
+            pkg_version,
+            &platform,
+            &info,
+            source_info.as_ref(),
+            manifest,
+            manifest_digest,
+        )?,
+        _ => None,
+    };
 
     std::fs::write(&toml_path, &new_content)?;
+    let provenance_path = if let Some(artifact) = &provenance_artifact {
+        let path = dir.join(&artifact.path);
+        let parent = path
+            .parent()
+            .with_context(|| format!("provenance path has no parent: {}", path.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating provenance directory {}", parent.display()))?;
+        std::fs::write(&path, &artifact.jsonl)
+            .with_context(|| format!("writing provenance artifact {}", path.display()))?;
+        Some(path)
+    } else {
+        None
+    };
 
     printer.step(3, 4, "Computing realisation graph...");
     let content_addressed = registry_content_addressed(&dir) && !no_ca;
@@ -1562,6 +1587,9 @@ pub async fn publish(
     if let Some(report) = &expose_store_report {
         printer.kv("Expose artifact graph", &report.summary());
     }
+    if let Some(artifact) = &provenance_artifact {
+        printer.kv("Provenance", &artifact.path);
+    }
     if let Some(source_info) = &source_info {
         printer.kv("Source drv", &source_info.path);
     }
@@ -1583,7 +1611,10 @@ pub async fn publish(
     if !no_commit {
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
-        let staged_paths = [toml_path.clone(), dir.join(store::STORE_DIR)];
+        let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
+        if let Some(path) = &provenance_path {
+            staged_paths.push(path.clone());
+        }
         commit_registry_paths(
             &dir,
             msg,
@@ -1651,6 +1682,7 @@ pub async fn publish(
                 "unchanged": report.unchanged,
                 "content_addressed": report.content_addressed,
             })),
+            "provenance": provenance_artifact.as_ref().map(|artifact| artifact.path.as_str()),
             "references": info.references,
             "source": source,
             "sysroot": sysroot,
@@ -1729,6 +1761,7 @@ fn build_package_toml(
     let platform_table = package_platform_table(
         name,
         version,
+        platform,
         info,
         image_infos,
         source_drv,
@@ -3042,6 +3075,7 @@ fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbF
 fn publish_attestation_meta(
     name: &str,
     version: &str,
+    platform: &str,
     manifest: &PublishExposeManifest,
     expose_manifest_digest: Option<&str>,
 ) -> Result<Option<AttestationMeta>> {
@@ -3070,19 +3104,173 @@ fn publish_attestation_meta(
         &root_hash,
         manifest_digest,
     );
+    let provenance = publish_provenance_ref(name, platform, &measurement)?;
     let meta = AttestationMeta {
         root_hash: Some(root_hash),
         root_hash_sig: Some(root_hash_sig),
-        provenance: None,
+        provenance: Some(provenance),
         measurement: Some(measurement),
     };
     validate_attestation_meta(&meta)?;
     Ok(Some(meta))
 }
 
+struct PublishProvenanceArtifact {
+    path: String,
+    jsonl: String,
+}
+
+fn publish_provenance_artifact(
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest: &PublishExposeManifest,
+    manifest_digest: &str,
+) -> Result<Option<PublishProvenanceArtifact>> {
+    let Some(attestation) =
+        publish_attestation_meta(name, version, platform, manifest, Some(manifest_digest))?
+    else {
+        return Ok(None);
+    };
+    let provenance = attestation
+        .provenance
+        .as_deref()
+        .context("package attestation provenance missing")?;
+    let statement = publish_provenance_statement(
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        manifest_digest,
+        &attestation,
+    )?;
+    let mut jsonl =
+        serde_json::to_string(&statement).context("serializing package provenance statement")?;
+    jsonl.push('\n');
+    Ok(Some(PublishProvenanceArtifact {
+        path: provenance.to_string(),
+        jsonl,
+    }))
+}
+
+fn publish_provenance_statement(
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    manifest_digest: &str,
+    attestation: &AttestationMeta,
+) -> Result<serde_json::Value> {
+    let root_hash = attestation
+        .root_hash
+        .as_deref()
+        .context("package attestation root_hash missing")?;
+    let measurement = attestation
+        .measurement
+        .as_deref()
+        .context("package attestation measurement missing")?;
+    let root_hash_sig = attestation
+        .root_hash_sig
+        .as_deref()
+        .context("package attestation root_hash_sig missing")?;
+    let provenance = attestation
+        .provenance
+        .as_deref()
+        .context("package attestation provenance missing")?;
+    let resolved_dependencies = source_info
+        .into_iter()
+        .map(|source| {
+            serde_json::json!({
+                "uri": format!("nix:{}", source.path.as_str()),
+                "digest": provenance_digest_map(&source.nar_hash),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(serde_json::json!({
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+            {
+                "name": info.path.as_str(),
+                "digest": provenance_digest_map(&info.nar_hash),
+            },
+            {
+                "name": format!("aos:permissions-manifest:{name}:{version}:{platform}"),
+                "digest": provenance_digest_map(manifest_digest),
+            },
+            {
+                "name": format!("aos:package-measurement:{name}:{version}:{platform}"),
+                "digest": provenance_digest_map(measurement),
+            },
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://andyl.com/aos/apr-publish/v1",
+                "externalParameters": {
+                    "package": name,
+                    "version": version,
+                    "platform": platform,
+                    "store_path": info.path.as_str(),
+                    "root_hash": root_hash,
+                    "root_hash_sig": root_hash_sig,
+                    "provenance": provenance,
+                },
+                "internalParameters": {},
+                "resolvedDependencies": resolved_dependencies,
+            },
+            "runDetails": {
+                "builder": {
+                    "id": "https://andyl.com/aos/apr-publish",
+                },
+                "metadata": {
+                    "invocationId": format!("apr-publish:{name}:{version}:{platform}"),
+                },
+            },
+        },
+    }))
+}
+
+fn publish_provenance_ref(name: &str, platform: &str, measurement: &str) -> Result<String> {
+    validate_package_name(name)?;
+    validate_platform_name(platform)?;
+    let measurement_hex = sha256_hex_payload(measurement).with_context(|| {
+        format!("package measurement must be a sha256 digest with 64 hex characters: {measurement}")
+    })?;
+    Ok(format!(
+        "provenance/{}/{name}/{platform}/{measurement_hex}.intoto.jsonl",
+        package_name_bucket(name)
+    ))
+}
+
+fn provenance_digest_map(digest: &str) -> serde_json::Value {
+    if let Some(hex) = sha256_hex_payload(digest) {
+        serde_json::json!({ "sha256": hex })
+    } else {
+        serde_json::json!({ "nix:narHash": digest })
+    }
+}
+
+fn sha256_hex_payload(digest: &str) -> Option<String> {
+    let payload = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .unwrap_or(digest);
+    if payload.len() == 64 && payload.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        Some(payload.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
 fn package_platform_table(
     name: &str,
     version: &str,
+    platform: &str,
     info: &StorePathInfo,
     image_infos: &[(String, StorePathInfo, SbFacts)],
     source_drv: &str,
@@ -3162,10 +3350,11 @@ fn package_platform_table(
     if let Some(manifest) = expose_manifest {
         let artifact = expose_artifact_info
             .context("expose manifest requires rendered expose artifact metadata")?;
-        let attestation = publish_attestation_meta(name, version, manifest, expose_manifest_digest)
-            .with_context(|| {
-                format!("deriving package attestation metadata for package '{name}'")
-            })?;
+        let attestation =
+            publish_attestation_meta(name, version, platform, manifest, expose_manifest_digest)
+                .with_context(|| {
+                    format!("deriving package attestation metadata for package '{name}'")
+                })?;
         table.insert(
             "min-format".into(),
             toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
@@ -3250,6 +3439,14 @@ fn package_platform_table(
                     attestation
                         .root_hash_sig
                         .context("package attestation root_hash_sig missing")?,
+                ),
+            );
+            table.insert(
+                "provenance".into(),
+                toml::Value::String(
+                    attestation
+                        .provenance
+                        .context("package attestation provenance missing")?,
                 ),
             );
             table.insert(
@@ -11412,6 +11609,12 @@ mod tests {
             platform.get("root_hash_sig").and_then(toml::Value::as_str),
             Some("root.roothash.p7s")
         );
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &expected_measurement).unwrap();
+        assert_eq!(
+            platform.get("provenance").and_then(toml::Value::as_str),
+            Some(expected_provenance.as_str())
+        );
         assert_eq!(
             platform.get("measurement").and_then(toml::Value::as_str),
             Some(expected_measurement.as_str())
@@ -11426,8 +11629,182 @@ mod tests {
             Some("root.roothash.p7s")
         );
         assert_eq!(
+            parsed.attestation.provenance.as_deref(),
+            Some(expected_provenance.as_str())
+        );
+        assert_eq!(
             parsed.attestation.measurement.as_deref(),
             Some(expected_measurement.as_str())
+        );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_binds_nar_manifest_measurement_and_source() {
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            root_hash,
+            manifest_digest,
+        );
+        let expected_provenance =
+            publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+
+        let artifact = publish_provenance_artifact(
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        assert_eq!(artifact.path, expected_provenance);
+        assert!(artifact.path.contains("/x86_64-linux/"));
+        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        assert_eq!(statement["_type"], "https://in-toto.io/Statement/v1");
+        assert_eq!(statement["predicateType"], "https://slsa.dev/provenance/v1");
+        assert_eq!(
+            statement["subject"][0]["name"].as_str(),
+            Some(info.path.as_str())
+        );
+        assert_eq!(
+            statement["subject"][0]["digest"]["sha256"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            statement["subject"][1]["digest"]["sha256"],
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        );
+        assert_eq!(
+            statement["subject"][2]["digest"]["sha256"],
+            measurement.trim_start_matches("sha256:")
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["root_hash"].as_str(),
+            Some(root_hash)
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["externalParameters"]["provenance"].as_str(),
+            Some(expected_provenance.as_str())
+        );
+        let expected_source_uri = format!("nix:{}", source.path);
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["uri"].as_str(),
+            Some(expected_source_uri.as_str())
+        );
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                ["sha256"]
+                .as_str(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+    }
+
+    #[test]
+    fn publish_provenance_paths_are_platform_scoped() {
+        let measurement = crate::package_attestation::package_measurement_digest(
+            "webapp",
+            "1.0.0",
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        );
+
+        let x86 = publish_provenance_ref("webapp", "x86_64-linux", &measurement).unwrap();
+        let arm = publish_provenance_ref("webapp", "aarch64-linux", &measurement).unwrap();
+
+        assert_ne!(x86, arm);
+        assert!(x86.contains("/x86_64-linux/"));
+        assert!(arm.contains("/aarch64-linux/"));
+    }
+
+    #[test]
+    fn publish_provenance_ref_rejects_malformed_measurements() {
+        assert!(publish_provenance_ref("webapp", "x86_64-linux", "not-a-digest").is_err());
+        assert!(publish_provenance_ref("webapp", "x86_64-linux", "sha256:abcd").is_err());
+        assert!(
+            publish_provenance_ref(
+                "webapp",
+                "x86_64-linux",
+                "sha256:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn publish_provenance_artifact_preserves_sri_nar_hashes_as_nix_digests() {
+        let package_nar_hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let source_nar_hash = "sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+        let info = StorePathInfo {
+            path: "/nix/store/abc123-webapp-1.0.0".into(),
+            nar_hash: package_nar_hash.into(),
+            nar_size: 1048576,
+            references: vec![],
+            closure_size: 5242880,
+        };
+        let source = StorePathInfo {
+            path: "/nix/store/srcdrv-webapp-1.0.0.drv".into(),
+            nar_hash: source_nar_hash.into(),
+            nar_size: 4096,
+            references: vec![],
+            closure_size: 4096,
+        };
+        let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let manifest = verity_expose_manifest(root_hash);
+        let manifest_digest =
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+        let artifact = publish_provenance_artifact(
+            "webapp",
+            "1.0.0",
+            "x86_64-linux",
+            &info,
+            Some(&source),
+            &manifest,
+            manifest_digest,
+        )
+        .unwrap()
+        .expect("provenance artifact");
+
+        let statement: serde_json::Value = serde_json::from_str(artifact.jsonl.trim_end()).unwrap();
+        assert_eq!(
+            statement["subject"][0]["digest"]["nix:narHash"].as_str(),
+            Some(package_nar_hash)
+        );
+        assert!(statement["subject"][0]["digest"].get("sha256").is_none());
+        assert_eq!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                ["nix:narHash"]
+                .as_str(),
+            Some(source_nar_hash)
+        );
+        assert!(
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0]["digest"]
+                .get("sha256")
+                .is_none()
         );
     }
 
