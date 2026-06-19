@@ -2161,9 +2161,8 @@ impl TreeWalk {
     /// lambda application, lazy `with` lookup, numeric arithmetic, numeric and
     /// string/list comparison, direct strict unary primops,
     /// scalar/string/function/list/attrset equality, and conservative thunk
-    /// allocation nodes. Remaining environment-dependent nodes return
-    /// [`TreeWalkErrorKind::UnsupportedNode`] until later slices add their
-    /// explicit runtime context.
+    /// allocation nodes. Non-expression IR helper nodes return
+    /// [`TreeWalkErrorKind::InvalidNodeKind`] when they are evaluated directly.
     ///
     /// # Errors
     ///
@@ -2223,7 +2222,7 @@ impl TreeWalk {
             IrKind::ThunkAlloc => self.eval_thunk_alloc(id, &node),
             IrKind::DerivationStrict => self.eval_derivation_strict(id, &node),
             kind => Err(TreeWalkError::new(
-                TreeWalkErrorKind::UnsupportedNode { id, kind },
+                TreeWalkErrorKind::InvalidNodeKind { id, kind },
                 node.span,
             )),
         }?;
@@ -30510,12 +30509,12 @@ pub enum TreeWalkErrorKind {
         /// The warning message bytes.
         message: Vec<u8>,
     },
-    /// The node kind is outside this evaluator slice.
-    #[error("unsupported tree-walk node {kind:?} at {id:?}")]
-    UnsupportedNode {
-        /// The unsupported node id.
+    /// The node kind is not directly evaluable.
+    #[error("invalid tree-walk node {kind:?} at {id:?}: node kind is not directly evaluable")]
+    InvalidNodeKind {
+        /// The invalid node id.
         id: IrId,
-        /// The unsupported node kind.
+        /// The invalid node kind.
         kind: IrKind,
     },
 }
@@ -56018,30 +56017,35 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_nodes_report_kind_and_span() {
-        let root = IrId::new(0);
-        let span = Span::new(0, 1);
-        let ir = manual_ir(
-            root,
-            vec![pure_node(
+    fn invalid_expression_nodes_report_kind_and_span() {
+        for (kind, data) in [
+            (
+                IrKind::FormalSet,
+                IrData::FormalSet {
+                    formals: IrChildSlice::new(0, 0),
+                    ellipsis: false,
+                    alias: None,
+                },
+            ),
+            (
                 IrKind::Formal,
-                span,
                 IrData::Formal {
                     name: Symbol::new(0),
                     default: None,
                 },
-            )],
-        );
-        let error = eval_whnf(&ir).expect_err("formal nodes are not directly evaluable");
+            ),
+        ] {
+            let root = IrId::new(0);
+            let span = Span::new(0, 1);
+            let ir = manual_ir(root, vec![pure_node(kind, span, data)]);
+            let error = eval_whnf(&ir).expect_err("helper nodes are not directly evaluable");
 
-        assert_eq!(
-            error.kind(),
-            TreeWalkErrorKind::UnsupportedNode {
-                id: root,
-                kind: IrKind::Formal,
-            }
-        );
-        assert_eq!(error.span(), span);
+            assert_eq!(
+                error.kind(),
+                TreeWalkErrorKind::InvalidNodeKind { id: root, kind }
+            );
+            assert_eq!(error.span(), span);
+        }
     }
 
     #[test]

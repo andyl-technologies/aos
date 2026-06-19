@@ -447,7 +447,6 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
         | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
-        | TreeWalkErrorKind::UnsupportedNode { .. }
         | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
         TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
             Some((*feature).to_string())
@@ -1012,6 +1011,24 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn native_eval_error_reports_invalid_ir_as_eval_error() {
+        let error = TreeWalkError::new(
+            TreeWalkErrorKind::InvalidNodeKind {
+                id: IrId::new(0),
+                kind: IrKind::Formal,
+            },
+            Span::new(0, 1),
+        );
+
+        let native = native_eval_error(error, None);
+
+        let NativeEvalError::EvalError { message } = native else {
+            panic!("invalid IR should not fall back to native CLI");
+        };
+        assert!(message.contains("invalid tree-walk node Formal"));
+    }
 
     #[test]
     fn native_expression_eval_renders_strict_json() -> Result<()> {
