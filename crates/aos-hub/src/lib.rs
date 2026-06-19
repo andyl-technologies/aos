@@ -79,6 +79,9 @@ pub mod compat;
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
 pub use aos_hub_core::config;
 pub mod console;
+/// The crawl-policy value type, re-exported from [`aos_hub_core::crawl`]; keeps
+/// `crate::crawl::…` stable for the CLI.
+pub use aos_hub_core::crawl;
 /// Native adapters from the hub's concrete types to the shared service ports
 /// ([`aos_hub_core::ratelimit::RateLimiter`],
 /// [`aos_hub_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.

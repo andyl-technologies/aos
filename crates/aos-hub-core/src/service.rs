@@ -864,6 +864,8 @@ impl RpcService {
             trust_keys: record.trust_keys.clone(),
             caches,
             roster,
+            crawl_policy: record.crawl_policy.clone(),
+            llms_txt_body: record.llms_txt_body.clone().unwrap_or_default(),
         })
     }
 
@@ -1657,6 +1659,50 @@ impl RpcService {
             .map_err(RpcError::internal)?;
         Ok(pb::CreateRegistryResponse {
             registry: Some(self.registry_message(&record, status).await?),
+        })
+    }
+
+    /// Set a registry's crawl policy through an audited change-set.
+    ///
+    /// Mirrors the visibility write path: resolves the registry, validates the
+    /// policy string against [`CrawlPolicy`](crate::crawl::CrawlPolicy),
+    /// authorizes [`Permission::RegistryConfigure`] at the registry scope, then
+    /// applies [`change_registry_crawl_policy`](crate::config::change_registry_crawl_policy).
+    /// The applied policy is echoed back.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError::InvalidArgument`] for an unknown policy, [`RpcError::NotFound`]
+    /// for an absent registry, an auth error without
+    /// [`Permission::RegistryConfigure`], and [`RpcError::Internal`] on failure.
+    pub async fn set_crawl_policy(
+        &self,
+        auth: Option<&str>,
+        req: pb::SetCrawlPolicyRequest,
+    ) -> Result<pb::SetCrawlPolicyResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let policy = crate::crawl::CrawlPolicy::parse(&req.policy)
+            .map_err(|e| RpcError::invalid(e.to_string()))?;
+        let registry = self.registry_or_not_found(&req.slug).await?;
+        self.require_permission(
+            &claims,
+            Permission::RegistryConfigure,
+            &Scope::parse(&registry.slug),
+        )
+        .await?;
+        let actor = claims_principal(&claims)
+            .ok_or_else(|| RpcError::Unauthenticated("missing principal".into()))?;
+        crate::config::change_registry_crawl_policy(
+            &self.db,
+            &actor,
+            &claims.sub,
+            registry.id,
+            policy.as_str(),
+        )
+        .await
+        .map_err(RpcError::internal)?;
+        Ok(pb::SetCrawlPolicyResponse {
+            policy: policy.as_str().to_string(),
         })
     }
 
@@ -3293,6 +3339,168 @@ impl RpcService {
             crate::sigv4::presign_get_url(&params)?
         };
         Ok(Some(url))
+    }
+
+    /// Serve the instance-root `robots.txt` body.
+    ///
+    /// Returns the operator's custom override verbatim when one is set, else the
+    /// document generated from the root crawl policy (see
+    /// [`crate::robots::render_robots`]). The result is always a complete file
+    /// body; the route layer wraps it in a `text/plain` response.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    pub async fn serve_root_robots(&self) -> Result<String, RpcError> {
+        if let Some(body) = self.db.root_robots_body().await.map_err(RpcError::internal)? {
+            return Ok(body);
+        }
+        let policy = self.db.root_crawl_policy().await.map_err(RpcError::internal)?;
+        let llms_url = format!("{}/llms.txt", self.external_url.trim_end_matches('/'));
+        Ok(crate::robots::render_robots(policy, Some(&llms_url)))
+    }
+
+    /// Serve the instance-root `llms.txt` body.
+    ///
+    /// Returns the operator's custom override verbatim when one is set, else the
+    /// document generated from the instance's **public** registries (see
+    /// [`crate::robots::render_root_llms`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    pub async fn serve_root_llms(&self) -> Result<String, RpcError> {
+        if let Some(body) = self.db.root_llms_body().await.map_err(RpcError::internal)? {
+            return Ok(body);
+        }
+        let base = self.external_url.trim_end_matches('/');
+        let brand = self
+            .db
+            .instance_config_get("brand")
+            .await
+            .map_err(RpcError::internal)?
+            .unwrap_or_default();
+        let registries = self.db.list_registries().await.map_err(RpcError::internal)?;
+        let views: Vec<crate::robots::RootRegistryView> = registries
+            .into_iter()
+            .filter(|r| r.visibility == "public")
+            .map(|r| crate::robots::RootRegistryView {
+                browse_url: format!("{base}/{}/", r.slug),
+                slug: r.slug,
+                description: None,
+            })
+            .collect();
+        Ok(crate::robots::render_root_llms(&brand, &views))
+    }
+
+    /// Serve a registry's `robots.txt`, or `None` when the registry is not
+    /// public.
+    ///
+    /// Anonymous serving path: only a **public** registry is exposed (a private
+    /// or internal registry, or an absent slug, returns `None` → `404`),
+    /// consistent with the anonymous browse gate. A registry with a custom
+    /// `robots.txt`... is not modeled per-registry; the per-registry document is
+    /// always generated from the registry's [`crate::crawl::CrawlPolicy`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    pub async fn serve_registry_robots(&self, slug: &str) -> Result<Option<String>, RpcError> {
+        let Some(registry) = self.public_registry(slug).await? else {
+            return Ok(None);
+        };
+        let policy = crate::crawl::CrawlPolicy::parse_or_default(&registry.crawl_policy);
+        let base = self.external_url.trim_end_matches('/');
+        let llms_url = format!("{base}/{}/llms.txt", registry.slug);
+        Ok(Some(crate::robots::render_robots(policy, Some(&llms_url))))
+    }
+
+    /// Serve a registry's `llms.txt`, or `None` when the registry is not public.
+    ///
+    /// Anonymous serving path: only a **public** registry is exposed. A registry
+    /// with a custom `llms_txt_body` override is served verbatim; otherwise the
+    /// document is generated from the registry's indexed packages and channels
+    /// (see [`crate::robots::render_registry_llms`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    pub async fn serve_registry_llms(&self, slug: &str) -> Result<Option<String>, RpcError> {
+        let Some(registry) = self.public_registry(slug).await? else {
+            return Ok(None);
+        };
+        if let Some(body) = registry.llms_txt_body.clone() {
+            return Ok(Some(body));
+        }
+        let status = self
+            .db
+            .index_status(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let packages = self
+            .db
+            .list_packages(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let channels = self
+            .db
+            .list_channels(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let base = self.external_url.trim_end_matches('/');
+        let view = crate::robots::RegistryView {
+            base_url: base.to_string(),
+            name: status.as_ref().and_then(|s| s.name.clone()),
+            description: status.as_ref().and_then(|s| s.description.clone()),
+            packages: packages
+                .into_iter()
+                .map(|p| crate::robots::PackageView {
+                    browse_url: format!("{base}/{}/-/packages/{}", registry.slug, p.name),
+                    name: p.name,
+                    description: p.description,
+                })
+                .collect(),
+            channels: channels
+                .into_iter()
+                .map(|c| crate::robots::ChannelView {
+                    name: c.name,
+                    frontier: c.frontier,
+                })
+                .collect(),
+            slug: registry.slug.clone(),
+        };
+        Ok(Some(crate::robots::render_registry_llms(&view)))
+    }
+
+    /// Load a registry by slug only when it is publicly visible.
+    ///
+    /// The shared anonymous-visibility gate for the `robots.txt`/`llms.txt`
+    /// serving paths: returns the [`RegistryRecord`] only for a `public`
+    /// registry under an active org, and `None` for an absent, internal, or
+    /// private registry — the two are deliberately indistinguishable to a
+    /// crawler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Internal`] on database failure.
+    async fn public_registry(&self, slug: &str) -> Result<Option<RegistryRecord>, RpcError> {
+        let Some(registry) = self
+            .db
+            .registry_by_slug(slug)
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        if registry.visibility != "public" {
+            return Ok(None);
+        }
+        if let Some(org_id) = registry.org_id {
+            if !matches!(self.db.org_is_active(org_id).await, Ok(true)) {
+                return Ok(None);
+            }
+        }
+        Ok(Some(registry))
     }
 
     /// Serve a managed cache's machine surface as a **streaming** response — the

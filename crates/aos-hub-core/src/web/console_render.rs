@@ -1651,6 +1651,39 @@ pub fn registry_settings_page(
          <strong>private</strong> breaks anonymous reads (consumers need a read token).</p>\n",
     );
 
+    // Crawl policy: the generated robots.txt posture for this registry.
+    body.push_str("<h2>Crawl policy</h2>\n");
+    let _ = writeln!(
+        body,
+        "<p>current <strong>{}</strong></p>",
+        escape(&registry.crawl_policy),
+    );
+    let mut crawl_options = String::new();
+    for p in ["allow_all", "allow_no_ai", "deny_all"] {
+        let selected = if p == registry.crawl_policy {
+            " selected"
+        } else {
+            ""
+        };
+        let _ = write!(crawl_options, "<option value=\"{p}\"{selected}>{p}</option>");
+    }
+    let _ = write!(
+        body,
+        "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/crawl\">\n{csrf}\
+         <label>policy <select name=\"policy\">{crawl_options}</select></label>\n\
+         <button>change crawl policy</button>\n</form>\n",
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+        crawl_options = crawl_options,
+    );
+    body.push_str(
+        "<p class=\"dim\">Controls the generated <code>robots.txt</code>. \
+         <strong>allow_all</strong> lets every crawler index; \
+         <strong>allow_no_ai</strong> blocks known AI crawlers (GPTBot, ClaudeBot, …); \
+         <strong>deny_all</strong> blocks every crawler. \
+         A confirmation-gated change-set, recorded in the audit feed.</p>\n",
+    );
+
     // Storage (read-only).
     body.push_str("<h2>Storage</h2>\n");
     match binding {

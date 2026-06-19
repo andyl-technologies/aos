@@ -455,6 +455,27 @@ enum InstanceCommand {
     },
     /// Show the current masthead brand.
     ShowBrand,
+    /// Set the instance-root crawl policy (robots.txt).
+    SetRootCrawlPolicy {
+        /// New policy: allow_all, allow_no_ai, or deny_all.
+        policy: String,
+    },
+    /// Show the instance-root crawl policy.
+    ShowRootCrawlPolicy,
+    /// Set or clear the instance-root custom robots.txt body.
+    SetRootRobots {
+        /// Read the robots.txt body from this file; omit to clear and
+        /// auto-generate.
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Set or clear the instance-root custom llms.txt body.
+    SetRootLlms {
+        /// Read the llms.txt body from this file; omit to clear and
+        /// auto-generate.
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1019,6 +1040,22 @@ enum RegistryCommand {
         /// New visibility: public, internal, or private.
         visibility: String,
     },
+    /// Set a registry's crawl policy (robots.txt) through an audited change-set.
+    SetCrawlPolicy {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// New policy: allow_all, allow_no_ai, or deny_all.
+        policy: String,
+    },
+    /// Set or clear a registry's custom llms.txt body.
+    SetLlmsTxt {
+        /// Canonical registry path or flat slug.
+        canonical: String,
+        /// Read the llms.txt body from this file; omit to clear and
+        /// auto-generate.
+        #[arg(long)]
+        file: Option<String>,
+    },
     /// List registered registries.
     List,
 }
@@ -1249,6 +1286,47 @@ async fn main() -> Result<()> {
                         "set '{canonical}' visibility to {visibility} (change-set {change_id})"
                     );
                 }
+                RegistryCommand::SetCrawlPolicy { canonical, policy } => {
+                    let parsed = aos_hub::crawl::CrawlPolicy::parse(&policy)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let registry = db
+                        .registry_by_slug(&canonical)
+                        .await?
+                        .with_context(|| format!("no registry '{canonical}'"))?;
+                    // The CLI actor is the local operator: an out-of-band
+                    // `system` principal (no IAM check on the local path).
+                    let actor = aos_hub::domain::Principal::user(0);
+                    let change_id = aos_hub::config::change_registry_crawl_policy(
+                        &db,
+                        &actor,
+                        "system",
+                        registry.id,
+                        parsed.as_str(),
+                    )
+                    .await?;
+                    println!(
+                        "set '{canonical}' crawl policy to {} (change-set {change_id})",
+                        parsed.as_str()
+                    );
+                }
+                RegistryCommand::SetLlmsTxt { canonical, file } => {
+                    let registry = db
+                        .registry_by_slug(&canonical)
+                        .await?
+                        .with_context(|| format!("no registry '{canonical}'"))?;
+                    match file {
+                        Some(path) => {
+                            let body = std::fs::read_to_string(&path)
+                                .with_context(|| format!("reading llms.txt from '{path}'"))?;
+                            db.set_registry_llms_txt(&registry.slug, Some(&body)).await?;
+                            println!("set custom llms.txt for '{canonical}' ({path})");
+                        }
+                        None => {
+                            db.set_registry_llms_txt(&registry.slug, None).await?;
+                            println!("cleared custom llms.txt for '{canonical}' (auto-generated)");
+                        }
+                    }
+                }
                 RegistryCommand::List => {
                     for registry in db.list_registries().await? {
                         let state = db
@@ -1412,6 +1490,39 @@ async fn main() -> Result<()> {
                         db.instance_config_get("brand").await?.unwrap_or_default()
                     );
                 }
+                InstanceCommand::SetRootCrawlPolicy { policy } => {
+                    let parsed = aos_hub::crawl::CrawlPolicy::parse(&policy)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    db.set_root_crawl_policy(parsed).await?;
+                    println!("root crawl policy set to {}", parsed.as_str());
+                }
+                InstanceCommand::ShowRootCrawlPolicy => {
+                    println!("{}", db.root_crawl_policy().await?.as_str());
+                }
+                InstanceCommand::SetRootRobots { file } => match file {
+                    Some(path) => {
+                        let body = std::fs::read_to_string(&path)
+                            .with_context(|| format!("reading robots.txt from '{path}'"))?;
+                        db.set_root_robots_body(Some(&body)).await?;
+                        println!("set custom root robots.txt ({path})");
+                    }
+                    None => {
+                        db.set_root_robots_body(None).await?;
+                        println!("cleared custom root robots.txt (auto-generated)");
+                    }
+                },
+                InstanceCommand::SetRootLlms { file } => match file {
+                    Some(path) => {
+                        let body = std::fs::read_to_string(&path)
+                            .with_context(|| format!("reading llms.txt from '{path}'"))?;
+                        db.set_root_llms_body(Some(&body)).await?;
+                        println!("set custom root llms.txt ({path})");
+                    }
+                    None => {
+                        db.set_root_llms_body(None).await?;
+                        println!("cleared custom root llms.txt (auto-generated)");
+                    }
+                },
             }
         }
         Command::Validate { command } => {

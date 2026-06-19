@@ -669,6 +669,55 @@ pub async fn change_registry_visibility(
     Ok(change_id)
 }
 
+/// Changes a registry's crawl policy through a one-revision change-set.
+///
+/// Opens a draft, stages a single `update` revision recording the old and new
+/// crawl policy, and applies it — the apply step calls
+/// [`Database::set_registry_crawl_policy`](crate::db::Database::set_registry_crawl_policy)
+/// to mutate the live registry, and one audit row is written. Returns the
+/// applied change-set's id.
+///
+/// Mirrors [`change_registry_visibility`]: the crawl-policy flip is a
+/// confirmation-gated, audited change so the RFC's access matrix and audit feed
+/// cover it. `new_policy` is the wire string of a
+/// [`CrawlPolicy`](crate::crawl::CrawlPolicy); the caller validates it before
+/// calling.
+///
+/// # Errors
+///
+/// Returns an error when `registry_id` names no registry, and on database
+/// failure (the change-set is rolled back on a failed apply).
+pub async fn change_registry_crawl_policy(
+    db: &Database,
+    actor: &Principal,
+    actor_label: &str,
+    registry_id: i64,
+    new_policy: &str,
+) -> Result<ChangeId> {
+    let record = registry_record(db, registry_id).await?;
+    let old_policy = record.crawl_policy.clone();
+    let slug = record.slug.clone();
+    let scope = Scope::parse(&slug);
+    let summary = format!("set {slug} crawl policy {old_policy} -> {new_policy}");
+    let change_id = open_draft(db, actor, actor_label, &scope, &summary).await?;
+    stage(
+        db,
+        &change_id,
+        "registry",
+        &slug,
+        ConfigOp::Update,
+        Some(serde_json::json!({ "crawl_policy": old_policy })),
+        Some(serde_json::json!({ "crawl_policy": new_policy })),
+    )
+    .await?;
+    apply(db, &change_id, "registry.crawl_policy", move |_rev| {
+        let slug = slug.clone();
+        async move { db.set_registry_crawl_policy(&slug, new_policy).await }
+    })
+    .await?;
+    Ok(change_id)
+}
+
 /// Whether a [`change_membership`] grants or revokes a role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipChange {

@@ -674,6 +674,8 @@ mod tests {
                 key: "AAAA".into(),
                 status: "active".into(),
             }],
+            crawl_policy: "allow_all".into(),
+            llms_txt_body: String::new(),
         }
     }
 
