@@ -316,6 +316,17 @@ struct WorkerArgs {
     /// Bearer token for the email relay (HUB_EMAIL_API_TOKEN).
     #[arg(long)]
     email_api_token: Option<String>,
+    /// Disable Workers Observability (persistent Workers Logs + metrics).
+    /// Observability is on by default so production errors are queryable.
+    #[arg(long)]
+    no_observability: bool,
+    /// Fraction (0.0–1.0) of requests sampled into Workers Logs. Default 1.0
+    /// (log every request); lower it to trade detail for log volume at scale.
+    #[arg(long, default_value_t = 1.0)]
+    head_sampling_rate: f64,
+    /// Enable Logpush: stream the Worker's logs to an account Logpush job.
+    #[arg(long)]
+    logpush: bool,
 }
 
 impl WorkerArgs {
@@ -2160,7 +2171,7 @@ async fn provision_worker(
     // No canonical URL is baked: the Worker derives it from each request's
     // origin (its `*.workers.dev` URL or a bound `--domain`), so it is passed
     // empty here and the `HUB_EXTERNAL_URL` var is omitted from the config.
-    aos_hub::cloudflare::provision(
+    let mut cfg = aos_hub::cloudflare::provision(
         assets,
         &args.name,
         &args.d1_name(),
@@ -2170,7 +2181,13 @@ async fn provision_worker(
         args.email_relay_url.as_deref(),
         &args.domains(),
     )
-    .await
+    .await?;
+    // Apply the observability flags onto the provisioned config (provision()
+    // defaults observability on; these let the operator tune or disable it).
+    cfg.observability = !args.no_observability;
+    cfg.head_sampling_rate = args.head_sampling_rate;
+    cfg.logpush = args.logpush;
+    Ok(cfg)
 }
 
 /// Provisions, deploys the bundled Worker wasm, and applies its runtime secrets.

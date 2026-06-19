@@ -121,6 +121,8 @@ pub mod indexer;
 #[cfg(target_arch = "wasm32")]
 pub mod surface;
 #[cfg(target_arch = "wasm32")]
+pub mod tracinglog;
+#[cfg(target_arch = "wasm32")]
 pub mod workerlease;
 #[cfg(target_arch = "wasm32")]
 pub mod workerlimit;
@@ -320,6 +322,9 @@ mod entry {
     /// returned as a `500` so a binding/back-end failure never panics the isolate.
     #[worker::event(fetch, respond_with_errors)]
     async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
+        // Route the shared core's `tracing` events to the console so handler
+        // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
+        crate::tracinglog::init();
         // The request's own `scheme://host`, the fallback canonical URL when
         // `HUB_EXTERNAL_URL` is unset (a no-custom-domain deploy).
         let request_origin = req
@@ -346,6 +351,7 @@ mod entry {
     /// not abort the run (see [`crate::indexer::index_all`]).
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+        crate::tracinglog::init();
         let db = match env.d1(crate::handlers::bindings::D1) {
             Ok(db) => db,
             Err(err) => {
