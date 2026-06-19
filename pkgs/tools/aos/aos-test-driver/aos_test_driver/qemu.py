@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO, ClassVar, override
 
 from .agent import Driver
+from .fs import clone_or_copy
 from .machine import Machine
 
 
@@ -188,11 +189,16 @@ class QemuMachine(Machine):
 
         # Per-machine writable copy. The disk is shared across machines of
         # this system variant (Nix dedups), but each VM needs a writable
-        # copy because QEMU opens it rw. The metadata ISO is per-machine
-        # already; the local copy isolates the run from any read-side
-        # caching quirks with store files on certain filesystems.
-        shutil.copyfile(self.disk_src, self.disk_copy)
+        # copy because QEMU opens it rw. clone_or_copy reflinks it on a
+        # CoW filesystem (the common case: the Nix store and build scratch
+        # are the same btrfs/XFS volume), so the copy is near-instant and
+        # free until the guest writes — it falls back to a full copy
+        # otherwise. The metadata ISO is per-machine already; its local
+        # copy isolates the run from any read-side caching quirks with
+        # store files on certain filesystems.
+        reflinked = clone_or_copy(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
+        copy_method = "reflink" if reflinked else "copy"
 
         if self.boot == "image":
             # Grow the per-run copy to the install target size (sparse —
@@ -218,7 +224,12 @@ class QemuMachine(Machine):
             # firmware package's template.
             shutil.copyfile(self.firmware_vars_src, self.vars_copy)
             os.chmod(self.vars_copy, 0o644)
-            log.info("  Image:    %s (%s MiB)", self.disk_copy, self.disk_size_mib)
+            log.info(
+                "  Image:    %s (%s MiB, %s)",
+                self.disk_copy,
+                self.disk_size_mib,
+                copy_method,
+            )
             log.info("  Firmware: %s", self.firmware_code)
             log.info("  fw_cfg:   %s", self.fw_cfg_path)
         else:
@@ -228,7 +239,7 @@ class QemuMachine(Machine):
                 )
             shutil.copyfile(self.metadata_src, self.metadata_copy)
             os.chmod(self.metadata_copy, 0o644)
-            log.info("  Disk:     %s", self.disk_copy)
+            log.info("  Disk:     %s (%s)", self.disk_copy, copy_method)
             log.info("  Metadata: %s", self.metadata_copy)
 
         # Serial drain — unidirectional listener appending to
