@@ -142,9 +142,10 @@ runtime root of trust.** Concretely, across the three artifacts:
    **tag-signs** that binding (its existing Ed25519 tag-signature chain,
    name-binding + anti-rollback floor); **hosts** the in-toto/SLSA provenance
    attestation that ties the NAR + manifest to the build inputs (the `.drv` /
-   source); and **appends the binding to a transparency log** (Merkle/append-only,
-   the Trustix/Rekor shape) so the publication is externally auditable and
-   non-equivocable. It is the layer that decides *what may be distributed*
+   source); and **appends the binding to the in-registry transparency hash
+   chain** so clients following the same registry history can audit append
+   consistency. Independent witness / Trustix / Rekor-style non-equivocation is
+   future work. It is the layer that decides *what may be distributed*
    (publication policy) and *signs the catalog entry* — but it cannot know any
    host's local policy (the three-layer rule of [permissions.md](permissions.md)
    is unchanged).
