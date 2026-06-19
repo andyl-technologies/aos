@@ -35,6 +35,7 @@ use aos_proto_types as pb;
 use aos_registry_surface::object::Oid;
 
 use crate::auth::jwt::{Claims, JwtKeys};
+use crate::binding::{BindingKind, RuntimeKind};
 use crate::clock;
 use crate::db::{Database, IndexStatus, RegistryRecord};
 use crate::fetch::SurfaceProvider;
@@ -2561,16 +2562,19 @@ impl RpcService {
 
     /// `StorageService.CreateBinding` — create a storage binding under an org.
     ///
-    /// Only the `local_fs` kind is supported this phase (where `root` is a
-    /// filesystem path). Requires [`Permission::RegistryConfigure`] on the org
-    /// scope.
+    /// The `kind` must be a known [`BindingKind`](crate::binding::BindingKind)
+    /// (`local_fs`, `s3`, or `r2`) that the serving runtime supports — the
+    /// Worker rejects `local_fs`, the native hub rejects `r2` (see
+    /// [`RuntimeKind`](crate::binding::RuntimeKind)). An empty `kind` defaults to
+    /// `local_fs`. Requires [`Permission::RegistryConfigure`] on the org scope.
     ///
     /// # Errors
     ///
     /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
     /// [`RpcError::PermissionDenied`] when the caller lacks `registry.configure`
     /// on the org scope, [`RpcError::NotFound`] for an unknown org,
-    /// [`RpcError::InvalidArgument`] for an empty name/root or unsupported kind,
+    /// [`RpcError::InvalidArgument`] for an empty name/root, an unknown kind, or
+    /// a kind the serving runtime does not support,
     /// [`RpcError::AlreadyExists`] when `(org, name)` exists, and
     /// [`RpcError::Internal`] on database failure.
     pub async fn create_binding(
@@ -2585,26 +2589,42 @@ impl RpcService {
         if req.name.is_empty() || req.root.is_empty() {
             return Err(RpcError::invalid("binding name and root are required"));
         }
-        let kind = if req.kind.is_empty() {
+        let kind_str = if req.kind.is_empty() {
             "local_fs"
         } else {
             req.kind.as_str()
         };
+        let kind = BindingKind::parse(kind_str).ok_or_else(|| {
+            RpcError::invalid(format!(
+                "unknown storage binding kind '{kind_str}' (expected local_fs, s3, or r2)"
+            ))
+        })?;
+        // The serving process's runtime gates which kinds are usable (the Worker
+        // has no filesystem; the native hub has no R2 SDK). `current()` reflects
+        // this process, so the check is correct here.
+        let runtime = RuntimeKind::current();
+        if !runtime.supports(kind) {
+            let supported = runtime
+                .supported_binding_kinds()
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(RpcError::invalid(format!(
+                "storage binding kind '{kind_str}' is not supported on the {} runtime; \
+                 supported kinds: [{supported}]",
+                runtime.name(),
+            )));
+        }
         self.db
-            .create_storage_binding(org.id, &req.name, kind, &req.root)
+            .create_storage_binding(org.id, &req.name, kind_str, &req.root)
             .await
-            .map_err(|e| {
-                if kind == "local_fs" {
-                    RpcError::AlreadyExists(format!("{e:#}"))
-                } else {
-                    RpcError::invalid(format!("{e:#}"))
-                }
-            })?;
+            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
         Ok(pb::CreateBindingResponse {
             binding: Some(binding_message(
                 org.slug,
                 req.name,
-                kind.to_string(),
+                kind.as_str().to_string(),
                 req.root,
             )),
         })
