@@ -511,8 +511,10 @@ class QemuMachine(Machine):
         not first boot — and re-handshake with the agent.
         """
         # The trailing `&` detaches the reboot so the agent can frame
-        # its reply before PID 1 tears the transport down.
-        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        # its reply before PID 1 starts an orderly shutdown. Do not use
+        # `reboot -f` here: it bypasses systemd, so journald and /var do
+        # not get a clean stop before the next boot reads the journal.
+        self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
         if self.qemu_proc is None:
@@ -538,10 +540,10 @@ class QemuMachine(Machine):
             return
 
         try:
-            self.qemu_proc.wait(timeout=60)
+            self.qemu_proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                f"[{self.name}] guest did not exit QEMU within 60s of reboot"
+                f"[{self.name}] guest did not exit QEMU within 120s of reboot"
             ) from None
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.close()
@@ -584,16 +586,16 @@ class QemuMachine(Machine):
                 "failed to load",
                 "verification failed",
             ]
-        self.execute("(sleep 1; reboot -f) >/dev/null 2>&1 &", timeout=30)
+        self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
         if self.qemu_proc is None:
             raise RuntimeError(f"[{self.name}] reboot before start()")
         try:
-            self.qemu_proc.wait(timeout=60)
+            self.qemu_proc.wait(timeout=120)
         except subprocess.TimeoutExpired:
             raise RuntimeError(
-                f"[{self.name}] guest did not exit QEMU within 60s of reboot"
+                f"[{self.name}] guest did not exit QEMU within 120s of reboot"
             ) from None
         if self._qemu_log_fd is not None:
             self._qemu_log_fd.close()
