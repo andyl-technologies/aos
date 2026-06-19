@@ -57,6 +57,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-17
           printf '%s\n' T-RISK-18
           printf '%s\n' T-RISK-19
+          printf '%s\n' T-RISK-20
         } > expected-checked-tasks.txt
 
         gawk '
@@ -69,7 +70,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 19 ] || fail "expected 19 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 20 ] || fail "expected 20 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -121,6 +122,12 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "\`race_yield_tested=false\`"
         require_fixed "$risk_doc" "\`d25_status=open_until_s12_passes_without_fallback\`"
         require_fixed "$risk_doc" "\`fallback_adopted=modeled_throughput_default_only_quantum_until_preemption_injection\`"
+        require_fixed "$risk_doc" "**RISK-28** is resolved by \`T-RISK-20\` with the read-only/Crucible-driven-step fallback"
+        require_fixed "$risk_doc" "\`hermetic_gdb_client_available=false\`"
+        require_fixed "$risk_doc" "\`known_aos_qemu_gdbstub_step_hook_detected=false\`"
+        require_fixed "$risk_doc" "\`gdb_single_step_policy=disabled_until_s14_green\`"
+        require_fixed "$risk_doc" "\`policy_enforcement_runtime=not_implemented\`"
+        require_fixed "$risk_doc" "\`fallback_adopted=read_only_attach_crucible_driven_step_until_gdbstub_gate\`"
 
         require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
         require_fixed "$decision_doc" "RISK-6 / RISK-7 / T-RISK-2"
@@ -141,6 +148,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
         require_fixed "$decision_doc" "RISK-26 / T-RISK-18"
         require_fixed "$decision_doc" "RISK-27 / T-RISK-19"
+        require_fixed "$decision_doc" "RISK-28 / T-RISK-20"
 
         require_fixed "$decision_doc" "checks.crucible.phase0.s1Fingerprint"
         require_fixed "$decision_doc" "checks.crucible.phase0.s2HltBusyPoll"
@@ -173,6 +181,8 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.searchTreeGrowth"
         require_fixed "$decision_doc" "checks.crucible.phase0.multiVmParallelism"
         require_fixed "$decision_doc" "checks.crucible.phase0.riskRegisterGate"
+        require_fixed "$decision_doc" "checked_risk_tasks=20"
+        require_fixed "$decision_doc" "retired_decision_entries=20"
         require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
         require_fixed "$decision_doc" "checks.crucible.phase0.s12PreemptionDecision"
         require_fixed "$decision_doc" "decision_preemption_exploration_enabled=false"
@@ -181,13 +191,18 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "selected_phase0_default_rr_switch_quantum=4096"
         require_fixed "$decision_doc" "d25_status=open_until_s12_passes_without_fallback"
         require_fixed "$decision_doc" "modeled_throughput_default_only_quantum_until_preemption_injection"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s14GdbstubFallback"
+        require_fixed "$decision_doc" "hermetic_gdb_client_available=false"
+        require_fixed "$decision_doc" "known_aos_qemu_gdbstub_step_hook_detected=false"
+        require_fixed "$decision_doc" "gdb_single_step_policy=disabled_until_s14_green"
+        require_fixed "$decision_doc" "read_only_attach_crucible_driven_step_until_gdbstub_gate"
 
         mkdir -p "$out"
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=19
-          echo retired_decision_entries=19
+          echo checked_risk_tasks=20
+          echo retired_decision_entries=20
           echo phase0_foundational_blockers_open=0
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0
