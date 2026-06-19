@@ -139,13 +139,21 @@ the cross-node machinery.
 
 ### Contract A — intra-VM hermeticity
 
-- **[DET-5]** **Contract A.** For one VM, fixed `(image, cmdline, seed)`, and a
-  fixed icount-stamped injected-input sequence `I`, the VM MUST produce a
-  bit-identical icount stream and architectural-state trajectory (i.e. `run`
-  from [DET-1] is a pure function for a single node). This MUST be testable in
-  isolation, with `I` supplied from a recorded list rather than from live peers.
-  *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:*
-  §4.2.1.
+- **[DET-5]** **Contract A.** For one VM with `N >= 1` vCPUs, fixed
+  `(image, cmdline, seed, N, rr_switch_quantum)`, and a fixed icount-stamped
+  injected-input sequence `I`, the VM MUST produce a bit-identical
+  *aggregate-icount* stream and architectural-state trajectory `T` (i.e. `run`
+  from [DET-1] is a pure function for a single node). For `N > 1`, `T` INCLUDES
+  every one of the `N` vCPUs' register files and the round-robin (RR) scheduler
+  cursor; the interleaving — which vCPU retires each instruction, and the point
+  at which each vCPU is preempted — MUST be a pure function of
+  `(image, cmdline, seed, I, rr_switch_quantum, N)` and of the `Schedule`'s
+  preemption decisions, not of host thread scheduling. The multi-vCPU node runs
+  under QEMU single-threaded round-robin TCG with `-icount` (NOT MTTCG; §4.6
+  E13), so the whole interleaving is a pure function of the inputs above. This
+  MUST be testable in isolation, with `I` supplied from a recorded list rather
+  than from live peers. *Gate:* `gate:layer0-determinism`,
+  `gate:single-vm-fingerprint`. *Spec:* §4.2.1.
 
 Contract A is entirely about *removing entropy from inside one VM*: it is the
 union of every elimination in §4.6. It says nothing about *when* inputs arrive —
@@ -313,7 +321,7 @@ differ.
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
 | E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | If boot entropy is fully seeded (E8), KASLR draws from a deterministic pool and *may* already be deterministic; `nokaslr` is the conservative belt-and-braces. Whether `nokaslr` is *required* given full seeding is an OPEN QUESTION (4.9). | launch |
 | E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | Same as E11: deterministic once entropy is seeded; `norandmaps` is the conservative default pending the E11 spike | launch |
-| E13 | Multi-vCPU / MTTCG instruction interleaving | Concurrent vCPUs interleave nondeterministically | Excluded by [NG-1]: single vCPU (`-smp 1`). Guest parallelism is serialized on one vCPU | launch |
+| E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`) | MTTCG is excluded; all `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
 | E14 | Host thread scheduling of QEMU threads | Order of QEMU's own threads (vCPU, iothread, main loop) affects timing | Single vCPU plus icount makes guest progress independent of host thread order; the plugin's synchronous time-control handshake forces a defined order at idle/advance points | plugin + patch |
 | E15 | Floating-point nondeterminism | FP results vary by rounding mode / FMA contraction / library | Under a fixed `-cpu` and TCG soft-float, FP is a deterministic function of inputs; cross-host reproducibility holds because TCG emulates, not delegates to host FPU. No action beyond E10 | (covered by E10) |
 | E16 | Uninitialized memory / device reset values | Power-on memory and device registers differ run to run | Deterministic machine reset: RAM zeroed (or fixed-pattern), device reset values fixed; part of the genesis bake (05) | launch + patch |
@@ -321,6 +329,10 @@ differ.
 | E18 | Network arrival timing | Frames delivered "as they arrive" race producer vs consumer | Contract B (4.4): every frame carries a delivery icount; the scheduler assigns it; transport timing is irrelevant | plugin + patch |
 | E19 | Block / 9p I/O completion timing | Disk/filesystem completions land at host-timing-dependent points | I/O sub-nodes (15) are first-class scheduling nodes with deterministic completion icounts; completions obey the injection contract | plugin + patch |
 | E20 | Snapshot/restore state loss | `loadvm` that drops icount or TCG state diverges from a fresh boot | Snapshot must preserve icount, bias, and TCG/device state completely; verified by the replay oracle. Completeness is a SPIKE (4.9) | patch |
+| E21 | RR vCPU-switch quantum | The granularity and order in which vCPUs are switched on the single host thread determines the interleaving | Fixed content-addressed `rr_switch_quantum` in node-icount units, with a fixed ascending vCPU rotation; never QEMU's adaptive `rr_quantum`, never realtime | launch + patch |
+| E22 | Inter-vCPU IPI / cross-CPU interrupt timing | A vCPU-to-vCPU IPI taken one instruction earlier/later on the target forks the path | The IPI becomes visible to the target at a deterministic node-icount = sender's icount + a fixed modeled IPI latency, delivered at the next RR switch boundary; never at a host-timing-dependent point | patch |
+| E23 | Per-vCPU TSC / RNG | Each vCPU's timestamp counter or entropy reads could diverge per vCPU | Every per-vCPU TSC/RNG value is derived from the node icount, and a uniform `-cpu` model is pinned across ALL vCPUs (no per-vCPU feature variation), so per-vCPU reads are pure functions of node icount | launch |
+| E24 | vCPU bringup / hotplug | Secondary-vCPU SIPI/INIT timing or runtime topology change perturbs `T` | Topology is fixed at the genesis bake (no runtime hotplug); secondary-vCPU SIPI/INIT sequencing is deterministic under RR-TCG + icount | launch + patch |
 
 - **[DET-18]** Each entropy source E1–E20 MUST be eliminated by its stated
   mechanism, and each mechanism MUST have a micro-test that fails if the source
@@ -349,9 +361,13 @@ differ.
   with no path by which the guest's CSPRNG is seeded from host entropy. *Gate:*
   `gate:layer0-determinism`. *Spec:* §4.6 (E8).
 
-- **[DET-23]** Multi-vCPU determinism MUST NOT be attempted (E13, [NG-1]); every
-  VM runs `-smp 1`. The harness MUST reject a scenario that configures more than
-  one vCPU. *Gate:* `gate:layer0-determinism`. *Spec:* §4.6 (E13).
+- **[DET-23]** Multi-vCPU determinism MUST be achieved via QEMU single-threaded
+  round-robin TCG plus `-icount`, with all `N` vCPUs time-sharing one host thread
+  and switching at a fixed content-addressed `rr_switch_quantum` (E13, E21).
+  MTTCG (`thread=multi`) MUST be rejected by the harness, and the adaptive
+  `rr_quantum` / any realtime-based switching MUST NOT be used. The harness MUST
+  reject a launch configuration that requests MTTCG or an unpinned switch
+  quantum. *Gate:* `gate:layer0-determinism`. *Spec:* §4.6 (E13, E21).
 
 The patch-series mechanisms (E2, E3, E9, E14, E18, E19, E20) are specified in
 [`11-qemu-patches.md`](11-qemu-patches.md); each patch MUST be inert unless
@@ -411,6 +427,34 @@ impl DecisionRng {
   different branch of the temporal graph). *Gate:* `gate:replay-oracle`,
   `gate:divergence-bisect`. *Spec:* §4.7, forward-ref 05, 08.
 
+### Ambient vs app-requested intended randomness
+
+Two distinct things both touch "guest randomness," and they MUST NOT be
+conflated:
+
+- **Ambient guest entropy** is the entropy the guest's CSPRNG is *seeded* with at
+  boot (E8): a `fw_cfg` random-seed that is a pure function of the scenario seed.
+  This requires **zero guest changes**, is opaque to Crucible (the host neither
+  sees nor explores individual guest draws), and is an *elimination* mechanism
+  (4.6), not a capability.
+- **App-requested randomness** is an *optional* capability in which a cooperating
+  guest application explicitly opts in — via the white-box channel (16) — to
+  request named random draws from Crucible. Each such draw is **white-box** and
+  becomes an explorable `Decision`, unlike the opaque ambient seeding.
+
+- **[DET-44]** Optional app-requested randomness MUST be served from the SINGLE
+  seeded decision source of §4.7 (it MUST NOT introduce a new entropy source).
+  Each app-requested stream MUST be forked per `(node, stream-name)` by name-hash
+  ([DET-25]), each draw MUST be recorded as a `Decision` in the `Schedule`
+  ([DET-27]), and each draw MUST be delivered to the guest under the injection
+  contract (4.4) at a deterministic delivery icount. The guest opts in through
+  the white-box channel (16); the capability MUST be distinguishable from ambient
+  `fw_cfg` guest entropy (which entails zero guest changes and is opaque). The
+  full determinism contract MUST hold *identically* in a run that makes zero
+  app-random requests (enabling the capability with no draws is byte-identical to
+  not enabling it). *Gate:* `gate:layer1-injection`, `gate:any-guest`,
+  `gate:single-vm-fingerprint`. *Spec:* §4.7, forward-ref 16.
+
 ## 4.8 The reduction identity and the execution fingerprint
 
 ### The reduction identity
@@ -439,9 +483,14 @@ it.
 - **[DET-29]** Each VM MUST expose an **execution fingerprint**: at a fixed
   periodic icount cadence (and at every cross-node interaction point), a digest
   combining the current icount with a hash of architectural registers and a hash
-  (or rolling hash) of guest memory and device state. The fingerprint MUST be
-  computed black-box from the host side (4.5) with no guest cooperation. *Gate:*
-  `gate:single-vm-fingerprint`. *Spec:* §4.8, forward-ref 12, 24.
+  (or rolling hash) of guest memory and device state. For a multi-vCPU node, the
+  fingerprint MUST include *every* vCPU's register file and the RR scheduler
+  cursor (the current vCPU, the quantum-remaining, and the per-vCPU retired
+  instruction counts), all keyed by the node's aggregate icount. Per-vCPU state
+  is plugin-internal and surfaces only here, in the fingerprint (it does not
+  cross the shmem ABI; 13). The fingerprint MUST be computed black-box from the
+  host side (4.5) with no guest cooperation. *Gate:* `gate:single-vm-fingerprint`.
+  *Spec:* §4.8, forward-ref 12, 24.
 
 - **[DET-30]** Two runs of a fixed `(image, cmdline, seed, I)` MUST produce
   identical fingerprint sequences; the *first* differing fingerprint MUST
@@ -547,6 +596,24 @@ fingerprint-identical.
   holds": if `reduce` is pure (4.8), the oracle passes by construction, so an
   oracle failure is a determinism defect. *Gate:* `gate:replay-oracle`. *Spec:*
   §4.11, forward-ref 05, 07, 24.
+
+### Multi-vCPU scenario identity and the A/B boundary
+
+- **[DET-42]** The `rr_switch_quantum`, the vCPU count `N`, and the vCPU rotation
+  order MUST be part of the scenario content hash, exactly as the icount shift is
+  ([DET-9]). A run MUST refuse to replay against a different `rr_switch_quantum`,
+  `N`, or rotation order, because each changes the multi-vCPU interleaving and
+  therefore `T`. *Gate:* `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:*
+  §4.6 (E13, E21), §4.2.1.
+
+- **[DET-43]** Delivery under Contract B (4.4) is to the NODE's aggregate icount:
+  an external input carries a single delivery icount on the node's aggregate
+  timeline, and Contract B fixes only *when* the input becomes visible to the
+  node. The intra-node routing of a delivered input to a particular vCPU (and the
+  exact RR boundary at which that vCPU observes it) is part of Contract A, not
+  Contract B — it is a pure function of the node's aggregate state and the RR
+  cursor, established by §4.2.1, not by the cross-node scheduler. *Gate:*
+  `gate:layer1-injection`. *Spec:* §4.4, §4.2.1.
 
 ## 4.12 Summary of the contract
 
@@ -676,3 +743,26 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   re-run from `(seed, scenario, schedule, build identity)` and assert
   fingerprint and oracle equality. — satisfies [DET-28], [DET-41], [DET-40];
   spec §4.8, §4.11.
+- [ ] **T-DET-28** Implement the multi-vCPU Contract A driver: run a single
+  `N > 1` vCPU node under single-threaded RR-TCG + icount with a recorded
+  icount-stamped input list and a per-vCPU execution fingerprint (every vCPU's
+  register file + the RR cursor, keyed by node aggregate icount); assert
+  bit-identical aggregate-icount trajectory across runs. — satisfies [DET-5],
+  [DET-29]; spec §4.2.1, §4.8.
+- [ ] **T-DET-29** Pin the RR switch quantum: fix `rr_switch_quantum` (node-icount
+  units) and the ascending vCPU rotation, fold `rr_switch_quantum`/`N`/rotation
+  into the scenario content hash, and reject MTTCG (`thread=multi`), the adaptive
+  `rr_quantum`, and any realtime-based switching in the launch config. —
+  satisfies [DET-23], [DET-42]; spec §4.6 (E13, E21), §4.2.1.
+- [ ] **T-DET-30** Verify per-vCPU entropy uniformity and IPI determinism: a
+  uniform `-cpu` pin across all vCPUs, per-vCPU TSC/RNG derived from node icount
+  (E23), inter-vCPU IPI delivered at a deterministic node-icount via a fixed
+  modeled latency at the next RR switch (E22), and deterministic secondary-vCPU
+  SIPI/INIT bringup with no runtime hotplug (E24). — satisfies [DET-18] (E22, E23,
+  E24), [DET-43]; spec §4.6 (E22, E23, E24), §4.4.
+- [ ] **T-DET-31** Implement app-requested randomness served from the single
+  seeded decision source: white-box opt-in (16), per-`(node, stream-name)`
+  name-hash fork, each draw a recorded `Decision` delivered under the injection
+  contract; assert the contract holds byte-identically with zero app-random
+  requests and distinguish it from opaque ambient `fw_cfg` entropy. — satisfies
+  [DET-44]; spec §4.7.

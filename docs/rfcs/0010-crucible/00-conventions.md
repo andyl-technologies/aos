@@ -76,6 +76,9 @@ test that enforces it, and a back-pointer to the defining section.
 | `D` | Design decisions (decision register) | 31 |
 | `EX` | Worked example scenarios | 33 |
 | `WL` | Workload / traffic generation | 33 |
+| `TRI` | Failure triage (clustering / dedup / reporting) | 34 |
+| `DCE` | Distributed & continuous exploration | 35 |
+| `DBG` | Time-travel & source-level debugging | 36 |
 
 Within a file, requirements are numbered in document order starting at 1. A file
 MAY group them under sub-headings but the numbers are flat within the file.

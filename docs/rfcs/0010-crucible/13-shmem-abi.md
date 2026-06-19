@@ -344,6 +344,20 @@ const _: () = assert!(core::mem::align_of::<NodeSlot>() == 128);
   exceed `max_advance_icount`. *Gate:* `gate:layer1-injection`. *Spec:* §13.3.2,
   §13.6.
 
+- **[SHM-37]** A multi-vCPU VM node (one running `N > 1` vCPUs single-threaded
+  under round-robin TCG + icount; [DET-5], [DET-23], 09) MUST be represented by a
+  **single** `NodeSlot` carrying the node's *aggregate* clock
+  (`current_icount`/`current_ns`), its *aggregate* advance ceiling
+  (`max_advance_icount`), and its *aggregate* `idle_wake_icount`. Per-vCPU icount
+  or per-vCPU state MUST NOT appear in the ABI — it is plugin-internal. The node's
+  `idle_wake_icount` MUST be the **minimum over its vCPUs' armed deadlines** (the
+  node aggregate of [TIME-24]); `device_io_active` and the RR sub-division of a
+  quantum are node-scoped, not per-vCPU. Because no per-vCPU fields are added,
+  `ABI_VERSION` is **unchanged** for N-vCPU nodes. Per-vCPU fingerprint state
+  ([DET-29]) is routed over QMP / plugin introspection (12), NOT over this shmem
+  region. *Gate:* `gate:abi-conformance`, `gate:layer1-injection`. *Spec:*
+  §13.3.2, forward-ref [`12-qemu-plugin.md`](12-qemu-plugin.md), 09.
+
 ### 13.3.3 SPSC ring header and frame entry
 
 Frames between nodes flow through single-producer/single-consumer rings: one ring
@@ -903,3 +917,9 @@ by when the producer's store landed in shared memory.
 - [ ] **T-SHM-15** Add property-based and `loom`-style SPSC concurrency tests
   (no loss/dup/tear/early-read) feeding `gate:abi-conformance`. — satisfies
   [SHM-23]; spec §13.6, forward-ref §24.
+- [ ] **T-SHM-16** Represent a multi-vCPU node with a single `NodeSlot` carrying
+  the node's aggregate clock/ceiling/idle-wake (node `idle_wake_icount` = min over
+  its vCPUs' deadlines; `device_io_active` and the RR sub-division node-scoped);
+  keep per-vCPU icount/state out of the ABI so `ABI_VERSION` is unchanged for
+  N-vCPU nodes; route per-vCPU fingerprint state over QMP/plugin introspection,
+  not shmem. — satisfies [SHM-37]; spec §13.3.2.

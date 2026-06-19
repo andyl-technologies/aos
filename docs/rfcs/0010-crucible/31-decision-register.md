@@ -137,6 +137,14 @@ genuinely unresolved and is tracked as a spike in
 
 ### D-4 — Single vCPU per VM; multi-vCPU determinism is out of scope
 
+> **Superseded in part by [D-22].** D-4's rejection of MTTCG **STANDS**: MTTCG
+> instruction-interleaving determinism remains a non-goal. The clause asserting
+> that *all* multi-vCPU determinism is out of scope and that the harness rejects
+> any `-smp > 1` scenario is **superseded by D-22**, which establishes
+> deterministic multi-vCPU via **single-threaded round-robin TCG** (not MTTCG).
+> Read D-4 below as the original single-vCPU framing; D-22 is the current decision
+> for the multi-vCPU dimension.
+
 - **Status:** Decided
 - **Decision:** Every VM runs single-vCPU (`-smp 1`). Multi-threaded TCG (MTTCG)
   instruction-interleaving determinism is a non-goal; the harness rejects a
@@ -571,6 +579,217 @@ genuinely unresolved and is tracked as a spike in
     by [CONV-1]; it would mislead about lineage and compatibility.
 - **Affects:** [CONV-1]; files 00 (§"Voice and naming"), README, 02.
 
+### D-22 — Deterministic multi-vCPU via single-threaded round-robin TCG; MTTCG rejected
+
+- **Status:** Decided
+- **Decision:** Multi-vCPU determinism is achieved with **single-threaded
+  round-robin TCG** (`-accel tcg,thread=single`): all vCPUs run on one host
+  thread, and the round-robin switch boundary is a fixed, content-addressed
+  `rr_switch_quantum` measured in node-icount. The same source-elimination
+  contract that makes a single-vCPU guest bit-identical is extended over all N
+  vCPUs and the round-robin cursor. **MTTCG is rejected.** This supersedes the
+  multi-vCPU-out-of-scope clause of D-4 (whose MTTCG rejection stands).
+- **Rationale:** MTTCG interleaves vCPU memory operations on separate host
+  threads with no deterministic memory-ordering model, so it cannot be made
+  reproducible host-side. Single-threaded round-robin TCG instead serializes all
+  vCPUs onto one host thread, and — critically — the switch boundary is itself an
+  **icount-commandable quantum**, exactly like virtual time: the scheduler decides
+  *when* a vCPU switch happens by a node-icount count, not by host scheduling, so
+  the interleaving is a pure function of icount. That makes an SMP guest as
+  deterministic as a single-vCPU one and lets the vCPU switch be a branchable
+  Decision (D-24). The cost is throughput (no real host parallelism *within* a
+  node), which is the right trade for a determinism-first simulator.
+- **Alternatives considered:**
+  - *MTTCG (multi-threaded TCG).* Rejected: nondeterministic vCPU interleaving;
+    no deterministic memory model at the TCG level (the D-4 rejection, which
+    stands).
+  - *Global-lock MTTCG.* Rejected: a global lock serializes execution — it is
+    single-vCPU-by-another-name, but slower and more complex, with none of the
+    icount-commandable-switch benefit of round-robin TCG.
+- **Affects:** [G-10], [DET-23], the Contract A restatement, [SCHED-45], [PLUG-3],
+  [QEMU-5], E21–E24; files 01, 04, 08, 09, 10, 11, 12, 13.
+
+### D-23 — Node clock stays aggregate; per-vCPU state is plugin-internal and in the fingerprint
+
+- **Status:** Decided
+- **Decision:** A node's clock remains a **single aggregate icount** even with N
+  vCPUs; per-vCPU architectural state lives **inside the plugin** and is folded
+  into the **extended fingerprint** (all N vCPUs' register files + the round-robin
+  cursor). The shared-memory ABI is **unchanged**: there are **no per-vCPU shmem
+  slots** and no per-vCPU clocks.
+- **Rationale:** Virtual time is a property of the *node*, not of an individual
+  vCPU; the round-robin TCG model already advances all vCPUs against one
+  aggregate instruction counter (D-22). Exposing a per-vCPU dimension into the
+  shmem ABI, the scheduler, and the total order would leak an internal detail
+  across the whole boundary for no gain — the scheduler orders *nodes*, and the
+  vCPU interleaving is resolved inside the plugin under the aggregate clock.
+  Keeping per-vCPU state plugin-internal (but in the fingerprint, so determinism
+  is still fully checked over all vCPUs) preserves the existing ABI and total
+  order untouched.
+- **Alternatives considered:**
+  - *Per-vCPU shmem slots.* Rejected: leaks the vCPU dimension into the
+    scheduler, the ABI, and the total order for no benefit.
+  - *Per-vCPU clocks.* Rejected: virtual time is a node property; N clocks per
+    node would need an intra-node ordering protocol the round-robin cursor already
+    provides under one aggregate clock.
+- **Affects:** [SHM-37], [TIME-34], [DET-43]; files 13, 09, 04.
+
+### D-24 — vCPU-switch and interrupt timing is a first-class `Decision::Preemption`
+
+- **Status:** Decided
+- **Decision:** The vCPU-switch boundary and timer-interrupt delivery timing are a
+  first-class **`Decision::Preemption`** in the Decision taxonomy: deterministic by
+  default, but **branchable by the explorer** to explore concurrency interleavings.
+  It works for single-vCPU guests too — varying the timer-interrupt delivery icount
+  explores intra-thread races without a second vCPU.
+- **Rationale:** Once the vCPU switch is an icount-commandable quantum (D-22), the
+  *choice* of switch point (or interrupt-delivery point) is exactly the kind of
+  resolved, reproducible decision the temporal graph already branches on for faults
+  and scheduling. Making it a Decision lets the state-space search explore
+  interleavings the same way it explores fault firings — each branch
+  bit-reproducible, the campaign adaptive. Extending it to interrupt timing means
+  even single-vCPU guests get an intra-thread race-exploration dimension.
+- **Alternatives considered:**
+  - *Fixed default interleaving only (no exploration).* Rejected: forecloses the
+    headline concurrency-bug-finding value of multi-vCPU support ([G-11]).
+  - *Preemption as an out-of-band tuning knob rather than a Decision.* Rejected: a
+    knob that changes `T` but is not a recorded Decision breaks the
+    `T = f(Configuration)` model; it must be a branch in the temporal graph.
+- **Affects:** [G-11], the EXEC Decision taxonomy, [SCHED-46], [ADV-39]; files 03,
+  07, 08, 22.
+
+### D-26 — App-controlled randomness as an optional white-box exploration dimension
+
+- **Status:** Decided
+- **Decision:** Application-controlled randomness is an **optional white-box
+  exploration dimension**: a guest may request a random value via the doorbell, and
+  the host serves it as a **`Decision::AppRandom`** drawn from the *single seeded
+  decision source* and written back over the doorbell. It is **never required** to
+  run any guest; a guest that does not opt in is unaffected.
+- **Rationale:** White-box guests that want their *own* randomness driven by the
+  explorer (so the search can branch on the values the application draws) get it for
+  free from the existing seeded decision source — the same source that resolves
+  fault firings and schedules. Serving it as a Decision keeps every drawn value
+  reproducible and branchable, and routing it over the existing doorbell means no
+  new transport. Keeping it strictly optional and white-box preserves D-6: a
+  black-box guest never needs it, and enabling it cannot become a hidden
+  determinism precondition.
+- **Alternatives considered:**
+  - *A required guest RNG hook.* Rejected: violates D-6 (any unmodified guest,
+    black-box floor); app randomness must be opt-in white-box only.
+  - *A separate entropy source for app randomness.* Rejected: a second seeded
+    source is a second thing to keep deterministic; the single decision source
+    already serves every reproducible choice.
+- **Affects:** [DET-44], [GHC-37], [GHC-38], the EXEC AppRandom Decision, [ADV-40];
+  files 16, 04, 03, 22.
+
+### D-27 — Guided / adaptive exploration: pluggable fixed-point guidance + optional deterministic bandit
+
+- **Status:** Decided
+- **Decision:** State-space exploration is **guided** by a pluggable, fixed-point
+  **guidance signal** (coverage / novelty / assertion-proximity) and an optional
+  **deterministic bandit** over exploration choices. Exploration is
+  **campaign-adaptive** — the campaign steers itself toward interesting regions —
+  but **each individual run is bit-identical** (the guidance is a pure function of
+  the recorded results so far).
+- **Rationale:** Blind exploration wastes the deterministic substrate; a guidance
+  signal computed as a fixed-point fold over the (deterministic, content-addressed)
+  event log lets the campaign prioritize coverage-novel or assertion-proximate
+  branches without sacrificing per-run reproducibility. Making the bandit
+  *deterministic* (seeded, replayable) keeps the *campaign itself* reproducible
+  given the same starting corpus, while still adapting. The signal is pluggable so
+  new objectives (a new coverage metric, a new novelty notion) drop in without
+  changing the engine.
+- **Alternatives considered:**
+  - *Random / round-robin frontier expansion.* Rejected: ignores the feedback the
+    deterministic log makes cheap; far less efficient at finding bugs.
+  - *A nondeterministic (wall-clock-seeded) bandit.* Rejected: makes the campaign
+    irreproducible; the bandit must be seeded and replayable.
+- **Affects:** [ADV-34]–[ADV-38], [ASRT-33], [OBS-37]; files 22, 18, 19.
+
+### D-28 — Distributed and continuous exploration over the shared content-addressed store
+
+- **Status:** Decided
+- **Decision:** Exploration may be **distributed** across hosts and run
+  **continuously** over a **shared content-addressed store**. Two claims are kept
+  distinct: **Claim A** — *reproduction* of any found configuration is
+  **host-independent** (content addressing makes location orthogonal to `T`);
+  **Claim B** — *scheduling and distribution of work* across the fleet **may be
+  nondeterministic** (which host explores which branch is a scaling concern, not a
+  correctness one). The fleet store is the future **RFC-0007 (`ratchet`) ratchet
+  seam**, but Crucible **ships standalone** (D-17).
+- **Rationale:** The content-addressed temporal graph already makes a checkpoint's
+  identity independent of where it was computed, so distributing exploration is a
+  pure scaling win: any host can reproduce any branch another host found (Claim A),
+  while the *assignment* of branches to hosts can be opportunistic and
+  nondeterministic without touching reproducibility (Claim B). Separating the two
+  claims prevents the common confusion that "distributed" implies "nondeterministic
+  results." The shared store is exactly the substrate RFC-0007's incremental cache
+  also wants, so it is the marked integration seam (D-17) — but, per D-17, Crucible
+  vendors what it needs and ships without waiting on ratchet.
+- **Alternatives considered:**
+  - *Single-host exploration only.* Rejected: forecloses the fuzzing fan-out [G-6]
+    motivates.
+  - *Deterministic global work scheduling across the fleet.* Rejected: needlessly
+    couples throughput to a global order; Claim B explicitly allows nondeterministic
+    distribution because reproduction (Claim A) does not depend on it.
+- **Affects:** file 35 ([DCE-*]), `gate:fleet-equivalence`,
+  `gate:campaign-continuity`, [PKG-43], [PKG-44], [PKG-45]; references [NG-7], D-17.
+
+### D-29 — Failure triage: content-addressed signature clustering + signature-preserving minimization
+
+- **Status:** Decided
+- **Decision:** Failure triage is **content-addressed failure-signature
+  clustering** (group failures by a content hash of their failure signature) plus
+  **signature-preserving minimization** (shrink a failing configuration while its
+  signature is preserved) plus **per-cluster reports**. It is entirely **offline**
+  over the recorded event log — **no new execution path**.
+- **Rationale:** A continuous, distributed campaign (D-28) finds many failures, most
+  of them duplicates; clustering by a content-addressed signature collapses
+  duplicates automatically and deterministically (same signature ⇒ same cluster).
+  Signature-preserving minimization yields the smallest reproducer that still
+  exhibits the bug, which is what a human triager actually needs. Doing it all
+  offline over the existing log means triage adds no determinism surface and no new
+  execution path — it is a pure fold/derivation over artifacts already produced.
+- **Alternatives considered:**
+  - *Raw per-failure reports with no clustering.* Rejected: drowns the triager in
+    duplicates from a continuous campaign.
+  - *Online minimization during exploration.* Rejected: adds an execution path and
+    a determinism surface; minimization is an offline derivation over recorded
+    failures.
+- **Affects:** file 34 ([TRI-*]).
+
+### D-30 — Time-travel and gdb debugging on instantiate + checkpoint-DAG + replay
+
+- **Status:** Decided
+- **Decision:** Time-travel and gdb debugging are built on the **existing**
+  `instantiate` + checkpoint-DAG + replay machinery: stepping and reverse-stepping
+  are positions in, and replays within, the temporal graph. The **non-canonical
+  debug branch** (a user mutating state and continuing) is **excluded from the
+  replay oracle** and is **not artifact-reproducible** — and it is **distinct from
+  the still-forbidden [ADV-33] detach-to-free-running-QEMU**: the debug branch still
+  runs under the deterministic scheduler, it is simply not a canonical, replayable
+  artifact.
+- **Rationale:** Debugging gets time-travel "for free" because the temporal graph
+  already realizes any past configuration via `instantiate` (D-8) and reverse-step
+  is just replay to an earlier checkpoint. Letting a user mutate-and-continue is
+  invaluable for interactive debugging, but such a branch is by definition off the
+  canonical decision stream, so it must be explicitly excluded from the replay
+  oracle ([INV-2]) — it is a *what-if*, not a reproducible run. Marking it distinct
+  from [ADV-33] is essential: the forbidden thing is detaching the guest to a
+  free-running, non-scheduler-controlled QEMU (which breaks determinism wholesale);
+  the debug branch stays under the deterministic scheduler and merely forfeits
+  artifact-reproducibility.
+- **Alternatives considered:**
+  - *A separate record/replay debugger.* Rejected: duplicates the temporal graph
+    and reintroduces a replay-log contract (D-1, [NG-6]); the checkpoint DAG already
+    gives reverse-step.
+  - *Allowing the debug branch into the replay oracle.* Rejected: a mutate-continue
+    branch is not on the canonical decision stream and cannot be a replayable
+    artifact without redefining the oracle.
+- **Affects:** file 36 ([DBG-*]), [SESS-32], [SESS-33], [CLI-27]; references
+  [ADV-33], [INV-2], D-8.
+
 ---
 
 ## Open
@@ -646,6 +865,29 @@ becomes a new `Decided` entry referencing the one it supersedes).
   [`30-risks-spikes.md`](30-risks-spikes.md) (lookahead floor / zero-latency
   links).
 
+### D-25 — Default `rr_switch_quantum` value
+
+- **Status:** Open
+- **Decision (provisional):** The round-robin vCPU-switch quantum (D-22) ships
+  with a **provisional fixed integer** value in node-icount. The choice is
+  **correctness-neutral** — any fixed quantum is deterministic — so the question is
+  purely the *default*: small enough to surface realistic intra-VM races, large
+  enough not to crater multi-vCPU throughput. The resolved value is established by
+  spike **S13**.
+- **Rationale:** The quantum trades the round-robin model's race-surfacing power
+  (finer ⇒ more interleavings explored) against throughput (finer ⇒ more
+  switch overhead). Since every fixed quantum is deterministic (D-22, [RISK-25]),
+  this is a perf/sensitivity tuning question, not a determinism question, and the
+  right value depends on measured throughput and race yield — neither known until
+  the round-robin scheduler is benchmarked (S13).
+- **Alternatives considered:** *A very fine fixed quantum* — rejected without data:
+  maximizes race surface but may crater throughput. *A very coarse fixed quantum* —
+  rejected without data: cheap but may miss realistic races. The value is left to
+  the benchmark-driven spike, with a per-branch explorer override as the fallback.
+- **Affects:** [SCHED-45], [PLUG-3], [G-9]; files 08, 22, 25. *Spike:*
+  [`30-risks-spikes.md`](30-risks-spikes.md) §30.11c (S13, `rr_switch_quantum`
+  granularity vs throughput).
+
 ---
 
 ## Relationship to spikes already in the determinism contract
@@ -693,3 +935,9 @@ a complete map of what is unsettled.
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
   §08, §25.
+- [ ] **T-D-4** Run the `rr_switch_quantum`-granularity spike (S13): sweep the
+  round-robin switch quantum, measure multi-vCPU throughput against the perf budget
+  and race-surfacing yield via the S12 explorer, choose the default value, and
+  record the resolution superseding D-25 (the per-branch explorer override is the
+  fallback). — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
+  [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25.

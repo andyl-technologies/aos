@@ -172,6 +172,8 @@ DETERMINISM (source elimination)                       class  enforces
   crucible-det-glib-prng ........ seed global GRand (1-line) D    DET-21, E9
   crucible-det-getrandom ........ deterministic guest-rng   D    DET-21, E9
   crucible-net-deterministic .... icount-timed RX delivery  D    DET-11, E18
+  crucible-rr-quantum-icount .... RR switch @ node-icount    D    DET-1, QEMU-43 (RR)
+  crucible-det-ipi .............. deterministic IPI/SIPI/INIT D    DET-1  (multi-vCPU)
   (crucible-replay-start) ....... NOT CARRIED (see §11.4)    —    NG-6 (PATCH-43)
 
 PLUGIN TIME CONTROL (API surface)                      class  enforces
@@ -180,6 +182,8 @@ PLUGIN TIME CONTROL (API surface)                      class  enforces
   crucible-plugin-drain-mainloop  drain main loop in cb      D    DET-1,  INV-10
   crucible-clock-deadline ....... exact next vtimer deadline D    TIME-24, TIME-25
   crucible-plugin-icount-raw .... raw icount read           F    DET-29 (fingerprint)
+  crucible-vcpu-introspect ...... per-vCPU regs + RR cursor  F    DET-29 (N-vCPU fp)
+  crucible-preemption-inject .... commanded vCPU switch/IRQ  D    DET-1, PLUG-50
   crucible-plugin-vcpu-exit ..... force vCPU exit            D    DET-1  (phase norm)
   crucible-plugin-wake-fd ....... main-loop wake-fd          F    SHM-26, INV-8
   crucible-plugin-tcg-exec-cb ... TCG-exec callback          F    coverage (fwd 22)
@@ -400,6 +404,72 @@ determinism-critical.
   `gate:qemu-inert`. *Spec:* §11.4; satisfies [DET-11], [DET-13], [DET-18] (E18),
   [INV-7].
 
+### crucible-rr-quantum-icount — round-robin switch at a pinned node-icount
+
+- **Enforces:** [DET-1], [QEMU-43]; makes multi-vCPU instruction interleaving a
+  pure function of icount under single-threaded round-robin TCG.
+- **Mechanism:** in the single-threaded round-robin TCG accelerator path, the
+  vCPU-switch boundary is normally `rr_quantum` derived adaptively from a
+  realtime timer (`QEMU_CLOCK_VIRTUAL_RT`), so how many instructions one vCPU
+  retires before the round-robin scheduler switches to the next is
+  host-speed-dependent. This patch makes the switch boundary the scenario's
+  fixed `rr_switch_quantum` expressed in **node-icount**: the round-robin loop
+  switches the current vCPU after exactly `rr_switch_quantum` retired
+  instructions (ascending vCPU rotation), never on a realtime tick. The quantum
+  is set from the launch configuration (10/[QEMU-43]) and is part of the content
+  hash, so the interleaving boundary is byte-identical across runs. Single-vCPU
+  (`-smp 1`) is the degenerate case where no switch ever occurs.
+- **Micro-test:** boot a 2-vCPU guest under `-accel sim` (single-threaded RR)
+  twice under injected host scheduling jitter; assert the vCPU-switch icounts and
+  the per-vCPU icount-delta traces are bit-identical; assert that with the
+  adaptive realtime quantum (patch reverted) the switch icounts diverge run to
+  run; assert `thread=multi` is independently rejected at launch ([QEMU-43]).
+- **Inertness:** [PATCH-3](b) — the node-icount switch boundary is taken only in
+  the sim round-robin path (`use_icount == ICOUNT_PRECISE` with a plugin holding
+  time control); non-sim round-robin TCG uses the upstream adaptive quantum
+  verbatim.
+- **Risk:** D (it determines the multi-vCPU interleaving; a defect silently
+  changes `T` for every multi-vCPU run).
+
+- **[PATCH-44]** The series MUST make the single-threaded round-robin TCG
+  vCPU-switch boundary a fixed `rr_switch_quantum` expressed in node-icount in
+  sim mode, with an ascending vCPU rotation, so multi-vCPU instruction
+  interleaving is a pure function of icount and not of the adaptive/realtime
+  `rr_quantum`; out of sim mode the round-robin quantum MUST be upstream-adaptive
+  unchanged. The quantum value MUST be supplied by the launch configuration
+  (10/[QEMU-43]) and is part of the content hash. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`, `gate:qemu-inert`.
+  *Spec:* §11.4; satisfies [DET-1], [DET-23], [QEMU-43], [INV-7].
+
+### crucible-det-ipi — deterministic inter-vCPU IPI/SIPI/INIT delivery
+
+- **Enforces:** [DET-1]; closes a multi-vCPU interrupt-timing hole.
+- **Mechanism:** under multi-vCPU, one vCPU sending an inter-processor interrupt
+  (IPI), startup-IPI (SIPI), or INIT to another vCPU must make that interrupt
+  architecturally visible to the target at a **deterministic node-icount**, not
+  whenever the host thread happens to dispatch the cross-vCPU notification. The
+  patch routes IPI/SIPI/INIT delivery through the sim round-robin loop's
+  icount-anchored event path so the target observes the interrupt at the same
+  node-icount on every run, synchronously with the round-robin switch boundary
+  ([PATCH-44]) rather than on a wall-clock-sensitive bottom-half iteration.
+- **Micro-test:** on a 2-vCPU guest, have vCPU0 send an IPI to vCPU1 at a fixed
+  point twice under host jitter; assert vCPU1 observes the interrupt at the
+  identical node-icount across runs; assert the delivery is gated by the icount
+  path, not a realtime callback.
+- **Inertness:** [PATCH-3](b) — the icount-anchored delivery branch is taken only
+  in the sim round-robin path; non-sim IPI/SIPI/INIT delivery is verbatim
+  upstream.
+- **Risk:** D (it determines cross-vCPU interrupt timing; a defect changes `T`
+  for multi-vCPU runs without an obvious failure).
+
+- **[PATCH-45]** The series MUST make inter-vCPU IPI/SIPI/INIT delivery
+  architecturally visible to the target vCPU at a deterministic node-icount in
+  sim mode (anchored to the round-robin event path, synchronous with the pinned
+  switch boundary [PATCH-44]), so cross-vCPU interrupt timing is a pure function
+  of icount; out of sim mode delivery MUST be upstream-identical. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`, `gate:qemu-inert`.
+  *Spec:* §11.4; satisfies [DET-1], [INV-7], references [PATCH-44].
+
 ### crucible-replay-start — deliberately NOT carried
 
 A QEMU determinism toolkit could include scaffolding to make the upstream
@@ -544,6 +614,64 @@ exact next deadline. They are additive exports ([PATCH-3](c)) except where noted
   plugin can supply the icount axis for the execution fingerprint and divergence
   bisection. *Gate:* `gate:single-vm-fingerprint`, `gate:qemu-inert`. *Spec:*
   §11.5; satisfies [DET-29], references [INV-10].
+
+### crucible-vcpu-introspect — per-vCPU register-file + round-robin cursor read
+
+- **Enforces:** [DET-29]; feeds the N-vCPU execution fingerprint (10/[QEMU-34]).
+- **Mechanism:** exports `qemu_plugin_read_vcpu_regs(vcpu_index, ...)` returning
+  the architectural register file of an arbitrary vCPU (not only the current one)
+  and `qemu_plugin_rr_cursor()` returning the round-robin scheduler cursor — which
+  vCPU is current and the position within the pinned `rr_switch_quantum`
+  ([PATCH-44]). Together they let the plugin and host compute a black-box
+  fingerprint over **all N vCPUs** plus the interleaving state, so two runs that
+  differ only in vCPU-switch phase are caught. With `-smp 1` it reduces to the
+  single register file plus a trivial cursor.
+- **Micro-test:** on a 2-vCPU guest, read both register files and the cursor at a
+  fixed icount twice; assert bit-identical results across runs; assert reading
+  vCPU1's registers does not perturb `S`/`T` (the read is side-effect-free).
+- **Inertness:** [PATCH-3](c) — a new plugin-API export that does nothing unless a
+  plugin calls it.
+- **Risk:** F (loud failure if a register read is wrong or missing).
+
+- **[PATCH-46]** The series MUST export a per-vCPU register-file read (for an
+  arbitrary vCPU index, not only the current one) and a round-robin cursor read
+  (current vCPU + position within the pinned `rr_switch_quantum`) so the host can
+  compute the N-vCPU execution fingerprint (10/[QEMU-34]) black-box; the reads
+  MUST be side-effect-free wrt `S`/`T`. *Gate:* `gate:single-vm-fingerprint`,
+  `gate:qemu-inert`. *Spec:* §11.5; satisfies [DET-29], references [QEMU-34],
+  [PATCH-44], [INV-10].
+
+### crucible-preemption-inject — commanded vCPU switch / interrupt delivery
+
+- **Enforces:** [DET-1], [PLUG-50]; makes the vCPU-switch + interrupt timing an
+  explorable, plugin-applied decision.
+- **Mechanism:** exports `qemu_plugin_inject_preemption(at_icount, kind, ...)`
+  letting the time-controlling plugin force a round-robin vCPU switch or deliver
+  an interrupt to a target vCPU at a **commanded node-icount**, so the scheduler's
+  `Decision::Preemption` (08) can be applied deterministically. The injection is
+  anchored to the same icount-driven round-robin event path as [PATCH-44]/[PATCH-45],
+  so a commanded preemption lands at exactly the requested icount on every run. A
+  commanded icount outside the authorized `[deadline, ceiling]` window MUST be
+  rejected by the export (the plugin fails loud, [PLUG-50]); the export never
+  silently clamps or defers.
+- **Micro-test:** command a vCPU switch (and separately an interrupt) at a fixed
+  in-window icount on a 2-vCPU guest twice under host jitter; assert the switch /
+  interrupt occurs at the identical icount across runs; assert an out-of-window
+  command is rejected with a distinct error rather than applied.
+- **Inertness:** [PATCH-3](c) — a new plugin-API export inert unless the plugin
+  calls it.
+- **Risk:** D (it determines interleaving when exploration is active; a defect
+  changes `T`).
+
+- **[PATCH-47]** The series MUST export a plugin-callable preemption-injection
+  path that forces a round-robin vCPU switch or delivers an interrupt at a
+  commanded node-icount (anchored to the icount round-robin event path of
+  [PATCH-44]/[PATCH-45]) so the scheduler's `Decision::Preemption`
+  (12/[PLUG-50]) is applied deterministically; a commanded icount outside the
+  authorized `[deadline, ceiling]` window MUST be rejected loudly, never clamped
+  or deferred. *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`,
+  `gate:qemu-inert`. *Spec:* §11.5; satisfies [DET-1], [INV-7], [INV-10],
+  references [PLUG-50], [PATCH-44].
 
 ### crucible-plugin-vcpu-exit — force vCPU exit (phase normalization)
 
@@ -1040,3 +1168,20 @@ time-control primitives the whole design rests on.
 - [ ] **T-PATCH-20** Pin and document the minimum QEMU version and the plugin-API
   capability set; fail the build loudly if a required capability is missing. —
   satisfies [PATCH-40], [PATCH-42]; spec §11.10.
+- [ ] **T-PATCH-21** Implement `crucible-rr-quantum-icount`: make the
+  single-threaded round-robin vCPU-switch boundary the pinned node-icount
+  `rr_switch_quantum` (ascending rotation) in sim mode, supplied by the launch
+  config; cross-run bit-identical switch-icount micro-test, with the adaptive
+  realtime quantum reverting to red. — satisfies [PATCH-44]; spec §11.4.
+- [ ] **T-PATCH-22** Implement `crucible-det-ipi`: deterministic inter-vCPU
+  IPI/SIPI/INIT delivery at a fixed node-icount via the round-robin event path,
+  with a cross-run identical-delivery-icount micro-test on a multi-vCPU guest. —
+  satisfies [PATCH-45]; spec §11.4.
+- [ ] **T-PATCH-23** Implement `crucible-vcpu-introspect`: per-vCPU register-file
+  read (arbitrary index) + round-robin cursor read for the N-vCPU fingerprint,
+  side-effect-free, additive/inert until called. — satisfies [PATCH-46]; spec
+  §11.5.
+- [ ] **T-PATCH-24** Implement `crucible-preemption-inject`: plugin-callable
+  commanded vCPU switch / interrupt delivery at a node-icount anchored to the
+  round-robin event path, rejecting out-of-`[deadline, ceiling]` commands loudly;
+  cross-run identical-application micro-test. — satisfies [PATCH-47]; spec §11.5.

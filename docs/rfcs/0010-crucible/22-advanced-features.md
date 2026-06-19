@@ -485,6 +485,137 @@ unsound one costs coverage.
   *Gate:* `gate:content-address`. *Spec:* §22.5.3; routes [NG-3]; cross-ref 07
   [TEMP-29].
 
+### 22.5.4 Guided and adaptive exploration
+
+> The strategies of §22.5.2 fix an expansion order up front. A *guided* campaign
+> goes further: it scores frontier nodes from the coverage projection (§22.6) and
+> temporal-graph metadata (07 §2) and lets that score steer expansion — and an
+> *adaptive* campaign tunes which strategy/signal mix is used as it learns. The
+> non-negotiable rule that makes this safe in Crucible is the separation between
+> the **campaign** and the **run**: the campaign is allowed to be adaptive, but
+> **every individual run it spawns stays bit-identical** to a non-guided run of
+> the same `(def, seed, schedule)`. Guidance is the campaign's own concern; it is
+> a reader of realized state and never a participant in `reduce`. The default —
+> coverage-only, no adaptivity — reproduces the existing behavior of §22.5.2
+> exactly.
+
+A **guidance signal** is a deterministic scoring function over a *realized*
+frontier checkpoint: it reads the checkpoint's coverage projection (§22.6) and
+its temporal-graph metadata (07 §2) and returns a fixed-point score used only to
+order the frontier. Signals are pure readers — they never enter `reduce`,
+scheduling, virtual time, or injection, and never change a fingerprint.
+
+```rust,illustrative
+/// Scores a realized frontier checkpoint to order expansion. A signal is a
+/// READER ONLY: it never influences reduce/scheduling/time/injection and never
+/// changes a fingerprint. Scores are fixed-point integers (never f64), and a
+/// composite is a deterministic fixed-point weighted sum over a fixed signal
+/// order, ties broken by content-address order (07 §1).
+pub trait GuidanceSignal {
+    /// Deterministic fixed-point score from the coverage projection (§22.6) and
+    /// temporal-graph metadata (07 §2). MUST NOT read host wall-clock or thread
+    /// RNG; any signal-internal randomness draws from the seeded source.
+    fn score(&self, node: &RealizedCheckpoint) -> FixedScore;
+}
+
+// Built-ins:
+//   Coverage          — the existing CoverageGuided behavior (§22.5.2).
+//   NoveltyRarity     — inverse-frequency over a deterministically-maintained
+//                       rarity table (rare blocks score higher).
+//   AssertionProximity— the distance-to-assertion metric defined in 18 (fwd-ref).
+```
+
+- **[ADV-34]** State-space search and fuzzing MAY consume a pluggable
+  **guidance-signal** abstraction: a `GuidanceSignal` that deterministically
+  scores a *realized* frontier checkpoint from its coverage projection (§22.6) and
+  temporal-graph metadata (07 §2). Crucible MUST provide at least three built-in
+  signals — coverage (the existing `CoverageGuided` behavior, §22.5.2),
+  novelty/rarity (inverse-frequency over a deterministically-maintained rarity
+  table), and assertion-proximity (the distance metric defined in 18,
+  forward-ref). Signals MUST compose by a deterministic fixed-point weighted sum,
+  with ties broken by content-address order (07 §1). Signals MUST be **readers
+  only**: a signal MUST NOT influence `reduce`, scheduling, virtual time, or
+  injection, and MUST NOT change a fingerprint (§22.6.2 [ADV-23], [INV-1]). The
+  default — coverage only, no adaptivity — MUST reproduce the existing behavior of
+  §22.5.2. *Gate:* `gate:content-address`, `gate:single-vm-fingerprint`. *Spec:*
+  §22.5.4; cross-ref §22.6, 07 §2, 18.
+
+- **[ADV-35]** Guidance scores and weights MUST be fixed-point/integer and MUST
+  NEVER be `f64`: float summation is not associative across hosts and is banned on
+  any ordering path ([INV-9]). Signal combination MUST use a fixed order (by signal
+  id, then content-address order of realized nodes, 07 §1), so the composite score
+  is a deterministic function of the realized graph. Any signal-internal randomness
+  MUST draw from the seeded decision source and MUST be recorded ([ADV-3], [INV-10]).
+  *Gate:* `gate:e2e-determinism`, `gate:harness-lint`. *Spec:* §22.5.4; routes
+  [INV-9], [INV-10].
+
+- **[ADV-36]** Adaptive strategy selection is **OPTIONAL and off by default**.
+  When enabled, it MUST be a deterministic multi-armed bandit (default: a
+  deterministic UCB rule) over a *fixed ordered set* of expansion arms (the
+  existing strategies of §22.5.2 plus signal-weight presets, §22.5.4). The bandit
+  MUST credit a deterministic reward — new coverage, novelty gain,
+  assertion-proximity progress, and *dominantly* a confirmed failure — and MUST
+  apply credit in content-address order (07 §1). All bandit state transitions MUST
+  be a deterministic function of the realized graph and the seed; no host
+  wall-clock or thread RNG ([ADV-3], [INV-9]). *Gate:* `gate:e2e-determinism`,
+  `gate:content-address`. *Spec:* §22.5.4; cross-ref §22.5.2, §22.6.
+
+- **[ADV-37]** An adaptive/guided campaign MUST be **campaign-adaptive but
+  run-deterministic**: its arm selections, rewards, and expansion order MUST be a
+  deterministic function of `(family, seed, budget, content-addressed graph,
+  signal+bandit config)` and reproducible *as a unit*. Guidance MUST change only
+  *which* nodes are expanded and *in what order* — never *what a node denotes*
+  ([INV-1]). The signal+bandit config MUST be hashed into the **campaign
+  identity**. A reproduction artifact (§22.8) MUST remain a bare
+  `(def, seed, schedule)` bundle reproducible by replay alone, with **no reference
+  to the campaign, signals, or bandit** ([ADV-28], 06 [SPAT-27]). *Gate:*
+  `gate:e2e-determinism`, `gate:content-address`, `gate:replay-oracle`. *Spec:*
+  §22.5.4; cross-ref §22.8, 06 §7.1.
+
+- **[ADV-38]** Guidance MUST be sound under reduction and fair. Because scores are
+  functions of the canonical `coverage_fingerprint` (07 §2), a node and its
+  symmetric representative MUST score identically, so guidance MUST NOT defeat
+  symmetry or partial-order reduction (§22.5.3, [ADV-19]): it is ordering-only over
+  the same explored graph. A **fairness floor** — a bounded fraction of expansions
+  allocated breadth-first — MUST be enforced to prevent starvation of the frontier.
+  *Gate:* `gate:content-address`, `gate:e2e-determinism`. *Spec:* §22.5.4;
+  cross-ref §22.5.3, 07 §2/§9.
+
+### 22.5.5 Interleaving and preemption exploration
+
+The decision taxonomy (05 §3) includes `Decision::Preemption` — the vCPU-switch
+and interrupt-timing decision derived from 05/08. Branching on *when* a vCPU is
+preempted (and when the timer interrupt lands) is the highest-leverage intra-node
+exploration axis, because it reaches concurrency bugs that no schedule of
+*delivered messages* alone can expose — and it works even for a **single-vCPU
+guest** by varying when the timer interrupt preempts the running vCPU.
+
+- **[ADV-39]** State-space search and fuzzing MUST be able to branch on
+  `Decision::Preemption` (the vCPU-switch + interrupt-timing decision of 05/08)
+  within the bounded `[deadline, horizon]` window — the highest-leverage intra-node
+  axis, working even for single-vCPU guests (varying when the timer interrupt
+  preempts). Search MUST apply partial-order reduction over commuting preemptions
+  (§22.5.3, [ADV-19]) to stay tractable. Each preemption-branch child MUST be a
+  content-addressed temporal-graph node (07 §1) validated by the replay oracle (07
+  §6, [INV-2]). *Gate:* `gate:replay-oracle`, `gate:content-address`. *Spec:*
+  §22.5.5; cross-ref 05 §3, 08, 07 §9.
+
+### 22.5.6 App-controlled randomness as a search dimension
+
+When a scenario opts into app-requested randomness (`Decision::AppRandom`, 16/05),
+the value served to the guest at each draw is itself a degree of freedom. Search
+and fuzzing MAY treat the served value as a mutation/branch dimension. This is
+strictly additive: a scenario with no app-random draws explores exactly as before.
+
+- **[ADV-40]** When a scenario opts into app-requested randomness
+  (`Decision::AppRandom`, 16/05), search and fuzzing MAY explore alternative served
+  values as a mutation/branch dimension, bounded by the per-scenario draw cap and a
+  per-draw seeded value-sampling budget. This capability MUST be strictly
+  optional/additive: a scenario with no app-random draws MUST explore identically
+  to before. Each alternative served value MUST be recorded as a `Decision` (05 §3)
+  so the branch is reproducible ([ADV-3], [INV-1]). *Gate:* `gate:e2e-determinism`,
+  `gate:content-address`. *Spec:* §22.5.6; cross-ref 16, 05 §3.
+
 ## 22.6 Coverage: black-box basic-block feedback
 
 ### 22.6.1 The signal
@@ -608,6 +739,12 @@ corpus membership and dedup ride the same content addressing as the temporal gra
 entries subsumed by others), and energy assignment (favor entries near coverage
 frontiers) — MUST be deterministic and seeded so a campaign reproduces ([ADV-25]).
 
+> **Cross-ref.** Scaling a fuzzing campaign across many hosts and keeping a
+> continuously-growing corpus is specified separately in
+> [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md)
+> (DCE); this section specifies only the single-host corpus and its content
+> addressing, on which the distributed/continuous capability builds.
+
 Throughput matters because fuzzing's reach is throughput-bound: idle time is
 fast-forwarded to zero wall-clock (12 §12.3.5), forks are CoW-cheap (07 §5), and
 runs parallelize up to the lookahead budget — the fuzzer MUST meet the **fuzzing
@@ -645,6 +782,11 @@ bundle of 06 §7.1 / 23: the pinned concrete `ScenarioDef` (with its `id`, 06
 schedule captures every genuine choice (05 [EXEC-8]), the artifact reproduces the
 run to the instruction with no reference to the search/fuzz campaign or the family
 that found it (06 [SPAT-27]).
+
+> **Cross-ref.** Triaging discovered findings — deduplicating, classifying, and
+> ranking the failures these artifacts represent — is specified separately in
+> [`34-failure-triage.md`](34-failure-triage.md) (TRI); this section specifies
+> only how a single finding is captured and minimized into a reproducible artifact.
 
 The artifact is correct by **replay alone** — `def + seed + schedule` reproduces by
 re-reduction, needing no stored snapshots (07 [TEMP-23]). Where a content-addressed
@@ -853,6 +995,36 @@ UNIFYING VIEW (§22.9): fork/save/resume/search/replay/fuzz/minimize are all
   sound graph-level node-deduplication over the content-addressed DAG (07 §9),
   explicitly not a model checker / spec-language evaluator (NG-3). — satisfies
   [ADV-19], [ADV-20]; spec §22.5.3; cross-ref 07 §9, 08.
+- [ ] **T-ADV-17** Implement the `GuidanceSignal` abstraction with three built-in
+  signals (coverage = the existing `CoverageGuided` behavior; novelty/rarity over a
+  deterministically-maintained rarity table; assertion-proximity from the 18
+  distance metric) and fixed-point deterministic composition (content-address
+  tie-break); prove the default (coverage only, no adaptivity) reproduces the
+  existing §22.5.2 behavior and that signals are readers-only (no fingerprint
+  effect). — satisfies [ADV-34], [ADV-35]; spec §22.5.4; cross-ref §22.6, 07 §2, 18.
+- [ ] **T-ADV-18** Implement optional, off-by-default adaptive strategy selection
+  (deterministic multi-armed bandit, default UCB) over a fixed ordered set of
+  expansion arms with a deterministic reward model (new coverage, novelty gain,
+  assertion-proximity progress, dominantly a confirmed failure; credited in
+  content-address order) and a breadth-first fairness floor; prove the campaign is
+  reproducible as a unit and that its config is hashed into the campaign identity
+  while the reproduction artifact stays a bare (def, seed, schedule) bundle. —
+  satisfies [ADV-36], [ADV-37], [ADV-38]; spec §22.5.4; cross-ref §22.5.3, §22.8.
+- [ ] **T-ADV-19** Add a determinism lint that bans `f64` on signal/bandit ordering
+  paths (scores, weights, reward accumulation), enforcing fixed-point/integer
+  arithmetic and fixed combination order. — satisfies [ADV-35]; spec §22.5.4;
+  cross-ref [INV-9], `gate:harness-lint`.
+- [ ] **T-ADV-20** Implement branching on `Decision::Preemption` (vCPU-switch +
+  interrupt-timing) within the bounded [deadline, horizon] window — working for
+  single-vCPU guests — with partial-order reduction over commuting preemptions and
+  each preemption-branch child a content-addressed, oracle-validated temporal-graph
+  node. — satisfies [ADV-39]; spec §22.5.5; cross-ref 05 §3, 08, 07 §6/§9.
+- [ ] **T-ADV-21** Implement optional, additive exploration of app-controlled
+  randomness (`Decision::AppRandom`, 16/05) as a mutation/branch dimension over
+  served values, bounded by the per-scenario draw cap and a per-draw seeded
+  value-sampling budget, recording each alternative as a `Decision`; prove a
+  scenario with no app-random draws explores identically to before. — satisfies
+  [ADV-40]; spec §22.5.6; cross-ref 16, 05 §3.
 - [ ] **T-ADV-10** Consume black-box basic-block coverage from the plugin TCG-exec
   hook (12 §12.8) as a registration-time opt-in with zero fingerprint effect,
   working on any binary with no guest instrumentation. — satisfies [ADV-21]; spec

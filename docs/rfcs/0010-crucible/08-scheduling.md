@@ -453,6 +453,12 @@ or no node has a finite horizon — the last case being quiescence. Idle nodes d
 (§8.9.3), so a node idle until virtual time `T` never constrains a peer running
 at a time `< T`.
 
+For a multi-vCPU node, "idle" is a property of *all* its vCPUs together: the
+node is idle only when every vCPU is halted with no armed timer and no pending
+input, and its idle wake icount is the minimum next deadline over its vCPUs.
+The effective-horizon projection ([SCHED-44]) is applied at the node level. See
+[SCHED-47] (§8.16).
+
 ## 8.9 The quantum: PICK / RUN / RESOLVE / EMIT / STEP
 
 The scheduler advances the system one **quantum** at a time, using the five-phase
@@ -528,6 +534,10 @@ incremental ceiling that the plugin could read at a host-scheduling-dependent
 moment would let a single-instruction difference leak into guest timing. The
 horizon is a *single* value computed before RUN and published once.
 
+For a multi-vCPU node, the node's instruction budget within one RUN is
+sub-divided across vCPUs internally; this sub-division is plugin-internal and
+does not change the single-ceiling rule above. See [SCHED-45] (§8.16).
+
 ### 8.9.3 RUN and idle: fast-forward without losing exactness
 
 - **[SCHED-28]** When the selected node goes idle (HLT) during RUN with its next
@@ -582,6 +592,11 @@ while every wakeup still lands at its exact icount.
   localize the violation, never deliver the event late ([DET-12], [INV-10]).
   *Gate:* `gate:layer1-injection`, `gate:divergence-bisect`. *Spec:* §8.9.4;
   routes [DET-12], [INV-10].
+
+When the explorer supplies a `Decision::Preemption`
+([`05-execution-model.md`](05-execution-model.md) §12), RESOLVE applies it as
+the node's interrupt/switch point within the bounded window, recorded in total
+order; see [SCHED-46] (§8.16).
 
 ### 8.9.5 EMIT
 
@@ -854,6 +869,43 @@ then the icount at which any input reaches any node is a pure function of virtua
 time — which is exactly Contract B ([DET-6]). The scheduler is the component that
 makes `reduce` ([INV-1]) pure across nodes.
 
+## 8.16 Multi-vCPU nodes: RR sub-division and applied preemptions
+
+A node may host more than one vCPU. The scheduler still treats the node as a
+single horizon-bearing entity (one ceiling per RUN, [SCHED-27]); the round-robin
+sub-division of the node's instruction budget across its vCPUs, and the
+application of explorer-supplied preemption decisions
+([`05-execution-model.md`](05-execution-model.md) §12), are specified here.
+
+- **[SCHED-45]** RUN MUST advance the selected node to its ceiling *via the
+  round-robin loop*: within one RUN the node's instruction budget MUST be
+  divided among its vCPUs by the deterministic `rr_switch_quantum` in a fixed
+  ascending rotation. The scheduler MUST publish only the **node** ceiling (one
+  ceiling per RUN, unchanged from [SCHED-27]); the RR sub-division MUST be
+  plugin-internal and MUST NOT be host-timing-dependent. A single-vCPU node is
+  the degenerate case (one vCPU consumes the whole budget). *Gate:*
+  `gate:single-vm-fingerprint`, `gate:layer1-injection`. *Spec:* §8.16, §8.9.2;
+  routes [INV-3], [DET-13].
+
+- **[SCHED-46]** When the explorer supplies a `Decision::Preemption`
+  ([`05-execution-model.md`](05-execution-model.md) §12), RESOLVE MUST apply it
+  as the node's interrupt/switch point within `[deadline, horizon]`, recorded in
+  the total order of §8.6. A preemption MUST NOT move a point past the node's
+  authorized ceiling, preserving Contract B and the conservative-PDES guarantee
+  ([SCHED-5], [DET-12]). The DEFAULT (round-robin and armed-deadline) preemption
+  sequence is deterministic engine behavior and is not a search decision until
+  overridden ([EXEC-33]). *Gate:* `gate:layer1-injection`,
+  `gate:replay-oracle`. *Spec:* §8.16, §8.9.4; routes [INV-3], [DET-12].
+
+- **[SCHED-47]** An N-vCPU node MUST be considered **idle** for quiescence
+  ([SCHED-22], [SCHED-23]) only when *all* N vCPUs are halted with no armed
+  timer and no pending input. The node's `idle_wake` icount MUST be the `min`
+  over its vCPUs of each vCPU's next deadline, and the `effective_horizon`
+  projection ([SCHED-44]) MUST be applied at the **node** level (one projection
+  per node, not per vCPU). *Gate:* `gate:scheduler-liveness`,
+  `gate:single-vm-fingerprint`. *Spec:* §8.16, §8.8, §8.9.1; routes [INV-8],
+  [INV-4].
+
 ## Implementation checklist
 
 > The authoritative, ordered tasks live in
@@ -964,3 +1016,16 @@ makes `reduce` ([INV-1]) pure across nodes.
   control op submitted to the scheduler actor is applied within a bounded number
   of quanta, only at quantum boundaries. — satisfies [SCHED-3], [SCHED-33]; spec
   §8.2, §8.9.6.
+- [ ] **T-SCHED-28** Implement RR sub-division inside RUN: divide a multi-vCPU
+  node's instruction budget among its vCPUs by `rr_switch_quantum` in fixed
+  ascending rotation, plugin-internal and host-timing-independent, with the node
+  ceiling unchanged (one ceiling per RUN). — satisfies [SCHED-45]; spec §8.16.
+- [ ] **T-SCHED-29** Apply explorer-supplied `Decision::Preemption` in RESOLVE
+  within the bounded `[deadline, horizon]` window, recorded in total order, never
+  moving a point past the node's authorized ceiling (Contract B / conservative
+  PDES). — satisfies [SCHED-46]; spec §8.16.
+- [ ] **T-SCHED-30** Implement all-vCPUs-idle quiescence for N-vCPU nodes: a node
+  is idle only when every vCPU is halted with no armed timer and no pending input;
+  node `idle_wake` = `min` over vCPUs of next deadline; apply the
+  `effective_horizon` projection at the node level. — satisfies [SCHED-47];
+  spec §8.16.

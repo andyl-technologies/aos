@@ -454,6 +454,23 @@ cheap and the present ships standalone.
   future integration; it is text, not a dependency. *Spec:* §26.9; satisfies
   [NG-7].
 
+- **[PKG-45]** The ratchet seam MUST be **the same seam** for the standalone
+  single-host store and the **fleet-visible content-addressed `DagStore` backend**
+  of [PKG-43]: the fleet store and its dependency-gated invalidation
+  ([PKG-33]) MUST sit **behind `crucible-cas`'s unchanged narrow interface**
+  ([PKG-34]), so that a future RFC-0007 ratchet shared substrate slots in at the
+  identical seam whether Crucible runs on one host or a fleet
+  ([`35-distributed-exploration.md`](35-distributed-exploration.md)). The
+  `crucible-cas` module docs MUST name the fleet-visible store and the
+  dependency-gated invalidation as that shared seam, and MUST state the same merge
+  bar: a shared implementation replaces it only if it passes
+  `gate:content-address`, `gate:replay-oracle`, and `gate:e2e-determinism`
+  unchanged. Crucible MUST still ship **standalone** with no RFC-0007 dependency
+  ([NG-7], [PKG-32]); the fleet store is a Crucible-owned implementation behind the
+  same interface, not an RFC-0007 import. *Gate:* `gate:content-address`,
+  `gate:replay-oracle`, `gate:e2e-determinism`. *Spec:* §26.9, §26.11; satisfies
+  [NG-7], [INV-6].
+
 - **[PKG-35]** The **future-merge plan** MUST be: when RFC-0007 lands a stable
   content-addressed-store + invalidation crate, replace `crucible-cas`'s internals
   with a thin adapter over it **behind the unchanged interface of [PKG-34]**,
@@ -490,6 +507,38 @@ cheap and the present ships standalone.
   ([`23-cli.md`](23-cli.md) §12) can refuse to replay against a mismatched build
   rather than silently produce a different run. *Gate:* `gate:e2e-determinism`.
   *Spec:* §26.10; satisfies [G-6], [G-8], [INV-10].
+
+## 26.11 Distributed exploration: the fleet store and campaign provenance
+
+Distributed/continuous exploration ([`35-distributed-exploration.md`](35-distributed-exploration.md))
+needs two packaging-level commitments beyond the single-host build: a
+fleet-visible content-addressed store the explorer hosts share, built from source
+as an AOS component; and a **provenance-keyed campaign** so that a corpus never
+carries findings across an incompatible build.
+
+- **[PKG-43]** The **fleet-visible content-addressed `DagStore` backend** (the
+  store explorer hosts share to publish and fetch checkpoints/ancestors, 07,
+  [`35-distributed-exploration.md`](35-distributed-exploration.md)) MUST be an
+  **AOS-built from-source component** ([PKG-1]) — no upstream binary, no host
+  tool, no nixpkgs — and the distributed-search / continuous-campaign capability
+  MUST be wired as an **AOS VM/fleet check** in the `lib/testing` VM/fleet harness
+  class (alongside [PKG-29]), running **TCG-only with no `kvm` feature** ([PKG-30],
+  [G-1]) so it runs on any CI runner without nested virtualization. The check MUST
+  build the fleet-store component and the explorer closure hermetically as part of
+  its inputs ([PKG-1]). *Gate:* `gate:e2e-determinism`, `gate:campaign-continuity`.
+  *Spec:* §26.11; satisfies [G-7], [G-1], [G-6].
+
+- **[PKG-44]** A campaign MUST be **keyed to the provenance triple** of
+  [PKG-36]/[PKG-38] — the Crucible software version, the QEMU build identity +
+  applied patch-series hash, and the three ABI versions ([PKG-21]). Seeding a new
+  campaign (or a CI run) from a prior corpus MUST **refuse cross-provenance reuse**:
+  a QEMU bump, a patch-series change, or any ABI bump ([PKG-16], [PKG-23]) starts a
+  **fresh campaign lineage** rather than mixing findings produced by a different
+  build (which could no longer reproduce, [PKG-38]). The refusal MUST be loud and
+  recorded as a fresh-lineage baseline event ([PERF-28],
+  [`31-decision-register.md`](31-decision-register.md)), never a silent merge.
+  *Gate:* `gate:e2e-determinism`, `gate:campaign-continuity`. *Spec:* §26.11;
+  satisfies [G-6], [G-8], [INV-10].
 
 ## Implementation checklist
 
@@ -575,3 +624,17 @@ cheap and the present ships standalone.
 - [ ] **T-PKG-20** Record the full provenance triple in every reproduction artifact
   so `crucible replay` refuses a mismatched build. — satisfies [PKG-38]; spec
   §26.10, coordinates with [`23-cli.md`](23-cli.md) §4, §12.
+- [ ] **T-PKG-21** Build the fleet-visible content-addressed `DagStore` backend as
+  an AOS from-source component and wire the distributed-search / continuous-campaign
+  capability as a TCG-only AOS VM/fleet check (no `kvm` feature), building the
+  fleet-store + explorer closure hermetically. — satisfies [PKG-43]; spec §26.11;
+  cross-ref [`35-distributed-exploration.md`](35-distributed-exploration.md).
+- [ ] **T-PKG-22** Key campaigns to the provenance triple and refuse cross-provenance
+  corpus reuse (a QEMU/patch-series/ABI bump starts a fresh campaign lineage,
+  recorded as a baseline event), loudly rather than silently merging. — satisfies
+  [PKG-44]; spec §26.11; cross-ref [PERF-28].
+- [ ] **T-PKG-23** Extend the `crucible-cas` ratchet-seam merge marker to name the
+  fleet-visible store + dependency-gated invalidation as the SAME seam behind the
+  unchanged narrow interface (merge bar = gate:content-address /
+  gate:replay-oracle / gate:e2e-determinism), keeping Crucible standalone (no
+  RFC-0007 dependency). — satisfies [PKG-45]; spec §26.9, §26.11.

@@ -145,6 +145,13 @@ Start here, then read in three bands:
 **Worked examples & workloads:**
 33. [`33-examples-and-workloads.md`](33-examples-and-workloads.md) — end-to-end worked scenarios (happy path, partition-recovery, crash/restart, fault campaign, determinism check) authored with zero guest-side components, plus the in-guest workload/traffic-generation story.
 
+**Advanced capabilities (built on the green determinism foundation):**
+34. [`34-failure-triage.md`](34-failure-triage.md) — clustering/dedup of discovered failures by root-cause signature, signature-preserving minimization, per-cluster reports.
+35. [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md) — fleet-scaled search over the shared content-addressed store, persistent campaigns + the coverage ratchet, the reproduction-vs-scheduling determinism boundary.
+36. [`36-time-travel-debugging.md`](36-time-travel-debugging.md) — gdb-stub attach to any checkpoint, reverse/time-travel via restore-nearest+replay, the non-canonical debug branch.
+
+(Multi-vCPU determinism, concurrency-interleaving exploration, guided/adaptive search, and optional app-controlled randomness are folded into the relevant spec files above — see [01](01-goals-nongoals-invariants.md) [G-10]/[G-11], [05](05-execution-model.md) `Decision::Preemption`/`Decision::AppRandom`, and [22](22-advanced-features.md).)
+
 **The plan (the thing an implementor works through):**
 33. [`32-implementation-plan.md`](32-implementation-plan.md) — the master, phased, checkbox implementation plan. Every task references the spec requirement IDs it satisfies; every spec file carries the slice of the plan that belongs to it. Phase ordering puts **determinism, the test harness, the transport ABI, and the control-plane API correctness first**, before any feature is built on top.
 

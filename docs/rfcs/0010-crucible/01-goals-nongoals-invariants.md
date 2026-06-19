@@ -57,11 +57,32 @@ and uphold the invariants stated here. Requirement IDs defined here (`G-*`,
   lookahead budget, determinism overhead within budget, and a stated fuzzing
   throughput.
 
+- **[G-10] Deterministic multi-vCPU guests.** Crucible MUST run multi-vCPU
+  (`-smp N`) guests deterministically via single-threaded round-robin (RR) TCG +
+  `-icount` (never MTTCG): the whole multi-vCPU interleaving MUST be a pure
+  function of `(image, seed, Schedule)`. Within a VM, vCPUs are serialized on one
+  host thread (determinism over intra-VM speed); cross-VM host parallelism
+  ([`08-scheduling.md`](08-scheduling.md)) is unaffected. (Detail:
+  [`04-determinism-contract.md`](04-determinism-contract.md),
+  [`10-qemu-integration.md`](10-qemu-integration.md),
+  [`11-qemu-patches.md`](11-qemu-patches.md),
+  [`12-qemu-plugin.md`](12-qemu-plugin.md).)
+
+- **[G-11] Concurrency-interleaving exploration.** The vCPU-switch and
+  interrupt/preemption timing MUST be a first-class explorable `Decision`
+  (`Decision::Preemption`), deterministic by default and branchable by the
+  explorer ([`22-advanced-features.md`](22-advanced-features.md)), including for
+  single-vCPU guests (varying when the timer interrupt preempts) — the
+  highest-leverage axis for finding intra-node concurrency/ordering bugs.
+
 ## Non-goals
 
-- **[NG-1] Multi-vCPU guest determinism.** Each VM runs single-vCPU (`-smp 1`).
-  Multi-threaded TCG (MTTCG) instruction-interleaving determinism is out of scope.
-  A guest that wants parallelism runs it serialized on one vCPU.
+- **[NG-1] _(withdrawn — superseded by [G-10])._** Multi-vCPU guest determinism
+  was originally out of scope (single-vCPU only) because multi-threaded TCG
+  (MTTCG) is nondeterministic. It is now a goal ([G-10]), achieved **not** via
+  MTTCG but via single-threaded round-robin TCG + `-icount` (all vCPUs time-share
+  one host thread, switching at a deterministic icount quantum). MTTCG
+  (`thread=multi`) remains forbidden ([DET-23]).
 
 - **[NG-2] In-process testing of host Rust code.** Crucible is a QEMU-guest
   simulator. It does NOT provide an in-process harness for testing the host's own
@@ -149,6 +170,12 @@ system. They are the load-bearing truths the design and its tests defend.
   source, or fail loudly. A detected divergence MUST localize to the first
   differing decision/instruction, never be smoothed over. *Gate:*
   `gate:divergence-bisect`.
+
+- **[INV-11] Interleaving is instruction-count-derived.** A node's vCPU
+  interleaving and interrupt-delivery points are a pure function of node icount,
+  the fixed `rr_switch_quantum`, and the `Schedule`'s `Decision::Preemption`
+  entries — never of host thread scheduling. *Gate:* `gate:layer0-determinism`,
+  `gate:single-vm-fingerprint`.
 
 ## Acceptance: when is Crucible "done" to this RFC?
 

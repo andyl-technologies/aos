@@ -63,22 +63,30 @@ region and, once at setup, the control socket.
   plugin-owned paths. *Gate:* `gate:layer1-injection`. *Spec:* §12.1, §12.5,
   §12.6, §12.7; routes [INV-3], [INV-8].
 
-### 12.1.2 Single vCPU ⇒ uncontended state
+### 12.1.2 Single-threaded round-robin ⇒ uncontended state
 
-Every VM runs `-smp 1` ([NG-1], [DET-23]), so QEMU serializes all vCPU callbacks
-— registration, translation-block hooks, idle, resume, and the device callbacks
-that fire on the vCPU thread — onto exactly one thread. This is the structural
-fact that makes the plugin's state cheap and correct.
+Every VM runs under single-threaded round-robin TCG (`-accel tcg,thread=single`)
+with N ≥ 1 vCPUs (10/[QEMU-5]). QEMU drives all N vCPUs serially on **one host
+thread**, so it serializes every vCPU callback — registration, translation-block
+hooks, idle, resume, and the device callbacks that fire on the vCPU thread —
+across all vCPUs onto exactly that one thread. This is the structural fact that
+makes the plugin's state cheap and correct: the uncontended-state property is
+**preserved by round-robin** even with N > 1, because there is never a second
+host thread running a vCPU callback concurrently. Multi-threaded TCG
+(`thread=multi`, MTTCG) would break that property and is rejected.
 
-- **[PLUG-3]** The plugin MUST be designed for the `-smp 1` single-vCPU
-  execution model: all vCPU-thread callbacks are serialized by QEMU onto one
-  thread, so the plugin's own state is *uncontended*. The plugin MUST NOT assume
-  or require multi-vCPU concurrency, and MUST reject (fail loudly at registration)
-  a configuration that reports more than one vCPU. Any synchronization primitive
-  the plugin holds for its own state exists only to satisfy the language's
-  thread-safety rules for process-global state, never to arbitrate genuine
-  contention. *Gate:* `gate:layer0-determinism`, `gate:single-vm-fingerprint`.
-  *Spec:* §12.1.2; routes [NG-1], [DET-23].
+- **[PLUG-3]** The plugin MUST be designed for the single-threaded round-robin
+  TCG execution model with N ≥ 1 vCPUs: QEMU serializes *all* vCPU-thread
+  callbacks (across all N vCPUs) onto one host thread, so the plugin's own state
+  is *uncontended* — a property the round-robin accelerator **preserves** for
+  any N. The plugin MUST reject (fail loudly at registration) multi-threaded TCG
+  (`thread=multi` / MTTCG), but MUST NOT reject `-smp N` per se: N > 1 under
+  single-threaded round-robin is supported and does not introduce concurrency on
+  the plugin's state. Any synchronization primitive the plugin holds for its own
+  state exists only to satisfy the language's thread-safety rules for
+  process-global state, never to arbitrate genuine contention. *Gate:*
+  `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §12.1.2;
+  routes [DET-23], references [NG-1], [QEMU-5].
 
 - **[PLUG-4]** Where two callback families can re-enter each other on the single
   vCPU thread (e.g. the idle handler advances virtual time, which fires a guest
@@ -213,22 +221,28 @@ exact-deadline discipline of [`09-virtual-time-icount.md`](09-virtual-time-icoun
 
 ### 12.3.2 The idle (HLT/WFI) callback
 
-When the guest executes `HLT` (x86) or `WFI` (aarch64) with no runnable work,
-QEMU fires the vCPU-idle callback. This is the synchronization point: the plugin
-computes how far it is allowed to jump, performs that jump, and injects any inputs
-that come due in the jumped-over window.
+When a vCPU executes `HLT` (x86) or `WFI` (aarch64) with no runnable work, QEMU
+fires the vCPU-idle callback for that vCPU. Under `-smp N` the **node** is idle
+only when **all N vCPUs are halted**: a node with one vCPU halted while another
+is still runnable is *not* node-idle, and the plugin MUST keep running the
+round-robin rather than treating the node as idle. The node-idle transition is
+the synchronization point: the plugin computes how far it is allowed to jump,
+performs that jump, and injects any inputs that come due in the jumped-over
+window.
 
-- **[PLUG-10]** On the vCPU-idle callback the plugin MUST:
+- **[PLUG-10]** On the node going idle (the transition at which **all N vCPUs are
+  halted**, tracked per [PLUG-52]) the plugin MUST:
   1. read its current icount and publish it (with the derived `current_ns`) into
      its node slot ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-10], [SHM-24]),
      bumping the publish-generation counter;
   2. query the **exact** next armed guest timer deadline via the clock-deadline
-     introspection capability (§12.3.4, [TIME-24]); a node with no armed timer
-     reports "no deadline";
-  3. compute its desired wake icount as the earliest of: the next timer deadline,
-     the `delivery_icount` of the head entry of any inbound frame ring (peeked,
-     not consumed, §12.4.2), and the scheduler-published `max_advance_icount`
-     ceiling;
+     introspection capability (§12.3.4, [TIME-24]) — taken as the **minimum over
+     all N vCPUs** of each vCPU's next armed deadline; a node with no armed timer
+     on any vCPU reports "no deadline";
+  3. compute its desired wake icount as the earliest of: the minimum-over-vCPUs
+     next timer deadline (step 2), the `delivery_icount` of the head entry of any
+     inbound frame ring (peeked, not consumed, §12.4.2), and the
+     scheduler-published `max_advance_icount` ceiling;
   4. publish `idle_wake_icount` and set its status to idle
      ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7);
   5. block on the wake fd / futex until the scheduler raises the ceiling to or
@@ -251,6 +265,18 @@ that come due in the jumped-over window.
   ceiling, the plugin blocks (step 5) rather than overshooting. *Gate:*
   `gate:layer0-determinism`, `gate:layer1-injection`. *Spec:* §12.3.2; routes
   [DET-12], [INV-8], [TIME-27].
+
+- **[PLUG-52]** The plugin MUST track per-vCPU halt state for all N vCPUs and
+  MUST treat the node as idle **only when every vCPU is halted**; one vCPU halted
+  while another is runnable is NOT node-idle and MUST NOT trigger the idle
+  publish/park/jump of [PLUG-10]. When the node is idle, `idle_wake_icount` MUST
+  be the **minimum over all vCPUs** of each vCPU's next armed timer deadline
+  (clamped at the ceiling per [PLUG-11]); a vCPU un-halting (interrupt, IPI, or
+  the commanded preemption of [PLUG-50]) MUST clear the node-idle state. The
+  plugin MUST maintain the per-vCPU halted count from the vCPU idle/resume
+  callbacks so the all-halted predicate is exact, never inferred from a single
+  vCPU. *Gate:* `gate:layer0-determinism`, `gate:scheduler-liveness`. *Spec:*
+  §12.3.2, §12.4.1; routes [DET-10], [INV-8], references [QEMU-5], [PLUG-50].
 
 The idle handler is the entire reason warp must be suppressed: under stock QEMU
 the idle path would advance the clock by *host* elapsed time. With the plugin
@@ -333,6 +359,35 @@ The synchronous-drain requirement is what makes idle fast-forward exact: a
 60-second idle gap collapses to one virtual-time jump ([G-9],
 [`25-performance-targets.md`](25-performance-targets.md)) and every timer that was
 due in that gap fires at its exact icount, in the same order, on every run.
+
+### 12.3.6 Round-robin sub-division and commanded preemption
+
+Within a single *running* quantum (between idle transitions) the node's N vCPUs
+are interleaved by the single-threaded round-robin TCG accelerator. The plugin
+drives that interleaving deterministically and applies the scheduler's
+exploration decision about *when* a vCPU switch / interrupt happens.
+
+- **[PLUG-50]** Within a RUN (the span between node-idle transitions) the
+  plugin MUST drive the deterministic round-robin sub-division of the N vCPUs:
+  each vCPU retires exactly the fixed, content-addressed `rr_switch_quantum`
+  (in node-icount, 10/[QEMU-43], 11/[PATCH-44]) before the round-robin switches
+  to the next vCPU in a **fixed ascending rotation**, never an adaptive or
+  realtime quantum. The plugin MUST apply any `Decision::Preemption` the
+  scheduler (08) hands it by forcing the vCPU switch / delivering the interrupt
+  at the **commanded node-icount** via the preemption-injection capability of the
+  patch series (11/[PATCH-47]). If a commanded preemption falls outside the
+  authorized window `[deadline, ceiling]`, the plugin MUST fail loudly and
+  localize it ([INV-10]) rather than clamp, defer, or apply it at a different
+  icount. The interleaving, and any applied preemption, MUST be a pure function
+  of icount and the decision — identical across runs given the same decision.
+  *Gate:* `gate:layer0-determinism`, `gate:layer1-injection`,
+  `gate:single-vm-fingerprint`. *Spec:* §12.3.6; routes [DET-1], [INV-3],
+  [INV-8], [INV-10], references [QEMU-43], [PATCH-44], [PATCH-47].
+
+A node with `-smp 1` is the degenerate case of [PLUG-50]: there is one vCPU,
+the rotation never switches, and a `Decision::Preemption` reduces to a commanded
+interrupt delivery at a node-icount. With N > 1 the same machinery makes the
+vCPU-switch interleaving an explorable, replayable property of the schedule.
 
 ## 12.4 Idle/resume handling and holding HZ ticks during device I/O
 
@@ -593,6 +648,25 @@ the plugin's part.
   marker is an observation stamped with an icount, not a side channel that can
   reorder the instruction stream. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer1-injection`. *Spec:* §12.7; routes [DET-17], [INV-3].
+
+- **[PLUG-51]** **App-controlled randomness (white-box, optional).** When and
+  only when a node opts in (a white-box mode, [PLUG-5] `whitebox=on`), the plugin
+  MUST serve a `random_request` doorbell: when the guest agent rings it
+  (§12.7, [`16-guest-host-channel.md`](16-guest-host-channel.md)), the plugin
+  draws the requested value from the **seeded decision source** (the same
+  deterministic stream the scheduler decisions derive from, never host entropy)
+  and writes the value back to the guest at the **trap icount** under the
+  injection contract of §4.4 (host→guest reply carrying a delivery icount and
+  becoming visible at exactly that icount, [DET-17], [PLUG-34]). The served value
+  MUST be recorded as a `Decision::AppRandom` (08) so it is part of the schedule
+  and replayable. Serving a request MUST be side-effect-free with respect to the
+  architectural trajectory `T` **except** for the requested value delivered at
+  the trap icount — it MUST NOT perturb virtual time, frame/I-O delivery, or the
+  instruction stream otherwise. The engine MUST function correctly with **zero**
+  such requests: app-controlled randomness is purely additive, and a node that
+  never rings the doorbell behaves exactly as a black-box node. *Gate:*
+  `gate:layer1-injection`, `gate:single-vm-fingerprint`, `gate:any-guest`.
+  *Spec:* §12.7; routes [DET-17], [INV-3], references [PLUG-34], [G-3].
 
 ## 12.8 Coverage hook (optional, negligible when off)
 
@@ -913,3 +987,23 @@ component that makes that purity true *inside* the QEMU process.
 - [ ] **T-PLUG-23** Add the plugin half of `gate:qemu-inert`: prove that with sim
   mode off the plugin is not loaded and has zero effect on QEMU behavior. —
   satisfies [PLUG-49]; spec §12.10.4.
+- [ ] **T-PLUG-24** Implement the deterministic round-robin sub-division within a
+  RUN (fixed `rr_switch_quantum`, fixed ascending vCPU rotation), per-vCPU halt
+  tracking, and the all-vCPUs-halted node-idle predicate with
+  `idle_wake_icount = min` over vCPUs of the next armed deadline. — satisfies
+  [PLUG-3], [PLUG-10], [PLUG-50], [PLUG-52]; spec §12.1.2, §12.3.2,
+  §12.3.6.
+- [ ] **T-PLUG-25** Implement application of `Decision::Preemption`: force the
+  vCPU switch / deliver the interrupt at the commanded node-icount via the
+  preemption-injection capability (11/[PATCH-47]), failing loud and localizing an
+  out-of-`[deadline, ceiling]` command rather than clamping or deferring. —
+  satisfies [PLUG-50]; spec §12.3.6.
+- [ ] **T-PLUG-26** Implement per-vCPU register-file + round-robin cursor reads
+  (via 11/[PATCH-46]) feeding the N-vCPU fingerprint (10/[QEMU-34]),
+  side-effect-free wrt `S`/`T`. — satisfies [PLUG-52]; spec §12.3.2.
+- [ ] **T-PLUG-27** Implement the optional app-controlled randomness doorbell:
+  serve a `random_request` by drawing from the seeded decision source and
+  replying at the trap icount under the injection contract, record a
+  `Decision::AppRandom`, keep it side-effect-free except the requested value, and
+  ensure the engine functions with zero requests. — satisfies [PLUG-51]; spec
+  §12.7.

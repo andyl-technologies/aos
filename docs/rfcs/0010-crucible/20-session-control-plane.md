@@ -391,6 +391,70 @@ pub type Reply<T> = tokio::sync::oneshot::Sender<Result<T, SessionError>>;
   control-plane face of the one execution model. *Gate:* `gate:replay-oracle`.
   *Spec:* §4, §7; cross-ref 05 §5/§6.
 
+### 4.4 Debugging and time-travel control commands
+
+The closed command set (§4) additionally carries a small, **read-only by
+default** debugging vocabulary that turns the session's existing primitives —
+checkpoint-restore (07), deterministic replay (05, [INV-1]), and the lock-free
+observation surface (§9) — into an operator-facing time-travel debugger. These
+commands are the session substrate over which the gdb-protocol debugger of
+[`36-debugging-time-travel.md`](36-debugging-time-travel.md) and the CLI `debug`
+subcommand (23 §16) are thin wrappers; they add no new determinism mechanism.
+
+```rust,illustrative
+/// The debugging / time-travel control commands. Read-only by default
+/// (excluded from the schedule, like query/pause — [SESS-33]); a mutating
+/// continue from a debug attach forks a NON-CANONICAL debug branch (§8).
+pub enum DebugCommand {
+    /// Open QEMU's gdbstub as a FOURTH out-of-band channel (alongside the
+    /// event bus, state bus, and control mailbox) on a deterministically
+    /// instantiated `node`, listening at `listen`. Observation-only on QEMU;
+    /// the in-process double / mock reject this (`open_gdbstub` unsupported).
+    AttachGdb { node: NodeId, listen: GdbListen, reply: Reply<GdbAttachInfo> },
+    /// Restore the nearest checkpoint at or before `coordinate` and
+    /// deterministically replay forward to it (05 [INV-1], 07). `scope`
+    /// selects whether one `Node` or the whole `World` is positioned.
+    Goto { coordinate: DebugCoordinate, scope: DebugScope },
+    /// Step backward by `grain` — defined as a `goto` of the immediately
+    /// earlier coordinate of that grain (so reverse-step reuses goto).
+    ReverseStep { grain: StepMode },
+    /// Continue backward until `condition` (a 17a `Condition`, §6) last held —
+    /// defined as a `goto` of the latest earlier coordinate satisfying it.
+    ReverseContinue { condition: Condition },
+}
+
+/// A position in the run a `goto` can restore-and-replay to.
+pub enum DebugCoordinate {
+    /// A guest instruction-count position (09).
+    Icount(u64),
+    /// A virtual-time position (09).
+    VirtualTime(VirtualTime),
+    /// An event-log sequence position (19).
+    EventSeq(u64),
+    /// A materialized checkpoint id (07).
+    CheckpointId(CheckpointRef),
+}
+
+/// Whether a time-travel reposition moves one node or the whole world.
+pub enum DebugScope { Node(NodeId), World }
+```
+
+- **[SESS-33]** `attach_gdb`, `goto`, `reverse_step`, and `reverse_continue`
+  MUST be **read-only control operations** — like `query` and `pause`, they touch
+  no canonical state and MUST be **excluded from the schedule** ([SESS-22]); they
+  are pure observation/repositioning over checkpoint-restore + deterministic
+  replay (05 [INV-1], 07). `goto` MUST restore the nearest checkpoint at or before
+  its `coordinate` (`Icount`/`VirtualTime`/`EventSeq`/`CheckpointId`) and replay
+  forward to it deterministically; `reverse_step`/`reverse_continue` MUST be
+  expressible as a `goto` of an earlier coordinate. **Mutating or continuing
+  *forward* from a debug attach** (issuing a control op through the gdbstub, or a
+  `continue` past the attach point that injects guest-visible change) MUST fork a
+  clearly-marked **NON-CANONICAL debug branch**: it is excluded from the replay
+  oracle, is not artifact-reproducible, and MUST be labelled as such on every
+  surface that exposes it. *Gate:* `gate:replay-oracle`, `gate:control-responsive`.
+  *Spec:* §4.4, §8; cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md),
+  [ADV-33], [SESS-22].
+
 ### 4.3 Step modes
 
 `step` advances a *bounded* amount and then pauses with
@@ -869,6 +933,20 @@ pub trait SimulationBackend: Send {
     /// # Errors
     /// Returns an error if a node fails to shut down.
     async fn shutdown(&mut self) -> Result<(), BackendError>;
+
+    /// OPTIONAL capability: open the backend's gdbstub on `node` as an
+    /// observation-only out-of-band channel (§4.4, [SESS-33]). The QEMU
+    /// backend (10) implements this against QEMU's gdbstub; the in-process
+    /// `SimDouble` and the mock do NOT support it and MUST reject `attach_gdb`.
+    /// Default implementation returns `BackendError::Unsupported`.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` on backends without a gdbstub; otherwise an error
+    /// if the stub cannot be opened.
+    async fn open_gdbstub(&mut self, _node: NodeId, _listen: &GdbListen)
+        -> Result<GdbAttachInfo, BackendError> {
+        Err(BackendError::Unsupported)
+    }
 }
 ```
 
@@ -879,6 +957,16 @@ pub trait SimulationBackend: Send {
   and a mock. The session, scheduler, command set, and lifecycle MUST be identical
   across backends; only the backend differs. *Gate:* `gate:control-responsive`,
   `gate:abi-conformance`. *Spec:* §10; cross-ref 24 [HARN-14].
+
+- **[SESS-32]** The backend trait MAY expose an **optional `open_gdbstub`
+  capability** (§10): an observation-only out-of-band gdbstub channel used by the
+  debugging commands of §4.4 ([SESS-33]). The QEMU backend (10) MUST implement it
+  against QEMU's gdbstub; the in-process `SimDouble` (24 §3) and the mock MUST NOT
+  support it and MUST reject `attach_gdb` with a typed error ([SESS-29]) rather than
+  faking a stub. Backends without the capability MUST default to refusing the
+  attach, so a debug session always knows whether its node is gdb-attachable.
+  *Gate:* `gate:control-responsive`, `gate:abi-conformance`. *Spec:* §4.4, §10;
+  cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md), 10.
 
 - **[SESS-27]** The backend trait MUST keep the scheduler (08) as the single
   source of timing truth: the backend advances nodes toward a scheduler-supplied
@@ -1011,3 +1099,10 @@ pub enum SessionError {
   `gate:control-responsive` / `gate:scheduler-liveness` against the in-process
   `SimDouble` (no real QEMU), asserting only fidelity properties require the QEMU
   backend. — satisfies [SESS-28]; spec §10; cross-ref 24 §2, §3.
+- [ ] **T-SESS-13** Implement the read-only debugging / time-travel command set
+  (attach_gdb/goto/reverse_step/reverse_continue) as repositioning over
+  checkpoint-restore + deterministic replay, excluded from the schedule like
+  query/pause, with mutating/forward-from-attach forking a clearly-marked
+  NON-CANONICAL debug branch; add the optional `open_gdbstub` backend capability
+  (QEMU implements; SimDouble/mock reject). — satisfies [SESS-33], [SESS-32];
+  spec §4.4, §10; cross-ref [`36-debugging-time-travel.md`](36-debugging-time-travel.md).

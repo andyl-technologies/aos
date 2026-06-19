@@ -469,9 +469,13 @@ requires the exact one.
 
 - **[TIME-24]** When a node goes idle, the plugin MUST report the **exact**
   virtual time of the node's next armed guest timer deadline to the scheduler
-  (or report "no armed timer"). The scheduler MUST use this deadline as the
-  node's *exact local event* in horizon computation, converting it to a target
-  icount via the `ceil` map ([TIME-4]). This requires the clock-deadline
+  (or report "no armed timer"). For a multi-vCPU node, "the node's next armed
+  guest timer deadline" is the **minimum over all vCPUs' armed virtual-clock
+  deadlines**, expressed on the node's single aggregate timeline; the per-vCPU
+  deadlines are plugin-internal and only their minimum surfaces to the scheduler.
+  The scheduler MUST use this deadline as the node's *exact local event* in
+  horizon computation, converting it to a target icount via the `ceil` map
+  ([TIME-4]). This requires the clock-deadline
   introspection capability of the plugin/patch series
   ([`12-qemu-plugin.md`](12-qemu-plugin.md),
   [`11-qemu-patches.md`](11-qemu-patches.md)): the plugin reads the next
@@ -591,6 +595,30 @@ host real time.
   ([DET-29]) MUST match exactly. *Gate:* `gate:single-vm-fingerprint`,
   `gate:layer0-determinism`. *Spec:* §9.10; satisfies [DET-5], [DET-29], [INV-4].
 
+### Multi-vCPU nodes: one aggregate icount
+
+A multi-vCPU node ([DET-5], [DET-23]) runs all `N` vCPUs single-threaded under
+round-robin TCG + `-icount`. This does NOT introduce per-vCPU clocks on the time
+axis: the node still has exactly one clock.
+
+- **[TIME-34]** For a multi-vCPU node, the node's icount MUST be the **aggregate
+  retired-instruction count across all `N` vCPUs**, and that aggregate icount
+  remains THE node clock for every purpose in this file (virtual-time
+  derivation [TIME-3], horizon/ceiling [TIME-27], cross-node ordering [TIME-15],
+  delivery-icount conversion [TIME-4]). Per-vCPU retired counts are
+  plugin-internal and surface only in the execution fingerprint ([DET-29]); the
+  shared timeline MUST use the node aggregate, and there MUST be no per-vCPU
+  shift or per-vCPU epoch. *Gate:* `gate:layer0-determinism`,
+  `gate:single-vm-fingerprint`. *Spec:* §9.10; satisfies [INV-4], [DET-5].
+
+- **[TIME-35]** The RR vCPU-switch quantum (`rr_switch_quantum`) MUST be denominated
+  in **node-icount units**, MUST be a fixed integer, and MUST be content-addressed
+  with the scenario ([TIME-6], [DET-42]); it MUST NOT be adaptive (never QEMU's
+  `rr_quantum`) nor derived from realtime. A change to `rr_switch_quantum` is a
+  change to the run because it changes the multi-vCPU interleaving and therefore
+  `T`. *Gate:* `gate:layer0-determinism`, `gate:replay-oracle`. *Spec:* §9.10;
+  satisfies [DET-23], [DET-42], [INV-6].
+
 If [TIME-31]–[TIME-33] hold, the determinism contract's icount-as-clock clause is
 met: `reduce` ([INV-1]) has no free time variable, the replay oracle ([INV-2])
 can hold by construction, and a divergence on the time axis localizes to a single
@@ -646,3 +674,9 @@ instruction-primary.
   `(icount, virtual_time)` trajectory and matching time-derived fingerprint
   fields under adversarial host conditions; lint-ban all host-time reads on the
   time path. — satisfies [TIME-31], [TIME-32], [TIME-33]; spec §9.10.
+- [ ] **T-TIME-9** Implement the multi-vCPU single-aggregate-icount clock: derive
+  the node clock from the aggregate retired-instruction count across all `N`
+  vCPUs (no per-vCPU shift/epoch), keep per-vCPU counts plugin-internal, pin the
+  node-icount `rr_switch_quantum` into the content hash, and compute the node's
+  exact next deadline as the minimum over all vCPUs' armed virtual-clock
+  deadlines. — satisfies [TIME-24], [TIME-34], [TIME-35]; spec §9.8, §9.10.
