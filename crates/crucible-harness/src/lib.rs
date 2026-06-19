@@ -11,6 +11,58 @@
 
 #![forbid(unsafe_code)]
 
+pub mod abi;
+pub mod adversarial;
+pub mod divergence;
+pub mod fingerprint;
+pub mod replay_oracle;
+
+/// A cross-crate harness component hosted by `crucible-harness`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HarnessComponentSpec {
+    /// Stable component name used by the crate-structure lint.
+    pub name: &'static str,
+    /// Public module that hosts the component.
+    pub module: &'static str,
+    /// Canonical gate primarily served by this component.
+    pub gate: &'static str,
+}
+
+/// The cross-crate harness components required by RFC-0010 file 27.
+pub const HARNESS_COMPONENTS: &[HarnessComponentSpec] = &[
+    HarnessComponentSpec {
+        name: "fingerprint comparator",
+        module: "fingerprint",
+        gate: "gate:single-vm-fingerprint",
+    },
+    HarnessComponentSpec {
+        name: "divergence bisector",
+        module: "divergence",
+        gate: "gate:divergence-bisect",
+    },
+    HarnessComponentSpec {
+        name: "replay-oracle checker",
+        module: "replay_oracle",
+        gate: "gate:replay-oracle",
+    },
+    HarnessComponentSpec {
+        name: "ABI golden-vector runner",
+        module: "abi",
+        gate: "gate:abi-conformance",
+    },
+    HarnessComponentSpec {
+        name: "adversarial driver",
+        module: "adversarial",
+        gate: "gate:adversarial-determinism",
+    },
+];
+
+/// Returns every cross-crate harness component in RFC order.
+#[must_use]
+pub fn harness_components() -> &'static [HarnessComponentSpec] {
+    HARNESS_COMPONENTS
+}
+
 /// A canonical determinism gate from RFC-0010 section 24.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateSpec {

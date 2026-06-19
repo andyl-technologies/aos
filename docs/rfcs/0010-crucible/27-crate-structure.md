@@ -653,7 +653,7 @@ Crucible needs and marks the seam.
 - [x] **T-CRATE-10** Configure crate artifact types: `crucible-qemu-plugin` as the
   sole `cdylib`, `crucible-cli` as the sole `[[bin]] name = "crucible"`, the rest
   as libs. — satisfies [CRATE-14]; spec §7.
-- [ ] **T-CRATE-11** Stand up the `crucible-harness` test crate hosting the
+- [x] **T-CRATE-11** Stand up the `crucible-harness` test crate hosting the
   cross-crate gates (fingerprint comparator, divergence bisector, replay-oracle
   checker, ABI golden-vector runner, adversarial driver) as a dev-dependency-only
   member. — satisfies [CRATE-15]; spec §7.
