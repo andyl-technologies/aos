@@ -6,14 +6,7 @@
 in {
   phase0 = {
     gates = {
-      harnessLint = redGate {
-        attrPath = "checks.crucible.phase0.gates.harnessLint";
-        gateName = "gate:harness-lint";
-        owner = "crucible-harness";
-        phase = "phase0";
-        taskIds = ["T-ARCH-4"];
-        reason = "full nondeterminism-source lint is intentionally pending";
-      };
+      harnessLint = import ./phase1-harness-lint.nix {inherit pkgs lib;};
     };
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};

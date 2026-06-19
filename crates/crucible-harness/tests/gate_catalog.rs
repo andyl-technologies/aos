@@ -38,7 +38,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         })
         .collect();
     let expected = BTreeSet::from([
-        "gate:harness-lint",
         "gate:layer0-determinism",
         "gate:single-vm-fingerprint",
         "gate:layer1-injection",
@@ -53,6 +52,10 @@ fn architecture_red_placeholder_gates_are_wired() {
             Some(GateStatus::RedPlaceholder)
         ));
     }
+    assert!(matches!(
+        find_gate("gate:harness-lint").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
 }
 
 fn workspace_root() -> PathBuf {

@@ -48,6 +48,8 @@ pub enum GateStatus {
     CatalogOnly,
     /// The gate has a wired target that intentionally fails until implemented.
     RedPlaceholder,
+    /// The gate has a local target that performs its initial automated check.
+    Implemented,
 }
 
 /// The canonical RFC-0010 gate catalog.
@@ -56,7 +58,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:harness-lint",
         phase: GatePhase::Always,
         owner: "crucible-harness",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:layer0-determinism",
