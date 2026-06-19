@@ -24,6 +24,8 @@ use super::store::read_drv_closure;
 use crate::nix::NixCli;
 
 #[cfg(feature = "native-eval")]
+use aos_nix::eval::tree_walk::NixSearchPathEntry;
+#[cfg(feature = "native-eval")]
 use aos_nix::{
     NativeCliFallbackReason, NativeDrvClosure, NativeEvalError, NixNative,
     eval::{EvalMode, IfdRealizationError, IfdRealizer, TreeWalkOptions},
@@ -365,6 +367,7 @@ pub struct NixEvalConfig {
     eval_mode: NixEvalMode,
     allowed_paths: Vec<String>,
     allowed_uris: Vec<String>,
+    nix_path: Option<String>,
     current_system: Option<String>,
     store_dir: Option<String>,
     state_dir: Option<String>,
@@ -435,6 +438,11 @@ impl NixEvalConfig {
     /// Returns URI prefixes allowed during restricted evaluation.
     pub fn allowed_uris(&self) -> &[String] {
         &self.allowed_uris
+    }
+
+    /// Returns the configured `NIX_PATH` environment value, if one was provided.
+    pub fn nix_path_env(&self) -> Option<&str> {
+        self.nix_path.as_deref()
     }
 
     /// Returns the configured Nix `system` value, if one was provided.
@@ -508,6 +516,9 @@ impl NixEvalConfig {
         }
         if let Some(log_dir) = &self.log_dir {
             vars.push(("NIX_LOG_DIR", log_dir.clone()));
+        }
+        if let Some(nix_path) = &self.nix_path {
+            vars.push(("NIX_PATH", nix_path.clone()));
         }
         vars
     }
@@ -590,6 +601,20 @@ impl NixEvalConfig {
         self.allowed_uris.clear();
     }
 
+    /// Replaces the configured `NIX_PATH` environment value.
+    ///
+    /// The value uses C++ Nix's legacy environment format. Native evaluation
+    /// maps filesystem-style entries and falls back to C++ Nix for URL,
+    /// channel, and flake-style entries it cannot represent faithfully.
+    pub fn set_nix_path_env(&mut self, nix_path: impl Into<String>) {
+        self.nix_path = Some(nix_path.into());
+    }
+
+    /// Clears the configured `NIX_PATH` environment value.
+    pub fn clear_nix_path_env(&mut self) {
+        self.nix_path = None;
+    }
+
     /// Replaces the configured Nix `system` value.
     ///
     /// # Errors
@@ -670,6 +695,7 @@ impl NixEvalConfig {
             eval_mode: NixEvalMode::Ambient,
             allowed_paths: Vec::new(),
             allowed_uris: Vec::new(),
+            nix_path: None,
             current_system: None,
             store_dir: None,
             state_dir: None,
@@ -686,6 +712,9 @@ impl NixEvalConfig {
         }
         for (name, value) in env {
             config.set_cli_env_var(name, value);
+        }
+        if let Ok(value) = std::env::var("NIX_PATH") {
+            config.set_cli_env_var("NIX_PATH", value);
         }
         if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
             config.set_aos_nix_cache_env_var(value);
@@ -714,13 +743,55 @@ impl NixEvalConfig {
             "NIX_STORE_DIR" => self.store_dir = Some(value),
             "NIX_STATE_DIR" => self.state_dir = Some(value),
             "NIX_LOG_DIR" => self.log_dir = Some(value),
+            "NIX_PATH" => self.nix_path = Some(value),
             _ => {}
         }
     }
 }
 
+#[cfg(any(test, feature = "native-eval"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NixPathConfigEntry {
+    prefix: String,
+    path: String,
+}
+
 fn push_cli_option(args: &mut Vec<String>, name: &str, value: impl Into<String>) {
     args.extend(["--option".to_string(), name.to_string(), value.into()]);
+}
+
+#[cfg(any(test, feature = "native-eval"))]
+fn native_nix_path_entries_from_env_value(value: &str) -> Option<Vec<NixPathConfigEntry>> {
+    if value.is_empty() || nix_path_contains_native_unsupported_entry(value) {
+        return None;
+    }
+
+    let entries = value
+        .split(':')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let (prefix, path) = entry.split_once('=').unwrap_or(("", entry));
+            NixPathConfigEntry {
+                prefix: prefix.to_string(),
+                path: path.to_string(),
+            }
+        })
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
+}
+
+#[cfg(any(test, feature = "native-eval"))]
+fn nix_path_contains_native_unsupported_entry(value: &str) -> bool {
+    value.contains("://")
+        || value.contains("channel:")
+        || value.contains("flake:")
+        || value.contains("github:")
+        || value.contains("gitlab:")
+        || value.contains("sourcehut:")
 }
 
 fn native_cache_root_from_env_value(value: &str) -> Option<PathBuf> {
@@ -1402,6 +1473,21 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
             options.add_allowed_uri(uri.as_bytes().to_vec())?;
         }
     }
+    if let Some(nix_path) = config.nix_path_env() {
+        if let Some(entries) = native_nix_path_entries_from_env_value(nix_path) {
+            let entries = entries
+                .into_iter()
+                .map(|entry| {
+                    NixSearchPathEntry::new(entry.prefix.into_bytes(), entry.path.into_bytes())
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            options.set_nix_path(entries);
+        } else {
+            options.set_reject_ambient_search_path(true);
+        }
+    } else {
+        options.set_reject_ambient_search_path(true);
+    }
     if let Some(store_dir) = config.store_dir() {
         options.set_store_dir(store_dir.as_bytes().to_vec())?;
     }
@@ -1493,6 +1579,51 @@ mod tests {
     }
 
     #[test]
+    fn eval_config_parses_nix_path_env_values() {
+        assert_eq!(
+            native_nix_path_entries_from_env_value("nixpkgs=/aos/nixpkgs:/aos/channels"),
+            Some(vec![
+                NixPathConfigEntry {
+                    prefix: "nixpkgs".to_string(),
+                    path: "/aos/nixpkgs".to_string(),
+                },
+                NixPathConfigEntry {
+                    prefix: String::new(),
+                    path: "/aos/channels".to_string(),
+                }
+            ])
+        );
+        assert_eq!(
+            native_nix_path_entries_from_env_value("nixpkgs=relative/entry::bare"),
+            Some(vec![
+                NixPathConfigEntry {
+                    prefix: "nixpkgs".to_string(),
+                    path: "relative/entry".to_string(),
+                },
+                NixPathConfigEntry {
+                    prefix: String::new(),
+                    path: "bare".to_string(),
+                }
+            ])
+        );
+        assert_eq!(native_nix_path_entries_from_env_value(""), None);
+        assert_eq!(
+            native_nix_path_entries_from_env_value("https://cache.example/root"),
+            None
+        );
+        assert_eq!(
+            native_nix_path_entries_from_env_value("nixpkgs=flake:nixpkgs"),
+            None
+        );
+        assert_eq!(
+            native_nix_path_entries_from_env_value("channel:nixos-unstable"),
+            None
+        );
+        assert_eq!(native_nix_path_entries_from_env_value(":"), None);
+        assert_eq!(native_nix_path_entries_from_env_value("::"), None);
+    }
+
+    #[test]
     fn eval_config_renders_cpp_nix_option_args() -> Result<()> {
         assert_eq!(NixEvalConfig::new().cli_option_args(), Vec::<String>::new());
         assert_eq!(
@@ -1572,8 +1703,9 @@ mod tests {
 
     #[test]
     fn eval_config_renders_cpp_nix_env_vars() -> Result<()> {
-        let config =
+        let mut config =
             NixEvalConfig::with_store_dirs("/aos/store", "/aos/var/nix", "/aos/var/nix/log/nix")?;
+        config.clear_nix_path_env();
 
         assert_eq!(
             config.cli_env_vars(),
@@ -1584,6 +1716,21 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn eval_config_renders_cpp_nix_path_env_var() {
+        let mut config = NixEvalConfig::new();
+        config.clear_store_dirs();
+        config.set_nix_path_env("nixpkgs=/aos/nixpkgs:/aos/channels");
+
+        assert_eq!(
+            config.cli_env_vars(),
+            vec![("NIX_PATH", "nixpkgs=/aos/nixpkgs:/aos/channels".to_string())]
+        );
+
+        config.clear_nix_path_env();
+        assert_eq!(config.cli_env_vars(), Vec::<(&'static str, String)>::new());
     }
 
     #[cfg(feature = "native-eval")]
@@ -1631,6 +1778,45 @@ mod tests {
         assert_eq!(options.eval_mode(), EvalMode::Pure);
         assert!(options.allowed_paths().is_empty());
         assert!(options.allowed_uris().is_empty());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_nix_path_to_native_options() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.set_nix_path_env("nixpkgs=/aos/nixpkgs:/aos/channels");
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        let entries = options.nix_path();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].prefix(), b"nixpkgs");
+        assert_eq!(entries[0].path(), b"/aos/nixpkgs");
+        assert_eq!(entries[1].prefix(), b"");
+        assert_eq!(entries[1].path(), b"/aos/channels");
+        assert!(!options.reject_ambient_search_path());
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_rejects_unrepresentable_native_nix_path() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+
+        let options = tree_walk_options_from_config(&config)?;
+        assert!(options.reject_ambient_search_path());
+
+        config.set_nix_path_env("");
+        let options = tree_walk_options_from_config(&config)?;
+        assert!(options.reject_ambient_search_path());
+
+        config.set_nix_path_env("nixpkgs=flake:nixpkgs");
+        let options = tree_walk_options_from_config(&config)?;
+        assert!(options.reject_ambient_search_path());
+        assert!(options.nix_path().is_empty());
         Ok(())
     }
 

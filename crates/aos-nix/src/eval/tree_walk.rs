@@ -1197,7 +1197,7 @@ impl TreeWalkOptions {
     /// observing configured search-path entries. Explicit `builtins.findFile`
     /// lists remain evaluable because they do not read the ambient Nix search
     /// path.
-    pub(crate) fn set_reject_ambient_search_path(&mut self, reject: bool) {
+    pub fn set_reject_ambient_search_path(&mut self, reject: bool) {
         self.reject_ambient_search_path = reject;
     }
 
@@ -1303,7 +1303,7 @@ impl TreeWalkOptions {
     }
 
     /// Returns whether ambient Nix search-path lookup is disabled.
-    pub(crate) const fn reject_ambient_search_path(&self) -> bool {
+    pub const fn reject_ambient_search_path(&self) -> bool {
         self.reject_ambient_search_path
     }
 
@@ -32231,6 +32231,18 @@ mod tests {
         assert_eq!(options.env_var(b"USER"), Some(b"overridden".as_slice()));
         options.clear_env_var(b"USER");
         assert_eq!(options.env_var(b"USER"), None);
+    }
+
+    #[test]
+    fn tree_walk_options_configure_ambient_search_path_rejection() {
+        let mut options = TreeWalkOptions::new();
+        assert!(!options.reject_ambient_search_path());
+
+        options.set_reject_ambient_search_path(true);
+        assert!(options.reject_ambient_search_path());
+
+        options.set_reject_ambient_search_path(false);
+        assert!(!options.reject_ambient_search_path());
     }
 
     #[test]
