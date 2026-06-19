@@ -1082,7 +1082,7 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=7`, `retired_decision_entries=7`,
+  - **Result:** `checked_risk_tasks=8`, `retired_decision_entries=8`,
     `phase0_foundational_blockers_open=4`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
@@ -1092,6 +1092,38 @@ register.
     catalog lint remains owned by `T-PLAN-1`; this check is the narrower
     RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
+
+- **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**
+  - **Status:** PASS; risk retired for the diskless no-block-device proof path of
+    deterministic multi-vCPU interleaving under single-threaded RR-TCG.
+  - **Check:** `checks.crucible.phase0.s11MultiVcpuFingerprint`.
+  - **Result:** `boot_medium=initramfs`, `block_devices=0`, `vcpus=4`,
+    `rr_switch_quantum=4096`, `cadence=100000000`, `host_adversary=jitter-load`,
+    `extended_fingerprint_match=true`, `aggregate_icount_stream_match=true`,
+    `horizon_fingerprint_match=true`, `samples=33`,
+    `final_extended_hash=16e7a49bfce0eb0f`,
+    `final_register_hash=ba71b2992131002d`,
+    `final_ram_hash=6f3239f7118a53e2`, `final_ram_bytes=268967936`,
+    `register_read_failures=0`,
+    `register_count_assertion=nonempty_per_vcpu`,
+    `device_event_capture=false`, `block_device_assertion=launch_argv_scan`,
+    `mismatch_localization=component`, `first_differing_line=none`,
+    `first_differing_component=none`, `fallback=smp1_not_needed`.
+  - **Scope:** validates a stock Linux kernel with a diskless initramfs running an
+    SMP pthread spinlock workload across four guest vCPUs. The extended samples
+    compare the aggregate instruction stream, per-vCPU register hashes, RAM
+    hash, RR cursor, RR quantum, and final horizon fingerprint across an
+    identical run and a host-jitter run. The check asserts every sampled vCPU
+    has a nonempty register descriptor set and zero register-read failures.
+    Memory/device-event callbacks are disabled in this diskless proof; full
+    device-event hashing remains later §4.6 gate work. The check scans the
+    actual launch argv for block-device options before running. The block-backed
+    diagnostic path is
+    not used as the retirement proof because it exposed a separate
+    device-completion timing leak; production device-state hashing and
+    block-device determinism remain owned by the later [DET-29] / QEMU-device
+    gates.
+  - **Fallback:** no `-smp 1` fallback adopted.
 
 ## Implementation checklist
 

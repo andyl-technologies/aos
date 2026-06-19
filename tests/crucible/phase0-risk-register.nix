@@ -45,6 +45,7 @@ pkgs.mkDerivation {
           printf '%s\n' T-RISK-14
           printf '%s\n' T-RISK-15
           printf '%s\n' T-RISK-16
+          printf '%s\n' T-RISK-17
         } > expected-checked-tasks.txt
 
         gawk '
@@ -57,7 +58,7 @@ pkgs.mkDerivation {
 
         sort expected-checked-tasks.txt > expected-checked-tasks.sorted
         checked_count=$(wc -l < checked-tasks.txt)
-        [ "$checked_count" -eq 7 ] || fail "expected 7 checked risk tasks, found $checked_count"
+        [ "$checked_count" -eq 8 ] || fail "expected 8 checked risk tasks, found $checked_count"
         while read -r task; do
           grep -F -x -q -- "$task" checked-tasks.txt || fail "missing checked task $task"
         done < expected-checked-tasks.sorted
@@ -77,6 +78,7 @@ pkgs.mkDerivation {
         require_fixed "$risk_doc" "**RISK-21** is retired by \`T-RISK-14\`"
         require_fixed "$risk_doc" "**RISK-22** is retired by \`T-RISK-15\`"
         require_fixed "$risk_doc" "**RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by \`T-RISK-16\`"
+        require_fixed "$risk_doc" "**RISK-25** is retired by \`T-RISK-17\`"
 
         require_fixed "$decision_doc" "RISK-15 / T-RISK-8"
         require_fixed "$decision_doc" "RISK-18 / T-RISK-11"
@@ -85,6 +87,7 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "RISK-21 / T-RISK-14"
         require_fixed "$decision_doc" "RISK-22 / T-RISK-15"
         require_fixed "$decision_doc" "RISK-23 / RISK-24 / T-RISK-16"
+        require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
 
         require_fixed "$decision_doc" "checks.crucible.phase0.coverageOverhead"
         require_fixed "$decision_doc" "checks.crucible.phase0.abiDrift"
@@ -93,13 +96,14 @@ pkgs.mkDerivation {
         require_fixed "$decision_doc" "checks.crucible.phase0.searchTreeGrowth"
         require_fixed "$decision_doc" "checks.crucible.phase0.multiVmParallelism"
         require_fixed "$decision_doc" "checks.crucible.phase0.riskRegisterGate"
+        require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
 
         mkdir -p "$out"
         {
           echo PASS
           echo spike=risk-register-checklist-guard
-          echo checked_risk_tasks=7
-          echo retired_decision_entries=7
+          echo checked_risk_tasks=8
+          echo retired_decision_entries=8
           echo phase0_foundational_blockers_open=4
           echo unexpected_checked_nonrisk_tasks=0
           echo phase1_plus_checked_tasks=0

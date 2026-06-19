@@ -1,0 +1,372 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -40,6 +40,7 @@
+ static bool icount_sleep = true;
+ /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
+ #define MAX_ICOUNT_SHIFT 10
++static uint64_t crucible_rr_switch_quantum;
+
+ /* Do not count executed instructions */
+ ICountMode use_icount = ICOUNT_DISABLED;
+@@ -70,6 +71,26 @@ static int64_t icount_get_executed(CPUState *cpu)
+             (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
+ }
+
++uint64_t icount_crucible_rr_switch_quantum(void)
++{
++    return crucible_rr_switch_quantum;
++}
++
++uint64_t icount_crucible_rr_cursor_position(CPUState *cpu)
++{
++    int64_t executed;
++
++    if (!cpu || crucible_rr_switch_quantum == 0) {
++        return 0;
++    }
++
++    executed = icount_get_executed(cpu);
++    if (executed < 0) {
++        return 0;
++    }
++    return MIN((uint64_t)executed, crucible_rr_switch_quantum);
++}
++
+ /*
+  * Update the global shared timer_state.qemu_icount to take into
+  * account executed instructions. This is done by the TCG vCPU
+@@ -408,15 +427,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+     bool sleep = qemu_opt_get_bool(opts, "sleep", true);
+     bool align = qemu_opt_get_bool(opts, "align", false);
+     long time_shift = -1;
++    uint64_t rr_switch_quantum =
++        qemu_opt_get_number(opts, "rr_switch_quantum", 0);
+
+     if (!option) {
+         if (qemu_opt_get(opts, "align") != NULL) {
+             error_setg(errp, "Please specify shift option when using align");
+             return false;
+         }
++        if (rr_switch_quantum != 0) {
++            error_setg(errp,
++                       "Please specify shift option when using rr_switch_quantum");
++            return false;
++        }
+         return true;
+     }
+
++    if (rr_switch_quantum > INT32_MAX) {
++        error_setg(errp, "icount: rr_switch_quantum is too large");
++        return false;
++    }
++
+     if (align && !sleep) {
+         error_setg(errp, "align=on and sleep=off are incompatible");
+         return false;
+@@ -436,6 +465,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+     }
+
+     icount_sleep = sleep;
++    crucible_rr_switch_quantum = rr_switch_quantum;
+     if (icount_sleep) {
+         timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
+                                          icount_timer_cb, NULL);
+diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -82,10 +82,17 @@ int64_t icount_percpu_budget(int cpu_count)
+ {
+     int64_t limit = icount_get_limit();
+-    int64_t timeslice = limit / cpu_count;
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    int64_t timeslice;
++
++    if (rr_switch_quantum != 0) {
++        return MIN(limit, (int64_t)rr_switch_quantum);
++    }
++
++    timeslice = limit / cpu_count;
+
+     if (timeslice == 0) {
+         timeslice = limit;
+     }
+
+     return timeslice;
+ }
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -933,6 +933,80 @@ QEMU_PLUGIN_API
+ int qemu_plugin_read_register(struct qemu_plugin_register *handle,
+                               GByteArray *buf);
+
++/**
++ * qemu_plugin_crucible_get_vcpu_registers() - return register list for a vCPU
++ * @vcpu_index: the vCPU index whose register descriptors should be returned
++ *
++ * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
++ * Caller frees the array, but not the const strings.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
++
++/**
++ * qemu_plugin_crucible_read_vcpu_register() - read one register from a vCPU
++ * @vcpu_index: the vCPU index to inspect
++ * @handle: a qemu_plugin_register handle from the matching vCPU's descriptor list
++ * @buf: a GByteArray for the plugin-owned data
++ *
++ * Returns the size of the read register. The content of @buf is in target byte
++ * order. On failure returns -1.
++ *
++ * This AOS Crucible extension is side-effect-free and available only in system
++ * emulation.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
++                                            struct qemu_plugin_register *handle,
++                                            GByteArray *buf);
++
++/**
++ * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
++ *
++ * Returns UINT64_MAX when no vCPU is current.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
++
++/**
++ * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
++ *
++ * Returns the retired-instruction offset within the current pinned
++ * rr_switch_quantum budget, or 0 when the quantum is not pinned.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_cursor_position(void);
++
++/**
++ * qemu_plugin_crucible_rr_switch_quantum() - return pinned RR switch quantum
++ *
++ * Returns the active rr_switch_quantum in node-icount units, or 0 when the
++ * launch did not pin the quantum.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
++
++/**
++ * qemu_plugin_crucible_ram_hash() - hash every RAM block
++ * @bytes_out: optional output for the total RAM bytes included in the hash
++ *
++ * Returns an FNV-1a hash over every RAM block's stable identifier, length, and
++ * host-backed bytes. This helper intentionally covers RAM only; device-model
++ * state must be covered by separate Crucible fingerprint inputs.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
++
+ /**
+  * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+  * @element_size: size (in bytes) for one entry
+diff --git a/include/sysemu/cpu-timers.h b/include/sysemu/cpu-timers.h
+--- a/include/sysemu/cpu-timers.h
++++ b/include/sysemu/cpu-timers.h
+@@ -65,6 +65,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+ /* used by tcg vcpu thread to calc icount budget */
+ int64_t icount_round(int64_t count);
+
++uint64_t icount_crucible_rr_switch_quantum(void);
++uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
++
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+ void icount_account_warp_timer(void);
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -36,6 +36,8 @@
+ #include "qemu/timer.h"
++#include "sysemu/cpu-timers.h"
+ #include "tcg/tcg.h"
+ #include "exec/exec-all.h"
++#include "exec/cpu-common.h"
+ #include "exec/gdbstub.h"
+ #include "exec/translator.h"
+ #include "disas/disas.h"
+@@ -45,6 +46,8 @@
+ #include "qapi/error.h"
+ #include "migration/blocker.h"
+ #include "exec/ram_addr.h"
++#include "exec/ramblock.h"
++#include "exec/ramlist.h"
+ #include "qemu/plugin-memory.h"
+ #include "hw/boards.h"
+ #else
+@@ -583,6 +586,109 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+     return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
+ }
+
++#ifndef CONFIG_USER_ONLY
++GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
++{
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++
++    if (!cpu) {
++        return NULL;
++    }
++
++    g_autoptr(GArray) regs = gdb_get_register_list(cpu);
++    return create_register_handles(regs);
++}
++
++int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
++                                            struct qemu_plugin_register *reg,
++                                            GByteArray *buf)
++{
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++
++    if (!cpu || !reg) {
++        return -1;
++    }
++
++    return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
++}
++
++uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
++{
++    if (!current_cpu) {
++        return UINT64_MAX;
++    }
++
++    return (uint64_t)current_cpu->cpu_index;
++}
++
++uint64_t qemu_plugin_crucible_rr_cursor_position(void)
++{
++    return icount_crucible_rr_cursor_position(current_cpu);
++}
++
++uint64_t qemu_plugin_crucible_rr_switch_quantum(void)
++{
++    return icount_crucible_rr_switch_quantum();
++}
++
++struct CrucibleRamHash {
++    uint64_t hash;
++    uint64_t bytes;
++};
++
++static uint64_t crucible_fnv1a_u64(uint64_t hash, uint64_t value)
++{
++    for (int i = 0; i < 8; i++) {
++        hash ^= (value >> (i * 8)) & 0xffU;
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++static uint64_t crucible_fnv1a_bytes(uint64_t hash,
++                                     const uint8_t *bytes,
++                                     size_t len)
++{
++    for (size_t i = 0; i < len; i++) {
++        hash ^= bytes[i];
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++static int crucible_hash_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleRamHash *state = opaque;
++
++    if (!block->host) {
++        return 0;
++    }
++
++    state->hash = crucible_fnv1a_bytes(state->hash,
++                                       (const uint8_t *)block->idstr,
++                                       strlen(block->idstr));
++    state->hash = crucible_fnv1a_u64(state->hash, block->used_length);
++    state->hash = crucible_fnv1a_bytes(state->hash, block->host,
++                                       block->used_length);
++    state->bytes += block->used_length;
++    return 0;
++}
++
++uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out)
++{
++    struct CrucibleRamHash state = {
++        .hash = 1469598103934665603ULL,
++        .bytes = 0,
++    };
++
++    qemu_ram_foreach_block(crucible_hash_ram_block, &state);
++    if (bytes_out) {
++        *bytes_out = state.bytes;
++    }
++    return state.hash;
++}
++#endif
++
+ struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
+ {
+     return plugin_scoreboard_new(element_size);
+diff --git a/qemu-options.hx b/qemu-options.hx
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -4819,7 +4819,7 @@ SRST
+ ERST
+
+ DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
+-    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
++    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
+     "                enable virtual instruction counter with 2^N clock ticks per\n" \
+     "                instruction, enable aligning the host and virtual clocks\n" \
+     "                or disable real time cpu sleeping, and optionally enable\n", QEMU_ARCH_ALL)
+@@ -4827,6 +4827,6 @@ DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
+     "                record-and-replay mode\n", QEMU_ARCH_ALL)
+ SRST
+-``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
++``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
+     Enable virtual instruction counter. The virtual cpu will execute one
+     instruction every 2^N ns of virtual time. If ``auto`` is specified
+     then the virtual cpu speed will be automatically adjusted to keep
+@@ -4859,6 +4859,13 @@ SRST
+     ``align=on`` is specified then we print a message to the user to
+     inform about the delay. Currently this option does not work when
+-    ``shift`` is ``auto``. Note: The sync algorithm will work for those
++    ``shift`` is ``auto``.
++
++    ``rr_switch_quantum=N`` pins the single-threaded TCG round-robin
++    vCPU budget to exactly ``N`` retired instructions when instruction counting
++    is enabled and the timer deadline permits it. This AOS Crucible extension
++    is ignored when omitted.
++
++    Note: The sync algorithm will work for those
+     shift values for which the guest clock runs ahead of the host clock.
+     Typically this happens when the shift value is high (how high
+     depends on the host machine). The default if icount is enabled
+diff --git a/system/vl.c b/system/vl.c
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -446,6 +446,9 @@ static QemuOptsList qemu_icount_opts = {
+         }, {
+             .name = "sleep",
+             .type = QEMU_OPT_BOOL,
++        }, {
++            .name = "rr_switch_quantum",
++            .type = QEMU_OPT_NUMBER,
+         }, {
+             .name = "rr",
+             .type = QEMU_OPT_STRING,
