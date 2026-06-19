@@ -1216,6 +1216,19 @@ clearing the `0.7000` budget floor. No cheaper coverage representation is
 adopted for Phase 0; the row remains listed as a regression risk for future
 production coverage work and the full `gate:perf-bench` baseline.
 
+**RISK-18** is retired by `T-RISK-11`: `checks.crucible.phase0.abiDrift`
+generated a C header from Rust `#[repr(C)]` layout facts, compiled the matching
+good C and Rust views, then deliberately drifted `RegionHeader.node_count` from
+offset `12` to offset `16`. The run reported
+`generated_header_diff_detected=1`, `c_static_assert_drift_failed=1`,
+`c_static_assert_specific_offset_failed=1`,
+`rust_static_assert_specific_offset_failed=1`,
+`golden_vector_good_c_roundtrip=1`, `golden_vector_good_rust_roundtrip=1`,
+`golden_vector_drifted_c_matches_generated=1`, and `drifted_header_size=256`.
+This is a throwaway Phase-0 proof of the fail-closed ABI-drift defenses; the row
+remains listed as a regression risk until the production `crucible-shmem` crate
+and full `gate:abi-conformance` wiring land.
+
 **RISK-19** is retired by `T-RISK-12`:
 `checks.crucible.phase0.futexStress` completed 2,000,000 actionable
 cross-process non-private futex wake cycles and 2,000,000 wake-without-action
@@ -1335,7 +1348,7 @@ never tolerated). Results live in the decision register (31).
   retirement icount, carries its register payload, yields a reproducible marker
   icount, and is inert when disabled; fall back to aarch64-black-box-only if no
   instruction traps precisely. — satisfies [RISK-17], [GHC-16]; spec §30.11.
-- [ ] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
+- [x] **T-RISK-11** Run the **ABI-drift** spike: deliberately drift a field offset
   and confirm the generated-header diff, bilateral static asserts, and golden
   vector catch it on at least one side. — satisfies [RISK-18], [SHM-31]; spec
   §30.12.
