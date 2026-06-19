@@ -16,7 +16,8 @@
 //!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
 //!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
 //!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
-//!   binary-cache generation), and [`state`] (persisted sync state).
+//!   binary-cache generation), [`tuf`] (release metadata thresholds and
+//!   timestamping), and [`state`] (persisted sync state).
 
 pub mod channel;
 pub mod fetch;
@@ -31,6 +32,7 @@ pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
 pub mod store;
+pub mod tuf;
 pub mod verify;
 
 use std::collections::HashMap;

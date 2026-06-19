@@ -28,8 +28,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::download::join_cache_url;
 use crate::gitcmd;
-use crate::registry::{channel, fetch, keys, verify};
-use crate::security::{self, KeyStore, KeySyncReport, TrustedKey, key_fingerprint};
+use crate::registry::{channel, fetch, keys, tuf, verify};
+use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
 use crate::types::{RegistryConfig, RegistryState, TrackingMode};
 use aos_core::output::Printer;
 
@@ -154,6 +154,7 @@ pub async fn sync_git(
         preflight_git_native_http_origin(&git_url).await?;
     }
     ensure_repo(&repo_dir, &git_url).await?;
+    let previous_selected_commit = state.last_commit.clone();
     let previous_floor = state.floor.clone();
     let mut retained_before = fetch::parse_retained(&state.retained)?;
     if let Some(floor) = state.floor.as_deref() {
@@ -219,6 +220,7 @@ pub async fn sync_git(
     // anti-rollback state because selected release commits can remain fixed
     // under tag/version/channel tracking.
     let mut post_pin_trusted_keys = trusted_keys.clone();
+    let mut pending_roster = None;
     if enforcing {
         verify_head_commit(&repo_dir, &roster_commit, &trusted_keys)?;
         let previous_roster_commit = state
@@ -228,15 +230,9 @@ pub async fn sync_git(
         if let Some(old_commit) = previous_roster_commit {
             enforce_fast_forward(&repo_dir, old_commit, &roster_commit).await?;
         }
-        if let Some(report) = apply_roster(&key_store, config, &repo_dir, &roster_commit)? {
-            if !report.is_noop() {
-                printer.info(&format!(
-                    "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
-                    config.name, report.pinned, report.unpinned, report.masked,
-                ));
-            }
-            post_pin_trusted_keys = assemble_trusted_set(&key_store, config);
-        }
+        let roster = load_verified_roster(config, &repo_dir, &roster_commit)?;
+        post_pin_trusted_keys = trusted_keys_from_roster(config, &roster)?;
+        pending_roster = Some(roster);
     }
 
     // Step 5: Determine the selected release commit.
@@ -317,6 +313,22 @@ pub async fn sync_git(
         verify_release_tag(&repo_dir, release_tag, &post_pin_trusted_keys)?;
     }
 
+    let verified_tuf = if enforcing {
+        let enforce_tuf_expiry = !tracking_mode_is_immutable_pin(tracking_mode);
+        tuf::verify_commit_metadata(
+            &repo_dir,
+            &config.name,
+            &new_commit,
+            previous_selected_commit.as_deref(),
+            &post_pin_trusted_keys,
+            state,
+            unix_now_secs(),
+            enforce_tuf_expiry,
+        )?
+    } else {
+        None
+    };
+
     // Step 7: Extract authenticated tree files used by consumers.
     let registry_cache_dir = cache_dir.join(&config.name);
     let packages_dir = registry_cache_dir.join("packages");
@@ -360,12 +372,27 @@ pub async fn sync_git(
             .collect();
     }
     prune_unretained_release_dirs(&repo_dir, &state.retained).await?;
+    if let Some(roster) = pending_roster.as_ref() {
+        let report = keys::pin_rotated_keys(&key_store, &config.name, roster)?;
+        if !report.is_noop() {
+            printer.info(&format!(
+                "Registry '{}': trust roster updated ({} pinned, {} unpinned, {} masked)",
+                config.name, report.pinned, report.unpinned, report.masked,
+            ));
+        }
+    }
     state.last_commit = Some(new_commit.clone());
     if enforcing {
         state.last_roster_commit = Some(roster_commit);
     }
     if record_successful_freshness {
         state.last_update = Some(chrono_now());
+    }
+    if let Some(verified_tuf) = verified_tuf {
+        state.tuf_root_version = Some(verified_tuf.root_version);
+        state.tuf_targets_version = Some(verified_tuf.targets_version);
+        state.tuf_snapshot_version = Some(verified_tuf.snapshot_version);
+        state.tuf_timestamp_version = Some(verified_tuf.timestamp_version);
     }
 
     printer.info(&format!(
@@ -464,18 +491,16 @@ fn verify_release_tag(repo_dir: &Path, tag: &str, trusted_keys: &[String]) -> Re
     Ok(())
 }
 
-/// Pin the trust roster committed at the verified head into the writable
-/// trusted-key store.
+/// Load and validate the trust roster committed at the verified head.
 ///
-/// Returns the sync report, or an error when the verified head has no
-/// usable roster: under enforcement a missing or empty `keys.toml` is a
-/// misconfigured registry, not a pass.
-fn apply_roster(
-    store: &KeyStore,
+/// Returns an error when the verified head has no usable roster: under
+/// enforcement a missing or empty `keys.toml` is a misconfigured registry, not
+/// a pass.
+fn load_verified_roster(
     config: &RegistryConfig,
     repo_dir: &Path,
     commit: &str,
-) -> Result<Option<KeySyncReport>> {
+) -> Result<keys::KeysToml> {
     let Some(roster) = keys::load_keys_toml_at_commit(repo_dir, commit)? else {
         bail!(
             "registry '{}' requires signed metadata but commit {commit} has no keys.toml \
@@ -492,7 +517,47 @@ fn apply_roster(
             config.name,
         );
     }
-    keys::pin_rotated_keys(store, &config.name, &roster).map(Some)
+    trusted_keys_from_roster(config, &roster)?;
+    Ok(roster)
+}
+
+fn trusted_keys_from_roster(
+    config: &RegistryConfig,
+    roster: &keys::KeysToml,
+) -> Result<Vec<String>> {
+    let mut trusted = Vec::with_capacity(roster.active.len());
+    for entry in &roster.active {
+        let (registry, _algorithm, _public_key) = security::parse_signing_key(&entry.key)
+            .with_context(|| format!("invalid active key '{}'", entry.id))?;
+        if registry != config.name {
+            bail!(
+                "active key '{}' belongs to registry '{}', expected '{}'",
+                entry.id,
+                registry,
+                config.name,
+            );
+        }
+        trusted.push(entry.key.clone());
+    }
+    Ok(trusted)
+}
+
+fn tracking_mode_is_immutable_pin(tracking_mode: &TrackingMode) -> bool {
+    match tracking_mode {
+        TrackingMode::Commit(_) | TrackingMode::Tag(_) => true,
+        TrackingMode::Version(req) => version_req_is_exact(req),
+        TrackingMode::Default | TrackingMode::Branch(_) | TrackingMode::Channel(_) => false,
+    }
+}
+
+fn version_req_is_exact(req: &semver::VersionReq) -> bool {
+    matches!(
+        req.comparators.as_slice(),
+        [comparator]
+            if matches!(comparator.op, semver::Op::Exact)
+                && comparator.minor.is_some()
+                && comparator.patch.is_some()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1710,6 +1775,26 @@ mod tests {
             1_709_164_800,
         );
         assert!(parse_iso8601_utc_secs("2023-02-29T00:00:00Z").is_err());
+    }
+
+    #[test]
+    fn only_exact_version_requirements_are_immutable_pins() {
+        let exact = semver::VersionReq::parse("=1.2.3").unwrap();
+        let caret = semver::VersionReq::parse("^1.2").unwrap();
+        let range = semver::VersionReq::parse(">=1.2, <2.0").unwrap();
+
+        assert!(version_req_is_exact(&exact));
+        assert!(tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            exact
+        )));
+        assert!(!version_req_is_exact(&caret));
+        assert!(!tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            caret
+        )));
+        assert!(!version_req_is_exact(&range));
+        assert!(!tracking_mode_is_immutable_pin(&TrackingMode::Version(
+            range
+        )));
     }
 
     #[test]

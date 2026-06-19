@@ -6,12 +6,13 @@
 mod common;
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::Result;
 use common::{RegistryFixture, StaticHttpServer};
 
-use aos_package::registry::Registry;
 use aos_package::registry::git;
+use aos_package::registry::{Registry, tuf};
 use aos_package::types::{RegistryConfig, RegistryState, SigningConfig, TrackingMode};
 
 /// Branch-tracking config with verification enforced and the given
@@ -46,6 +47,50 @@ async fn sync(
     .await
 }
 
+fn tuf_signer(id: &str, key: &str, key_path: &Path, role_key: bool) -> tuf::MetadataSigningKey {
+    tuf::MetadataSigningKey {
+        key_id: id.to_string(),
+        key_path: key_path.to_path_buf(),
+        key: key.to_string(),
+        role_key,
+    }
+}
+
+fn fixture_tuf_signer(
+    fixture: &RegistryFixture,
+    id: &str,
+    role_key: bool,
+) -> tuf::MetadataSigningKey {
+    tuf_signer(
+        id,
+        fixture.trusted_key(),
+        fixture.private_key_path(),
+        role_key,
+    )
+}
+
+fn commit_tuf_metadata(
+    fixture: &RegistryFixture,
+    version: &str,
+    signers: &[tuf::MetadataSigningKey],
+    commit_key: Option<&Path>,
+) -> Result<String> {
+    let version = semver::Version::parse(version)?;
+    let changed = tuf::write_release_metadata_worktree(
+        fixture.source_path(),
+        fixture.name(),
+        &version,
+        signers,
+    )?;
+    assert!(changed, "TUF metadata should change for release {version}");
+    let message = format!("registry: update TUF metadata {version}");
+    if let Some(key_path) = commit_key {
+        fixture.commit_all_with_key(&message, key_path)
+    } else {
+        fixture.commit_all(&message)
+    }
+}
+
 /// §11 item 2: a registry with two active roster keys, releases signed
 /// alternately by each maintainer; the client syncs and resolves both.
 #[tokio::test]
@@ -53,12 +98,20 @@ async fn two_maintainer_releases_sync_and_verify() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     let key_a = fixture.trusted_key().to_string();
     let (key_b, key_b_path) = fixture.make_keypair([42_u8; 32], "maintainer_b")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
+    let signer_b = tuf_signer("b", &key_b, &key_b_path, true);
 
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
     fixture.write_keys_toml_with(&[("a", &key_a), ("b", &key_b)], &[])?;
     fixture.write_package("hello", "1.0.0")?;
     // Maintainer A signs the first release.
     fixture.commit_all("release 1.0.0")?;
+    commit_tuf_metadata(
+        &fixture,
+        "1.0.0",
+        &[signer_a.clone(), signer_b.clone()],
+        None,
+    )?;
     fixture.signed_tag("1.0.0", "HEAD")?;
     fixture.publish_bare_origin()?;
 
@@ -75,7 +128,9 @@ async fn two_maintainer_releases_sync_and_verify() -> Result<()> {
     // Maintainer B signs the second release; the sync verifies it via the
     // pinned roster, not the bootstrap anchor.
     fixture.write_package("world", "1.1.0")?;
-    let second_commit = fixture.commit_all_with_key("release 1.1.0", &key_b_path)?;
+    fixture.commit_all_with_key("release 1.1.0", &key_b_path)?;
+    let second_commit =
+        commit_tuf_metadata(&fixture, "1.1.0", &[signer_a, signer_b], Some(&key_b_path))?;
     fixture.signed_tag_with_key("1.1.0", "HEAD", &key_b_path)?;
     fixture.publish_bare_origin()?;
 
@@ -95,11 +150,14 @@ async fn roster_addition_signed_by_trusted_key_pins_new_key() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     let key_a = fixture.trusted_key().to_string();
     let (key_b, key_b_path) = fixture.make_keypair([43_u8; 32], "maintainer_b")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
+    let signer_b = tuf_signer("b", &key_b, &key_b_path, true);
 
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
-    fixture.write_keys_toml()?; // roster {A}
+    fixture.write_keys_toml_with(&[("a", &key_a)], &[])?; // roster {A}
     fixture.write_package("hello", "1.0.0")?;
     fixture.commit_all("release 1.0.0")?;
+    commit_tuf_metadata(&fixture, "1.0.0", std::slice::from_ref(&signer_a), None)?;
     fixture.publish_bare_origin()?;
 
     let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
@@ -113,6 +171,12 @@ async fn roster_addition_signed_by_trusted_key_pins_new_key() -> Result<()> {
     // A enrolls B (continuity proof: the enrolling commit is signed by A).
     fixture.write_keys_toml_with(&[("a", &key_a), ("b", &key_b)], &[])?;
     fixture.commit_all("registry: add signing key b")?;
+    commit_tuf_metadata(
+        &fixture,
+        "1.0.1",
+        &[signer_a.clone(), signer_b.clone()],
+        None,
+    )?;
     fixture.publish_bare_origin()?;
     sync(&fixture, &config, &mut state).await?;
     let pinned = fs::read_to_string(fixture.pinned_keys_path())?;
@@ -121,7 +185,8 @@ async fn roster_addition_signed_by_trusted_key_pins_new_key() -> Result<()> {
 
     // A head signed by B now verifies.
     fixture.write_package("world", "1.1.0")?;
-    let head = fixture.commit_all_with_key("release 1.1.0", &key_b_path)?;
+    fixture.commit_all_with_key("release 1.1.0", &key_b_path)?;
+    let head = commit_tuf_metadata(&fixture, "1.1.0", &[signer_a, signer_b], Some(&key_b_path))?;
     fixture.publish_bare_origin()?;
     let result = sync(&fixture, &config, &mut state).await?;
     assert_eq!(result.new_commit, head);
@@ -136,6 +201,8 @@ async fn retired_key_unpinned_and_masked_in_readonly_anchor() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     let key_a = fixture.trusted_key().to_string();
     let (key_b, key_b_path) = fixture.make_keypair([44_u8; 32], "maintainer_b")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
+    let signer_b = tuf_signer("b", &key_b, &key_b_path, true);
 
     // The image-baked read-only anchor still ships A.
     fixture.write_anchor_keys(&[&key_a])?;
@@ -144,6 +211,12 @@ async fn retired_key_unpinned_and_masked_in_readonly_anchor() -> Result<()> {
     fixture.write_keys_toml_with(&[("a", &key_a), ("b", &key_b)], &[])?;
     fixture.write_package("hello", "1.0.0")?;
     fixture.commit_all("release 1.0.0")?;
+    commit_tuf_metadata(
+        &fixture,
+        "1.0.0",
+        &[signer_a.clone(), signer_b.clone()],
+        None,
+    )?;
     fixture.signed_tag("1.0.0", "HEAD")?; // signed by A
     fixture.publish_bare_origin()?;
 
@@ -155,6 +228,14 @@ async fn retired_key_unpinned_and_masked_in_readonly_anchor() -> Result<()> {
     // Retire A, vouched by B; the retiring commit is signed by B.
     fixture.write_keys_toml_with(&[("b", &key_b)], &["a"])?;
     fixture.commit_all_with_key("registry: retire signing key a", &key_b_path)?;
+    let mut transition_a = signer_a;
+    transition_a.role_key = false;
+    commit_tuf_metadata(
+        &fixture,
+        "1.0.1",
+        &[transition_a, signer_b.clone()],
+        Some(&key_b_path),
+    )?;
     fixture.publish_bare_origin()?;
     sync(&fixture, &config, &mut state).await?;
 
@@ -202,11 +283,13 @@ async fn forged_roster_rejected_without_state_change() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     let key_a = fixture.trusted_key().to_string();
     let (key_c, key_c_path) = fixture.make_keypair([45_u8; 32], "attacker")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
 
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
-    fixture.write_keys_toml()?; // roster {A}
+    fixture.write_keys_toml_with(&[("a", &key_a)], &[])?; // roster {A}
     fixture.write_package("hello", "1.0.0")?;
     fixture.commit_all("release 1.0.0")?;
+    commit_tuf_metadata(&fixture, "1.0.0", std::slice::from_ref(&signer_a), None)?;
     fixture.publish_bare_origin()?;
 
     let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
@@ -235,6 +318,47 @@ async fn forged_roster_rejected_without_state_change() -> Result<()> {
     );
     assert_eq!(state.last_commit, commit_before);
     assert!(!pinned_before.contains(&key_c));
+    Ok(())
+}
+
+#[tokio::test]
+async fn tuf_failure_does_not_persist_roster_change() -> Result<()> {
+    let fixture = RegistryFixture::new("aos-core")?;
+    let key_a = fixture.trusted_key().to_string();
+    let (key_b, key_b_path) = fixture.make_keypair([47_u8; 32], "maintainer_b")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
+    let signer_b = tuf_signer("b", &key_b, &key_b_path, true);
+
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
+    fixture.write_keys_toml_with(&[("a", &key_a), ("b", &key_b)], &[])?;
+    fixture.write_package("hello", "1.0.0")?;
+    fixture.commit_all("release 1.0.0")?;
+    let accepted = commit_tuf_metadata(&fixture, "1.0.0", &[signer_a.clone(), signer_b], None)?;
+    fixture.publish_bare_origin()?;
+
+    let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
+    let config = enforced_config(&fixture, server.base_url(), Some(key_a.clone()));
+    let mut state = RegistryState::default();
+    sync(&fixture, &config, &mut state).await?;
+    let pinned_before = fs::read_to_string(fixture.pinned_keys_path())?;
+    assert!(pinned_before.contains(&key_a));
+    assert!(pinned_before.contains(&key_b));
+
+    fixture.write_keys_toml_with(&[("a", &key_a)], &["b"])?;
+    fixture.commit_all("registry: maliciously drop b without TUF update")?;
+    fixture.publish_bare_origin()?;
+    let err = sync(&fixture, &config, &mut state)
+        .await
+        .expect_err("stale TUF catalog must reject the roster change");
+    assert!(
+        format!("{err:#}").contains("catalog does not match"),
+        "{err:#}"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.pinned_keys_path())?,
+        pinned_before
+    );
+    assert_eq!(state.last_commit.as_deref(), Some(accepted.as_str()));
     Ok(())
 }
 
@@ -278,12 +402,15 @@ async fn no_anchor_sync_fails_with_instructive_error() -> Result<()> {
 async fn force_pushed_roster_downgrade_rejected() -> Result<()> {
     let fixture = RegistryFixture::new("aos-core")?;
     let key_a = fixture.trusted_key().to_string();
-    let (key_b, _key_b_path) = fixture.make_keypair([46_u8; 32], "maintainer_b")?;
+    let (key_b, key_b_path) = fixture.make_keypair([46_u8; 32], "maintainer_b")?;
+    let signer_a = fixture_tuf_signer(&fixture, "a", true);
 
     fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 50)])?;
-    fixture.write_keys_toml()?; // roster {A}
+    fixture.write_keys_toml_with(&[("a", &key_a)], &[])?; // roster {A}
     fixture.write_package("hello", "1.0.0")?;
-    let first_commit = fixture.commit_all("release 1.0.0")?;
+    fixture.commit_all("release 1.0.0")?;
+    let first_commit =
+        commit_tuf_metadata(&fixture, "1.0.0", std::slice::from_ref(&signer_a), None)?;
     fixture.publish_bare_origin()?;
 
     let server = StaticHttpServer::spawn(fixture.origin_path().to_path_buf()).await?;
@@ -293,7 +420,9 @@ async fn force_pushed_roster_downgrade_rejected() -> Result<()> {
 
     // Roster gains B in a signed fast-forward; the client pins it.
     fixture.write_keys_toml_with(&[("a", &key_a), ("b", &key_b)], &[])?;
-    let second_commit = fixture.commit_all("registry: add signing key b")?;
+    let signer_b = tuf_signer("b", &key_b, &key_b_path, true);
+    fixture.commit_all("registry: add signing key b")?;
+    let second_commit = commit_tuf_metadata(&fixture, "1.0.1", &[signer_a, signer_b], None)?;
     fixture.publish_bare_origin()?;
     sync(&fixture, &config, &mut state).await?;
     assert_eq!(state.last_commit.as_deref(), Some(second_commit.as_str()));
