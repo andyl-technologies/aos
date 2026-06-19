@@ -1501,15 +1501,22 @@ name = "crucible"
 version = "0.1.0"
 dependencies = [
  "crucible-sim",
+ "thiserror",
 ]
 
 [[package]]
 name = "crucible-api"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-assert"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-cli"
@@ -1518,14 +1525,23 @@ version = "0.1.0"
 [[package]]
 name = "crucible-daemon"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-device"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-guest"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-harness"
@@ -1537,29 +1553,45 @@ dependencies = [
 [[package]]
 name = "crucible-protocol"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-qemu"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-qemu-plugin"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-session"
 version = "0.1.0"
 dependencies = [
  "crucible",
+ "thiserror",
 ]
 
 [[package]]
 name = "crucible-shmem"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crucible-sim"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "crypto-bigint"
