@@ -3177,7 +3177,7 @@ impl TreeWalk {
         let structured_attrs =
             self.derivation_structured_attrs_value(id, span, argument, argument_span, &entries)?;
         let structured_attrs_enabled = structured_attrs == Some(true);
-        let mut structured_json = structured_attrs_enabled.then(StructuredAttrsJson::new);
+        let mut structured_json = StructuredAttrsJson::new();
         if !structured_attrs_enabled {
             derivation
                 .environment
@@ -3207,8 +3207,14 @@ impl TreeWalk {
 
             let value = self.force_value(argument, argument_span, entry.value)?;
             if key == NAME_ATTR {
-                if let Some(json) = structured_json.as_mut() {
-                    Self::write_structured_json_string_field(id, span, json, &key, &name)?;
+                if structured_attrs_enabled {
+                    Self::write_structured_json_string_field(
+                        id,
+                        span,
+                        &mut structured_json,
+                        &key,
+                        &name,
+                    )?;
                 }
                 continue;
             }
@@ -3248,16 +3254,13 @@ impl TreeWalk {
                 context = context.union(&value_context).map_err(|source| {
                     TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
                 })?;
-                let json = structured_json.as_mut().ok_or_else(|| {
-                    TreeWalkError::new(
-                        TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                            id,
-                            feature: "structured attrs",
-                        },
-                        span,
-                    )
-                })?;
-                Self::write_structured_json_string_list_field(id, span, json, &key, &output_names)?;
+                Self::write_structured_json_string_list_field(
+                    id,
+                    span,
+                    &mut structured_json,
+                    &key,
+                    &output_names,
+                )?;
                 outputs_seen = true;
                 derivation.outputs = outputs;
                 continue;
@@ -3272,16 +3275,13 @@ impl TreeWalk {
                         })?;
                         let env_value =
                             Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
-                        let json = structured_json.as_mut().ok_or_else(|| {
-                            TreeWalkError::new(
-                                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                    id,
-                                    feature: "structured attrs",
-                                },
-                                span,
-                            )
-                        })?;
-                        Self::write_structured_json_string_field(id, span, json, &key, &env_value)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            &mut structured_json,
+                            &key,
+                            &env_value,
+                        )?;
                         builder = Some(env_value);
                     }
                     SYSTEM_ATTR => {
@@ -3294,16 +3294,13 @@ impl TreeWalk {
                         )?;
                         let env_value =
                             Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
-                        let json = structured_json.as_mut().ok_or_else(|| {
-                            TreeWalkError::new(
-                                TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                    id,
-                                    feature: "structured attrs",
-                                },
-                                span,
-                            )
-                        })?;
-                        Self::write_structured_json_string_field(id, span, json, &key, &env_value)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            &mut structured_json,
+                            &key,
+                            &env_value,
+                        )?;
                         system = Some(env_value);
                     }
                     OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
@@ -3319,15 +3316,7 @@ impl TreeWalk {
                         Self::write_structured_json_string_field(
                             id,
                             span,
-                            structured_json.as_mut().ok_or_else(|| {
-                                TreeWalkError::new(
-                                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                        id,
-                                        feature: "structured attrs",
-                                    },
-                                    span,
-                                )
-                            })?,
+                            &mut structured_json,
                             &key,
                             &env_value,
                         )?;
@@ -3344,15 +3333,7 @@ impl TreeWalk {
                             span,
                             argument,
                             argument_span,
-                            structured_json.as_mut().ok_or_else(|| {
-                                TreeWalkError::new(
-                                    TreeWalkErrorKind::UnsupportedDerivationStrictFeature {
-                                        id,
-                                        feature: "structured attrs",
-                                    },
-                                    span,
-                                )
-                            })?,
+                            &mut structured_json,
                             &key,
                             value,
                             &mut context,
@@ -3478,10 +3459,10 @@ impl TreeWalk {
                 .environment
                 .insert(output_name.clone(), env_value.into());
         }
-        if let Some(json) = structured_json {
+        if structured_attrs_enabled {
             derivation
                 .environment
-                .insert("__json".to_owned(), json.finish().into());
+                .insert("__json".to_owned(), structured_json.finish().into());
         }
         self.add_derivation_context_inputs(id, span, &mut derivation, &context)?;
 
@@ -11343,22 +11324,22 @@ impl TreeWalk {
         url: &[u8],
         parsed: &Url,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        #[cfg(test)]
-        if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
-            return Ok(response.clone());
-        }
-        #[cfg(test)]
-        if !self.options.fetch_tree_url_responses.is_empty() {
-            return Err(Self::fetch_tree_error(
-                id,
-                span,
-                url,
-                "missing test fetchTree URL response",
-            ));
-        }
-
         match parsed.scheme() {
             "http" | "https" => {
+                #[cfg(test)]
+                if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
+                    return Ok(response.clone());
+                }
+                #[cfg(test)]
+                if !self.options.fetch_tree_url_responses.is_empty() {
+                    return Err(Self::fetch_tree_error(
+                        id,
+                        span,
+                        url,
+                        "missing test fetchTree URL response",
+                    ));
+                }
+
                 let client = reqwest::blocking::Client::builder()
                     .no_gzip()
                     .no_brotli()
@@ -12889,20 +12870,6 @@ impl TreeWalk {
         url: &[u8],
         parsed: &Url,
     ) -> Result<Vec<u8>, TreeWalkError> {
-        #[cfg(test)]
-        if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
-            return Ok(response.clone());
-        }
-        #[cfg(test)]
-        if !self.options.fetch_tree_url_responses.is_empty() {
-            return Err(Self::fetch_tree_error(
-                id,
-                span,
-                url,
-                "missing test fetchTree URL response",
-            ));
-        }
-
         match parsed.scheme() {
             "file" => {
                 let path = Self::fetchurl_file_path(id, span, url, parsed)?;
@@ -12914,6 +12881,20 @@ impl TreeWalk {
                 fs::read(&path).map_err(|source| Self::fetch_tree_error(id, span, url, source))
             }
             "http" | "https" => {
+                #[cfg(test)]
+                if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
+                    return Ok(response.clone());
+                }
+                #[cfg(test)]
+                if !self.options.fetch_tree_url_responses.is_empty() {
+                    return Err(Self::fetch_tree_error(
+                        id,
+                        span,
+                        url,
+                        "missing test fetchTree URL response",
+                    ));
+                }
+
                 let client = reqwest::blocking::Client::builder()
                     .no_gzip()
                     .no_brotli()
@@ -30681,14 +30662,6 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The rejected normalized path bytes.
         path: Vec<u8>,
-    },
-    /// `derivationStrict` reached a Nix feature outside this implementation slice.
-    #[error("derivationStrict at node {id:?} does not support {feature}")]
-    UnsupportedDerivationStrictFeature {
-        /// The derivation boundary node id.
-        id: IrId,
-        /// The unsupported derivation feature.
-        feature: &'static str,
     },
     /// `derivationStrict` needed UTF-8 for a field stored in nix-compat.
     #[error("derivationStrict {field} at node {id:?} is not UTF-8: {bytes:?}: {message}")]
@@ -49177,12 +49150,7 @@ mod tests {
         assert_eq!(value["nested"], "inner");
         assert_eq!(value["rev"], resolved_rev);
         assert_eq!(value["shortRev"], &resolved_rev[..7]);
-        assert!(
-            value["narHash"]
-                .as_str()
-                .expect("narHash is a string")
-                .starts_with("sha256-")
-        );
+        assert_eq!(value["narHash"], recursive_nar_hash);
 
         let mut restricted_options = options;
         restricted_options.set_eval_mode(EvalMode::Restricted);

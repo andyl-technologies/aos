@@ -505,7 +505,6 @@ fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
         | TreeWalkErrorKind::UnsupportedFetchTreeFeature { .. }
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. }
-        | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
         | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
         TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
