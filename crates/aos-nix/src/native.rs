@@ -1576,51 +1576,89 @@ mod tests {
             return Ok(());
         };
         let native = NixNative::new(0)?;
+        let nonce = unique_store_name("native-drv-oracle");
+        let base_name = format!("base-{nonce}");
+        let consumer_name = format!("consumer-{nonce}");
+        let ca_name = format!("ca-{nonce}");
+        let ca_consumer_name = format!("ca-consumer-{nonce}");
 
         for expr in [
-            r#"derivationStrict {
-                 name = "base";
+            format!(
+                r#"derivationStrict {{
+                 name = "{base_name}";
                  system = "x86_64-linux";
                  builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-               }"#,
-            r#"let
-                 base = derivationStrict {
-                   name = "base";
+               }}"#
+            ),
+            format!(
+                r#"let
+                 base = derivationStrict {{
+                   name = "{base_name}";
                    system = "x86_64-linux";
                    builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                 };
-               in derivationStrict {
-                 name = "consumer";
+                 }};
+               in derivationStrict {{
+                 name = "{consumer_name}";
                  system = "x86_64-linux";
                  builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
-                 input = "${base.out}";
-               }"#,
-            r#"derivationStrict {
-                 name = "ca";
+                 input = "${{base.out}}";
+               }}"#
+            ),
+            format!(
+                r#"derivationStrict {{
+                 name = "{ca_name}";
                  system = "x86_64-linux";
                  builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
                  __contentAddressed = true;
                  outputHashAlgo = "sha256";
                  outputHashMode = "recursive";
-               }"#,
-            r#"let
-                 base = derivationStrict {
-                   name = "ca";
+               }}"#
+            ),
+            format!(
+                r#"let
+                 base = derivationStrict {{
+                   name = "{ca_name}";
                    system = "x86_64-linux";
                    builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
                    __contentAddressed = true;
                    outputHashAlgo = "sha256";
                    outputHashMode = "recursive";
-                 };
-               in derivationStrict {
-                 name = "consumer";
+                 }};
+               in derivationStrict {{
+                 name = "{ca_consumer_name}";
                  system = "x86_64-linux";
                  builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-builder";
-                 input = "${base.out}";
-               }"#,
+                 input = "${{base.out}}";
+               }}"#
+            ),
         ] {
-            let closure = native.instantiate_expr_closure(expr)?;
-            let output = Command::new(&oracle).args(["--expr", expr]).output()?;
+            let closure = native.instantiate_expr_closure(&expr)?;
+            let instantiate_output = Command::new(&oracle).args(["--expr", &expr]).output()?;
+            if !instantiate_output.status.success()
+                && String::from_utf8_lossy(&instantiate_output.stderr)
+                    .contains("experimental Nix feature")
+            {
+                eprintln!("configured C++ Nix oracle skipped experimental expression {expr:?}");
+                continue;
+            }
+            assert!(
+                instantiate_output.status.success(),
+                "C++ Nix oracle unexpectedly rejected {expr:?}: {}",
+                String::from_utf8_lossy(&instantiate_output.stderr)
+            );
+
+            for path in closure.drvs().keys() {
+                assert!(
+                    path.exists(),
+                    "C++ Nix oracle did not materialize {} for {expr:?}",
+                    path.display()
+                );
+            }
+
+            let source = derivation_path_wrapper_source(&expr);
+            let output = Command::new(&oracle)
+                .args(["--eval", "--strict", "--expr", &source])
+                .output()?;
             if !output.status.success()
                 && String::from_utf8_lossy(&output.stderr).contains("experimental Nix feature")
             {
@@ -1632,7 +1670,7 @@ mod tests {
                 "C++ Nix oracle unexpectedly rejected {expr:?}: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let root = String::from_utf8(output.stdout)?.trim().to_string();
+            let root: String = serde_json::from_slice(&output.stdout)?;
             assert_eq!(closure.root(), Path::new(&root), "{expr}");
 
             for (path, bytes) in closure.drvs() {
@@ -2701,10 +2739,14 @@ mod tests {
     }
 
     fn unique_temp_dir(prefix: &str) -> PathBuf {
+        std::env::temp_dir().join(unique_store_name(prefix))
+    }
+
+    fn unique_store_name(prefix: &str) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+        format!("{prefix}-{}-{nanos}", std::process::id())
     }
 }
