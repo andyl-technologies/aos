@@ -251,7 +251,7 @@ impl NixNative {
             unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
         })?;
         let outcome = self
-            .eval_ir(&ir)
+            .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
         derivation_path_from_value(outcome.value(), outcome.heap())
     }
@@ -281,7 +281,7 @@ impl NixNative {
             unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
         })?;
         let outcome = self
-            .eval_ir(&ir)
+            .eval_instantiation_ir(&ir)
             .map_err(|error| native_eval_error(error, source_map))?;
         let root = derivation_path_from_value(outcome.value(), outcome.heap())?;
         let mut drvs = BTreeMap::new();
@@ -316,6 +316,12 @@ impl NixNative {
             self.options.clone(),
             self.ifd_realizer.clone(),
         )
+    }
+
+    fn eval_instantiation_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
+        let mut options = self.options.clone();
+        options.set_reject_ambient_search_path(true);
+        eval_whnf_owned_with_options_and_realizer(ir, options, self.ifd_realizer.clone())
     }
 }
 
@@ -364,9 +370,9 @@ fn native_eval_error(
     source_map: Option<WrappedSourceMap>,
 ) -> NativeEvalError {
     let kind = error.kind();
-    if tree_walk_error_is_unsupported(&kind) {
+    if let Some(feature) = tree_walk_unsupported_feature(&kind) {
         return NativeEvalError::Unsupported {
-            feature: kind.to_string(),
+            feature,
             span: source_map
                 .and_then(|source_map| source_span_from_wrapped(error.span(), source_map)),
         };
@@ -377,7 +383,7 @@ fn native_eval_error(
     }
 }
 
-fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
+fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
     match kind {
         TreeWalkErrorKind::UnsupportedLambdaPattern { .. }
         | TreeWalkErrorKind::UnsupportedLetBindingKey { .. }
@@ -388,19 +394,25 @@ fn tree_walk_error_is_unsupported(kind: &TreeWalkErrorKind) -> bool {
         | TreeWalkErrorKind::UnsupportedDerivationStrictFeature { .. }
         | TreeWalkErrorKind::UnsupportedEqualityType { .. }
         | TreeWalkErrorKind::UnsupportedAttrPath { .. }
-        | TreeWalkErrorKind::UnsupportedNode { .. } => true,
-        TreeWalkErrorKind::ImportFromDerivation { .. } => true,
+        | TreeWalkErrorKind::UnsupportedNode { .. }
+        | TreeWalkErrorKind::ImportFromDerivation { .. } => Some(kind.to_string()),
+        TreeWalkErrorKind::UnsupportedAmbientSearchPath { feature, .. } => {
+            Some((*feature).to_string())
+        }
+        TreeWalkErrorKind::SearchPathNotFound { ambient: true, .. } => {
+            Some("configured Nix search path lookup".to_string())
+        }
         TreeWalkErrorKind::Type {
             expected,
             actual: ValueTag::Attrs,
             ..
-        } => matches!(*expected, "lambda" | "function"),
+        } if matches!(*expected, "lambda" | "function") => Some(kind.to_string()),
         TreeWalkErrorKind::Type {
             expected: "attrs",
             actual: ValueTag::Lambda | ValueTag::Primop,
             ..
-        } => true,
-        _ => false,
+        } => Some(kind.to_string()),
+        _ => None,
     }
 }
 
@@ -844,6 +856,40 @@ mod tests {
         assert!(path.to_string_lossy().ends_with("-base.drv"));
         let bytes = assert_materialized_drv(&path)?;
         assert!(bytes.starts_with(b"Derive("));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_reified_builtins_do_not_force_nix_path() -> Result<()> {
+        let (native, root, store) = native_with_temp_store("native-reified-builtins")?;
+
+        for source in [
+            r#"let b = builtins; in b.derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+            r#"let b = builtins; in b.${"derivationStrict"} {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+            r#"with builtins; derivationStrict {
+                 name = "base";
+                 system = "x86_64-linux";
+                 builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               }"#,
+        ] {
+            let closure = native.instantiate_expr_closure(source)?;
+            assert!(
+                closure.root().starts_with(&store),
+                "{}",
+                closure.root().display()
+            );
+            assert!(closure.root().to_string_lossy().ends_with("-base.drv"));
+        }
 
         fs::remove_dir_all(root)?;
         Ok(())
@@ -1426,6 +1472,64 @@ mod tests {
             error.downcast_ref::<NativeEvalError>(),
             Some(NativeEvalError::Unsupported { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn native_instantiation_search_path_stays_fallback_eligible() -> Result<()> {
+        let native = NixNative::new(0)?;
+
+        for (source, expected) in [
+            ("<nixpkgs>", "configured Nix search path lookup"),
+            ("builtins.nixPath", "builtins.nixPath"),
+            ("let b = builtins; in b.nixPath", "builtins.nixPath"),
+            (r#"builtins.${"nixPath"}"#, "builtins.nixPath"),
+            ("with builtins; nixPath", "builtins.nixPath"),
+        ] {
+            let error = native
+                .instantiate_expr(source)
+                .expect_err("search-path-sensitive instantiation should fall back");
+            assert!(
+                matches!(
+                    error.downcast_ref::<NativeEvalError>(),
+                    Some(NativeEvalError::Unsupported { feature, span: Some(_) })
+                        if feature.contains(expected)
+                ),
+                "unexpected error for {source:?}: {error:?}"
+            );
+        }
+
+        let dir = unique_temp_dir("aos-nix-native-instantiate-search-path");
+        fs::create_dir_all(&dir)?;
+        let file = dir.join("default.nix");
+        fs::write(&file, r#"{ pkgs.hello = <nixpkgs>; }"#)?;
+
+        let error = native
+            .instantiate(&file, "pkgs.hello")
+            .expect_err("file-backed search-path instantiation should fall back");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::Unsupported { feature, .. })
+                    if feature.contains("configured Nix search path lookup")
+            ),
+            "unexpected error: {error:?}"
+        );
+
+        let error = native
+            .instantiate_expr(
+                r#"builtins.findFile [ { path = "/definitely-missing-aos-nix"; } ] "missing""#,
+            )
+            .expect_err("explicit findFile misses are semantic eval errors");
+        assert!(
+            matches!(
+                error.downcast_ref::<NativeEvalError>(),
+                Some(NativeEvalError::EvalError { .. })
+            ),
+            "unexpected explicit findFile error: {error:?}"
+        );
         Ok(())
     }
 

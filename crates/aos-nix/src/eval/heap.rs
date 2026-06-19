@@ -84,6 +84,13 @@ pub(crate) enum EvalThunkKind {
         /// The lowered attribute path to select.
         path: IrAttrPathId,
     },
+    /// Evaluates a builtin attribute value when a reified `builtins` entry is forced.
+    BuiltinAttr {
+        /// The selected builtin attribute symbol.
+        symbol: Symbol,
+        /// The selected builtin declaration.
+        builtin: Builtin,
+    },
 }
 
 /// A suspended tree-walk thunk heap record.
@@ -200,6 +207,14 @@ impl EvalThunk {
         }
     }
 
+    /// Creates a suspended builtin attribute value thunk record.
+    pub(crate) const fn builtin_attr(symbol: Symbol, builtin: Builtin) -> Self {
+        Self {
+            kind: EvalThunkKind::BuiltinAttr { symbol, builtin },
+            cell: ThunkCell::new(),
+        }
+    }
+
     /// Returns the deferred work this thunk performs when forced.
     pub(crate) const fn kind(&self) -> &EvalThunkKind {
         &self.kind
@@ -211,7 +226,8 @@ impl EvalThunk {
             EvalThunkKind::Node { body, .. } => Some(body.id()),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
         }
     }
 
@@ -221,7 +237,8 @@ impl EvalThunk {
             EvalThunkKind::Node { body, .. } => Some(*body),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
         }
     }
 
@@ -231,7 +248,8 @@ impl EvalThunk {
             EvalThunkKind::Node { env, .. } => Some(env),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
         }
     }
 
@@ -241,7 +259,8 @@ impl EvalThunk {
             EvalThunkKind::Node { with_env, .. } => Some(with_env),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
         }
     }
 
@@ -251,7 +270,8 @@ impl EvalThunk {
             EvalThunkKind::Node { scoped_globals, .. } => Some(scoped_globals),
             EvalThunkKind::Apply { .. }
             | EvalThunkKind::Apply2 { .. }
-            | EvalThunkKind::Select { .. } => None,
+            | EvalThunkKind::Select { .. }
+            | EvalThunkKind::BuiltinAttr { .. } => None,
         }
     }
 

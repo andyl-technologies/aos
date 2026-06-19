@@ -686,6 +686,7 @@ pub struct TreeWalkOptions {
     max_call_depth: usize,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
+    reject_ambient_search_path: bool,
     parse_cache_root: Option<PathBuf>,
 }
 
@@ -706,6 +707,7 @@ impl Default for TreeWalkOptions {
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
+            reject_ambient_search_path: false,
             parse_cache_root: None,
         }
     }
@@ -1189,6 +1191,16 @@ impl TreeWalkOptions {
         Ok(())
     }
 
+    /// Enables or disables ambient Nix search-path lookup.
+    ///
+    /// When enabled, evaluating `<...>` or `builtins.nixPath` fails before
+    /// observing configured search-path entries. Explicit `builtins.findFile`
+    /// lists remain evaluable because they do not read the ambient Nix search
+    /// path.
+    pub(crate) fn set_reject_ambient_search_path(&mut self, reject: bool) {
+        self.reject_ambient_search_path = reject;
+    }
+
     /// Replaces the parse-cache root directory.
     pub fn set_parse_cache_root(&mut self, parse_cache_root: impl Into<PathBuf>) {
         self.parse_cache_root = Some(parse_cache_root.into());
@@ -1288,6 +1300,11 @@ impl TreeWalkOptions {
     /// Returns the configured Nix search-path entries.
     pub fn nix_path(&self) -> &[NixSearchPathEntry] {
         &self.nix_path
+    }
+
+    /// Returns whether ambient Nix search-path lookup is disabled.
+    pub(crate) const fn reject_ambient_search_path(&self) -> bool {
+        self.reject_ambient_search_path
     }
 
     /// Returns the configured parse-cache root directory, if any.
@@ -2826,6 +2843,9 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         if builtin.execution() == BuiltinExecution::BuiltinsValue {
             return self.alloc_thunk_for_node(id, id, span);
+        }
+        if builtin.execution() == BuiltinExecution::NixPathValue {
+            return self.alloc_builtin_attr_thunk(id, span, symbol, builtin);
         }
         builtin.select(self, id, span, symbol)
     }
@@ -5596,6 +5616,15 @@ impl TreeWalk {
     }
 
     fn eval_search_path(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        if self.options.reject_ambient_search_path() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAmbientSearchPath {
+                    id,
+                    feature: "configured Nix search path lookup",
+                },
+                node.span,
+            ));
+        }
         let IrData::Symbol(symbol) = node.data else {
             return Err(self.invalid_payload(id, node, "search-path symbol payload"));
         };
@@ -5622,6 +5651,15 @@ impl TreeWalk {
     }
 
     fn eval_nix_path_value(&mut self, id: IrId, span: Span) -> Result<Value, TreeWalkError> {
+        if self.options.reject_ambient_search_path() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAmbientSearchPath {
+                    id,
+                    feature: "builtins.nixPath",
+                },
+                span,
+            ));
+        }
         let entries = self.visible_nix_path().to_vec();
         let mut values = Vec::new();
         values.try_reserve_exact(entries.len()).map_err(|_| {
@@ -5764,7 +5802,7 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let cache_key = FindFileCacheKey::new(self.options.search_path_base(), entries, lookup);
         if let Some(cached) = self.find_file_cache.get(&cache_key).cloned() {
-            return self.find_file_cached_result(id, span, cached, lookup);
+            return self.find_file_cached_result(id, span, cached, lookup, origin);
         }
 
         for entry in entries {
@@ -5807,7 +5845,7 @@ impl TreeWalk {
         }
         self.find_file_cache
             .insert(cache_key, FindFileCacheEntry::Miss);
-        self.find_file_not_found(id, span, lookup)
+        self.find_file_not_found(id, span, lookup, origin)
     }
 
     fn check_find_file_candidate_access(
@@ -5829,10 +5867,11 @@ impl TreeWalk {
         span: Span,
         cached: FindFileCacheEntry,
         lookup: &[u8],
+        origin: FindFileLookupOrigin,
     ) -> Result<Value, TreeWalkError> {
         match cached {
             FindFileCacheEntry::Hit(path) => self.alloc_find_file_path(id, span, path),
-            FindFileCacheEntry::Miss => self.find_file_not_found(id, span, lookup),
+            FindFileCacheEntry::Miss => self.find_file_not_found(id, span, lookup, origin),
         }
     }
 
@@ -5852,11 +5891,13 @@ impl TreeWalk {
         id: IrId,
         span: Span,
         lookup: &[u8],
+        origin: FindFileLookupOrigin,
     ) -> Result<Value, TreeWalkError> {
         Err(TreeWalkError::new(
             TreeWalkErrorKind::SearchPathNotFound {
                 id,
                 lookup: lookup.to_vec(),
+                ambient: origin == FindFileLookupOrigin::AmbientSearchPath,
             },
             span,
         ))
@@ -6810,6 +6851,18 @@ impl TreeWalk {
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
+    fn alloc_builtin_attr_thunk(
+        &mut self,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+        builtin: Builtin,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_thunk(EvalThunk::builtin_attr(symbol, builtin))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
     fn force_value(&mut self, id: IrId, span: Span, value: Value) -> Result<Value, TreeWalkError> {
         if !value.is_thunk() {
             return Ok(value);
@@ -6908,6 +6961,9 @@ impl TreeWalk {
                         )?;
                         eval.force_node_result(select.id(), span, value)
                     }),
+                    EvalThunkKind::BuiltinAttr { symbol, builtin } => {
+                        (*builtin).select(self, id, span, *symbol)
+                    }
                 };
                 let value = result?;
                 let value = guard.finish(value).map_err(|source| {
@@ -29380,6 +29436,14 @@ pub enum TreeWalkErrorKind {
         /// The unsupported value type.
         actual: ValueTag,
     },
+    /// Ambient Nix search-path access was disabled by evaluator options.
+    #[error("ambient Nix search path at node {id:?} does not support {feature}")]
+    UnsupportedAmbientSearchPath {
+        /// The search-path-sensitive node id.
+        id: IrId,
+        /// The rejected search-path-sensitive feature.
+        feature: &'static str,
+    },
     /// A Nix search-path lookup found no existing candidate.
     #[error("search path lookup at node {id:?} did not find {lookup:?}")]
     SearchPathNotFound {
@@ -29387,6 +29451,8 @@ pub enum TreeWalkErrorKind {
         id: IrId,
         /// The unresolved lookup bytes.
         lookup: Vec<u8>,
+        /// Whether the miss came from `<...>` rather than an explicit `findFile` list.
+        ambient: bool,
     },
     /// A lowered search-path literal did not retain its `<...>` delimiters.
     #[error("invalid search-path literal at node {id:?}: {literal:?}")]
