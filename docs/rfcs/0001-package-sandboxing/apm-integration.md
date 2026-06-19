@@ -188,7 +188,7 @@ requires-features = [
 
 # NEW: this package exposes a systemd handle plus generated units.
 [versions.platforms.x86_64-linux.expose]
-target       = "aos-pkg-myapp.target"   # the activation handle apm registers
+target       = "aos-pkg-myapp.target"   # must equal aos-pkg-<package>.target
 units        = ["myapp.service"]     # member units pulled by the target
 # No "kind" field: under the unified model every exposing package gets a
 # package target. Privilege is declared separately in the [permissions] manifest

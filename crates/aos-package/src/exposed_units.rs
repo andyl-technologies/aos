@@ -286,6 +286,15 @@ fn exposed_packages_from_expose_dir(
         let Some(expose) = apm.expose.as_ref() else {
             continue;
         };
+        let expected_target = format!("aos-pkg-{}.target", apm.name);
+        if expose.target != expected_target {
+            bail!(
+                "installed exposed package '{}' declares target '{}' but expected '{}'",
+                apm.name,
+                expose.target,
+                expected_target
+            );
+        }
         let Some(artifact) = apm.expose_artifact.as_ref() else {
             bail!(
                 "installed exposed package '{}' is missing expose artifact metadata",
@@ -3488,6 +3497,33 @@ mod tests {
             link_expose_artifact(&profile, entry);
         }
         exposed_packages(&profile, installed).unwrap()
+    }
+
+    #[test]
+    fn exposed_packages_rejects_target_bound_to_other_package() {
+        let tmp = TempDir::new().unwrap();
+        let mut installed = installed_with_expose(&tmp, "web", "pkgwebhash11", "artifactweb11");
+        installed
+            .apm
+            .as_mut()
+            .unwrap()
+            .expose
+            .as_mut()
+            .unwrap()
+            .target = "aos-pkg-other.target".into();
+        let profile = Profile {
+            path: tmp.path().join("profile-target-binding"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("expected 'aos-pkg-web.target'"),
+            "{err:#}"
+        );
     }
 
     fn write_exposed_unit_surface(root: &Path, packages: &[ExposedPackage]) {

@@ -87,7 +87,7 @@ use crate::types::{
     FEATURE_REQUIRES_V1, PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile,
     RegistryRootConfig, RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec,
     package_name_bucket, validate_attestation_meta, validate_branch_name, validate_channel_name,
-    validate_expose_artifact_meta, validate_expose_meta, validate_git_ref_name,
+    validate_expose_artifact_meta, validate_expose_meta_for_package, validate_git_ref_name,
     validate_package_name, validate_permissions_meta, validate_platform_name,
     validate_registry_name,
 };
@@ -1928,7 +1928,7 @@ fn read_publish_expose_manifest(path: &str, package_name: &str) -> Result<Publis
     let mut manifest: PublishExposeManifest = serde_json::from_str(&content)
         .with_context(|| format!("parsing expose manifest {path}"))?;
 
-    validate_expose_meta(&manifest.expose)
+    validate_expose_meta_for_package(package_name, &manifest.expose)
         .with_context(|| format!("validating expose manifest for package '{package_name}'"))?;
     if manifest.permissions.confinement.is_none() {
         manifest.permissions.confinement = Some(manifest.permissions.computed_confinement());
@@ -12494,6 +12494,27 @@ mod tests {
     }
 
     #[test]
+    fn read_publish_expose_manifest_rejects_target_bound_to_other_package() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("manifest.json");
+        let manifest = serde_json::json!({
+            "expose": {
+                "target": "aos-pkg-other.target",
+                "units": ["webapp.service"],
+            },
+            "permissions": {},
+        });
+        fs::write(&path, serde_json::to_string(&manifest).unwrap()).unwrap();
+
+        let err = read_publish_expose_manifest(path.to_str().unwrap(), "webapp").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
     fn read_publish_manifest_digest_tracks_manifest_bytes() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("manifest.json");
@@ -12899,7 +12920,7 @@ mod tests {
     }
 
     #[test]
-    fn build_package_toml_detects_ebpf_feature_from_package_name_not_target() {
+    fn build_package_toml_detects_ebpf_feature_from_package_name() {
         let info = StorePathInfo {
             path: "/nix/store/abc123-webapp-1.0.0".into(),
             nar_hash: "sha256:deadbeef".into(),
@@ -12916,7 +12937,7 @@ mod tests {
         };
         let manifest = PublishExposeManifest {
             expose: ExposeMeta {
-                target: "aos-pkg-custom.target".into(),
+                target: "aos-pkg-webapp.target".into(),
                 units: vec![
                     "webapp.service".into(),
                     "aos-pkg-webapp.slice".into(),

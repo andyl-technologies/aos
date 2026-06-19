@@ -756,6 +756,27 @@
     if reservedCollision.success
     then throw "expose renderer must reject package-authored synthesized side-effect unit names"
     else "ok";
+  targetMismatch = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        target = "aos-pkg-other.target";
+        units."expose-smoke-target-mismatch.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  targetMismatchRejected =
+    if targetMismatch.success
+    then throw "expose renderer must reject expose.target values that are not bound to the package name"
+    else "ok";
   privilegedExecPrefix = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -1317,6 +1338,7 @@ in
     k3sCombinedExposePath = k3sCombinedPackage.expose;
     inherit
       reservedCollisionRejected
+      targetMismatchRejected
       verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
@@ -1825,6 +1847,7 @@ in
           grep -q 'Description=RFC-0001 expose override service' \
             "$overriddenExposePath/units/expose-smoke-override.service"
           test "$reservedCollisionRejected" = ok
+          test "$targetMismatchRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
           test "$landlockShellExecPrefixRejected" = ok

@@ -1193,7 +1193,7 @@ pub fn validate_supported_package_meta_with(
     }
 
     if let Some(expose) = &meta.expose {
-        validate_expose_meta(expose)?;
+        validate_expose_meta_for_package(&meta.name, expose)?;
         validate_attestation_expose_consistency(meta)?;
         if !expose.requires.is_empty() {
             require_feature(meta, FEATURE_REQUIRES_V1)?;
@@ -1281,6 +1281,25 @@ pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
     validate_expose_config_meta(&expose.config)?;
     validate_capability_routes(expose)?;
     validate_expose_unit_references(expose, &unit_names)?;
+    Ok(())
+}
+
+/// Validate an RFC-0001 exposure metadata block for a package.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_expose_meta`] rejects the metadata or the
+/// target is not the package-owned `aos-pkg-<package>.target` activation unit.
+pub fn validate_expose_meta_for_package(package_name: &str, expose: &ExposeMeta) -> Result<()> {
+    validate_package_name(package_name)?;
+    validate_expose_meta(expose)?;
+    let expected = format!("aos-pkg-{package_name}.target");
+    if expose.target != expected {
+        bail!(
+            "expose target for package '{package_name}' must equal {expected}: {}",
+            expose.target
+        );
+    }
     Ok(())
 }
 
@@ -4054,6 +4073,50 @@ last_update = "2026-02-13T10:30:00Z"
         meta.requires_features
             .push(FEATURE_NETWORK_POLICY_V1.into());
         validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_expose_target_bound_to_other_package() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_EXPOSE_V1.into(), FEATURE_NETWORK_POLICY_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-other.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
     }
 
     #[test]
