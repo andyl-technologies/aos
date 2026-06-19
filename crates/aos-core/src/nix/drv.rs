@@ -117,6 +117,21 @@ pub fn parse_drv_input_drvs_from_str(content: &str) -> Result<Vec<DrvInput>> {
     parse_drv_input_drvs_section(content, start, end)
 }
 
+/// Parses the input derivation edges from raw `.drv` ATerm bytes.
+///
+/// This parser only inspects the second top-level `Derive(...)` list, so byte
+/// diff traversal can follow input derivations without requiring the full
+/// derivation to be valid UTF-8 or structurally parseable.
+///
+/// # Errors
+///
+/// Returns an error if the ATerm does not contain a parseable
+/// input-derivations section, or if an input path or output name is not UTF-8.
+pub fn parse_drv_input_drvs_from_bytes(content: &[u8]) -> Result<Vec<DrvInput>> {
+    let (start, end) = nth_top_level_list_span_bytes(content, 1)?;
+    parse_drv_input_drvs_section_bytes(content, start, end)
+}
+
 /// Parses the env section of a .drv file into a key-value map.
 ///
 /// The env section is the last top-level `[...]` list inside
@@ -240,6 +255,41 @@ fn parse_drv_input_drvs_section(content: &str, start: usize, end: usize) -> Resu
     Ok(inputs)
 }
 
+fn parse_drv_input_drvs_section_bytes(
+    content: &[u8],
+    start: usize,
+    end: usize,
+) -> Result<Vec<DrvInput>> {
+    let mut inputs = Vec::new();
+    let mut pos = start;
+
+    while pos < end {
+        match find_bytes(&content[pos..end], b"(\"") {
+            Some(offset) => pos += offset + 1,
+            None => break,
+        }
+        if pos >= end {
+            break;
+        }
+
+        let drv_path = parse_aterm_utf8_string_bytes(content, &mut pos)?;
+        while pos < end && content[pos] != b'[' {
+            pos += 1;
+        }
+        let outputs = parse_aterm_string_list_bytes(content, &mut pos, end)?;
+        inputs.push(DrvInput { drv_path, outputs });
+
+        while pos < end && content[pos] != b')' {
+            pos += 1;
+        }
+        if pos < end {
+            pos += 1;
+        }
+    }
+
+    Ok(inputs)
+}
+
 fn parse_aterm_string_list(content: &str, pos: &mut usize, end: usize) -> Result<Vec<String>> {
     let bytes = content.as_bytes();
     if *pos >= end || bytes[*pos] != b'[' {
@@ -255,6 +305,38 @@ fn parse_aterm_string_list(content: &str, pos: &mut usize, end: usize) -> Result
                 return Ok(values);
             }
             b'"' => values.push(parse_aterm_string(content, pos)?),
+            b',' | b' ' | b'\n' | b'\t' => *pos += 1,
+            other => {
+                anyhow::bail!(
+                    "unexpected byte '{}' in string list at position {}",
+                    other as char,
+                    *pos
+                );
+            }
+        }
+    }
+
+    anyhow::bail!("unterminated string list at position {}", *pos)
+}
+
+fn parse_aterm_string_list_bytes(
+    content: &[u8],
+    pos: &mut usize,
+    end: usize,
+) -> Result<Vec<String>> {
+    if *pos >= end || content[*pos] != b'[' {
+        anyhow::bail!("expected '[' at position {}", *pos);
+    }
+    *pos += 1;
+
+    let mut values = Vec::new();
+    while *pos < end {
+        match content[*pos] {
+            b']' => {
+                *pos += 1;
+                return Ok(values);
+            }
+            b'"' => values.push(parse_aterm_utf8_string_bytes(content, pos)?),
             b',' | b' ' | b'\n' | b'\t' => *pos += 1,
             other => {
                 anyhow::bail!(
@@ -314,12 +396,87 @@ fn top_level_list_spans(content: &str) -> Result<Vec<(usize, usize)>> {
     Ok(spans)
 }
 
+fn nth_top_level_list_span_bytes(content: &[u8], target_index: usize) -> Result<(usize, usize)> {
+    let len = content.len();
+    let derive_start = find_bytes(content, b"Derive(")
+        .map(|index| index + 7)
+        .context("could not find Derive term in .drv")?;
+
+    let mut list_index = 0_usize;
+    let mut depth = 0_usize;
+    let mut current_start = None;
+    let mut pos = derive_start;
+
+    while pos < len {
+        match content[pos] {
+            b'[' => {
+                if depth == 0 {
+                    current_start = Some(pos);
+                }
+                depth += 1;
+            }
+            b']' => {
+                if depth == 0 {
+                    anyhow::bail!("unmatched ']' at position {pos}");
+                }
+                depth -= 1;
+                if depth == 0 {
+                    let start = current_start.context("list end without list start")?;
+                    if list_index == target_index {
+                        return Ok((start, pos + 1));
+                    }
+                    list_index += 1;
+                    current_start = None;
+                }
+            }
+            b'"' => skip_aterm_string_bytes(content, &mut pos)?,
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    if depth != 0 {
+        anyhow::bail!("unterminated list in .drv");
+    }
+
+    anyhow::bail!("could not find top-level list {target_index} in .drv")
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
 fn skip_aterm_string(content: &str, pos: &mut usize) -> Result<()> {
     let bytes = content.as_bytes();
     let len = bytes.len();
     *pos += 1;
     while *pos < len {
         match bytes[*pos] {
+            b'\\' => {
+                *pos += 1;
+                if *pos >= len {
+                    anyhow::bail!("trailing backslash at end of string (position {})", *pos);
+                }
+            }
+            b'"' => return Ok(()),
+            _ => {}
+        }
+        *pos += 1;
+    }
+
+    anyhow::bail!("unterminated string at position {}", *pos)
+}
+
+fn skip_aterm_string_bytes(content: &[u8], pos: &mut usize) -> Result<()> {
+    let len = content.len();
+    *pos += 1;
+    while *pos < len {
+        match content[*pos] {
             b'\\' => {
                 *pos += 1;
                 if *pos >= len {
@@ -441,6 +598,51 @@ fn parse_aterm_string(content: &str, pos: &mut usize) -> Result<String> {
     anyhow::bail!("unterminated string at position {}", *pos)
 }
 
+fn parse_aterm_utf8_string_bytes(content: &[u8], pos: &mut usize) -> Result<String> {
+    let value = parse_aterm_string_bytes(content, pos)?;
+    String::from_utf8(value).context("ATerm string is not UTF-8")
+}
+
+fn parse_aterm_string_bytes(content: &[u8], pos: &mut usize) -> Result<Vec<u8>> {
+    let len = content.len();
+
+    if *pos >= len || content[*pos] != b'"' {
+        anyhow::bail!("expected '\"' at position {}", *pos);
+    }
+    *pos += 1;
+
+    let mut result = Vec::new();
+    while *pos < len {
+        match content[*pos] {
+            b'\\' => {
+                *pos += 1;
+                if *pos >= len {
+                    anyhow::bail!("trailing backslash at end of string (position {})", *pos);
+                }
+                match content[*pos] {
+                    b'n' => result.push(b'\n'),
+                    b'r' => result.push(b'\r'),
+                    b't' => result.push(b'\t'),
+                    b'\\' => result.push(b'\\'),
+                    b'"' => result.push(b'"'),
+                    other => {
+                        result.push(b'\\');
+                        result.push(other);
+                    }
+                }
+            }
+            b'"' => {
+                *pos += 1;
+                return Ok(result);
+            }
+            byte => result.push(byte),
+        }
+        *pos += 1;
+    }
+
+    anyhow::bail!("unterminated string at position {}", *pos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +690,45 @@ mod tests {
                     outputs: vec!["dev".to_string(), "out".to_string()],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parse_drv_input_drvs_from_bytes_skips_non_utf8_sections() {
+        let mut drv = br#"Derive([("out","/nix/store/root-out","","")],[("/nix/store/aaa-input.drv",["out"]),("/nix/store/bbb-input.drv",["dev","out"])],[],"x86_64-linux","/nix/store/bash",[],[("name","root"),("raw",""#
+            .to_vec();
+        drv.push(0xff);
+        drv.extend_from_slice(br#"")])"#);
+
+        let inputs = parse_drv_input_drvs_from_bytes(&drv).unwrap();
+
+        assert_eq!(
+            inputs,
+            vec![
+                DrvInput {
+                    drv_path: "/nix/store/aaa-input.drv".to_string(),
+                    outputs: vec!["out".to_string()],
+                },
+                DrvInput {
+                    drv_path: "/nix/store/bbb-input.drv".to_string(),
+                    outputs: vec!["dev".to_string(), "out".to_string()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_drv_input_drvs_from_bytes_ignores_malformed_tail() {
+        let drv = br#"Derive([],[("/nix/store/aaa-input.drv",["out"])],[],[unterminated"#;
+
+        let inputs = parse_drv_input_drvs_from_bytes(drv).unwrap();
+
+        assert_eq!(
+            inputs,
+            vec![DrvInput {
+                drv_path: "/nix/store/aaa-input.drv".to_string(),
+                outputs: vec!["out".to_string()],
+            }]
         );
     }
 

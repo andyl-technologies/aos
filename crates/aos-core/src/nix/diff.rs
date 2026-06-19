@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use nix_compat::derivation::Derivation;
 
-use super::drv::{DrvInput, parse_drv_input_drvs_from_str};
+use super::drv::{DrvInput, parse_drv_input_drvs_from_bytes};
 use super::{DrvClosure, NixEval};
 
 /// The level of `.drv` comparison to perform.
@@ -462,9 +462,7 @@ fn first_derivation_diff_field(oracle: &Derivation, candidate: &Derivation) -> &
 }
 
 fn parse_drv_inputs_from_bytes(bytes: &[u8], path: &Path, label: &str) -> Result<Vec<DrvInput>> {
-    let content = std::str::from_utf8(bytes)
-        .with_context(|| format!("decoding {label} drv {} as UTF-8", path.display()))?;
-    parse_drv_input_drvs_from_str(content)
+    parse_drv_input_drvs_from_bytes(bytes)
         .with_context(|| format!("parsing {label} drv inputs {}", path.display()))
 }
 
@@ -546,6 +544,10 @@ mod tests {
     }
 
     fn drv(outputs: &[(&str, &[&str])], marker: &str) -> String {
+        String::from_utf8(drv_bytes(outputs, marker, None)).expect("fixture is UTF-8")
+    }
+
+    fn drv_bytes(outputs: &[(&str, &[&str])], marker: &str, extra_env: Option<&[u8]>) -> Vec<u8> {
         let inputs = outputs
             .iter()
             .map(|(path, names)| {
@@ -558,9 +560,49 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join(",");
-        format!(
-            r#"Derive([("out","/nix/store/{marker}-out","","")],[{inputs}],[],"x86_64-linux","/nix/store/bash",[],[("name","{marker}")])"#
+        let mut out = format!(
+            r#"Derive([("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out","","")],[{inputs}],[],"x86_64-linux","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash",[],[("builder","/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash"),("name","{marker}"),("out","/nix/store/cccccccccccccccccccccccccccccccc-{marker}-out"),("system","x86_64-linux")"#
         )
+        .into_bytes();
+        if let Some(extra_env) = extra_env {
+            out.extend_from_slice(br#",("raw",""#);
+            out.extend_from_slice(extra_env);
+            out.extend_from_slice(br#"")"#);
+        }
+        out.extend_from_slice(b"])");
+        out
+    }
+
+    fn drv_input_section_only_bytes(inputs: &[(&str, &[&str])]) -> Vec<u8> {
+        let inputs = inputs
+            .iter()
+            .map(|(path, names)| {
+                let names = names
+                    .iter()
+                    .map(|name| format!(r#""{name}""#))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"("{path}",[{names}])"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(r#"Derive([],[{inputs}])"#).into_bytes()
+    }
+
+    fn drv_with_malformed_tail_bytes(inputs: &[(&str, &[&str])]) -> Vec<u8> {
+        let inputs = inputs
+            .iter()
+            .map(|(path, names)| {
+                let names = names
+                    .iter()
+                    .map(|name| format!(r#""{name}""#))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"("{path}",[{names}])"#)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(r#"Derive([],[{inputs}],[],[unterminated"#).into_bytes()
     }
 
     fn structural_drv(name: &str) -> String {
@@ -627,16 +669,20 @@ mod tests {
 
     #[test]
     fn byte_mode_walks_input_derivation_pairs() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let oracle_input = temp.path().join("oracle-input.drv");
-        let candidate_input = temp.path().join("candidate-input.drv");
-        let oracle_root = temp.path().join("oracle-root.drv");
-        let candidate_root = temp.path().join("candidate-root.drv");
-        fs::write(&oracle_input, drv(&[], "input"))?;
-        fs::write(
-            &oracle_root,
-            drv(&[(path_str(&oracle_input)?, &["out"])], "root"),
-        )?;
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv(&[(path_str(&oracle_input)?, &["out"])], "root").into_bytes(),
+        );
         let mut candidate_bytes = BTreeMap::new();
         candidate_bytes.insert(
             candidate_input.clone(),
@@ -646,7 +692,7 @@ mod tests {
             candidate_root.clone(),
             drv(&[(path_str(&candidate_input)?, &["out"])], "root").into_bytes(),
         );
-        let oracle = FakeEval::path(oracle_root.clone());
+        let oracle = FakeEval::path_with_bytes(oracle_root.clone(), oracle_bytes);
         let candidate = FakeEval::path_with_bytes(candidate_root.clone(), candidate_bytes);
 
         let report = diff_closure(
@@ -681,22 +727,26 @@ mod tests {
 
     #[test]
     fn byte_mode_requires_complete_in_memory_closure_bytes() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let oracle_input = temp.path().join("oracle-input.drv");
-        let candidate_input = temp.path().join("candidate-input.drv");
-        let oracle_root = temp.path().join("oracle-root.drv");
-        let candidate_root = temp.path().join("candidate-root.drv");
-        fs::write(&oracle_input, drv(&[], "input"))?;
-        fs::write(
-            &oracle_root,
-            drv(&[(path_str(&oracle_input)?, &["out"])], "root"),
-        )?;
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv(&[(path_str(&oracle_input)?, &["out"])], "root").into_bytes(),
+        );
         let mut candidate_bytes = BTreeMap::new();
         candidate_bytes.insert(
             candidate_root.clone(),
             drv(&[(path_str(&candidate_input)?, &["out"])], "root").into_bytes(),
         );
-        let oracle = FakeEval::path(oracle_root);
+        let oracle = FakeEval::path_with_bytes(oracle_root, oracle_bytes);
         let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
 
         let error = diff_closure(
@@ -712,6 +762,152 @@ mod tests {
             error
                 .to_string()
                 .contains("did not provide in-memory drv bytes")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_walks_non_utf8_drv_bytes() -> Result<()> {
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv_bytes(
+                &[(path_str(&oracle_input)?, &["out"])],
+                "root",
+                Some(&[0xff]),
+            ),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            drv(&[], "input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv_bytes(
+                &[(path_str(&candidate_input)?, &["out"])],
+                "root",
+                Some(&[0xff]),
+            ),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root, oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
+                    if oracle == &oracle_input && candidate == &candidate_input))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_walks_inputs_without_full_structural_parse() -> Result<()> {
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv_input_section_only_bytes(&[(path_str(&oracle_input)?, &["out"])]),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            drv(&[], "input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv_input_section_only_bytes(&[(path_str(&candidate_input)?, &["out"])]),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root, oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
+                    if oracle == &oracle_input && candidate == &candidate_input))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_walks_inputs_without_validating_later_sections() -> Result<()> {
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv_with_malformed_tail_bytes(&[(path_str(&oracle_input)?, &["out"])]),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            drv(&[], "input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv_with_malformed_tail_bytes(&[(path_str(&candidate_input)?, &["out"])]),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root, oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )?;
+
+        assert!(
+            report
+                .divergences
+                .iter()
+                .any(|diff| matches!(diff, DrvDiff::Bytes { oracle, candidate }
+                    if oracle == &oracle_input && candidate == &candidate_input))
         );
         Ok(())
     }
