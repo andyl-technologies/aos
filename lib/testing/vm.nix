@@ -85,9 +85,20 @@
     # Size of the /var partition (partition 4) in MiB. Raise for tests
     # whose guests stage large payloads under /var (e.g. a fleet registry
     # peer writing a static binary cache of a full system closure).
+    # Only consulted when `varProvisioning == "baked"`; under "ignition"
+    # the image carries no /var partition and the size is applied at boot.
     varSizeMiB ? 256,
+    # How /var is provisioned. "baked" (default): /var is partition 4 of
+    # this image, formatted and seeded at build time. "ignition": the
+    # image is boot+root-a+swap only — ignition creates and formats /var
+    # on first boot (see lib/testing/fleet.nix), so machines differing
+    # only in /var size share one base image. The build-time `varSeed` is
+    # skipped under "ignition"; the guest agent arrives via the
+    # `aos-test-agent` role instead.
+    varProvisioning ? "baked",
   }: let
     systemPackages = system.config.environment.systemPackages;
+    bakeVar = varProvisioning == "baked";
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -372,19 +383,20 @@
           name = "assemble";
           script = ''
             set -eu
-            VAR_SIZE_MIB=${builtins.toString varSizeMiB}
+            ${lib.optionalString bakeVar ''
+              VAR_SIZE_MIB=${builtins.toString varSizeMiB}
 
-            # ── /var partition staging ──────────────────────────────────
-            mkdir -p var
+              # ── /var partition staging ────────────────────────────────
+              mkdir -p var
 
-            # Spec v12 model: the test-only /etc overrides + test units
-            # live on /var/etc (the persistent overlay lower), not on
-            # the rootfs's /etc tree (which is now empty by design).
-            ${varSeed}
+              # Spec v12 model: the test-only /etc overrides + test units
+              # live on /var/etc (the persistent overlay lower), not on
+              # the rootfs's /etc tree (which is now empty by design).
+              ${varSeed}
 
-            # fakeroot so the var partition's files land as uid/gid 0.
-            fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
-
+              # fakeroot so the var partition's files land as uid/gid 0.
+              fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
+            ''}
             # ── Root image from the shared rootfs helper ────────────────
             cp "$ROOT_IMG" root.img
             chmod u+w root.img
@@ -395,16 +407,30 @@
             # for GPT headers. Partition 1 (boot) is vestigial in tests
             # — the harness passes kernel+initrd via -kernel/-initrd —
             # but reserving it keeps root at /dev/vda2 matching production.
+            #
+            # Under varProvisioning="ignition" the image stops at
+            # boot+root-a+swap: ignition creates /var (partition 4) on
+            # first boot, so machines differing only in /var size share
+            # this one base image. The driver grows the per-run copy to
+            # make room before boot (see lib/testing/fleet.nix).
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
             SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
-            VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
 
             BOOT_START=2048
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
             SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
-            VAR_START=$((  SWAP_START + SWAP_SECTORS ))
-            DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+            ${
+      if bakeVar
+      then ''
+        VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
+        VAR_START=$((  SWAP_START + SWAP_SECTORS ))
+        DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+      ''
+      else ''
+        DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
+      ''
+    }
             DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
@@ -415,17 +441,19 @@
             # mount-var.service binds to via /dev/disk/by-partlabel/var.
             # The root partition is labelled `root-a` to match the
             # production A/B layout — aos-growfs triggers on
-            # ConditionPathExists=/dev/disk/by-partlabel/root-a.
-            sfdisk disk.img <<PTABLE
-            label: gpt
-            size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="boot"
-            size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root-a"
-            size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name="swap"
-            size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="var"
-            PTABLE
+            # ConditionPathExists=/dev/disk/by-partlabel/root-a. The var
+            # line is omitted under "ignition" (created at first boot).
+            {
+              echo "label: gpt"
+              echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
+              echo "size=$ROOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=root-a"
+              echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
+              ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
+            } > ptable.sfdisk
+            sfdisk disk.img < ptable.sfdisk
 
             dd if=root.img of=disk.img bs=512 seek="$ROOT_START" conv=notrunc status=none
-            dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none
+            ${lib.optionalString bakeVar ''dd if=var.img  of=disk.img bs=512 seek="$VAR_START"  conv=notrunc status=none''}
 
             mkdir -p $out
             mv disk.img $out/disk.img

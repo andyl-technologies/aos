@@ -154,7 +154,28 @@
           per-test state; raise it for machines that stage large payloads
           under /var, e.g. a registry peer generating a static binary
           cache of a full system closure (tests/fleet/
-          apm-registry-upgrade.nix).
+          apm-registry-upgrade.nix). With `varProvisioning = "baked"`
+          (the default) this sizes the partition baked into the shared
+          disk image; with `varProvisioning = "ignition"` it is the size
+          ignition grows the per-run disk by and formats /var to at first
+          boot — the disk image itself carries no /var partition, so the
+          size no longer forks the (deduplicated) base image.
+        '';
+      };
+
+      varProvisioning = mkOption {
+        type = types.enum ["baked" "ignition"];
+        default = "baked";
+        description = ''
+          How this machine's /var comes to exist (kernel-boot machines
+          only). `baked` (default) ships /var as a pre-formatted, seeded
+          partition inside the disk image. `ignition` ships no /var
+          partition at all: ignition creates and formats it on first boot
+          at `varSizeMiB` (mirroring production), so every machine shares
+          one base disk image regardless of its /var size. Machines using
+          `ignition` must list the `aos-test-agent` role — with no baked
+          /var seed, the guest agent arrives via the role's ignition merge
+          instead.
         '';
       };
 
