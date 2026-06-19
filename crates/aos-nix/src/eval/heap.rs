@@ -20,6 +20,7 @@ use crate::attrs::FlatAttrs;
 use crate::compile::{FrameId, IrAttrPathId, IrId};
 use crate::heap::arena::{ArenaError, ArenaStats, BumpArena};
 use crate::list::NixList;
+use crate::runtime::builtins::Builtin;
 use crate::string::NixString;
 use crate::syntax::{Span, Symbol};
 use crate::value::{HeapObject, Value, ValueError, ValueTag};
@@ -396,12 +397,14 @@ impl EvalPrimOpArg {
 /// A builtin function or partially applied builtin heap record.
 ///
 /// This is the tree-walk oracle's representation of the RFC `PrimopApp`
-/// wrapper. `symbol` identifies the registered builtin, and `args` stores the
-/// already supplied lazy arguments. A record with fewer captured arguments than
-/// the builtin's declared arity is a WHNF function value; the evaluator calls
-/// the builtin only after saturation.
+/// wrapper. Evaluator-selected records carry the selected registry declaration,
+/// `symbol` preserves the source symbol used for diagnostics, and `args`
+/// stores the already supplied lazy arguments. A record with fewer captured
+/// arguments than the builtin's declared arity is a WHNF function value; the
+/// evaluator calls the builtin only after saturation.
 #[derive(Debug)]
 pub struct EvalPrimOp {
+    builtin: Option<Builtin>,
     symbol: Symbol,
     args: Vec<EvalPrimOpArg>,
 }
@@ -410,6 +413,7 @@ impl EvalPrimOp {
     /// Creates an unapplied first-class builtin record for `symbol`.
     pub const fn new(symbol: Symbol) -> Self {
         Self {
+            builtin: None,
             symbol,
             args: Vec::new(),
         }
@@ -417,7 +421,38 @@ impl EvalPrimOp {
 
     /// Creates a partially applied builtin record with captured arguments.
     pub fn with_args(symbol: Symbol, args: Vec<EvalPrimOpArg>) -> Self {
-        Self { symbol, args }
+        Self {
+            builtin: None,
+            symbol,
+            args,
+        }
+    }
+
+    /// Creates an unapplied first-class builtin with its registry declaration.
+    pub(crate) const fn registered(symbol: Symbol, builtin: Builtin) -> Self {
+        Self {
+            builtin: Some(builtin),
+            symbol,
+            args: Vec::new(),
+        }
+    }
+
+    /// Creates a partially applied builtin with its registry declaration.
+    pub(crate) fn registered_with_args(
+        symbol: Symbol,
+        builtin: Builtin,
+        args: Vec<EvalPrimOpArg>,
+    ) -> Self {
+        Self {
+            builtin: Some(builtin),
+            symbol,
+            args,
+        }
+    }
+
+    /// Returns the registry declaration selected for this builtin.
+    pub(crate) const fn builtin(&self) -> Option<Builtin> {
+        self.builtin
     }
 
     /// Returns the builtin symbol.
@@ -1164,6 +1199,7 @@ mod tests {
     use super::super::ThunkState;
     use super::*;
     use crate::attrs::AttrEntry;
+    use crate::runtime::builtins::lookup_builtin;
     use crate::string::{ContextElement, StringContext};
     use crate::syntax::SymbolTable;
 
@@ -1402,21 +1438,44 @@ mod tests {
     fn allocates_primop_values_and_recovers_record() {
         let mut symbols = SymbolTable::new();
         let symbol = symbols.intern(b"length").expect("symbol interns");
+        let builtin = lookup_builtin(b"length").expect("length builtin is registered");
         let argument = EvalPrimOpArg::new(IrId::new(2), Span::new(4, 8), Value::int(3));
         let mut heap = EvalHeap::with_initial_chunk_bytes(128).expect("heap creates");
         let value = heap
-            .alloc_primop(EvalPrimOp::with_args(symbol, vec![argument]))
+            .alloc_primop(EvalPrimOp::registered_with_args(
+                symbol,
+                builtin,
+                vec![argument],
+            ))
             .expect("primop allocates");
 
         assert_eq!(value.tag(), ValueTag::Primop);
         assert_eq!(heap.len(), 1);
         let primop = heap.get_primop(value).expect("primop exists");
+        assert_eq!(primop.builtin(), Some(builtin));
         assert_eq!(primop.symbol(), symbol);
         assert_eq!(primop.args().len(), 1);
         assert_eq!(primop.args()[0].id(), IrId::new(2));
         assert_eq!(primop.args()[0].span(), Span::new(4, 8));
         assert!(primop.args()[0].value().raw_eq(Value::int(3)));
         assert_eq!(heap.arena_stats().chunks, 1);
+    }
+
+    #[test]
+    fn public_primop_constructors_keep_symbol_only_records() {
+        let mut symbols = SymbolTable::new();
+        let symbol = symbols.intern(b"length").expect("symbol interns");
+        let argument = EvalPrimOpArg::new(IrId::new(2), Span::new(4, 8), Value::int(3));
+
+        let empty = EvalPrimOp::new(symbol);
+        assert_eq!(empty.builtin(), None);
+        assert_eq!(empty.symbol(), symbol);
+        assert!(empty.args().is_empty());
+
+        let partial = EvalPrimOp::with_args(symbol, vec![argument]);
+        assert_eq!(partial.builtin(), None);
+        assert_eq!(partial.symbol(), symbol);
+        assert_eq!(partial.args().len(), 1);
     }
 
     #[test]
