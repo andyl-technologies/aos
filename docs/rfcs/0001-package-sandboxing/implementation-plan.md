@@ -907,10 +907,16 @@ than guessing. Resolve each in the cited phase before ticking that phase's exit.
       requirement sets; the package spike includes `/lib/modules` (ro),
       `/dev/fuse`, `/dev/kmsg`, host networking, cgroup delegation, and the
       host-fulfilled `br_netfilter` / `vxlan` / `ip_set` module loads.
-- [ ] **Re-confirm investigation-reported facts (all phases).** The
-      machined/portabled/importd disable flags, the kernel namespace configs, and
-      the exact `aos-seed-profiles` ordering were read once and should be
-      re-confirmed against the tree before the MVP lands.
+- [x] **Re-confirm investigation-reported facts (all phases).** Re-confirmed
+      against the current tree: `pkgs/system/systemd.nix` still sets
+      `-Dmachined=false`, `-Dportabled=false`, and `-Dimportd=disabled`;
+      `pkgs/kernel/config/base.config` enables `CONFIG_NAMESPACES`,
+      `CONFIG_UTS_NS`, `CONFIG_IPC_NS`, `CONFIG_USER_NS`, `CONFIG_PID_NS`,
+      and `CONFIG_NET_NS`, now asserted by `tests/build/kernel-config.nix`;
+      and `aos-seed-profiles.service` still runs in initrd after
+      `nix-overlay-setup.service`, before
+      `ignition-files.service`, with baked package seeding and desired-package
+      install ordered after it.
 - [x] **Landlock apply mechanism (P8).** The TCP policy apply point uses the
       AOS-built `aos-landlock` service exec wrapper rather than waiting for an
       upstream systemd directive. The wrapper now exposes `--print-abi`; the

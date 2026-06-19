@@ -17,8 +17,9 @@
 
   configFile = "${pkgs.linux}/boot/config-${pkgs.linux.version}";
 
-  # Symbols required to be enabled (CONFIG_<name>=y). Key-free, seed-free
-  # hardening common to all supported architectures.
+  # Symbols required to be enabled (CONFIG_<name>=y). Includes key-free,
+  # seed-free hardening plus container substrate features common to all
+  # supported architectures.
   enabledCommon = [
     "INIT_STACK_ALL_ZERO"
     "INIT_ON_ALLOC_DEFAULT_ON"
@@ -36,6 +37,13 @@
     "DEBUG_WX"
     "STRICT_DEVMEM"
     "IO_STRICT_DEVMEM"
+    "CGROUPS"
+    "NAMESPACES"
+    "UTS_NS"
+    "IPC_NS"
+    "USER_NS"
+    "PID_NS"
+    "NET_NS"
     "SECURITY_DMESG_RESTRICT"
     "BPF"
     "BPF_SYSCALL"
