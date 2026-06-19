@@ -2085,6 +2085,29 @@ fn validate_landlock_exec_command(
             package_name
         );
     }
+    let command = &rest[expected_args.len()..];
+    let Some(executable) = command.first() else {
+        bail!(
+            "network policy service '{}' {} for package '{}' is missing command after aos-landlock wrapper",
+            unit,
+            key,
+            package_name
+        );
+    };
+    if executable
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| matches!(byte, b'-' | b'@' | b':' | b'|' | b'!' | b'+'))
+        || !executable.starts_with('/')
+    {
+        bail!(
+            "network policy service '{}' {} for package '{}' has command executable that cannot be preserved exactly by aos-landlock: {}",
+            unit,
+            key,
+            package_name,
+            executable
+        );
+    }
     Ok(())
 }
 
@@ -4635,6 +4658,60 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("missing required aos-landlock wrapper"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_landlock_wrapped_shell_prefix_command() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        write_network_policy_file(&installed, &[], &[]);
+        let exec_start = sandbox_exec_for_test(
+            "web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "|/bin/true",
+        );
+        write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("cannot be preserved exactly by aos-landlock"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn exposed_packages_rejects_landlock_wrapped_slashless_command() {
+        let tmp = TempDir::new().unwrap();
+        let profile = Profile {
+            path: tmp.path().join("profile"),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        let installed = installed_with_expose(&tmp, "web", "pkghash111", "artifacthash111");
+        write_network_policy_file(&installed, &[], &[]);
+        let exec_start = sandbox_exec_for_test(
+            "web",
+            "--require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-web",
+            "true",
+        );
+        write_service_unit(&installed, &format!("[Service]\nExecStart={exec_start}\n"));
+        link_expose_artifact(&profile, &installed);
+
+        let err = exposed_packages(&profile, &[installed]).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("cannot be preserved exactly by aos-landlock"),
             "{err:?}"
         );
     }

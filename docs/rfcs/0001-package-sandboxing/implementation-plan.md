@@ -576,13 +576,15 @@ Full spec: [`enforcement.md`](enforcement.md).
       wrapper path and arguments before attaching a unit artifact. Current
       coverage records the built kernel's max Landlock ABI in the
       `security-aos-landlock-fs` VM check with `aos-landlock --print-abi` and
-      fails closed below ABI 4. Current
-      coverage also maps declared `host-paths` to `LANDLOCK_ACCESS_FS_*` rules
-      for `sandboxed-with-holes` packages and applies default filesystem
-      confinement (`/` read-only plus writable package temp/state roots) for
-      non-root-equivalent empty manifests. Holds even when a namespace is
-      shared — the layer for `sandboxed-with-holes` packages. Host-owned TCP
-      socket listeners are validated against the socket-capability /
+      fails closed below ABI 4. `checks.fleet.apm-landlock-argv` verifies that
+      generated Landlock/MAC wrapper prefixes preserve package-authored `Exec*`
+      argv tokenization. Current coverage also maps declared `host-paths` to
+      `LANDLOCK_ACCESS_FS_*` rules for `sandboxed-with-holes` packages and
+      applies default filesystem confinement (`/` read-only plus writable
+      package temp/state roots) for non-root-equivalent empty manifests. Holds
+      even when a namespace is shared — the layer for `sandboxed-with-holes`
+      packages. Host-owned TCP socket listeners are validated against the
+      socket-capability /
       `tcp-bind` contract before units can be attached.
 - [x] **Generated MAC profile (D20).** Render a default-deny per-package
       SELinux profile named from the manifest security label and load it before
