@@ -1246,6 +1246,23 @@ and `reaped=7`. The row remains listed as a regression risk; the production
 `QemuNode` implementation must preserve `kill_on_drop`, `PR_SET_PDEATHSIG`, and
 unconditional reap behavior.
 
+**RISK-21** is retired by `T-RISK-14`:
+`checks.crucible.phase0.searchTreeGrowth` measured a deterministic synthetic
+pending-message/fault temporal-graph search model with four symmetric replicas,
+14 pending-message slots, source/destination/payload messages, append/ack/heartbeat
+deliveries, crash/drop/partition/heal/timer decisions, event-log/RNG coordinates,
+and materialized-state reference counts. A deterministic raw branching proxy at
+depth 5 was `raw_branching_proxy=46812255`; the bounded search at depth 4 stored
+`bounded_seen_nodes=351`, expanded `bounded_expanded_nodes=102`, reported
+`symmetry_skipped_edges=186`, `dedup_hits=35`, `frontier_pruned=687`,
+`frontier_dropped=438`, `frontier_replaced=249`, `bounded_max_frontier=64`,
+`uncapped_seen_nodes=66349`, `uncapped_max_frontier=12512`,
+`uncapped_frontier_pruned=0`, and `estimated_store_bytes=67392` against a
+`196608` byte budget. This retires the
+Phase-0 pre-build bounding risk for the modeled representative search family; the
+row remains listed as a regression risk until the production temporal graph,
+replay oracle, search engine, and scenario corpus land.
+
 - **[RISK-23]** The risk register MUST be kept current: every spike result
   ([RISK-1]) updates its row (retired / re-classified / fallback-adopted), and a
   new load-bearing assumption discovered during implementation MUST be added as a
@@ -1358,7 +1375,7 @@ never tolerated). Results live in the decision register (31).
 - [x] **T-RISK-13** Run the **no-leak lifecycle** spike: induce every termination
   path and assert the surviving-child count returns to zero. — satisfies [RISK-20],
   [QEMU-29], [QEMU-31]; spec §30.12.
-- [ ] **T-RISK-14** Run the **search-tree-growth** spike: measure temporal-graph
+- [x] **T-RISK-14** Run the **search-tree-growth** spike: measure temporal-graph
   growth on a representative scenario and confirm CAS dedup + bounded frontier +
   coverage-guided prioritization keep memory/frontier within budget. — satisfies
   [RISK-21]; spec §30.12.

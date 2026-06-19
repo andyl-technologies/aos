@@ -1011,6 +1011,36 @@ register.
     die-with-parent and unconditional reap behavior.
   - **Fallback:** none adopted.
 
+- **RISK-21 / T-RISK-14 — search-tree growth stays bounded**
+  - **Status:** PASS; risk retired for the Phase-0 synthetic representative
+    search-growth model exercising the bounding concepts in the temporal-graph and
+    search-strategy design.
+  - **Check:** `checks.crucible.phase0.searchTreeGrowth`.
+  - **Result:** `scenario=pending-message-fault-temporal-graph`, `replicas=4`,
+    `pending_message_slots=14`, `max_faults=4`, `search_depth_limit=4`,
+    `raw_depth_limit=5`, `raw_branching_proxy=46812255`,
+    `bounded_seen_nodes=351`, `bounded_accepted_nodes=351`,
+    `bounded_expanded_nodes=102`, `bounded_raw_edges=1009`,
+    `bounded_reduced_edges=823`, `partial_order_skipped_edges=0`,
+    `symmetry_skipped_edges=186`, `dedup_hits=35`, `frontier_pruned=687`,
+    `frontier_dropped=438`, `frontier_replaced=249`,
+    `bounded_max_frontier=64`, `frontier_budget=64`,
+    `uncapped_seen_nodes=66349`, `uncapped_expanded_nodes=66349`,
+    `uncapped_max_frontier=12512`, `uncapped_frontier_pruned=0`,
+    `accepted_coverage_bits=47`, `expanded_coverage_bits=47`,
+    `uncapped_expanded_coverage_bits=48`, `estimated_store_bytes=67392`,
+    `store_budget_bytes=196608`, `dedup_compression_ratio_x1000=133368247`.
+  - **Scope:** validates a deterministic synthetic temporal-graph search model:
+    symmetric replica relabeling, source/destination/payload pending messages,
+    append/ack/heartbeat delivery effects, crash/drop/partition/heal/timer
+    decisions, event-log/RNG/materialized-reference coordinates,
+    content-addressed canonical state IDs, symmetry-reduced successor generation,
+    coverage-guided priority scoring, and a hard frontier cap compared with an
+    uncapped reference. Partial-order reduction is deliberately not load-bearing in
+    this spike; the production temporal graph, replay oracle, search engine, and
+    scenario corpus still own the permanent implementation.
+  - **Fallback:** none adopted.
+
 ## Implementation checklist
 
 > Decisions are *realized* by the per-area tasks in the files they affect (listed
