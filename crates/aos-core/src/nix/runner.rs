@@ -61,11 +61,16 @@ impl NixRunner {
     /// `PATH`, [`AosError::RootNotFound`] if no `default.nix` can be
     /// located, or another error if the configured evaluator cannot be
     /// initialized.
-    pub fn with_eval_config(verbose: u8, quiet: bool, eval_config: NixEvalConfig) -> Result<Self> {
+    pub fn with_eval_config(
+        verbose: u8,
+        quiet: bool,
+        mut eval_config: NixEvalConfig,
+    ) -> Result<Self> {
         // Verify nix is available.
         which("nix-build").map_err(|_| AosError::NixNotFound)?;
 
         let root = Self::find_root()?;
+        eval_config.set_working_dir(root.clone())?;
         let evaluator = select_evaluator_with_config(verbose, eval_config.clone())?;
 
         Ok(Self {
@@ -368,7 +373,6 @@ impl NixRunner {
         self.eval_config.apply_cli_env(&mut command);
         let status = command
             .args(self.repl_args(nix_file))
-            .current_dir(&self.root)
             .status()
             .context("failed to start nix repl")?;
 
@@ -472,7 +476,6 @@ impl NixRunner {
         self.eval_config.apply_cli_env(&mut command);
         let child = command
             .args(&args)
-            .current_dir(&self.root)
             .stdout(Stdio::piped())
             .stderr(stderr_behavior)
             .spawn()

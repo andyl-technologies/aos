@@ -12,6 +12,8 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 #[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -376,6 +378,8 @@ pub struct NixEvalConfig {
     store_dir: Option<String>,
     state_dir: Option<String>,
     log_dir: Option<String>,
+    working_dir: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
     native_cache_root: Option<PathBuf>,
     trace_verbose: bool,
 }
@@ -459,6 +463,20 @@ impl NixEvalConfig {
         self.store_dir.as_deref()
     }
 
+    /// Returns the evaluator working directory, if one was provided.
+    ///
+    /// C++ Nix uses this as the subprocess current directory. Native
+    /// evaluation uses it as the base for relative expression path literals
+    /// and relative search-path entries.
+    pub fn working_dir(&self) -> Option<&Path> {
+        self.working_dir.as_deref()
+    }
+
+    /// Returns the configured home directory, if one was provided.
+    pub fn home_dir(&self) -> Option<&Path> {
+        self.home_dir.as_deref()
+    }
+
     /// Returns the native evaluator cache root, if one was provided.
     ///
     /// The parse cache stores entries below this root's `parse/` child.
@@ -540,6 +558,9 @@ impl NixEvalConfig {
             command.env(name, value);
         }
         command.env_remove("AOS_NIX_NATIVE");
+        if let Some(working_dir) = self.working_dir() {
+            command.current_dir(working_dir);
+        }
     }
 
     /// Replaces the configured evaluation impurity mode.
@@ -679,6 +700,55 @@ impl NixEvalConfig {
         self.clear_eval_env_var(b"NIX_LOG_DIR");
     }
 
+    /// Replaces the evaluator working directory.
+    ///
+    /// Relative paths are resolved against the process current directory when
+    /// this method is called, matching how a subprocess would interpret a
+    /// relative `current_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `working_dir` is empty, cannot be made absolute, or
+    /// does not name an existing directory.
+    pub fn set_working_dir(&mut self, working_dir: impl Into<PathBuf>) -> Result<()> {
+        let working_dir =
+            absolutize_config_path("evaluator working directory", working_dir.into())?;
+        if !working_dir.is_dir() {
+            anyhow::bail!(
+                "evaluator working directory must be an existing directory: {}",
+                working_dir.display()
+            );
+        }
+        self.working_dir = Some(working_dir);
+        Ok(())
+    }
+
+    /// Clears the evaluator working directory.
+    pub fn clear_working_dir(&mut self) {
+        self.working_dir = None;
+    }
+
+    /// Replaces the configured home directory.
+    ///
+    /// This also updates the `HOME` binding seen by C++ Nix subprocesses and
+    /// by native `builtins.getEnv`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `home_dir` is empty or relative.
+    pub fn set_home_dir(&mut self, home_dir: impl Into<PathBuf>) -> Result<()> {
+        let home_dir = validate_absolute_config_path("HOME", home_dir.into())?;
+        self.set_eval_env_var_bytes(b"HOME".to_vec(), path_bytes(&home_dir));
+        self.home_dir = Some(home_dir);
+        Ok(())
+    }
+
+    /// Clears the configured home directory and the corresponding `HOME` binding.
+    pub fn clear_home_dir(&mut self) {
+        self.home_dir = None;
+        self.clear_eval_env_var(b"HOME");
+    }
+
     /// Replaces the native evaluator cache root.
     ///
     /// The parse cache stores entries below this root's `parse/` child. Use
@@ -716,6 +786,8 @@ impl NixEvalConfig {
             store_dir: None,
             state_dir: None,
             log_dir: None,
+            working_dir: None,
+            home_dir: None,
             native_cache_root: None,
             trace_verbose: false,
         };
@@ -735,6 +807,16 @@ impl NixEvalConfig {
         if let Ok(value) = std::env::var("AOS_NIX_CACHE") {
             config.set_aos_nix_cache_env_var(value);
         }
+        match std::env::current_dir() {
+            Ok(working_dir) => config.working_dir = Some(working_dir),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "unable to capture evaluator working directory; relative native path context disabled"
+                );
+            }
+        }
+        config.set_home_dir_from_env_snapshot();
 
         config
     }
@@ -761,6 +843,7 @@ impl NixEvalConfig {
             "NIX_STATE_DIR" => self.state_dir = Some(value),
             "NIX_LOG_DIR" => self.log_dir = Some(value),
             "NIX_PATH" => self.nix_path = Some(value),
+            "HOME" => self.set_home_dir_from_env_snapshot(),
             _ => {}
         }
     }
@@ -773,6 +856,34 @@ impl NixEvalConfig {
 
     fn clear_eval_env_var(&mut self, name: &[u8]) {
         self.eval_env_vars.remove(name);
+    }
+
+    pub(crate) fn resolve_eval_file_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(working_dir) = self.working_dir() {
+            working_dir.join(path)
+        } else {
+            path.to_path_buf()
+        }
+    }
+
+    fn set_home_dir_from_env_snapshot(&mut self) {
+        let Some(value) = self.eval_env_vars.get(b"HOME".as_slice()) else {
+            self.home_dir = None;
+            return;
+        };
+        let home_dir = PathBuf::from(os_string_from_env_bytes(value.clone()));
+        match validate_absolute_config_path("HOME", home_dir) {
+            Ok(home_dir) => self.home_dir = Some(home_dir),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "invalid HOME value; native home path expansion disabled"
+                );
+                self.home_dir = None;
+            }
+        }
     }
 }
 
@@ -834,6 +945,19 @@ fn nix_env_from_process(name: &'static str) -> Option<(&'static str, String)> {
     std::env::var(name).ok().map(|value| (name, value))
 }
 
+fn absolutize_config_path(name: &str, value: PathBuf) -> Result<PathBuf> {
+    if value.as_os_str().is_empty() {
+        anyhow::bail!("{name} must not be empty");
+    }
+    if value.is_absolute() {
+        return Ok(value);
+    }
+    let cwd = std::env::current_dir().map_err(|source| {
+        anyhow::anyhow!("cannot resolve {name} against current directory: {source}")
+    })?;
+    Ok(cwd.join(value))
+}
+
 fn eval_env_vars_from_process() -> BTreeMap<Vec<u8>, Vec<u8>> {
     std::env::vars_os()
         .filter_map(|(name, value)| {
@@ -865,6 +989,16 @@ fn os_string_from_env_bytes(value: Vec<u8>) -> OsString {
 #[cfg(not(unix))]
 fn os_string_from_env_bytes(value: Vec<u8>) -> OsString {
     OsString::from(String::from_utf8_lossy(&value).into_owned())
+}
+
+#[cfg(unix)]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(not(unix))]
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
 }
 
 fn validate_absolute_config_path(name: &str, value: PathBuf) -> Result<PathBuf> {
@@ -1032,6 +1166,7 @@ pub fn select_native_diff_candidate_with_config(
 struct NativeFallbackEval {
     native: NixNative,
     fallback: NixCli,
+    config: NixEvalConfig,
 }
 
 #[cfg(feature = "native-eval")]
@@ -1039,13 +1174,15 @@ impl NativeFallbackEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
         let fallback = NixCli::with_eval_config(verbose, config.clone());
+        let native = native_with_ifd_realizer(
+            NixNative::with_options(verbose, native_options)?,
+            verbose,
+            config.clone(),
+        );
         Ok(Self {
-            native: native_with_ifd_realizer(
-                NixNative::with_options(verbose, native_options)?,
-                verbose,
-                config,
-            ),
+            native,
             fallback,
+            config,
         })
     }
 }
@@ -1053,7 +1190,8 @@ impl NativeFallbackEval {
 #[cfg(feature = "native-eval")]
 impl NixEval for NativeFallbackEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        match self.native.instantiate(file, attr) {
+        let file = self.config.resolve_eval_file_path(file);
+        match self.native.instantiate(&file, attr) {
             Ok(path) => {
                 observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
                 Ok(path)
@@ -1063,7 +1201,7 @@ impl NixEval for NativeFallbackEval {
                     return Err(error);
                 };
                 warn_native_cli_fallback(&error, reason);
-                self.fallback.instantiate(file, attr)
+                self.fallback.instantiate(&file, attr)
             }
         }
     }
@@ -1108,26 +1246,27 @@ impl NixEval for NativeFallbackEval {
 #[cfg(feature = "native-eval")]
 struct NativeOnlyEval {
     native: NixNative,
+    config: NixEvalConfig,
 }
 
 #[cfg(feature = "native-eval")]
 impl NativeOnlyEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
-        Ok(Self {
-            native: native_with_ifd_realizer(
-                NixNative::with_options(verbose, native_options)?,
-                verbose,
-                config,
-            ),
-        })
+        let native = native_with_ifd_realizer(
+            NixNative::with_options(verbose, native_options)?,
+            verbose,
+            config.clone(),
+        );
+        Ok(Self { native, config })
     }
 }
 
 #[cfg(feature = "native-eval")]
 impl NixEval for NativeOnlyEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let path = self.native.instantiate(file, attr)?;
+        let file = self.config.resolve_eval_file_path(file);
+        let path = self.native.instantiate(&file, attr)?;
         observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
         Ok(path)
     }
@@ -1139,7 +1278,8 @@ impl NixEval for NativeOnlyEval {
     }
 
     fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
-        let closure = self.native.instantiate_closure(file, attr)?;
+        let file = self.config.resolve_eval_file_path(file);
+        let closure = self.native.instantiate_closure(&file, attr)?;
         observe_native_eval_success(NativeSuccessOperation::FileInstantiation);
         let (root, drvs) = closure.into_parts();
         Ok(Some(DrvClosure::new(root, drvs)))
@@ -1160,6 +1300,7 @@ impl NixEval for NativeOnlyEval {
 struct ShadowEval {
     native: NixNative,
     fallback: NixCli,
+    config: NixEvalConfig,
 }
 
 #[cfg(feature = "native-eval")]
@@ -1167,13 +1308,15 @@ impl ShadowEval {
     fn new(verbose: u8, config: NixEvalConfig) -> Result<Self> {
         let native_options = tree_walk_options_from_config(&config)?;
         let fallback = NixCli::with_eval_config(verbose, config.clone());
+        let native = native_with_ifd_realizer(
+            NixNative::with_options(verbose, native_options)?,
+            verbose,
+            config.clone(),
+        );
         Ok(Self {
-            native: native_with_ifd_realizer(
-                NixNative::with_options(verbose, native_options)?,
-                verbose,
-                config,
-            ),
+            native,
             fallback,
+            config,
         })
     }
 }
@@ -1181,8 +1324,9 @@ impl ShadowEval {
 #[cfg(feature = "native-eval")]
 impl NixEval for ShadowEval {
     fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
-        let fallback = self.fallback.instantiate(file, attr)?;
-        compare_shadow_file_drv_closure(&self.native, file, attr, &fallback);
+        let file = self.config.resolve_eval_file_path(file);
+        let fallback = self.fallback.instantiate(&file, attr)?;
+        compare_shadow_file_drv_closure(&self.native, &file, attr, &fallback);
         Ok(fallback)
     }
 
@@ -1193,10 +1337,11 @@ impl NixEval for ShadowEval {
     }
 
     fn instantiate_closure(&self, file: &Path, attr: &str) -> Result<Option<DrvClosure>> {
-        let fallback = self.fallback.instantiate_closure(file, attr)?;
+        let file = self.config.resolve_eval_file_path(file);
+        let fallback = self.fallback.instantiate_closure(&file, attr)?;
         compare_shadow_native_drv_closure(
             &fallback,
-            self.native.instantiate_closure(file, attr),
+            self.native.instantiate_closure(&file, attr),
             "file instantiation",
         );
         Ok(Some(fallback))
@@ -1536,6 +1681,14 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     for (name, value) in &config.eval_env_vars {
         options.set_env_var(name.clone(), value.clone());
     }
+    if let Some(working_dir) = config.working_dir() {
+        let working_dir = path_bytes(working_dir);
+        options.set_search_path_base(working_dir.clone())?;
+        options.set_path_literal_base(working_dir)?;
+    }
+    if let Some(home_dir) = config.home_dir() {
+        options.set_home_dir(path_bytes(home_dir))?;
+    }
     if let Some(nix_path) = config.nix_path_env() {
         if let Some(entries) = native_nix_path_entries_from_env_value(nix_path) {
             let entries = entries
@@ -1610,6 +1763,44 @@ mod tests {
             .expect_err("relative native cache root should be invalid");
 
         assert!(error.to_string().contains("AOS_NIX_CACHE"));
+    }
+
+    #[test]
+    fn eval_config_rejects_relative_home_dir() {
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .set_home_dir("relative/home")
+            .expect_err("relative home dir should be invalid");
+
+        assert!(error.to_string().contains("HOME"));
+    }
+
+    #[test]
+    fn eval_config_rejects_missing_working_dir() {
+        let parent = tempfile::tempdir().expect("tempdir creates");
+        let mut config = NixEvalConfig::new();
+        let error = config
+            .set_working_dir(parent.path().join("does-not-exist"))
+            .expect_err("missing working dir should be invalid");
+
+        assert!(error.to_string().contains("existing directory"));
+    }
+
+    #[test]
+    fn eval_config_resolves_relative_eval_file_paths_against_working_dir() -> Result<()> {
+        let working_dir = tempfile::tempdir()?;
+        let mut config = NixEvalConfig::new();
+        config.set_working_dir(working_dir.path())?;
+
+        assert_eq!(
+            config.resolve_eval_file_path(Path::new("default.nix")),
+            working_dir.path().join("default.nix")
+        );
+        assert_eq!(
+            config.resolve_eval_file_path(Path::new("/already/absolute.nix")),
+            PathBuf::from("/already/absolute.nix")
+        );
+        Ok(())
     }
 
     #[test]
@@ -1825,12 +2016,14 @@ mod tests {
     }
 
     #[test]
-    fn eval_config_applies_get_env_snapshot_to_cpp_command() {
+    fn eval_config_applies_get_env_snapshot_and_working_dir_to_cpp_command() -> Result<()> {
+        let working_dir = tempfile::tempdir()?;
         let mut config = NixEvalConfig::new();
         config.eval_env_vars.clear();
         config.set_eval_env_var_bytes(b"AOS_ARBITRARY_ENV".to_vec(), b"present".to_vec());
         config.set_eval_env_var_bytes(b"AOS_NIX_NATIVE".to_vec(), b"1".to_vec());
         config.set_nix_path_env("nixpkgs=/aos/nixpkgs");
+        config.set_working_dir(working_dir.path())?;
 
         let mut command = Command::new("nix-instantiate");
         command.env("STALE_COMMAND_ENV", "stale");
@@ -1846,6 +2039,34 @@ mod tests {
         );
         assert_eq!(command_env_bytes(&command, b"AOS_NIX_NATIVE"), None);
         assert_eq!(command_env_bytes(&command, b"STALE_COMMAND_ENV"), None);
+        assert_eq!(command.get_current_dir(), Some(working_dir.path()));
+        Ok(())
+    }
+
+    #[test]
+    fn eval_config_applies_home_dir_to_cpp_command_and_get_env_snapshot() -> Result<()> {
+        let mut config = NixEvalConfig::new();
+        config.eval_env_vars.clear();
+        config.set_home_dir("/home/aos")?;
+
+        assert_eq!(config.home_dir(), Some(Path::new("/home/aos")));
+        assert_eq!(
+            config.eval_env_vars.get(b"HOME".as_slice()),
+            Some(&b"/home/aos".to_vec())
+        );
+
+        let mut command = Command::new("nix-instantiate");
+        config.apply_cli_env(&mut command);
+
+        assert_eq!(
+            command_env_bytes(&command, b"HOME").as_deref(),
+            Some(b"/home/aos".as_slice())
+        );
+
+        config.clear_home_dir();
+        assert_eq!(config.home_dir(), None);
+        assert_eq!(config.eval_env_vars.get(b"HOME".as_slice()), None);
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1928,6 +2149,24 @@ mod tests {
 
         assert_eq!(options.env_var(b"HOME"), Some(b"/home/aos".as_slice()));
         assert_eq!(options.env_var(b"MISSING"), None);
+        Ok(())
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn eval_config_maps_path_context_to_native_options() -> Result<()> {
+        let working_dir = tempfile::tempdir()?;
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.set_working_dir(working_dir.path())?;
+        config.set_home_dir("/home/aos")?;
+
+        let options = tree_walk_options_from_config(&config)?;
+
+        let expected = path_bytes(working_dir.path());
+        assert_eq!(options.search_path_base(), expected.as_slice());
+        assert_eq!(options.path_literal_base(), Some(expected.as_slice()));
+        assert_eq!(options.home_dir(), Some(b"/home/aos".as_slice()));
         Ok(())
     }
 

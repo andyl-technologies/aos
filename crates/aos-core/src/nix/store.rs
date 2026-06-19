@@ -90,6 +90,7 @@ impl NixCli {
     /// non-zero, or prints non-UTF-8 output.
     pub fn instantiate(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = self.nix_command("nix-instantiate");
+        let file = self.eval_config.resolve_eval_file_path(file);
         cmd.arg(file).arg("-A").arg(attr);
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
@@ -123,6 +124,7 @@ impl NixCli {
     /// path line plus a parseable `NIX_SHOW_STATS` JSON object.
     pub fn instantiate_with_stats(&self, file: &Path, attr: &str) -> Result<NixInstantiateStats> {
         let mut cmd = self.nix_command("nix-instantiate");
+        let file = self.eval_config.resolve_eval_file_path(file);
         cmd.arg(file).arg("-A").arg(attr);
         let stats_dir = tempfile::Builder::new()
             .prefix("aos-nix-show-stats-")
@@ -236,6 +238,7 @@ impl NixCli {
     /// non-zero (i.e. the build failed), or prints non-UTF-8 output.
     pub fn build(&self, file: &Path, attr: &str) -> Result<PathBuf> {
         let mut cmd = self.nix_command("nix-build");
+        let file = self.eval_config.resolve_eval_file_path(file);
         cmd.arg(file).arg("-A").arg(attr).arg("--no-out-link");
         self.append_eval_options(&mut cmd);
         if self.verbose > 0 {
