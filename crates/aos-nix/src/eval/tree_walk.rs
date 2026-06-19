@@ -320,6 +320,69 @@ pub fn eval_whnf_owned_with_options_and_realizer(
     })
 }
 
+/// Evaluates an IR root and selects an attr path with `nix-instantiate -A` auto-calls.
+///
+/// Formal-set lambdas encountered before each path segment are called with an
+/// empty attrset so defaults are honored. Plain lambdas are left untouched and
+/// therefore produce the same type error as ordinary attr selection.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation, formal-set auto-call, or
+/// attribute selection fails.
+pub fn eval_instantiation_attr_path_owned_with_options_and_realizer(
+    ir: &Ir,
+    attr_path: &[Vec<u8>],
+    options: TreeWalkOptions,
+    ifd_realizer: Option<IfdRealizer>,
+) -> Result<EvalOutcome, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    if let Some(realizer) = ifd_realizer {
+        evaluator.set_ifd_realizer(realizer);
+    }
+    let root = evaluator.eval_root()?;
+    let span = evaluator.node(ir.root)?.span;
+    let value = evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)?;
+    let derivations = evaluator.derivation_snapshot()?;
+    Ok(EvalOutcome {
+        value,
+        heap: evaluator.heap,
+        trace_output: evaluator.trace_output,
+        warning_output: evaluator.warning_output,
+        derivations,
+    })
+}
+
+fn attr_path_segment_is_list_index(segment: &[u8]) -> bool {
+    parse_attr_path_list_index(segment).is_some()
+}
+
+fn parse_attr_path_list_index(segment: &[u8]) -> Option<usize> {
+    let index = segment.iter().copied().try_fold(0u32, |index, byte| {
+        let digit = u32::from(byte.checked_sub(b'0')?);
+        if digit > 9 {
+            return None;
+        }
+        index.checked_mul(10)?.checked_add(digit)
+    })?;
+    if segment.is_empty() {
+        None
+    } else {
+        Some(index as usize)
+    }
+}
+
+fn parse_attr_path_list_index_diagnostic(segment: &[u8]) -> i64 {
+    segment
+        .iter()
+        .copied()
+        .try_fold(0i64, |index, byte| {
+            let digit = i64::from(byte - b'0');
+            index.checked_mul(10)?.checked_add(digit)
+        })
+        .unwrap_or(i64::MAX)
+}
+
 /// Evaluates an IR root and renders a numeric value like raw `nix-instantiate --eval`.
 ///
 /// This renderer is intentionally number-scoped. The native integration
@@ -26157,6 +26220,142 @@ impl TreeWalk {
             TreeWalkErrorKind::InvalidAttrPath { id, path: path_id },
             span,
         ))
+    }
+
+    fn eval_instantiation_attr_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        mut current: Value,
+        attr_path: &[Vec<u8>],
+    ) -> Result<Value, TreeWalkError> {
+        if attr_path.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "non-empty attr path",
+                    actual: current.tag(),
+                },
+                span,
+            ));
+        }
+
+        for segment in attr_path {
+            current = self.auto_call_formal_set_lambda(id, span, current)?;
+            current = self.force_value(id, span, current)?;
+            if attr_path_segment_is_list_index(segment) {
+                current = self.eval_instantiation_list_index(id, span, current, segment)?;
+                continue;
+            }
+            if current.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: current.tag(),
+                    },
+                    span,
+                ));
+            }
+            let key = self.intern_attr_name_bytes(id, segment)?;
+            let selected = {
+                let attrs = self.heap.get_attrs(current).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(key)
+            };
+            current = selected.ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::MissingAttribute { id, symbol: key },
+                    span,
+                )
+            })?;
+        }
+
+        self.force_node_result(id, span, current)
+    }
+
+    fn eval_instantiation_list_index(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        segment: &[u8],
+    ) -> Result<Value, TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let list = self
+            .heap
+            .get_list(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let index = parse_attr_path_list_index(segment);
+        let diagnostic_index = parse_attr_path_list_index_diagnostic(segment);
+        let Some(value) = index.and_then(|index| list.get(index)) else {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ListIndexOutOfBounds {
+                    id,
+                    index: diagnostic_index,
+                    len: list.len(),
+                },
+                span,
+            ));
+        };
+        Ok(value)
+    }
+
+    fn auto_call_formal_set_lambda(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(id, span, value)?;
+        if value.tag() != ValueTag::Lambda {
+            return Ok(value);
+        }
+        let lambda = self
+            .heap
+            .clone_lambda(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        if !self.lambda_uses_formal_set_pattern(id, span, &lambda)? {
+            return Ok(value);
+        }
+        let argument = self
+            .heap
+            .alloc_attrs(0, FlatAttrs::empty())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.apply_lambda_value(id, span, id, value, span, id, argument)
+    }
+
+    fn lambda_uses_formal_set_pattern(
+        &mut self,
+        id: IrId,
+        span: Span,
+        lambda: &EvalLambda,
+    ) -> Result<bool, TreeWalkError> {
+        self.with_current_module(lambda.module(), |eval| {
+            let pattern_node = *eval.node(lambda.pattern())?;
+            match pattern_node.kind {
+                IrKind::Formal => Ok(false),
+                IrKind::FormalSet => Ok(true),
+                kind => Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnsupportedLambdaPattern {
+                        id,
+                        pattern: lambda.pattern(),
+                        kind,
+                    },
+                    span,
+                )),
+            }
+        })
     }
 
     fn eval_builtin_static_select(
