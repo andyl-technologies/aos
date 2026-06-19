@@ -520,7 +520,7 @@ reading order is in the [`README.md`](README.md).
   optional and non-perturbing when enabled. — satisfies [ARCH-4], [ARCH-6],
   [ARCH-8]; spec §4, §6, [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md),
   [`16-guest-host-channel.md`](16-guest-host-channel.md).
-- [ ] **T-ARCH-5** Establish the single-scheduler boundary: a quantum-loop trait
+- [x] **T-ARCH-5** Establish the single-scheduler boundary: a quantum-loop trait
   in L3 that is the sole owner of virtual-time advancement and cross-node event
   resolution, with the session actor (L4) as its only driver; model all cross-node
   I/O (disk/9p/network) as scheduling sub-nodes resolved in the one total order,
