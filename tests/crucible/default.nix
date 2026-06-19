@@ -5,6 +5,7 @@
   phase0 = {
     s1Fingerprint = import ./phase0-s1.nix {inherit pkgs lib;};
     s2HltBusyPoll = import ./phase0-s2.nix {inherit pkgs lib;};
+    s3SavevmLoadvm = import ./phase0-s3.nix {inherit pkgs lib;};
     s4ShmemVisibility = import ./phase0-s4.nix {inherit pkgs;};
     s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
     abiDrift = import ./phase0-abi-drift.nix {inherit pkgs;};
