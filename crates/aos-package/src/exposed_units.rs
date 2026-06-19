@@ -3447,6 +3447,31 @@ mod tests {
         .unwrap();
     }
 
+    fn exposed_packages_for_installed(
+        tmp: &TempDir,
+        profile_name: &str,
+        installed: &[InstalledMeta],
+    ) -> Vec<ExposedPackage> {
+        let profile = Profile {
+            path: tmp.path().join(profile_name),
+            scope: ProfileScope::System,
+        };
+        std::fs::create_dir_all(profile.current_path().join("expose")).unwrap();
+        for entry in installed {
+            link_expose_artifact(&profile, entry);
+        }
+        exposed_packages(&profile, installed).unwrap()
+    }
+
+    fn write_exposed_unit_surface(root: &Path, packages: &[ExposedPackage]) {
+        write_attached_units(root, packages).unwrap();
+        let targets = packages
+            .iter()
+            .map(|package| package.target.clone())
+            .collect::<BTreeSet<_>>();
+        write_exact_preset(root, &targets).unwrap();
+    }
+
     fn add_generated_credential_blob(installed: &mut InstalledMeta, relative: &str, content: &str) {
         let artifact = installed
             .apm
@@ -5182,6 +5207,66 @@ mod tests {
             assert!(!dir.join("stale.service").exists());
             assert!(dir.join("aos-pkg-web.target").symlink_metadata().is_ok());
             assert!(dir.join("web.service").symlink_metadata().is_ok());
+        }
+    }
+
+    #[test]
+    fn exposed_unit_surface_rewrites_to_rolled_back_generation() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("root");
+        let v1_installed = vec![installed_with_expose(
+            &tmp,
+            "web",
+            "pkghash111",
+            "artifacthash111",
+        )];
+        let v2_installed = vec![
+            installed_with_expose(&tmp, "web", "pkghash222", "artifacthash222"),
+            installed_with_expose(&tmp, "api", "pkghash333", "artifacthash333"),
+        ];
+        let v1_packages = exposed_packages_for_installed(&tmp, "profile-v1", &v1_installed);
+        let v2_packages = exposed_packages_for_installed(&tmp, "profile-v2", &v2_installed);
+
+        write_exposed_unit_surface(&root, &v2_packages);
+
+        for dir in attached_dirs(&root) {
+            let web_target = std::fs::read_link(dir.join("web.service")).unwrap();
+            assert!(
+                web_target
+                    .display()
+                    .to_string()
+                    .contains("artifacthash222-expose-web"),
+                "web.service should point at v2 artifact, got {}",
+                web_target.display()
+            );
+            assert!(dir.join("api.service").symlink_metadata().is_ok());
+        }
+        for path in preset_paths(&root) {
+            let preset = std::fs::read_to_string(path).unwrap();
+            assert_eq!(
+                preset,
+                "enable aos-pkg-api.target\nenable aos-pkg-web.target\n"
+            );
+        }
+
+        write_exposed_unit_surface(&root, &v1_packages);
+
+        for dir in attached_dirs(&root) {
+            let web_target = std::fs::read_link(dir.join("web.service")).unwrap();
+            assert!(
+                web_target
+                    .display()
+                    .to_string()
+                    .contains("artifacthash111-expose-web"),
+                "web.service should point back at v1 artifact, got {}",
+                web_target.display()
+            );
+            assert!(dir.join("api.service").symlink_metadata().is_err());
+            assert!(dir.join("aos-pkg-api.target").symlink_metadata().is_err());
+        }
+        for path in preset_paths(&root) {
+            let preset = std::fs::read_to_string(path).unwrap();
+            assert_eq!(preset, "enable aos-pkg-web.target\n");
         }
     }
 
