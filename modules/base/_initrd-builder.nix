@@ -490,6 +490,25 @@ in
 
           cat > root/etc/group <<'GROUP'
           root:x:0:
+          adm:x:4:
+          tty:x:5:
+          disk:x:6:
+          lp:x:7:
+          kmem:x:9:
+          wheel:x:10:
+          dialout:x:20:
+          utmp:x:22:
+          cdrom:x:24:
+          clock:x:25:
+          tape:x:26:
+          audio:x:29:
+          kvm:x:36:
+          video:x:44:
+          users:x:100:
+          input:x:104:
+          sgx:x:106:
+          render:x:107:
+          systemd-journal:x:190:
           systemd-network:x:192:
           nobody:x:65534:
           GROUP
