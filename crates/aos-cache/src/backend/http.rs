@@ -19,7 +19,10 @@ use serde::Deserialize;
 
 use aos_net::{TransferEngine, TransferRequest};
 
-use super::{AuthOptions, CacheBackend, add_static_metadata_headers};
+use super::{
+    AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
+    add_static_metadata_headers,
+};
 
 /// HTTP(S) cache backend.
 ///
@@ -223,8 +226,13 @@ impl CacheBackend for HttpBackend {
         }
         let url = self.narinfo_url(store_hash);
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers
-            .push(("Content-Type".to_string(), "text/x-nix-narinfo".to_string()));
+        // narinfos are rewritten in place (e.g. re-signed on key rotation), so
+        // they must stay revalidatable rather than be cached as immutable.
+        add_static_metadata_headers(
+            &mut req,
+            Some("text/x-nix-narinfo"),
+            Some(MUTABLE_CACHE_CONTROL),
+        );
         let req = self.add_headers(req);
         self.engine
             .execute(req)
@@ -260,10 +268,13 @@ impl CacheBackend for HttpBackend {
         // tests/fleet/apm-e2e.nix (`step 3.9`) guards the eventual fix.
         let url = self.nar_url(&format!("nar/{filename}"));
         let mut req = TransferRequest::put(&url, data.to_vec());
-        req.headers.push((
-            "Content-Type".to_string(),
-            "application/x-nix-nar".to_string(),
-        ));
+        // NAR archives are content-addressed by the hash embedded in their
+        // filename, so the bytes behind a URL never change: cache immutably.
+        add_static_metadata_headers(
+            &mut req,
+            Some("application/x-nix-nar"),
+            Some(IMMUTABLE_CACHE_CONTROL),
+        );
         let req = self.add_headers(req);
         self.engine.execute(req).await.context("uploading NAR")?;
         Ok(())
@@ -316,8 +327,9 @@ impl CacheBackend for HttpBackend {
         }
         let url = self.cache_info_url();
         let mut req = TransferRequest::put(&url, content.as_bytes().to_vec());
-        req.headers
-            .push(("Content-Type".to_string(), "text/plain".to_string()));
+        // The cache marker is rewritten in place (e.g. Priority changes), so
+        // keep it revalidatable rather than long-lived.
+        add_static_metadata_headers(&mut req, Some("text/plain"), Some(MUTABLE_CACHE_CONTROL));
         let req = self.add_headers(req);
         let result = self
             .engine

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, Any, ClassVar, override
 
 from .agent import Driver
+from .fs import clone_or_copy
 from .machine import Machine
 
 
@@ -106,14 +107,12 @@ class FirecrackerMachine(Machine):
     def _start(self, *, copy_disk: bool) -> None:
         log.info("==> Starting machine: %s (firecracker)", self.name)
 
-        if copy_disk or not os.path.exists(self.disk_copy):
-            shutil.copyfile(self.disk_src, self.disk_copy)
-            os.chmod(self.disk_copy, 0o644)
-        if (
-            self.metadata_copy is not None
-            and self.metadata_src is not None
-            and (copy_disk or not os.path.exists(self.metadata_copy))
-        ):
+        # Per-machine writable copy; reflinked on a CoW filesystem (free
+        # until written), full copy otherwise. See clone_or_copy in fs.py.
+        reflinked = clone_or_copy(self.disk_src, self.disk_copy)
+        os.chmod(self.disk_copy, 0o644)
+        copy_method = "reflink" if reflinked else "copy"
+        if self.metadata_copy is not None and self.metadata_src is not None:
             shutil.copyfile(self.metadata_src, self.metadata_copy)
             os.chmod(self.metadata_copy, 0o644)
         for stale in (self.agent.socket_path, self.fc_stdin_fifo):
@@ -186,7 +185,7 @@ class FirecrackerMachine(Machine):
         log.info("  Driver: firecracker")
         log.info("  Kernel: %s", vmlinux)
         log.info("  Initrd: %s", initrd)
-        log.info("  Disk:   %s", self.disk_copy)
+        log.info("  Disk:   %s (%s)", self.disk_copy, copy_method)
         log.info("  CID:    %d", guest_cid)
         log.info("  Vsock:  %s", self.agent.socket_path)
 
