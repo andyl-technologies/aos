@@ -1007,8 +1007,14 @@
     (hexNibbleToInt (builtins.substring 0 1 pair) * 16)
     + hexNibbleToInt (builtins.substring 1 1 pair);
 
+  execCommandText = command: lib.trim (builtins.toString command);
+
+  isExecReset = command: execCommandText command == "";
+
+  firstExecToken = command: builtins.head (lib.splitString " " (execCommandText command));
+
   hasPrivilegedExecPrefix = command:
-    builtins.match "[-@:]*[!+].*" (builtins.toString command) != null;
+    builtins.match "[-@:|]*[!+].*" (execCommandText command) != null;
 
   validateNoPrivilegedExecPrefixes = packageName: unitName: serviceConfig: let
     presentExecKeys = builtins.filter (key: serviceConfig ? ${key}) execKeys;
@@ -1028,14 +1034,22 @@
     serviceConfig;
 
   hasAnyExecPrefix = command:
-    builtins.match "[-@:!+].*" (builtins.toString command) != null;
+    builtins.match "[-@:|!+].*" (execCommandText command) != null;
 
   validateNoLandlockExecPrefixes = packageName: unitName: key: command: let
-    text = builtins.toString command;
+    text = execCommandText command;
   in
     throwIfNot
     (!hasAnyExecPrefix text)
     "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} prefix that cannot be preserved by generated sandbox wrappers: ${text}"
+    command;
+
+  validateLandlockExecAbsolutePath = packageName: unitName: key: command: let
+    text = execCommandText command;
+  in
+    throwIfNot
+    (isExecReset command || lib.hasPrefix "/" (firstExecToken command))
+    "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} command whose executable is not an absolute path and cannot be resolved exactly by generated sandbox wrappers: ${text}"
     command;
 in rec {
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
@@ -1496,8 +1510,13 @@ in rec {
       if builtins.isList value
       then builtins.map (command: wrapSandboxExecCommand unitName key command) value
       else let
-        checkedCommand = validateNoLandlockExecPrefixes packageName unitName key value;
-      in "${execWrapperPrefix} ${builtins.toString checkedCommand}";
+        checkedCommand = validateLandlockExecAbsolutePath packageName unitName key (
+          validateNoLandlockExecPrefixes packageName unitName key value
+        );
+      in
+        if isExecReset checkedCommand
+        then ""
+        else "${execWrapperPrefix} ${builtins.toString checkedCommand}";
 
     landlockServiceConfigFor = unitName: unit: authoredServiceConfig: let
       scriptDerivedExecs =

@@ -801,6 +801,90 @@
     if landlockScriptDerivedExec.success
     then throw "expose renderer must reject script-derived Exec* commands for Landlock services"
     else "ok";
+  landlockShellExecPrefix = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-landlock-shell-prefix.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "|${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  landlockShellExecPrefixRejected =
+    if landlockShellExecPrefix.success
+    then throw "expose renderer must reject systemd shell Exec* prefixes for Landlock services"
+    else "ok";
+  landlockCombinedExecPrefix = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-landlock-combined-prefix.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "|+${pkgs.bash}/bin/bash -c true";
+          };
+        };
+        permissions.network = "private";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  landlockCombinedExecPrefixRejected =
+    if landlockCombinedExecPrefix.success
+    then throw "expose renderer must reject combined systemd Exec* prefixes for Landlock services"
+    else "ok";
+  landlockSlashlessExec = builtins.tryEval (
+    (pkg.overrideAttrs (_: {
+      expose = {
+        units."expose-smoke-landlock-slashless.service" = {
+          serviceConfig = {
+            Type = "oneshot";
+            ExecStart = "bash -c true";
+          };
+        };
+        permissions.network = "private";
+        requires = [];
+      };
+    }))
+    .expose
+    .outPath
+  );
+  landlockSlashlessExecRejected =
+    if landlockSlashlessExec.success
+    then throw "expose renderer must reject slashless Exec* executables for Landlock services"
+    else "ok";
+  landlockExecReset = pkg.overrideAttrs (_: {
+    expose = {
+      units."expose-smoke-landlock-reset.service" = {
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = [
+            ""
+            "${pkgs.bash}/bin/bash -c true"
+          ];
+          ExecStartPre = [
+            ""
+            "${pkgs.bash}/bin/bash -c true"
+          ];
+        };
+      };
+      permissions.network = "private";
+      requires = [];
+    };
+  });
+  landlockExecResetEval = builtins.tryEval landlockExecReset.expose.outPath;
+  landlockExecResetAccepted =
+    if landlockExecResetEval.success
+    then "ok"
+    else throw "expose renderer must preserve empty Exec*= reset entries for Landlock services";
   socketMissingTcpBind = builtins.tryEval (
     (pkg.overrideAttrs (_: {
       expose = {
@@ -1226,6 +1310,7 @@ in
     privilegedSyscallsExposePath = privilegedSyscalls.expose;
     privateOutboundExposePath = privateOutbound.expose;
     regexNamePrivateOutboundExposePath = regexNamePrivateOutbound.expose;
+    landlockExecResetExposePath = landlockExecReset.expose;
     hostPathWithoutPrepareExposePath = hostPathWithoutPrepare.expose;
     k3sWorkerExposePath = k3sWorkerPackage.expose;
     k3sControlPlaneExposePath = k3sControlPlanePackage.expose;
@@ -1235,6 +1320,10 @@ in
       verityTupleMissingRejected
       privilegedExecPrefixRejected
       landlockScriptDerivedExecRejected
+      landlockShellExecPrefixRejected
+      landlockCombinedExecPrefixRejected
+      landlockSlashlessExecRejected
+      landlockExecResetAccepted
       socketMissingTcpBindRejected
       socketListenStreamsMissingTcpBindRejected
       socketListenStreamResetAccepted
@@ -1738,6 +1827,15 @@ in
           test "$reservedCollisionRejected" = ok
           test "$privilegedExecPrefixRejected" = ok
           test "$landlockScriptDerivedExecRejected" = ok
+          test "$landlockShellExecPrefixRejected" = ok
+          test "$landlockCombinedExecPrefixRejected" = ok
+          test "$landlockSlashlessExecRejected" = ok
+          test "$landlockExecResetAccepted" = ok
+          reset_unit="$landlockExecResetExposePath/units/expose-smoke-landlock-reset.service"
+          grep -qx 'ExecStart=' "$reset_unit"
+          grep -qx 'ExecStartPre=' "$reset_unit"
+          grep -q 'ExecStart=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
+          grep -q 'ExecStartPre=.*/bin/aos-selinux-run --context system_u:system_r:aos_x2dpkg_x2dexpose_x2dsmoke_t -- .*/bin/aos-landlock --require-abi 4 --fs-ro / --fs-rw /tmp --fs-rw /var/tmp --fs-rw /var/lib/aos-pkg-expose-smoke -- ${pkgs.bash}/bin/bash -c true' "$reset_unit"
           test "$socketMissingTcpBindRejected" = ok
           test "$socketListenStreamsMissingTcpBindRejected" = ok
           test "$socketListenStreamResetAccepted" = ok
