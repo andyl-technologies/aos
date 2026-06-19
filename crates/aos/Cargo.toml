@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "apr"
-path = "src/main.rs"
+path = "src/apr.rs"
 
 [dependencies]
 aos-core = { workspace = true }

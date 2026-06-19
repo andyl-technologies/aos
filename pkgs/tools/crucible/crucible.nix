@@ -8,6 +8,8 @@
   src = import ./_source.nix {inherit lib;};
   packages = import ./_packages.nix;
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") packages);
+  docPackages = builtins.filter (package: package != "crucible-cli") packages;
+  docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
 in
   mkCargoPackage {
     pname = "crucible";
@@ -30,6 +32,25 @@ in
       cd crates
     '';
 
+    postBuild = ''
+      export RUSTDOCFLAGS="-D warnings -D missing_docs"
+      cargo doc \
+        --no-deps \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        --target-dir target/crucible-doc-libs \
+        ${docPackageFlags}
+      cargo doc \
+        --no-deps \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        --target-dir target/crucible-doc-cli \
+        -p crucible-cli \
+        --bin crucible
+    '';
+
     postInstall = ''
       test -x "$out/bin/crucible"
 
@@ -40,6 +61,8 @@ in
       cargo_deps=fetchCargoDeps
       cargo_workspace=crates
       cargo_packages=${packageFlags}
+      cargo_doc=warning-free
+      rustdocflags=-D warnings -D missing_docs
       INFO
     '';
 

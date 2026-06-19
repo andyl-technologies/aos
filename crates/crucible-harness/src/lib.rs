@@ -10,8 +10,16 @@
 //! the red placeholder targets that make early phase wiring visible before the
 //! owning subsystems turn the gates green. It is not an L0-L4 runtime layer and
 //! is not a shipped crate.
+//!
+//! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
+//! hostile-profile runs, [`divergence`] localizes mismatches, [`fingerprint`]
+//! compares fingerprint streams, [`gate_targets`] indexes Cargo gate targets,
+//! [`replay_oracle`] compares replay hashes, and [`spec_index`] owns the
+//! crate-to-RFC map.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod abi;
 pub mod adversarial;

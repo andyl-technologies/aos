@@ -5,5 +5,11 @@
 //! This L4 crate will define the session lifecycle, stepping, query, and
 //! temporal-graph API types described by RFC-0010 file 21. It is a
 //! safe boundary over versioned data and dispatch shapes.
+//!
+//! Module map: the crate root currently reserves the public API package
+//! boundary; implementation modules will split by lifecycle, query, and
+//! temporal-graph surfaces as those APIs land.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]

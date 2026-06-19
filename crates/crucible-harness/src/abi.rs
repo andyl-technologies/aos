@@ -3,6 +3,14 @@
 //! The runner in this module compares live encodings against frozen golden
 //! vectors. It deliberately treats version drift separately from byte drift so
 //! later ABI gates can fail with precise diagnostics.
+//!
+//! Golden-vector record sketch:
+//!
+//! ```text
+//! name
+//! expected-version actual-version
+//! expected-bytes actual-bytes
+//! ```
 
 use std::error::Error;
 use std::fmt;

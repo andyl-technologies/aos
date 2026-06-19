@@ -7,8 +7,14 @@
 //! log, and VM backend adapters. The crate remains a safe reduction island: it
 //! declares the backend trait and core model signatures, while concrete VM
 //! drivers and driver-specific details live outside the engine crate.
+//!
+//! Module map: [`scheduler`] owns the quantum-loop boundary, `sim_backend`
+//! provides the gated in-process test double, and the crate root owns the
+//! content-addressed execution-model vocabulary.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 use std::error::Error;
 use std::fmt;
