@@ -51,10 +51,7 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      # aos-test-agent: with varProvisioning = "ignition" the guest agent
-      # is no longer baked into /var; it arrives via this role's ignition
-      # merge instead (the production-mirror path).
-      roles = ["aos-registry-server" "test-http-server" "aos-test-agent"];
+      roles = ["aos-registry-server" "test-http-server"];
       extraClosures = [server2Top];
       # `apr cache generate` rewrites the FULL ~1.5 GiB system closure into
       # the registry store under /var/lib AND writes the compressed static
@@ -70,7 +67,7 @@ in {
 
     target = {
       system = systems.server;
-      roles = ["test-http-server" "aos-test-agent"];
+      roles = ["test-http-server"];
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on

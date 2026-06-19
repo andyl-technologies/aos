@@ -96,7 +96,6 @@ in {
       bootMode = "image";
       imageDiskMiB = 16384;
       tpm = true;
-      roles = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;

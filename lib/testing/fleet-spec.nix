@@ -172,10 +172,10 @@
           partition inside the disk image. `ignition` ships no /var
           partition at all: ignition creates and formats it on first boot
           at `varSizeMiB` (mirroring production), so every machine shares
-          one base disk image regardless of its /var size. Machines using
-          `ignition` must list the `aos-test-agent` role — with no baked
-          /var seed, the guest agent arrives via the role's ignition merge
-          instead.
+          one base disk image regardless of its /var size. With no baked
+          /var seed the guest agent arrives via the `aos-test-agent` role's
+          ignition merge instead — the harness adds that role automatically
+          (lib/testing/fleet.nix), so tests need not list it.
         '';
       };
 
