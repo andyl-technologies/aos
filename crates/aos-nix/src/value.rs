@@ -581,9 +581,11 @@ pub enum ValueError {
 }
 
 const _: () = {
+    assert!(mem::size_of::<usize>() == 8);
     assert!(mem::size_of::<ValueTag>() == 8);
     assert!(mem::size_of::<Value>() == 16);
     assert!(mem::align_of::<Value>() == 8);
+    assert!(mem::align_of::<HeapObject>() == HEAP_POINTER_ALIGN);
 };
 
 #[cfg(test)]
@@ -592,9 +594,18 @@ mod tests {
 
     #[test]
     fn value_layout_is_two_machine_words() {
+        assert_eq!(mem::size_of::<usize>(), 8);
         assert_eq!(mem::size_of::<ValueTag>(), 8);
         assert_eq!(mem::size_of::<Value>(), 16);
         assert_eq!(mem::align_of::<Value>(), 8);
+        assert_eq!(mem::align_of::<HeapObject>(), HEAP_POINTER_ALIGN);
+    }
+
+    #[test]
+    fn host_platform_matches_supported_value_abi_contract() {
+        assert_eq!(usize::BITS, 64);
+        assert!(cfg!(any(target_arch = "x86_64", target_arch = "aarch64")));
+        assert!(cfg!(any(target_os = "linux", target_os = "macos")));
     }
 
     #[test]

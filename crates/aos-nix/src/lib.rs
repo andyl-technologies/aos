@@ -30,10 +30,24 @@
 //! - [`string`] owns byte-oriented Nix strings and string contexts.
 //! - [`runtime`] owns shared runtime metadata such as builtin declarations.
 //!
+//! The Phase-1 value ABI is intentionally host-portable only across the
+//! RFC-supported matrix: 64-bit x86-64 or AArch64 hosts on Linux or Darwin.
+//! Host architecture affects evaluator speed only; the configured Nix
+//! `system` value determines evaluation output.
+//!
 //! Future Phase-1 modules land below this boundary in the order specified by
 //! the RFC: `store`.
 
 #![forbid(unsafe_code)]
+
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("aos-nix requires a 64-bit host pointer width");
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("aos-nix supports only x86-64 and AArch64 host architectures");
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("aos-nix supports only Linux and Darwin host operating systems");
 
 pub mod attrs;
 pub mod cache;
