@@ -49,15 +49,19 @@ use super::heap::{
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
+use crate::cache::{CachedParse, ParseCache, ParseCacheError};
 use crate::compile::{
-    FrameId, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice, IrChildSlice, IrData, IrId,
-    IrKind, IrLowerOptions, IrNode, IrShapeId, ResolverOptions, ScopeResolver, lower,
-    lower_with_options, resolve,
+    FrameId, InheritResolution, InheritSource, Ir, IrAttrPathId, IrAttrPathSegment, IrBindingSlice,
+    IrChildSlice, IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShapeId, ResolvedAst,
+    ResolverOptions, ScopeResolver, ScopeTables, lower, lower_with_options, resolve,
 };
 use crate::list::{NixList, NixListError};
 use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
-use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
+use crate::syntax::{
+    AstArena, BinOpKind, Node, NodeData, Span, Symbol, SymbolTable, UnaryOpKind,
+    parse_bytes_with_symbols,
+};
 use crate::value::{Value, ValueTag};
 
 const TO_STRING_ATTR: &[u8] = b"__toString";
@@ -663,6 +667,7 @@ pub struct TreeWalkOptions {
     max_call_depth: usize,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
+    parse_cache_root: Option<PathBuf>,
 }
 
 impl Default for TreeWalkOptions {
@@ -682,6 +687,7 @@ impl Default for TreeWalkOptions {
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
+            parse_cache_root: None,
         }
     }
 }
@@ -885,6 +891,17 @@ impl TreeWalkOptions {
     pub fn with_max_call_depth(max_call_depth: usize) -> Self {
         let mut options = Self::default();
         options.set_max_call_depth(max_call_depth);
+        options
+    }
+
+    /// Creates evaluator options with a configured parse-cache root directory.
+    ///
+    /// The tree-walk evaluator uses this cache for ordinary filesystem-backed
+    /// imports. Scoped imports keep their direct frontend path because they use
+    /// different unresolved-global scope rules.
+    pub fn with_parse_cache_root(parse_cache_root: impl Into<PathBuf>) -> Self {
+        let mut options = Self::default();
+        options.set_parse_cache_root(parse_cache_root);
         options
     }
 
@@ -1153,6 +1170,16 @@ impl TreeWalkOptions {
         Ok(())
     }
 
+    /// Replaces the parse-cache root directory.
+    pub fn set_parse_cache_root(&mut self, parse_cache_root: impl Into<PathBuf>) {
+        self.parse_cache_root = Some(parse_cache_root.into());
+    }
+
+    /// Disables parse-cache use by this evaluator.
+    pub fn clear_parse_cache_root(&mut self) {
+        self.parse_cache_root = None;
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
@@ -1242,6 +1269,11 @@ impl TreeWalkOptions {
     /// Returns the configured Nix search-path entries.
     pub fn nix_path(&self) -> &[NixSearchPathEntry] {
         &self.nix_path
+    }
+
+    /// Returns the configured parse-cache root directory, if any.
+    pub fn parse_cache_root(&self) -> Option<&Path> {
+        self.parse_cache_root.as_deref()
     }
 }
 
@@ -1828,6 +1860,11 @@ pub struct TreeWalk {
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
+    parse_cache: Option<ParseCache>,
+    #[cfg(test)]
+    import_parse_cache_hits: usize,
+    #[cfg(test)]
+    import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
     ifd_realizer: Option<IfdRealizer>,
     call_depth: usize,
@@ -1916,6 +1953,7 @@ impl TreeWalk {
     /// Creates a tree-walk evaluator over `ir` with explicit runtime options.
     pub fn with_options(ir: &Ir, options: TreeWalkOptions) -> Self {
         let path_literal_base = options.path_literal_base().map(<[u8]>::to_vec);
+        let parse_cache = options.parse_cache_root().map(ParseCache::new);
         Self {
             modules: vec![TreeWalkModule {
                 ir: ir.clone(),
@@ -1935,6 +1973,11 @@ impl TreeWalk {
             find_file_cache: BTreeMap::new(),
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
+            parse_cache,
+            #[cfg(test)]
+            import_parse_cache_hits: 0,
+            #[cfg(test)]
+            import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),
             ifd_realizer: None,
             call_depth: 0,
@@ -1995,6 +2038,11 @@ impl TreeWalk {
     #[cfg(test)]
     fn captured_stderr(&self) -> &[u8] {
         self.stderr.captured()
+    }
+
+    #[cfg(test)]
+    fn import_parse_cache_stats(&self) -> (usize, usize) {
+        (self.import_parse_cache_hits, self.import_parse_cache_misses)
     }
 
     fn check_call_depth(&self, id: IrId, span: Span) -> Result<(), TreeWalkError> {
@@ -15052,6 +15100,35 @@ impl TreeWalk {
             .as_os_str()
             .as_bytes()
             .to_vec();
+        if let Some(cached) = self.load_parse_cached_import(
+            argument,
+            argument_span,
+            realpath,
+            &path,
+            &source,
+            global_scope,
+        )? {
+            #[cfg(test)]
+            if cached.hit {
+                self.import_parse_cache_hits += 1;
+            } else {
+                self.import_parse_cache_misses += 1;
+            }
+
+            let resolved =
+                self.remap_cached_import_symbols(argument, argument_span, &path, cached.resolved)?;
+            let ir = lower(resolved).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportLower {
+                        id: argument,
+                        path: path.clone(),
+                        message: source.to_string(),
+                    },
+                    argument_span,
+                )
+            })?;
+            return self.load_and_eval_import_ir(id, span, &path, &base, &source, ir, global_scope);
+        }
         self.load_and_eval_import_bytes(
             id,
             span,
@@ -15062,6 +15139,72 @@ impl TreeWalk {
             &source,
             global_scope,
         )
+    }
+
+    fn load_parse_cached_import(
+        &self,
+        argument: IrId,
+        argument_span: Span,
+        realpath: &Path,
+        path: &[u8],
+        source: &[u8],
+        global_scope: ImportGlobalScope,
+    ) -> Result<Option<CachedParse>, TreeWalkError> {
+        if global_scope.is_scoped() {
+            return Ok(None);
+        }
+        let Some(cache) = &self.parse_cache else {
+            return Ok(None);
+        };
+
+        let source_hint = Some(realpath.to_string_lossy().into_owned());
+        cache
+            .load_or_parse_bytes(source, source_hint)
+            .map(Some)
+            .map_err(|source| Self::parse_cache_import_error(argument, argument_span, path, source))
+    }
+
+    fn parse_cache_import_error(
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        source: ParseCacheError,
+    ) -> TreeWalkError {
+        let path = path.to_vec();
+        match source {
+            ParseCacheError::Parse { source } => TreeWalkError::new(
+                TreeWalkErrorKind::ImportParse {
+                    id: argument,
+                    path,
+                    message: source.to_string(),
+                },
+                argument_span,
+            ),
+            ParseCacheError::Scope { source } => TreeWalkError::new(
+                TreeWalkErrorKind::ImportScope {
+                    id: argument,
+                    path,
+                    message: source.to_string(),
+                },
+                argument_span,
+            ),
+            ParseCacheError::LowerIr { source } => TreeWalkError::new(
+                TreeWalkErrorKind::ImportLower {
+                    id: argument,
+                    path,
+                    message: source.to_string(),
+                },
+                argument_span,
+            ),
+            other => TreeWalkError::new(
+                TreeWalkErrorKind::ImportParse {
+                    id: argument,
+                    path,
+                    message: other.to_string(),
+                },
+                argument_span,
+            ),
+        }
     }
 
     fn load_and_eval_text_store_import(
@@ -15157,6 +15300,19 @@ impl TreeWalk {
                 argument_span,
             )
         })?;
+        self.load_and_eval_import_ir(id, span, path, base, source, ir, global_scope)
+    }
+
+    fn load_and_eval_import_ir(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: &[u8],
+        base: &[u8],
+        source: &[u8],
+        ir: Ir,
+        global_scope: ImportGlobalScope,
+    ) -> Result<Value, TreeWalkError> {
         self.symbols = ir.symbols.clone();
         let root = ir.root;
         let module =
@@ -15171,6 +15327,172 @@ impl TreeWalk {
         self.with_scopes = saved_with_scopes;
         self.scoped_globals = saved_scoped_globals;
         result
+    }
+
+    fn remap_cached_import_symbols(
+        &mut self,
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        resolved: ResolvedAst,
+    ) -> Result<ResolvedAst, TreeWalkError> {
+        let mut symbols = self.symbols.clone();
+        let mut symbol_map = Vec::new();
+        symbol_map
+            .try_reserve_exact(resolved.symbols.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "failed to allocate cached import symbol remap".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+        for bytes in resolved.symbols.symbols() {
+            let symbol = symbols.intern(bytes).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: format!("failed to remap cached import symbol: {source}"),
+                    },
+                    argument_span,
+                )
+            })?;
+            symbol_map.push(symbol);
+        }
+
+        let mut nodes = Vec::new();
+        nodes
+            .try_reserve_exact(resolved.arena.nodes().len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "failed to allocate cached import nodes".to_owned(),
+                    },
+                    argument_span,
+                )
+            })?;
+        for node in resolved.arena.nodes() {
+            nodes.push(Node::new(
+                node.kind,
+                node.span,
+                Self::remap_cached_node_data(
+                    argument,
+                    argument_span,
+                    path,
+                    &symbol_map,
+                    node.data,
+                )?,
+            ));
+        }
+
+        let mut inherit_resolutions =
+            Vec::with_capacity(resolved.scopes.inherit_resolutions().len());
+        for inherit in resolved.scopes.inherit_resolutions() {
+            let mut sources = Vec::with_capacity(inherit.sources.len());
+            for source in inherit.sources.as_ref() {
+                sources.push(InheritSource {
+                    target: Self::remap_cached_symbol(
+                        argument,
+                        argument_span,
+                        path,
+                        &symbol_map,
+                        source.target,
+                    )?,
+                    source: source.source,
+                });
+            }
+            inherit_resolutions.push(InheritResolution {
+                from: inherit.from,
+                sources: sources.into_boxed_slice(),
+            });
+        }
+
+        Ok(ResolvedAst {
+            root: resolved.root,
+            arena: AstArena::from_raw_parts(nodes, resolved.arena.child_pool().to_vec()),
+            symbols,
+            scopes: ScopeTables::from_raw_parts(
+                resolved.scopes.frames().to_vec(),
+                resolved.scopes.node_frames().to_vec(),
+                resolved.scopes.with_chains().to_vec(),
+                inherit_resolutions,
+                resolved.scopes.node_inherits().to_vec(),
+            ),
+        })
+    }
+
+    fn remap_cached_node_data(
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        symbol_map: &[Symbol],
+        data: NodeData,
+    ) -> Result<NodeData, TreeWalkError> {
+        match data {
+            NodeData::Symbol(symbol) => Ok(NodeData::Symbol(Self::remap_cached_symbol(
+                argument,
+                argument_span,
+                path,
+                symbol_map,
+                symbol,
+            )?)),
+            NodeData::FormalSet {
+                formals,
+                ellipsis,
+                alias,
+            } => Ok(NodeData::FormalSet {
+                formals,
+                ellipsis,
+                alias: alias
+                    .map(|symbol| {
+                        Self::remap_cached_symbol(argument, argument_span, path, symbol_map, symbol)
+                    })
+                    .transpose()?,
+            }),
+            NodeData::Formal { name, default } => Ok(NodeData::Formal {
+                name: Self::remap_cached_symbol(argument, argument_span, path, symbol_map, name)?,
+                default,
+            }),
+            NodeData::WithVar { symbol, chain } => Ok(NodeData::WithVar {
+                symbol: Self::remap_cached_symbol(
+                    argument,
+                    argument_span,
+                    path,
+                    symbol_map,
+                    symbol,
+                )?,
+                chain,
+            }),
+            other => Ok(other),
+        }
+    }
+
+    fn remap_cached_symbol(
+        argument: IrId,
+        argument_span: Span,
+        path: &[u8],
+        symbol_map: &[Symbol],
+        symbol: Symbol,
+    ) -> Result<Symbol, TreeWalkError> {
+        symbol_map
+            .get(symbol.as_u32() as usize)
+            .copied()
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ImportScope {
+                        id: argument,
+                        path: path.to_vec(),
+                        message: "cached import artifact references an invalid symbol".to_owned(),
+                    },
+                    argument_span,
+                )
+            })
     }
 
     fn import_scoped_globals(
@@ -34473,6 +34795,182 @@ mod tests {
             cycle.kind(),
             TreeWalkErrorKind::RecursiveImport { .. }
         ));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn ordinary_filesystem_import_uses_configured_parse_cache() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        fs::write(root.join("dep.nix"), b"{ zOnly = 41; }").expect("dep writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+        let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+        let mut first = TreeWalk::with_options(&ir, options.clone());
+        let value = first.eval_root().expect("first import evaluates");
+        let string = first
+            .heap()
+            .get_string(value)
+            .expect("attrNames result concatenates to string");
+        assert_eq!(string.bytes(), b"zOnly");
+        assert_eq!(first.import_parse_cache_stats(), (0, 1));
+        assert!(
+            fs::read_dir(&cache_root)
+                .expect("cache directory exists")
+                .next()
+                .is_some(),
+            "first import should write a durable parse-cache entry"
+        );
+
+        let mut second = TreeWalk::with_options(&ir, options);
+        let value = second.eval_root().expect("second import evaluates");
+        let string = second
+            .heap()
+            .get_string(value)
+            .expect("cached attrNames result concatenates to string");
+        assert_eq!(string.bytes(), b"zOnly");
+        assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn parse_cached_import_remaps_formal_and_inherit_symbols() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache-symbols"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        fs::write(
+            root.join("dep.nix"),
+            br#"let
+                 hidden = 7;
+                 f = args@{ a ? hidden, ... }: a;
+               in { inherit hidden f; }"#,
+        )
+        .expect("dep writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+        let ir = lower(
+            r#"let imported = import ./dep.nix;
+               in (builtins.getAttr "f" imported) {} + builtins.getAttr "hidden" imported"#,
+        );
+
+        let mut first = TreeWalk::with_options(&ir, options.clone());
+        assert_eq!(
+            first
+                .eval_root()
+                .expect("first import evaluates")
+                .as_int()
+                .expect("first result is int"),
+            14
+        );
+        assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+        let mut second = TreeWalk::with_options(&ir, options);
+        assert_eq!(
+            second
+                .eval_root()
+                .expect("cached import evaluates")
+                .as_int()
+                .expect("cached result is int"),
+            14
+        );
+        assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn parse_cached_imports_keep_module_relative_path_bases() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache-bases"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        let first_dir = root.join("first");
+        let second_dir = root.join("second");
+        fs::create_dir(&first_dir).expect("first dir creates");
+        fs::create_dir(&second_dir).expect("second dir creates");
+        fs::write(first_dir.join("dep.nix"), b"./data.txt").expect("first dep writes");
+        fs::write(second_dir.join("dep.nix"), b"./data.txt").expect("second dep writes");
+        fs::write(first_dir.join("data.txt"), b"first").expect("first data writes");
+        fs::write(second_dir.join("data.txt"), b"second").expect("second data writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+        let ir = lower(
+            r#"builtins.toString (import ./first/dep.nix)
+               + "|"
+               + builtins.toString (import ./second/dep.nix)"#,
+        );
+        let mut evaluator = TreeWalk::with_options(&ir, options);
+        let value = evaluator.eval_root().expect("imports evaluate");
+        let string = evaluator
+            .heap()
+            .get_string(value)
+            .expect("result is a string");
+        let expected = format!(
+            "{}|{}",
+            first_dir.join("data.txt").display(),
+            second_dir.join("data.txt").display()
+        );
+        assert_eq!(string.bytes(), expected.as_bytes());
+        assert_eq!(evaluator.import_parse_cache_stats(), (1, 1));
+
+        fs::remove_dir_all(root).expect("temp directory removes");
+    }
+
+    #[test]
+    fn parse_cache_does_not_capture_scoped_or_text_store_imports() {
+        let root = fs::canonicalize(unique_temp_dir("import-parse-cache-bypass"))
+            .expect("temp directory canonicalizes");
+        let cache_root = root.join("cache");
+        fs::write(root.join("scoped.nix"), b"secret").expect("scoped import writes");
+
+        let mut options = TreeWalkOptions::new();
+        options
+            .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+            .expect("path base configures");
+        options.set_parse_cache_root(&cache_root);
+
+        let scoped_ir = lower("builtins.scopedImport { secret = 9; } ./scoped.nix");
+        let mut scoped = TreeWalk::with_options(&scoped_ir, options.clone());
+        assert_eq!(
+            scoped
+                .eval_root()
+                .expect("scoped import evaluates")
+                .as_int()
+                .expect("scoped result is int"),
+            9
+        );
+        assert_eq!(scoped.import_parse_cache_stats(), (0, 0));
+
+        let text_store_ir = lower(r#"let p = builtins.toFile "generated.nix" "3"; in import p"#);
+        let mut text_store = TreeWalk::with_options(&text_store_ir, options);
+        assert_eq!(
+            text_store
+                .eval_root()
+                .expect("text-store import evaluates")
+                .as_int()
+                .expect("text-store result is int"),
+            3
+        );
+        assert_eq!(text_store.import_parse_cache_stats(), (0, 0));
+        assert!(
+            !cache_root.exists(),
+            "bypassed imports should not create parse-cache artifacts"
+        );
 
         fs::remove_dir_all(root).expect("temp directory removes");
     }
