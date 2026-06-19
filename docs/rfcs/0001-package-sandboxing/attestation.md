@@ -107,9 +107,10 @@ new mechanism.
   against the registry's golden catalog** (next section). Result: cryptographic
   proof that node X runs exactly package-set P, at versions V, with root digests
   D, under privilege manifests M — all chaining to hardware. Reference verifier:
-  Keylime-shaped (`TPM2_Quote` + IMA/CEL replay); AOS may host the verifier role
-  fleet-side or as a registry-adjacent service (it is a *separate role* from the
-  registry's catalog — see custody below).
+  Keylime-shaped (`TPM2_Quote` + IMA/CEL replay). AOS hosts this as the
+  standalone `aos.services.attestationVerifier` role: it consumes delivered
+  quote/event-log/catalog evidence and writes a verifier result, while the
+  registry remains only the catalog/provenance plane (see custody below).
 
 ## How the AOS registry fits in
 
@@ -142,13 +143,12 @@ runtime root of trust.** Concretely, across the three artifacts:
    new role, and it is exactly the RFC-0006 SB-catalog role generalized. The
    registry records, per package/version, the **expected measurement tuple**
    `H(name ‖ version ‖ root-digest ‖ manifest-digest)` — the same value a node
-   extends into PCR 15. A fleet verifier (or the registry acting through a
-   *separate* verifier service) answers: "node X quoted PCR 15 = D and presented
-   event log E; is every tuple in E a registry-known package at a non-rolled-back
-   version with a registry-known, policy-permitted manifest?" The registry is the
-   **oracle of expected/golden values**, just as it records `expected_pcr11` for
-   UKIs today. It never holds a TPM, never signs a quote, never is the hardware
-   root of trust.
+   extends into PCR 15. The standalone fleet verifier answers: "node X quoted
+   PCR 15 = D and presented event log E; is every tuple in E a registry-known
+   package at a non-rolled-back version with a registry-known, policy-permitted
+   manifest?" The registry is the **oracle of expected/golden values**, just as
+   it records `expected_pcr11` for UKIs today. It never holds a TPM, never signs
+   a quote, never is the hardware root of trust.
 
 **Custody / separation of duties (mandatory).** The registry **publication key**
 (catalog + provenance, artifact 1) is distinct from the **UEFI-db/verity key**

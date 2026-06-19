@@ -107,6 +107,7 @@
         --arg expose_path ${lib.escapeShellArg (builtins.toString package.package.expose)} \
         --arg root_hash "$root_hash" \
         --arg root_hash_sig "$root_hash_sig" \
+        --arg root_digest "$root_digest" \
         --arg measurement "$measurement" \
         '{
           store_path: $store_path,

@@ -255,6 +255,17 @@
       };
     }
   ];
+  verifierSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.services.attestationVerifier = {
+        enable = true;
+        catalogFiles = ["/var/lib/aos-attestation-verifier/package-attestation-catalog.json"];
+        quoteIdentityFiles = ["/var/lib/aos-attestation-verifier/quote-identity.json"];
+        pcr15BaselineFile = "/var/lib/aos-attestation-verifier/pcr15-baseline";
+      };
+    }
+  ];
 in {
   name = "package-root-image-secureboot";
   timeout = 1800;
@@ -275,6 +286,9 @@ in {
         config = diskProvision;
       };
     };
+    verifier = {
+      system = verifierSystem;
+    };
   };
 
   testScript =
@@ -287,8 +301,11 @@ in {
       SB_GUID = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
       DB_GUID = "d719b2cb-3d3a-4596-a3bc-dad00e67656f"
       APM = "${pkgs.aos}/bin/apm"
+      BASE64 = "${pkgs.coreutils}/bin/base64"
       JQ = "${pkgs.jq}/bin/jq"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
+      VERIFIER_ROOT = "/var/lib/aos-attestation-verifier"
+      VERIFIER_QUOTE = f"{VERIFIER_ROOT}/quote"
 
       def efivar_byte(name):
           path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
@@ -318,6 +335,74 @@ in {
               f"done < {path}; "
               f"test \"$found\" = 1"
           )
+
+      def copy_target_file_to_verifier(source, destination):
+          encoded = target.succeed(f"{BASE64} -w0 {shlex.quote(source)}").strip()
+          parent = destination.rsplit("/", 1)[0]
+          verifier.succeed(f"mkdir -p {shlex.quote(parent)}")
+          verifier.succeed(
+              f"printf %s {shlex.quote(encoded)} | "
+              f"{BASE64} -d > {shlex.quote(destination)}"
+          )
+
+      def write_verifier_file(destination, content):
+          parent = destination.rsplit("/", 1)[0]
+          verifier.succeed(f"mkdir -p {shlex.quote(parent)}")
+          verifier.succeed(f"printf %s {shlex.quote(content)} > {shlex.quote(destination)}")
+
+      def assert_standalone_verifier_accepts_quote(event_log_path, nonce, baseline_value, quote, identity):
+          assert baseline_value is not None, "standalone verifier test expects PCR baseline"
+          verifier.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
+          verifier.succeed("test -e /etc/systemd/system/aos-attestation-verifier.service")
+          verifier.succeed(f"rm -rf {VERIFIER_ROOT}")
+          verifier.succeed(f"mkdir -p {VERIFIER_QUOTE}")
+          write_verifier_file(f"{VERIFIER_ROOT}/nonce", nonce)
+          write_verifier_file(f"{VERIFIER_ROOT}/pcr15-baseline", baseline_value)
+          write_verifier_file(
+              f"{VERIFIER_ROOT}/quote-identity.json",
+              json.dumps({
+                  "version": 1,
+                  "anchors": [{
+                      "label": "service-quote",
+                      "identity": identity,
+                  }],
+              }),
+          )
+          copy_target_file_to_verifier(
+              event_log_path,
+              f"{VERIFIER_ROOT}/aos-packages.cel",
+          )
+          copy_target_file_to_verifier(
+              "/etc/aos/package-attestation-catalog.json",
+              f"{VERIFIER_ROOT}/package-attestation-catalog.json",
+          )
+          for key, filename in (
+              ("ek_public", "ek.pub"),
+              ("ek_name", "ek.name"),
+              ("ek_qualified_name", "ek.qname"),
+              ("ak_public", "ak.pub"),
+              ("ak_name", "ak.name"),
+              ("ak_qualified_name", "ak.qname"),
+              ("quote_message", "quote.msg"),
+              ("quote_signature", "quote.sig"),
+              ("quote_pcrs", "quote.pcrs"),
+          ):
+              copy_target_file_to_verifier(quote[key], f"{VERIFIER_QUOTE}/{filename}")
+          verifier.succeed(
+              f"find {VERIFIER_ROOT} -type d -exec chmod 0755 {{}} + && "
+              f"find {VERIFIER_ROOT} -type f -exec chmod 0644 {{}} +"
+          )
+          verifier.succeed("systemctl start aos-attestation-verifier.service", timeout=120)
+          raw = verifier.succeed(f"cat {VERIFIER_ROOT}/result.json")
+          print("=== standalone package attestation verifier result ===")
+          print(raw)
+          verified = json.loads(raw)
+          assert verified["pcr15"] == quote["quoted_pcr15"]
+          assert verified["package_count"] >= 2
+          assert verified["quote_bundle_verified"] is True
+          assert verified["ak_ek_trusted"] is False
+          assert verified["quote_identity_pinned"] is True
+          assert verified["quote_identity_label"] == "service-quote"
 
       def assert_root_hash_metadata(name, package_hash, image):
           root_hash = target.succeed(f"cat {image}/root.roothash").strip()
@@ -471,6 +556,13 @@ in {
           assert service_trusted["ak_ek_trusted"] is False
           assert service_trusted["quote_identity_pinned"] is True
           assert service_trusted["quote_identity_label"] == "service-quote"
+          assert_standalone_verifier_accepts_quote(
+              event_log_path,
+              nonce,
+              baseline_value,
+              service_quote,
+              service_quote["identity"],
+          )
 
           raw = target.succeed(
               f"{APM} --json attest quote "
