@@ -6,15 +6,13 @@ This doc specifies the boot-time flow for the **packages** model, which folds
 into AOS's `apm`/registry system — see [README.md](README.md) and
 [migration.md](migration.md). The shape is:
 Ignition **declares** the package set, a boot-stage step runs **apm** to
-**install** those packages into the system profile, and then each package is
-**enabled** — for plain packages that means reaching `aos-pkg-<name>.target`,
-and for container packages it means starting the `systemd-nspawn` instance
-behind that target (see [container-model.md](container-model.md)). The
+**install/reconcile** those packages into the system package profile, and then each package is
+**enabled** — reaching `aos-pkg-<name>.target`, which starts the generated
+per-unit service behind that target (see [container-model.md](container-model.md)). The
 package files ship **inert in the image**; install makes their store closure
 present and their units reachable; enable activates them. Config delivery that
-those enabled units consume is **explicitly open** — see [config.md](config.md)
-and [open-questions.md](open-questions.md) — and is deliberately not settled
-here.
+those enabled units consume is layered — see [config.md](config.md) and
+[open-questions.md](open-questions.md).
 
 This is a planning doc. Where the current code already does part of this, the
 real file/line is cited. Where the mechanism does not yet exist, it is marked
@@ -32,8 +30,8 @@ which packages actually come up.
 | State | What it means | Who establishes it |
 |-------|---------------|--------------------|
 | **Inert (in image)** | The package's *system-level* units (the synthesized `aos-pkg-<name>.target` and its member units / gated side-effect services) exist as regular files in the EROFS `/etc/systemd/system/`, but nothing `Wants=` them. The package's store closure may or may not be in the local store yet. | Image build (the package module, evaluated into `system.build.toplevel`) |
-| **Installed** | The package's store closure is present in the local `/nix/store`, recorded in the system profile generation, and (for container packages) its container root image is available under `/var/lib/machines`. | `apm install` at boot |
-| **Enabled** | The package is *running*: `aos-pkg-<name>.target` is reached, pulling member units; for container packages the `systemd-nspawn` service behind the target is started. | systemd activation, triggered by the Ignition-written enable hook |
+| **Installed** | The package's store closure is present in the local `/nix/store`, recorded in the system package profile generation, and its expose artifacts are materialized. | `apm install` at boot |
+| **Enabled** | The package is *running*: `aos-pkg-<name>.target` is reached, pulling member units and gated side-effect services. | systemd activation, triggered by preset policy |
 
 The target/activation design ([activation.md](activation.md)) establishes the
 "inert in EROFS, one activation root per package" half: member units are baked
@@ -135,8 +133,8 @@ This mirrors how registries are already configured post-boot
 (`apm registry add` writes `registries.d/<name>.toml`), just laid down by
 Ignition instead of by hand. Writing it through `storage.files` keeps it inside
 Ignition's existing idempotent files stage rather than inventing a new Ignition
-section. **Needs verification:** whether to reuse `registries.d/` verbatim plus a
-separate `packages.d/desired.toml`, or fold both into one document.
+section. **Resolved:** registries stay in `registries.d/`, while desired
+packages live in the separate `/etc/aos/packages.d/desired.toml`.
 
 ### 3.2 How "enabled" is expressed
 
@@ -240,8 +238,8 @@ the host whose preset file enables it.
 
 ## 4. The install step: which unit, which stage, ordering
 
-Insert a **(new)** boot-stage oneshot, `aos-install-packages.service`, that
-reads the declared set (§3.1) and runs `apm` to install it.
+Use the boot-stage oneshot `aos-install-packages.service` to read the declared
+set (§3.1) and run `apm` to install or prune it.
 
 ### 4.1 Placement and ordering
 
@@ -282,11 +280,11 @@ Recommendation: **stage 2**, ordered `Before=multi-user.target` and after the
 overlay/seed/network preconditions. This is also what the
 [testing](#7-testing) and fleet harnesses are set up to observe. **Verified:**
 `aos-seed-profiles` writes `/sysroot/var/lib/profiles/system` — the
-persistent `/var` partition — so the state is visible from stage 2, and a
-root/boot-time `apm install` uses the same `ProfileScope::System`
-(`/var/lib/profiles/system/`; the only scopes are `User` and `System`,
-`crates/aos-package/src/types.rs:560-626`), sharing the profile the seed step
-initializes.
+persistent `/var` partition — so the sysroot state is visible from stage 2.
+Runtime/boot-time `apm install --system` uses `ProfileScope::System`'s package
+profile path, `/var/lib/profiles/system-packages/`
+(`crates/aos-package/src/types.rs`), keeping package generations independent
+from the sysroot generation pointer the seed step initializes.
 
 ### 4.2 Enable follows install
 
@@ -299,14 +297,12 @@ against the merged preset policy (§3.2), run by `apm` immediately after expose
 install (apm install ...) → expose (units + target) → systemctl preset aos-pkg-<name>.target → start
 ```
 
-For plain packages, "enable" reaches the target and its member units (the
-gated `aos-pkg-<name>-modules/sysctl/firewall.service` from the
-[activation.md](activation.md) design) come up under it. For **container**
-packages, the target's
-`Wants=` pulls the `systemd-nspawn` instance — see
-[container-model.md](container-model.md) for the unit shape. The boot flow does
-not need to know which kind it is; it enables the target and the package's own
-unit graph decides what runs.
+For service packages, "enable" reaches the target and its member units (the
+generated launch service plus the gated
+`aos-pkg-<name>-modules/sysctl/firewall.service` units from the
+[activation.md](activation.md) design) come up under it. The boot flow does not
+need to know a substrate kind; it enables the target and the package's own unit
+graph decides what runs.
 
 ### 4.3 Idempotency across generations and upgrades
 
@@ -326,33 +322,27 @@ generations.
   `install.rs:67-73` exits early ("All requested packages are already
   installed. No changes made.") **without** minting a generation when nothing
   changed and `--reinstall` is not set. No extra marker file is needed.
-  > **Profile vs. scope (needs verification).** Two distinct things are at play
-  > and must not be conflated: the **system profile** holds the toplevel plus
-  > the packages **baked** into the image (seeded `registry: "seed"`), while
-  > **runtime apm-installed** packages live in an apm package profile/scope
-  > (`/var/lib/profiles/{scope}/`, the `{scope}` parameter referenced in §1 and
-  > §4.3 and in [apm-integration.md](apm-integration.md) §5). The intended
-  > relationship — whether runtime packages share the `system` scope or get
-  > their own — is **needs verification** against
-  > `crates/aos-package/src/profile/mod.rs`. The key property either way: an
-  > apm package generation is independent of the *toplevel* (system-image)
-  > generation, so a host-image upgrade does not by itself churn the
-  > apm-installed package set.
+  > **Profile vs. scope (verified).** Two distinct things are at play and must
+  > not be conflated: the **system profile** holds the toplevel plus the packages
+  > **baked** into the image (seeded `registry: "seed"`), while **runtime
+  > apm-installed** system packages live in the separate apm package profile at
+  > `/var/lib/profiles/system-packages/`
+  > (`crates/aos-package/src/types.rs`:
+  > `ProfileScope::System.package_profile_path()`). An apm package generation is
+  > independent of the *toplevel* (system-image) generation, so a host-image
+  > upgrade does not by itself churn the apm-installed package set.
 
 - **Image upgrade (new generation of the *system*):** the baked-in packages
   belong to the new toplevel (gen seeded `registry: "seed"`). apm-installed
   packages live in their apm package profile/scope (see the note above)
   independently of the toplevel generation. The boot step re-runs against
-  `desired.toml`; packages already
-  present remain, newly-added ones install, removed ones are **not** auto-removed
-  (removal is a separate, explicit `apm` operation — see
-  [apm-integration.md](apm-integration.md)). **Open:** whether a package dropped
-  from `desired.toml` should be disabled on next boot. Reconciling "declared set
-  vs installed set" (prune) is a policy decision; default to **additive only**
-  for safety and call removal out as future work.
+  `desired.toml`; packages already present remain, newly-added ones install, and
+  removed ones are pruned by declarative reconciliation. The boot step converges
+  the package profile to the declared set rather than staying additive-only.
 
-The enable step is naturally idempotent: `systemctl enable`/the wants symlink is
-a fixed-point operation, and starting an already-active target is a no-op.
+The enable step is naturally idempotent: the preset policy is a fixed-point
+operation, `aos-preset.service` re-derives wants links from that policy, and
+starting an already-active target is a no-op.
 
 ### 4.4 Offline / baked vs fetched
 
@@ -366,10 +356,10 @@ Two install sources, chosen per package / per host:
 Baked mode is the honest default for **k3s**: it is an infrastructure package
 that wants host privilege (global kernel modules, host net/cgroups), is large,
 and should come up deterministically without a registry round-trip. Its closure
-(and, if containerized, its container root under `/var/lib/machines`) should be
-present in the image, and the boot step's job for k3s is install-as-register +
-enable, not fetch. See [container-model.md](container-model.md) for why k3s's
-container is *nominal* (host net/cgroups, not a security boundary) and
+(and any package-root artifact) should be present in the image, and the boot
+step's job for k3s is install-as-register + enable, not fetch. See
+[container-model.md](container-model.md) for why k3s is high-privilege (host
+net/cgroups, not a security boundary) and
 [migration.md](migration.md) for how the existing k3s role maps onto this.
 
 For fetched packages, the install step needs network, so it explicitly pulls
@@ -394,13 +384,12 @@ initrd:
 
 stage 2:
   (network-online.target reached on demand if any package is "fetched")
-  aos-preset.service                    # systemctl preset-all --preset-mode=enable-only
-                                        # + start --no-block newly-enabled targets (§3.2)
   aos-install-packages.service          # apm install --from desired.toml  [INSTALLED]
     └─ apm runs: systemctl preset aos-pkg-<name>.target    (per §3.2 policy)
+  aos-preset.service                    # systemctl preset-all --preset-mode=enable-only
+                                        # + start --no-block newly-enabled targets (§3.2)
   systemd reaches aos-pkg-<name>.target                        [ENABLED]
-       ├─ plain package: member units + gated modules/sysctl/firewall services
-       └─ container package: systemd-nspawn@<name> instance (see container-model.md)
+       └─ service package: generated per-unit service + gated modules/sysctl/firewall services
   multi-user.target
 ```
 
@@ -414,32 +403,33 @@ enable it — its units sit inert in EROFS, wanted by nothing, exactly as the
 
 ## 6. Honest gaps and limits
 
-- **The bridge does not exist yet.** `aos-seed-profiles` seeds only the system
-  profile; there is no boot step today that runs `apm install` for additional
-  packages. `aos-install-packages.service` is entirely new.
+- **The bridge exists as `aos-install-packages.service`.** `aos-seed-profiles`
+  seeds the sysroot system profile; the stage-2 install service reconciles
+  additional desired packages in the system package profile.
 - **`systemd.units[].enabled` is gone (v12 §5.6.4).** Enable is expressed via
   systemd presets (§3.2): the image ships `disable *`, Ignition writes a
   per-host preset file, PID 1 applies presets on first boot, and `apm` runs
   `systemctl preset` for runtime installs. Nothing re-implements
   `[Install]`→symlink logic. The **machine-id precondition** for the
-  first-boot pass needs verification (§3.2).
+  first-boot pass is verified in §3.2.
 - **Idempotency depends on `apm` generation behavior.** If `apm install` mints a
   generation on every invocation regardless of input, the boot step will churn
-  generations each boot and needs an explicit "unchanged set" guard. **Needs
-  verification.**
+  generations each boot and needs an explicit "unchanged set" guard. Verified
+  in §4.3: unchanged installs exit without minting a new generation.
 - **k3s does not fit the sandbox cleanly.** It must be a **baked/offline**
-  infrastructure package with a **nominal** container (host net/cgroups, global
-  kernel modules) — call this out rather than pretend it is a sandboxed workload.
-  Details in [container-model.md](container-model.md).
-- **Config is not solved here.** The enabled units consume configuration whose
-  delivery is **explicitly open** (do not assume credstore). The boot flow only
-  guarantees *units come up*; whether they have valid config to consume is the
-  subject of [config.md](config.md). For k3s today, config arrives via Ignition
+  infrastructure package with high host privilege (host net/cgroups, global
+  kernel modules) — call this out rather than pretend it is a sandboxed
+  workload. Details in [container-model.md](container-model.md).
+- **Config is layered, but boot only orders units.** The enabled units consume
+  configuration delivered by the layered config model in [config.md](config.md):
+  TPM2-sealed credentials for secrets, schema-validated apm artifacts for
+  structured config, and `EnvironmentFile=` for simple config. The boot flow
+  guarantees unit ordering; package-specific config validity remains the
+  package/config contract. For k3s today, config arrives via Ignition
   `storage.files` (`/etc/rancher/k3s/k3s.env`) consumed by `EnvironmentFile=` —
   documented as the current working pattern, not a decision.
-- **Prune semantics undecided.** Removing a package from `desired.toml` does not
-  currently disable/uninstall it on next boot (additive-only). Reconciliation is
-  future work; tracked in [open-questions.md](open-questions.md).
+- **Prune semantics are declarative.** Removing a package from `desired.toml`
+  removes it from the reconciled desired package set on the next boot.
 
 ---
 
@@ -453,8 +443,8 @@ findings; harness files under `lib/testing/`):
   (inert-in-image invariant).
 - **Single-VM check:** boot with `desired.toml` declaring one package; assert
   `aos-install-packages.service` succeeded, the closure is in `/nix/store`, the
-  target is enabled, and (container case) the `systemd-nspawn` instance is
-  active. Re-trigger the service and assert no new generation is minted
+  target is enabled, and the generated service is active. Re-trigger the service
+  and assert no new generation is minted
   (idempotency).
 - **Fleet:** the existing `apm-e2e` pattern (registry server + client running
   `apm update` / `apm install`) extended so the client's install is driven by an
@@ -466,8 +456,8 @@ findings; harness files under `lib/testing/`):
 ## See also
 
 - [README.md](README.md) — overview of the packages model and doc set
-- [container-model.md](container-model.md) — nspawn containers, the nominal-vs-real boundary, k3s
-- [apm-integration.md](apm-integration.md) — registry metadata, target/container declaration, install/enable/remove
-- [config.md](config.md) — config-delivery design space (open)
+- [container-model.md](container-model.md) — per-unit substrate, future nspawn path, k3s
+- [apm-integration.md](apm-integration.md) — registry metadata, target declaration, install/enable/remove
+- [config.md](config.md) — layered config and credential delivery
 - [migration.md](migration.md) — migration onto the packages model and the k3s mapping
 - [open-questions.md](open-questions.md) — unresolved decisions (prune, enable mechanism, config backend)
