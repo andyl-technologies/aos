@@ -918,6 +918,68 @@ These entries record risk-spike outcomes required by
 decisions; they retire, reclassify, or adopt fallbacks for rows in the risk
 register.
 
+- **RISK-4 / RISK-5 / T-RISK-1 — S1 single-VM fingerprint**
+  - **Status:** PASS; the fatal single-VM deterministic-execution risk is
+    retired for the stock Linux diskless proof path.
+  - **Check:** `checks.crucible.phase0.s1Fingerprint`.
+  - **Result:** `scenario=stock-linux-diskless-initramfs-workload`,
+    `boot_medium=initramfs`, `block_devices=0`, `vcpus=1`,
+    `cadence=100000000`, `horizon_icount=3200000000`,
+    `host_adversary=jitter-load`, `stop_request=plugin-requested-icount-pause`,
+    `extended_fingerprint_match=true`,
+    `aggregate_icount_stream_match=true`,
+    `cadence_fingerprint_match=true`,
+    `horizon_fingerprint_match=true`,
+    `plugin_exit_fingerprint_compared=true`,
+    `paused_migration_state_match=not_asserted`, `samples=32`,
+    `horizon_retired=3200000000`,
+    `horizon_extended_hash=9d1e61606ac54920`,
+    `horizon_register_hash=a732f3acdae34c85`,
+    `horizon_ram_hash=110f5442638e18ba`, `horizon_ram_bytes=268967936`,
+    `pause_retired=3200000005`, `pause_overshoot=5`,
+    `pause_extended_hash=5b766fd1f851292b`,
+    `pause_register_hash=d69c6c9e1a874f24`,
+    `pause_ram_hash=110f5442638e18ba`,
+    `device_event_capture=true`,
+    `device_event_scope=io_event_multiset`,
+    `device_event_device_name_scope=excluded`,
+    `device_event_value_scope=stores_only`,
+    `device_state_scope=io_event_multiset`,
+    `horizon_device_event_hash=1ba88ef5d7831ee0`,
+    `pause_device_event_hash=1ba88ef5d7831ee0`,
+    `migration_state_hash_a=not_recorded`,
+    `migration_state_hash_b=not_recorded`,
+    `migration_state_comparison=diagnostic_not_gated`,
+    `migration_state_scope=diagnostic_qemu_migration_stream_at_plugin_pause`,
+    `migration_state_retired=3200000005`,
+    `migration_normalization=icount_host_timer_offsets_zeroed_by_qemu_patch`,
+    `register_read_failures=0`,
+    `register_count_assertion=nonempty_single_vcpu`,
+    `block_device_assertion=launch_argv_scan`,
+    `mismatch_localization=component`, `first_differing_line=none`,
+    `first_differing_component=none`, `rr_as_diagnostic=not_used`,
+    `det29_phase0_device_state_scope=io_event_multiset`,
+    `det29_full_device_cadence_complete=false`, `s1_complete=true`,
+    `open_gap=paused_qemu_migration_state_timer_icount_hpet`.
+  - **Scope:** validates one stock Linux kernel plus diskless initramfs workload
+    launched twice with `-smp 1`, `-accel tcg,thread=single`,
+    `-icount shift=0,sleep=off,align=off`, no block devices, fixed RTC, fixed
+    seed material through `fw_cfg`, `virtio-rng`, and conservative boot entropy
+    controls. The second run adds scheduling jitter/load. The proof compares the
+    aggregate instruction stream, one nonempty vCPU register hash, RAM hash, and
+    IO-event multiset digest at each cadence point including the requested
+    `3200000000` horizon. It also compares the plugin-exit fingerprint at the
+    deterministic `3200000005` retired-instruction pause point. Raw QEMU
+    migration streams at that pause point are diagnostic-only because repeated
+    runs exposed nondeterministic serialized `timer/icount` bias and HPET/local
+    timer state after the guest-facing fingerprint had already matched. This
+    does not claim the full production DET-29 device-state digest at every
+    cadence point; that remains owned by the later QEMU-device fingerprint gates.
+    The QEMU RR-TCG icount idle-warp fix is load-bearing for this result.
+  - **Fallback:** raw paused migration byte identity is not adopted as the S1
+    pass signal; S1 is green for the scoped Phase-0 execution-fingerprint proof
+    path.
+
 - **RISK-15 / T-RISK-8 — TCG-exec coverage overhead**
   - **Status:** PASS; risk retired for the Phase-0 basic-block coverage
     extraction overhead spike in [GHC-7].
@@ -1082,15 +1144,15 @@ register.
   - **Status:** PASS; the Phase-0 risk-register maintenance rule and foundational
     blocker checklist rule are now enforced by a hermetic doc check.
   - **Check:** `checks.crucible.phase0.riskRegisterGate`.
-  - **Result:** `checked_risk_tasks=8`, `retired_decision_entries=8`,
-    `phase0_foundational_blockers_open=4`, `unexpected_checked_nonrisk_tasks=0`,
+  - **Result:** `checked_risk_tasks=9`, `retired_decision_entries=9`,
+    `phase0_foundational_blockers_open=3`, `unexpected_checked_nonrisk_tasks=0`,
     `phase1_plus_checked_tasks=0`.
   - **Scope:** validates the current RFC state: every checked Phase-0 risk spike
-    has a retirement record and a decision-register check name, the foundational
-    blockers S1/S2/S4/S3 are still visibly open, and no non-risk checklist item is
-    marked complete while those blockers remain open. The full RFC coverage/gate
-    catalog lint remains owned by `T-PLAN-1`; this check is the narrower
-    RISK-23/RISK-24 guard.
+    has a retirement record and a decision-register check name, the remaining
+    foundational blockers S2/S4/S3 are still visibly open, and no non-risk
+    checklist item is marked complete while those blockers remain open. The full
+    RFC coverage/gate catalog lint remains owned by `T-PLAN-1`; this check is
+    the narrower RISK-23/RISK-24 guard.
   - **Fallback:** none adopted.
 
 - **RISK-25 / T-RISK-17 — diskless multi-vCPU RR-TCG fingerprint**

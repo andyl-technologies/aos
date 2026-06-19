@@ -94,10 +94,93 @@ diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
 
      return timeslice;
  }
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -110,4 +110,14 @@ static void rr_wait_io_event(void)
+     while (all_cpu_threads_idle()) {
+         rr_stop_kick_timer();
++        if (icount_enabled()) {
++            /*
++             * Advancing the virtual clock from the host main-loop poll can make
++             * idle warps depend on host scheduling. Account the warp at the
++             * deterministic RR idle boundary instead, then run any virtual
++             * timers that became due before waiting.
++             */
++            icount_start_warp_timer();
++            icount_handle_deadline();
++        }
+         qemu_cond_wait_bql(first_cpu->halt_cond);
+     }
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -22,6 +22,7 @@
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
+ #include "migration/vmstate.h"
++#include "migration/qemu-file-types.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+ #include "sysemu/cpus.h"
+@@ -219,14 +219,50 @@ static const VMStateDescription icount_vmstate_timers = {
+     }
+ };
+-
++
++static int get_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field)
++{
++    int64_t *v = pv;
++
++    qemu_get_sbe64s(f, v);
++    return 0;
++}
++
++static int put_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field,
++                                                JSONWriter *vmdesc)
++{
++    int64_t zero = 0;
++    int64_t *v = pv;
++
++    if (icount_enabled()) {
++        qemu_put_sbe64s(f, &zero);
++    } else {
++        qemu_put_sbe64s(f, v);
++    }
++    return 0;
++}
++
++static const VMStateInfo vmstate_info_crucible_icount_host_timer_int64 = {
++    .name = "int64",
++    .get = get_crucible_icount_host_timer_int64,
++    .put = put_crucible_icount_host_timer_int64,
++};
++
+ static const VMStateDescription vmstate_timers = {
+     .name = "timer",
+     .version_id = 2,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+-        VMSTATE_INT64(cpu_ticks_offset, TimersState),
++        VMSTATE_SINGLE(cpu_ticks_offset, TimersState, 0,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_UNUSED(8),
+-        VMSTATE_INT64_V(cpu_clock_offset, TimersState, 2),
++        VMSTATE_SINGLE(cpu_clock_offset, TimersState, 2,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_END_OF_LIST()
+     },
+     .subsections = (const VMStateDescription * const []) {
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -933,6 +933,80 @@ QEMU_PLUGIN_API
+@@ -933,6 +933,92 @@ QEMU_PLUGIN_API
  int qemu_plugin_read_register(struct qemu_plugin_register *handle,
                                GByteArray *buf);
 
@@ -175,6 +258,18 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
 +QEMU_PLUGIN_API
 +uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
 +
++/**
++ * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
++ *
++ * This lets a fingerprint plugin request a stop after recording a fixed-horizon
++ * sample, so QMP can inspect or migrate the stable VM state where the stop
++ * takes effect.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_pause_vm(void);
++
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   * @element_size: size (in bytes) for one entry
@@ -194,9 +289,10 @@ diff --git a/include/sysemu/cpu-timers.h b/include/sysemu/cpu-timers.h
 diff --git a/plugins/api.c b/plugins/api.c
 --- a/plugins/api.c
 +++ b/plugins/api.c
-@@ -36,6 +36,8 @@
+@@ -36,6 +36,9 @@
  #include "qemu/timer.h"
 +#include "sysemu/cpu-timers.h"
++#include "sysemu/runstate.h"
  #include "tcg/tcg.h"
  #include "exec/exec-all.h"
 +#include "exec/cpu-common.h"
@@ -212,7 +308,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  #include "qemu/plugin-memory.h"
  #include "hw/boards.h"
  #else
-@@ -583,6 +586,109 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+@@ -583,6 +587,114 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
      return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
  }
 
@@ -316,6 +412,11 @@ diff --git a/plugins/api.c b/plugins/api.c
 +        *bytes_out = state.bytes;
 +    }
 +    return state.hash;
++}
++
++void qemu_plugin_crucible_pause_vm(void)
++{
++    (void)vm_stop(RUN_STATE_PAUSED);
 +}
 +#endif
 +

@@ -1287,6 +1287,45 @@ pre-production lookahead-budget risk for the modeled scheduler cost surface; the
 row remains listed as a regression risk until production scheduler liveness,
 real host-core perf measurement, and `gate:perf-bench` land.
 
+**RISK-4 / RISK-5** are retired by `T-RISK-1`:
+`checks.crucible.phase0.s1Fingerprint` booted the same stock Linux kernel plus
+diskless initramfs twice with no block devices, `-smp 1`,
+`-accel tcg,thread=single`, `-icount shift=0,sleep=off,align=off`, a fixed RTC,
+fixed seed material through `fw_cfg`, `virtio-rng`, and the conservative
+`nokaslr norandmaps random.trust_cpu=off` kernel arguments. The second run
+injected host scheduling jitter with CPU load. The plugin sampled the extended
+fingerprint every `100000000` retired guest instructions, requested a stop at
+the fixed `3200000000`-instruction horizon, and compared both the exact horizon
+cadence sample and the plugin-exit sample. The QMP-visible pause took effect
+deterministically at `3200000005` retired instructions in both runs. The run
+reported `extended_fingerprint_match=true`,
+`aggregate_icount_stream_match=true`, `cadence_fingerprint_match=true`,
+`horizon_fingerprint_match=true`, `plugin_exit_fingerprint_compared=true`,
+`paused_migration_state_match=not_asserted`, `horizon_retired=3200000000`,
+`pause_retired=3200000005`, `pause_overshoot=5`,
+`horizon_extended_hash=9d1e61606ac54920`,
+`horizon_register_hash=a732f3acdae34c85`,
+`horizon_ram_hash=110f5442638e18ba`, `horizon_ram_bytes=268967936`,
+`horizon_device_event_hash=1ba88ef5d7831ee0`,
+`device_state_scope=io_event_multiset`,
+`migration_state_comparison=diagnostic_not_gated`,
+`register_read_failures=0`, `register_count_assertion=nonempty_single_vcpu`,
+`block_device_assertion=launch_argv_scan`,
+`mismatch_localization=component`, `first_differing_line=none`,
+`first_differing_component=none`, `s1_complete=true`, and
+`open_gap=paused_qemu_migration_state_timer_icount_hpet`. Raw QEMU migration
+streams are logged only as diagnostics for this spike: repeated runs exposed a
+narrow paused-state serialization split around `timer/icount` bias and HPET/local
+timer state even when the execution-fingerprint sequence, RAM, registers, and
+IO-event multiset match. The proof path required the plugin `stop_at` pause hook
+and a QEMU RR-TCG fix that accounts icount idle warps at the deterministic RR
+idle boundary before waiting. This retires the fatal single-VM
+execution-fingerprint risk for the stock Linux diskless proof path; full
+production DET-29 device-state hashing at every cadence, byte-identical paused
+QEMU device migration state, block-device determinism, fat snapshot restore,
+broader DET-38 host coverage, and QEMU-version gating remain owned by later
+gates/spikes.
+
 **RISK-25** is retired by `T-RISK-17`:
 `checks.crucible.phase0.s11MultiVcpuFingerprint` booted the same stock Linux
 kernel plus diskless initramfs twice with `-smp 4`,
@@ -1325,11 +1364,12 @@ fallback for [G-10].
 
 **RISK-23 / RISK-24** are enforced as a Phase-0 checklist guard by `T-RISK-16`:
 `checks.crucible.phase0.riskRegisterGate` verifies that every completed Phase-0
-risk spike has a decision-register entry and a concrete check name, that the four
-foundational Phase-0 blockers remain unchecked until their own PASS/fallback
-evidence exists, and that no non-risk checklist item is marked complete while
-those blockers remain open. The run reported `checked_risk_tasks=8`,
-`retired_decision_entries=8`, `phase0_foundational_blockers_open=4`,
+risk spike has a decision-register entry and a concrete check name, that the
+remaining foundational Phase-0 blockers stay unchecked until their own
+PASS/fallback evidence exists, and that no non-risk checklist item is marked
+complete while those blockers remain open. The run reported
+`checked_risk_tasks=9`,
+`retired_decision_entries=9`, `phase0_foundational_blockers_open=3`,
 `unexpected_checked_nonrisk_tasks=0`, and `phase1_plus_checked_tasks=0`.
 
 ## 30.14 Summary
@@ -1373,7 +1413,7 @@ never tolerated). Results live in the decision register (31).
 > they validate ([G-5], [RISK-2], [RISK-3]). Each task is a throwaway measurement
 > that retires a risk and is recorded in [`31-decision-register.md`](31-decision-register.md).
 
-- [ ] **T-RISK-1** Run **S1** (Phase-0 blocker ★, highest priority): boot one
+- [x] **T-RISK-1** Run **S1** (Phase-0 blocker ★, highest priority): boot one
   unmodified guest twice under the §10.2 launch config with §4.6 elimination
   active, capture the execution-fingerprint sequence ([DET-29]) under adversarial
   host conditions, and diff; bisect any mismatch to the leaking entropy source
