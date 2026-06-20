@@ -84,6 +84,12 @@
     PAHOLE_VERSION = "131";
   };
 
+  # Functional symbols required by higher-level roles.
+  enabledFunctionalCommon = [
+    "NETFILTER_NETLINK_ACCT"
+    "NFT_COMPAT"
+  ];
+
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module
   # signing, whose default key generation is incompatible with a reproducible
   # public base; the memory symbols expose kernel memory. The wireless stack is
@@ -125,6 +131,7 @@
 
   enabled =
     enabledCommon
+    ++ enabledFunctionalCommon
     ++ lib.optionals isX86 enabledX86
     ++ lib.optionals isAarch64 enabledAarch64;
 

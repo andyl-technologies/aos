@@ -14,6 +14,7 @@
   util-linux,
   kmod,
   coreutils,
+  writeShellScriptBin,
 }: let
   pkgs = {
     inherit
@@ -30,6 +31,7 @@
       util-linux
       kmod
       coreutils
+      writeShellScriptBin
       ;
   };
   common = import ./_k3s-common.nix {inherit lib pkgs;};
