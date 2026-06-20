@@ -11,7 +11,7 @@
 ##!   2. `/bin/<name>` symlinks into those closures so systemd units and
 ##!      ExecStart paths can reference short names when needed.
 ##!   3. The active kernel's module tree at /lib/modules/<ver>/.
-##!   4. `/etc/modules-load.d/initrd.conf` listing `aos.boot.initrd.modules`.
+##!   4. `/etc/modules-load.d/initrd.conf` listing `aos.boot.initrd.loadModules`.
 ##!   5. Empty `/etc/fstab` (root device comes from the kernel cmdline
 ##!      `root=` parameter; the fstab generator processes it).
 ##!   6. Minimal `/etc/{os-release,initrd-release,passwd,group,shadow}`.
@@ -27,7 +27,7 @@
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library
 ##!   kernel        — kernel derivation (provides /lib/modules/<ver>/)
-##!   kernelModules — list of module names for /etc/modules-load.d/initrd.conf
+##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
 ##!   initrdNetworkDir — derivation whose output is a directory of rendered
@@ -40,7 +40,7 @@
   pkgs,
   lib,
   kernel,
-  kernelModules,
+  loadModules,
   initrdUnits,
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
@@ -356,7 +356,7 @@
     '')
     initrdGenerators;
 
-  modulesLoadConf = lib.concatStringsSep "\n" kernelModules;
+  modulesLoadConf = lib.concatStringsSep "\n" loadModules;
 
   interactivePath = lib.concatStringsSep ":" (
     (map (p: "${p}/bin") initrdPackages)
