@@ -14,6 +14,7 @@
   util-linux,
   kmod,
   coreutils,
+  writeShellScriptBin,
 }: let
   mkK3sExposePackage = import ./_k3s-expose-package.nix {
     inherit
@@ -32,6 +33,7 @@
       util-linux
       kmod
       coreutils
+      writeShellScriptBin
       ;
   };
 in
