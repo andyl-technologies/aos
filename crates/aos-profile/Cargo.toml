@@ -1,0 +1,13 @@
+[package]
+name = "aos-profile"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aos-core = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
