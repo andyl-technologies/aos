@@ -10,6 +10,10 @@
 //! Module map: the crate root currently reserves the host-QEMU boundary; future
 //! modules will split launch construction, QMP, shared-memory mapping, and the
 //! engine backend adapter.
+//!
+//! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
+//! details stay private; public callers use a safe host-driver API that
+//! validates process and mapping invariants before touching raw state.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

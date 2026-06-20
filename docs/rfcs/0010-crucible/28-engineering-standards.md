@@ -553,7 +553,7 @@ the conditions under which feature code can be trusted to stay deterministic
   un-annotated allow is itself a finding; treat the lint config as versioned spec
   surface that is never weakened to pass. — satisfies [STD-13], [STD-14],
   [STD-15]; spec §2.
-- [ ] **T-STD-7** Apply the `unsafe` fences: `#![forbid(unsafe_code)]` on every
+- [x] **T-STD-7** Apply the `unsafe` fences: `#![forbid(unsafe_code)]` on every
   crate except the enumerated FFI/mmap/atomics crates (per the crate table),
   with the safe-wrapper requirement and `// SAFETY:` on every block. — satisfies
   [STD-16], [STD-17], [STD-18]; spec §3.
