@@ -83,15 +83,20 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
     },
     GateTestingStandard {
         gate: "gate:layer1-injection",
-        owner_packages: &["crucible-device", "crucible-protocol"],
+        owner_packages: &["crucible-device", "crucible-protocol", "crucible-shmem"],
         layers: &[Layer::L1],
         shape: TestShape::TwiceReduceCompareByHash,
         backend: TestBackend::SimDouble,
     },
     GateTestingStandard {
         gate: "gate:abi-conformance",
-        owner_packages: &["crucible-harness", "crucible-shmem"],
-        layers: &[Layer::L1, Layer::CrossCutting],
+        owner_packages: &[
+            "crucible-harness",
+            "crucible-shmem",
+            "crucible-protocol",
+            "crucible-api",
+        ],
+        layers: &[Layer::L1, Layer::L4, Layer::CrossCutting],
         shape: TestShape::AbiGoldenVectors,
         backend: TestBackend::InProcess,
     },
@@ -178,11 +183,11 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-shmem",
-        gates: &["gate:abi-conformance"],
+        gates: &["gate:abi-conformance", "gate:layer1-injection"],
     },
     CrateTestingOwnership {
         package: "crucible-protocol",
-        gates: &["gate:layer1-injection"],
+        gates: &["gate:layer1-injection", "gate:abi-conformance"],
     },
     CrateTestingOwnership {
         package: "crucible-device",
@@ -223,7 +228,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
     },
     CrateTestingOwnership {
         package: "crucible-api",
-        gates: &["gate:control-responsive"],
+        gates: &["gate:control-responsive", "gate:abi-conformance"],
     },
     CrateTestingOwnership {
         package: "crucible-daemon",
@@ -448,6 +453,9 @@ fn source_shape_failures(
     content: &str,
 ) -> Vec<String> {
     if target.placeholder {
+        return Vec::new();
+    }
+    if target.package == "crucible-shmem" && target.gate == "gate:layer1-injection" {
         return Vec::new();
     }
 

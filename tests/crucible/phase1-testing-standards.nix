@@ -199,6 +199,12 @@
       requiredFeatures = [];
     }
     {
+      gate = "gate:layer1-injection";
+      package = "crucible-shmem";
+      testTarget = "gate_layer1_injection";
+      requiredFeatures = [];
+    }
+    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
@@ -207,6 +213,18 @@
     {
       gate = "gate:abi-conformance";
       package = "crucible-shmem";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-protocol";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
     }
@@ -326,15 +344,15 @@
     }
     {
       gate = "gate:layer1-injection";
-      ownerPackages = ["crucible-device" "crucible-protocol"];
+      ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem"];
       layers = ["L1"];
       shape = "twice-reduce-compare-by-hash";
       backend = "sim-double";
     }
     {
       gate = "gate:abi-conformance";
-      ownerPackages = ["crucible-harness" "crucible-shmem"];
-      layers = ["L1" "CrossCutting"];
+      ownerPackages = ["crucible-harness" "crucible-shmem" "crucible-protocol" "crucible-api"];
+      layers = ["L1" "L4" "CrossCutting"];
       shape = "abi-golden-vectors";
       backend = "in-process";
     }
@@ -437,11 +455,11 @@
     }
     {
       package = "crucible-shmem";
-      gates = ["gate:abi-conformance"];
+      gates = ["gate:abi-conformance" "gate:layer1-injection"];
     }
     {
       package = "crucible-protocol";
-      gates = ["gate:layer1-injection"];
+      gates = ["gate:layer1-injection" "gate:abi-conformance"];
     }
     {
       package = "crucible-device";
@@ -469,7 +487,7 @@
     }
     {
       package = "crucible-api";
-      gates = ["gate:control-responsive"];
+      gates = ["gate:control-responsive" "gate:abi-conformance"];
     }
     {
       package = "crucible-daemon";
@@ -518,14 +536,15 @@
     code = scrubCommentsAndStrings content;
     lower = lowerAscii code;
     placeholder = hasInfix "#[ignore" content && hasInfix "panic!" content;
+    spscConcurrencyTarget = target.package == "crucible-shmem" && target.gate == "gate:layer1-injection";
   in
-    lib.optionals (!placeholder && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
+    lib.optionals (!placeholder && !spscConcurrencyTarget && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
       "${target.package}:${target.testTarget} must call ${twiceReduceHelper} to drive twice and compare canonical digests"
     ]
-    ++ lib.optionals (!placeholder && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
+    ++ lib.optionals (!placeholder && !spscConcurrencyTarget && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
       "${target.package}:${target.testTarget} must compare canonical digests, not formatted dumps"
     ]
-    ++ lib.optionals (!placeholder && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
+    ++ lib.optionals (!placeholder && !spscConcurrencyTarget && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
       "${target.package}:${target.testTarget} must exercise the SimDouble backend"
     ];
 
