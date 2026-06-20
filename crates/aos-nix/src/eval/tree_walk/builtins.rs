@@ -1,5 +1,25 @@
 use super::*;
 
+const GET_FLAKE_SOURCE_PREFIX: &[u8] = br#"
+let
+  sourceInfo = builtins.fetchTree "#;
+const GET_FLAKE_SOURCE_SUFFIX: &[u8] = br#";
+  flake = import (sourceInfo.outPath + "/flake.nix");
+  declaredInputs = flake.inputs or {};
+  inputs =
+    if builtins.length (builtins.attrNames declaredInputs) == 0
+    then {}
+    else builtins.throw "aos-nix builtins.getFlake currently supports only flakes without inputs";
+  outputs = flake.outputs (inputs // { inherit self; });
+  metadata = sourceInfo // {
+    _type = "flake";
+    inherit inputs outputs sourceInfo;
+    outPath = sourceInfo.outPath;
+  };
+  self = outputs // metadata;
+in self
+"#;
+
 impl BuiltinExecutor for TreeWalk {
     type Value = crate::value::Value;
     type Error = TreeWalkError;
@@ -675,8 +695,95 @@ impl TreeWalk {
         let value = self.force_demanded_value(argument, argument_span, value)?;
         let flake_ref =
             self.context_free_string_bytes(argument, argument_span, value, "getFlake")?;
-        let _ = Self::parse_flake_ref_attrs(argument, argument_span, &flake_ref)?;
+        let attrs = Self::parse_flake_ref_attrs(argument, argument_span, &flake_ref)?;
+        let flake_ref = self.flake_ref_attrs_to_string(argument, argument_span, &attrs)?;
+        let source = Self::get_flake_source(argument, argument_span, &flake_ref)?;
 
-        unsupported_primop(call)
+        self.load_and_eval_import_bytes(
+            call.id,
+            call.span,
+            argument,
+            argument_span,
+            b"<builtins.getFlake>",
+            b"/",
+            &source,
+            ImportGlobalScope::Fresh,
+        )
+    }
+
+    fn get_flake_source(id: IrId, span: Span, flake_ref: &[u8]) -> Result<Vec<u8>, TreeWalkError> {
+        let literal = Self::nix_double_quoted_string(id, span, flake_ref)?;
+        let len = literal
+            .len()
+            .checked_add(GET_FLAKE_SOURCE_PREFIX.len())
+            .and_then(|len| len.checked_add(GET_FLAKE_SOURCE_SUFFIX.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut source = Vec::new();
+        source.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        source.extend_from_slice(GET_FLAKE_SOURCE_PREFIX);
+        source.extend_from_slice(&literal);
+        source.extend_from_slice(GET_FLAKE_SOURCE_SUFFIX);
+        Ok(source)
+    }
+
+    fn nix_double_quoted_string(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let mut out = Vec::new();
+        let capacity = bytes
+            .len()
+            .checked_mul(2)
+            .and_then(|len| len.checked_add(2))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        out.try_reserve_exact(capacity).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len: capacity },
+                span,
+            )
+        })?;
+        out.push(b'"');
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => out.extend_from_slice(br#"\""#),
+                b'\\' => out.extend_from_slice(br#"\\"#),
+                b'\n' => out.extend_from_slice(br#"\n"#),
+                b'\r' => out.extend_from_slice(br#"\r"#),
+                b'\t' => out.extend_from_slice(br#"\t"#),
+                b'$' if bytes.get(index + 1) == Some(&b'{') => out.extend_from_slice(br#"\$"#),
+                byte if byte.is_ascii_control() => {
+                    return Err(Self::flake_ref_error(
+                        id,
+                        span,
+                        bytes,
+                        "flake reference cannot be embedded in getFlake source",
+                    ));
+                }
+                byte => out.push(byte),
+            }
+            index += 1;
+        }
+        out.push(b'"');
+        Ok(out)
     }
 }

@@ -147,7 +147,7 @@ const PINNED_NIX_2_24_12_FLAKES_BUILTIN_NAMES: &[&str] = &[
     "zipAttrsWith",
 ];
 
-const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &["fetchMercurial", "getFlake"];
+const PRESENT_UNIMPLEMENTED_BUILTIN_STUBS: &[&str] = &["fetchMercurial"];
 
 const VERSION_GATED_BUILTIN_NAMES: &[&str] = &[
     "addDrvOutputDependencies",
@@ -6766,16 +6766,10 @@ fn present_unimplemented_builtin_stubs_select_as_lambdas() {
 
 #[test]
 fn present_unimplemented_builtin_stubs_error_when_called() {
-    for (source, name) in [
-        (
-            r#"builtins.fetchMercurial "https://example.invalid/repo""#,
-            b"fetchMercurial".as_slice(),
-        ),
-        (
-            r#"builtins.getFlake "github:NixOS/nixpkgs""#,
-            b"getFlake".as_slice(),
-        ),
-    ] {
+    for (source, name) in [(
+        r#"builtins.fetchMercurial "https://example.invalid/repo""#,
+        b"fetchMercurial".as_slice(),
+    )] {
         let ir = lower(source);
         let error = eval_whnf_owned(&ir).expect_err("unimplemented builtin stub errors");
 
@@ -6790,7 +6784,7 @@ fn present_unimplemented_builtin_stubs_error_when_called() {
 }
 
 #[test]
-fn get_flake_stub_preflights_argument_before_fallback() {
+fn get_flake_preflights_argument_before_fetching() {
     let error =
         eval_whnf_owned(&lower("builtins.getFlake 1")).expect_err("getFlake requires string");
     assert!(matches!(
@@ -6821,13 +6815,164 @@ fn get_flake_stub_preflights_argument_before_fallback() {
         .expect_err("getFlake validates flake-reference syntax");
     assert!(matches!(error.kind(), TreeWalkErrorKind::FlakeRef { .. }));
 
-    let ir = lower(r#"let get = builtins.getFlake; in get "nixpkgs""#);
-    let error = eval_whnf_owned(&ir).expect_err("valid first-class getFlake still falls back");
+    let error = eval_whnf_owned(&lower(r#"let get = builtins.getFlake; in get "nixpkgs""#))
+        .expect_err("indirect getFlake refs are not resolved yet");
     assert!(matches!(
         error.kind(),
-        TreeWalkErrorKind::UnsupportedPrimOp { symbol, .. }
-            if symbol == symbol_for(&ir, b"getFlake")
+        TreeWalkErrorKind::FetchTree { message, .. }
+            if message == "unsupported fetchTree string flake reference type"
     ));
+}
+
+#[test]
+fn get_flake_evaluates_local_inputless_flakes() {
+    let root = unique_temp_dir("get-flake-local");
+    fs::write(
+        root.join("flake.nix"),
+        br#"
+            {
+              outputs = { self }: {
+                answer = 42;
+                foo = "foo";
+                fromSelfFoo = self.foo;
+                fromSelfOutPath = self.outPath;
+                narHash = "output-nar-hash";
+                nested.value = "ok";
+                outPath = "output-out-path";
+                sourceInfo = "output-source-info";
+              };
+            }
+            "#,
+    )
+    .expect("flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-local-store");
+    let options = TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+        .expect("temporary store root configures");
+    let flake_ref = nix_string_literal(&path_source(&root));
+
+    let source = format!(
+        r#"
+                let f = builtins.getFlake {flake_ref};
+                in {{
+                  answer = f.answer;
+                  flakeType = f._type;
+                  fromSelfFoo = f.fromSelfFoo;
+                  inputs = builtins.attrNames f.inputs;
+                  nested = f.nested.value;
+                  outputNarHash = f.outputs.narHash;
+                  outputNames = builtins.attrNames f.outputs;
+                  outputOutPath = f.outputs.outPath;
+                  outputSourceInfo = f.outputs.sourceInfo;
+                  topNames = builtins.attrNames f;
+                  flakeOutPath = f.outPath;
+                  flakeNarHash = f.narHash;
+                  selfOutPath = f.fromSelfOutPath;
+                  sourceOutPath = f.sourceInfo.outPath;
+                }}
+                "#
+    );
+    let json = eval_json_bytes_with_options(&source, options);
+    let value: serde_json::Value = serde_json::from_slice(&json).expect("flake JSON parses");
+
+    assert_eq!(value["answer"], 42);
+    assert_eq!(value["flakeType"], "flake");
+    assert_eq!(value["fromSelfFoo"], "foo");
+    assert_eq!(value["inputs"], serde_json::json!([]));
+    assert_eq!(value["nested"], "ok");
+    assert_eq!(value["outputNarHash"], "output-nar-hash");
+    assert_eq!(value["outputOutPath"], "output-out-path");
+    assert_eq!(value["outputSourceInfo"], "output-source-info");
+    assert_eq!(
+        value["outputNames"],
+        serde_json::json!([
+            "answer",
+            "foo",
+            "fromSelfFoo",
+            "fromSelfOutPath",
+            "narHash",
+            "nested",
+            "outPath",
+            "sourceInfo"
+        ])
+    );
+    assert_eq!(
+        value["topNames"],
+        serde_json::json!([
+            "_type",
+            "answer",
+            "foo",
+            "fromSelfFoo",
+            "fromSelfOutPath",
+            "inputs",
+            "lastModified",
+            "lastModifiedDate",
+            "narHash",
+            "nested",
+            "outPath",
+            "outputs",
+            "sourceInfo"
+        ])
+    );
+    let out_path = value["flakeOutPath"]
+        .as_str()
+        .expect("flakeOutPath is a string");
+    assert!(out_path.starts_with(path_source(&store_dir).as_str()));
+    assert_eq!(value["selfOutPath"], out_path);
+    assert_eq!(value["sourceOutPath"], out_path);
+    assert!(
+        value["flakeNarHash"]
+            .as_str()
+            .expect("flakeNarHash is a string")
+            .starts_with("sha256-")
+    );
+
+    fs::remove_dir_all(root).expect("flake temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
+}
+
+#[test]
+fn get_flake_obeys_fetch_tree_locking_and_rejects_declared_inputs() {
+    let root = unique_temp_dir("get-flake-locked");
+    fs::write(
+        root.join("flake.nix"),
+        br#"
+            {
+              inputs.nixpkgs.url = "github:NixOS/nixpkgs";
+              outputs = { self }: { answer = 42; };
+            }
+            "#,
+    )
+    .expect("flake.nix writes");
+    let store_dir = unique_temp_dir("get-flake-locked-store");
+    let flake_ref = nix_string_literal(&format!("path:{}", path_source(&root)));
+    let pure_error = eval_whnf_owned_with_options(
+        &lower(&format!("builtins.getFlake {flake_ref}")),
+        TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+    )
+    .expect_err("pure getFlake path refs require a narHash");
+    assert!(matches!(
+        pure_error.kind(),
+        TreeWalkErrorKind::FetchTreeLockedInputRequired {
+            mode: EvalMode::Pure,
+            ..
+        }
+    ));
+
+    let input_error = eval_whnf_owned_with_options(
+        &lower(&format!(
+            "builtins.attrNames (builtins.getFlake {flake_ref}).inputs"
+        )),
+        TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+            .expect("temporary store root configures"),
+    )
+    .expect_err("declared inputs are not resolved yet");
+    assert!(matches!(
+        input_error.kind(),
+        TreeWalkErrorKind::Thrown { .. }
+    ));
+
+    fs::remove_dir_all(root).expect("flake temp directory removes");
+    fs::remove_dir_all(store_dir).expect("store temp directory removes");
 }
 
 #[test]
