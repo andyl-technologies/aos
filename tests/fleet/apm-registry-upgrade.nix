@@ -130,7 +130,12 @@ in {
       # The Nix DB must be seeded before a check-validity failure is
       # meaningful (an absent DB also fails the check).
       target.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
-      target.fail("${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'")
+      # The miss is intentional; keep nix-store's expected error off the
+      # serial console so unexpected warnings remain visible.
+      target.fail(
+          "${pkgs.nix}/bin/nix-store --check-validity '${server2Top}' "
+          "> /tmp/server2-validity-precheck.out 2>&1"
+      )
 
       # gen-2-only surfaces absent; gen-1 baselines (same as
       # apm-system-upgrade.nix).
@@ -176,7 +181,7 @@ in {
           export NIX_REMOTE=""
           export NIX_CONF_DIR=/tmp/nix-conf
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'
@@ -196,6 +201,7 @@ in {
             --license MIT \\
             --maintainer test \\
             --sysroot \\
+            --no-ca \\
             --registry sysreg \\
             --no-commit
           ${pkgs.aos}/bin/apr verify --registry sysreg
