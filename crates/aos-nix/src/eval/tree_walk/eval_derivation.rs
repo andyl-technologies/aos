@@ -1,0 +1,960 @@
+//! Evaluation of `derivation`/`derivationStrict` and derivation attribute handling.
+
+use super::*;
+
+impl TreeWalk {
+    pub(super) fn invalid_payload(
+        &self,
+        id: IrId,
+        node: &IrNode,
+        expected: &'static str,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::InvalidPayload {
+                id,
+                kind: node.kind,
+                expected,
+            },
+            node.span,
+        )
+    }
+
+    pub(super) fn clone_attr_entries(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let entries = attrs.entries_by_symbol();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: entries.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(entries);
+        Ok(cloned)
+    }
+
+    pub(super) fn clone_attr_entries_source_order(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend(attrs.iter_source_order().copied());
+        Ok(cloned)
+    }
+
+    pub(super) fn clone_attr_entries_lexicographic(
+        id: IrId,
+        span: Span,
+        attrs: &FlatAttrs,
+    ) -> Result<Vec<AttrEntry>, TreeWalkError> {
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(attrs.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Attr {
+                    id,
+                    source: AttrError::AllocationFailed {
+                        entries: attrs.len(),
+                    },
+                },
+                span,
+            )
+        })?;
+        cloned.extend(attrs.iter_lexicographic().copied());
+        Ok(cloned)
+    }
+
+    pub(super) fn clone_list_elements(
+        id: IrId,
+        span: Span,
+        list: &NixList,
+    ) -> Result<Vec<Value>, TreeWalkError> {
+        let elements = list.as_slice();
+        let mut cloned = Vec::new();
+        cloned.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        cloned.extend_from_slice(elements);
+        Ok(cloned)
+    }
+
+    pub(super) fn eval_derivation_wrapper_lambda(
+        &mut self,
+        id: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        self.load_and_eval_import_bytes(
+            id,
+            span,
+            id,
+            span,
+            DERIVATION_INTERNAL_PATH,
+            b"/",
+            DERIVATION_INTERNAL_SOURCE.as_bytes(),
+            ImportGlobalScope::Fresh,
+        )
+    }
+
+    pub(super) fn eval_derivation_wrapper_call(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let wrapper = self.eval_derivation_wrapper_lambda(id, span)?;
+        self.apply_lambda_value(id, span, id, wrapper, span, argument, argument_value)
+    }
+
+    pub(super) fn eval_derivation_strict(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+    ) -> Result<Value, TreeWalkError> {
+        let IrData::Node(argument) = node.data else {
+            return Err(self.invalid_payload(id, node, "derivationStrict argument payload"));
+        };
+        let argument_span = self.node(argument)?.span;
+        let value = self.eval_node(argument)?;
+        self.eval_derivation_strict_value(id, node.span, argument, argument_span, value)
+    }
+
+    pub(super) fn eval_derivation_strict_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        argument: IrId,
+        argument_span: Span,
+        value: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_demanded_value(argument, argument_span, value)?;
+        if value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument,
+                    expected: "attrs",
+                    actual: value.tag(),
+                },
+                argument_span,
+            ));
+        }
+        let entries = {
+            let attrs = self.heap.get_attrs(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: argument,
+                        source,
+                    },
+                    argument_span,
+                )
+            })?;
+            Self::clone_attr_entries_lexicographic(argument, argument_span, attrs)?
+        };
+
+        let mut derivation = nix_compat::derivation::Derivation::default();
+        let mut context = StringContext::empty();
+        let name = self.derivation_name_value(id, span, argument, argument_span, &entries)?;
+        let mut builder = None;
+        let mut system = None;
+        let mut outputs_seen = false;
+        let structured_attrs =
+            self.derivation_structured_attrs_value(id, span, argument, argument_span, &entries)?;
+        let structured_attrs_enabled = structured_attrs == Some(true);
+        let mut structured_json = StructuredAttrsJson::new();
+        if !structured_attrs_enabled {
+            derivation
+                .environment
+                .insert("name".to_owned(), name.clone().into());
+        }
+        let ignore_nulls =
+            self.derivation_ignore_nulls_value(id, span, argument, argument_span, &entries)?;
+        let mut output_hash = None;
+        let mut output_hash_algo = None;
+        let mut output_hash_mode = None;
+        let mut content_addressed = false;
+        let mut impure = false;
+
+        for entry in entries {
+            let key = {
+                let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol {
+                            id: argument,
+                            symbol: entry.key,
+                        },
+                        argument_span,
+                    )
+                })?;
+                Self::copy_bytes_for_node(argument, argument_span, key)?
+            };
+
+            let value = self.force_value(argument, argument_span, entry.value)?;
+            if key == NAME_ATTR {
+                if structured_attrs_enabled {
+                    Self::write_structured_json_string_field(
+                        id,
+                        span,
+                        &mut structured_json,
+                        &key,
+                        &name,
+                    )?;
+                }
+                continue;
+            }
+            if key == IGNORE_NULLS_ATTR
+                || (structured_attrs_enabled && key == STRUCTURED_ATTRS_ATTR)
+            {
+                continue;
+            }
+            if ignore_nulls && value.tag() == ValueTag::Null {
+                continue;
+            }
+            if key == CONTENT_ADDRESSED_ATTR {
+                if self.expect_bool(id, value, span)? {
+                    content_addressed = true;
+                    continue;
+                }
+            }
+            if key == IMPURE_ATTR {
+                if self.expect_bool(id, value, span)? {
+                    impure = true;
+                    continue;
+                }
+            }
+
+            if key == ARGS_ATTR {
+                let (arguments, value_context) =
+                    self.derivation_args_value(id, span, argument, argument_span, value)?;
+                context = context.union(&value_context).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
+                derivation.arguments = arguments;
+                continue;
+            }
+            if structured_attrs_enabled && key == OUTPUTS_ATTR {
+                let (outputs, output_names, value_context) =
+                    self.derivation_outputs_list_value(id, span, argument, argument_span, value)?;
+                context = context.union(&value_context).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                })?;
+                Self::write_structured_json_string_list_field(
+                    id,
+                    span,
+                    &mut structured_json,
+                    &key,
+                    &output_names,
+                )?;
+                outputs_seen = true;
+                derivation.outputs = outputs;
+                continue;
+            }
+            if structured_attrs_enabled {
+                match key.as_slice() {
+                    BUILDER_ATTR => {
+                        let (bytes, value_context) =
+                            self.derivation_string_value(id, span, argument, argument_span, value)?;
+                        context = context.union(&value_context).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+                        })?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            &mut structured_json,
+                            &key,
+                            &env_value,
+                        )?;
+                        builder = Some(env_value);
+                    }
+                    SYSTEM_ATTR => {
+                        let bytes = self.derivation_context_free_string_value(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            value,
+                        )?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            &mut structured_json,
+                            &key,
+                            &env_value,
+                        )?;
+                        system = Some(env_value);
+                    }
+                    OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
+                        let bytes = self.derivation_context_free_string_value(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            value,
+                        )?;
+                        let env_value =
+                            Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                        Self::write_structured_json_string_field(
+                            id,
+                            span,
+                            &mut structured_json,
+                            &key,
+                            &env_value,
+                        )?;
+                        match key.as_slice() {
+                            OUTPUT_HASH_ATTR => output_hash = Some(env_value),
+                            OUTPUT_HASH_ALGO_ATTR => output_hash_algo = Some(env_value),
+                            OUTPUT_HASH_MODE_ATTR => output_hash_mode = Some(env_value),
+                            _ => {}
+                        }
+                    }
+                    _ => {
+                        self.write_structured_json_value_field(
+                            id,
+                            span,
+                            argument,
+                            argument_span,
+                            &mut structured_json,
+                            &key,
+                            value,
+                            &mut context,
+                        )?;
+                    }
+                }
+                continue;
+            }
+
+            let rendered =
+                self.derivation_to_string_value(id, span, argument, argument_span, value)?;
+            let (bytes, value_context) = rendered.into_parts();
+            context = context.union(&value_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+
+            let env_key = Self::derivation_utf8_string(id, span, "environment name", &key)?;
+            match key.as_slice() {
+                BUILDER_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                    derivation
+                        .environment
+                        .insert(env_key, env_value.clone().into());
+                    builder = Some(env_value);
+                }
+                SYSTEM_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                    derivation
+                        .environment
+                        .insert(env_key, env_value.clone().into());
+                    system = Some(env_value);
+                }
+                OUTPUTS_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                    derivation
+                        .environment
+                        .insert(env_key, env_value.clone().into());
+                    outputs_seen = true;
+                    derivation.outputs =
+                        Self::derivation_outputs_value(id, span, &bytes, &env_value)?;
+                }
+                OUTPUT_HASH_ATTR | OUTPUT_HASH_ALGO_ATTR | OUTPUT_HASH_MODE_ATTR => {
+                    let env_value =
+                        Self::derivation_utf8_string(id, span, "environment value", &bytes)?;
+                    if key.as_slice() == OUTPUT_HASH_ATTR {
+                        output_hash = Some(env_value.clone());
+                    } else if key.as_slice() == OUTPUT_HASH_ALGO_ATTR {
+                        output_hash_algo = Some(env_value.clone());
+                    } else if key.as_slice() == OUTPUT_HASH_MODE_ATTR {
+                        output_hash_mode = Some(env_value.clone());
+                    }
+                    derivation.environment.insert(env_key, env_value.into());
+                }
+                _ => {
+                    derivation.environment.insert(env_key, bytes.into());
+                }
+            }
+        }
+
+        derivation.builder =
+            builder.ok_or_else(|| self.missing_derivation_strict_attr(id, span, BUILDER_ATTR))?;
+        derivation.system =
+            system.ok_or_else(|| self.missing_derivation_strict_attr(id, span, SYSTEM_ATTR))?;
+        if !outputs_seen {
+            derivation
+                .outputs
+                .insert("out".to_owned(), nix_compat::derivation::Output::default());
+        }
+        Self::validate_derivation_strict_name_suffix(id, span, &name)?;
+        Self::configure_derivation_fixed_output(
+            id,
+            span,
+            &mut derivation,
+            output_hash.as_deref(),
+            output_hash_algo.as_deref(),
+            output_hash_mode.as_deref(),
+        )?;
+        let deferred_output_resolution = if output_hash.is_none() {
+            if content_addressed && impure {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: "derivation cannot be both content-addressed and impure"
+                            .to_owned(),
+                    },
+                    span,
+                ));
+            }
+            if content_addressed {
+                Some(DerivationOutputResolution::FloatingCa(
+                    Self::configure_derivation_floating_ca_output(
+                        id,
+                        span,
+                        output_hash_algo.as_deref(),
+                        output_hash_mode.as_deref(),
+                    )?,
+                ))
+            } else if impure {
+                Some(DerivationOutputResolution::Impure(
+                    Self::configure_derivation_floating_ca_output(
+                        id,
+                        span,
+                        output_hash_algo.as_deref(),
+                        output_hash_mode.as_deref(),
+                    )?,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        for output_name in derivation.outputs.keys() {
+            let env_value = if deferred_output_resolution.is_some() {
+                Self::derivation_output_placeholder(id, span, output_name.as_bytes())?
+            } else {
+                Vec::new()
+            };
+            derivation
+                .environment
+                .insert(output_name.clone(), env_value.into());
+        }
+        if structured_attrs_enabled {
+            derivation
+                .environment
+                .insert("__json".to_owned(), structured_json.finish().into());
+        }
+        self.add_derivation_context_inputs(id, span, &mut derivation, &context)?;
+
+        self.validate_derivation_strict_before_paths(id, span, &derivation)?;
+        let input_hashes = self.known_derivation_hashes_for_inputs(id, span, &derivation)?;
+        let (known_hash, drv_path, output_resolution) =
+            if let Some(output_resolution) = deferred_output_resolution {
+                match output_resolution {
+                    DerivationOutputResolution::FloatingCa(floating_ca_output) => {
+                        let known_hash = self.hash_floating_ca_derivation_modulo_with_inputs(
+                            &derivation,
+                            floating_ca_output,
+                            &input_hashes.hashes,
+                        );
+                        let drv_path = self.calculate_floating_ca_derivation_path(
+                            id,
+                            span,
+                            &name,
+                            &derivation,
+                            floating_ca_output,
+                        )?;
+                        (
+                            known_hash,
+                            drv_path,
+                            DerivationOutputResolution::FloatingCa(floating_ca_output),
+                        )
+                    }
+                    DerivationOutputResolution::Impure(impure_output) => {
+                        let known_hash = Self::impure_derivation_hash_modulo();
+                        let drv_path = self.calculate_impure_derivation_path(
+                            id,
+                            span,
+                            &name,
+                            &derivation,
+                            impure_output,
+                        )?;
+                        (
+                            known_hash,
+                            drv_path,
+                            DerivationOutputResolution::Impure(impure_output),
+                        )
+                    }
+                    DerivationOutputResolution::StaticPaths
+                    | DerivationOutputResolution::DeferredPlaceholders => unreachable!(
+                        "deferred derivation output setup only produces floating or impure outputs"
+                    ),
+                }
+            } else if input_hashes.has_deferred && !Self::derivation_has_fixed_output(&derivation) {
+                let known_hash = self.hash_derivation_modulo_with_inputs(
+                    id,
+                    span,
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
+                (
+                    known_hash,
+                    drv_path,
+                    DerivationOutputResolution::DeferredPlaceholders,
+                )
+            } else {
+                let hash = self.hash_derivation_modulo_with_inputs(
+                    id,
+                    span,
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                self.calculate_output_paths(id, span, &name, &mut derivation, &hash)?;
+                let known_hash = self.hash_derivation_modulo_with_inputs(
+                    id,
+                    span,
+                    &derivation,
+                    &input_hashes.hashes,
+                )?;
+                let drv_path = self.calculate_derivation_path(id, span, &name, &derivation)?;
+                (
+                    known_hash,
+                    drv_path,
+                    DerivationOutputResolution::StaticPaths,
+                )
+            };
+        self.remember_derivation(
+            id,
+            span,
+            drv_path.clone(),
+            &derivation,
+            known_hash,
+            output_resolution,
+        );
+        self.alloc_derivation_strict_result(id, span, &derivation, &drv_path, output_resolution)
+    }
+
+    pub(super) fn derivation_name_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<String, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != NAME_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            if value.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: attrs_id,
+                        expected: "string",
+                        actual: value.tag(),
+                    },
+                    attrs_span,
+                ));
+            }
+            let string = self.heap.get_string(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: attrs_id,
+                        source,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if string.has_context() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::StringContextNotAllowed {
+                        id: attrs_id,
+                        op: "derivationStrict",
+                    },
+                    attrs_span,
+                ));
+            }
+            let bytes = Self::copy_bytes_for_node(attrs_id, attrs_span, string.bytes())?;
+            let name = Self::derivation_utf8_string(id, span, "derivation name", &bytes)?;
+            Self::validate_derivation_strict_name(id, span, &name)?;
+            return Ok(name);
+        }
+
+        Err(self.missing_derivation_strict_attr(id, span, NAME_ATTR))
+    }
+
+    pub(super) fn validate_derivation_strict_name(
+        id: IrId,
+        span: Span,
+        name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if let Some(reason) = Self::derivation_strict_name_error_reason(name) {
+            return Err(Self::invalid_derivation_strict_name_error(id, span, reason));
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn derivation_strict_name_error_reason(name: &str) -> Option<String> {
+        if name.is_empty() {
+            return Some("name must not be empty".to_owned());
+        }
+        if name.len() > DERIVATION_NAME_MAX_LEN {
+            return Some(format!(
+                "name '{name}' must be no longer than {DERIVATION_NAME_MAX_LEN} characters"
+            ));
+        }
+        if name == "." || name == ".." {
+            return Some(format!("name '{name}' is not valid"));
+        }
+        if name.starts_with(".-") {
+            return Some(format!(
+                "name '{name}' is not valid: first dash-separated component must not be '.'"
+            ));
+        }
+        if name.starts_with("..-") {
+            return Some(format!(
+                "name '{name}' is not valid: first dash-separated component must not be '..'"
+            ));
+        }
+        for character in name.chars() {
+            if !Self::is_derivation_name_char(character) {
+                return Some(format!(
+                    "name '{name}' contains illegal character '{}'",
+                    character
+                ));
+            }
+        }
+
+        None
+    }
+
+    pub(super) fn is_derivation_name_char(character: char) -> bool {
+        character.is_ascii() && Self::is_derivation_name_byte(character as u8)
+    }
+
+    pub(super) fn is_derivation_name_byte(byte: u8) -> bool {
+        matches!(
+            byte,
+            b'0'..=b'9'
+                | b'a'..=b'z'
+                | b'A'..=b'Z'
+                | b'+'
+                | b'-'
+                | b'.'
+                | b'_'
+                | b'?'
+                | b'='
+        )
+    }
+
+    pub(super) fn validate_derivation_strict_name_suffix(
+        id: IrId,
+        span: Span,
+        name: &str,
+    ) -> Result<(), TreeWalkError> {
+        if name.ends_with(DERIVATION_EXTENSION) {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!(
+                        "derivation names are allowed to end in '{DERIVATION_EXTENSION}' only if they produce a single derivation file"
+                    ),
+                },
+                span,
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn invalid_derivation_strict_name_error(
+        id: IrId,
+        span: Span,
+        reason: String,
+    ) -> TreeWalkError {
+        TreeWalkError::new(
+            TreeWalkErrorKind::DerivationStrict {
+                id,
+                message: format!(
+                    "invalid derivation name: {reason}. Please pass a different 'name'."
+                ),
+            },
+            span,
+        )
+    }
+
+    pub(super) fn derivation_ignore_nulls_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<bool, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != IGNORE_NULLS_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            return self.expect_bool(id, value, span);
+        }
+
+        Ok(false)
+    }
+
+    pub(super) fn derivation_structured_attrs_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        attrs_id: IrId,
+        attrs_span: Span,
+        entries: &[AttrEntry],
+    ) -> Result<Option<bool>, TreeWalkError> {
+        for entry in entries {
+            let key = self.symbols.resolve(entry.key).ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: attrs_id,
+                        symbol: entry.key,
+                    },
+                    attrs_span,
+                )
+            })?;
+            if key != STRUCTURED_ATTRS_ATTR {
+                continue;
+            }
+
+            let value = self.force_value(attrs_id, attrs_span, entry.value)?;
+            return self.expect_bool(id, value, span).map(Some);
+        }
+
+        Ok(None)
+    }
+
+    pub(super) fn derivation_args_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<(Vec<String>, StringContext), TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let elements = {
+            let list = self.heap.get_list(value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: value_id,
+                        source,
+                    },
+                    value_span,
+                )
+            })?;
+            Self::clone_list_elements(value_id, value_span, list)?
+        };
+        let mut arguments = Vec::new();
+        arguments.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: value_id,
+                    len: elements.len(),
+                },
+                value_span,
+            )
+        })?;
+        let mut context = StringContext::empty();
+        for element in elements {
+            let value = self.force_value(value_id, value_span, element)?;
+            let rendered =
+                self.derivation_to_string_value(id, span, value_id, value_span, value)?;
+            let (bytes, value_context) = rendered.into_parts();
+            context = context.union(&value_context).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span)
+            })?;
+            arguments.push(Self::derivation_utf8_string(id, span, "argument", &bytes)?);
+        }
+
+        Ok((arguments, context))
+    }
+
+    pub(super) fn derivation_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<(Vec<u8>, StringContext), TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        let bytes = Self::copy_bytes_for_node(id, span, string.bytes())?;
+        let context = StringContext::empty()
+            .union(string.context())
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::String { id, source }, span))?;
+        Ok((bytes, context))
+    }
+
+    pub(super) fn derivation_context_free_string_value(
+        &self,
+        id: IrId,
+        span: Span,
+        value_id: IrId,
+        value_span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() != ValueTag::String {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: value_id,
+                    expected: "string",
+                    actual: value.tag(),
+                },
+                value_span,
+            ));
+        }
+
+        let string = self.heap.get_string(value).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: value_id,
+                    source,
+                },
+                value_span,
+            )
+        })?;
+        if string.has_context() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::StringContextNotAllowed {
+                    id: value_id,
+                    op: "derivationStrict",
+                },
+                value_span,
+            ));
+        }
+        Self::copy_bytes_for_node(id, span, string.bytes())
+    }
+
+    pub(super) fn derivation_outputs_value(
+        id: IrId,
+        span: Span,
+        bytes: &[u8],
+        env_value: &str,
+    ) -> Result<BTreeMap<String, nix_compat::derivation::Output>, TreeWalkError> {
+        let mut outputs = BTreeMap::new();
+        for output in bytes
+            .split(|byte| Self::is_derivation_outputs_separator(*byte))
+            .filter(|output| !output.is_empty())
+        {
+            let output_name = Self::derivation_utf8_string(id, span, "output name", output)?;
+            Self::validate_derivation_strict_declared_output_name(id, span, &output_name)?;
+            if outputs
+                .insert(
+                    output_name.clone(),
+                    nix_compat::derivation::Output::default(),
+                )
+                .is_some()
+            {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::DerivationStrict {
+                        id,
+                        message: format!("duplicate derivation output {output_name:?}"),
+                    },
+                    span,
+                ));
+            }
+        }
+
+        if outputs.is_empty() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!(
+                        "derivation cannot have an empty set of outputs from {env_value:?}"
+                    ),
+                },
+                span,
+            ));
+        }
+
+        Ok(outputs)
+    }
+}

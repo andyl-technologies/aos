@@ -1,0 +1,801 @@
+//! Value-to-string coercion, path resolution, and Nix search-path lookups.
+
+use super::*;
+
+impl TreeWalk {
+    pub(super) fn derivation_output_placeholder(
+        id: IrId,
+        span: Span,
+        output_name: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let input_len = PLACEHOLDER_HASH_PREFIX
+            .len()
+            .checked_add(output_name.len())
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut input = Vec::new();
+        input.try_reserve_exact(input_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len: input_len },
+                span,
+            )
+        })?;
+        input.extend_from_slice(PLACEHOLDER_HASH_PREFIX);
+        input.extend_from_slice(output_name);
+        Self::slash_prefixed_nix_base32_sha256(id, span, &input)
+    }
+
+    pub(super) fn downstream_output_placeholder(
+        id: IrId,
+        span: Span,
+        drv_path: &nix_compat::store_path::StorePath<String>,
+        output_name: &str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let drv_name: &str = drv_path.name().as_ref();
+        let base_name = drv_name.strip_suffix(".drv").ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::DerivationStrict {
+                    id,
+                    message: format!("derivation path name {drv_name:?} does not end in .drv"),
+                },
+                span,
+            )
+        })?;
+        let output_path_name = if output_name == "out" {
+            base_name.to_owned()
+        } else {
+            format!("{base_name}-{output_name}")
+        };
+        let drv_hash = Self::encode_nix_base32(id, span, drv_path.digest())?;
+        let input_len = UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX
+            .len()
+            .checked_add(drv_hash.len())
+            .and_then(|len| len.checked_add(1))
+            .and_then(|len| len.checked_add(output_path_name.len()))
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: usize::MAX,
+                    },
+                    span,
+                )
+            })?;
+        let mut input = Vec::new();
+        input.try_reserve_exact(input_len).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed { id, len: input_len },
+                span,
+            )
+        })?;
+        input.extend_from_slice(UPSTREAM_OUTPUT_PLACEHOLDER_HASH_PREFIX);
+        input.extend_from_slice(&drv_hash);
+        input.push(b':');
+        input.extend_from_slice(output_path_name.as_bytes());
+        Self::slash_prefixed_nix_base32_sha256(id, span, &input)
+    }
+
+    pub(super) fn slash_prefixed_nix_base32_sha256(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let digest = Sha256::digest(input);
+        let encoded = Self::encode_nix_base32(id, span, &digest)?;
+        let len = encoded.len().checked_add(1).ok_or_else(|| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: usize::MAX,
+                },
+                span,
+            )
+        })?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(len).map_err(|_| {
+            TreeWalkError::new(TreeWalkErrorKind::ByteAllocationFailed { id, len }, span)
+        })?;
+        bytes.push(b'/');
+        bytes.extend_from_slice(&encoded);
+        Ok(bytes)
+    }
+
+    pub(super) fn eval_if(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Triple {
+            first,
+            second,
+            third,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "if payload"));
+        };
+        let selected = if self.eval_bool_node(first)? {
+            second
+        } else {
+            third
+        };
+        self.eval_node(selected)
+    }
+
+    pub(super) fn eval_assert(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Pair { first, second } = node.data else {
+            return Err(self.invalid_payload(id, node, "assert payload"));
+        };
+        if self.eval_bool_node(first)? {
+            self.eval_node(second)
+        } else {
+            Err(TreeWalkError::new(
+                TreeWalkErrorKind::AssertionFailed { id },
+                node.span,
+            ))
+        }
+    }
+
+    pub(super) fn eval_unary(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Unary { op, operand } = node.data else {
+            return Err(self.invalid_payload(id, node, "unary payload"));
+        };
+        match op {
+            UnaryOpKind::Not => Ok(Value::bool(!self.eval_bool_node(operand)?)),
+            UnaryOpKind::Neg => self.eval_numeric_negation(id, node, operand),
+        }
+    }
+
+    pub(super) fn eval_binary(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Binary { op, lhs, rhs } = node.data else {
+            return Err(self.invalid_payload(id, node, "binary payload"));
+        };
+        match op {
+            BinOpKind::And => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                } else {
+                    Ok(Value::bool(false))
+                }
+            }
+            BinOpKind::Or => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(true))
+                } else {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                }
+            }
+            BinOpKind::Impl => {
+                if self.eval_bool_node(lhs)? {
+                    Ok(Value::bool(self.eval_bool_node(rhs)?))
+                } else {
+                    Ok(Value::bool(true))
+                }
+            }
+            BinOpKind::Add => self.eval_add(id, node, lhs, rhs),
+            BinOpKind::Sub => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Sub, lhs, rhs),
+            BinOpKind::Mul => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Mul, lhs, rhs),
+            BinOpKind::Div => self.eval_numeric_binary(id, node, BinaryArithmeticOp::Div, lhs, rhs),
+            BinOpKind::Lt => self.eval_comparison(id, node, ComparisonOp::Lt, lhs, rhs),
+            BinOpKind::Gt => self.eval_comparison(id, node, ComparisonOp::Gt, lhs, rhs),
+            BinOpKind::Le => self.eval_comparison(id, node, ComparisonOp::Le, lhs, rhs),
+            BinOpKind::Ge => self.eval_comparison(id, node, ComparisonOp::Ge, lhs, rhs),
+            BinOpKind::Eq => self.eval_equality(id, node, lhs, rhs, false),
+            BinOpKind::Ne => self.eval_equality(id, node, lhs, rhs, true),
+            BinOpKind::Concat => self.eval_list_concat(id, node, lhs, rhs),
+            BinOpKind::Update => self.eval_attr_update(id, node, lhs, rhs),
+            BinOpKind::PipeRight => self.eval_apply_expression(id, node.span, rhs, lhs),
+            BinOpKind::PipeLeft => self.eval_apply_expression(id, node.span, lhs, rhs),
+        }
+    }
+
+    pub(super) fn eval_string(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "string symbol payload"));
+        };
+        let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let mut owned = Vec::new();
+        owned.try_reserve_exact(bytes.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ByteAllocationFailed {
+                    id,
+                    len: bytes.len(),
+                },
+                node.span,
+            )
+        })?;
+        owned.extend_from_slice(bytes);
+        self.heap
+            .alloc_string(NixString::from_bytes(owned))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    pub(super) fn eval_path(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "path symbol payload"));
+        };
+        let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let path = self.path_literal_bytes_for_node(id, node.span, bytes)?;
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    pub(super) fn eval_search_path(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+    ) -> Result<Value, TreeWalkError> {
+        if self.options.reject_ambient_search_path() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAmbientSearchPath {
+                    id,
+                    feature: "configured Nix search path lookup",
+                },
+                node.span,
+            ));
+        }
+        let IrData::Symbol(symbol) = node.data else {
+            return Err(self.invalid_payload(id, node, "search-path symbol payload"));
+        };
+        let lookup = self.symbols.resolve(symbol).ok_or_else(|| {
+            TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+        })?;
+        let lookup = Self::copy_bytes_for_node(id, node.span, lookup)?;
+        let lookup = search_path_literal_lookup(id, node.span, &lookup)?;
+        let entries = self
+            .visible_nix_path()
+            .iter()
+            .map(|entry| ResolvedSearchPathEntry {
+                prefix: entry.prefix().to_vec(),
+                path: entry.path().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        self.find_file_in_entries(
+            id,
+            node.span,
+            &entries,
+            lookup,
+            FindFileLookupOrigin::AmbientSearchPath,
+        )
+    }
+
+    pub(super) fn eval_nix_path_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if self.options.reject_ambient_search_path() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedAmbientSearchPath {
+                    id,
+                    feature: "builtins.nixPath",
+                },
+                span,
+            ));
+        }
+        let entries = self.visible_nix_path().to_vec();
+        let mut values = Vec::new();
+        values.try_reserve_exact(entries.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: entries.len(),
+                },
+                span,
+            )
+        })?;
+        let path_key = self.intern_builtin_attr_symbol(id, PATH_ATTR, span)?;
+        let prefix_key = self.intern_builtin_attr_symbol(id, PREFIX_ATTR, span)?;
+
+        for entry in entries {
+            let path = self.alloc_static_string(id, span, entry.path())?;
+            let prefix = self.alloc_static_string(id, span, entry.prefix())?;
+            let attrs = FlatAttrs::new(
+                vec![
+                    AttrEntry::new(path_key, path),
+                    AttrEntry::new(prefix_key, prefix),
+                ],
+                &self.symbols,
+            )
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+            let attrs = self.heap.alloc_attrs(0, attrs).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+            })?;
+            values.push(attrs);
+        }
+
+        self.heap
+            .alloc_list(NixList::new(values))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    pub(super) fn eval_find_file_primop(
+        &mut self,
+        id: IrId,
+        span: Span,
+        search_path_id: IrId,
+        search_path_span: Span,
+        search_path: Value,
+        lookup_id: IrId,
+        lookup_span: Span,
+        lookup: Value,
+    ) -> Result<Value, TreeWalkError> {
+        let entries =
+            self.search_path_entries_from_value(search_path_id, search_path_span, search_path)?;
+        let lookup = self.context_free_string_bytes(lookup_id, lookup_span, lookup, "findFile")?;
+        self.find_file_in_entries(
+            id,
+            span,
+            &entries,
+            &lookup,
+            FindFileLookupOrigin::ExplicitSearchPath,
+        )
+    }
+
+    pub(super) fn search_path_entries_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<ResolvedSearchPathEntry>, TreeWalkError> {
+        if value.tag() != ValueTag::List {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "list",
+                    actual: value.tag(),
+                },
+                span,
+            ));
+        }
+        let list = self
+            .heap
+            .get_list(value)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        let elements = Self::clone_list_elements(id, span, list)?;
+        let mut entries = Vec::new();
+        entries.try_reserve_exact(elements.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: elements.len(),
+                },
+                span,
+            )
+        })?;
+        for element in elements {
+            let element = self.force_value(id, span, element)?;
+            if element.tag() != ValueTag::Attrs {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id,
+                        expected: "attrs",
+                        actual: element.tag(),
+                    },
+                    span,
+                ));
+            }
+            let path = self.required_attr_value_by_name(id, element, PATH_ATTR, span)?;
+            let path = self.force_value(id, span, path)?;
+            let path = self.coerce_to_search_path_bytes(id, span, path, "findFile")?;
+            let prefix =
+                if let Some(prefix) = self.attr_value_by_name(id, element, PREFIX_ATTR, span)? {
+                    let prefix = self.force_value(id, span, prefix)?;
+                    self.context_free_string_bytes(id, span, prefix, "findFile")?
+                } else {
+                    Vec::new()
+                };
+            entries.push(ResolvedSearchPathEntry { prefix, path });
+        }
+        Ok(entries)
+    }
+
+    pub(super) fn coerce_to_search_path_bytes(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        op: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(id, span, value)?;
+            return Self::copy_bytes_for_node(id, span, path.bytes());
+        }
+        let string = self.coerce_to_string(id, value, span)?;
+        self.context_free_string_bytes(id, span, string, op)
+    }
+
+    pub(super) fn find_file_in_entries(
+        &mut self,
+        id: IrId,
+        span: Span,
+        entries: &[ResolvedSearchPathEntry],
+        lookup: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Result<Value, TreeWalkError> {
+        let cache_key = FindFileCacheKey::new(self.options.search_path_base(), entries, lookup);
+        if let Some(cached) = self.find_file_cache.get(&cache_key).cloned() {
+            return self.find_file_cached_result(id, span, cached, lookup, origin);
+        }
+
+        for entry in entries {
+            let Some(suffix) = search_path_suffix(entry.prefix.as_slice(), lookup) else {
+                continue;
+            };
+            let candidate = join_search_path(
+                id,
+                span,
+                self.options.search_path_base(),
+                entry.path.as_slice(),
+                suffix,
+            )?;
+            self.check_find_file_candidate_access(id, span, &candidate, origin)?;
+            match fs::metadata(Path::new(OsStr::from_bytes(&candidate))) {
+                Ok(_) => {
+                    self.find_file_cache
+                        .insert(cache_key, FindFileCacheEntry::Hit(candidate.clone()));
+                    return self.alloc_find_file_path(id, span, candidate);
+                }
+                Err(source)
+                    if matches!(
+                        source.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    continue;
+                }
+                Err(source) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::PathStat {
+                            id,
+                            path: candidate,
+                            message: source.to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+        self.find_file_cache
+            .insert(cache_key, FindFileCacheEntry::Miss);
+        self.find_file_not_found(id, span, lookup, origin)
+    }
+
+    pub(super) fn check_find_file_candidate_access(
+        &self,
+        id: IrId,
+        span: Span,
+        candidate: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Result<(), TreeWalkError> {
+        match (origin, self.options.eval_mode()) {
+            (FindFileLookupOrigin::ExplicitSearchPath, EvalMode::Pure) => Ok(()),
+            _ => self.check_filesystem_path_access(id, span, candidate),
+        }
+    }
+
+    pub(super) fn find_file_cached_result(
+        &mut self,
+        id: IrId,
+        span: Span,
+        cached: FindFileCacheEntry,
+        lookup: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Result<Value, TreeWalkError> {
+        match cached {
+            FindFileCacheEntry::Hit(path) => self.alloc_find_file_path(id, span, path),
+            FindFileCacheEntry::Miss => self.find_file_not_found(id, span, lookup, origin),
+        }
+    }
+
+    pub(super) fn alloc_find_file_path(
+        &mut self,
+        id: IrId,
+        span: Span,
+        path: Vec<u8>,
+    ) -> Result<Value, TreeWalkError> {
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    pub(super) fn find_file_not_found(
+        &self,
+        id: IrId,
+        span: Span,
+        lookup: &[u8],
+        origin: FindFileLookupOrigin,
+    ) -> Result<Value, TreeWalkError> {
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::SearchPathNotFound {
+                id,
+                lookup: lookup.to_vec(),
+                ambient: origin == FindFileLookupOrigin::AmbientSearchPath,
+            },
+            span,
+        ))
+    }
+
+    pub(super) fn eval_interp(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        match node.data {
+            IrData::Node(child) => {
+                let span = self.node(child)?.span;
+                let value = self.eval_node(child)?;
+                self.coerce_to_interpolation_string(child, value, span)
+            }
+            IrData::Children(children) => {
+                let children = self
+                    .current_ir()
+                    .arena
+                    .child_slice(children)
+                    .ok_or_else(|| {
+                        TreeWalkError::new(
+                            TreeWalkErrorKind::InvalidChildSlice {
+                                id,
+                                slice: children,
+                            },
+                            node.span,
+                        )
+                    })?
+                    .to_vec();
+                if self.interp_children_have_path_fragments(&children)? {
+                    return self.eval_path_interp(id, node, &children);
+                }
+                let Some((first, rest)) = children.split_first() else {
+                    return self
+                        .heap
+                        .alloc_string(NixString::default())
+                        .map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                        });
+                };
+                let first_span = self.node(*first)?.span;
+                let mut current = {
+                    let value = self.eval_node(*first)?;
+                    self.coerce_to_interpolation_string(*first, value, first_span)?
+                };
+                for child in rest {
+                    let child_span = self.node(*child)?.span;
+                    let next = {
+                        let value = self.eval_node(*child)?;
+                        self.coerce_to_interpolation_string(*child, value, child_span)?
+                    };
+                    current = self.concat_strings(id, node, current, next)?;
+                }
+                Ok(current)
+            }
+            IrData::None => self
+                .heap
+                .alloc_string(NixString::default())
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                }),
+            IrData::Symbol(symbol) => {
+                let bytes = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidSymbol { id, symbol }, node.span)
+                })?;
+                let mut owned = Vec::new();
+                owned.try_reserve_exact(bytes.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ByteAllocationFailed {
+                            id,
+                            len: bytes.len(),
+                        },
+                        node.span,
+                    )
+                })?;
+                owned.extend_from_slice(bytes);
+                self.heap
+                    .alloc_string(NixString::from_bytes(owned))
+                    .map_err(|source| {
+                        TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span)
+                    })
+            }
+            _ => Err(self.invalid_payload(id, node, "interpolation payload")),
+        }
+    }
+
+    pub(super) fn interp_children_have_path_fragments(
+        &self,
+        children: &[IrId],
+    ) -> Result<bool, TreeWalkError> {
+        for child in children {
+            if self.node(*child)?.kind == IrKind::Path {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    pub(super) fn eval_path_interp(
+        &mut self,
+        id: IrId,
+        node: &IrNode,
+        children: &[IrId],
+    ) -> Result<Value, TreeWalkError> {
+        let mut bytes = Vec::new();
+        for child in children {
+            let child_node = *self.node(*child)?;
+            if child_node.kind == IrKind::Path {
+                let IrData::Symbol(symbol) = child_node.data else {
+                    return Err(self.invalid_payload(*child, &child_node, "path symbol payload"));
+                };
+                let raw = self.symbols.resolve(symbol).ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::InvalidSymbol { id: *child, symbol },
+                        child_node.span,
+                    )
+                })?;
+                let fragment = Self::copy_bytes_for_node(*child, child_node.span, raw)?;
+                bytes.try_reserve_exact(fragment.len()).map_err(|_| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::ByteAllocationFailed {
+                            id,
+                            len: bytes.len().saturating_add(fragment.len()),
+                        },
+                        node.span,
+                    )
+                })?;
+                bytes.extend_from_slice(&fragment);
+                continue;
+            }
+
+            let expression = if child_node.kind == IrKind::Interp {
+                match child_node.data {
+                    IrData::Node(expression) => expression,
+                    _ => *child,
+                }
+            } else {
+                *child
+            };
+            let expression_span = self.node(expression)?.span;
+            let value = self.eval_node(expression)?;
+            let value = self.force_demanded_value(expression, expression_span, value)?;
+            let fragment =
+                self.coerce_to_path_interpolation_fragment(expression, expression_span, value)?;
+            bytes.try_reserve_exact(fragment.len()).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ByteAllocationFailed {
+                        id,
+                        len: bytes.len().saturating_add(fragment.len()),
+                    },
+                    node.span,
+                )
+            })?;
+            bytes.extend_from_slice(&fragment);
+        }
+
+        let path = self.path_literal_bytes_for_node(id, node.span, &bytes)?;
+        self.heap
+            .alloc_path(NixString::from_bytes(path))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    pub(super) fn coerce_to_path_interpolation_fragment(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        if value.tag() == ValueTag::Path {
+            let path = self.clone_path_value(id, span, value)?;
+            return Self::copy_bytes_for_node(id, span, path.bytes());
+        }
+
+        let value = self.coerce_to_string(id, value, span)?;
+        self.context_free_string_bytes(id, span, value, "path interpolation")
+    }
+
+    pub(super) fn coerce_to_interpolation_string(
+        &mut self,
+        id: IrId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => Ok(value),
+            ValueTag::Path => {
+                let path = self.source_path_store_string(id, span, value)?;
+                self.heap.alloc_string(path).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
+            ValueTag::Attrs => self.coerce_attrs_to_interpolation_string(id, value, span),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    pub(super) fn coerce_attrs_to_interpolation_string(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(hook) = self.attr_value_by_name(id, attrs_value, TO_STRING_ATTR, span)? {
+            let hook = self.force_value(id, span, hook)?;
+            let value = self.apply_lambda_value(id, span, id, hook, span, id, attrs_value)?;
+            return self.coerce_to_interpolation_string(id, value, span);
+        }
+
+        if let Some(out_path) = self.attr_value_by_name(id, attrs_value, OUT_PATH_ATTR, span)? {
+            let value = self.force_value(id, span, out_path)?;
+            return self.coerce_to_interpolation_string(id, value, span);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            span,
+        ))
+    }
+
+    pub(super) fn coerce_to_string(
+        &mut self,
+        id: IrId,
+        value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        match value.tag() {
+            ValueTag::String => Ok(value),
+            ValueTag::Path => {
+                let path = self.clone_path_value(id, span, value)?;
+                self.heap.alloc_string(path).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })
+            }
+            ValueTag::Attrs => self.coerce_attrs_to_string(id, value, span),
+            actual => Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id,
+                    expected: "string",
+                    actual,
+                },
+                span,
+            )),
+        }
+    }
+
+    pub(super) fn coerce_attrs_to_string(
+        &mut self,
+        id: IrId,
+        attrs_value: Value,
+        span: Span,
+    ) -> Result<Value, TreeWalkError> {
+        if let Some(hook) = self.attr_value_by_name(id, attrs_value, TO_STRING_ATTR, span)? {
+            let hook = self.force_value(id, span, hook)?;
+            let value = self.apply_lambda_value(id, span, id, hook, span, id, attrs_value)?;
+            return self.coerce_to_string(id, value, span);
+        }
+
+        if let Some(out_path) = self.attr_value_by_name(id, attrs_value, OUT_PATH_ATTR, span)? {
+            let value = self.force_value(id, span, out_path)?;
+            return self.coerce_to_string(id, value, span);
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id,
+                expected: "string",
+                actual: ValueTag::Attrs,
+            },
+            span,
+        ))
+    }
+}

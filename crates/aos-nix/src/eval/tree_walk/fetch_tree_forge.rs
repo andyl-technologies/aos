@@ -1,0 +1,830 @@
+//! Forge (GitHub/GitLab) ref resolution and `fetchTree` argument assembly.
+
+use super::*;
+
+impl TreeWalk {
+    pub(super) fn resolve_fetch_tree_github_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url = Self::fetch_tree_github_ref_url(id, span, owner, repo, host, reference)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response =
+            self.fetch_tree_json_api_bytes(id, span, &url, &parsed, "application/vnd.github+json")?;
+        let rev =
+            Self::fetch_tree_github_rev_from_commit_response(id, span, canonical_uri, &response)?;
+        self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    pub(super) fn resolve_fetch_tree_forge_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        input_type: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match input_type {
+            b"github" => self.resolve_fetch_tree_github_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_url_access,
+            ),
+            b"gitlab" => self.resolve_fetch_tree_gitlab_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_url_access,
+            ),
+            _ => Err(Self::unsupported_fetch_tree_feature(
+                id,
+                span,
+                "forge reference resolution",
+            )),
+        }
+    }
+
+    pub(super) fn fetch_tree_github_ref_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let reference = Self::percent_encode_flake_ref(reference, b"");
+        let mut url = match host {
+            None => b"https://api.github.com/repos/".to_vec(),
+            Some(host) if host == b"github.com" => b"https://api.github.com/repos/".to_vec(),
+            Some(host) => {
+                let host = std::str::from_utf8(host)
+                    .map_err(|source| Self::fetch_tree_error(id, span, host, source))?;
+                let mut url = b"https://".to_vec();
+                url.extend_from_slice(host.as_bytes());
+                url.extend_from_slice(b"/api/v3/repos/");
+                url
+            }
+        };
+        url.extend_from_slice(&owner);
+        url.push(b'/');
+        url.extend_from_slice(&repo);
+        url.extend_from_slice(b"/commits/");
+        url.extend_from_slice(&reference);
+        Ok(url)
+    }
+
+    pub(super) fn resolve_fetch_tree_gitlab_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url = Self::fetch_tree_gitlab_ref_url(id, span, owner, repo, host, reference)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response =
+            self.fetch_tree_json_api_bytes(id, span, &url, &parsed, "application/json")?;
+        let rev =
+            Self::fetch_tree_gitlab_rev_from_commit_response(id, span, canonical_uri, &response)?;
+        self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    pub(super) fn fetch_tree_gitlab_ref_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let reference = Self::percent_encode_flake_ref(reference, b"");
+        let host = match host {
+            Some(host) => std::str::from_utf8(host)
+                .map_err(|source| Self::fetch_tree_error(id, span, host, source))?,
+            None => "gitlab.com",
+        };
+        let mut url = b"https://".to_vec();
+        url.extend_from_slice(host.as_bytes());
+        url.extend_from_slice(b"/api/v4/projects/");
+        url.extend_from_slice(&owner);
+        url.extend_from_slice(b"%2F");
+        url.extend_from_slice(&repo);
+        url.extend_from_slice(b"/repository/commits/");
+        url.extend_from_slice(&reference);
+        Ok(url)
+    }
+
+    pub(super) fn fetch_tree_json_api_bytes(
+        &self,
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        parsed: &Url,
+        accept: &'static str,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match parsed.scheme() {
+            "http" | "https" => {
+                #[cfg(test)]
+                if let Some(response) = self.options.fetch_tree_url_responses.get(url) {
+                    return Ok(response.clone());
+                }
+                #[cfg(test)]
+                if !self.options.fetch_tree_url_responses.is_empty() {
+                    return Err(Self::fetch_tree_error(
+                        id,
+                        span,
+                        url,
+                        "missing test fetchTree URL response",
+                    ));
+                }
+
+                let client = reqwest::blocking::Client::builder()
+                    .no_gzip()
+                    .no_brotli()
+                    .no_zstd()
+                    .no_deflate()
+                    .build()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = client
+                    .get(parsed.as_str())
+                    .header(reqwest::header::ACCEPT, accept)
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity")
+                    .header(reqwest::header::USER_AGENT, "aos-nix")
+                    .send()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                let response = response
+                    .error_for_status()
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
+                response
+                    .bytes()
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|source| Self::fetch_tree_error(id, span, url, source))
+            }
+            scheme => Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: url.to_vec(),
+                    message: format!("unsupported URL scheme {scheme:?}"),
+                },
+                span,
+            )),
+        }
+    }
+
+    pub(super) fn fetch_tree_gitlab_rev_from_commit_response(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        response: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = serde_json::from_slice::<JsonValue>(response).map_err(|source| {
+            Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                format!("invalid GitLab response: {source}"),
+            )
+        })?;
+        let sha = value.get("id").and_then(JsonValue::as_str).ok_or_else(|| {
+            Self::fetch_tree_error(id, span, input, "GitLab response is missing commit id")
+        })?;
+        if !Self::is_git_rev(sha.as_bytes()) {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "GitLab response commit id is invalid",
+            ));
+        }
+        Ok(sha.as_bytes().to_vec())
+    }
+
+    pub(super) fn fetch_tree_github_rev_from_commit_response(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        response: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = serde_json::from_slice::<JsonValue>(response).map_err(|source| {
+            Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                format!("invalid GitHub response: {source}"),
+            )
+        })?;
+        let sha = value
+            .get("sha")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                Self::fetch_tree_error(id, span, input, "GitHub response is missing commit sha")
+            })?;
+        if !Self::is_git_rev(sha.as_bytes()) {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "GitHub response commit sha is invalid",
+            ));
+        }
+        Ok(sha.as_bytes().to_vec())
+    }
+
+    pub(super) fn fetch_tree_git_flake_ref_arguments(
+        &self,
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        attrs: &FlakeRefAttrs,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        Self::ensure_flake_ref_attrs(
+            id,
+            span,
+            attrs,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                SHALLOW_ATTR,
+                SUBMODULES_ATTR,
+                ALL_REFS_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_COUNT_ATTR,
+                EXPORT_IGNORE_ATTR,
+                VERIFY_COMMIT_ATTR,
+                KEYTYPE_ATTR,
+                PUBLIC_KEY_ATTR,
+                PUBLIC_KEYS_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let extra_query = self.fetch_tree_git_flake_ref_verified_fetch_query(id, span, attrs)?;
+        let url = Self::required_flake_ref_string_attr(id, span, attrs, URL_ATTR)?;
+        let transport_url = Self::fetch_tree_git_flake_ref_transport_url(
+            id,
+            span,
+            input,
+            url,
+            attrs.contains_key(DIR_ATTR),
+        )?;
+        let dir =
+            Self::optional_flake_ref_string_attr(id, span, attrs, DIR_ATTR)?.map(ToOwned::to_owned);
+        let submodules =
+            Self::optional_flake_ref_bool_attr(id, span, attrs, SUBMODULES_ATTR)?.unwrap_or(false);
+        Ok(FetchTreeArguments::Git {
+            args: FetchGitArguments {
+                url: url.to_vec(),
+                transport_url,
+                name: "source".to_owned(),
+                rev: Self::optional_flake_ref_string_attr(id, span, attrs, REV_ATTR)?
+                    .map(ToOwned::to_owned),
+                reference: Self::optional_flake_ref_string_attr(id, span, attrs, REF_ATTR)?
+                    .map(ToOwned::to_owned),
+                submodules,
+                shallow: Self::optional_flake_ref_bool_attr(id, span, attrs, SHALLOW_ATTR)?
+                    .unwrap_or(true),
+                all_refs: Self::optional_flake_ref_bool_attr(id, span, attrs, ALL_REFS_ATTR)?
+                    .unwrap_or(false),
+                export_ignore: Self::optional_flake_ref_bool_attr(
+                    id,
+                    span,
+                    attrs,
+                    EXPORT_IGNORE_ATTR,
+                )?
+                .unwrap_or(!submodules),
+                extra_query,
+            },
+            dir,
+            expected_nar_hash: self.optional_flake_ref_nar_hash_attr(id, span, attrs)?,
+            expected_last_modified: Self::optional_flake_ref_i64_attr(
+                id,
+                span,
+                attrs,
+                LAST_MODIFIED_ATTR,
+            )?,
+            expected_rev_count: Self::optional_flake_ref_usize_attr(
+                id,
+                span,
+                attrs,
+                REV_COUNT_ATTR,
+            )?,
+            dirty_rev: None,
+            dirty_short_rev: None,
+        })
+    }
+
+    pub(super) fn fetch_tree_forge_archive_url(
+        id: IrId,
+        span: Span,
+        input_type: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        rev: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let rev = Self::percent_encode_flake_ref(rev, b"");
+        let host = match host {
+            Some(host) => std::str::from_utf8(host)
+                .map_err(|source| Self::fetch_tree_error(id, span, host, source))?,
+            None => Self::default_forge_host(input_type).ok_or_else(|| {
+                Self::fetch_tree_error(id, span, input_type, "unsupported forge input type")
+            })?,
+        };
+        let mut url = b"https://".to_vec();
+        url.extend_from_slice(host.as_bytes());
+        match input_type {
+            b"github" if host == "github.com" => {
+                url.push(b'/');
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/archive/");
+                url.extend_from_slice(&rev);
+                url.extend_from_slice(b".tar.gz");
+            }
+            b"github" => {
+                url.extend_from_slice(b"/api/v3/repos/");
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/tarball/");
+                url.extend_from_slice(&rev);
+            }
+            b"gitlab" => {
+                url.extend_from_slice(b"/api/v4/projects/");
+                url.extend_from_slice(&owner);
+                url.extend_from_slice(b"%2F");
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/repository/archive.tar.gz?sha=");
+                url.extend_from_slice(&rev);
+            }
+            b"sourcehut" => {
+                url.push(b'/');
+                url.extend_from_slice(&owner);
+                url.push(b'/');
+                url.extend_from_slice(&repo);
+                url.extend_from_slice(b"/archive/");
+                url.extend_from_slice(&rev);
+                url.extend_from_slice(b".tar.gz");
+            }
+            _ => {
+                return Err(Self::fetch_tree_error(
+                    id,
+                    span,
+                    input_type,
+                    "unsupported forge input type",
+                ));
+            }
+        }
+        Ok(url)
+    }
+
+    pub(super) fn default_forge_host(input_type: &[u8]) -> Option<&'static str> {
+        match input_type {
+            b"github" => Some("github.com"),
+            b"gitlab" => Some("gitlab.com"),
+            b"sourcehut" => Some("git.sr.ht"),
+            _ => None,
+        }
+    }
+
+    pub(super) fn validate_forge_path_segment(
+        id: IrId,
+        span: Span,
+        value: &[u8],
+        message: &'static str,
+    ) -> Result<(), TreeWalkError> {
+        if value.is_empty() || value.contains(&b'/') {
+            return Err(Self::fetch_tree_error(id, span, value, message));
+        }
+        Ok(())
+    }
+
+    pub(super) fn fetch_tree_path_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                PATH_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+            ],
+        )?;
+        let path_value = self.required_attr_value_by_name(id, value, PATH_ATTR, span)?;
+        let path = self.fetch_tree_path_argument_bytes(id, span, path_value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        Ok(FetchTreeArguments::Path {
+            path,
+            expected_nar_hash,
+            expected_last_modified,
+            rev,
+            rev_count,
+        })
+    }
+
+    pub(super) fn fetch_tree_git_flake_ref_transport_url(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        url: &[u8],
+        strip_dir: bool,
+    ) -> Result<Option<Vec<u8>>, TreeWalkError> {
+        let text = std::str::from_utf8(url)
+            .map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let parsed =
+            Url::parse(text).map_err(|source| Self::fetch_tree_error(id, span, input, source))?;
+        let mut query = Self::decode_flake_ref_query(id, span, input, parsed.query())?;
+        let mut stripped = false;
+
+        if query.remove(NAR_HASH_ATTR).is_some() {
+            stripped = true;
+        }
+        if query.remove(LAST_MODIFIED_ATTR).is_some() {
+            stripped = true;
+        }
+        if query.remove(REV_COUNT_ATTR).is_some() {
+            stripped = true;
+        }
+        if strip_dir && query.remove(DIR_ATTR).is_some() {
+            stripped = true;
+        }
+        for key in [
+            VERIFY_COMMIT_ATTR,
+            KEYTYPE_ATTR,
+            PUBLIC_KEY_ATTR,
+            PUBLIC_KEYS_ATTR,
+        ] {
+            if query.remove(key).is_some() {
+                stripped = true;
+            }
+        }
+
+        if !stripped {
+            return Ok(None);
+        }
+
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            input,
+            &parsed,
+            None,
+            query,
+            BTreeMap::new(),
+        )
+        .map(Some)
+    }
+
+    pub(super) fn fetch_tree_url_with_dir_metadata(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+        dir: Option<&[u8]>,
+    ) -> Result<(Vec<u8>, Vec<u8>), TreeWalkError> {
+        let transport_url = url.to_vec();
+        let Some(dir) = dir else {
+            return Ok((transport_url.clone(), transport_url));
+        };
+        let parsed = Self::parse_fetch_tree_url(id, span, url)?;
+        let mut updates = BTreeMap::new();
+        updates.insert(DIR_ATTR.to_vec(), dir.to_vec());
+        let canonical_url = Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            url,
+            &parsed,
+            None,
+            Self::decode_flake_ref_query(id, span, url, parsed.query())?,
+            updates,
+        )?;
+        Ok((canonical_url, transport_url))
+    }
+
+    pub(super) fn fetch_tree_transport_url_without_dir(
+        id: IrId,
+        span: Span,
+        url: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let parsed = Self::parse_fetch_tree_url(id, span, url)?;
+        let mut query = Self::decode_flake_ref_query(id, span, url, parsed.query())?;
+        if query.remove(DIR_ATTR).is_none() {
+            return Ok(url.to_vec());
+        }
+        Self::flake_ref_url_with_scheme_and_query(
+            id,
+            span,
+            url,
+            &parsed,
+            None,
+            query,
+            BTreeMap::new(),
+        )
+    }
+
+    pub(super) fn fetch_tree_file_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                UNPACK_ATTR,
+            ],
+        )?;
+        let url = self.required_fetch_tree_url(id, span, value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        let _unpack = self.optional_fetch_tree_bool_attr(id, span, value, UNPACK_ATTR, false)?;
+        Ok(FetchTreeArguments::File {
+            url,
+            expected_nar_hash,
+            expected_last_modified,
+            rev,
+            rev_count,
+        })
+    }
+
+    pub(super) fn fetch_tree_tarball_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_ATTR,
+                REV_COUNT_ATTR,
+                UNPACK_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let raw_url = self.required_fetch_tree_url(id, span, value)?;
+        let dir = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)?;
+        let (url, transport_url) =
+            Self::fetch_tree_url_with_dir_metadata(id, span, &raw_url, dir.as_deref())?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let rev_count = self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+        let _unpack = self.optional_fetch_tree_bool_attr(id, span, value, UNPACK_ATTR, true)?;
+        Ok(FetchTreeArguments::Tarball {
+            url,
+            transport_url,
+            dir,
+            expected_nar_hash,
+            expected_last_modified,
+            last_modified_from_lock: false,
+            rev,
+            rev_count,
+        })
+    }
+
+    pub(super) fn fetch_tree_forge_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+        input_type: &[u8],
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                OWNER_ATTR,
+                REPO_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                HOST_ATTR,
+                b"treeHash",
+                DIR_ATTR,
+            ],
+        )?;
+
+        let mut attrs = FlakeRefAttrs::new();
+        attrs.insert(
+            TYPE_ATTR.to_vec(),
+            FlakeRefAttrValue::String(input_type.to_vec()),
+        );
+        let owner_value = self.required_attr_value_by_name(id, value, OWNER_ATTR, span)?;
+        let owner_value = self.force_value(id, span, owner_value)?;
+        attrs.insert(
+            OWNER_ATTR.to_vec(),
+            FlakeRefAttrValue::String(self.context_free_string_bytes(
+                id,
+                span,
+                owner_value,
+                "fetchTree",
+            )?),
+        );
+        let repo_value = self.required_attr_value_by_name(id, value, REPO_ATTR, span)?;
+        let repo_value = self.force_value(id, span, repo_value)?;
+        attrs.insert(
+            REPO_ATTR.to_vec(),
+            FlakeRefAttrValue::String(self.context_free_string_bytes(
+                id,
+                span,
+                repo_value,
+                "fetchTree",
+            )?),
+        );
+        if let Some(reference) = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)? {
+            attrs.insert(REF_ATTR.to_vec(), FlakeRefAttrValue::String(reference));
+        }
+        if let Some(rev) = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)? {
+            attrs.insert(REV_ATTR.to_vec(), FlakeRefAttrValue::String(rev));
+        }
+        if let Some(nar_hash) =
+            self.optional_fetch_tree_string_attr(id, span, value, NAR_HASH_ATTR)?
+        {
+            attrs.insert(NAR_HASH_ATTR.to_vec(), FlakeRefAttrValue::String(nar_hash));
+        }
+        if let Some(last_modified) =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?
+        {
+            let last_modified = u64::try_from(last_modified).map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::FetchTree {
+                        id,
+                        input: LAST_MODIFIED_ATTR.to_vec(),
+                        message: "fetchTree integer attribute must be non-negative".to_owned(),
+                    },
+                    span,
+                )
+            })?;
+            attrs.insert(
+                LAST_MODIFIED_ATTR.to_vec(),
+                FlakeRefAttrValue::Int(last_modified),
+            );
+        }
+        if let Some(host) = self.optional_fetch_tree_string_attr(id, span, value, HOST_ATTR)? {
+            attrs.insert(HOST_ATTR.to_vec(), FlakeRefAttrValue::String(host));
+        }
+        if let Some(dir) = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)? {
+            attrs.insert(DIR_ATTR.to_vec(), FlakeRefAttrValue::String(dir));
+        }
+
+        self.fetch_tree_forge_flake_ref_arguments(id, span, input_type, &attrs)
+    }
+
+    pub(super) fn fetch_tree_git_arguments(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: Value,
+    ) -> Result<FetchTreeArguments, TreeWalkError> {
+        self.validate_fetch_tree_attrs(
+            id,
+            span,
+            value,
+            &[
+                TYPE_ATTR,
+                URL_ATTR,
+                REF_ATTR,
+                REV_ATTR,
+                SHALLOW_ATTR,
+                SUBMODULES_ATTR,
+                ALL_REFS_ATTR,
+                NAR_HASH_ATTR,
+                LAST_MODIFIED_ATTR,
+                REV_COUNT_ATTR,
+                EXPORT_IGNORE_ATTR,
+                DIRTY_REV_ATTR,
+                DIRTY_SHORT_REV_ATTR,
+                VERIFY_COMMIT_ATTR,
+                KEYTYPE_ATTR,
+                PUBLIC_KEY_ATTR,
+                PUBLIC_KEYS_ATTR,
+                DIR_ATTR,
+            ],
+        )?;
+        let raw_url = self.required_fetch_tree_url(id, span, value)?;
+        let dir = self.optional_fetch_tree_string_attr(id, span, value, DIR_ATTR)?;
+        let (url, transport_url) =
+            Self::fetch_tree_url_with_dir_metadata(id, span, &raw_url, dir.as_deref())?;
+        let rev = self.optional_fetch_tree_string_attr(id, span, value, REV_ATTR)?;
+        let reference = self.optional_fetch_tree_string_attr(id, span, value, REF_ATTR)?;
+        let submodules =
+            self.optional_fetch_tree_bool_attr(id, span, value, SUBMODULES_ATTR, false)?;
+        let shallow = self.optional_fetch_tree_bool_attr(id, span, value, SHALLOW_ATTR, true)?;
+        let all_refs = self.optional_fetch_tree_bool_attr(id, span, value, ALL_REFS_ATTR, false)?;
+        let export_ignore =
+            self.optional_fetch_tree_bool_attr(id, span, value, EXPORT_IGNORE_ATTR, !submodules)?;
+        let dirty_rev = self.optional_fetch_tree_string_attr(id, span, value, DIRTY_REV_ATTR)?;
+        let dirty_short_rev =
+            self.optional_fetch_tree_string_attr(id, span, value, DIRTY_SHORT_REV_ATTR)?;
+        if dirty_rev.is_some() != dirty_short_rev.is_some() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::FetchTree {
+                    id,
+                    input: DIRTY_REV_ATTR.to_vec(),
+                    message: "fetchTree git dirtyRev and dirtyShortRev must be provided together"
+                        .to_owned(),
+                },
+                span,
+            ));
+        }
+        let extra_query = self.fetch_tree_git_verified_fetch_query(id, span, value)?;
+        let expected_nar_hash = self.optional_fetch_tree_nar_hash_attr(id, span, value)?;
+        let expected_last_modified =
+            self.optional_fetch_tree_int_attr(id, span, value, LAST_MODIFIED_ATTR)?;
+        let expected_rev_count =
+            self.optional_fetch_tree_usize_attr(id, span, value, REV_COUNT_ATTR)?;
+
+        Ok(FetchTreeArguments::Git {
+            args: FetchGitArguments {
+                url,
+                transport_url: dir.as_ref().map(|_| transport_url),
+                name: "source".to_owned(),
+                rev,
+                reference,
+                submodules,
+                shallow,
+                all_refs,
+                export_ignore,
+                extra_query,
+            },
+            dir,
+            expected_nar_hash,
+            expected_last_modified,
+            expected_rev_count,
+            dirty_rev,
+            dirty_short_rev,
+        })
+    }
+}

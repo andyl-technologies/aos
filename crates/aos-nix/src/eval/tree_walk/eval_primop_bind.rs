@@ -1,0 +1,959 @@
+//! Strict primop binding, `select`, `foldl`, and replacement helpers.
+
+use super::*;
+
+impl TreeWalk {
+    pub(super) fn force_primop_value(
+        &mut self,
+        argument: EvalPrimOpArg,
+        expected: &'static str,
+        tag: ValueTag,
+    ) -> Result<Value, TreeWalkError> {
+        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        if value.tag() != tag {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument.id(),
+                    expected,
+                    actual: value.tag(),
+                },
+                argument.span(),
+            ));
+        }
+        Ok(value)
+    }
+
+    pub(super) fn force_int_primop_value(
+        &mut self,
+        argument: EvalPrimOpArg,
+    ) -> Result<i64, TreeWalkError> {
+        let value = self.force_value(argument.id(), argument.span(), argument.value())?;
+        self.expect_int(argument.id(), value, argument.span())
+    }
+
+    pub(super) fn eval_strict_ternary_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        primop: StrictTernaryPrimOp,
+        first: EvalPrimOpArg,
+        second: EvalPrimOpArg,
+        third: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            StrictTernaryPrimOp::FoldlStrict => {
+                self.eval_foldl_strict_primop_value(id, span, first, second, third)
+            }
+            StrictTernaryPrimOp::ReplaceStrings => {
+                self.eval_replace_strings_primop_value(id, span, first, second, third)
+            }
+            StrictTernaryPrimOp::Substring => {
+                self.eval_substring_primop_value(first, second, third)
+            }
+        }
+    }
+
+    pub(super) fn eval_foldl_strict_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        op_arg: EvalPrimOpArg,
+        initial_arg: EvalPrimOpArg,
+        list_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let op = self.force_callable_value(op_arg.id(), op_arg.span(), op_arg.value())?;
+        let list_value = self.force_primop_value(list_arg, "list", ValueTag::List)?;
+        let elements = {
+            let list = self.heap.get_list(list_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: list_arg.id(),
+                        source,
+                    },
+                    list_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(list_arg.id(), list_arg.span(), list)?
+        };
+
+        let mut accumulator =
+            self.force_value(initial_arg.id(), initial_arg.span(), initial_arg.value())?;
+        for element in elements {
+            let step = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                op,
+                op_arg.span(),
+                initial_arg.id(),
+                accumulator,
+            )?;
+            let result = self.apply_lambda_value(
+                id,
+                span,
+                op_arg.id(),
+                step,
+                op_arg.span(),
+                list_arg.id(),
+                element,
+            )?;
+            accumulator = self.force_value(op_arg.id(), op_arg.span(), result)?;
+        }
+
+        Ok(accumulator)
+    }
+
+    pub(super) fn eval_replace_strings_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        from_arg: EvalPrimOpArg,
+        to_arg: EvalPrimOpArg,
+        string_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let from_value = self.force_primop_value(from_arg, "list", ValueTag::List)?;
+        let from_values = {
+            let from = self.heap.get_list(from_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: from_arg.id(),
+                        source,
+                    },
+                    from_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(from_arg.id(), from_arg.span(), from)?
+        };
+
+        let to_value = self.force_primop_value(to_arg, "list", ValueTag::List)?;
+        let to_values = {
+            let to = self.heap.get_list(to_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: to_arg.id(),
+                        source,
+                    },
+                    to_arg.span(),
+                )
+            })?;
+            Self::clone_list_elements(to_arg.id(), to_arg.span(), to)?
+        };
+
+        if from_values.len() != to_values.len() {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::ReplaceStringsLengthMismatch {
+                    id,
+                    from_len: from_values.len(),
+                    to_len: to_values.len(),
+                },
+                span,
+            ));
+        }
+
+        let mut patterns = Vec::new();
+        patterns.try_reserve_exact(from_values.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id,
+                    len: from_values.len(),
+                },
+                span,
+            )
+        })?;
+        for (from, replacement) in from_values.into_iter().zip(to_values) {
+            let from = self.force_value(from_arg.id(), from_arg.span(), from)?;
+            if from.tag() != ValueTag::String {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: from_arg.id(),
+                        expected: "string",
+                        actual: from.tag(),
+                    },
+                    from_arg.span(),
+                ));
+            }
+            let from = {
+                let string = self.heap.get_string(from).map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Heap {
+                            id: from_arg.id(),
+                            source,
+                        },
+                        from_arg.span(),
+                    )
+                })?;
+                Self::copy_bytes_for_node(from_arg.id(), from_arg.span(), string.bytes())?
+            };
+            patterns.push(ReplaceStringPattern { from, replacement });
+        }
+
+        let string_value = self.force_primop_value(string_arg, "string", ValueTag::String)?;
+        let (source, context) = {
+            let string = self.heap.get_string(string_value).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_arg.id(),
+                        source,
+                    },
+                    string_arg.span(),
+                )
+            })?;
+            let source =
+                Self::copy_bytes_for_node(string_arg.id(), string_arg.span(), string.bytes())?;
+            let context = string
+                .context()
+                .union(&StringContext::empty())
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_arg.id(),
+                            source,
+                        },
+                        string_arg.span(),
+                    )
+                })?;
+            (source, context)
+        };
+
+        let result = self.replace_strings_bytes(
+            id,
+            span,
+            to_arg.id(),
+            to_arg.span(),
+            &source,
+            context,
+            &patterns,
+        )?;
+        self.heap
+            .alloc_string(result)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+    }
+
+    pub(super) fn eval_substring_primop_value(
+        &mut self,
+        start_arg: EvalPrimOpArg,
+        len_arg: EvalPrimOpArg,
+        string_arg: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        let start_offset = self.force_int_primop_value(start_arg)? as u32 as i32;
+        if start_offset < 0 {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::NegativeSubstringStart {
+                    id: start_arg.id(),
+                    start: start_offset.into(),
+                },
+                start_arg.span(),
+            ));
+        }
+
+        let len = self.force_int_primop_value(len_arg)? as u32 as usize;
+        let value = self.force_value(string_arg.id(), string_arg.span(), string_arg.value())?;
+        let string = self.coerce_to_string(string_arg.id(), value, string_arg.span())?;
+        let result = {
+            let string = self.heap.get_string(string).map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Heap {
+                        id: string_arg.id(),
+                        source,
+                    },
+                    string_arg.span(),
+                )
+            })?;
+            string
+                .substring_preserve_context(start_offset as usize, len)
+                .map_err(|source| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::String {
+                            id: string_arg.id(),
+                            source,
+                        },
+                        string_arg.span(),
+                    )
+                })?
+        };
+        self.heap.alloc_string(result).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::Heap {
+                    id: string_arg.id(),
+                    source,
+                },
+                string_arg.span(),
+            )
+        })
+    }
+
+    pub(super) fn eval_strict_binary_primop_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        symbol: Symbol,
+        primop: StrictBinaryPrimOp,
+        first: EvalPrimOpArg,
+        second: EvalPrimOpArg,
+    ) -> Result<Value, TreeWalkError> {
+        match primop {
+            StrictBinaryPrimOp::AppendContext => {
+                self.eval_append_context_primop_value(id, span, first, second)
+            }
+            StrictBinaryPrimOp::ElemAt => self.eval_elem_at_primop_value(first, second),
+            StrictBinaryPrimOp::HashString => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let algorithm =
+                    self.eval_hash_algorithm(first.id(), first.span(), left, "hashString")?;
+                let string = self.force_value(second.id(), second.span(), second.value())?;
+                if string.tag() != ValueTag::String {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id: second.id(),
+                            expected: "string",
+                            actual: string.tag(),
+                        },
+                        second.span(),
+                    ));
+                }
+                self.eval_hash_string_value(id, span, second.id(), second.span(), string, algorithm)
+            }
+            StrictBinaryPrimOp::HashFile => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let algorithm =
+                    self.eval_hash_algorithm(first.id(), first.span(), left, "hashFile")?;
+                let path_value = self.force_value(second.id(), second.span(), second.value())?;
+                self.eval_hash_file_path_value(
+                    id,
+                    span,
+                    second.id(),
+                    second.span(),
+                    path_value,
+                    algorithm,
+                )
+            }
+            StrictBinaryPrimOp::CompareVersions => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left = self.context_free_string_bytes(
+                    first.id(),
+                    first.span(),
+                    left,
+                    "compareVersions",
+                )?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right = self.context_free_string_bytes(
+                    second.id(),
+                    second.span(),
+                    right,
+                    "compareVersions",
+                )?;
+                Ok(Value::int(compare_version_bytes(&left, &right)))
+            }
+            StrictBinaryPrimOp::Add
+            | StrictBinaryPrimOp::Sub
+            | StrictBinaryPrimOp::Mul
+            | StrictBinaryPrimOp::Div => {
+                let left = self.force_demanded_value(first.id(), first.span(), first.value())?;
+                let right =
+                    self.force_demanded_value(second.id(), second.span(), second.value())?;
+                let left = self.expect_number(first.id(), left, first.span())?;
+                let right = self.expect_number(second.id(), right, second.span())?;
+                let node = self.node(id)?;
+                let op = match primop {
+                    StrictBinaryPrimOp::Add => BinaryArithmeticOp::Add,
+                    StrictBinaryPrimOp::Sub => BinaryArithmeticOp::Sub,
+                    StrictBinaryPrimOp::Mul => BinaryArithmeticOp::Mul,
+                    StrictBinaryPrimOp::Div => BinaryArithmeticOp::Div,
+                    _ => {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                            span,
+                        ));
+                    }
+                };
+                self.eval_numeric_values(id, node, op, left, right)
+            }
+            StrictBinaryPrimOp::BitAnd | StrictBinaryPrimOp::BitOr | StrictBinaryPrimOp::BitXor => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let left = self.expect_int(first.id(), left, first.span())?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let right = self.expect_int(second.id(), right, second.span())?;
+                let op = match primop {
+                    StrictBinaryPrimOp::BitAnd => BitwiseOp::And,
+                    StrictBinaryPrimOp::BitOr => BitwiseOp::Or,
+                    StrictBinaryPrimOp::BitXor => BitwiseOp::Xor,
+                    _ => {
+                        return Err(TreeWalkError::new(
+                            TreeWalkErrorKind::UnsupportedPrimOp { id, symbol },
+                            span,
+                        ));
+                    }
+                };
+                Ok(Value::int(op.apply(left, right)))
+            }
+            StrictBinaryPrimOp::LessThan => {
+                let left = self.force_value(first.id(), first.span(), first.value())?;
+                let right = self.force_value(second.id(), second.span(), second.value())?;
+                let node = *self.node(id)?;
+                self.eval_comparison_values(
+                    id,
+                    &node,
+                    ComparisonOp::Lt,
+                    first.id(),
+                    first.span(),
+                    left,
+                    second.id(),
+                    second.span(),
+                    right,
+                )
+            }
+            StrictBinaryPrimOp::All => {
+                self.eval_all_any_primop_value(id, span, AllAnyOp::All, first, second)
+            }
+            StrictBinaryPrimOp::Any => {
+                self.eval_all_any_primop_value(id, span, AllAnyOp::Any, first, second)
+            }
+            StrictBinaryPrimOp::Match => self.eval_match_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::Split => self.eval_split_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::ConcatMap => {
+                self.eval_concat_map_primop_value(id, span, first, second)
+            }
+            StrictBinaryPrimOp::Filter => self.eval_filter_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::GenList => self.eval_gen_list_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::GroupBy => self.eval_group_by_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::Map => self.eval_map_primop_value(id, span, first, second),
+            StrictBinaryPrimOp::Partition => {
+                self.eval_partition_primop_value(id, span, first, second)
+            }
+        }
+    }
+
+    pub(super) fn bind_lambda_argument(
+        &mut self,
+        id: IrId,
+        pattern: IrId,
+        slot_count: usize,
+        frame: &EvalFrame,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let pattern_node = *self.node(pattern)?;
+        match pattern_node.kind {
+            IrKind::Formal => {
+                let IrData::Formal {
+                    name: _,
+                    default: None,
+                } = pattern_node.data
+                else {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::UnsupportedLambdaPattern {
+                            id,
+                            pattern,
+                            kind: pattern_node.kind,
+                        },
+                        pattern_node.span,
+                    ));
+                };
+                if slot_count != 1 {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::LambdaFrameSlotMismatch {
+                            id,
+                            frame_slots: slot_count,
+                            pattern_slots: 1,
+                        },
+                        span,
+                    ));
+                }
+                frame.set(0, argument).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })
+            }
+            IrKind::FormalSet => self.bind_formal_set_argument(
+                id,
+                pattern,
+                &pattern_node,
+                slot_count,
+                frame,
+                argument_id,
+                argument_span,
+                argument,
+                span,
+            ),
+            kind => Err(TreeWalkError::new(
+                TreeWalkErrorKind::UnsupportedLambdaPattern { id, pattern, kind },
+                pattern_node.span,
+            )),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn bind_formal_set_argument(
+        &mut self,
+        id: IrId,
+        pattern: IrId,
+        pattern_node: &IrNode,
+        slot_count: usize,
+        frame: &EvalFrame,
+        argument_id: IrId,
+        argument_span: Span,
+        argument: Value,
+        span: Span,
+    ) -> Result<(), TreeWalkError> {
+        let IrData::FormalSet {
+            formals,
+            ellipsis,
+            alias,
+        } = pattern_node.data
+        else {
+            return Err(self.invalid_payload(pattern, pattern_node, "formal-set payload"));
+        };
+        let formal_slice = self
+            .current_ir()
+            .arena
+            .child_slice(formals)
+            .ok_or_else(|| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidChildSlice {
+                        id: pattern,
+                        slice: formals,
+                    },
+                    pattern_node.span,
+                )
+            })?;
+        let mut formal_ids = Vec::new();
+        formal_ids
+            .try_reserve_exact(formal_slice.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::ListAllocationFailed {
+                        id: pattern,
+                        len: formal_slice.len(),
+                    },
+                    pattern_node.span,
+                )
+            })?;
+        formal_ids.extend_from_slice(formal_slice);
+
+        let mut names = Vec::new();
+        names.try_reserve_exact(formal_ids.len()).map_err(|_| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::ListAllocationFailed {
+                    id: pattern,
+                    len: formal_ids.len(),
+                },
+                pattern_node.span,
+            )
+        })?;
+        for formal in &formal_ids {
+            let formal_node = *self.node(*formal)?;
+            let IrData::Formal { name, .. } = formal_node.data else {
+                return Err(self.invalid_payload(*formal, &formal_node, "formal payload"));
+            };
+            if self.symbols.resolve(name).is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: *formal,
+                        symbol: name,
+                    },
+                    formal_node.span,
+                ));
+            }
+            names.push(name);
+        }
+        if let Some(alias) = alias {
+            if self.symbols.resolve(alias).is_none() {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::InvalidSymbol {
+                        id: pattern,
+                        symbol: alias,
+                    },
+                    pattern_node.span,
+                ));
+            }
+        }
+        let alias_slot = alias.filter(|alias| !names.contains(alias));
+        let pattern_slots = names.len() + usize::from(alias_slot.is_some());
+        if slot_count != pattern_slots {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::LambdaFrameSlotMismatch {
+                    id,
+                    frame_slots: slot_count,
+                    pattern_slots,
+                },
+                span,
+            ));
+        }
+
+        let attrs_value = self.force_value(argument_id, argument_span, argument)?;
+        if attrs_value.tag() != ValueTag::Attrs {
+            return Err(TreeWalkError::new(
+                TreeWalkErrorKind::Type {
+                    id: argument_id,
+                    expected: "attrs",
+                    actual: attrs_value.tag(),
+                },
+                argument_span,
+            ));
+        }
+
+        if !ellipsis {
+            let unexpected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs
+                    .iter_lexicographic()
+                    .find(|entry| !names.contains(&entry.key))
+                    .map(|entry| entry.key)
+            };
+            if let Some(symbol) = unexpected {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::UnexpectedFormalAttribute { id, symbol },
+                    span,
+                ));
+            }
+        }
+
+        for (slot, formal) in formal_ids.into_iter().enumerate() {
+            let formal_node = *self.node(formal)?;
+            let IrData::Formal { name, default } = formal_node.data else {
+                return Err(self.invalid_payload(formal, &formal_node, "formal payload"));
+            };
+            let selected = {
+                let attrs = self.heap.get_attrs(attrs_value).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(name)
+            };
+            let value = match (selected, default) {
+                (Some(value), _) => value,
+                (None, Some(default)) => self.eval_lazy_node(default)?,
+                (None, None) => {
+                    return Err(TreeWalkError::new(
+                        TreeWalkErrorKind::MissingFormalAttribute { id, symbol: name },
+                        span,
+                    ));
+                }
+            };
+            frame.set(slot as u32, value).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+            })?;
+        }
+
+        if alias_slot.is_some() {
+            frame
+                .set(names.len() as u32, attrs_value)
+                .map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, span)
+                })?;
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn eval_attrset(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::AttrSet {
+            shape,
+            bindings,
+            recursive,
+            has_dynamic: _,
+            frame,
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "attrset payload"));
+        };
+        let binding_range = self.binding_range(id, bindings, node.span)?;
+        {
+            let shape_keys = self
+                .current_ir()
+                .shapes
+                .get(shape.index())
+                .ok_or_else(|| {
+                    TreeWalkError::new(TreeWalkErrorKind::InvalidShapeId { id, shape }, node.span)
+                })?
+                .keys
+                .to_vec();
+            self.validate_attrset_shape(id, shape, &shape_keys, binding_range.clone(), node.span)?;
+        }
+        let static_bindings = binding_range
+            .clone()
+            .filter(|binding_index| {
+                matches!(
+                    self.current_ir().bindings[*binding_index].key,
+                    IrAttrPathSegment::Static(_)
+                )
+            })
+            .count();
+        let frame_values = if recursive {
+            let Some(frame) = frame else {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::MissingFrameMetadata { id },
+                    node.span,
+                ));
+            };
+            let slot_count = self.frame_info(id, frame, node.span)?.slot_count as usize;
+            if slot_count != static_bindings {
+                return Err(TreeWalkError::new(
+                    TreeWalkErrorKind::AttrSetFrameSlotMismatch {
+                        id,
+                        frame_slots: slot_count,
+                        bindings: static_bindings,
+                    },
+                    node.span,
+                ));
+            }
+            Some(EvalFrame::new(slot_count).map_err(|source| {
+                TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+            })?)
+        } else {
+            None
+        };
+        let mut inherit_source_thunks = BTreeMap::new();
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(binding_range.len())
+            .map_err(|_| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::Attr {
+                        id,
+                        source: AttrError::AllocationFailed {
+                            entries: binding_range.len(),
+                        },
+                    },
+                    node.span,
+                )
+            })?;
+        if let Some(frame_values) = &frame_values {
+            self.env.push(Rc::clone(frame_values));
+        }
+        let result = (|| {
+            if let Some(frame_values) = &frame_values {
+                let mut slot = 0u32;
+                for binding_index in binding_range.clone() {
+                    let binding = self.current_ir().bindings[binding_index];
+                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                        let value = self.eval_attr_binding_value(
+                            id,
+                            node.span,
+                            binding.value,
+                            &mut inherit_source_thunks,
+                        )?;
+                        frame_values.set(slot, value).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                        })?;
+                        slot += 1;
+                    }
+                }
+            }
+
+            let mut slot = 0u32;
+            for binding_index in binding_range {
+                let binding = self.current_ir().bindings[binding_index];
+                let key = self.eval_attr_name(
+                    id,
+                    binding.key,
+                    DynamicAttrNullPolicy::SkipNull,
+                    node.span,
+                )?;
+                let Some(key) = key else {
+                    continue;
+                };
+                let value = if let Some(frame_values) = &frame_values {
+                    if matches!(binding.key, IrAttrPathSegment::Static(_)) {
+                        let value = frame_values.get(slot).map_err(|source| {
+                            TreeWalkError::new(TreeWalkErrorKind::Env { id, source }, node.span)
+                        })?;
+                        slot += 1;
+                        value
+                    } else {
+                        self.eval_attr_binding_value(
+                            id,
+                            node.span,
+                            binding.value,
+                            &mut inherit_source_thunks,
+                        )?
+                    }
+                } else {
+                    self.eval_attr_binding_value(
+                        id,
+                        node.span,
+                        binding.value,
+                        &mut inherit_source_thunks,
+                    )?
+                };
+                let position = binding
+                    .position
+                    .map(|span| AttrPosition::new(self.current_module.as_u32(), span));
+                let entry = match position {
+                    Some(position) => AttrEntry::with_position(key, value, position),
+                    None => AttrEntry::new(key, value),
+                };
+                entries.push(entry);
+            }
+            Ok(entries)
+        })();
+        if recursive {
+            let _ = self.env.pop();
+        }
+        let entries = result?;
+
+        let attrs = FlatAttrs::new(entries, &self.symbols).map_err(|source| {
+            TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, node.span)
+        })?;
+        self.heap
+            .alloc_attrs(shape.as_u32(), attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, node.span))
+    }
+
+    pub(super) fn eval_attr_binding_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        value: IrId,
+        inherit_source_thunks: &mut BTreeMap<u32, Value>,
+    ) -> Result<Value, TreeWalkError> {
+        let Some((select_id, receiver, path)) = self.inherit_source_select(value)? else {
+            return self.eval_lazy_node(value);
+        };
+
+        let receiver_key = receiver.as_u32();
+        let receiver_value = if let Some(receiver_value) = inherit_source_thunks.get(&receiver_key)
+        {
+            *receiver_value
+        } else {
+            let receiver_value = self.eval_lazy_node(receiver)?;
+            inherit_source_thunks.insert(receiver_key, receiver_value);
+            receiver_value
+        };
+
+        self.alloc_select_thunk(id, span, select_id, receiver_value, path)
+    }
+
+    pub(super) fn inherit_source_select(
+        &self,
+        value: IrId,
+    ) -> Result<Option<(IrId, IrId, IrAttrPathId)>, TreeWalkError> {
+        // `inherit (e) name...` lowers each target to a lazy select whose receiver
+        // is the same thunked source expression. Sharing that receiver at runtime
+        // preserves Nix's one-evaluation source behavior without caching all
+        // `ThunkAlloc` nodes globally across lexical environments.
+        let value_node = self.node(value)?;
+        if value_node.kind != IrKind::ThunkAlloc {
+            return Ok(None);
+        }
+        let IrData::Node(select_id) = value_node.data else {
+            return Err(self.invalid_payload(value, value_node, "thunk body"));
+        };
+        let select_node = self.node(select_id)?;
+        if select_node.kind != IrKind::Select {
+            return Ok(None);
+        }
+        let IrData::Select {
+            receiver,
+            path,
+            default,
+            ..
+        } = select_node.data
+        else {
+            return Err(self.invalid_payload(select_id, select_node, "select payload"));
+        };
+        if default.is_some() || self.node(receiver)?.kind != IrKind::ThunkAlloc {
+            return Ok(None);
+        }
+        if self
+            .attr_path(select_id, path, select_node.span)?
+            .iter()
+            .any(|segment| matches!(segment, IrAttrPathSegment::Dynamic(_)))
+        {
+            return Ok(None);
+        }
+
+        Ok(Some((select_id, receiver, path)))
+    }
+
+    pub(super) fn eval_select(&mut self, id: IrId, node: &IrNode) -> Result<Value, TreeWalkError> {
+        let IrData::Select {
+            receiver,
+            path: path_id,
+            default,
+            ..
+        } = node.data
+        else {
+            return Err(self.invalid_payload(id, node, "select payload"));
+        };
+        self.reject_empty_attr_path(id, path_id, node.span)?;
+        if let Some(value) =
+            self.eval_builtin_static_select(id, node, receiver, path_id, default)?
+        {
+            return Ok(value);
+        }
+        let current = self.eval_node(receiver)?;
+        self.eval_select_from_value(id, node.span, current, path_id, default, false)
+    }
+
+    pub(super) fn eval_select_from_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        mut current: Value,
+        path_id: IrAttrPathId,
+        default: Option<IrId>,
+        force_receiver: bool,
+    ) -> Result<Value, TreeWalkError> {
+        let segments = self.attr_path_len(id, path_id, span)?;
+        self.reject_empty_attr_path_len(id, path_id, span, segments)?;
+
+        if force_receiver {
+            current = self.force_value(id, span, current)?;
+        }
+        for index in 0..segments {
+            let segment = self.attr_path_segment(id, path_id, index, span)?;
+            let key = self
+                .eval_attr_name(id, segment, DynamicAttrNullPolicy::RejectNull, span)?
+                .ok_or_else(|| {
+                    TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "string",
+                            actual: ValueTag::Null,
+                        },
+                        span,
+                    )
+                })?;
+            if current.tag() != ValueTag::Attrs {
+                return match default {
+                    Some(default) => self.eval_node(default),
+                    None => Err(TreeWalkError::new(
+                        TreeWalkErrorKind::Type {
+                            id,
+                            expected: "attrs",
+                            actual: current.tag(),
+                        },
+                        span,
+                    )),
+                };
+            }
+            let selected = {
+                let attrs = self.heap.get_attrs(current).map_err(|source| {
+                    TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span)
+                })?;
+                attrs.get(key)
+            };
+            let Some(value) = selected else {
+                return match default {
+                    Some(default) => self.eval_node(default),
+                    None => Err(TreeWalkError::new(
+                        TreeWalkErrorKind::MissingAttribute { id, symbol: key },
+                        span,
+                    )),
+                };
+            };
+            if index + 1 == segments {
+                return Ok(value);
+            }
+            current = self.force_value(id, span, value)?;
+        }
+
+        Err(TreeWalkError::new(
+            TreeWalkErrorKind::InvalidAttrPath { id, path: path_id },
+            span,
+        ))
+    }
+}
