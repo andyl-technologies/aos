@@ -233,6 +233,12 @@ mod tests {
         ));
         assert_eq!(backend.shutdown(), Ok(()));
         assert!(matches!(
+            backend.advance_to_horizon(ExecutionHorizon {
+                icount: Icount { retired: 10 },
+            }),
+            Err(BackendError::Rejected { message }) if message == "sim backend is shut down; cannot advance"
+        ));
+        assert!(matches!(
             backend.deliver_input(BackendInput {
                 node: NodeId {
                     name: String::from("node-a"),
@@ -240,6 +246,21 @@ mod tests {
                 payload: Vec::new(),
             }),
             Err(BackendError::Rejected { .. })
+        ));
+    }
+
+    #[test]
+    fn sim_backend_rejects_unknown_checkpoint_deterministically() {
+        let mut backend = SimBackend::new();
+        let unknown = Checkpoint {
+            id: ContentHash { bytes: [7; 32] },
+            configuration: ContentHash::default(),
+            kind: CheckpointKind::Fat,
+        };
+
+        assert!(matches!(
+            backend.restore(&unknown),
+            Err(BackendError::Rejected { message }) if message == "sim backend cannot restore unknown checkpoint"
         ));
     }
 }

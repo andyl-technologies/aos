@@ -171,4 +171,22 @@ mod tests {
 
         assert_ne!(first.finish(), second.finish());
     }
+
+    #[test]
+    fn stable_hasher_covers_chunk_remainder_and_bool_inputs() {
+        let mut with_full_chunk = StableHasher::new();
+        with_full_chunk.write_bytes(b"abcdefgh");
+        with_full_chunk.write_bool(true);
+
+        let mut with_remainder = StableHasher::new();
+        with_remainder.write_bytes(b"abcdefghi");
+        with_remainder.write_bool(true);
+
+        let mut with_false = StableHasher::new();
+        with_false.write_bytes(b"abcdefgh");
+        with_false.write_bool(false);
+
+        assert_ne!(with_full_chunk.finish(), with_remainder.finish());
+        assert_ne!(with_full_chunk.finish(), with_false.finish());
+    }
 }

@@ -256,6 +256,27 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_event_keys_cover_producer_tie_break() {
+        let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
+        let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
+        let network_a = scheduler_node("a", SchedulingNodeKind::Network);
+        let mut keys = [
+            event_key(1, &vm_a, &network_a, 1),
+            event_key(1, &vm_a, &disk_a, 1),
+        ];
+
+        keys.sort();
+
+        assert_eq!(
+            keys,
+            [
+                event_key(1, &vm_a, &disk_a, 1),
+                event_key(1, &vm_a, &network_a, 1),
+            ]
+        );
+    }
+
+    #[test]
     fn quantum_outcome_carries_step_decisions() {
         let config = Configuration::genesis(ScenarioDef {
             id: ContentHash::default(),
@@ -276,6 +297,27 @@ mod tests {
         };
 
         assert_eq!(outcome.configuration.schedule.decisions(), &[decision]);
+    }
+
+    #[test]
+    fn scheduler_errors_render_all_variants_deterministically() {
+        let backend = SchedulerError::from(BackendError::Rejected {
+            message: String::from("backend refused"),
+        });
+        let boundary = SchedulerError::BoundaryViolation {
+            message: String::from("bypassed scheduler boundary"),
+        };
+        let not_implemented = SchedulerError::NotImplemented { operation: "pick" };
+
+        assert_eq!(
+            not_implemented.to_string(),
+            "scheduler operation pick is not implemented yet"
+        );
+        assert_eq!(
+            backend.to_string(),
+            "backend failed under scheduler control: backend refused"
+        );
+        assert_eq!(boundary.to_string(), "bypassed scheduler boundary");
     }
 
     fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {

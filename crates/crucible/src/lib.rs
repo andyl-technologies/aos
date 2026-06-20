@@ -600,13 +600,21 @@ mod tests {
         let prefix = schedule.prefix(1);
         assert!(prefix.is_ok());
         assert_eq!(prefix.as_ref().map(Schedule::len), Ok(1));
+        let error = match schedule.prefix(2) {
+            Ok(_) => panic!("prefix beyond schedule length should fail"),
+            Err(error) => error,
+        };
         assert!(matches!(
-            schedule.prefix(2),
-            Err(ScheduleError::PrefixTooLong {
+            error,
+            ScheduleError::PrefixTooLong {
                 requested: 2,
                 available: 1,
-            })
+            }
         ));
+        assert_eq!(
+            error.to_string(),
+            "schedule prefix length 2 exceeds available length 1"
+        );
     }
 
     #[test]
@@ -655,5 +663,25 @@ mod tests {
         });
 
         assert_eq!(advanced, Ok(AdvanceOutcome::ReachedHorizon));
+    }
+
+    #[test]
+    fn engine_and_backend_errors_render_all_variants_deterministically() {
+        let engine = EngineError::NotImplemented {
+            operation: "reduce",
+        };
+        let backend_not_implemented = BackendError::NotImplemented {
+            operation: "snapshot",
+        };
+        let backend_rejected = BackendError::Rejected {
+            message: String::from("stable rejection"),
+        };
+
+        assert_eq!(engine.to_string(), "reduce is not implemented yet");
+        assert_eq!(
+            backend_not_implemented.to_string(),
+            "backend operation snapshot is not implemented yet"
+        );
+        assert_eq!(backend_rejected.to_string(), "stable rejection");
     }
 }

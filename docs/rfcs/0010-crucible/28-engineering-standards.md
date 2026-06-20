@@ -566,7 +566,7 @@ the conditions under which feature code can be trusted to stay deterministic
   vectors + round-trip + fuzzing for the three ABIs, and the replay-oracle test
   run both fixed-corpus and in-search. — satisfies [STD-22], [STD-23], [STD-25];
   spec §4, §8 of 24, §6 of 24.
-- [ ] **T-STD-10** Define and measure the determinism-core coverage floor (every
+- [x] **T-STD-10** Define and measure the determinism-core coverage floor (every
   ordering branch and error variant in the scheduler/RNG/digest/ring/codec/
   oracle/artifact paths exercised), measured deterministically in a separate
   instrumentation build. — satisfies [STD-26]; spec §4.
