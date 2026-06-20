@@ -87,6 +87,10 @@ pub struct IndexOutcome {
     /// Whether this run took the incremental channel-refresh fast path
     /// (unchanged `info/refs`; only channel partitions re-verified).
     pub incremental: bool,
+    /// Whether the registry has no published surface yet (no `info/refs`): a
+    /// freshly-created registry. A pending run indexes nothing and raises no
+    /// events; it is recorded as the benign `pending` state, never `failed`.
+    pub pending: bool,
 }
 
 /// Index one registered registry, recording failure state on error.
@@ -115,7 +119,11 @@ pub async fn index_and_record(
 
     match index_registry(db, fetch, registry).await {
         Ok(outcome) => {
-            dispatch_index_events(db, registry, &outcome, &prior_releases).await;
+            // A pending run (no surface published yet) indexed nothing, so it
+            // raises no `index.completed`/`release.published` events.
+            if !outcome.pending {
+                dispatch_index_events(db, registry, &outcome, &prior_releases).await;
+            }
             Ok(outcome)
         }
         Err(err) => {
@@ -199,10 +207,21 @@ pub async fn index_registry(
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
 ) -> Result<IndexOutcome> {
-    let refs_bytes = fetch
-        .fetch("info/refs")
-        .await?
-        .with_context(|| format!("{}: info/refs not found", fetch.describe()))?;
+    let Some(refs_bytes) = fetch.fetch("info/refs").await? else {
+        // No `info/refs` object: the registry has no published surface yet (a
+        // freshly-created registry nobody has pushed to). That is not a failure —
+        // record the benign `pending` state and return, so its home page reads
+        // "nothing published yet" rather than "index failed".
+        db.mark_index_pending(registry.id).await?;
+        return Ok(IndexOutcome {
+            commit: String::new(),
+            packages: 0,
+            releases: 0,
+            channels: 0,
+            incremental: false,
+            pending: true,
+        });
+    };
     let refs = parse_info_refs(std::str::from_utf8(&refs_bytes).context("info/refs not UTF-8")?)?;
     let refs_digest = hex::encode(Sha256::digest(&refs_bytes));
 
@@ -342,6 +361,7 @@ pub async fn index_registry(
         releases: snapshot.releases.len(),
         channels: snapshot.channels.len(),
         incremental: false,
+        pending: false,
     };
     db.apply_snapshot(registry.id, &snapshot).await?;
     raise_floors(db, registry.id, &snapshot.channels).await?;
@@ -565,6 +585,7 @@ async fn index_incremental(
         releases: releases.len(),
         channels: channels.len(),
         incremental: true,
+        pending: false,
     })
 }
 

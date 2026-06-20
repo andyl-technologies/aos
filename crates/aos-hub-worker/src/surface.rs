@@ -27,6 +27,38 @@ use aos_hub_core::surface_write::{SurfaceWrite, SurfaceWriteProvider};
 
 use crate::keymap;
 
+/// Whether an R2 error message names a transient, retryable condition.
+///
+/// Cloudflare R2 surfaces error `10001` ("We encountered an internal error.
+/// Please try again.") for transient server-side faults, which it explicitly
+/// asks callers to retry. A missing object is not an error (it returns
+/// `Ok(None)`), so this never matches a 404-equivalent.
+fn is_transient_r2(message: &str) -> bool {
+    message.contains("(10001)") || message.contains("Please try again")
+}
+
+/// Run an R2 `get`, retrying a few times on a transient R2 internal error
+/// ([`is_transient_r2`]).
+///
+/// A missing object (`Ok(None)`) and a non-transient error return immediately;
+/// only a transient `10001`-class fault is retried (up to three attempts total),
+/// so a brief R2 hiccup does not, for example, mark a registry's index `failed`.
+///
+/// # Errors
+///
+/// Returns an error if a non-transient error occurs or every attempt fails (the
+/// last error is reported, prefixed with the key).
+async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<worker::Object>> {
+    let mut attempt = 0u32;
+    loop {
+        match bucket.get(key).execute().await {
+            Ok(object) => return Ok(object),
+            Err(err) if attempt < 2 && is_transient_r2(&err.to_string()) => attempt += 1,
+            Err(err) => return Err(anyhow::anyhow!("R2 get {key}: {err}")),
+        }
+    }
+}
+
 /// A [`SurfaceProvider`] that serves every registry from one R2 bucket.
 ///
 /// Holds the hub-owned bucket binding; [`fetcher`](SurfaceProvider::fetcher)
@@ -73,12 +105,7 @@ struct R2SurfaceFetch {
 impl SurfaceFetch for R2SurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let key = keymap::r2_key(&self.prefix, path);
-        let object = self
-            .bucket
-            .get(&key)
-            .execute()
-            .await
-            .map_err(|err| anyhow::anyhow!("R2 get {key}: {err}"))?;
+        let object = r2_get(&self.bucket, &key).await?;
         let Some(object) = object else {
             return Ok(None);
         };
@@ -113,12 +140,7 @@ impl SurfaceFetch for R2SurfaceFetch {
         // range end), so the memory-safety property the streaming path guarantees
         // is preserved; only the discarded pre-`start` bytes cross R2→isolate
         // (nil for the whole-object and prefix reads nix actually issues).
-        let object = self
-            .bucket
-            .get(&key)
-            .execute()
-            .await
-            .map_err(|err| anyhow::anyhow!("R2 get {key}: {err}"))?;
+        let object = r2_get(&self.bucket, &key).await?;
         let Some(object) = object else {
             return Ok(None);
         };
