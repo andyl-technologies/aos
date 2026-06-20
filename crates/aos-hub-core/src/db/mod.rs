@@ -1345,9 +1345,11 @@ pub struct StorageBindingRecord {
     pub org_id: i64,
     /// Binding name, unique within the org.
     pub name: String,
-    /// Backend kind; `local_fs` is the only kind implemented this phase.
+    /// Backend kind: `local_fs` (a host directory), or `s3`/`r2` (an external
+    /// S3-compatible object store reached via presigned URLs).
     pub kind: String,
-    /// Backend root: a filesystem path for `local_fs`.
+    /// Backend root: a filesystem path for `local_fs`, or the bucket name
+    /// (optionally `bucket/sub-prefix`) for `s3`/`r2`.
     pub root: String,
     /// Access mode: `public` (Direct-eligible, served at `public_base_url`) or
     /// `private` (hub-only; reads must be proxied or presigned).

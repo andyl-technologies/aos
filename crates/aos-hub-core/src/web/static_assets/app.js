@@ -403,7 +403,35 @@
     renderHighlight();
   }
 
+  // Storage-binding create form: show the S3/R2 origin fields only when an
+  // object-store kind is selected. Without JS every field is visible (the
+  // server ignores origin fields for local_fs), so this is pure enhancement.
+  function initBindingForm(form) {
+    var kindSel = form.querySelector("select[name=kind]");
+    var accessSel = form.querySelector("select[name=access]");
+    if (!kindSel) return;
+    function sync() {
+      var isObjectStore = kindSel.value === "s3" || kindSel.value === "r2";
+      form.querySelectorAll(".s3-only").forEach(function (el) {
+        el.style.display = isObjectStore ? "" : "none";
+      });
+      form.querySelectorAll(".local-only").forEach(function (el) {
+        el.style.display = isObjectStore ? "none" : "";
+      });
+      if (isObjectStore && accessSel) {
+        var isPrivate = accessSel.value !== "public";
+        form.querySelectorAll(".private-only").forEach(function (el) {
+          el.style.display = isPrivate ? "" : "none";
+        });
+      }
+    }
+    kindSel.addEventListener("change", sync);
+    if (accessSel) accessSel.addEventListener("change", sync);
+    sync();
+  }
+
   document.querySelectorAll("form[data-live]").forEach(initLiveSearch);
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
+  document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
 })();

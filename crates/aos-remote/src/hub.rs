@@ -51,6 +51,27 @@ use aos_proto_types::{
 
 use crate::client::validate_base_url;
 
+/// The endpoint, region, access mode, and credentials for an `s3`/`r2` storage
+/// binding, passed to [`HubClient::create_binding`].
+///
+/// All fields are ignored for a `local_fs` binding; pass
+/// [`BindingOrigin::default`] in that case.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BindingOrigin<'a> {
+    /// Access mode: `private` (credentialed, read/write) or `public`
+    /// (credential-less, read-only). Empty defaults to `private` on the hub.
+    pub access: &'a str,
+    /// Endpoint origin URL (e.g. `https://<account>.r2.cloudflarestorage.com`).
+    pub endpoint: &'a str,
+    /// Signing region (`auto` for R2, e.g. `us-east-1` for S3). Empty defaults to
+    /// `auto`.
+    pub region: &'a str,
+    /// Access key id (required for a private binding).
+    pub access_key_id: &'a str,
+    /// Secret access key (required for a private binding); sealed at rest.
+    pub secret_access_key: &'a str,
+}
+
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
 
@@ -457,9 +478,11 @@ impl RegistryHubClient {
 
     /// Creates a storage binding under an org.
     ///
-    /// Requires `registry.configure` on the org scope. Only the `local_fs` kind
-    /// is supported this phase; `root` is the backend root path. Calls
-    /// `aos.registry.v1.StorageService/CreateBinding`.
+    /// Requires `registry.configure` on the org scope. `kind` is `local_fs`,
+    /// `s3`, or `r2`; `root` is the backend root (a host path for `local_fs`, or
+    /// the bucket for `s3`/`r2`). For an `s3`/`r2` binding, `origin` carries the
+    /// endpoint, region, access mode, and (for a private binding) credentials.
+    /// Calls `aos.registry.v1.StorageService/CreateBinding`.
     ///
     /// # Errors
     ///
@@ -472,6 +495,7 @@ impl RegistryHubClient {
         name: &str,
         kind: &str,
         root: &str,
+        origin: BindingOrigin<'_>,
     ) -> Result<Binding> {
         let resp: CreateBindingResponse = self
             .call(
@@ -481,7 +505,11 @@ impl RegistryHubClient {
                     name: name.into(),
                     kind: kind.into(),
                     root: root.into(),
-                    ..Default::default()
+                    access: origin.access.into(),
+                    endpoint: origin.endpoint.into(),
+                    region: origin.region.into(),
+                    access_key_id: origin.access_key_id.into(),
+                    secret_access_key: origin.secret_access_key.into(),
                 },
             )
             .await
