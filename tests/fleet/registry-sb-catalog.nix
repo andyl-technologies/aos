@@ -106,7 +106,12 @@ in {
           "readlink /var/lib/profiles/system/current"
       ).strip()
       assert gen_before == "gen-1", f"expected gen-1, got {gen_before!r}"
-      target.fail("${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'")
+      # The miss is intentional; keep nix-store's expected error off the
+      # serial console so unexpected warnings remain visible.
+      target.fail(
+          "${pkgs.nix}/bin/nix-store --check-validity '${sbTop}' "
+          "> /tmp/sbtop-validity-precheck.out 2>&1"
+      )
 
       # ════ 1. PUBLISH the signed sysroot + UKI; derive SB facts ════════
       # `apr publish` shells out to sbverify (signer cert), objcopy (.sbat /
@@ -122,7 +127,7 @@ in {
           export NIX_CONF_DIR=/tmp/nix-conf
           export PATH="${pkgs.sbsigntools}/bin:${pkgs.binutils}/bin:${pkgs.systemd}/lib/systemd:$PATH"
           mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \\
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' \\
             > "$NIX_CONF_DIR/nix.conf"
 
           ${pkgs.nix}/bin/nix-store --check-validity '${sbTop}'
@@ -146,6 +151,7 @@ in {
             --maintainer test \\
             --sysroot \\
             --image '${sbUki}' --image-format uki \\
+            --no-ca \\
             --registry sysreg \\
             --no-commit > /tmp/publish.json
           ${pkgs.aos}/bin/apr verify --registry sysreg
