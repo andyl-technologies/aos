@@ -58,6 +58,7 @@ in {
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};
     singleSchedulerBoundary = import ./phase1-single-scheduler-boundary.nix {inherit pkgs lib;};
     standaloneDependencies = import ./phase1-standalone-dependencies.nix {inherit pkgs lib;};
+    testingStandards = import ./phase1-testing-standards.nix {inherit pkgs lib;};
     gates = {
       harnessLint = import ./phase1-harness-lint.nix {
         inherit pkgs lib;

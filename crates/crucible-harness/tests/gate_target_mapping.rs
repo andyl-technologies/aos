@@ -126,6 +126,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:layer0-determinism",
+                "crucible-assert",
+                "gate_layer0_determinism"
+            ),
+            (
+                "gate:layer0-determinism",
                 "crucible",
                 "gate_layer0_determinism"
             ),
@@ -137,6 +142,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
             (
                 "gate:single-vm-fingerprint",
                 "crucible-qemu-plugin",
+                "gate_single_vm_fingerprint"
+            ),
+            (
+                "gate:single-vm-fingerprint",
+                "crucible-guest",
                 "gate_single_vm_fingerprint"
             ),
             (
@@ -152,6 +162,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
             (
                 "gate:abi-conformance",
                 "crucible-harness",
+                "gate_abi_conformance"
+            ),
+            (
+                "gate:abi-conformance",
+                "crucible-shmem",
                 "gate_abi_conformance"
             ),
             ("gate:replay-oracle", "crucible", "gate_replay_oracle"),
@@ -174,6 +189,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
             (
                 "gate:control-responsive",
                 "crucible-api",
+                "gate_control_responsive"
+            ),
+            (
+                "gate:control-responsive",
+                "crucible-daemon",
                 "gate_control_responsive"
             ),
             ("gate:any-guest", "crucible-qemu", "gate_any_guest"),

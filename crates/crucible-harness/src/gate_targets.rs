@@ -38,6 +38,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     },
     GateTargetSpec {
         gate: "gate:layer0-determinism",
+        package: "crucible-assert",
+        test_target: "gate_layer0_determinism",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:layer0-determinism",
         package: "crucible",
         test_target: "gate_layer0_determinism",
         required_features: &["test-double"],
@@ -53,6 +60,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:single-vm-fingerprint",
         package: "crucible-qemu-plugin",
+        test_target: "gate_single_vm_fingerprint",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:single-vm-fingerprint",
+        package: "crucible-guest",
         test_target: "gate_single_vm_fingerprint",
         required_features: &[],
         placeholder: true,
@@ -74,6 +88,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:abi-conformance",
         package: "crucible-harness",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-shmem",
         test_target: "gate_abi_conformance",
         required_features: &[],
         placeholder: true,
@@ -116,6 +137,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:control-responsive",
         package: "crucible-api",
+        test_target: "gate_control_responsive",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:control-responsive",
+        package: "crucible-daemon",
         test_target: "gate_control_responsive",
         required_features: &[],
         placeholder: true,
