@@ -1,0 +1,507 @@
+//! Tree-walk evaluator tests: parse.
+
+use super::*;
+
+#[test]
+fn scoped_import_ifd_error_reports_scoped_import_op() {
+    let root = fs::canonicalize(unique_temp_dir("ifd-scoped")).expect("temp dir canonicalizes");
+    let store = root.join("store");
+    fs::create_dir(&store).expect("store dir creates");
+    let drv_path = store.join("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-ifd.drv");
+    let output_path = store.join("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-ifd");
+    let import_path = output_path.join("imported.nix");
+    let source = format!(
+        "builtins.scopedImport {{ }} (builtins.appendContext {file} {{ {drv} = {{ outputs = [ \"out\" ]; }}; }})",
+        file = nix_string_literal(&path_source(&import_path)),
+        drv = nix_string_literal(&path_source(&drv_path)),
+    );
+    let options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())
+        .expect("store dir configures");
+
+    let error = eval_whnf_owned_with_options(&lower(&source), options)
+        .expect_err("scopedImport IFD requires a realizer");
+    let TreeWalkErrorKind::UnsupportedImportFromDerivation { op, detail, .. } = error.kind() else {
+        panic!("unexpected error kind: {error:?}");
+    };
+    assert_eq!(op, "scopedImport");
+    assert_eq!(detail.path(), import_path.as_os_str().as_bytes());
+    assert_eq!(detail.drv_path(), drv_path.as_os_str().as_bytes());
+    assert_eq!(detail.output_name(), Some(b"out".as_slice()));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn import_evaluates_files_directories_and_escaping_values_in_one_heap() {
+    let root =
+        fs::canonicalize(unique_temp_dir("import-basic")).expect("temp directory canonicalizes");
+    let subdir = root.join("sub");
+    let dir_import = root.join("dir");
+    let empty_dir = root.join("empty-dir");
+    fs::create_dir(&subdir).expect("sub directory creates");
+    fs::create_dir(&dir_import).expect("import directory creates");
+    fs::create_dir(&empty_dir).expect("empty import directory creates");
+    fs::write(subdir.join("dep.nix"), b"2").expect("dep writes");
+    fs::write(subdir.join("inc.nix"), b"3").expect("inc writes");
+    fs::write(subdir.join("data.txt"), b"data").expect("data writes");
+    fs::write(subdir.join("rec.nix"), b"rec { x = 4; y = x; }").expect("rec writes");
+    fs::write(
+        subdir.join("child.nix"),
+        br#"{
+              a = 1;
+              nested = import ./dep.nix;
+              f = x: x + import ./inc.nix;
+              formal = { a ? 1, b }: a + b;
+              rel = ./data.txt;
+            }"#,
+    )
+    .expect("child writes");
+    fs::write(dir_import.join("default.nix"), b"5").expect("default writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    assert_eq!(
+        eval_with_options("(import ./sub/child.nix).a", options.clone())
+            .as_int()
+            .expect("imported attr is int"),
+        1
+    );
+    assert_eq!(
+        eval_with_options("(import ./sub/child.nix).nested", options.clone())
+            .as_int()
+            .expect("imported nested value is int"),
+        2
+    );
+    assert_eq!(
+        eval_with_options("(import ./sub/child.nix).f 4", options.clone())
+            .as_int()
+            .expect("imported function result is int"),
+        7
+    );
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "builtins.baseNameOf ((import ./sub/child.nix).rel)",
+            options.clone(),
+        ),
+        b"data.txt"
+    );
+    assert_eq!(
+        eval_with_options("(import ./sub/rec.nix).y == 4", options.clone())
+            .as_bool()
+            .expect("imported recursive attr equality is bool"),
+        true
+    );
+    assert_eq!(
+        eval_with_options(
+            r#"let args = builtins.functionArgs (import ./sub/child.nix).formal;
+                   in args.a && !(args.b)"#,
+            options.clone(),
+        )
+        .as_bool()
+        .expect("imported functionArgs result is bool"),
+        true
+    );
+    let xml = eval_string_bytes_with_options(
+        "builtins.toXML (import ./sub/child.nix).formal",
+        options.clone(),
+    );
+    assert!(
+        xml.windows(b"attrspat".len())
+            .any(|window| window == b"attrspat"),
+        "imported formal-set lambda XML includes attrspat"
+    );
+    let traced_path = eval_whnf_owned_with_options(
+        &lower("builtins.trace (import ./sub/child.nix).rel 0"),
+        options.clone(),
+    )
+    .expect("imported path trace evaluates");
+    let expected_path = subdir.join("data.txt").as_os_str().as_bytes().to_vec();
+    assert_eq!(traced_path.trace_output().len(), 1);
+    assert_trace_output(
+        traced_path
+            .trace_output()
+            .first()
+            .expect("path trace output exists"),
+        EvalTraceKind::Trace,
+        &expected_path,
+    );
+    assert_eq!(
+        eval_with_options("import ./dir", options.clone())
+            .as_int()
+            .expect("directory import is int"),
+        5
+    );
+    let missing_default =
+        eval_whnf_owned_with_options(&lower("import ./empty-dir"), options.clone())
+            .expect_err("directory import without default.nix rejects");
+    assert!(matches!(
+        missing_default.kind(),
+        TreeWalkErrorKind::FileRead { .. }
+    ));
+    let first_class =
+        eval_whnf_owned_with_options(&lower("let f = import; in f ./sub/child.nix"), options)
+            .expect("first-class import evaluates");
+    assert_eq!(first_class.value().tag(), ValueTag::Attrs);
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn import_uses_fresh_scope_and_shared_result_cache() {
+    let root = fs::canonicalize(unique_temp_dir("import-scope-cache"))
+        .expect("temp directory canonicalizes");
+    fs::write(root.join("fresh.nix"), b"secret").expect("fresh writes");
+    fs::write(root.join("traced.nix"), br#"builtins.trace "once" 9"#).expect("traced writes");
+    std::os::unix::fs::symlink(root.join("traced.nix"), root.join("traced-link.nix"))
+        .expect("trace symlink creates");
+    let traced_dir = root.join("traced-dir");
+    fs::create_dir(&traced_dir).expect("traced dir creates");
+    fs::write(
+        traced_dir.join("default.nix"),
+        br#"builtins.trace "dir-once" 8"#,
+    )
+    .expect("traced default writes");
+    fs::write(root.join("self.nix"), b"import ./self.nix").expect("self writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+
+    let fresh_error = eval_whnf_owned_with_options(
+        &lower("with { secret = 42; }; import ./fresh.nix"),
+        options.clone(),
+    )
+    .expect_err("imported file does not inherit caller with-scope");
+    assert!(matches!(
+        fresh_error.kind(),
+        TreeWalkErrorKind::ImportScope { .. } | TreeWalkErrorKind::UnresolvedWithVar { .. }
+    ));
+    let fresh_let_error = eval_whnf_owned_with_options(
+        &lower("let secret = 42; in import ./fresh.nix"),
+        options.clone(),
+    )
+    .expect_err("imported file does not inherit caller let-scope");
+    assert!(matches!(
+        fresh_let_error.kind(),
+        TreeWalkErrorKind::ImportScope { .. } | TreeWalkErrorKind::UnresolvedWithVar { .. }
+    ));
+
+    let traced = eval_whnf_owned_with_options(
+        &lower("builtins.deepSeq [ (import ./traced.nix) (import ./traced.nix) ] 0"),
+        options.clone(),
+    )
+    .expect("cached imports evaluate");
+    assert_eq!(traced.value().as_int().expect("trace result is int"), 0);
+    assert_eq!(traced.trace_output().len(), 1);
+    assert_trace_output(
+        traced.trace_output().first().expect("trace output exists"),
+        EvalTraceKind::Trace,
+        b"once",
+    );
+
+    let symlinked = eval_whnf_owned_with_options(
+        &lower("builtins.deepSeq [ (import ./traced.nix) (import ./traced-link.nix) ] 0"),
+        options.clone(),
+    )
+    .expect("canonicalized imports share cache");
+    assert_eq!(symlinked.value().as_int().expect("trace result is int"), 0);
+    assert_eq!(symlinked.trace_output().len(), 1);
+    assert_trace_output(
+        symlinked
+            .trace_output()
+            .first()
+            .expect("trace output exists"),
+        EvalTraceKind::Trace,
+        b"once",
+    );
+
+    let default_nix = eval_whnf_owned_with_options(
+        &lower("builtins.deepSeq [ (import ./traced-dir) (import ./traced-dir/default.nix) ] 0"),
+        options.clone(),
+    )
+    .expect("directory and default.nix imports share cache");
+    assert_eq!(
+        default_nix.value().as_int().expect("trace result is int"),
+        0
+    );
+    assert_eq!(default_nix.trace_output().len(), 1);
+    assert_trace_output(
+        default_nix
+            .trace_output()
+            .first()
+            .expect("trace output exists"),
+        EvalTraceKind::Trace,
+        b"dir-once",
+    );
+
+    let cycle = eval_whnf_owned_with_options(&lower("import ./self.nix"), options)
+        .expect_err("recursive import is rejected");
+    assert!(matches!(
+        cycle.kind(),
+        TreeWalkErrorKind::RecursiveImport { .. }
+    ));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn ordinary_filesystem_import_uses_configured_parse_cache() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    fs::write(root.join("dep.nix"), b"{ zOnly = 41; }").expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower(r#"builtins.concatStringsSep "," (builtins.attrNames (import ./dep.nix))"#);
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    let value = first.eval_root().expect("first import evaluates");
+    let string = first
+        .heap()
+        .get_string(value)
+        .expect("attrNames result concatenates to string");
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+    assert!(
+        fs::read_dir(&cache_root)
+            .expect("cache directory exists")
+            .next()
+            .is_some(),
+        "first import should write a durable parse-cache entry"
+    );
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    let value = second.eval_root().expect("second import evaluates");
+    let string = second
+        .heap()
+        .get_string(value)
+        .expect("cached attrNames result concatenates to string");
+    assert_eq!(string.bytes(), b"zOnly");
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cached_import_remaps_formal_and_inherit_symbols() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-symbols"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    fs::write(
+        root.join("dep.nix"),
+        br#"let
+                 hidden = 7;
+                 f = args@{ a ? hidden, ... }: a;
+               in { inherit hidden f; }"#,
+    )
+    .expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower(
+        r#"let imported = import ./dep.nix;
+               in (builtins.getAttr "f" imported) {} + builtins.getAttr "hidden" imported"#,
+    );
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    assert_eq!(
+        first
+            .eval_root()
+            .expect("first import evaluates")
+            .as_int()
+            .expect("first result is int"),
+        14
+    );
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    assert_eq!(
+        second
+            .eval_root()
+            .expect("cached import evaluates")
+            .as_int()
+            .expect("cached result is int"),
+        14
+    );
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cached_import_remaps_lowered_builtin_symbols() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-builtins"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    fs::write(
+        root.join("dep.nix"),
+        br#"let f = builtins.length; in builtins.add (f [ 1 2 3 ]) 4"#,
+    )
+    .expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower("import ./dep.nix");
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    assert_eq!(
+        first
+            .eval_root()
+            .expect("first import evaluates")
+            .as_int()
+            .expect("first result is int"),
+        7
+    );
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    assert_eq!(
+        second
+            .eval_root()
+            .expect("cached import evaluates")
+            .as_int()
+            .expect("cached result is int"),
+        7
+    );
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cached_import_remaps_with_var_symbols() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-with-var"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    fs::write(root.join("dep.nix"), br#"with { x = 41; }; x + 1"#).expect("dep writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower("import ./dep.nix");
+
+    let mut first = TreeWalk::with_options(&ir, options.clone());
+    assert_eq!(
+        first
+            .eval_root()
+            .expect("first import evaluates")
+            .as_int()
+            .expect("first result is int"),
+        42
+    );
+    assert_eq!(first.import_parse_cache_stats(), (0, 1));
+
+    let mut second = TreeWalk::with_options(&ir, options);
+    assert_eq!(
+        second
+            .eval_root()
+            .expect("cached import evaluates")
+            .as_int()
+            .expect("cached result is int"),
+        42
+    );
+    assert_eq!(second.import_parse_cache_stats(), (1, 0));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cached_imports_keep_module_relative_path_bases() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-bases"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    let first_dir = root.join("first");
+    let second_dir = root.join("second");
+    fs::create_dir(&first_dir).expect("first dir creates");
+    fs::create_dir(&second_dir).expect("second dir creates");
+    fs::write(first_dir.join("dep.nix"), b"./data.txt").expect("first dep writes");
+    fs::write(second_dir.join("dep.nix"), b"./data.txt").expect("second dep writes");
+    fs::write(first_dir.join("data.txt"), b"first").expect("first data writes");
+    fs::write(second_dir.join("data.txt"), b"second").expect("second data writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+    let ir = lower(
+        r#"builtins.toString (import ./first/dep.nix)
+               + "|"
+               + builtins.toString (import ./second/dep.nix)"#,
+    );
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let value = evaluator.eval_root().expect("imports evaluate");
+    let string = evaluator
+        .heap()
+        .get_string(value)
+        .expect("result is a string");
+    let expected = format!(
+        "{}|{}",
+        first_dir.join("data.txt").display(),
+        second_dir.join("data.txt").display()
+    );
+    assert_eq!(string.bytes(), expected.as_bytes());
+    assert_eq!(evaluator.import_parse_cache_stats(), (1, 1));
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}
+
+#[test]
+fn parse_cache_does_not_capture_scoped_or_text_store_imports() {
+    let root = fs::canonicalize(unique_temp_dir("import-parse-cache-bypass"))
+        .expect("temp directory canonicalizes");
+    let cache_root = root.join("cache");
+    fs::write(root.join("scoped.nix"), b"secret").expect("scoped import writes");
+
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_path_literal_base(root.as_os_str().as_bytes().to_vec())
+        .expect("path base configures");
+    options.set_parse_cache_root(&cache_root);
+
+    let scoped_ir = lower("builtins.scopedImport { secret = 9; } ./scoped.nix");
+    let mut scoped = TreeWalk::with_options(&scoped_ir, options.clone());
+    assert_eq!(
+        scoped
+            .eval_root()
+            .expect("scoped import evaluates")
+            .as_int()
+            .expect("scoped result is int"),
+        9
+    );
+    assert_eq!(scoped.import_parse_cache_stats(), (0, 0));
+
+    let text_store_ir = lower(r#"let p = builtins.toFile "generated.nix" "3"; in import p"#);
+    let mut text_store = TreeWalk::with_options(&text_store_ir, options);
+    assert_eq!(
+        text_store
+            .eval_root()
+            .expect("text-store import evaluates")
+            .as_int()
+            .expect("text-store result is int"),
+        3
+    );
+    assert_eq!(text_store.import_parse_cache_stats(), (0, 0));
+    assert!(
+        !cache_root.exists(),
+        "bypassed imports should not create parse-cache artifacts"
+    );
+
+    fs::remove_dir_all(root).expect("temp directory removes");
+}

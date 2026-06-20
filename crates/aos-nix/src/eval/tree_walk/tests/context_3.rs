@@ -1,0 +1,751 @@
+//! Tree-walk evaluator tests: context 3.
+
+use super::*;
+
+#[test]
+fn store_path_primop_returns_context_bearing_store_strings() {
+    let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+    let child = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src/sub";
+    let context_json =
+        br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec();
+
+    assert_eq!(
+        eval_string_bytes(&format!("builtins.storePath {root}")),
+        root.as_bytes()
+    );
+    assert_eq!(
+        eval_string_bytes(&format!(r#"builtins.storePath "{root}/.""#)),
+        root.as_bytes()
+    );
+    assert_eq!(
+        eval_string_bytes(&format!(r#"builtins.storePath "{child}""#)),
+        child.as_bytes()
+    );
+    assert_eq!(
+        eval_string_bytes(&format!(r#"builtins.storePath {{ outPath = "{root}"; }}"#)),
+        root.as_bytes()
+    );
+    assert_eq!(
+        eval_string_bytes(&format!("builtins.typeOf (builtins.storePath {root})")),
+        b"string"
+    );
+    assert_eq!(
+        eval_json_bytes(&format!("builtins.getContext (builtins.storePath {root})")),
+        context_json
+    );
+    assert_eq!(
+        eval_json_bytes(&format!(
+            r#"builtins.getContext (builtins.storePath "{child}")"#
+        )),
+        br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec()
+    );
+}
+
+#[test]
+fn store_path_primop_unions_existing_string_context() {
+    let source = r#"builtins.getContext (
+            builtins.storePath (
+                builtins.appendContext
+                  "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src"
+                  {
+                    "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other" = {
+                      path = true;
+                    };
+                  }
+            )
+        )"#;
+
+    assert_eq!(
+            eval_json_bytes(source),
+            br#"{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true},"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-other":{"path":true}}"#.to_vec()
+        );
+}
+
+#[test]
+fn store_path_context_is_observed_by_derivation_strict_as_input_src() {
+    let source = r#"let
+             src = builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               inherit src;
+             };
+           in {
+             drvPath = d.drvPath;
+             out = d.out;
+             src = src;
+             srcContext = builtins.getContext src;
+           }"#;
+
+    assert_eq!(
+            eval_json_bytes(source),
+            br#"{"drvPath":"/nix/store/vkbcsd0wpf20mil1mngbk8dzrh9z3sdv-x.drv","out":"/nix/store/y1q9h2irnds1pphaf2cpyxdv54y87w6d-x","src":"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src","srcContext":{"/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}}"#.to_vec()
+        );
+}
+
+#[test]
+fn store_path_primop_uses_configured_store_dir() {
+    let root = "/custom/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+    let options =
+        TreeWalkOptions::with_store_dir(b"/custom/store".to_vec()).expect("store dir configures");
+
+    assert_eq!(
+        eval_string_bytes_with_options(&format!("builtins.storePath {root}"), options.clone()),
+        root.as_bytes()
+    );
+    assert_eq!(
+        eval_json_bytes_with_options(
+            &format!(r#"builtins.getContext (builtins.storePath "{root}/sub")"#),
+            options,
+        ),
+        br#"{"/custom/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src":{"path":true}}"#.to_vec()
+    );
+}
+
+#[test]
+fn store_path_primop_rejects_non_store_paths() {
+    let error = eval_whnf_owned(&lower(r#"builtins.storePath "/tmp/not-store""#))
+        .expect_err("storePath rejects paths outside the store");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::StorePathNotInStore {
+            path,
+            ..
+        } if path.as_slice() == b"/tmp/not-store"
+    ));
+
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src/..""#,
+    ))
+    .expect_err("storePath rejects normalized store dir");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::StorePathNotInStore {
+            path,
+            ..
+        } if path.as_slice() == b"/nix/store"
+    ));
+
+    let error = eval_whnf_owned(&lower("builtins.storePath 1"))
+        .expect_err("storePath coerces its argument to a string");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "string",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn store_path_primop_is_gated_by_filesystem_policy() {
+    let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src";
+    let source = format!(r#"builtins.storePath "{root}""#);
+    let ir = lower(&source);
+
+    let error = eval_whnf_owned_with_options(&ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+        .expect_err("pure mode rejects storePath calls");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StorePathPureEval { id: ir.root }
+    );
+
+    assert_eq!(
+        eval_with_options(
+            "builtins ? storePath",
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+        )
+        .as_bool(),
+        Ok(true)
+    );
+    assert_eq!(
+        eval_string_bytes_with_options(
+            "builtins.typeOf builtins.storePath",
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+        ),
+        b"lambda"
+    );
+    let fallback_ir = lower("builtins.storePath or 42");
+    assert_eq!(
+        eval_whnf_owned_with_options(
+            &fallback_ir,
+            TreeWalkOptions::with_eval_mode(EvalMode::Pure)
+        )
+        .expect("storePath is visible to select-or in pure mode")
+        .value()
+        .tag(),
+        ValueTag::Primop
+    );
+
+    let invalid_ir = lower("builtins.storePath 1");
+    let (argument, argument_span) = primop_argument(&invalid_ir, 0);
+    let error =
+        eval_whnf_owned_with_options(&invalid_ir, TreeWalkOptions::with_eval_mode(EvalMode::Pure))
+            .expect_err("pure storePath still validates its argument before mode rejection");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            id: argument,
+            expected: "string",
+            actual: ValueTag::Int,
+        }
+    );
+    assert_eq!(error.span(), argument_span);
+
+    let mut allowed_pure_options = TreeWalkOptions::with_eval_mode(EvalMode::Pure);
+    allowed_pure_options
+        .add_allowed_path(b"/nix/store".to_vec())
+        .expect("store root configures as allowed");
+    let error = eval_whnf_owned_with_options(&ir, allowed_pure_options)
+        .expect_err("pure mode rejects storePath even when path policy would allow it");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StorePathPureEval { id: ir.root }
+    );
+
+    let selected_call = lower(&format!(r#"let f = builtins.storePath; in f "{root}""#));
+    let error = eval_whnf_owned_with_options(
+        &selected_call,
+        TreeWalkOptions::with_eval_mode(EvalMode::Pure),
+    )
+    .expect_err("pure mode rejects selected first-class storePath calls");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::StorePathPureEval { .. }
+    ));
+
+    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+    options
+        .add_allowed_path(b"/nix/store".to_vec())
+        .expect("store root configures as allowed");
+    assert_eq!(
+        eval_string_bytes_with_options(&source, options),
+        root.as_bytes()
+    );
+}
+
+#[test]
+fn to_file_primop_builds_text_store_paths_and_context() {
+    let source = r#"let
+            p = builtins.toFile "foo" "bar";
+            nested = builtins.toFile "baz" p;
+            dot = builtins.toFile ".x" "x";
+        in {
+            path = p;
+            ctx = builtins.getContext p;
+            nested = nested;
+            nestedCtx = builtins.getContext nested;
+            dot = dot;
+            firstClass = (builtins.toFile "hello") "abc";
+        }"#;
+
+    assert_eq!(
+            eval_json_bytes(source),
+            br#"{"ctx":{"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo":{"path":true}},"dot":"/nix/store/1x49d9g8znzikskxdsx7k6kk2qzcdrps-.x","firstClass":"/nix/store/4falznnjmyg7iqca3qlskx9l79bh6hwd-hello","nested":"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz","nestedCtx":{"/nix/store/5xd714cbfnkz02h2vbsj4fm03x3f15nf-baz":{"path":true}},"path":"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo"}"#.to_vec()
+        );
+}
+
+#[test]
+fn to_file_primop_validates_name_before_forcing_contents() {
+    let error = eval_whnf_owned(&lower(r#"builtins.toFile 1 (builtins.throw "contents")"#))
+        .expect_err("toFile validates the name type before forcing contents");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "string",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.toFile
+                (builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src")
+                (builtins.throw "contents")"#,
+    ))
+    .expect_err("toFile validates name context before forcing contents");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextNotAllowed { op: "toFile", .. }
+    ));
+
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.toFile "bad/name" (builtins.throw "contents")"#,
+    ))
+    .expect_err("toFile forces contents before constructing the store path");
+    assert!(matches!(error.kind(), TreeWalkErrorKind::Thrown { .. }));
+}
+
+#[test]
+fn to_file_text_store_is_visible_to_filesystem_builtins_and_import() {
+    let source = r#"let
+            p = builtins.toFile "x.nix" "1 + 2";
+            scoped = builtins.toFile "scoped.nix" "y + 1";
+        in {
+            exists = builtins.pathExists p;
+            type = builtins.readFileType p;
+            read = builtins.readFile p;
+            imported = import p;
+            scoped = builtins.scopedImport { y = 4; } scoped;
+        }"#;
+
+    assert_eq!(
+        eval_json_bytes(source),
+        br#"{"exists":true,"imported":3,"read":"1 + 2","scoped":5,"type":"regular"}"#.to_vec()
+    );
+}
+
+#[test]
+fn to_file_text_store_read_file_preserves_references() {
+    let source = r#"let
+            p = builtins.toFile "foo" "bar";
+            q = builtins.toFile "baz" p;
+            read = builtins.readFile q;
+        in {
+            ctx = builtins.getContext read;
+            sameAgain = builtins.toFile "again" read == builtins.toFile "again" p;
+        }"#;
+
+    assert_eq!(
+            eval_json_bytes(source),
+            br#"{"ctx":{"/nix/store/vxjiwkjkn7x4079qvh1jkl5pn05j2aw0-foo":{"path":true}},"sameAgain":true}"#.to_vec()
+        );
+}
+
+#[test]
+fn to_file_text_store_import_uses_import_cache() {
+    let outcome = eval_owned(
+        r#"let
+                p = builtins.toFile "cached.nix" "builtins.trace \"cached\" 1";
+                values = [ (import p) (import p) ];
+            in builtins.deepSeq values values"#,
+    );
+
+    assert_eq!(outcome.trace_output().len(), 1);
+    assert_trace_output(
+        outcome.trace_output().first().expect("trace output exists"),
+        EvalTraceKind::Trace,
+        b"cached",
+    );
+}
+
+#[test]
+fn to_file_text_store_read_file_rejects_nul_bytes() {
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.readFile (builtins.toFile "nul" (builtins.fromJSON "\"a\\u0000b\""))"#,
+    ))
+    .expect_err("readFile rejects NUL bytes from text store files");
+
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::FileReadContainsNul { .. }
+    ));
+}
+
+#[test]
+fn to_file_primop_rejects_invalid_name_and_types() {
+    for name in ["bad/name", "", ".", "..", ".-x", "..-x"] {
+        let source = format!(r#"builtins.toFile "{name}" "x""#);
+        let error =
+            eval_whnf_owned(&lower(&source)).expect_err("invalid store path names are rejected");
+        assert!(
+            matches!(error.kind(), TreeWalkErrorKind::ToFilePath { .. }),
+            "{name:?} rejected as ToFilePath, got {error:?}"
+        );
+    }
+
+    let error = eval_whnf_owned(&lower(r#"builtins.toFile 1 "x""#))
+        .expect_err("toFile name must be a string");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "string",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+
+    let error = eval_whnf_owned(&lower(r#"builtins.toFile "x" 1"#))
+        .expect_err("toFile contents must be a string");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            expected: "string",
+            actual: ValueTag::Int,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn to_file_primop_rejects_contextual_names_and_derivation_contents() {
+    let error = eval_whnf_owned(&lower(
+        r#"builtins.toFile
+                (builtins.storePath "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-src")
+                "x""#,
+    ))
+    .expect_err("toFile names cannot carry context");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextNotAllowed { op: "toFile", .. }
+    ));
+
+    let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ ];
+             };
+           in builtins.toFile "bad" d.out"#;
+    let error = eval_whnf_owned(&lower(source))
+        .expect_err("toFile contents cannot reference derivation outputs");
+    assert!(matches!(
+        error.kind(),
+        TreeWalkErrorKind::ToFileDerivationReference {
+            kind: ContextKind::SingleOutput,
+            ..
+        }
+    ));
+
+    let source = r#"let
+             d = derivationStrict {
+               name = "x";
+               system = "x86_64-linux";
+               builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+               args = [ ];
+             };
+           in builtins.toFile "ok" (builtins.unsafeDiscardOutputDependency d.drvPath)"#;
+    eval_whnf_owned(&lower(source))
+        .expect("toFile allows derivation contexts downgraded to opaque paths");
+}
+
+#[test]
+fn add_drv_output_dependencies_primop_upgrades_derivation_context() {
+    assert_eq!(
+        eval_string_bytes(
+            "let builtins = { addDrvOutputDependencies = value: \"shadow\"; }; in builtins.addDrvOutputDependencies \"x\""
+        ),
+        b"shadow"
+    );
+
+    let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("addDrvOutputDependencies argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let drv_path = b"/nix/store/derivation.drv";
+    let context = StringContext::singleton(
+        ContextElement::opaque_path(drv_path.to_vec()).expect("drv context is valid"),
+    )
+    .expect("context allocates");
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(drv_path.to_vec(), context))
+        .expect("context-bearing string allocates");
+
+    let result = evaluator
+        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .expect("addDrvOutputDependencies evaluates");
+    let string = evaluator
+        .heap
+        .get_string(result)
+        .expect("result string exists");
+
+    assert_eq!(string.bytes(), drv_path);
+    assert_eq!(string.context().len(), 1);
+    let element = string
+        .context()
+        .elements()
+        .first()
+        .expect("result context element exists");
+    assert_eq!(element.kind(), ContextKind::DeepDerivation);
+    assert_eq!(element.path(), drv_path);
+}
+
+#[test]
+fn add_drv_output_dependencies_primop_is_idempotent_for_deep_context() {
+    let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("addDrvOutputDependencies argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let drv_path = b"/nix/store/deep.drv";
+    let context = StringContext::singleton(
+        ContextElement::deep_derivation(drv_path.to_vec()).expect("deep context is valid"),
+    )
+    .expect("context allocates");
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(drv_path.to_vec(), context))
+        .expect("context-bearing string allocates");
+
+    let result = evaluator
+        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .expect("addDrvOutputDependencies evaluates");
+    let string = evaluator
+        .heap
+        .get_string(result)
+        .expect("result string exists");
+
+    assert_eq!(string.bytes(), drv_path);
+    assert_eq!(string.context().len(), 1);
+    let element = string
+        .context()
+        .elements()
+        .first()
+        .expect("result context element exists");
+    assert_eq!(element.kind(), ContextKind::DeepDerivation);
+    assert_eq!(element.path(), drv_path);
+}
+
+#[test]
+fn add_drv_output_dependencies_primop_rejects_invalid_context_shapes() {
+    let ir = lower("builtins.addDrvOutputDependencies \"x\"");
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("addDrvOutputDependencies argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+    let error = eval_whnf_owned(&ir).expect_err("empty context is rejected");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextElementCount {
+            id: argument,
+            len: 0,
+        }
+    );
+    assert_eq!(error.span(), argument_span);
+
+    let mut evaluator = TreeWalk::new(&ir);
+    let context = StringContext::new(vec![
+        ContextElement::opaque_path(b"/nix/store/a.drv".to_vec()).expect("first context is valid"),
+        ContextElement::opaque_path(b"/nix/store/b.drv".to_vec()).expect("second context is valid"),
+    ]);
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(b"x".to_vec(), context))
+        .expect("context-bearing string allocates");
+    let error = evaluator
+        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .expect_err("multiple context elements are rejected");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextElementCount {
+            id: argument,
+            len: 2,
+        }
+    );
+
+    let mut evaluator = TreeWalk::new(&ir);
+    let source_path = b"/nix/store/source";
+    let context = StringContext::singleton(
+        ContextElement::opaque_path(source_path.to_vec()).expect("source context is valid"),
+    )
+    .expect("context allocates");
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(source_path.to_vec(), context))
+        .expect("context-bearing string allocates");
+    let error = evaluator
+        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .expect_err("non-derivation context paths are rejected");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextPathNotDerivation {
+            id: argument,
+            path: source_path.to_vec(),
+        }
+    );
+
+    let mut evaluator = TreeWalk::new(&ir);
+    let drv_path = b"/nix/store/output.drv";
+    let context = StringContext::singleton(
+        ContextElement::single_output(drv_path.to_vec(), b"out".to_vec())
+            .expect("output context is valid"),
+    )
+    .expect("context allocates");
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(drv_path.to_vec(), context))
+        .expect("context-bearing string allocates");
+    let error = evaluator
+        .eval_add_drv_output_dependencies_primop(argument, argument_span, value)
+        .expect_err("output context is rejected");
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextDerivationOutput {
+            id: argument,
+            output: b"out".to_vec(),
+        }
+    );
+}
+
+#[test]
+fn add_drv_output_dependencies_primop_coerces_argument() {
+    let ir = lower("builtins.addDrvOutputDependencies 1");
+    let root = ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let args = ir.arena.child_slice(args).expect("primop args exist");
+    let argument = args[0];
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+    let error = eval_whnf_owned(&ir).expect_err("integer coercion is rejected");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            id: argument,
+            expected: "string",
+            actual: ValueTag::Int,
+        }
+    );
+    assert_eq!(error.span(), argument_span);
+
+    let ir = lower("builtins.addDrvOutputDependencies { outPath = \"x\"; }");
+    let root = ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let args = ir.arena.child_slice(args).expect("primop args exist");
+    let argument = args[0];
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+    let error = eval_whnf_owned(&ir).expect_err("coerced context-free string is rejected");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::StringContextElementCount {
+            id: argument,
+            len: 0,
+        }
+    );
+    assert_eq!(error.span(), argument_span);
+}
+
+#[test]
+fn unsafe_discard_output_dependency_primop_downgrades_deep_contexts() {
+    assert_eq!(
+        eval_string_bytes("builtins.unsafeDiscardOutputDependency \"abc\""),
+        b"abc"
+    );
+    assert_eq!(
+        eval_string_bytes("builtins.unsafeDiscardOutputDependency { outPath = \"abc\"; }"),
+        b"abc"
+    );
+    assert_eq!(
+        eval_string_bytes(
+            "let builtins = { unsafeDiscardOutputDependency = value: \"shadow\"; }; in builtins.unsafeDiscardOutputDependency \"abc\""
+        ),
+        b"shadow"
+    );
+
+    let ir = lower("builtins.unsafeDiscardOutputDependency \"x\"");
+    let root = *ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let argument = ir
+        .arena
+        .child_slice(args)
+        .expect("primop args exist")
+        .first()
+        .copied()
+        .expect("unsafeDiscardOutputDependency argument exists");
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+    let mut evaluator = TreeWalk::new(&ir);
+    let source_path = b"/nix/store/source";
+    let deep_path = b"/nix/store/deep.drv";
+    let output_path = b"/nix/store/output.drv";
+    let context = StringContext::new(vec![
+        ContextElement::deep_derivation(deep_path.to_vec()).expect("deep context is valid"),
+        ContextElement::opaque_path(deep_path.to_vec()).expect("opaque context is valid"),
+        ContextElement::opaque_path(source_path.to_vec()).expect("source context is valid"),
+        ContextElement::single_output(output_path.to_vec(), b"out".to_vec())
+            .expect("output context is valid"),
+    ]);
+    let value = evaluator
+        .heap
+        .alloc_string(NixString::new(b"x".to_vec(), context))
+        .expect("context-bearing string allocates");
+
+    let result = evaluator
+        .eval_unsafe_discard_output_dependency_primop(argument, argument_span, value)
+        .expect("unsafeDiscardOutputDependency evaluates");
+    let string = evaluator
+        .heap
+        .get_string(result)
+        .expect("result string exists");
+
+    assert_eq!(string.bytes(), b"x");
+    assert_eq!(string.context().len(), 3);
+    assert!(string.context().contains(
+        &ContextElement::opaque_path(source_path.to_vec()).expect("source context builds")
+    ));
+    assert!(string.context().contains(
+        &ContextElement::opaque_path(deep_path.to_vec()).expect("deep path context builds")
+    ));
+    assert!(
+        string.context().contains(
+            &ContextElement::single_output(output_path.to_vec(), b"out".to_vec())
+                .expect("output context builds")
+        )
+    );
+    assert!(!string.context().contains(
+        &ContextElement::deep_derivation(deep_path.to_vec()).expect("deep context builds")
+    ));
+}
+
+#[test]
+fn unsafe_discard_output_dependency_primop_coerces_argument() {
+    let ir = lower("builtins.unsafeDiscardOutputDependency 1");
+    let root = ir.arena.node(ir.root).expect("root exists");
+    let IrData::PrimOp { args, .. } = root.data else {
+        panic!("root is a primop");
+    };
+    let args = ir.arena.child_slice(args).expect("primop args exist");
+    let argument = args[0];
+    let argument_span = ir.arena.node(argument).expect("argument exists").span;
+
+    let error = eval_whnf_owned(&ir).expect_err("integer coercion is rejected");
+
+    assert_eq!(
+        error.kind(),
+        TreeWalkErrorKind::Type {
+            id: argument,
+            expected: "string",
+            actual: ValueTag::Int,
+        }
+    );
+    assert_eq!(error.span(), argument_span);
+}
