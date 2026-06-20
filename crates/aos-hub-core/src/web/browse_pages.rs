@@ -306,12 +306,22 @@ pub fn registry_home(
         body.push_str("</div>\n");
     }
     if let Some(status) = status {
-        if status.state == "failed" {
-            let _ = write!(
-                body,
-                "<p class=\"bad\">index failed: {}</p>",
-                escape(status.error.as_deref().unwrap_or("unknown error")),
-            );
+        match status.state.as_str() {
+            "failed" => {
+                let _ = write!(
+                    body,
+                    "<p class=\"bad\">index failed: {}</p>",
+                    escape(status.error.as_deref().unwrap_or("unknown error")),
+                );
+            }
+            // A freshly-created registry with no surface published yet, or one
+            // still awaiting its first index pass — not an error.
+            "pending" | "indexing" => {
+                body.push_str(
+                    "<p class=\"dim\">No releases published to this registry yet.</p>\n",
+                );
+            }
+            _ => {}
         }
     }
 

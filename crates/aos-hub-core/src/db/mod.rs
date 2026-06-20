@@ -2770,6 +2770,28 @@ impl Database {
         Ok(())
     }
 
+    /// Mark a registry's index `pending`: it has no published surface yet (a
+    /// freshly-created registry whose `info/refs` does not exist).
+    ///
+    /// This is a benign, non-error state — distinct from `failed` (a real,
+    /// surfaced indexing error) — so a newly created registry reads as "nothing
+    /// published yet" rather than broken. The `error` column is cleared.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn mark_index_pending(&self, registry_id: i64) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO registry_index (registry_id, state, error)
+             VALUES (?1, 'pending', NULL)
+             ON CONFLICT(registry_id) DO UPDATE SET state = 'pending', error = NULL",
+                &vals![registry_id],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Mark a registry's index stale (surface unreachable), keeping the
     /// last good index.
     ///
