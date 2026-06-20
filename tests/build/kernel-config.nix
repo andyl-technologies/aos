@@ -86,19 +86,26 @@
 
   # Symbols that must not be enabled. SECURITY_LOCKDOWN_LSM pulls in module
   # signing, whose default key generation is incompatible with a reproducible
-  # public base; the rest expose kernel memory.
+  # public base; the memory symbols expose kernel memory. The wireless stack is
+  # intentionally absent from the server/cloud base profile until a Wi-Fi
+  # profile also ships regulatory.db in early boot.
   disabledCommon = [
-    "SECURITY_LOCKDOWN_LSM"
-    "SECURITY_LOCKDOWN_LSM_EARLY"
-    "MODULE_SIG"
-    "MODULE_SIG_ALL"
-    "MODULE_SIG_FORCE"
-    "DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING"
-    "DEVKMEM"
-    "PROC_KCORE"
+    "CFG80211"
     "COMPAT_BRK"
     "DEBUG_INFO_REDUCED"
     "DEBUG_INFO_SPLIT"
+    "DEVKMEM"
+    "DM_VERITY_VERIFY_ROOTHASH_SIG_SECONDARY_KEYRING"
+    "MAC80211"
+    "MODULE_SIG"
+    "MODULE_SIG_ALL"
+    "MODULE_SIG_FORCE"
+    "PROC_KCORE"
+    "RFKILL"
+    "SECURITY_LOCKDOWN_LSM"
+    "SECURITY_LOCKDOWN_LSM_EARLY"
+    "WIRELESS"
+    "WLAN"
   ];
 
   enabledX86 = [
