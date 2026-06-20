@@ -561,7 +561,7 @@ the conditions under which feature code can be trusted to stay deterministic
   own its layer gate ([HARN-3]); the twice-reduce/compare-by-hash shape;
   flaky-is-failing; the `SimDouble` carries the bulk of L1/L3/L4 determinism
   tests. — satisfies [STD-19], [STD-20], [STD-21]; spec §4.
-- [ ] **T-STD-9** Establish the concurrency-, ABI-, and oracle-test standards:
+- [x] **T-STD-9** Establish the concurrency-, ABI-, and oracle-test standards:
   loom + proptest on the SPSC ring (before its `unsafe` is relied on), golden
   vectors + round-trip + fuzzing for the three ABIs, and the replay-oracle test
   run both fixed-corpus and in-search. — satisfies [STD-22], [STD-23], [STD-25];

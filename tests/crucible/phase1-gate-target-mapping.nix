@@ -69,6 +69,13 @@
       placeholder = true;
     }
     {
+      gate = "gate:layer1-injection";
+      package = "crucible-shmem";
+      testTarget = "gate_layer1_injection";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
       testTarget = "gate_abi_conformance";
@@ -78,6 +85,20 @@
     {
       gate = "gate:abi-conformance";
       package = "crucible-shmem";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-protocol";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       placeholder = true;
@@ -351,7 +372,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=25
+            placeholder_targets=28
             RESULT
           '';
         }

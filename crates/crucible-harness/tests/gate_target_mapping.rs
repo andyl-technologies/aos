@@ -160,6 +160,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_layer1_injection"
             ),
             (
+                "gate:layer1-injection",
+                "crucible-shmem",
+                "gate_layer1_injection"
+            ),
+            (
                 "gate:abi-conformance",
                 "crucible-harness",
                 "gate_abi_conformance"
@@ -167,6 +172,16 @@ fn crate_structure_gate_targets_match_rfc_table() {
             (
                 "gate:abi-conformance",
                 "crucible-shmem",
+                "gate_abi_conformance"
+            ),
+            (
+                "gate:abi-conformance",
+                "crucible-protocol",
+                "gate_abi_conformance"
+            ),
+            (
+                "gate:abi-conformance",
+                "crucible-api",
                 "gate_abi_conformance"
             ),
             ("gate:replay-oracle", "crucible", "gate_replay_oracle"),

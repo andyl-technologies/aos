@@ -86,6 +86,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: true,
     },
     GateTargetSpec {
+        gate: "gate:layer1-injection",
+        package: "crucible-shmem",
+        test_target: "gate_layer1_injection",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
         gate: "gate:abi-conformance",
         package: "crucible-harness",
         test_target: "gate_abi_conformance",
@@ -95,6 +102,20 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:abi-conformance",
         package: "crucible-shmem",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-protocol",
+        test_target: "gate_abi_conformance",
+        required_features: &[],
+        placeholder: true,
+    },
+    GateTargetSpec {
+        gate: "gate:abi-conformance",
+        package: "crucible-api",
         test_target: "gate_abi_conformance",
         required_features: &[],
         placeholder: true,
