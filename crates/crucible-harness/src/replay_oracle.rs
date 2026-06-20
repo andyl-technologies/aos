@@ -60,3 +60,60 @@ pub fn check_replay_oracle(cases: &[ReplayOracleCase]) -> Result<(), ReplayOracl
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_oracle_accepts_matching_corpus() {
+        let cases = [
+            ReplayOracleCase {
+                checkpoint_id: String::from("cp-1"),
+                fat_hash: vec![1, 2, 3],
+                thin_hash: vec![1, 2, 3],
+            },
+            ReplayOracleCase {
+                checkpoint_id: String::from("cp-2"),
+                fat_hash: vec![4, 5, 6],
+                thin_hash: vec![4, 5, 6],
+            },
+        ];
+
+        assert_eq!(check_replay_oracle(&cases), Ok(()));
+    }
+
+    #[test]
+    fn replay_oracle_reports_first_mismatch() {
+        let cases = [
+            ReplayOracleCase {
+                checkpoint_id: String::from("cp-1"),
+                fat_hash: vec![1],
+                thin_hash: vec![1],
+            },
+            ReplayOracleCase {
+                checkpoint_id: String::from("cp-2"),
+                fat_hash: vec![2],
+                thin_hash: vec![3],
+            },
+            ReplayOracleCase {
+                checkpoint_id: String::from("cp-3"),
+                fat_hash: vec![4],
+                thin_hash: vec![5],
+            },
+        ];
+
+        let mismatch = match check_replay_oracle(&cases) {
+            Ok(()) => panic!("replay oracle should report the first mismatch"),
+            Err(mismatch) => mismatch,
+        };
+
+        assert_eq!(mismatch.checkpoint_id, "cp-2");
+        assert_eq!(mismatch.fat_hash, vec![2]);
+        assert_eq!(mismatch.thin_hash, vec![3]);
+        assert_eq!(
+            mismatch.to_string(),
+            "replay oracle mismatch for checkpoint `cp-2`"
+        );
+    }
+}

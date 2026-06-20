@@ -1,0 +1,932 @@
+{
+  pkgs,
+  lib,
+}: let
+  root = ../..;
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-7PIlTjQ6Cnb2k2+Qn4A49maDZSffD20krhCcwJ7od8Y=";
+  };
+  coverageRust = builtins.readFile ../../crates/crucible-harness/tests/determinism_core_coverage.rs;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  scrubCommentsAndStrings = content: let
+    length = builtins.stringLength content;
+    charAt = index: builtins.substring index 1 content;
+    indexes = builtins.genList (index: index) length;
+    step = state: index:
+      if state.skip
+      then
+        state
+        // {
+          skip = false;
+        }
+      else let
+        ch = charAt index;
+        next =
+          if (index + 1) < length
+          then charAt (index + 1)
+          else "";
+      in
+        if state.mode == "code"
+        then
+          if ch == "/" && next == "/"
+          then
+            state
+            // {
+              out = state.out + "  ";
+              mode = "line";
+              skip = true;
+            }
+          else if ch == "/" && next == "*"
+          then
+            state
+            // {
+              out = state.out + "  ";
+              mode = "block";
+              depth = 1;
+              skip = true;
+            }
+          else if ch == "\""
+          then
+            state
+            // {
+              out = state.out + " ";
+              mode = "string";
+            }
+          else
+            state
+            // {
+              out = state.out + ch;
+            }
+        else if state.mode == "line"
+        then
+          if ch == "\n"
+          then
+            state
+            // {
+              out = state.out + "\n";
+              mode = "code";
+            }
+          else
+            state
+            // {
+              out = state.out + " ";
+            }
+        else if state.mode == "block"
+        then
+          if ch == "/" && next == "*"
+          then
+            state
+            // {
+              out = state.out + "  ";
+              depth = state.depth + 1;
+              skip = true;
+            }
+          else if ch == "*" && next == "/"
+          then
+            state
+            // {
+              out = state.out + "  ";
+              mode =
+                if state.depth == 1
+                then "code"
+                else "block";
+              depth =
+                if state.depth == 1
+                then 0
+                else state.depth - 1;
+              skip = true;
+            }
+          else
+            state
+            // {
+              out = state.out + (
+                if ch == "\n"
+                then "\n"
+                else " "
+              );
+            }
+        else if ch == "\\" && next != ""
+        then
+          state
+          // {
+            out = state.out + " " + (
+              if next == "\n"
+              then "\n"
+              else " "
+            );
+            skip = true;
+          }
+        else if ch == "\""
+        then
+          state
+          // {
+            out = state.out + " ";
+            mode = "code";
+          }
+        else
+          state
+          // {
+            out = state.out + (
+              if ch == "\n"
+              then "\n"
+              else " "
+            );
+          };
+    result =
+      builtins.foldl' step {
+        out = "";
+        mode = "code";
+        depth = 0;
+        skip = false;
+      }
+      indexes;
+  in
+    result.out;
+
+  coverageInstrumentationProfile = "crucible-determinism-core-coverage";
+  coverageMeasurement = pkgs.mkDerivation {
+    pname = "crucible-determinism-core-coverage-measurement";
+    version = "0";
+    src = crucibleSrc;
+
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.gawk
+      pkgs.grep
+      pkgs.llvm
+      pkgs.rust
+      pkgs.sed
+    ];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          export CARGO_HOME="$TMPDIR/cargo"
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          mkdir -p "$CARGO_HOME" .cargo
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
+        '';
+      }
+      {
+        name = "measure-coverage";
+        script = ''
+          set -eu
+
+          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+            cd source
+          fi
+          cd crates
+          mkdir -p "$TMPDIR/profraw"
+          export LLVM_PROFILE_FILE="$TMPDIR/profraw/%m-%p.profraw"
+          export RUSTFLAGS="-C instrument-coverage -C link-dead-code -C codegen-units=1"
+          target_dir="$TMPDIR/crucible-determinism-core-coverage-target"
+
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target_dir" \
+            -p crucible-harness \
+            --lib \
+            --test determinism_core_coverage \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target_dir" \
+            -p crucible \
+            --lib \
+            --features test-double \
+            -- --test-threads=1
+          cargo test \
+            --frozen \
+            --offline \
+            --target-dir "$target_dir" \
+            -p crucible-sim \
+            --lib \
+            -- --test-threads=1
+
+          profraw_count="$(find "$TMPDIR/profraw" -name '*.profraw' | wc -l)"
+          [ "$profraw_count" -gt 0 ] || {
+            echo "coverage instrumentation produced no profraw files" >&2
+            exit 1
+          }
+
+          ${pkgs.llvm}/bin/llvm-profdata merge \
+            -sparse \
+            "$TMPDIR"/profraw/*.profraw \
+            -o "$TMPDIR/coverage.profdata"
+
+          objects="$(find "$target_dir/debug/deps" -maxdepth 1 -type f -perm -0100 \
+            ! -name '*.d' ! -name '*.rlib' ! -name '*.rmeta' | sort)"
+          first_object="$(printf '%s\n' "$objects" | head -1)"
+          [ -n "$first_object" ] || {
+            echo "coverage instrumentation found no test executables" >&2
+            exit 1
+          }
+          object_args=""
+          for object in $objects; do
+            if [ "$object" != "$first_object" ]; then
+              object_args="$object_args --object $object"
+            fi
+          done
+
+          ${pkgs.llvm}/bin/llvm-cov export \
+            --format=lcov \
+            --instr-profile="$TMPDIR/coverage.profdata" \
+            "$first_object" $object_args \
+            > "$TMPDIR/coverage.lcov"
+
+          require_covered_function() {
+            name="$1"
+            if ! grep -E "FNDA:[1-9][0-9]*,.*$name" "$TMPDIR/coverage.lcov" >/dev/null; then
+              echo "missing executed coverage function: $name" >&2
+              exit 1
+            fi
+          }
+
+          require_covered_function quantum_loop_trait_is_object_safe
+          require_covered_function quantum_outcome_carries_step_decisions
+          require_covered_function scheduler_errors_render_all_variants_deterministically
+          require_covered_function scheduled_event_keys_define_total_order
+          require_covered_function scheduled_event_keys_cover_producer_tie_break
+          require_covered_function schedule_prefix_bounds_are_checked
+          require_covered_function engine_and_backend_errors_render_all_variants_deterministically
+          require_covered_function sim_backend_rejects_backward_advance_and_post_shutdown_mutation
+          require_covered_function sim_backend_rejects_unknown_checkpoint_deterministically
+          require_covered_function stable_hasher_is_repeatable
+          require_covered_function stable_hasher_is_order_sensitive
+          require_covered_function stable_hasher_covers_chunk_remainder_and_bool_inputs
+          require_covered_function replay_oracle_accepts_matching_corpus
+          require_covered_function replay_oracle_reports_first_mismatch
+
+          line_for() {
+            file="$1"
+            pattern="$2"
+            line="$(grep -nF "$pattern" "$file" | head -1 | cut -d: -f1)"
+            if [ -z "$line" ]; then
+              echo "coverage source marker not found: $file :: $pattern" >&2
+              exit 1
+            fi
+            printf '%s\n' "$line"
+          }
+
+          line_for_after() {
+            file="$1"
+            anchor="$2"
+            pattern="$3"
+            line="$(awk -v anchor="$anchor" -v pattern="$pattern" '
+              index($0, anchor) > 0 {
+                seen = 1
+              }
+              seen && index($0, pattern) > 0 {
+                print NR
+                found = 1
+                exit
+              }
+              END {
+                exit(found ? 0 : 1)
+              }
+            ' "$file")"
+            if [ -z "$line" ]; then
+              echo "coverage source marker not found after anchor: $file :: $anchor :: $pattern" >&2
+              exit 1
+            fi
+            printf '%s\n' "$line"
+          }
+
+          require_covered_line_at_least() {
+            suffix="$1"
+            line="$2"
+            minimum="$3"
+            label="$4"
+            if ! awk -v suffix="$suffix" -v line="$line" -v minimum="$minimum" '
+              /^SF:/ {
+                in_file = index($0, suffix) > 0
+                next
+              }
+              in_file && /^DA:/ {
+                split(substr($0, 4), parts, ",")
+                if (parts[1] == line && (parts[2] + 0) >= minimum) {
+                  found = 1
+                }
+              }
+              END {
+                exit(found ? 0 : 1)
+              }
+            ' "$TMPDIR/coverage.lcov"; then
+              echo "missing executed implementation coverage: $label ($suffix:$line, min=$minimum)" >&2
+              exit 1
+            fi
+          }
+
+          require_line_marker() {
+            suffix="$1"
+            file="$2"
+            minimum="$3"
+            pattern="$4"
+            label="$5"
+            require_covered_line_at_least "$suffix" "$(line_for "$file" "$pattern")" "$minimum" "$label"
+          }
+
+          require_line_marker_after() {
+            suffix="$1"
+            file="$2"
+            minimum="$3"
+            anchor="$4"
+            pattern="$5"
+            label="$6"
+            require_covered_line_at_least "$suffix" "$(line_for_after "$file" "$anchor" "$pattern")" "$minimum" "$label"
+          }
+
+          require_line_marker \
+            "crucible/src/lib.rs" \
+            "crucible/src/lib.rs" \
+            1 \
+            "return Err(ScheduleError::PrefixTooLong {" \
+            "schedule prefix error branch"
+          require_line_marker_after \
+            "crucible/src/lib.rs" \
+            "crucible/src/lib.rs" \
+            1 \
+            "impl fmt::Display for ScheduleError" \
+            "requested," \
+            "schedule error display variant"
+          require_line_marker_after \
+            "crucible/src/lib.rs" \
+            "crucible/src/lib.rs" \
+            1 \
+            "impl fmt::Display for EngineError" \
+            "Self::NotImplemented { operation } => {" \
+            "engine error display variant"
+          require_line_marker_after \
+            "crucible/src/lib.rs" \
+            "crucible/src/lib.rs" \
+            1 \
+            "impl fmt::Display for BackendError" \
+            "Self::NotImplemented { operation } => {" \
+            "backend not-implemented display variant"
+          require_line_marker \
+            "crucible/src/lib.rs" \
+            "crucible/src/lib.rs" \
+            1 \
+            "Self::Rejected { message } => f.write_str(message)," \
+            "backend rejected display variant"
+          require_line_marker_after \
+            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler.rs" \
+            1 \
+            "impl fmt::Display for SchedulerError" \
+            "Self::NotImplemented { operation } => {" \
+            "scheduler not-implemented display variant"
+          require_line_marker \
+            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler.rs" \
+            1 \
+            "backend failed under scheduler control: {error}" \
+            "scheduler backend display variant"
+          require_line_marker \
+            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler.rs" \
+            1 \
+            "Self::BoundaryViolation { message } => f.write_str(message)," \
+            "scheduler boundary display variant"
+          require_line_marker \
+            "crucible/src/sim_backend.rs" \
+            "crucible/src/sim_backend.rs" \
+            2 \
+            "sim backend is shut down; cannot {operation}" \
+            "sim backend shutdown rejection branches"
+          require_line_marker \
+            "crucible/src/sim_backend.rs" \
+            "crucible/src/sim_backend.rs" \
+            1 \
+            "sim backend cannot advance backwards from {} to {} retired instructions" \
+            "sim backend backward advance branch"
+          require_line_marker \
+            "crucible/src/sim_backend.rs" \
+            "crucible/src/sim_backend.rs" \
+            1 \
+            "sim backend cannot restore unknown checkpoint" \
+            "sim backend restore error branch"
+          require_line_marker \
+            "crucible-sim/src/lib.rs" \
+            "crucible-sim/src/lib.rs" \
+            2 \
+            "self.write_u64(u64::from(value));" \
+            "stable hasher bool branch inputs"
+          require_line_marker \
+            "crucible-sim/src/lib.rs" \
+            "crucible-sim/src/lib.rs" \
+            1 \
+            "for chunk in &mut chunks {" \
+            "stable hasher full chunk branch"
+          require_line_marker \
+            "crucible-sim/src/lib.rs" \
+            "crucible-sim/src/lib.rs" \
+            1 \
+            "for (index, byte) in remainder.iter().enumerate() {" \
+            "stable hasher remainder branch"
+          require_line_marker \
+            "crucible-harness/src/replay_oracle.rs" \
+            "crucible-harness/src/replay_oracle.rs" \
+            1 \
+            "return Err(ReplayOracleMismatch {" \
+            "replay oracle mismatch branch"
+          require_line_marker \
+            "crucible-harness/src/replay_oracle.rs" \
+            "crucible-harness/src/replay_oracle.rs" \
+            1 \
+            "Ok(())" \
+            "replay oracle match branch"
+
+          mkdir -p "$out"
+          cp "$TMPDIR/coverage.profdata" "$out/coverage.profdata"
+          cp "$TMPDIR/coverage.lcov" "$out/coverage.lcov"
+          cat > "$out/result" <<RESULT
+          PASS
+          coverage_profile=${coverageInstrumentationProfile}
+          instrumentation_build=separate-deterministic
+          profraw_files=$profraw_count
+          RESULT
+        '';
+      }
+    ];
+  };
+
+  decisionRngActivationMarkers = [
+    "DecisionRng"
+    "fork_rng"
+    "fork_stream"
+    "per_entity_rng"
+  ];
+  spscRingActivationMarkers = [
+    "Atomic"
+    "compare_exchange"
+    "fetch_add"
+    "SpscRing"
+    "FrameRing"
+  ];
+  protocolCodecActivationMarkers = [
+    "pub fn encode"
+    "pub fn decode"
+    "ProtocolFrame"
+    "FrameCodec"
+  ];
+  reproductionArtifactActivationMarkers = [
+    "ReproductionArtifact"
+    "serialize_reproduction"
+    "deserialize_reproduction"
+    "replay_artifact"
+  ];
+
+  activeSurfaces = [
+    {
+      id = "scheduler-quantum-loop";
+      sourcePath = "crates/crucible/src/scheduler.rs";
+      testPath = "crates/crucible/src/scheduler.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "quantum_loop_trait_is_object_safe"
+        "quantum_outcome_carries_step_decisions"
+        "scheduler_errors_render_all_variants_deterministically"
+      ];
+    }
+    {
+      id = "scheduler-ordering-keys";
+      sourcePath = "crates/crucible/src/scheduler.rs";
+      testPath = "crates/crucible/src/scheduler.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "scheduled_event_keys_define_total_order"
+        "scheduled_event_keys_cover_producer_tie_break"
+      ];
+    }
+    {
+      id = "error-variant-floor";
+      sourcePath = "crates/crucible/src/lib.rs";
+      testPath = "crates/crucible/src/lib.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "schedule_prefix_bounds_are_checked"
+        "engine_and_backend_errors_render_all_variants_deterministically"
+      ];
+    }
+    {
+      id = "sim-backend-error-variants";
+      sourcePath = "crates/crucible/src/sim_backend.rs";
+      testPath = "crates/crucible/src/sim_backend.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "sim_backend_rejects_backward_advance_and_post_shutdown_mutation"
+        "sim_backend_rejects_unknown_checkpoint_deterministically"
+      ];
+    }
+    {
+      id = "content-addressed-digest";
+      sourcePath = "crates/crucible-sim/src/lib.rs";
+      testPath = "crates/crucible-sim/src/lib.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "stable_hasher_is_repeatable"
+        "stable_hasher_is_order_sensitive"
+        "stable_hasher_covers_chunk_remainder_and_bool_inputs"
+      ];
+    }
+    {
+      id = "replay-oracle-path";
+      sourcePath = "crates/crucible-harness/src/replay_oracle.rs";
+      testPath = "crates/crucible-harness/src/replay_oracle.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "replay_oracle_accepts_matching_corpus"
+        "replay_oracle_reports_first_mismatch"
+      ];
+    }
+  ];
+
+  plannedSurfaces = [
+    {
+      id = "decision-rng-and-forking";
+      sourcePath = "crates/crucible/src/lib.rs";
+      testPath = "crates/crucible/tests/gate_layer0_determinism.rs";
+      status = "planned";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = decisionRngActivationMarkers;
+      activationSourceRoots = ["crates/crucible/src"];
+      requiredMarkers = [
+        "assert_decision_rng_branch_coverage("
+        "assert_per_entity_rng_forking_coverage("
+      ];
+    }
+    {
+      id = "spsc-ring";
+      sourcePath = "crates/crucible-shmem/src/lib.rs";
+      testPath = "crates/crucible-shmem/tests/gate_layer1_injection.rs";
+      status = "planned";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = spscRingActivationMarkers;
+      activationSourceRoots = ["crates/crucible-shmem/src"];
+      requiredMarkers = [
+        "assert_spsc_ring_loom_model("
+        "assert_spsc_ring_proptest_properties("
+      ];
+    }
+    {
+      id = "protocol-codec";
+      sourcePath = "crates/crucible-protocol/src/lib.rs";
+      testPath = "crates/crucible-protocol/tests/gate_abi_conformance.rs";
+      status = "planned";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = protocolCodecActivationMarkers;
+      activationSourceRoots = ["crates/crucible-protocol/src"];
+      requiredMarkers = [
+        "assert_protocol_codec_fuzz_corpus("
+        "assert_decode_encode_roundtrip("
+      ];
+    }
+    {
+      id = "reproduction-artifact-serializer";
+      sourcePath = "crates/crucible/src/lib.rs";
+      testPath = "crates/crucible/tests/gate_replay_oracle.rs";
+      status = "planned";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = reproductionArtifactActivationMarkers;
+      activationSourceRoots = ["crates/crucible/src"];
+      requiredMarkers = [
+        "assert_reproduction_artifact_roundtrip_coverage("
+        "assert_reproduction_artifact_error_variant_coverage("
+      ];
+    }
+  ];
+
+  requiredSurfaceIds = [
+    "scheduler-quantum-loop"
+    "scheduler-ordering-keys"
+    "error-variant-floor"
+    "sim-backend-error-variants"
+    "decision-rng-and-forking"
+    "content-addressed-digest"
+    "spsc-ring"
+    "protocol-codec"
+    "replay-oracle-path"
+    "reproduction-artifact-serializer"
+  ];
+
+  allSurfaces = activeSurfaces ++ plannedSurfaces;
+  surfaceIds = map (surface: surface.id) allSurfaces;
+  activeSurfaceIds = map (surface: surface.id) activeSurfaces;
+  plannedSurfaceIds = map (surface: surface.id) plannedSurfaces;
+  activeSurfaceSummary = builtins.concatStringsSep "," activeSurfaceIds;
+  plannedSurfaceSummary = builtins.concatStringsSep "," plannedSurfaceIds;
+
+  rustFilesUnder = relativeRoot: let
+    absoluteRoot = root + "/${relativeRoot}";
+    entries = builtins.readDir absoluteRoot;
+  in
+    lib.concatMap (
+      name: let
+        kind = entries.${name};
+        relative = "${relativeRoot}/${name}";
+      in
+        if kind == "regular" && lib.hasSuffix ".rs" name
+        then [relative]
+        else if kind == "directory"
+        then rustFilesUnder relative
+        else []
+    )
+    (builtins.attrNames entries);
+  activationSourceContent = surface: let
+    scanRoots =
+      if surface.activationSourceRoots == []
+      then [surface.sourcePath]
+      else surface.activationSourceRoots;
+    rustFiles =
+      lib.concatMap (
+        scanRoot:
+          if builtins.pathExists (root + "/${scanRoot}")
+          then rustFilesUnder scanRoot
+          else []
+      )
+      scanRoots;
+  in
+    builtins.concatStringsSep "\n" (
+      map (relative: builtins.readFile (root + "/${relative}")) rustFiles
+    );
+  plannedSurfaceIsImplemented = surface:
+    surface.status == "active"
+    || (
+      builtins.pathExists (root + "/${surface.sourcePath}")
+      && builtins.any (
+        marker: hasInfix marker (scrubCommentsAndStrings (activationSourceContent surface))
+      )
+      surface.activationMarkers
+    );
+  coverageMarkerFailures = surface:
+    if !(builtins.pathExists (root + "/${surface.testPath}"))
+    then [
+      "${surface.id}: missing determinism-core coverage test ${surface.testPath}"
+    ]
+    else let
+      code = scrubCommentsAndStrings (builtins.readFile (root + "/${surface.testPath}"));
+    in
+      lib.concatMap (
+        marker:
+          lib.optionals (!(hasInfix marker code)) [
+            "${surface.id}: active determinism-core coverage marker `${marker}` is missing from ${surface.testPath}"
+          ]
+      )
+      surface.requiredMarkers;
+  coverageMarkerFailuresForContent = surface: content: let
+    code = scrubCommentsAndStrings content;
+  in
+    lib.concatMap (
+      marker:
+        lib.optionals (!(hasInfix marker code)) [
+          "${surface.id}: active determinism-core coverage marker `${marker}` is missing from ${surface.testPath}"
+        ]
+    )
+    surface.requiredMarkers;
+  requiredSurfaceFailuresFor = ids:
+    lib.concatMap (
+      required:
+        lib.optionals (!(builtins.elem required ids)) [
+          "missing determinism-core coverage surface `${required}`"
+        ]
+    )
+    requiredSurfaceIds;
+
+  sourceExistsFailures =
+    lib.concatMap (
+      surface:
+        lib.optionals (!(builtins.pathExists (root + "/${surface.sourcePath}"))) [
+          "${surface.id}: missing determinism-core source ${surface.sourcePath}"
+        ]
+    )
+    allSurfaces;
+
+  instrumentationFailures =
+    lib.concatMap (
+      surface:
+        lib.optionals (surface.instrumentation != "separate-deterministic-build") [
+          "${surface.id} must be measured in the ${coverageInstrumentationProfile} separate deterministic instrumentation build"
+        ]
+    )
+    allSurfaces;
+
+  activeMarkerFailures =
+    lib.concatMap (
+      surface: coverageMarkerFailures surface
+    )
+    activeSurfaces;
+
+  plannedMeasurementFailures =
+    lib.concatMap (
+      surface:
+        lib.optionals (plannedSurfaceIsImplemented surface) [
+          "${surface.id}: planned determinism-core surface is implemented but is not measured by ${coverageInstrumentationProfile}; promote it to activeSurfaces and add coverageMeasurement wiring"
+        ]
+    )
+    plannedSurfaces;
+
+  requiredSurfaceFailures = requiredSurfaceFailuresFor surfaceIds;
+
+  rustHarnessFailures = let
+    requiredRustText = [
+      "DETERMINISM_CORE_COVERAGE_FLOOR"
+      "CoverageStatus::Active"
+      "CoverageStatus::Planned"
+      "InstrumentationMode::SeparateDeterministicBuild"
+      "COVERAGE_INSTRUMENTATION_PROFILE"
+      "activation_markers"
+      "activation_source_roots"
+      "activation_source_content"
+      "collect_rust_files"
+      "synthetic-protocol/src/codec.rs"
+      "planned_surface_is_implemented"
+      "scrub_comments_and_strings"
+      "planned determinism-core surface is implemented"
+      "active_determinism_core_paths_have_branch_and_error_coverage_markers"
+      "coverage_floor_regression_failures"
+      "error-variant-floor"
+      "scheduler_errors_render_all_variants_deterministically"
+      "scheduled_event_keys_cover_producer_tie_break"
+      "engine_and_backend_errors_render_all_variants_deterministically"
+      "sim_backend_rejects_unknown_checkpoint_deterministically"
+      "stable_hasher_covers_chunk_remainder_and_bool_inputs"
+      "replay_oracle_reports_first_mismatch"
+    ];
+  in
+    lib.concatMap (
+      required:
+        lib.optionals (!(hasInfix required coverageRust)) [
+          "crates/crucible-harness/tests/determinism_core_coverage.rs: missing coverage-floor wiring `${required}`"
+        ]
+    )
+    requiredRustText;
+
+  regressionFailures = let
+    syntheticDigestSurface = {
+      id = "content-addressed-digest";
+      sourcePath = "crates/crucible-sim/src/lib.rs";
+      testPath = "synthetic.rs";
+      status = "active";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = [];
+      activationSourceRoots = [];
+      requiredMarkers = [
+        "stable_hasher_is_repeatable"
+        "stable_hasher_is_order_sensitive"
+      ];
+    };
+    syntheticProtocolSurface = {
+      id = "protocol-codec";
+      sourcePath = "synthetic-protocol.rs";
+      testPath = "synthetic-protocol-test.rs";
+      status = "planned";
+      instrumentation = "separate-deterministic-build";
+      activationMarkers = protocolCodecActivationMarkers;
+      activationSourceRoots = ["synthetic-protocol/src"];
+      requiredMarkers = [
+        "assert_protocol_codec_fuzz_corpus("
+        "assert_decode_encode_roundtrip("
+      ];
+    };
+    plannedSourceCode = scrubCommentsAndStrings ''
+      mod codec;
+      pub fn encode(value: &[u8]) -> Vec<u8> { value.to_vec() }
+    '';
+    plannedIsImplemented =
+      builtins.any (marker: hasInfix marker plannedSourceCode)
+      syntheticProtocolSurface.activationMarkers;
+    missingMarkerFindings = coverageMarkerFailuresForContent syntheticDigestSurface ''
+      fn stable_hasher_is_repeatable() {}
+      /* stable_hasher_is_order_sensitive */
+      "stable_hasher_is_order_sensitive"
+    '';
+    badInstrumentationFindings =
+      lib.optionals ("shared-test-build" != "separate-deterministic-build") [
+        "scheduler-quantum-loop must be measured in the ${coverageInstrumentationProfile} separate deterministic instrumentation build"
+      ];
+    missingSurfaceFindings = requiredSurfaceFailuresFor ["scheduler-quantum-loop"];
+    plannedActivationFindings =
+      lib.optionals plannedIsImplemented [
+        "protocol-codec: planned determinism-core surface is implemented but is not measured by ${coverageInstrumentationProfile}; promote it to activeSurfaces and add coverageMeasurement wiring"
+      ];
+    findings =
+      missingMarkerFindings
+      ++ badInstrumentationFindings
+      ++ missingSurfaceFindings
+      ++ plannedActivationFindings;
+    hasFinding = needle: builtins.any (finding: hasInfix needle finding) findings;
+  in
+    lib.optionals (!(hasFinding "stable_hasher_is_order_sensitive")) [
+      "coverage-floor regression failed to reject missing branch coverage marker"
+    ]
+    ++ lib.optionals (!(hasFinding "separate deterministic instrumentation build")) [
+      "coverage-floor regression failed to reject shared instrumentation builds"
+    ]
+    ++ lib.optionals (!(hasFinding "decision-rng-and-forking")) [
+      "coverage-floor regression failed to reject missing required surface"
+    ]
+    ++ lib.optionals (!(hasFinding "planned determinism-core surface is implemented")) [
+      "coverage-floor regression failed to reject unmeasured planned surface activation"
+    ];
+
+  failures =
+    sourceExistsFailures
+    ++ instrumentationFailures
+    ++ activeMarkerFailures
+    ++ plannedMeasurementFailures
+    ++ requiredSurfaceFailures
+    ++ rustHarnessFailures
+    ++ regressionFailures;
+in
+  if failures != []
+  then throw "crucible phase1 determinism-core coverage-floor lint failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase1-determinism-core-coverage";
+      version = "0";
+      src = null;
+
+      buildDeps = [
+        pkgs.coreutils
+        coverageMeasurement
+      ];
+
+      phases = [
+        {
+          name = "write-result";
+          script = ''
+            set -eu
+            test -s "${coverageMeasurement}/coverage.lcov"
+            test -s "${coverageMeasurement}/coverage.profdata"
+            mkdir -p "$out"
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=checks.crucible.phase1.determinismCoreCoverage
+            tasks=T-STD-10
+            coverage_profile=crucible-determinism-core-coverage
+            instrumentation_build=separate-deterministic
+            coverage_measurement=${coverageMeasurement}
+            active_scope=${activeSurfaceSummary}
+            planned_scope=${plannedSurfaceSummary}
+            RESULT
+          '';
+        }
+      ];
+    }
