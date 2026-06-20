@@ -570,7 +570,7 @@ the conditions under which feature code can be trusted to stay deterministic
   ordering branch and error variant in the scheduler/RNG/digest/ring/codec/
   oracle/artifact paths exercised), measured deterministically in a separate
   instrumentation build. — satisfies [STD-26]; spec §4.
-- [ ] **T-STD-11** Establish file/module size limits, layer-boundary dependency
+- [x] **T-STD-11** Establish file/module size limits, layer-boundary dependency
   rules, and commit hygiene (atomic commits; ABI + golden-vector + dependent
   logic land together; no determinism change buried in formatting churn). —
   satisfies [STD-27], [STD-28], [STD-29]; spec §5.

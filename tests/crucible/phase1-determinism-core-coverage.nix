@@ -375,35 +375,35 @@
           }
 
           require_line_marker \
-            "crucible/src/lib.rs" \
-            "crucible/src/lib.rs" \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
             1 \
             "return Err(ScheduleError::PrefixTooLong {" \
             "schedule prefix error branch"
           require_line_marker_after \
-            "crucible/src/lib.rs" \
-            "crucible/src/lib.rs" \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
             1 \
             "impl fmt::Display for ScheduleError" \
             "requested," \
             "schedule error display variant"
           require_line_marker_after \
-            "crucible/src/lib.rs" \
-            "crucible/src/lib.rs" \
+            "crucible/src/model.rs" \
+            "crucible/src/model.rs" \
             1 \
             "impl fmt::Display for EngineError" \
             "Self::NotImplemented { operation } => {" \
             "engine error display variant"
           require_line_marker_after \
-            "crucible/src/lib.rs" \
-            "crucible/src/lib.rs" \
+            "crucible/src/backend.rs" \
+            "crucible/src/backend.rs" \
             1 \
             "impl fmt::Display for BackendError" \
             "Self::NotImplemented { operation } => {" \
             "backend not-implemented display variant"
           require_line_marker \
-            "crucible/src/lib.rs" \
-            "crucible/src/lib.rs" \
+            "crucible/src/backend.rs" \
+            "crucible/src/backend.rs" \
             1 \
             "Self::Rejected { message } => f.write_str(message)," \
             "backend rejected display variant"
@@ -545,7 +545,7 @@
     }
     {
       id = "error-variant-floor";
-      sourcePath = "crates/crucible/src/lib.rs";
+      sourcePath = "crates/crucible/src/model.rs";
       testPath = "crates/crucible/src/lib.rs";
       status = "active";
       instrumentation = "separate-deterministic-build";
