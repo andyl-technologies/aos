@@ -193,6 +193,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: CacheCmd,
     },
+    /// Profile a closure for leaked build/dev artifacts
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCmd,
+    },
     /// Browse documentation
     Doc {
         /// Source path or flake URI (default: current directory)
@@ -208,6 +213,28 @@ pub enum Commands {
         /// Force rebuild index
         #[arg(long)]
         rebuild: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ProfileCmd {
+    /// Profile a target's runtime closure for build/dev artifacts
+    Closure {
+        /// Package name, attribute path, or store path to profile
+        target: String,
+        /// Number of largest paths to list
+        #[arg(long, default_value_t = 15)]
+        top: usize,
+        /// Only print confirmed leaks (dev-leak / spurious verdicts)
+        #[arg(long)]
+        suspects_only: bool,
+    },
+    /// Explain why one package references another, with evidence
+    Refs {
+        /// Package that holds the reference
+        package: String,
+        /// Referenced dependency to justify
+        dependency: String,
     },
 }
 
