@@ -390,12 +390,34 @@ fn project_message(org_slug: String, path: String, name: String) -> pb::Project 
 }
 
 /// Build the wire [`pb::Binding`] for a storage binding under `org_slug`.
-fn binding_message(org_slug: String, name: String, kind: String, root: String) -> pb::Binding {
+///
+/// `expose_root` gates the admin-only `root`/`endpoint` detail (the hub's
+/// storage layout): a plain member sees an empty `root`/`endpoint`. The sealed
+/// credential is never placed on the wire regardless.
+fn binding_message(
+    org_slug: String,
+    b: &crate::db::StorageBindingRecord,
+    expose_root: bool,
+) -> pb::Binding {
+    // For an s3/r2 binding the "region" lives inside the sealed credential_ref
+    // (access_key:secret_key:region); it is not separately surfaced here to avoid
+    // an unseal on a list call. The access mode and endpoint are non-secret.
     pb::Binding {
         org_slug,
-        name,
-        kind,
-        root,
+        name: b.name.clone(),
+        kind: b.kind.clone(),
+        root: if expose_root { b.root.clone() } else { String::new() },
+        access: if b.kind == "local_fs" {
+            String::new()
+        } else {
+            b.access.clone()
+        },
+        endpoint: if expose_root {
+            b.public_base_url.clone().unwrap_or_default()
+        } else {
+            String::new()
+        },
+        region: String::new(),
     }
 }
 
@@ -1406,12 +1428,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .into_iter()
-            .map(|b| pb::Binding {
-                org_slug: org.slug.clone(),
-                name: b.name,
-                kind: b.kind,
-                root: if expose_root { b.root } else { String::new() },
-            })
+            .map(|b| binding_message(org.slug.clone(), &b, expose_root))
             .collect();
         Ok(pb::ListBindingsResponse { bindings })
     }
@@ -2610,9 +2627,12 @@ impl RpcService {
     ///
     /// The `kind` must be a known [`BindingKind`](crate::binding::BindingKind)
     /// (`local_fs`, `s3`, or `r2`) that the serving runtime supports — the
-    /// Worker rejects `local_fs`, the native hub rejects `r2` (see
-    /// [`RuntimeKind`](crate::binding::RuntimeKind)). An empty `kind` defaults to
-    /// `local_fs`. Requires [`Permission::RegistryConfigure`] on the org scope.
+    /// Worker rejects `local_fs` (it has no filesystem); both runtimes accept
+    /// `s3`/`r2` (see [`RuntimeKind`](crate::binding::RuntimeKind)). An empty
+    /// `kind` defaults to `local_fs`. An `s3`/`r2` binding additionally carries an
+    /// `endpoint`, optional `region`, and (when `access` is `private`, the
+    /// default) an `access_key_id`/`secret_access_key` pair, which is sealed at
+    /// rest. Requires [`Permission::RegistryConfigure`] on the org scope.
     ///
     /// # Errors
     ///
@@ -2646,8 +2666,8 @@ impl RpcService {
             ))
         })?;
         // The serving process's runtime gates which kinds are usable (the Worker
-        // has no filesystem; the native hub has no R2 SDK). `current()` reflects
-        // this process, so the check is correct here.
+        // has no filesystem). `current()` reflects this process, so the check is
+        // correct here.
         let runtime = RuntimeKind::current();
         if !runtime.supports(kind) {
             let supported = runtime
@@ -2662,17 +2682,61 @@ impl RpcService {
                 runtime.name(),
             )));
         }
-        self.db
-            .create_storage_binding(org.id, &req.name, kind_str, &req.root)
+        // An s3/r2 binding needs the origin sealed; without a wired sealer a
+        // private binding's credentials could not be stored safely.
+        let origin = if kind.requires_origin_config() {
+            Some(crate::binding_provision::OriginInput {
+                endpoint: &req.endpoint,
+                region: &req.region,
+                access_key_id: &req.access_key_id,
+                secret_access_key: &req.secret_access_key,
+                // Default to private (the common case: an org's own bucket);
+                // "public" opts into a credential-less read-only mirror.
+                private: req.access.trim() != "public",
+            })
+        } else {
+            None
+        };
+        let sealer = self.sealer.as_ref().ok_or_else(|| {
+            RpcError::internal(anyhow::anyhow!("no secret sealer configured on this hub"))
+        })?;
+        crate::binding_provision::provision_binding(
+            &self.db,
+            sealer.as_ref(),
+            crate::binding_provision::NewBinding {
+                org_id: org.id,
+                name: &req.name,
+                kind,
+                root: &req.root,
+                origin,
+            },
+        )
+        .await
+        .map_err(|e| match e {
+            crate::binding_provision::ProvisionError::Invalid(m) => RpcError::invalid(m),
+            crate::binding_provision::ProvisionError::AlreadyExists(m) => {
+                RpcError::AlreadyExists(format!("storage binding '{m}' already exists"))
+            }
+            crate::binding_provision::ProvisionError::Backend(e) => RpcError::internal(e),
+        })?;
+        let record = self
+            .db
+            .storage_binding_by_name(org.id, req.name.trim())
             .await
-            .map_err(|e| RpcError::AlreadyExists(format!("{e:#}")))?;
+            .map_err(RpcError::internal)?;
+        let binding = record
+            .map(|b| binding_message(org.slug.clone(), &b, true))
+            .unwrap_or_else(|| pb::Binding {
+                org_slug: org.slug,
+                name: req.name,
+                kind: kind.as_str().to_string(),
+                root: req.root,
+                access: String::new(),
+                endpoint: String::new(),
+                region: String::new(),
+            });
         Ok(pb::CreateBindingResponse {
-            binding: Some(binding_message(
-                org.slug,
-                req.name,
-                kind.as_str().to_string(),
-                req.root,
-            )),
+            binding: Some(binding),
         })
     }
 

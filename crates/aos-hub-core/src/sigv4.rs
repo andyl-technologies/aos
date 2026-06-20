@@ -158,8 +158,35 @@ pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
     presign_url("PUT", p)
 }
 
-/// Build a presigned URL for `method` (`GET`/`PUT`). The shared signer behind
-/// [`presign_get_url`]/[`presign_put_url`].
+/// Build a presigned `HEAD` URL valid for [`PresignParams::expires_secs`].
+///
+/// The metadata sibling of [`presign_get_url`]: a client may `HEAD` it to read
+/// an object's size/existence (`Content-Length`) without transferring the body.
+/// Because the HTTP method is part of the signed canonical request, a `HEAD`
+/// presign differs from the `GET`/`PUT` presigns of the same object.
+///
+/// # Errors
+///
+/// Same as [`presign_get_url`].
+pub fn presign_head_url(p: &PresignParams<'_>) -> Result<String> {
+    presign_url("HEAD", p)
+}
+
+/// Build a presigned `DELETE` URL valid for [`PresignParams::expires_secs`].
+///
+/// The removal sibling of [`presign_put_url`]: a client may `DELETE` it to
+/// remove the object with no further credentials until it expires.
+///
+/// # Errors
+///
+/// Same as [`presign_get_url`].
+pub fn presign_delete_url(p: &PresignParams<'_>) -> Result<String> {
+    presign_url("DELETE", p)
+}
+
+/// Build a presigned URL for `method` (`GET`/`PUT`/`HEAD`/`DELETE`). The shared
+/// signer behind [`presign_get_url`]/[`presign_put_url`]/[`presign_head_url`]/
+/// [`presign_delete_url`].
 fn presign_url(method: &str, p: &PresignParams<'_>) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;

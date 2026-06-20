@@ -2239,7 +2239,24 @@ pub(crate) struct NewBindingForm {
     /// Backend kind (`local_fs`, `s3`, or `r2`); defaults to `local_fs`.
     #[serde(default)]
     kind: String,
+    /// Host path for `local_fs`; bucket (optionally `bucket/sub-prefix`) for
+    /// `s3`/`r2`.
     root: String,
+    /// Endpoint origin URL for an `s3`/`r2` binding.
+    #[serde(default)]
+    endpoint: String,
+    /// Signing region for an `s3`/`r2` binding (defaults to `auto`).
+    #[serde(default)]
+    region: String,
+    /// Access mode for an `s3`/`r2` binding: `private` (default) or `public`.
+    #[serde(default)]
+    access: String,
+    /// Access key id for a private `s3`/`r2` binding.
+    #[serde(default)]
+    access_key_id: String,
+    /// Secret access key for a private `s3`/`r2` binding.
+    #[serde(default)]
+    secret_access_key: String,
 }
 
 /// `POST /-/org/{org}/bindings` — create a storage binding.
@@ -2282,23 +2299,10 @@ pub(crate) async fn org_create_binding(
         )
             .into_response();
     };
-    // Custom s3/r2 bindings have no working fetcher/writer yet; refuse to create
-    // one that cannot serve. New registries use the deployment's default storage.
-    let runtime = RuntimeKind::current();
-    if !kind.implemented_as_custom_binding() {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "custom '{}' bindings are not implemented yet; new registries use \
-                 the deployment's default storage ({})",
-                kind.as_str(),
-                runtime.default_storage_label()
-            ),
-        )
-            .into_response();
-    }
     // The serving runtime gates which kinds are usable; `current()` reflects
-    // this process (native hub vs. Worker).
+    // this process (native hub vs. Worker). The Worker has no filesystem, so it
+    // rejects local_fs; both runtimes accept s3/r2 (served via presigned URLs).
+    let runtime = RuntimeKind::current();
     if !runtime.supports(kind) {
         let supported = runtime
             .supported_binding_kinds()
@@ -2316,29 +2320,33 @@ pub(crate) async fn org_create_binding(
         )
             .into_response();
     }
-    // A `local_fs` root is a host path (validated); for object stores the root
-    // is a bucket/prefix and is taken as-is.
-    if kind == BindingKind::LocalFs {
-        let path = std::path::Path::new(root);
-        if !path.is_absolute()
-            || path
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            return (
-                StatusCode::BAD_REQUEST,
-                "root must be an absolute path with no '..' components",
-            )
-                .into_response();
-        }
-    }
+    let origin = if kind.requires_origin_config() {
+        Some(crate::binding_provision::OriginInput {
+            endpoint: form.endpoint.trim(),
+            region: form.region.trim(),
+            access_key_id: form.access_key_id.trim(),
+            secret_access_key: form.secret_access_key.trim(),
+            private: form.access.trim() != "public",
+        })
+    } else {
+        None
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(false);
+            return Ok(None);
         };
-        deps.db
-            .create_storage_binding(org.id, name, kind_str, root)
-            .await?;
+        let id = crate::binding_provision::provision_binding(
+            &deps.db,
+            deps.sealer.as_ref(),
+            crate::binding_provision::NewBinding {
+                org_id: org.id,
+                name,
+                kind,
+                root,
+                origin,
+            },
+        )
+        .await?;
         deps.db
             .record_audit(
                 "user",
@@ -2352,13 +2360,23 @@ pub(crate) async fn org_create_binding(
                 Some(name),
             )
             .await?;
-        Ok::<_, anyhow::Error>(true)
+        Ok::<_, crate::binding_provision::ProvisionError>(Some(id))
     }
     .await;
     match result {
-        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
-        Ok(false) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
+        Ok(Some(_)) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(crate::binding_provision::ProvisionError::AlreadyExists(_)) => (
+            StatusCode::CONFLICT,
+            format!("a storage binding named '{name}' already exists"),
+        )
+            .into_response(),
+        Err(crate::binding_provision::ProvisionError::Invalid(m)) => {
+            (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        Err(crate::binding_provision::ProvisionError::Backend(err)) => {
+            (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response()
+        }
     }
 }
 

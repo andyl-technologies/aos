@@ -190,12 +190,28 @@ pub enum HubBindingCmd {
         /// Binding name
         #[arg(long)]
         name: String,
-        /// Backend kind (only `local_fs` is supported this phase)
+        /// Backend kind: local_fs, s3, or r2
         #[arg(long, default_value = "local_fs")]
         kind: String,
-        /// Backend root (an absolute filesystem path for local_fs)
+        /// Backend root: an absolute path for local_fs, or the bucket (optionally
+        /// bucket/sub-prefix) for s3/r2
         #[arg(long)]
         root: String,
+        /// Endpoint origin URL for s3/r2 (e.g. https://<acct>.r2.cloudflarestorage.com)
+        #[arg(long)]
+        endpoint: Option<String>,
+        /// Signing region for s3/r2 (defaults to "auto")
+        #[arg(long)]
+        region: Option<String>,
+        /// Access mode for s3/r2: private (default) or public
+        #[arg(long, default_value = "private")]
+        access: String,
+        /// Access key id for a private s3/r2 binding
+        #[arg(long)]
+        access_key_id: Option<String>,
+        /// Secret access key for a private s3/r2 binding
+        #[arg(long)]
+        secret_access_key: Option<String>,
     },
 }
 

@@ -17,15 +17,71 @@
 //! the core ports drop those bounds (the wasm32 `BackendBounds` is unbounded),
 //! so an `Rc`-free owned [`worker::Bucket`] satisfies the trait directly.
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use worker::Bucket;
 
-use aos_hub_core::db::RegistryRecord;
+use aos_hub_core::auth::seal::SecretSealer;
+use aos_hub_core::db::{Cache, Database, RegistryRecord};
 use aos_hub_core::fetch::{OriginFetch, StreamedRead, SurfaceFetch, SurfaceProvider};
+use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::surface_write::{SurfaceWrite, SurfaceWriteProvider};
 
 use crate::keymap;
+
+/// Resolve a registry's storage binding into an external [`S3Surface`], or
+/// `Ok(None)` when the registry has no binding (or its binding is not an
+/// S3-compatible object store).
+///
+/// A managed registry with an `s3`/`r2` binding serves its surface from an
+/// external object store rather than the hub-owned R2 bucket; this loads the
+/// binding row from D1 and resolves it (unsealing private credentials) against
+/// the registry's `prefix`. Registries with no binding (`file://`/`http`
+/// phase-1 rows, or a non-object-store binding) return `Ok(None)` so the caller
+/// keeps the default R2 path.
+///
+/// # Errors
+///
+/// Returns an error if the D1 lookup of the binding fails, or if resolving the
+/// binding fails (missing endpoint, malformed or un-unsealable credentials).
+async fn registry_s3_surface(
+    db: &Database,
+    sealer: &dyn SecretSealer,
+    registry: &RegistryRecord,
+) -> Result<Option<S3Surface>> {
+    let Some(id) = registry.storage_binding_id else {
+        return Ok(None);
+    };
+    let Some(binding) = db.storage_binding(id).await? else {
+        return Ok(None);
+    };
+    S3Surface::from_binding(&binding, &registry.prefix, sealer)
+}
+
+/// Resolve a cache's storage binding into an external [`S3Surface`], or
+/// `Ok(None)` when the binding is not an S3-compatible object store.
+///
+/// The cache counterpart of [`registry_s3_surface`], scoped to the cache's
+/// `prefix`. A cache always names a binding (`Cache::storage_binding_id` is
+/// non-optional); a binding whose kind is not `s3`/`r2` (e.g. the hub-owned R2
+/// bucket) yields `Ok(None)`.
+///
+/// # Errors
+///
+/// Returns an error if the D1 lookup of the binding fails, or if resolving the
+/// binding fails (missing endpoint, malformed or un-unsealable credentials).
+async fn cache_s3_surface(
+    db: &Database,
+    sealer: &dyn SecretSealer,
+    cache: &Cache,
+) -> Result<Option<S3Surface>> {
+    let Some(binding) = db.storage_binding(cache.storage_binding_id).await? else {
+        return Ok(None);
+    };
+    S3Surface::from_binding(&binding, &cache.prefix, sealer)
+}
 
 /// Whether an R2 error message names a transient, retryable condition.
 ///
@@ -59,25 +115,48 @@ async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<worker::Object>> {
     }
 }
 
-/// A [`SurfaceProvider`] that serves every registry from one R2 bucket.
+/// A [`SurfaceProvider`] that serves every registry from one R2 bucket, or from
+/// an external S3/R2 origin when the resource names an `s3`/`r2` storage
+/// binding.
 ///
-/// Holds the hub-owned bucket binding; [`fetcher`](SurfaceProvider::fetcher)
-/// scopes a reader to the requested registry's prefix.
+/// Holds the hub-owned bucket binding plus the shared [`Database`] and
+/// [`SecretSealer`] needed to resolve a per-resource storage binding;
+/// [`fetcher`](SurfaceProvider::fetcher) scopes a reader to the requested
+/// registry's prefix — proxying to the external origin via signed URLs when the
+/// binding is external ([`S3SurfaceFetch`]), else reading the hub R2 bucket
+/// ([`R2SurfaceFetch`]).
 pub struct R2SurfaceProvider {
     bucket: Bucket,
+    db: Arc<Database>,
+    sealer: Arc<dyn SecretSealer>,
 }
 
 impl R2SurfaceProvider {
-    /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface provider.
+    /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface provider,
+    /// with the D1 [`Database`] and [`SecretSealer`] used to resolve external
+    /// S3/R2 storage bindings.
     #[must_use]
-    pub fn new(bucket: Bucket) -> R2SurfaceProvider {
-        R2SurfaceProvider { bucket }
+    pub fn new(
+        bucket: Bucket,
+        db: Arc<Database>,
+        sealer: Arc<dyn SecretSealer>,
+    ) -> R2SurfaceProvider {
+        R2SurfaceProvider {
+            bucket,
+            db,
+            sealer,
+        }
     }
 }
 
 #[async_trait(?Send)]
 impl SurfaceProvider for R2SurfaceProvider {
     async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
+        if let Some(surface) =
+            registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
+        {
+            return Ok(Box::new(S3SurfaceFetch { surface }));
+        }
         Ok(Box::new(R2SurfaceFetch {
             bucket: self.bucket.clone(),
             prefix: registry.prefix.clone(),
@@ -88,6 +167,9 @@ impl SurfaceProvider for R2SurfaceProvider {
         &self,
         cache: &aos_hub_core::db::Cache,
     ) -> Result<Box<dyn SurfaceFetch>> {
+        if let Some(surface) = cache_s3_surface(&self.db, self.sealer.as_ref(), cache).await? {
+            return Ok(Box::new(S3SurfaceFetch { surface }));
+        }
         Ok(Box::new(R2SurfaceFetch {
             bucket: self.bucket.clone(),
             prefix: cache.prefix.clone(),
@@ -240,6 +322,166 @@ impl SurfaceFetch for R2SurfaceFetch {
     }
 }
 
+/// A [`SurfaceFetch`] reading one resource's surface from an external
+/// S3-compatible origin via per-object signed URLs.
+///
+/// The external-binding counterpart of [`R2SurfaceFetch`]: instead of an R2
+/// `get`/`head`, each operation mints a short-lived presigned URL with
+/// [`S3Surface::object_url`] and drives it over the Workers global Fetch API,
+/// streaming bodies through the isolate exactly like [`WorkerOriginFetch`] (so a
+/// large NAR never buffers). A presigned URL signs only the `Host` header, so a
+/// `Range` request header may be added freely on the streaming path.
+struct S3SurfaceFetch {
+    surface: S3Surface,
+}
+
+#[async_trait(?Send)]
+impl SurfaceFetch for S3SurfaceFetch {
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        use worker::Fetch;
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Get, path, now)?;
+        let mut response = Fetch::Url(
+            url.parse()
+                .map_err(|err| anyhow::anyhow!("s3 parse GET url: {err}"))?,
+        )
+        .send()
+        .await
+        .map_err(|err| anyhow::anyhow!("s3 GET {}: {err}", self.surface.describe()))?;
+        let status = response.status_code();
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            anyhow::bail!("s3 GET {}: status {status}", self.surface.describe());
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 read body {}: {err}", self.surface.describe()))?;
+        Ok(Some(bytes))
+    }
+
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        use futures_util::TryStreamExt as _;
+        use worker::{Fetch, Headers, Method, Request, RequestInit};
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Get, path, now)?;
+
+        // The presigned URL signs only the Host header, so a `Range` request
+        // header travels unsigned and the origin honors it as a normal byte
+        // range — the served range/total are re-derived from the response.
+        let mut headers = Headers::new();
+        if let Some((start, end)) = range {
+            let spec = if end == u64::MAX {
+                format!("bytes={start}-")
+            } else {
+                format!("bytes={start}-{end}")
+            };
+            headers
+                .set("Range", &spec)
+                .map_err(|err| anyhow::anyhow!("s3 set Range: {err}"))?;
+        }
+        let mut init = RequestInit::new();
+        init.with_method(Method::Get).with_headers(headers);
+        let request = Request::new_with_init(&url, &init)
+            .map_err(|err| anyhow::anyhow!("s3 build request: {err}"))?;
+        let mut response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 GET {}: {err}", self.surface.describe()))?;
+        let status = response.status_code();
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            anyhow::bail!("s3 GET {}: status {status}", self.surface.describe());
+        }
+        // A `206` carries the served range + total in `Content-Range`; a `200`
+        // carries the size in `Content-Length` and serves the whole object.
+        let served;
+        let total;
+        if status == 206 {
+            let cr = response
+                .headers()
+                .get("content-range")
+                .ok()
+                .flatten()
+                .and_then(|v| parse_content_range(&v))
+                .ok_or_else(|| anyhow::anyhow!("s3 206 without a parseable Content-Range"))?;
+            // Trust nothing from the origin: a malformed range would
+            // underflow/overflow the downstream `Content-Length` arithmetic.
+            if cr.0 > cr.1 || cr.1 >= cr.2 {
+                anyhow::bail!("s3 malformed Content-Range bytes {}-{}/{}", cr.0, cr.1, cr.2);
+            }
+            served = Some((cr.0, cr.1));
+            total = cr.2;
+        } else {
+            served = None;
+            total = response
+                .headers()
+                .get("content-length")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<u64>().ok())
+                .ok_or_else(|| anyhow::anyhow!("s3 200 without a Content-Length"))?;
+        }
+        let stream = response
+            .stream()
+            .map_err(|err| anyhow::anyhow!("s3 stream {}: {err}", self.surface.describe()))?
+            .map_err(|err| std::io::Error::other(err.to_string()));
+        // The `worker::Response` `ByteStream` is `!Send`; `SendWrapper` makes it
+        // `Send` (sound on the single-threaded Worker) so the same
+        // `StreamedRead` the R2/native paths return flows through `cache_serve`.
+        let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(stream));
+        Ok(Some(StreamedRead {
+            body,
+            total,
+            range: served,
+        }))
+    }
+
+    async fn size(&self, path: &str) -> Result<Option<u64>> {
+        use worker::{Fetch, Method, Request, RequestInit};
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Head, path, now)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Head);
+        let request = Request::new_with_init(&url, &init)
+            .map_err(|err| anyhow::anyhow!("s3 build HEAD request: {err}"))?;
+        let response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 HEAD {}: {err}", self.surface.describe()))?;
+        let status = response.status_code();
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            anyhow::bail!("s3 HEAD {}: status {status}", self.surface.describe());
+        }
+        let len = response
+            .headers()
+            .get("content-length")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<u64>().ok())
+            .ok_or_else(|| anyhow::anyhow!("s3 HEAD without a Content-Length"))?;
+        Ok(Some(len))
+    }
+
+    fn describe(&self) -> String {
+        self.surface.describe()
+    }
+}
+
 /// A [`OriginFetch`] over the Workers global Fetch API.
 ///
 /// The Worker counterpart of the native `ReqwestOriginFetch`: it streams a
@@ -344,28 +586,48 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
     ))
 }
 
-/// A [`SurfaceWriteProvider`] that writes every registry into one R2 bucket.
+/// A [`SurfaceWriteProvider`] that writes every registry into one R2 bucket, or
+/// into an external S3/R2 origin when the resource names an `s3`/`r2` binding.
 ///
 /// The write sibling of [`R2SurfaceProvider`]: holds the hub-owned bucket
-/// binding and scopes a [`R2Write`] to the requested registry's prefix. The
-/// shared git-backed change-request flow ([`aos_hub_core::gitwrite`]) uses
-/// it to write loose objects and draft refs.
+/// binding plus the shared [`Database`] and [`SecretSealer`] for resolving an
+/// external binding, and scopes a writer to the requested registry's prefix —
+/// signed `PUT`/`DELETE` against the external origin ([`S3Write`]) when the
+/// binding is external, else the hub R2 bucket ([`R2Write`]). The shared
+/// git-backed change-request flow ([`aos_hub_core::gitwrite`]) uses it to write
+/// loose objects and draft refs.
 pub struct R2SurfaceWriteProvider {
     bucket: Bucket,
+    db: Arc<Database>,
+    sealer: Arc<dyn SecretSealer>,
 }
 
 impl R2SurfaceWriteProvider {
     /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface write
-    /// provider.
+    /// provider, with the D1 [`Database`] and [`SecretSealer`] used to resolve
+    /// external S3/R2 storage bindings.
     #[must_use]
-    pub fn new(bucket: Bucket) -> R2SurfaceWriteProvider {
-        R2SurfaceWriteProvider { bucket }
+    pub fn new(
+        bucket: Bucket,
+        db: Arc<Database>,
+        sealer: Arc<dyn SecretSealer>,
+    ) -> R2SurfaceWriteProvider {
+        R2SurfaceWriteProvider {
+            bucket,
+            db,
+            sealer,
+        }
     }
 }
 
 #[async_trait(?Send)]
 impl SurfaceWriteProvider for R2SurfaceWriteProvider {
     async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>> {
+        if let Some(surface) =
+            registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
+        {
+            return Ok(Box::new(S3Write { surface }));
+        }
         Ok(Box::new(R2Write {
             bucket: self.bucket.clone(),
             prefix: registry.prefix.clone(),
@@ -376,6 +638,9 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         &self,
         cache: &aos_hub_core::db::Cache,
     ) -> Result<Box<dyn SurfaceWrite>> {
+        if let Some(surface) = cache_s3_surface(&self.db, self.sealer.as_ref(), cache).await? {
+            return Ok(Box::new(S3Write { surface }));
+        }
         Ok(Box::new(R2Write {
             bucket: self.bucket.clone(),
             prefix: cache.prefix.clone(),
@@ -417,5 +682,63 @@ impl SurfaceWrite for R2Write {
             .await
             .map_err(|err| anyhow::anyhow!("R2 delete {key}: {err}"))?;
         Ok(())
+    }
+}
+
+/// A [`SurfaceWrite`] writing one resource's surface to an external
+/// S3-compatible origin via per-object signed URLs.
+///
+/// The external-binding counterpart of [`R2Write`]: each operation mints a
+/// short-lived presigned `PUT`/`DELETE` URL with [`S3Surface::object_url`] and
+/// drives it over the Workers global Fetch API. A `DELETE` is idempotent — a
+/// `404`/`204` (absent key) is treated as success — matching the R2 path's
+/// no-op delete.
+struct S3Write {
+    surface: S3Surface,
+}
+
+#[async_trait(?Send)]
+impl SurfaceWrite for S3Write {
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
+        use worker::{Fetch, Method, Request, RequestInit};
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Put, path, now)?;
+        let body: worker::wasm_bindgen::JsValue = js_sys::Uint8Array::from(bytes).into();
+        let mut init = RequestInit::new();
+        init.with_method(Method::Put).with_body(Some(body));
+        let request = Request::new_with_init(&url, &init)
+            .map_err(|err| anyhow::anyhow!("s3 build PUT request: {err}"))?;
+        let response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 PUT {}: {err}", self.surface.describe()))?;
+        let status = response.status_code();
+        if !(200..300).contains(&status) {
+            anyhow::bail!("s3 PUT {}: status {status}", self.surface.describe());
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, path: &str) -> Result<()> {
+        use worker::{Fetch, Method, Request, RequestInit};
+
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Delete, path, now)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Delete);
+        let request = Request::new_with_init(&url, &init)
+            .map_err(|err| anyhow::anyhow!("s3 build DELETE request: {err}"))?;
+        let response = Fetch::Request(request)
+            .send()
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 DELETE {}: {err}", self.surface.describe()))?;
+        let status = response.status_code();
+        // Idempotent: deleting an absent object (404) succeeds, as does a 204
+        // No Content or any other 2xx the origin returns.
+        if status == 404 || (200..300).contains(&status) {
+            return Ok(());
+        }
+        anyhow::bail!("s3 DELETE {}: status {status}", self.surface.describe());
     }
 }

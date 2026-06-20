@@ -1294,66 +1294,78 @@ pub fn org_dashboard(
                 } else {
                     String::new()
                 };
-                vec![
-                    escape(&b.name),
-                    escape(&b.kind),
-                    format!("<code>{}</code>", escape(&b.root)),
-                    action,
-                ]
+                let location = if b.kind == "local_fs" {
+                    format!("<code>{}</code>", escape(&b.root))
+                } else {
+                    // Object store: show endpoint + bucket + access mode, never
+                    // the sealed credential.
+                    let endpoint = b.public_base_url.as_deref().unwrap_or("");
+                    format!(
+                        "<code>{endpoint}/{bucket}</code> · {access}",
+                        endpoint = escape(endpoint.trim_end_matches('/')),
+                        bucket = escape(&b.root),
+                        access = escape(&b.access),
+                    )
+                };
+                vec![escape(&b.name), escape(&b.kind), location, action]
             })
             .collect();
-        body.push_str(&table(&["name", "kind", "root", ""], &rows));
+        body.push_str(&table(&["name", "kind", "location", ""], &rows));
     }
     // New registries use the deployment's default storage automatically — no
-    // binding required. A custom binding is only for pointing an org at an
-    // *additional* backend.
+    // binding required. A custom binding points an org at its *own* external
+    // object store (or a host directory) instead.
     let _ = write!(
         body,
         "<p class=\"dim\">New registries use {default} automatically — no storage binding is \
-         required. A custom binding below only adds an extra backend.</p>\n",
+         required. Add a binding below only to serve a registry from your own S3/R2 bucket (or a \
+         host directory).</p>\n",
         default = escape(RuntimeKind::current().default_storage_label()),
     );
     if can_configure {
-        // Offer only kinds that are both runtime-supported and actually
-        // implemented as a custom binding. Today that is `local_fs` on the
-        // native hub and nothing on the Worker (its R2 is the default storage,
-        // not a custom binding), so the misleading "create an s3/r2 binding that
-        // can't serve" form is never shown.
         let creatable = RuntimeKind::current().creatable_binding_kinds();
-        if creatable.is_empty() {
-            body.push_str(
-                "<p class=\"dim\">Custom storage bindings (for example an external S3 bucket) are \
-                 not available on this deployment yet — registries use the default storage \
-                 above.</p>\n",
-            );
-        } else {
-            body.push_str("<h3>Add a custom storage binding</h3>\n");
-            let mut kind_options = String::new();
-            for kind in &creatable {
-                let _ = write!(
-                    kind_options,
-                    "<option value=\"{value}\">{label}</option>",
-                    value = escape(kind.as_str()),
-                    label = escape(kind.label()),
-                );
-            }
+        body.push_str("<h3>Add a storage binding</h3>\n");
+        let mut kind_options = String::new();
+        for kind in &creatable {
             let _ = write!(
-                body,
-                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\">\n{csrf}\
-                 <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
-                 <label>kind <select name=\"kind\">{kinds}</select></label>\n\
-                 <label>root <input type=\"text\" name=\"root\" required \
-                 placeholder=\"/srv/registries/acme\"></label>\n\
-                 <button>create binding</button>\n</form>\n",
-                org = escape(slug),
-                csrf = csrf_field(csrf),
-                kinds = kind_options,
-            );
-            body.push_str(
-                "<p class=\"dim\">For <code>local_fs</code> the root is an absolute host path with no \
-                 <code>..</code> components. Managed registries place their surfaces under it.</p>\n",
+                kind_options,
+                "<option value=\"{value}\">{label}</option>",
+                value = escape(kind.as_str()),
+                label = escape(kind.label()),
             );
         }
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\" \
+             data-binding-kind>\n{csrf}\
+             <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
+             <label>kind <select name=\"kind\">{kinds}</select></label>\n\
+             <label><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span> \
+             <input type=\"text\" name=\"root\" required placeholder=\"/srv/registries/acme\"></label>\n\
+             <div class=\"s3-only\">\n\
+             <label>endpoint <input type=\"text\" name=\"endpoint\" \
+             placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
+             <label>region <input type=\"text\" name=\"region\" placeholder=\"auto\"></label>\n\
+             <label>access <select name=\"access\">\
+             <option value=\"private\">private (read/write, credentialed)</option>\
+             <option value=\"public\">public (read-only, no credentials)</option></select></label>\n\
+             <label class=\"private-only\">access key id \
+             <input type=\"text\" name=\"access_key_id\" autocomplete=\"off\"></label>\n\
+             <label class=\"private-only\">secret access key \
+             <input type=\"password\" name=\"secret_access_key\" autocomplete=\"off\"></label>\n\
+             </div>\n\
+             <button>create binding</button>\n</form>\n",
+            org = escape(slug),
+            csrf = csrf_field(csrf),
+            kinds = kind_options,
+        );
+        body.push_str(
+            "<p class=\"dim\">A <code>local_fs</code> path is an absolute host path with no \
+             <code>..</code>. For <code>s3</code>/<code>r2</code>, the bucket plus each registry's \
+             slug form the key prefix; a private binding's credentials are sealed at rest and the \
+             secret is never shown again. Cloudflare R2 uses region <code>auto</code> and an \
+             endpoint like <code>https://&lt;account&gt;.r2.cloudflarestorage.com</code>.</p>\n",
+        );
     }
 
     body.push_str("<h2>Members</h2>\n");

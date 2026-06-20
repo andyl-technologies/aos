@@ -92,12 +92,14 @@ pub(crate) fn write_service(state: &AppState) -> RpcService {
         state.auth.jwt_keys.clone(),
         state.external_url.clone(),
         Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
-            &state.db,
-        ))),
-        Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
-            &state.db,
-        ))),
+        Arc::new(
+            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
         Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
         Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
         Some(Arc::clone(&state.sealer)),

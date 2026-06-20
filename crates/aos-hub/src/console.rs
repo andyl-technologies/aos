@@ -951,7 +951,8 @@ async fn advance_direct_action(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let surface_write =
-        crate::coreports::HubSurfaceWriteProvider::new(std::sync::Arc::clone(&state.db));
+        crate::coreports::HubSurfaceWriteProvider::new(std::sync::Arc::clone(&state.db))
+            .with_sealer(std::sync::Arc::clone(&state.sealer));
     let reindexer = crate::coreports::HubReindexer::new(std::sync::Arc::clone(&state.db));
     let result = crate::signing::advance_channel(
         &state.db,
@@ -1317,6 +1318,7 @@ async fn current_registry_toml(
     let head = crate::surface::object::Oid::from_hex(&head_hex)?;
     use aos_hub_core::fetch::SurfaceProvider as _;
     let fetch = crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+        .with_sealer(Arc::clone(&state.sealer))
         .fetcher(registry)
         .await?;
     Ok(
@@ -1351,13 +1353,15 @@ async fn config_submit_action(
     use aos_hub_core::fetch::SurfaceProvider as _;
     use aos_hub_core::surface_write::SurfaceWriteProvider as _;
     let fetch = match crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+        .with_sealer(Arc::clone(&state.sealer))
         .fetcher(registry)
         .await
     {
         Ok(fetch) => fetch,
         Err(err) => return internal(err),
     };
-    let write_provider = crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db));
+    let write_provider = crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+        .with_sealer(Arc::clone(&state.sealer));
     let writer = match write_provider.writer(registry).await {
         Ok(writer) => writer,
         Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),

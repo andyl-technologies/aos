@@ -368,12 +368,22 @@ message ListProjectsResponse {
 message Binding {
   string org_slug = 1;
   string name = 2;
-  // Backend kind: "local_fs" | "s3" | "r2". The serving runtime gates which
-  // kinds are usable (the native hub serves local_fs/s3; the Worker serves
-  // r2/s3).
+  // Backend kind: "local_fs" | "s3" | "r2". The native hub serves all three;
+  // the Worker serves s3/r2 (it has no filesystem). External s3/r2 bindings are
+  // served via presigned URLs.
   string kind = 3;
-  // Backend root: a filesystem path for local_fs, a bucket/prefix for s3/r2.
+  // Backend root: a filesystem path for local_fs, or the bucket (optionally
+  // "bucket/sub-prefix") for s3/r2.
   string root = 4;
+  // Access mode for an s3/r2 binding: "private" (credentialed, read/write) or
+  // "public" (credential-less, read-only). Empty for local_fs.
+  string access = 5;
+  // Endpoint origin URL for an s3/r2 binding (e.g.
+  // "https://<account>.r2.cloudflarestorage.com"). Empty for local_fs.
+  string endpoint = 6;
+  // Signing region for an s3/r2 binding ("auto" for R2, e.g. "us-east-1" for
+  // S3). Empty for local_fs. Credentials are never echoed back.
+  string region = 7;
 }
 
 message CreateBindingRequest {
@@ -382,8 +392,20 @@ message CreateBindingRequest {
   // Backend kind: "local_fs" | "s3" | "r2" (defaults to local_fs when empty).
   // The serving runtime gates which kinds are usable; see Binding.kind.
   string kind = 3;
-  // Backend root: a filesystem path for local_fs, a bucket/prefix for s3/r2.
+  // Backend root: a filesystem path for local_fs, or the bucket (optionally
+  // "bucket/sub-prefix") for s3/r2.
   string root = 4;
+  // Access mode for an s3/r2 binding: "private" (default) or "public".
+  string access = 5;
+  // Endpoint origin URL for an s3/r2 binding. Required for s3/r2.
+  string endpoint = 6;
+  // Signing region for an s3/r2 binding (defaults to "auto" when empty).
+  string region = 7;
+  // Access key id for a private s3/r2 binding (required when access=private).
+  string access_key_id = 8;
+  // Secret access key for a private s3/r2 binding (required when
+  // access=private). Sealed at rest; never stored or returned in the clear.
+  string secret_access_key = 9;
 }
 
 message CreateBindingResponse {

@@ -11,27 +11,32 @@
 //! Not every binding kind makes sense in every place the hub runs. The hub is
 //! deployed two ways, and each has a different storage substrate:
 //!
-//! - The **native** `aos-hub` binary reads/writes surfaces over the local
-//!   filesystem (and, in a later phase, Amazon S3). A `local_fs` root is a
-//!   directory on the host; an `r2` binding has no meaning here because the
-//!   Cloudflare R2 SDK is a Worker-runtime API.
+//! - The **native** `aos-hub` binary can serve a surface from the local
+//!   filesystem (`local_fs`) — a directory on the host.
 //! - The **Worker** runtime (`wasm32-unknown-unknown` on Cloudflare) has no
-//!   filesystem, so `local_fs` is meaningless; its native object store is R2
-//!   (and, in a later phase, S3 over HTTP).
+//!   filesystem, so `local_fs` is meaningless there; its built-in object store
+//!   is the deployment's R2 bucket, used automatically as the default storage
+//!   (not a custom binding).
 //!
-//! [`RuntimeKind`] models that split. The capability set that matters is always
-//! the **serving** runtime's: the Worker rejects a `local_fs` binding and the
-//! native hub rejects an `r2` binding, regardless of which surface (CLI, WebUI,
-//! or RPC) the binding was authored through. Enforcement therefore lives in the
-//! serving process (the `create_binding` RPC and the WebUI handler call
-//! [`RuntimeKind::current`]); the shared database layer and the offline CLI only
-//! validate that a kind is *known* — they cannot know the deployment runtime
-//! they will eventually be served from.
+//! Both runtimes can serve an **external, S3-compatible object store** (`s3` or
+//! `r2`) — Amazon S3, Cloudflare R2 via its S3 API, MinIO, and so on. There is
+//! no runtime-specific SDK involved: the shared
+//! [`S3Surface`](crate::s3surface::S3Surface) mints SigV4-presigned URLs (pure,
+//! `wasm`-clean signing) and each runtime makes a plain HTTP request to them, so
+//! `s3`/`r2` bindings work identically on the native hub and the Worker.
+//!
+//! [`RuntimeKind`] models the one real split — the local filesystem. The
+//! capability set that matters is always the **serving** runtime's: the Worker
+//! rejects a `local_fs` binding, regardless of which surface (CLI, WebUI, or RPC)
+//! the binding was authored through. Enforcement lives in the serving process
+//! (the `create_binding` RPC and the WebUI handler call [`RuntimeKind::current`]);
+//! the shared database layer and the offline CLI only validate that a kind is
+//! *known*.
 //!
 //! ```text
 //!                 local_fs   s3   r2
-//!   native           ok      ok    --
-//!   worker           --      ok    ok
+//!   native           ok      ok   ok
+//!   worker           --      ok   ok
 //! ```
 
 /// A storage backend kind a binding can target.
@@ -89,20 +94,16 @@ impl BindingKind {
         }
     }
 
-    /// Reports whether a *custom* binding of this kind has a working read/write
-    /// implementation today.
+    /// Reports whether this kind targets an external S3-compatible object store
+    /// (`s3`/`r2`) and therefore needs origin configuration — an endpoint URL and
+    /// (for a private binding) credentials.
     ///
-    /// Only [`LocalFs`](BindingKind::LocalFs) does: the native hub resolves it
-    /// to a filesystem fetcher/writer. Custom [`S3`](BindingKind::S3) and
-    /// [`R2`](BindingKind::R2) bindings — an org pointing at its *own* external
-    /// object store with credentials — are not yet implemented (the byte I/O is
-    /// a TODO), so the UI must not let an operator create one that cannot serve.
-    ///
-    /// This is distinct from runtime *support*: the Worker serves registries
-    /// from its single deployment R2 bucket by prefix (the default storage),
-    /// which is not a custom binding row and is always available without one.
-    pub fn implemented_as_custom_binding(&self) -> bool {
-        matches!(self, BindingKind::LocalFs)
+    /// [`LocalFs`](BindingKind::LocalFs) returns `false` (a host path is all it
+    /// needs); [`S3`](BindingKind::S3) and [`R2`](BindingKind::R2) return `true`.
+    /// The WebUI uses this to decide whether to show the endpoint/credentials
+    /// fields, and the provisioner to decide whether to require and seal them.
+    pub fn requires_origin_config(&self) -> bool {
+        matches!(self, BindingKind::S3 | BindingKind::R2)
     }
 }
 
@@ -146,12 +147,14 @@ impl RuntimeKind {
 
     /// Returns the binding kinds supported on this runtime.
     ///
-    /// The native runtime supports `local_fs` and `s3`; the Worker runtime
-    /// supports `r2` and `s3`.
+    /// The native runtime supports all three (`local_fs`, `s3`, `r2`); the Worker
+    /// runtime supports `s3` and `r2` but not `local_fs` (it has no filesystem).
+    /// External `s3`/`r2` bindings are served via presigned URLs, so neither
+    /// needs a runtime-specific object-store SDK.
     pub fn supported_binding_kinds(&self) -> &'static [BindingKind] {
         match self {
-            RuntimeKind::Native => &[BindingKind::LocalFs, BindingKind::S3],
-            RuntimeKind::Worker => &[BindingKind::R2, BindingKind::S3],
+            RuntimeKind::Native => &[BindingKind::LocalFs, BindingKind::S3, BindingKind::R2],
+            RuntimeKind::Worker => &[BindingKind::S3, BindingKind::R2],
         }
     }
 
@@ -160,21 +163,16 @@ impl RuntimeKind {
         self.supported_binding_kinds().contains(&kind)
     }
 
-    /// Returns the binding kinds an operator can actually *create* on this
-    /// runtime right now — those both [supported](Self::supports) by the runtime
-    /// and [implemented](BindingKind::implemented_as_custom_binding) as a custom
-    /// binding.
+    /// Returns the binding kinds an operator can create on this runtime — the
+    /// kinds the WebUI offers in the create-binding form.
     ///
-    /// This is what the WebUI offers in the create-binding form. It is empty on
-    /// the [`Worker`](RuntimeKind::Worker) today (its only object store is the
-    /// deployment's default R2 bucket, used automatically — not a custom
-    /// binding), and `[local_fs]` on the [`Native`](RuntimeKind::Native) hub.
+    /// Every [supported](Self::supports) kind is creatable: `local_fs` on the
+    /// [`Native`](RuntimeKind::Native) hub, and `s3`/`r2` on both runtimes (an
+    /// external object store reached via presigned URLs). This is *in addition*
+    /// to the deployment's zero-config default storage, which needs no binding at
+    /// all.
     pub fn creatable_binding_kinds(&self) -> Vec<BindingKind> {
-        self.supported_binding_kinds()
-            .iter()
-            .copied()
-            .filter(BindingKind::implemented_as_custom_binding)
-            .collect()
+        self.supported_binding_kinds().to_vec()
     }
 
     /// Returns a human-facing description of this runtime's *default* storage —
@@ -211,26 +209,28 @@ mod tests {
     }
 
     #[test]
-    fn only_local_fs_is_implemented_as_a_custom_binding() {
-        assert!(BindingKind::LocalFs.implemented_as_custom_binding());
-        assert!(!BindingKind::S3.implemented_as_custom_binding());
-        assert!(!BindingKind::R2.implemented_as_custom_binding());
+    fn only_object_stores_require_origin_config() {
+        assert!(!BindingKind::LocalFs.requires_origin_config());
+        assert!(BindingKind::S3.requires_origin_config());
+        assert!(BindingKind::R2.requires_origin_config());
     }
 
     #[test]
-    fn creatable_kinds_are_supported_and_implemented() {
-        // Native can create local_fs; the Worker can create none today (its R2
-        // is the default storage, not a custom binding).
+    fn creatable_kinds_equal_supported_kinds() {
+        // Native can create all three; the Worker can create the two object-store
+        // kinds (no filesystem).
         assert_eq!(
             RuntimeKind::Native.creatable_binding_kinds(),
-            vec![BindingKind::LocalFs]
+            vec![BindingKind::LocalFs, BindingKind::S3, BindingKind::R2]
         );
-        assert!(RuntimeKind::Worker.creatable_binding_kinds().is_empty());
-        // Every creatable kind is both supported and implemented.
+        assert_eq!(
+            RuntimeKind::Worker.creatable_binding_kinds(),
+            vec![BindingKind::S3, BindingKind::R2]
+        );
+        // Every creatable kind is supported by its runtime.
         for rt in [RuntimeKind::Native, RuntimeKind::Worker] {
             for kind in rt.creatable_binding_kinds() {
                 assert!(rt.supports(kind));
-                assert!(kind.implemented_as_custom_binding());
             }
         }
     }
@@ -257,15 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn native_supports_local_fs_and_s3_only() {
+    fn native_supports_all_kinds() {
         let rt = RuntimeKind::Native;
         assert!(rt.supports(BindingKind::LocalFs));
         assert!(rt.supports(BindingKind::S3));
-        assert!(!rt.supports(BindingKind::R2));
+        assert!(rt.supports(BindingKind::R2));
     }
 
     #[test]
-    fn worker_supports_r2_and_s3_only() {
+    fn worker_supports_object_stores_only() {
         let rt = RuntimeKind::Worker;
         assert!(rt.supports(BindingKind::R2));
         assert!(rt.supports(BindingKind::S3));

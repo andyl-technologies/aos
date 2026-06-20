@@ -33,9 +33,12 @@
 //! [`index_and_record`] (which records it as the registry's index state) and
 //! does not abort the rest of the run.
 
+use std::sync::Arc;
+
 use anyhow::{Context as _, Result};
 use worker::Bucket;
 
+use aos_hub_core::auth::seal::SecretSealer;
 use aos_hub_core::db::Database;
 use aos_hub_core::fetch::SurfaceProvider as _;
 
@@ -51,12 +54,20 @@ use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 /// registry's failure is recorded as its index state and logged, never aborting
 /// the run.
 ///
+/// `sealer` resolves a managed registry's external S3/R2 storage binding
+/// credentials (the same AES-GCM sealer the request path uses); a registry with
+/// no external binding reads from the hub R2 bucket.
+///
 /// # Errors
 ///
 /// Returns an error only if the registry list cannot be read from D1.
-pub async fn index_all(backend: D1Backend, bucket: Bucket) -> Result<()> {
-    let db = Database::attach(Box::new(backend));
-    let provider = R2SurfaceProvider::new(bucket);
+pub async fn index_all(
+    backend: D1Backend,
+    bucket: Bucket,
+    sealer: Arc<dyn SecretSealer>,
+) -> Result<()> {
+    let db = Arc::new(Database::attach(Box::new(backend)));
+    let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
 
     // The Worker serves only `public` registries (RFC-0004 multi-tenancy): the
     // Cron indexes exactly that subset of the non-tombstoned registries.
@@ -99,12 +110,21 @@ pub async fn index_all(backend: D1Backend, bucket: Bucket) -> Result<()> {
 /// Cron tick's Unix time (seconds), supplied by the caller since wasm has no
 /// ambient clock.
 ///
+/// `sealer` resolves a cache's external S3/R2 storage binding credentials (the
+/// same AES-GCM sealer the request path uses) when its surface lives off the
+/// hub R2 bucket.
+///
 /// # Errors
 ///
 /// Returns an error only if the cache list cannot be read from D1.
-pub async fn gc_all(backend: D1Backend, bucket: Bucket, now: i64) -> Result<()> {
-    let db = Database::attach(Box::new(backend));
-    let writers = R2SurfaceWriteProvider::new(bucket);
+pub async fn gc_all(
+    backend: D1Backend,
+    bucket: Bucket,
+    now: i64,
+    sealer: Arc<dyn SecretSealer>,
+) -> Result<()> {
+    let db = Arc::new(Database::attach(Box::new(backend)));
+    let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), sealer);
 
     let caches = db.list_caches().await.context("listing caches")?;
     for cache in caches {

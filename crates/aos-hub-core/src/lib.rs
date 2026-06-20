@@ -50,6 +50,7 @@
 pub mod auth;
 pub mod backend;
 pub mod binding;
+pub mod binding_provision;
 pub mod clock;
 pub mod config;
 pub mod connect;
@@ -71,6 +72,7 @@ pub mod sigv4;
 pub mod ratelimit;
 pub mod reindex;
 pub mod robots;
+pub mod s3surface;
 pub mod service;
 pub mod signing;
 pub mod stack;

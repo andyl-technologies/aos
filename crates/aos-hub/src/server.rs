@@ -308,12 +308,14 @@ pub async fn router(state: Arc<AppState>) -> Router {
         state.auth.jwt_keys.clone(),
         state.external_url.clone(),
         Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-        Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
-            &state.db,
-        ))),
-        Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
-            &state.db,
-        ))),
+        Arc::new(
+            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
         // The shared service's publish lease is the *same* in-memory lease the
         // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
         // pointer-flip serialization is process-wide whether a write arrives via
@@ -405,12 +407,14 @@ pub async fn router(state: Arc<AppState>) -> Router {
         mailer: Arc::clone(&state.mailer),
         sealer: Arc::clone(&state.sealer),
         http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        surface: Arc::new(crate::coreports::HubSurfaceProvider::new(Arc::clone(
-            &state.db,
-        ))),
-        surface_write: Arc::new(crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(
-            &state.db,
-        ))),
+        surface: Arc::new(
+            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        surface_write: Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
         reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
     };
     let console_router = aos_hub_core::web::console::console_router(console_deps);

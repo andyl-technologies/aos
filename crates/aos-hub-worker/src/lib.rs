@@ -277,12 +277,17 @@ mod entry {
             .map_err(|err| worker::Error::RustError(format!("rate limiter init: {err:#}")))?,
         );
 
-        let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
-            crate::surface::R2SurfaceProvider::new(env.bucket(crate::handlers::bindings::R2)?),
-        );
+        let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+            Arc::new(crate::surface::R2SurfaceProvider::new(
+                env.bucket(crate::handlers::bindings::R2)?,
+                Arc::clone(&db),
+                Arc::clone(&sealer),
+            ));
         let surface_write: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
             Arc::new(crate::surface::R2SurfaceWriteProvider::new(
                 env.bucket(crate::handlers::bindings::R2)?,
+                Arc::clone(&db),
+                Arc::clone(&sealer),
             ));
 
         // The cross-isolate publish lease and the deferred reindexer back the
@@ -400,11 +405,28 @@ mod entry {
                 return;
             }
         };
+        // The AES-GCM sealer (from `HUB_SEAL_KEY`) unseals an external S3/R2
+        // storage binding's credentials, so the Cron indexer/GC can read and
+        // write managed surfaces hosted off the hub R2 bucket — the same sealer
+        // the request path builds.
+        let sealer = match env
+            .secret(HUB_SEAL_KEY)
+            .map_err(|err| format!("{err}"))
+            .and_then(|s| sealer_from_secret(&s.to_string()).map_err(|err| format!("{err:#}")))
+        {
+            Ok(sealer) => sealer,
+            Err(err) => {
+                worker::console_error!("scheduled: {HUB_SEAL_KEY} unavailable: {err}");
+                return;
+            }
+        };
         // Drive the indexer's D1 access through the shared D1Backend (f64 binds,
         // NULL-tolerant reads), the same engine the read path uses; the surface
         // read goes through the R2-backed SurfaceProvider.
         let backend = crate::d1backend::D1Backend::new(db);
-        if let Err(err) = crate::indexer::index_all(backend, bucket).await {
+        if let Err(err) =
+            crate::indexer::index_all(backend, bucket, Arc::clone(&sealer)).await
+        {
             worker::console_error!("scheduled index failed: {err:#}");
         }
 
@@ -421,7 +443,7 @@ mod entry {
         };
         let now = (worker::Date::now().as_millis() / 1000) as i64;
         let gc_backend = crate::d1backend::D1Backend::new(gc_db);
-        if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now).await {
+        if let Err(err) = crate::indexer::gc_all(gc_backend, gc_bucket, now, sealer).await {
             worker::console_error!("scheduled cache gc failed: {err:#}");
         }
     }

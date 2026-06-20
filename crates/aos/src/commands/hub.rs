@@ -228,9 +228,21 @@ async fn binding(printer: &Printer, command: &HubBindingCmd) -> Result<()> {
             name,
             kind,
             root,
+            endpoint,
+            region,
+            access,
+            access_key_id,
+            secret_access_key,
         } => {
             let client = hub_client(hub, token.as_deref())?;
-            let binding = client.create_binding(org, name, kind, root).await?;
+            let origin = aos_remote::hub::BindingOrigin {
+                access: access.as_str(),
+                endpoint: endpoint.as_deref().unwrap_or_default(),
+                region: region.as_deref().unwrap_or_default(),
+                access_key_id: access_key_id.as_deref().unwrap_or_default(),
+                secret_access_key: secret_access_key.as_deref().unwrap_or_default(),
+            };
+            let binding = client.create_binding(org, name, kind, root, origin).await?;
             if printer.json_if_active(&serde_json::json!({
                 "binding": {
                     "org_slug": binding.org_slug,
