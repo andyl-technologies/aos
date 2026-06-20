@@ -2410,7 +2410,7 @@ mod tests {
                      name = "x";
                      system = "x86_64-linux";
                      builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
-                     src = builtins.fetchTree "gitlab:NixOS/nixpkgs/main";
+                     src = builtins.fetchTree "sourcehut:~andyl/aos/main";
                    }"#,
                 "forge reference resolution",
             ),

@@ -11110,7 +11110,7 @@ impl TreeWalk {
                     span,
                 ));
             }
-            if input_type != b"github" {
+            if !matches!(input_type, b"github" | b"gitlab") {
                 return Err(Self::unsupported_fetch_tree_feature(
                     id,
                     span,
@@ -11144,10 +11144,11 @@ impl TreeWalk {
                     ));
                 }
             }
-            let rev = self.resolve_fetch_tree_github_ref(
+            let rev = self.resolve_fetch_tree_forge_ref(
                 id,
                 span,
                 &canonical_uri,
+                input_type,
                 owner,
                 repo,
                 host,
@@ -11280,10 +11281,52 @@ impl TreeWalk {
         if check_url_access {
             self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
         }
-        let response = self.fetch_tree_github_api_bytes(id, span, &url, &parsed)?;
+        let response =
+            self.fetch_tree_json_api_bytes(id, span, &url, &parsed, "application/vnd.github+json")?;
         let rev =
             Self::fetch_tree_github_rev_from_commit_response(id, span, canonical_uri, &response)?;
         self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    fn resolve_fetch_tree_forge_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        input_type: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        match input_type {
+            b"github" => self.resolve_fetch_tree_github_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_url_access,
+            ),
+            b"gitlab" => self.resolve_fetch_tree_gitlab_ref(
+                id,
+                span,
+                canonical_uri,
+                owner,
+                repo,
+                host,
+                reference,
+                check_url_access,
+            ),
+            _ => Err(Self::unsupported_fetch_tree_feature(
+                id,
+                span,
+                "forge reference resolution",
+            )),
+        }
     }
 
     fn fetch_tree_github_ref_url(
@@ -11317,12 +11360,63 @@ impl TreeWalk {
         Ok(url)
     }
 
-    fn fetch_tree_github_api_bytes(
+    fn resolve_fetch_tree_gitlab_ref(
+        &self,
+        id: IrId,
+        span: Span,
+        canonical_uri: &[u8],
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+        check_url_access: bool,
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let url = Self::fetch_tree_gitlab_ref_url(id, span, owner, repo, host, reference)?;
+        let parsed = Self::parse_fetch_tree_url(id, span, &url)?;
+        if check_url_access {
+            self.check_fetch_tree_url_access(id, span, &url, &parsed)?;
+        }
+        let response =
+            self.fetch_tree_json_api_bytes(id, span, &url, &parsed, "application/json")?;
+        let rev =
+            Self::fetch_tree_gitlab_rev_from_commit_response(id, span, canonical_uri, &response)?;
+        self.canonical_flake_ref_rev(id, span, &rev)
+    }
+
+    fn fetch_tree_gitlab_ref_url(
+        id: IrId,
+        span: Span,
+        owner: &[u8],
+        repo: &[u8],
+        host: Option<&[u8]>,
+        reference: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let owner = Self::percent_encode_flake_ref(owner, b"");
+        let repo = Self::percent_encode_flake_ref(repo, b"");
+        let reference = Self::percent_encode_flake_ref(reference, b"");
+        let host = match host {
+            Some(host) => std::str::from_utf8(host)
+                .map_err(|source| Self::fetch_tree_error(id, span, host, source))?,
+            None => "gitlab.com",
+        };
+        let mut url = b"https://".to_vec();
+        url.extend_from_slice(host.as_bytes());
+        url.extend_from_slice(b"/api/v4/projects/");
+        url.extend_from_slice(&owner);
+        url.extend_from_slice(b"%2F");
+        url.extend_from_slice(&repo);
+        url.extend_from_slice(b"/repository/commits/");
+        url.extend_from_slice(&reference);
+        Ok(url)
+    }
+
+    fn fetch_tree_json_api_bytes(
         &self,
         id: IrId,
         span: Span,
         url: &[u8],
         parsed: &Url,
+        accept: &'static str,
     ) -> Result<Vec<u8>, TreeWalkError> {
         match parsed.scheme() {
             "http" | "https" => {
@@ -11349,7 +11443,7 @@ impl TreeWalk {
                     .map_err(|source| Self::fetch_tree_error(id, span, url, source))?;
                 let response = client
                     .get(parsed.as_str())
-                    .header(reqwest::header::ACCEPT, "application/vnd.github+json")
+                    .header(reqwest::header::ACCEPT, accept)
                     .header(reqwest::header::ACCEPT_ENCODING, "identity")
                     .header(reqwest::header::USER_AGENT, "aos-nix")
                     .send()
@@ -11371,6 +11465,34 @@ impl TreeWalk {
                 span,
             )),
         }
+    }
+
+    fn fetch_tree_gitlab_rev_from_commit_response(
+        id: IrId,
+        span: Span,
+        input: &[u8],
+        response: &[u8],
+    ) -> Result<Vec<u8>, TreeWalkError> {
+        let value = serde_json::from_slice::<JsonValue>(response).map_err(|source| {
+            Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                format!("invalid GitLab response: {source}"),
+            )
+        })?;
+        let sha = value.get("id").and_then(JsonValue::as_str).ok_or_else(|| {
+            Self::fetch_tree_error(id, span, input, "GitLab response is missing commit id")
+        })?;
+        if !Self::is_git_rev(sha.as_bytes()) {
+            return Err(Self::fetch_tree_error(
+                id,
+                span,
+                input,
+                "GitLab response commit id is invalid",
+            ));
+        }
+        Ok(sha.as_bytes().to_vec())
     }
 
     fn fetch_tree_github_rev_from_commit_response(
@@ -48841,6 +48963,34 @@ mod tests {
             b"https://git.example/api/v3/repos/NixOS/nixpkgs/commits/main"
         );
 
+        let gitlab_ref_url = TreeWalk::fetch_tree_gitlab_ref_url(
+            ir.root,
+            span,
+            b"NixOS",
+            b"nixpkgs",
+            None,
+            b"release/23.05",
+        )
+        .expect("GitLab ref resolution URL renders");
+        assert_eq!(
+            gitlab_ref_url,
+            b"https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/commits/release%2F23.05"
+        );
+
+        let custom_gitlab_ref_url = TreeWalk::fetch_tree_gitlab_ref_url(
+            ir.root,
+            span,
+            b"NixOS",
+            b"nixpkgs",
+            Some(b"git.example"),
+            b"main",
+        )
+        .expect("custom GitLab ref resolution URL renders");
+        assert_eq!(
+            custom_gitlab_ref_url,
+            b"https://git.example/api/v4/projects/NixOS%2Fnixpkgs/repository/commits/main"
+        );
+
         let resolved_rev = TreeWalk::fetch_tree_github_rev_from_commit_response(
             ir.root,
             span,
@@ -48857,6 +49007,24 @@ mod tests {
             br#"{"sha":"main"}"#,
         )
         .expect_err("GitHub commit response requires a full rev");
+        assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
+
+        let resolved_rev = TreeWalk::fetch_tree_gitlab_rev_from_commit_response(
+            ir.root,
+            span,
+            b"gitlab:NixOS/nixpkgs/main",
+            br#"{"id":"0123456789abcdef0123456789abcdef01234567"}"#,
+        )
+        .expect("GitLab commit response exposes a full rev");
+        assert_eq!(resolved_rev, b"0123456789abcdef0123456789abcdef01234567");
+
+        let error = TreeWalk::fetch_tree_gitlab_rev_from_commit_response(
+            ir.root,
+            span,
+            b"gitlab:NixOS/nixpkgs/main",
+            br#"{"id":"main"}"#,
+        )
+        .expect_err("GitLab commit response requires a full rev");
         assert!(matches!(error.kind(), TreeWalkErrorKind::FetchTree { .. }));
 
         let pure_attrs =
@@ -48913,6 +49081,40 @@ mod tests {
                 mode: EvalMode::Restricted,
                 ..
             } if input == format!("https://git.example/api/v3/repos/NixOS/nixpkgs/tarball/{rev}").as_bytes()
+        ));
+
+        let restricted_gitlab_source = format!(
+            r#"builtins.fetchTree {{ type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; rev = "{rev}"; narHash = "{nar_hash}"; host = "git.example"; }}"#
+        );
+        let error = eval_whnf_owned_with_options(
+            &lower(&restricted_gitlab_source),
+            TreeWalkOptions::with_eval_mode(EvalMode::Restricted),
+        )
+        .expect_err("restricted GitLab fetchTree rejects before archive access");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!("gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}").as_bytes()
+        ));
+
+        let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
+        options
+            .add_allowed_uri(format!(
+                "gitlab:NixOS/nixpkgs/{rev}?narHash={nar_hash_query}"
+            ))
+            .expect("canonical GitLab forge URI is a valid allowed URI prefix");
+        let error = eval_whnf_owned_with_options(&lower(&restricted_gitlab_source), options)
+            .expect_err("custom GitLab host requires archive URL authorization");
+        assert!(matches!(
+            error.kind(),
+            TreeWalkErrorKind::FetchTreeAccessDenied {
+                input,
+                mode: EvalMode::Restricted,
+                ..
+            } if input == format!("https://git.example/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={rev}").as_bytes()
         ));
 
         let restricted_dir_source = format!(
@@ -49018,10 +49220,30 @@ mod tests {
             }
         ));
 
-        for source in [
-            format!(r#"builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={nar_hash_query}""#),
-            format!(
-                r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; narHash = "{nar_hash}"; }}"#
+        for (source, expected_input) in [
+            (
+                format!(
+                    r#"builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={nar_hash_query}""#
+                ),
+                format!("github:NixOS/nixpkgs/main?narHash={nar_hash_query}"),
+            ),
+            (
+                format!(
+                    r#"builtins.fetchTree {{ type = "github"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; narHash = "{nar_hash}"; }}"#
+                ),
+                format!("github:NixOS/nixpkgs/main?narHash={nar_hash_query}"),
+            ),
+            (
+                format!(
+                    r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main?narHash={nar_hash_query}""#
+                ),
+                format!("gitlab:NixOS/nixpkgs/main?narHash={nar_hash_query}"),
+            ),
+            (
+                format!(
+                    r#"builtins.fetchTree {{ type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; ref = "main"; narHash = "{nar_hash}"; }}"#
+                ),
+                format!("gitlab:NixOS/nixpkgs/main?narHash={nar_hash_query}"),
             ),
         ] {
             let error = eval_whnf_owned_with_options(
@@ -49036,7 +49258,7 @@ mod tests {
                         input,
                         mode: EvalMode::Pure,
                         ..
-                    } if input == format!("github:NixOS/nixpkgs/main?narHash={nar_hash_query}").as_bytes()
+                    } if input == expected_input.as_bytes()
                 ),
                 "{source}: {error:?}",
             );
@@ -49058,10 +49280,10 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("gitlab:NixOS/nixpkgs/main")
-            .expect("unresolved forge URI is a valid allowed URI prefix");
+            .add_allowed_uri("sourcehut:~andyl/aos/main")
+            .expect("unresolved sourcehut URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main""#),
+            &lower(r#"builtins.fetchTree "sourcehut:~andyl/aos/main""#),
             options,
         )
         .expect_err("allowed unresolved forge ref still needs resolution support");
@@ -49075,10 +49297,10 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("gitlab:NixOS/nixpkgs/main?dir=lib")
+            .add_allowed_uri("sourcehut:~andyl/aos/main?dir=lib")
             .expect("dir-bearing forge URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main?dir=lib""#),
+            &lower(r#"builtins.fetchTree "sourcehut:~andyl/aos/main?dir=lib""#),
             options,
         )
         .expect_err("unresolved forge access drops dir metadata");
@@ -49088,15 +49310,15 @@ mod tests {
                 input,
                 mode: EvalMode::Restricted,
                 ..
-            } if input == b"gitlab:NixOS/nixpkgs/main"
+            } if input == b"sourcehut:~andyl/aos/main"
         ));
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("gitlab:NixOS/nixpkgs/main")
+            .add_allowed_uri("sourcehut:~andyl/aos/main")
             .expect("dir-stripped forge URI is a valid allowed URI prefix");
         let error = eval_whnf_owned_with_options(
-            &lower(r#"builtins.fetchTree "gitlab:NixOS/nixpkgs/main?dir=lib""#),
+            &lower(r#"builtins.fetchTree "sourcehut:~andyl/aos/main?dir=lib""#),
             options,
         )
         .expect_err("allowed unresolved forge ref still needs resolution support");
@@ -49162,6 +49384,73 @@ mod tests {
         let restricted_json = eval_json_bytes_with_options(
             &format!(
                 r#"let x = builtins.fetchTree "github:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}"; in x.rev"#
+            ),
+            restricted_options,
+        );
+        assert_eq!(
+            restricted_json,
+            serde_json::to_vec(resolved_rev).expect("rev JSON serializes")
+        );
+
+        fs::remove_dir_all(archive_dir).expect("archive temp directory removes");
+        fs::remove_dir_all(store_dir).expect("store temp directory removes");
+    }
+
+    #[test]
+    fn fetch_tree_gitlab_refs_resolve_with_test_url_responses() {
+        let (archive_dir, archive_path) = fetch_tarball_fixture("fetch-tree-gitlab-ref");
+        let archive_bytes = fs::read(&archive_path).expect("archive fixture reads");
+        let store_dir = unique_temp_dir("fetch-tree-gitlab-ref-store");
+        let mut options =
+            TreeWalkOptions::with_store_dir(store_dir.as_os_str().as_bytes().to_vec())
+                .expect("temporary store root configures");
+        let resolved_rev = "0123456789abcdef0123456789abcdef01234567";
+        let recursive_nar_hash = "sha256-2huQKpXoKVd3jyPd2WSNvpaYPRMVWmOk+ehCZVNq3KI=";
+        let recursive_nar_hash_query =
+            url::form_urlencoded::byte_serialize(recursive_nar_hash.as_bytes()).collect::<String>();
+
+        options.add_fetch_tree_url_response(
+            "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/commits/main",
+            format!(r#"{{"id":"{resolved_rev}"}}"#).into_bytes(),
+        );
+        options.add_fetch_tree_url_response(
+            format!(
+                "https://gitlab.com/api/v4/projects/NixOS%2Fnixpkgs/repository/archive.tar.gz?sha={resolved_rev}"
+            ),
+            archive_bytes,
+        );
+
+        let source = format!(
+            r#"
+            let x = builtins.fetchTree "gitlab:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}";
+            in {{
+              data = builtins.readFile "${{x.outPath}}/file.txt";
+              nested = builtins.readFile "${{x.outPath}}/sub/nested.txt";
+              rev = x.rev;
+              shortRev = x.shortRev;
+              narHash = x.narHash;
+            }}
+            "#
+        );
+        let json = eval_json_bytes_with_options(&source, options.clone());
+        let value: serde_json::Value =
+            serde_json::from_slice(&json).expect("GitLab fetchTree JSON parses");
+        assert_eq!(value["data"], "data");
+        assert_eq!(value["nested"], "inner");
+        assert_eq!(value["rev"], resolved_rev);
+        assert_eq!(value["shortRev"], &resolved_rev[..7]);
+        assert_eq!(value["narHash"], recursive_nar_hash);
+
+        let mut restricted_options = options;
+        restricted_options.set_eval_mode(EvalMode::Restricted);
+        restricted_options
+            .add_allowed_uri(format!(
+                "gitlab:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}"
+            ))
+            .expect("restricted GitLab ref URI configures");
+        let restricted_json = eval_json_bytes_with_options(
+            &format!(
+                r#"let x = builtins.fetchTree "gitlab:NixOS/nixpkgs/main?narHash={recursive_nar_hash_query}"; in x.rev"#
             ),
             restricted_options,
         );
@@ -49272,11 +49561,11 @@ mod tests {
 
         let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Restricted);
         options
-            .add_allowed_uri("gitlab:")
-            .expect("gitlab URI prefix is a valid allowed URI");
+            .add_allowed_uri("sourcehut:")
+            .expect("sourcehut URI prefix is a valid allowed URI");
         for source in [
-            r#"builtins.fetchTree { type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; ref = ""; }"#,
-            r#"builtins.fetchTree { type = "gitlab"; owner = "NixOS"; repo = "nixpkgs"; ref = "bad?ref"; }"#,
+            r#"builtins.fetchTree { type = "sourcehut"; owner = "~andyl"; repo = "aos"; ref = ""; }"#,
+            r#"builtins.fetchTree { type = "sourcehut"; owner = "~andyl"; repo = "aos"; ref = "bad?ref"; }"#,
         ] {
             let error = eval_whnf_owned_with_options(&lower(source), options.clone())
                 .expect_err("allowed unresolved forge attrset still needs resolution support");
