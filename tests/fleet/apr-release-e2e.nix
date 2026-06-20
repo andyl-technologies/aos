@@ -22,7 +22,6 @@
 # `testScript` is Python (Machine API). The producer dance runs as one
 # `registry.succeed(textwrap.dedent("""..."""))` so shell vars stay in scope.
 {
-  lib,
   pkgs,
   systems,
 }: let
@@ -135,10 +134,10 @@ in {
           # public half; `apr create --trust-key` then initialises the
           # registry (directory + git repo + keys.toml roster seeded with
           # that key) so the release below can be published and signed.
-          ${pkgs.aos}/bin/apr keys generate release --registry relreg \\
-            > /tmp/relreg-keygen.out 2>&1
-          cat /tmp/relreg-keygen.out
-          PUBKEY=$(grep -o 'relreg:Ed25519:[A-Za-z0-9+/=]*' /tmp/relreg-keygen.out | head -1)
+          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry relreg 2>&1)
+          printf '%s\\n' "$KEYGEN"
+          PUBKEY=$(printf '%s\\n' "$KEYGEN" | awk '/Public key:/ {{print $NF; exit}}')
+          test -n "$PUBKEY"
           KEY=$HOME/.config/apm/keys/relreg-release.key
           ${pkgs.aos}/bin/apr create relreg --trust-key "$PUBKEY" --key "$KEY"
           REG_DIR=$HOME/.local/share/apm/registries/relreg
