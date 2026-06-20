@@ -34,7 +34,8 @@ pub fn run(nix: &NixRunner, printer: &Printer, cmd: &ProfileCmd) -> Result<()> {
             target,
             top,
             suspects_only,
-        } => closure(nix, printer, target, *top, *suspects_only),
+            deep,
+        } => closure(nix, printer, target, *top, *suspects_only, *deep),
         ProfileCmd::Refs {
             package,
             dependency,
@@ -66,6 +67,7 @@ fn closure(
     target: &str,
     top: usize,
     suspects_only: bool,
+    deep: bool,
 ) -> Result<()> {
     let path = resolve_target(nix, printer, target)?;
 
@@ -75,11 +77,12 @@ fn closure(
     spinner.finish_and_clear();
 
     printer.info(&format!(
-        "Scanning {} paths for leaked references...",
-        graph.paths.len()
+        "Scanning {} paths for leaked references{}...",
+        graph.paths.len(),
+        if deep { " (deep)" } else { "" }
     ));
     let spinner = create_spinner("classifying references");
-    let mut analysis = report::analyze(&graph, top)?;
+    let mut analysis = report::analyze(&graph, top, deep)?;
     spinner.finish_and_clear();
 
     if suspects_only {

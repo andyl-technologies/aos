@@ -21,10 +21,17 @@ use anyhow::{Context, Result};
 use aos_core::nix::NixCli;
 use serde::Serialize;
 
-use crate::scan::store_name;
+use crate::scan::{self, store_name};
 
 /// Sentinel for "no immediate dominator computed yet".
 const UNDEFINED: usize = usize::MAX;
+
+/// Minimum exclusive size for the structural (no-`.so`/no-executable)
+/// suspect detector to fire. Below this, the closure is dominated by
+/// tiny `/etc` fragments and unit files — legitimate inert config whose
+/// flagging would be pure noise — so structural detection is reserved
+/// for substantial inert payloads (header trees, stray sources).
+const STRUCTURAL_MIN_SIZE: u64 = 512 * 1024;
 
 /// A realised runtime closure as an analysable graph.
 pub struct ClosureGraph {
@@ -123,11 +130,28 @@ impl ClosureGraph {
         order
     }
 
-    /// Identifies suspect paths — build tooling and dev outputs that
-    /// should not appear in a runtime closure — sorted by exclusive size.
+    /// Identifies suspect paths — build tooling, dev outputs, and paths
+    /// that ship no runnable artifact — that should not appear in a
+    /// runtime closure, sorted by exclusive size.
+    ///
+    /// Two detectors run per path:
+    ///
+    /// 1. **Name-based** ([`classify_suspect`]) — recognises known build
+    ///    tools, interpreters, and `*-dev`/`*-doc` split outputs.
+    /// 2. **Structural** — a path that ships neither a shared library nor
+    ///    an executable cannot be loaded or run, so its presence in a
+    ///    runtime closure is inherently questionable. This catches leaks
+    ///    of any name (a header-only package dragged in by a dead RPATH,
+    ///    a stray source tree). Genuine data packages (certificates,
+    ///    time-zone data, fonts) also match but are kept by the verdict
+    ///    layer, which sees their real data references.
+    ///
+    /// The structural detector (point 2) walks each candidate's files and
+    /// scans its referrers, which is costly on a large closure, so it runs
+    /// only when `deep` is set; the name-based detector always runs.
     ///
     /// The root itself is never reported as a suspect.
-    pub fn suspects(&self) -> Vec<Suspect> {
+    pub fn suspects(&self, deep: bool) -> Vec<Suspect> {
         let mut found: Vec<Suspect> = self
             .paths
             .iter()
@@ -135,7 +159,18 @@ impl ClosureGraph {
             .filter(|&(i, _)| i != self.root)
             .filter_map(|(i, path)| {
                 let name = store_name(path);
-                classify_suspect(name).map(|kind| Suspect {
+                let kind = classify_suspect(name).or_else(|| {
+                    if deep
+                        && self.exclusive[i] >= STRUCTURAL_MIN_SIZE
+                        && !scan::provides_shared_lib(path)
+                        && !scan::provides_executable(path)
+                    {
+                        Some(SuspectKind::NoRuntimeArtifact)
+                    } else {
+                        None
+                    }
+                })?;
+                Some(Suspect {
                     node: i,
                     path: path.clone(),
                     name: name.to_string(),
@@ -178,6 +213,9 @@ pub enum SuspectKind {
     Interpreter,
     /// A split dev/doc output (`*-dev`, `*-doc`, …).
     DevOutput,
+    /// Ships neither a shared library nor an executable: nothing in it
+    /// can be loaded or run at runtime (structural detection).
+    NoRuntimeArtifact,
 }
 
 impl SuspectKind {
@@ -188,6 +226,7 @@ impl SuspectKind {
             SuspectKind::BuildSystem => "build-system",
             SuspectKind::Interpreter => "interpreter",
             SuspectKind::DevOutput => "dev-output",
+            SuspectKind::NoRuntimeArtifact => "no .so/exe",
         }
     }
 }

@@ -228,6 +228,10 @@ pub enum ProfileCmd {
         /// Only print confirmed leaks (dev-leak / spurious verdicts)
         #[arg(long)]
         suspects_only: bool,
+        /// Also flag any path shipping no library/executable (slower:
+        /// scans much more of the closure, catches leaks of any name)
+        #[arg(long)]
+        deep: bool,
     },
     /// Explain why one package references another, with evidence
     Refs {
