@@ -89,11 +89,15 @@ pub struct ClosureAnalysis {
 /// hashes — keeping the cost close to one pass over the relevant subset
 /// of the closure.
 ///
+/// When `deep` is set, the structural suspect detector also runs (paths
+/// shipping no shared library or executable), catching leaks of any name
+/// at the cost of scanning much more of the closure.
+///
 /// # Errors
 ///
 /// Returns an error only if a referrer directory cannot be traversed;
 /// unreadable individual files are skipped within the scan.
-pub fn analyze(graph: &ClosureGraph, top: usize) -> Result<ClosureAnalysis> {
+pub fn analyze(graph: &ClosureGraph, top: usize, deep: bool) -> Result<ClosureAnalysis> {
     let largest = graph
         .by_exclusive()
         .into_iter()
@@ -106,7 +110,7 @@ pub fn analyze(graph: &ClosureGraph, top: usize) -> Result<ClosureAnalysis> {
         })
         .collect();
 
-    let suspects = graph.suspects();
+    let suspects = graph.suspects(deep);
 
     // Group the scan work by referrer so each is read only once: map a
     // referrer node to the set of suspect (hash -> path) it references.
@@ -143,6 +147,16 @@ pub fn analyze(graph: &ClosureGraph, top: usize) -> Result<ClosureAnalysis> {
             .flat_map(|(_, sites)| sites.iter().cloned())
             .collect();
         let (v, note) = refine_verdict(&s.path, &all_sites);
+
+        // Structural (no-`.so`/no-executable) suspects are only worth
+        // surfacing when they are confirmed leaks: a large inert payload
+        // ruled `runtime` is a legitimate data package (certificates,
+        // time-zone data) and listing it would be noise. Named suspects
+        // (build tools, interpreters) stay visible regardless, since
+        // their mere presence is informative.
+        if s.kind == SuspectKind::NoRuntimeArtifact && !v.is_leak() {
+            continue;
+        }
         if v.is_leak() {
             removable = removable.saturating_add(s.exclusive);
         }
@@ -228,20 +242,22 @@ pub fn render(printer: &Printer, a: &ClosureAnalysis) {
     printer.kv("Total size", &human(a.total_size));
     printer.plain("");
 
-    printer.header(&format!(
-        "Largest paths (top {}, by exclusive size):",
-        a.largest.len()
-    ));
-    for row in &a.largest {
-        printer.plain(&format!(
-            "  {:>10}  {:>10}  {}",
-            human(row.exclusive),
-            human(row.size),
-            row.name,
+    if !a.largest.is_empty() {
+        printer.header(&format!(
+            "Largest paths (top {}, by exclusive size):",
+            a.largest.len()
         ));
+        for row in &a.largest {
+            printer.plain(&format!(
+                "  {:>10}  {:>10}  {}",
+                human(row.exclusive),
+                human(row.size),
+                row.name,
+            ));
+        }
+        printer.plain("    (col 1 = exclusive/dominated subtree, col 2 = own size)");
+        printer.plain("");
     }
-    printer.plain("    (col 1 = exclusive/dominated subtree, col 2 = own size)");
-    printer.plain("");
 
     let leaks: Vec<&SuspectFinding> = a.suspects.iter().filter(|s| s.verdict.is_leak()).collect();
     let kept: usize = a.suspects.len() - leaks.len();

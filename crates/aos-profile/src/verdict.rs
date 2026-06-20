@@ -98,15 +98,16 @@ fn site_strength(site: &RefSite) -> Strength {
 ///
 /// Takes the strongest site: a single runtime use outranks any number of
 /// spurious mentions. An empty slice (no located site) is treated as
-/// [`Verdict::Spurious`] — the hash was recorded as a reference but could
-/// not be found in content, which is itself a sign of a stale or
-/// metadata-only reference.
+/// [`Verdict::Runtime`], not a leak: when Nix records a reference but the
+/// target's hash appears in no file content, the edge is a store-database
+/// or build-graph relationship (such as the system toplevel pulling in an
+/// `/etc` fragment by path), which is legitimate inclusion rather than
+/// leaked residue. Only positively-located weak evidence marks a leak.
 pub fn verdict(sites: &[RefSite]) -> Verdict {
-    let strongest = sites.iter().map(site_strength).max();
-    match strongest {
-        Some(Strength::Runtime) => Verdict::Runtime,
+    match sites.iter().map(site_strength).max() {
+        Some(Strength::Runtime) | None => Verdict::Runtime,
         Some(Strength::Dev) => Verdict::DevLeak,
-        _ => Verdict::Spurious,
+        Some(Strength::Spurious) => Verdict::Spurious,
     }
 }
 
@@ -156,7 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_is_spurious() {
-        assert_eq!(verdict(&[]), Verdict::Spurious);
+    fn empty_is_runtime() {
+        // No located site means a store-database/build-graph reference,
+        // not a leak — do not cry wolf.
+        assert_eq!(verdict(&[]), Verdict::Runtime);
     }
 }

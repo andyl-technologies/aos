@@ -71,6 +71,39 @@ pub fn provides_shared_lib(path: &str) -> bool {
     walk(Path::new(path))
 }
 
+/// Returns whether `path` ships any executable file.
+///
+/// "Executable" means a regular file carrying any Unix execute bit.
+/// Together with [`provides_shared_lib`] this distinguishes paths that
+/// contribute a runnable or loadable artifact from inert ones (headers,
+/// data, source) whose presence in a runtime closure is suspect.
+pub fn provides_executable(path: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fn walk(dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let Ok(meta) = fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                if walk(&p) {
+                    return true;
+                }
+            } else if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return true;
+            }
+        }
+        false
+    }
+    walk(Path::new(path))
+}
+
 /// Returns whether a filename names an ELF shared object.
 ///
 /// A real shared library ends in `.so` or carries a versioned suffix
