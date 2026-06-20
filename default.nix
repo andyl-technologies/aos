@@ -246,7 +246,7 @@
       eval.config.spec;
   in
     builtins.listToAttrs (
-      builtins.map (filename: {
+      map (filename: {
         name = lib.removeSuffix ".nix" filename;
         value = fleetHarness.mkFleetTest (loadSpec filename);
       })
@@ -312,6 +312,7 @@ in {
     package-test-http-server = packageTestHttpServerCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
+    lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
