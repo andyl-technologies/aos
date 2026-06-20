@@ -21,6 +21,13 @@
     }
     {
       gate = "gate:layer0-determinism";
+      package = "crucible-assert";
+      testTarget = "gate_layer0_determinism";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:layer0-determinism";
       package = "crucible";
       testTarget = "gate_layer0_determinism";
       requiredFeatures = ["test-double"];
@@ -36,6 +43,13 @@
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu-plugin";
+      testTarget = "gate_single_vm_fingerprint";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:single-vm-fingerprint";
+      package = "crucible-guest";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
       placeholder = true;
@@ -57,6 +71,13 @@
     {
       gate = "gate:abi-conformance";
       package = "crucible-harness";
+      testTarget = "gate_abi_conformance";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:abi-conformance";
+      package = "crucible-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       placeholder = true;
@@ -99,6 +120,13 @@
     {
       gate = "gate:control-responsive";
       package = "crucible-api";
+      testTarget = "gate_control_responsive";
+      requiredFeatures = [];
+      placeholder = true;
+    }
+    {
+      gate = "gate:control-responsive";
+      package = "crucible-daemon";
       testTarget = "gate_control_responsive";
       requiredFeatures = [];
       placeholder = true;
@@ -323,7 +351,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=21
+            placeholder_targets=25
             RESULT
           '';
         }

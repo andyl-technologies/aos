@@ -557,7 +557,7 @@ the conditions under which feature code can be trusted to stay deterministic
   crate except the enumerated FFI/mmap/atomics crates (per the crate table),
   with the safe-wrapper requirement and `// SAFETY:` on every block. — satisfies
   [STD-16], [STD-17], [STD-18]; spec §3.
-- [ ] **T-STD-8** Establish the per-layer testing standards: each crate's tests
+- [x] **T-STD-8** Establish the per-layer testing standards: each crate's tests
   own its layer gate ([HARN-3]); the twice-reduce/compare-by-hash shape;
   flaky-is-failing; the `SimDouble` carries the bulk of L1/L3/L4 determinism
   tests. — satisfies [STD-19], [STD-20], [STD-21]; spec §4.
