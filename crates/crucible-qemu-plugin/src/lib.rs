@@ -10,6 +10,10 @@
 //! Module map: the crate root currently reserves the plugin ABI boundary;
 //! future modules will split entry points, time control, device callbacks, and
 //! QEMU-facing helpers.
+//!
+//! Unsafe boundary discipline: exported C ABI entry points validate raw QEMU
+//! pointers and delegate to safe Rust shims for time-control, callback
+//! registration, and memory access.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]

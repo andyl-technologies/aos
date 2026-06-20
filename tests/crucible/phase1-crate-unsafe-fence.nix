@@ -3,6 +3,7 @@
   lib,
 }: let
   cratesDir = ../../crates;
+  crateUnsafeFenceRust = builtins.readFile ../../crates/crucible-harness/tests/crate_unsafe_fence.rs;
   safeFence = "#![forbid(unsafe_code)]";
   unsafeFence = "#![deny(unsafe_op_in_unsafe_fn)]";
 
@@ -22,6 +23,59 @@
     indexes;
 
   stripLineComment = line: lib.trim (builtins.elemAt (lib.splitString "//" line) 0);
+
+  normalize = value: builtins.replaceStrings [" " "\t" "\r"] ["" "" ""] value;
+
+  scrubLineStrings = line: let
+    chars = builtins.genList (index: builtins.substring index 1 line) (builtins.stringLength line);
+    step = state: ch:
+      if state.inString
+      then
+        if state.escape
+        then
+          state
+          // {
+            out = state.out + " ";
+            escape = false;
+          }
+        else if ch == "\\"
+        then
+          state
+          // {
+            out = state.out + " ";
+            escape = true;
+          }
+        else if ch == "\""
+        then {
+          out = state.out + " ";
+          inString = false;
+          escape = false;
+        }
+        else
+          state
+          // {
+            out = state.out + " ";
+          }
+      else if ch == "\""
+      then {
+        out = state.out + " ";
+        inString = true;
+        escape = false;
+      }
+      else
+        state
+        // {
+          out = state.out + ch;
+        };
+    result =
+      builtins.foldl' step {
+        out = "";
+        inString = false;
+        escape = false;
+      }
+      chars;
+  in
+    result.out;
 
   crateRootInnerAttributes = content: let
     lines = lib.splitString "\n" content;
@@ -68,76 +122,254 @@
   in
     result.attrs;
 
+  uncommentCodeLines = content: let
+    lines = lib.splitString "\n" content;
+    step = state: line: let
+      trimmed = lib.trim line;
+    in
+      if state.inBlockComment
+      then
+        state
+        // {
+          lines = state.lines ++ [""];
+          inBlockComment = !(hasInfix "*/" trimmed);
+        }
+      else if trimmed == "" || lib.hasPrefix "//" trimmed
+      then
+        state
+        // {
+          lines = state.lines ++ [""];
+        }
+      else if lib.hasPrefix "/*" trimmed
+      then
+        state
+        // {
+          lines = state.lines ++ [""];
+          inBlockComment = !(hasInfix "*/" trimmed);
+        }
+      else
+        state
+        // {
+          lines = state.lines ++ [(scrubLineStrings (stripLineComment line))];
+        };
+    result =
+      builtins.foldl' step {
+        lines = [];
+        inBlockComment = false;
+      }
+      lines;
+  in
+    result.lines;
+
+  safetyCommentStatesInvariant = rawLines: lineNumber:
+    if lineNumber <= 1
+    then false
+    else let
+      prefix = "// SAFETY:";
+      previous = lib.trim (builtins.elemAt rawLines (lineNumber - 2));
+      invariant = lib.trim (builtins.substring (builtins.stringLength prefix) (builtins.stringLength previous) previous);
+    in
+      lib.hasPrefix prefix previous && invariant != "";
+
+  rustSources = dir: displayPrefix: let
+    entries = builtins.readDir dir;
+    names = lib.sort builtins.lessThan (builtins.attrNames entries);
+  in
+    lib.concatMap (
+      name: let
+        path = dir + "/${name}";
+        display = "${displayPrefix}/${name}";
+        kind = entries.${name};
+      in
+        if kind == "directory"
+        then rustSources path display
+        else if kind == "regular" && lib.hasSuffix ".rs" name
+        then [{inherit path display;}]
+        else []
+    )
+    names;
+
+  unsafeSourceFailuresForContent = spec: display: content: let
+    rawLines = lib.splitString "\n" content;
+    codeLines = uncommentCodeLines content;
+    indexes = builtins.genList (index: index) (builtins.length codeLines);
+    unsafePatterns = [
+      "unsafe{"
+      "unsafefn"
+      "unsafetrait"
+      "unsafeimpl"
+      "unsafeextern"
+    ];
+    step = state: index: let
+      line = builtins.elemAt codeLines index;
+      compact = normalize line;
+      lineNumber = index + 1;
+      linePrefix = "${display}:${builtins.toString lineNumber}";
+      startsUnsafeExternBlock = hasInfix "unsafeextern" compact && hasInfix "{" compact && !(hasInfix "unsafeexternfn" compact);
+      inUnsafeExternBlock = state.inUnsafeExternBlock || startsUnsafeExternBlock;
+      closesUnsafeExternBlock = inUnsafeExternBlock && hasInfix "}" compact;
+      safeCrateFailures =
+        if spec.unsafeBoundary
+        then []
+        else
+          lib.concatMap (
+            pattern:
+              lib.optionals (hasInfix pattern compact) [
+                "${linePrefix}: banned unsafe keyword outside enumerated unsafe-boundary crate pattern `${pattern}`"
+              ]
+          )
+          unsafePatterns;
+      unsafeBlockFailures =
+        lib.optionals (
+          spec.unsafeBoundary
+          && hasInfix "unsafe{" compact
+          && !(safetyCommentStatesInvariant rawLines lineNumber)
+        ) [
+          "${linePrefix}: banned bare unsafe block pattern `unsafe`"
+        ];
+      unsafeImplFailures =
+        lib.optionals (
+          spec.unsafeBoundary
+          && hasInfix "unsafeimpl" compact
+          && !(safetyCommentStatesInvariant rawLines lineNumber)
+        ) [
+          "${linePrefix}: banned unsafe impl without SAFETY pattern `unsafe impl`"
+        ];
+      unsafeCallableFailures =
+        lib.optionals (
+          spec.unsafeBoundary
+          && (hasInfix "unsafefn" compact || hasInfix "unsafetrait" compact || hasInfix "unsafeexternfn" compact)
+        ) [
+          "${linePrefix}: banned unsafe item pattern `unsafe`"
+        ];
+      publicUnsafeExternFailures =
+        lib.optionals (
+          spec.unsafeBoundary
+          && inUnsafeExternBlock
+          && lib.hasPrefix "pub" compact
+        ) [
+          "${linePrefix}: banned public unsafe extern item pattern `pub item`"
+        ];
+    in {
+      inUnsafeExternBlock = inUnsafeExternBlock && !closesUnsafeExternBlock;
+      failures = state.failures ++ safeCrateFailures ++ unsafeBlockFailures ++ unsafeImplFailures ++ unsafeCallableFailures ++ publicUnsafeExternFailures;
+    };
+    result =
+      builtins.foldl' step {
+        inUnsafeExternBlock = false;
+        failures = [];
+      }
+      indexes;
+  in
+    result.failures;
+
+  unsafeSourceFailuresForSpec = spec:
+    lib.concatMap (
+      source:
+        unsafeSourceFailuresForContent spec source.display (builtins.readFile source.path)
+    ) (rustSources (cratesDir + "/${spec.package}/src") "crates/${spec.package}/src");
+
   specs = [
     {
       package = "crucible-sim";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-assert";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-shmem";
       root = "src/lib.rs";
       unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "safe typed region accessors"
+        "safe SPSC push/pop"
+        "wrappers that uphold alignment"
+      ];
     }
     {
       package = "crucible-protocol";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-device";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-qemu";
       root = "src/lib.rs";
       unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use a safe host-driver API"
+        "validates process and mapping invariants"
+      ];
     }
     {
       package = "crucible-qemu-plugin";
       root = "src/lib.rs";
       unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "validate raw QEMU"
+        "delegate to safe Rust shims"
+      ];
     }
     {
       package = "crucible-guest";
       root = "src/lib.rs";
       unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use safe doorbell and marker accessors"
+        "guest/register and shared-region invariants"
+      ];
     }
     {
       package = "crucible";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-session";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-api";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-daemon";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-cli";
       root = "src/main.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
     {
       package = "crucible-harness";
       root = "src/lib.rs";
       unsafeBoundary = false;
+      safeWrapperContract = [];
     }
   ];
 
@@ -189,15 +421,126 @@
       then safeFence
       else unsafeFence;
     displayPath = "crates/${spec.package}/${spec.root}";
+    contractFailures =
+      if spec.unsafeBoundary && spec.safeWrapperContract == []
+      then [
+        "${displayPath}: unsafe boundary has no safe-wrapper contract"
+      ]
+      else
+        lib.concatMap (
+          phrase:
+            lib.optionals (!(hasInfix phrase content)) [
+              "${displayPath}: missing safe-wrapper contract phrase `${phrase}`"
+            ]
+        )
+        spec.safeWrapperContract;
   in
     (lib.optionals (!(builtins.elem required activeAttrs)) [
       "${displayPath}: missing required crate-root fence `${required}`"
     ])
     ++ (lib.optionals (builtins.elem rejected activeAttrs) [
       "${displayPath}: carries contradictory crate-root fence `${rejected}`"
+    ])
+    ++ contractFailures;
+
+  rustHarnessFailures = let
+    requiredRustText = [
+      "unsafe_boundary_crates_document_safe_wrapper_contracts"
+      "unsafe_usage_is_confined_to_safe_wrapper_boundaries"
+      "unsafe_source_scanner_rejects_boundary_drift"
+      "unsafe_source_failures"
+      "unsafe_callable_item_at"
+      "unsafe_impl_at"
+      "unsafe_extern_function_at"
+      "public_unsafe_api_at"
+      "public_unsafe_extern_item_failures"
+      "outside enumerated unsafe-boundary crate"
+      "has_immediately_preceding_safety_comment"
+      "safety_comment_states_invariant"
+      "safe-wrapper contract"
+      "unsafe item"
+      "unsafe impl without SAFETY"
+      "public unsafe API"
+      "public unsafe extern item"
+    ];
+  in
+    lib.concatMap (
+      required:
+        lib.optionals (!(hasInfix required crateUnsafeFenceRust)) [
+          "crates/crucible-harness/tests/crate_unsafe_fence.rs: missing unsafe-fence scanner wiring `${required}`"
+        ]
+    )
+    requiredRustText;
+
+  unsafeSourceFailures = lib.concatMap unsafeSourceFailuresForSpec specs;
+
+  unsafeSourceRegressionFailures = let
+    safeCrateFindings = unsafeSourceFailuresForContent {
+      package = "crucible";
+      unsafeBoundary = false;
+    } "safe-regression.rs" ''
+      fn bad() {
+        unsafe {}
+      }
+    '';
+    unsafeBoundaryFindings = unsafeSourceFailuresForContent {
+      package = "crucible-shmem";
+      unsafeBoundary = true;
+    } "unsafe-boundary-regression.rs" ''
+      pub unsafe fn leaky_public_api() {}
+
+      unsafe impl Send for LeakyRing {}
+
+      unsafe extern "C" {
+        pub static mut RAW_STATE: u8;
+      }
+
+      fn empty_safety_comment() {
+        // SAFETY:
+        unsafe {}
+      }
+    '';
+    allowedBoundaryFindings = unsafeSourceFailuresForContent {
+      package = "crucible-shmem";
+      unsafeBoundary = true;
+    } "allowed-boundary-regression.rs" ''
+      pub fn safe_wrapper() {
+        // SAFETY: the wrapper validates the pointer before dereference.
+        unsafe {}
+      }
+
+      unsafe extern "C" {
+        fn private_raw_ffi_import();
+        fn publish_event();
+      }
+
+      // SAFETY: the ring wrapper owns the producer/consumer invariants.
+      unsafe impl Send for PrivateRing {}
+
+      const SAMPLE: &str = "unsafe {";
+    '';
+    hasFinding = reason: findings: builtins.any (finding: hasInfix reason finding) findings;
+  in
+    (lib.optionals (!(hasFinding "outside enumerated unsafe-boundary crate" safeCrateFindings)) [
+      "unsafe-source scanner regression failed to reject unsafe in a SAFE crate"
+    ])
+    ++ (lib.optionals (!(hasFinding "unsafe item" unsafeBoundaryFindings)) [
+      "unsafe-source scanner regression failed to reject unsafe callable items"
+    ])
+    ++ (lib.optionals (!(hasFinding "unsafe impl without SAFETY" unsafeBoundaryFindings)) [
+      "unsafe-source scanner regression failed to reject undocumented unsafe impl"
+    ])
+    ++ (lib.optionals (!(hasFinding "public unsafe extern item" unsafeBoundaryFindings)) [
+      "unsafe-source scanner regression failed to reject public unsafe extern items"
+    ])
+    ++ (lib.optionals (!(hasFinding "bare unsafe block" unsafeBoundaryFindings)) [
+      "unsafe-source scanner regression failed to reject empty SAFETY comments"
+    ])
+    ++ (lib.optionals (allowedBoundaryFindings != []) [
+      "unsafe-source scanner regression rejected allowed safe-wrapper sample: ${builtins.concatStringsSep "; " allowedBoundaryFindings}"
     ]);
 
-  failures = packageSetFailures ++ scannerRegressionFailures ++ lib.concatMap checkSpec specs;
+  failures = packageSetFailures ++ scannerRegressionFailures ++ rustHarnessFailures ++ unsafeSourceRegressionFailures ++ unsafeSourceFailures ++ lib.concatMap checkSpec specs;
 in
   if failures != []
   then throw "crucible phase1 crate unsafe-fence lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -219,10 +562,11 @@ in
             PASS
             check=checks.crucible.phase1.crateUnsafeFence
             gate=gate:harness-lint
-            task=T-CRATE-2
+            tasks=T-CRATE-2,T-STD-7
             runtime_safe_crates=9
             runtime_unsafe_boundary_crates=4
             test_only_safe_crates=1
+            unsafe_policy=root-fences,no-fifth-unsafe-crate,immediate-safety-invariants,no-unsafe-callable-items,no-public-unsafe-api,safe-wrapper-contracts
             RESULT
           '';
         }

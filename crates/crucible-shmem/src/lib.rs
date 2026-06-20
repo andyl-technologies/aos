@@ -11,6 +11,10 @@
 //! boundary; future modules will split region headers, node clocks, status
 //! words, and SPSC frame queues.
 //!
+//! Unsafe boundary discipline: mmap, pointer, and atomic details stay private;
+//! public callers use safe typed region accessors and safe SPSC push/pop
+//! wrappers that uphold alignment, lifetime, and ordering invariants.
+//!
 //! Shared-memory layout sketch:
 //!
 //! ```text

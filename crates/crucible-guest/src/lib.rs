@@ -10,6 +10,10 @@
 //! Module map: the crate root currently reserves the optional guest-agent
 //! boundary; future modules will split doorbell transport from guest ABI
 //! accessors.
+//!
+//! Unsafe boundary discipline: trapped-instruction and ABI-memory details stay
+//! private; public callers use safe doorbell and marker accessors that uphold
+//! guest/register and shared-region invariants.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
