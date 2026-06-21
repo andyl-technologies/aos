@@ -849,10 +849,12 @@ derivation-level (consumed by `derivationStrict`).
       serializes env/args (doc 11/21); **not** a language-coercion attribute.
       Listed here only to mark it as *not* language-level — the language passes it
       through to the derivation layer unchanged.
-- [ ] **`__impure` (derivation-level)** — marks an impure derivation
-      (doc 11/21); not language-level. Verify whether AOS uses impure
-      derivations at all (likely not, given hermetic-from-source). Mark
-      **verify against AOS package set**.
+- [x] **`__impure` (derivation-level)** — marks an impure derivation
+      (doc 11/21); not language-level. Implemented in `derivationStrict` as
+      derivation output metadata, with invalid marker combinations rejected and
+      ordinary language-level `__impure` attr behavior covered. AOS package code
+      currently uses only `__impure = false` for fixed-output `fetchurl`, so true
+      impure derivations are compatibility support rather than package-set policy.
 - [x] **Other `__`-prefixed derivation attributes** (`__contentAddressed`,
       `__darwinAllowLocalNetworking`, etc.) — pass-through to the derivation layer
       (doc 11/21), not interpreted by the language. Language-layer behavior is

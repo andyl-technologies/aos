@@ -709,7 +709,8 @@ Here we enumerate only the *builtin surface* and the attributes it consumes.
       - Special attributes consumed (not emitted as plain env): `name`,
         `system`, `builder`, `args`, `outputs`, `__structuredAttrs`,
         `__ignoreNulls`, `outputHash`, `outputHashAlgo`, `outputHashMode`,
-        `__contentAddressed`, and the `allowed`/`disallowedReferences` family.
+        `__contentAddressed`, `__impure`, and the
+        `allowed`/`disallowedReferences` family.
       - **`outputs`**: default `["out"]`; multiple outputs (`["out" "dev" …]`)
         produce one path per output, each back-patched into both `outputs` and
         the corresponding `$out`/`$dev` env var.
