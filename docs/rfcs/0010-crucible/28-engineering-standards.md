@@ -577,7 +577,7 @@ the conditions under which feature code can be trusted to stay deterministic
 - [x] **T-STD-12** Enforce "documenting existing code is comments-only" and the
   doc-lint that keeps the gate catalog and per-file Implementation checklists in
   sync with the master plan. — satisfies [STD-30], [STD-31]; spec §5, §1 of 24.
-- [ ] **T-STD-13** Author the determinism review checklist as a PR template,
+- [x] **T-STD-13** Author the determinism review checklist as a PR template,
   require it on any engine/scheduler/transport PR, and codify the
   root-cause-not-workaround rule for surfaced leaks. — satisfies [STD-32],
   [STD-33]; spec §6.
