@@ -29,9 +29,9 @@ in
     doCheck = true;
     buildDeps = [rust.dev];
 
-    # The source root includes docs/, pkgs/tools/crucible/, and tests/crucible/
-    # so harness lints can read RFC-0010 and AOS check wiring, while Cargo's
-    # virtual workspace remains rooted at crates/.
+    # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
+    # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
+    # while Cargo's virtual workspace remains rooted at crates/.
     preBuild = ''
       cd crates
     '';

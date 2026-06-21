@@ -14,6 +14,8 @@ in
       && base != "result"
       && (
         pathString == repoRootString
+        || pathString == "${repoRootString}/CLAUDE.md"
+        || pathString == "${repoRootString}/AGENTS.md"
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || lib.hasPrefix "${repoRootString}/docs" pathString
         || pathString == "${repoRootString}/pkgs"
