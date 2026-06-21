@@ -574,7 +574,7 @@ the conditions under which feature code can be trusted to stay deterministic
   rules, and commit hygiene (atomic commits; ABI + golden-vector + dependent
   logic land together; no determinism change buried in formatting churn). —
   satisfies [STD-27], [STD-28], [STD-29]; spec §5.
-- [ ] **T-STD-12** Enforce "documenting existing code is comments-only" and the
+- [x] **T-STD-12** Enforce "documenting existing code is comments-only" and the
   doc-lint that keeps the gate catalog and per-file Implementation checklists in
   sync with the master plan. — satisfies [STD-30], [STD-31]; spec §5, §1 of 24.
 - [ ] **T-STD-13** Author the determinism review checklist as a PR template,
