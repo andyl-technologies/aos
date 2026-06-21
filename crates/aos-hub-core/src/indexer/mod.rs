@@ -87,10 +87,43 @@ pub struct IndexOutcome {
     /// Whether this run took the incremental channel-refresh fast path
     /// (unchanged `info/refs`; only channel partitions re-verified).
     pub incremental: bool,
-    /// Whether the registry has no published surface yet (no `info/refs`): a
-    /// freshly-created registry. A pending run indexes nothing and raises no
-    /// events; it is recorded as the benign `pending` state, never `failed`.
+    /// Whether the registry has no readable surface yet (no `info/refs`, or a
+    /// transiently-unavailable backend): a freshly-created registry, or one whose
+    /// object store is briefly erroring. A pending run indexes nothing and raises
+    /// no events; it is recorded as the benign `pending` state, never `failed`.
     pub pending: bool,
+}
+
+/// The [`IndexOutcome`] for a run that indexed nothing because the surface is
+/// not (yet) readable — a registry with no published `info/refs`, or one whose
+/// backend is transiently unavailable.
+fn pending_outcome() -> IndexOutcome {
+    IndexOutcome {
+        commit: String::new(),
+        packages: 0,
+        releases: 0,
+        channels: 0,
+        incremental: false,
+        pending: true,
+    }
+}
+
+/// Reports whether `err` is a *transient* surface-backend error the platform
+/// asks callers to retry, rather than a permanent failure.
+///
+/// The motivating case is Cloudflare R2 error **10001** ("We encountered an
+/// internal error. Please try again."), which the Worker's R2 binding can return
+/// for a `get` — including, on some buckets, for an object that is merely absent.
+/// Such an error must never be recorded as a permanent `failed` index state (it
+/// would leave the registry stuck showing "index failed" until a manual
+/// re-index); the indexer treats it like an unavailable surface and retries on
+/// the next pass. The match is on the error message because the backend error
+/// crosses the [`SurfaceFetch`] boundary as an opaque `anyhow` error.
+fn is_transient_backend_error(err: &anyhow::Error) -> bool {
+    let msg = format!("{err:#}");
+    msg.contains("(10001)")
+        || msg.contains("Please try again")
+        || msg.contains("please try again")
 }
 
 /// Index one registered registry, recording failure state on error.
@@ -207,20 +240,36 @@ pub async fn index_registry(
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
 ) -> Result<IndexOutcome> {
-    let Some(refs_bytes) = fetch.fetch("info/refs").await? else {
-        // No `info/refs` object: the registry has no published surface yet (a
-        // freshly-created registry nobody has pushed to). That is not a failure —
-        // record the benign `pending` state and return, so its home page reads
-        // "nothing published yet" rather than "index failed".
-        db.mark_index_pending(registry.id).await?;
-        return Ok(IndexOutcome {
-            commit: String::new(),
-            packages: 0,
-            releases: 0,
-            channels: 0,
-            incremental: false,
-            pending: true,
-        });
+    let refs_bytes = match fetch.fetch("info/refs").await {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            // No `info/refs` object: the registry has no published surface yet (a
+            // freshly-created registry nobody has pushed to). That is not a failure
+            // — record the benign `pending` state and return, so its home page
+            // reads "nothing published yet" rather than "index failed".
+            db.mark_index_pending(registry.id).await?;
+            return Ok(pending_outcome());
+        }
+        Err(err) if is_transient_backend_error(&err) => {
+            // The surface backend is *transiently* unavailable — e.g. Cloudflare
+            // R2 error 10001 ("We encountered an internal error. Please try
+            // again."), which the platform explicitly asks callers to retry. This
+            // is NOT a permanent index failure, so it must never be recorded as
+            // `failed` (which would leave the registry stuck showing "index
+            // failed: ... (10001)" until a manual re-index). Record the benign
+            // `pending` state so the next scheduled pass retries — but do not
+            // regress a registry that already has a good (`fresh`) index, so a
+            // brief backend hiccup never hides a healthy registry's releases.
+            let already_fresh = db
+                .index_status(registry.id)
+                .await?
+                .is_some_and(|status| status.state == "fresh");
+            if !already_fresh {
+                db.mark_index_pending(registry.id).await?;
+            }
+            return Ok(pending_outcome());
+        }
+        Err(err) => return Err(err),
     };
     let refs = parse_info_refs(std::str::from_utf8(&refs_bytes).context("info/refs not UTF-8")?)?;
     let refs_digest = hex::encode(Sha256::digest(&refs_bytes));
@@ -814,6 +863,10 @@ fn sshsig_signer(armored: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::fetch::SurfaceFetch;
+
     #[test]
     fn pack_path_splits_semver_components() {
         // Mirrors the worked example in docs/registry/http-layout.md:
@@ -822,5 +875,76 @@ mod tests {
         assert_eq!(parts.next(), Some("1"));
         assert_eq!(parts.next(), Some("0"));
         assert_eq!(parts.next(), Some("0-beta+exp.sha.5114f85"));
+    }
+
+    #[test]
+    fn transient_backend_errors_are_recognized() {
+        let r2_10001 = anyhow::anyhow!(
+            "R2 get andyl/demo/info/refs: get: We encountered an internal error. \
+             Please try again. (10001)"
+        );
+        assert!(is_transient_backend_error(&r2_10001));
+        // A genuine parse/corruption error is not transient.
+        assert!(!is_transient_backend_error(&anyhow::anyhow!(
+            "surface advertises no branches"
+        )));
+        assert!(!is_transient_backend_error(&anyhow::anyhow!("info/refs not UTF-8")));
+    }
+
+    /// A [`SurfaceFetch`] whose `info/refs` read fails with a given error, to
+    /// exercise the indexer's transient-vs-permanent classification.
+    struct FailingFetch {
+        error: String,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for FailingFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            Err(anyhow::anyhow!("{}", self.error))
+        }
+        fn describe(&self) -> String {
+            "failing".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_surface_error_records_pending_not_failed() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db
+            .register_registry("acme/app", "", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_slug("acme/app").await.unwrap().unwrap();
+        let fetch = FailingFetch {
+            error: "R2 get acme/app/info/refs: get: We encountered an internal error. \
+                    Please try again. (10001)"
+                .into(),
+        };
+
+        // A retryable R2 10001 on the surface read must NOT mark the index failed
+        // — a never-indexed registry is recorded as the benign `pending` state so
+        // the next pass retries.
+        let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
+        assert!(outcome.pending, "a transient backend error is a pending run");
+        let status = db.index_status(id).await.unwrap().unwrap();
+        assert_eq!(status.state, "pending");
+        assert!(status.error.is_none(), "pending carries no error message");
+    }
+
+    #[tokio::test]
+    async fn permanent_surface_error_still_fails() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.register_registry("acme/bad", "", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_slug("acme/bad").await.unwrap().unwrap();
+        // A non-transient error (e.g. a malformed surface) is a real failure.
+        let fetch = FailingFetch {
+            error: "objects/ab/cd is corrupt".into(),
+        };
+        let result = index_and_record(&db, &fetch, &registry).await;
+        assert!(result.is_err(), "a permanent error propagates");
+        let status = db.index_status(registry.id).await.unwrap().unwrap();
+        assert!(matches!(status.state.as_str(), "failed" | "stale"));
     }
 }
