@@ -899,7 +899,7 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       Verified AOS `.nix` sources do not use pipe operators in expression
       position; the only source hit is a `sed` delimiter inside the glibc
       bootstrap shell script.
-- [ ] **CA derivations at the language layer — IN SCOPE (not out of scope).**
+- [x] **CA derivations at the language layer — IN SCOPE (not out of scope).**
       Content-addressed derivations are a **required surface from the start** (a
       deliberate design choice for aos-nix; see
       [derivation and store compatibility](11-derivation-and-store-compatibility.md)).
@@ -910,6 +910,12 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       `dynamic-derivations` feature) remain conditionally scoped — implemented iff
       the pinned Nix enables the feature and the AOS set exercises it. This item is
       listed in §15 only to *correct the record*: CA is no longer an exclusion.
+      Language-layer representation is implemented: `derivationStrict` handles
+      floating CA and fixed-output precedence, emits placeholders for deferred
+      outputs, partitions context into input sources/input derivations, supports
+      structured attrs and downstream deferred outputs, and native instantiation
+      records floating CA `.drv` bytes. The broader full-closure byte-parity gate
+      remains tracked in doc 11/21.
 - [ ] **Flakes / the flake language layer** — `flake.nix` schema, `inputs`,
       `outputs`, the lock file: out of scope for the *evaluator core* unless AOS
       evaluates flakes (verify). Flake evaluation is a layer *above* the language;
