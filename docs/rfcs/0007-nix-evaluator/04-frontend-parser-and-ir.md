@@ -992,7 +992,7 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 - [x] `with`-classification: emit `WithVar` only when no lexical binder shadows; record the innermost-first `with` chain; reproduce lexical-beats-`with` / inner-beats-outer probe order exactly (§6.3) — **P1**; `with`-scope conformance (§8). Frontend `with`-shape speculation hooks left entirely to runtime inline caches (`R-8`, **P5/P8** research-grade) — IN SCOPE, deferred in dependency order.
 - [x] Precise per-lambda upvalue/free-variable capture set computation (no over-capture) (§6.4) — **P1**; prerequisite for escape analysis ([07](07-laziness-and-whole-program-analyses.md)).
 - [x] Resolver side tables: `FrameInfo { slot_count, captures, rec, has_with }`, `Upvalue { depth, slot }`, index-addressed for serialization (§6.5) — **P1**.
-- [ ] IR lowering: variables-resolved, thunking-explicit, single-source-for-all-tiers arena IR; conservatively thunk everything non-trivial (§5, §5.1) — **P1**, `S-11`/`S-19` (taxonomy owned by [25](25-intermediate-representation.md)).
+- [x] IR lowering: variables-resolved, thunking-explicit, single-source-for-all-tiers arena IR; conservatively thunk everything non-trivial (§5, §5.1) — **P1**, `S-11`/`S-19` (taxonomy owned by [25](25-intermediate-representation.md)). Implemented in `compile/ir`: lowering consumes `ResolvedAst`, emits the fixed-stride arena IR with explicit `ThunkAlloc` nodes at lazy positions, and the tree-walk oracle consumes that IR directly. Verified by `compile::ir`, `with`, and full `aos-nix` tests; the all-tiers wording is the IR contract until later tiers exist.
 
 ### Parse / compile cache (§9)
 

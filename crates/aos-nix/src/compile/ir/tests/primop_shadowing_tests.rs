@@ -1,9 +1,6 @@
 //! Tests that shadowed builtin names stay ordinary applications.
 
-use super::super::*;
 use super::*;
-use crate::compile::{ScopeTables, resolve};
-use crate::syntax::{AstArena, parse_str};
 
 #[test]
 fn shadowed_pure_strict_unary_primops_stay_ordinary_applications() {

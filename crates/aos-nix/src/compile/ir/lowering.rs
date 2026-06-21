@@ -81,7 +81,7 @@ impl IrLowerer {
             NodeKind::Select => self.lower_select(node),
             NodeKind::HasAttr => self.lower_has_attr(node),
             NodeKind::LetIn => self.lower_let(id, node),
-            NodeKind::With => self.lower_pair(node, IrKind::With, LazySecond::No),
+            NodeKind::With => self.lower_with(node),
             NodeKind::Assert => self.lower_pair(node, IrKind::Assert, LazySecond::No),
             NodeKind::IfThenElse => self.lower_if(node),
             NodeKind::BinOp => self.lower_binary(node),
@@ -290,6 +290,27 @@ impl IrLowerer {
             self.lower_expr(second)?
         };
         self.push(kind, node.span, IrData::Pair { first, second })
+    }
+
+    pub(super) fn lower_with(&mut self, node: Node) -> Result<IrId, IrError> {
+        let NodeData::Pair {
+            first: scope,
+            second: body,
+        } = node.data
+        else {
+            return Err(self.invalid_shape(node, "with pair"));
+        };
+        let lowered_scope = self.lower_lazy(scope)?;
+        self.lowered_nodes.insert(scope, lowered_scope);
+        let body = self.lower_expr(body)?;
+        self.push(
+            IrKind::With,
+            node.span,
+            IrData::Pair {
+                first: lowered_scope,
+                second: body,
+            },
+        )
     }
 
     pub(super) fn lower_apply(&mut self, node: Node) -> Result<IrId, IrError> {

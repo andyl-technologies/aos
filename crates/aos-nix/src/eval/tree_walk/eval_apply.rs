@@ -69,7 +69,7 @@ impl TreeWalk {
             return Err(self.invalid_payload(id, node, "with pair"));
         };
         self.node(body)?;
-        let value = self.alloc_thunk_for_node(id, scope, node.span)?;
+        let value = self.eval_lazy_node(scope)?;
         self.with_scopes.try_reserve_exact(1).map_err(|_| {
             TreeWalkError::new(
                 TreeWalkErrorKind::WithScopeAllocationFailed {

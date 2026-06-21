@@ -2,8 +2,8 @@
 
 use super::super::*;
 use super::*;
-use crate::compile::{ScopeTables, resolve};
-use crate::syntax::{AstArena, parse_str};
+use crate::compile::resolve;
+use crate::syntax::parse_str;
 
 #[test]
 fn lowers_let_lambda_application_to_resolved_ir() {
@@ -208,6 +208,25 @@ fn with_var_chains_point_to_lowered_scopes_inner_first() {
 
     let chain = &ir.with_chains[chain as usize];
     assert_eq!(chain.scopes.as_ref(), &[inner, outer]);
+}
+
+#[test]
+fn with_scrutinees_are_explicit_lazy_scope_nodes() {
+    let ir = lowered("with { a = 1; }; a");
+    let IrData::Pair {
+        first: scope,
+        second: body,
+    } = root_node(&ir).data
+    else {
+        panic!("with payload expected");
+    };
+    assert_eq!(node(&ir, scope).kind, IrKind::ThunkAlloc);
+    assert_eq!(node(&ir, thunk_inner(&ir, scope)).kind, IrKind::AttrSet);
+
+    let IrData::WithVar { chain, .. } = node(&ir, body).data else {
+        panic!("with-var payload expected");
+    };
+    assert_eq!(ir.with_chains[chain as usize].scopes.as_ref(), &[scope]);
 }
 
 #[test]

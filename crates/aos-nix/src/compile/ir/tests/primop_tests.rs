@@ -1,9 +1,6 @@
 //! Tests for direct primop and builtin lowering.
 
-use super::super::*;
 use super::*;
-use crate::compile::{ScopeTables, resolve};
-use crate::syntax::{AstArena, parse_str};
 
 #[test]
 fn lowers_effectful_unary_primops_directly() {
