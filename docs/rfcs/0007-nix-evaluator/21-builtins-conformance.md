@@ -920,15 +920,17 @@ version reports**. Concretely:
       ≥ 2.16-era, `warn` ≥ 2.23, `fetchTree` stabilized ≥ 2.19) is present **iff**
       the pinned version includes it.
 - [x] `nixVersion` / `langVersion` are spoofed to the pinned values (§14).
-- [ ] Experimental-feature-gated builtins (`fetchClosure`, `outputOf`,
-      `fetchTree` where still experimental, CA-derivation attributes) follow the
-      pinned version's *enabled experimental features* — present and functional
-      only if the pinned config enables them, otherwise present-but-erroring or
-      absent exactly as the pinned `nix` behaves.
-      - Pinned C++ Nix 2.24.12 exposes `fetchTree` as stable, and does not expose
-        `fetchClosure` or `outputOf` under the harness flakes feature surface.
-        CA-derivation attribute feature gating remains checked at the
-        `derivationStrict` boundary.
+- [x] Experimental-feature-gated builtin *surface* matches the pinned flakes
+      harness configuration: pinned C++ Nix 2.24.12 exposes `fetchTree` as
+      stable, and does not expose `fetchClosure` or `outputOf` under the
+      harness flakes feature surface. The registry golden fixture, runtime
+      `builtins.attrNames builtins`, and absent-attr/default behavior match that
+      surface locally, with configured-oracle tests available when
+      `AOS_NIX_ORACLE` points at the pinned Nix. CA-derivation attributes are
+      intentionally handled and validated at the `derivationStrict` boundary by
+      AOS policy; this row does not claim flakes-only C++ experimental-feature
+      rejection for those attributes. Full `fetchTree`, `getFlake`, and
+      `derivationStrict` byte-parity details remain tracked by their own rows.
 
 Bumping the pinned Nix version is a deliberate, harness-revalidated event (it can
 change the builtin set, the wrapper `derivation.nix`, float formatting, or a
