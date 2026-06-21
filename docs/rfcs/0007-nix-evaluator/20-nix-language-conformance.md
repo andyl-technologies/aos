@@ -920,8 +920,13 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       `outputs`, the lock file: out of scope for the *evaluator core* unless AOS
       evaluates flakes (verify). Flake evaluation is a layer *above* the language;
       the language items here are what it would be built on.
-- [ ] **Error-message *text* byte-parity** — explicitly best-effort, not gated
+- [x] **Error-message *text* byte-parity** — explicitly best-effort, not gated
       (doc 02 §8 Q4, doc 15 §3.3). Error *class* parity is in scope (§12).
+      Verified as a scope decision: doc 02/15/19/20/24 consistently separate
+      hard error-class/catchability parity from soft rendered-diagnostic text
+      parity. Package-specific error-text assertions remain enumerated and handled
+      per case before those packages use native eval; there is no global
+      byte-identical diagnostic-text gate.
 - [x] **Non-pure-eval-mode features** — if AOS evaluates in pure mode, `~`-home
       paths (§4), `<...>` search paths via `NIX_PATH` (§4), and other impure
       lookups may be *disabled and must-error*; verify the AOS eval mode and scope
