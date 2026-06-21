@@ -916,10 +916,15 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       structured attrs and downstream deferred outputs, and native instantiation
       records floating CA `.drv` bytes. The broader full-closure byte-parity gate
       remains tracked in doc 11/21.
-- [ ] **Flakes / the flake language layer** — `flake.nix` schema, `inputs`,
-      `outputs`, the lock file: out of scope for the *evaluator core* unless AOS
-      evaluates flakes (verify). Flake evaluation is a layer *above* the language;
-      the language items here are what it would be built on.
+- [x] **Flakes / the flake language layer** — `flake.nix` schema validation,
+      `inputs` graph resolution, `outputs` protocol, `flake.lock` semantics,
+      registries, and the flake eval cache are out of scope for the evaluator
+      core. Verified AOS package/system evaluation uses the non-flake
+      `default.nix` / `-A` path; the repository root `flake.nix` has no external
+      inputs and derives its outputs from `import ./.`. Native support for
+      `parseFlakeRef`, `flakeRefToString`, selected `fetchTree` inputs, and a
+      narrow local-inputless `getFlake` path is tracked as builtin coverage in
+      doc 21 and does not constitute full flake-layer support.
 - [x] **Error-message *text* byte-parity** — explicitly best-effort, not gated
       (doc 02 §8 Q4, doc 15 §3.3). Error *class* parity is in scope (§12).
       Verified as a scope decision: doc 02/15/19/20/24 consistently separate

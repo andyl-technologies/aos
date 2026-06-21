@@ -33,17 +33,19 @@ can prove (flakes) or silently violate parity inside the surface we keep
 
 > **Decision.** aos-nix targets **non-flake** evaluation: the AOS package set
 > (`default.nix` plus its attribute tree) and the `systems/` variants
-> (`lib.evalModules`-composed configurations). The flake-specific builtins —
-> `builtins.getFlake`, `builtins.parseFlakeRef`, `builtins.flakeRefToString` —
-> are **unsupported and stubbed**. Any evaluation that reaches a flake builtin
-> returns a typed `Unsupported` error and falls back to `NixCli`
-> ([integration with AOS](14-integration-with-aos.md) §6.1). Flake evaluation,
-> if it is ever needed, is a **separate future workstream**, not a corner of
-> this one.
+> (`lib.evalModules`-composed configurations). Full flake evaluation —
+> `flake.nix` schema validation, input graph and lock-file resolution,
+> registry indirection, the `outputs` protocol, and the flake eval cache — is
+> out of scope for the evaluator core. Selected flake-adjacent builtins
+> (`parseFlakeRef`, `flakeRefToString`, selected `fetchTree` inputs, and a
+> narrow local-inputless `getFlake` path) are tracked as builtin coverage in
+> [builtins conformance](21-builtins-conformance.md); they do not make flakes
+> part of the AOS eval hot path. Full flake evaluation, if it is ever needed,
+> is a **separate future workstream**, not a corner of this one.
 
 ### 1.1 Why AOS does not need flakes on the eval hot path
 
-AOS is, by construction, a non-flake repository. As recorded in
+AOS package/system evaluation is, by construction, non-flake. As recorded in
 [CLAUDE.md](../../../CLAUDE.md), the package set is a plain Nix expression tree
 rooted at `default.nix`, and system variants are assembled by `lib.evalModules`
 under `systems/` — the classic `nix-instantiate -f <file> -A <attr>` model, not
@@ -89,23 +91,25 @@ closure to prove it against.
 
 ### 1.3 How the boundary is enforced
 
-The three flake builtins are present in the builtin table
-([primops and runtime ABI](10-primops-and-runtime-abi.md)) only as stubs that
-raise `NativeEvalError::Unsupported { feature: "flakes", .. }`. Per the failure
-model in [integration with AOS](14-integration-with-aos.md) §6.1, `Unsupported`
-triggers a *transparent* top-level fallback to `NixCli`, so even a stray flake
-expression yields a correct `.drv` — via the subprocess oracle, not natively.
+The AOS evaluation entry point stays on the classic `default.nix` / `-A` path,
+and the repository root `flake.nix` has no external inputs and derives its
+outputs from `import ./.`. Native flake-adjacent builtin subsets are
+deliberately tracked in [builtins conformance](21-builtins-conformance.md),
+where their remaining gaps stay visible. This scope decision does not claim
+that every full-flake input already produces a transparent fallback; partial
+native builtin paths may still preflight arguments or surface scoped errors
+until the doc 21 builtin rows are complete.
 The differential harness
 ([differential testing](15-differential-testing-and-benchmarking.md)) needs no
 flake fixtures because the AOS closure contains none; if a future AOS component
-grows a flake entry point, the harness sees the fallback counter increment
-rather than a divergence, which is the safe failure mode.
+grows a real flake entry point, this scope decision no longer covers that input
+class and a dedicated flake gate must be added before native cutover.
 
 > **Boundary, stated plainly.** aos-nix evaluates the AOS non-flake package set
-> and `systems/` variants. Flakes fall back to `NixCli`. There is no partial
-> flake support: it is all-fallback until and unless a dedicated future
-> workstream takes it on, at which point it gets its own scope document and its
-> own gate.
+> and `systems/` variants. Full flake evaluation is outside the evaluator-core
+> completion claim. Implemented flake-adjacent builtin subsets are
+> builtin-conformance work, not flake-layer support; a dedicated future flake
+> workstream would need its own scope document and its own gate.
 
 ---
 
@@ -458,7 +462,7 @@ invisible until it changes a branch, then catastrophic.
 
 | # | Decision | In/Out | Why it lives here |
 |---|---|---|---|
-| 1 | Flakes (`getFlake`, `parseFlakeRef`, `flakeRefToString`, lock files, eval cache) | **Out** | No AOS flake workload; a parallel surface as large as the one we already commit to. Falls back to `NixCli`. |
+| 1 | Full flake layer (`flake.nix` schema, input graph, lock files, registries, eval cache) | **Out** | No AOS flake workload; a parallel surface as large as the one we already commit to. Selected flake-adjacent builtin subsets and scoped errors are tracked in doc 21. |
 | 2 | `--pure-eval`, `restrict-eval`, allowed-paths/allowed-uris | **In** | Observable: same flags must yield same branches and same eval-time I/O; it is the evaluator's I/O boundary and ties to the cache key. |
 | 3 | Multi-arch (x86-64 + aarch64; no 32-bit) | **In** | Value repr + Cranelift target both AOS arches. Invariant: host affects speed, never output — cross-host `.drv` identity, gated. |
 | 4 | `nixVersion` / `langVersion` spoofing to the pinned version | **In** | Parity requirement: version gates must take identical branches or the `.drv` diverges and fans out. |
@@ -489,7 +493,16 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### Flakes are out of scope (§1)
 
-- [x] Stub the three flake builtins (`getFlake`, `parseFlakeRef`, `flakeRefToString`) as native-fallback boundaries that raise `NativeEvalError::Unsupported{feature:"flakes"}`, triggering transparent top-level `NixCli` fallback — no partial flake support, no flake fixtures in the harness (the AOS closure contains none); a future flake entry point shows up as a fallback-counter increment, never a divergence (§1.1, §1.3) — **P1**, `C-22`; the excluded surface (`flake.nix` schema, `flake.lock`, flakeref grammar, flake eval cache, `getFlake` impurity rules) is documented as out-of-box (§1.2).
+- [x] Record full flake-layer evaluation (`flake.nix` schema validation,
+      `inputs` graph resolution, `outputs` protocol, `flake.lock` semantics,
+      registries, and the flake eval cache) as out of scope for the evaluator
+      core. Verified AOS package/system evaluation uses the non-flake
+      `default.nix` / `-A` path, and the repository root `flake.nix` has no
+      external inputs and derives its outputs from `import ./.`. Native support
+      for `parseFlakeRef`, `flakeRefToString`, selected `fetchTree` inputs, and
+      a narrow local-inputless `getFlake` path remains tracked as builtin
+      coverage in doc 21 and does not constitute full flake-layer support
+      (§1.1, §1.3) — **P1**, `C-22`.
 
 ### Restricted / pure-eval modes and allowed-paths (§2)
 

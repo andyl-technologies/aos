@@ -561,8 +561,9 @@ a given mode does so identically.
       debugger, but it still preserves C++ Nix's observable thunk wrapper
       behavior at strictness boundaries.
 
-`getFlake` and `exec` are also effectful but are **out of scope / stubbed** —
-see §13 and §17.
+`exec` is effectful and remains a stub. Full `getFlake` support is scoped with
+the flake layer, while the narrow native local-inputless path is tracked in
+§17.
 
 ---
 
@@ -941,15 +942,17 @@ hash-modulo detail). It is tracked in
 
 Honesty about the boundary, to prevent the fabrication class of error.
 
-**Flake / experimental machinery — conditional scope or stubbed to existence.**
-These exist in recent `builtins` but are tied to flakes or experimental features.
-For the AOS target (a pinned, non-flake-centric from-source set) they are
-implemented only if the pinned package set exercises them; otherwise they are
-present in the `builtins` set (so `attrNames` matches) but error when called,
-exactly mirroring how the pinned `nix` behaves with the relevant experimental
-feature disabled:
+**Flake / experimental machinery — conditional scope or explicit builtin
+coverage.** These exist in recent `builtins` but are tied to flakes or
+experimental features. For the AOS target (a pinned, non-flake-centric
+from-source set), full flake-layer behavior remains out of scope while explicit
+builtin subsets are implemented and tested where the pinned builtin surface
+requires them:
 
-- [ ] `getFlake` (args) — fetch and evaluate a flake. Flakes; **stubbed/scoped**.
+- [ ] `getFlake` (args) — fetch and evaluate a flake. Full flake support remains
+      scoped; native evaluation covers the narrow local-inputless path, with
+      declared inputs, registry/indirect resolution, lock-file graph semantics,
+      and the general flake protocol still open.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
