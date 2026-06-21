@@ -922,10 +922,16 @@ Stated so the design record does not overstate coverage. Each exclusion is a
       the language items here are what it would be built on.
 - [ ] **Error-message *text* byte-parity** — explicitly best-effort, not gated
       (doc 02 §8 Q4, doc 15 §3.3). Error *class* parity is in scope (§12).
-- [ ] **Non-pure-eval-mode features** — if AOS evaluates in pure mode, `~`-home
+- [x] **Non-pure-eval-mode features** — if AOS evaluates in pure mode, `~`-home
       paths (§4), `<...>` search paths via `NIX_PATH` (§4), and other impure
       lookups may be *disabled and must-error*; verify the AOS eval mode and scope
       accordingly.
+      Verified scope: AOS exposes explicit Ambient/Impure/Pure/Restricted policies
+      instead of being pure-only; native evaluation requires an explicit policy and
+      falls back for ambient or unrepresentable `NIX_PATH`. Pure mode hides
+      configured home/search-path/environment/current-system/current-time impurity
+      and denies unallowed filesystem reads, while explicit impure mode passes the
+      configured values through.
 
 ---
 
