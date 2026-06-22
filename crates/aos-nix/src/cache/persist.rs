@@ -590,6 +590,20 @@ impl PersistFileArtifactMaterialization {
             Self::Skipped { .. } => None,
         }
     }
+
+    /// Returns the complete file-artifact index entry when materialized.
+    pub const fn index_entry(self) -> Option<PersistFileArtifactIndexEntry> {
+        match self {
+            Self::Materialized {
+                artifact_key,
+                index_value,
+            } => Some(PersistFileArtifactIndexEntry::new(
+                artifact_key,
+                index_value,
+            )),
+            Self::Skipped { .. } => None,
+        }
+    }
 }
 
 /// Filesystem paths for one persistent eval-cache root.
@@ -2755,6 +2769,7 @@ mod tests {
         );
         assert_eq!(result.artifact_key(), artifact_key);
         assert_eq!(result.index_value(), None);
+        assert_eq!(result.index_entry(), None);
         assert_eq!(
             fs::metadata(cache.file_pack().path())
                 .expect("file pack metadata")
@@ -2794,6 +2809,13 @@ mod tests {
         assert_eq!(actual_key, artifact_key);
         assert_eq!(result.artifact_key(), artifact_key);
         assert_eq!(result.index_value(), Some(index_value));
+        assert_eq!(
+            result.index_entry(),
+            Some(PersistFileArtifactIndexEntry::new(
+                artifact_key,
+                index_value
+            ))
+        );
         assert_eq!(
             index_value.blob_hash(),
             DurableBlake3Hash::for_bytes(payload)

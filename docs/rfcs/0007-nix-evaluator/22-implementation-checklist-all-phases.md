@@ -605,6 +605,13 @@ alone (`M-1`/`Q-A`).
       payload format, automatic parse-cache integration, durable index updates,
       lookup, mmap reads, GC/repack, and harness proof remain open
       (`C-13`/`C-14`).
+- [x] Current materialized file-artifact index-entry accessor:
+      `PersistFileArtifactMaterialization::index_entry` returns the complete
+      `PersistFileArtifactIndexEntry` only when an artifact was materialized,
+      binding the mapping key and blob lookup value the future durable index
+      would store. This is accessor-only; durable index writes/reads,
+      parse-cache integration, lookup, mmap reads, GC/repack, and harness proof
+      remain open (`C-13`).
 - [x] Current explicit parse-entry materialization adapter:
       `PersistCache::materialize_parse_artifact_entry` consumes a caller-supplied
       `ParseFileKey`/`ParseCacheKey` plus source `ParseCacheEntry`, skips without
