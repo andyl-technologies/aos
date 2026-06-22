@@ -15,7 +15,9 @@ use thiserror::Error;
 use super::parse::{
     ParseArtifactBundle, ParseCacheEntry, ParseCacheError, ParseCacheKey, ParseFileKey,
 };
-use super::{DurableBlake3Hash, MaterializationDecision, MaterializationReuse};
+use super::{
+    DurableBlake3Hash, MaterializationDecision, MaterializationReuse, MaterializationSignals,
+};
 
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
@@ -895,6 +897,26 @@ impl PersistCache {
         }
     }
 
+    /// Applies materialization threshold signals to `payload`.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_blob`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
+    /// be opened, validated, or written, or when `payload` does not hash to
+    /// `key.hash()`.
+    pub fn materialize_blob_with_signals(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistMaterialization, PersistBlobPackError> {
+        self.materialize_blob(key, payload, signals.decide())
+    }
+
     /// Applies `decision` to a frontend file artifact payload.
     ///
     /// The artifact mapping key is derived from `file_key` and `parse_key`.
@@ -1565,6 +1587,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::cache::MaterializationCosts;
 
     static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -2354,6 +2377,55 @@ mod tests {
             error,
             PersistBlobPackError::PayloadHashMismatch { .. }
         ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_materialization_signals_can_skip_without_hashing() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+        let signals =
+            MaterializationSignals::new(MaterializationCosts::new(100, 10, 20, 30), false);
+
+        let result = cache
+            .materialize_blob_with_signals(key, b"payload", signals)
+            .expect("skip succeeds");
+
+        assert_eq!(result, PersistMaterialization::Skipped);
+        assert_eq!(
+            fs::metadata(cache.value_pack().path())
+                .expect("value pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_materialization_signals_append_when_threshold_passes() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"payload";
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+        let signals = MaterializationSignals::new(MaterializationCosts::new(100, 10, 20, 30), true);
+
+        let result = cache
+            .materialize_blob_with_signals(key, payload, signals)
+            .expect("materialization succeeds");
+
+        let PersistMaterialization::Materialized(location) = result else {
+            panic!("materialization should append");
+        };
+        assert_eq!(
+            cache
+                .read_blob(key, location)
+                .expect("materialized blob reads")
+                .as_slice(),
+            payload
+        );
 
         let _ = fs::remove_dir_all(root);
     }

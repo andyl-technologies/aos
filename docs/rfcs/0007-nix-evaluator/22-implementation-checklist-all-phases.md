@@ -573,6 +573,14 @@ alone (`M-1`/`Q-A`).
       `Materialize`. Cost measurement, reuse metadata, evaluator value
       serialization, durable index updates, mmap reads, GC/repack, and AOS
       tuning remain open (`C-14`).
+- [x] Current threshold-to-pack signal adapter:
+      `PersistCache::materialize_blob_with_signals` evaluates caller-supplied
+      `MaterializationSignals` at the persistence boundary, preserves the
+      skip-without-hash/write behavior when the threshold fails, and delegates
+      passing signals to the key-routed blob pack append path. This is
+      adapter-only; cost measurement, reuse metadata production, evaluator
+      value serialization, durable index updates, mmap reads, GC/repack, and
+      AOS tuning remain open (`C-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
