@@ -1,6 +1,6 @@
 ##! modules/base/_initrd-builder.nix — Tier-ii systemd initrd builder
 ##!
-##! Builds a gzip-compressed cpio initramfs from pure Nix-store paths —
+##! Builds a zstd-compressed cpio initramfs from pure Nix-store paths —
 ##! no VM, no losetup. The archive is assembled from a directory tree
 ##! populated from:
 ##!
@@ -35,7 +35,7 @@
 ##!                   `boot.initrd.systemd.network` tree); copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
 ##!
-##! Output: $out/initrd.img (gzip-compressed newc cpio archive)
+##! Output: $out/initrd.img (zstd-compressed newc cpio archive)
 {
   pkgs,
   lib,
@@ -62,9 +62,9 @@
     iproute2
     kmod
     less
-    pigz
     systemd
     util-linux
+    zstd
     ;
 
   # Packages whose full runtime closures are copied into the initrd's
@@ -370,7 +370,7 @@ in
 
     buildDeps = [
       cpio
-      pigz
+      zstd
       coreutils
       findutils
     ];
@@ -729,18 +729,22 @@ in
           # device numbers. Sort the file list so the archive order is
           # deterministic across builds.
           #
-          # pigz -9 -n -p N is bit-identical to gzip -9n for the same input
-          # (pigz partitions input into 128 KiB blocks deterministically;
-          # thread count only affects scheduling), and emits a standard
-          # gzip stream the kernel's initramfs decompressor handles fine.
-          # $NIX_BUILD_CORES is set by the Nix daemon; fall back to 1 if
-          # a caller somehow cleared it.
+          # zstd -19 is the strongest level whose decompression window
+          # (8 MiB, windowLog 23) is universally accepted by the kernel's
+          # CONFIG_RD_ZSTD initramfs decompressor — the proven maximum used
+          # by dracut/mkinitcpio. (`--ultra -22` is ~1-3% smaller but uses a
+          # 128 MiB window; only adopt it with a boot test.) We run
+          # single-threaded on purpose: zstd is bit-reproducible only for a
+          # fixed thread count, and $NIX_BUILD_CORES varies between builders,
+          # so multithreading would break the deterministic-output guarantee
+          # that measured boot and the binary cache rely on. zstd writes no
+          # timestamps, so the stream is reproducible by default.
           (
             cd root \
               && find . -print0 \
               | LC_ALL=C sort -z \
               | cpio --quiet -o -H newc -R +0:+0 --reproducible --null \
-              | pigz -9 -n -p "''${NIX_BUILD_CORES:-1}" > $out/initrd.img
+              | zstd -19 -q -c > $out/initrd.img
           )
 
           echo "==> $(stat -c '%s bytes' $out/initrd.img) written to $out/initrd.img"
@@ -749,6 +753,6 @@ in
     ];
 
     meta = {
-      description = "AOS initrd (gzip-compressed cpio, systemd PID 1)";
+      description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
   }

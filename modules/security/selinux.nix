@@ -164,13 +164,6 @@ in {
       ];
     };
 
-    environment.systemPackages = [
-      pkgs.policycoreutils
-      pkgs.libselinux
-      pkgs.libsemanage
-      pkgs.semodule-utils
-    ];
-
     environment.etc = {
       # /etc/selinux/config — main SELinux configuration file.
       # Read by libselinux at boot and by selinux-policy-load.service.

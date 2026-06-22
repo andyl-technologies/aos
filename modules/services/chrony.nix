@@ -161,7 +161,6 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.chrony];
 
     # /etc/chrony.conf — chronyd configuration.
     environment.etc."chrony.conf" = {

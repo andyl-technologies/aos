@@ -389,8 +389,6 @@ in {
       ];
     };
 
-    environment.systemPackages = [pkgs.openssh];
-
     aos.pam.services.sshd = lib.mkIf cfg.usePAM {
       unixAuth = cfg.passwordAuthentication;
       startSession = true;

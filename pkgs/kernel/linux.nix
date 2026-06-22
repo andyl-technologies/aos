@@ -18,6 +18,7 @@
   gcc-libs,
   dwarves,
   python3,
+  zstd,
   # Optional: extra kernel config fragment text to merge after the base
   # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
   extraConfig ? "",
@@ -56,6 +57,7 @@ in
       binutils
       dwarves
       python3
+      zstd
     ];
     runtimeDeps = [kmod];
     propagatedDeps = [];
@@ -135,15 +137,25 @@ in
         script = ''
           mkdir -p $out/boot $out/lib/modules
 
-          # Install kernel image
+          # Install kernel image (the self-decompressing, BTF-bearing image
+          # the system actually boots).
           cp ${kernelArch.imgPath} $out/boot/vmlinuz-${linuxSource.version}
-          cp vmlinux $out/boot/vmlinux-${linuxSource.version}
           cp System.map $out/boot/System.map-${linuxSource.version}
           cp .config $out/boot/config-${linuxSource.version}
 
-          # Install modules
+          # NOTE: the unstripped `vmlinux` ELF (~480 MiB of DWARF, produced
+          # because CONFIG_DEBUG_INFO_BTF requires CONFIG_DEBUG_INFO) is
+          # deliberately NOT shipped. The running kernel exposes BTF for eBPF
+          # CO-RE via /sys/kernel/btf/vmlinux from its in-memory .BTF section;
+          # vmlinux is only needed at build time (pahole reads it to embed
+          # BTF). Keeping it out of the runtime closure saves ~480 MiB.
+
+          # Install modules, stripped of DWARF (INSTALL_MOD_STRIP). BTF stays
+          # in the kernel image, so eBPF CO-RE still works; this only drops
+          # per-module debug info, which also shrinks the initrd and rootfs.
           make modules_install \
             INSTALL_MOD_PATH=$out \
+            INSTALL_MOD_STRIP=1 \
             DEPMOD=${kmod}/sbin/depmod \
             ARCH=${kernelArch.karch}
 

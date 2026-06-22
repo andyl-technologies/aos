@@ -37,21 +37,6 @@ in {
     {
       # Security: debug level (permissive SELinux, core dumps, no lockdown)
       aos.security.level = lib.mkDefault "debug";
-
-      # Debug and diagnostic tools
-      environment.systemPackages = [
-        pkgs.strace
-        pkgs.tcpdump
-        pkgs.lsof
-        pkgs.hdparm
-        pkgs.smartmontools
-        pkgs.procps-ng
-        pkgs.conntrack-tools
-        pkgs.iproute2
-        pkgs.ethtool
-        pkgs.curl
-        pkgs.jq
-      ];
     }
 
     (lib.mkIf cfg.autologin (let

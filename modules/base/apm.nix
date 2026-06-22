@@ -309,11 +309,11 @@ in {
 
     aos.apm.installAtBoot.ignitionConfig = installAtBootIgnitionConfig;
 
-    # `apm`'s registry/update and runtime attach paths rely on the hermetic
-    # wrapper in `pkgs/tools/aos/aos.nix` for shell-out tools such as git, tar,
-    # nix, and systemctl. Keeping `pkgs.aos` in the base image makes those
-    # tools available through the wrapper without relying on the host PATH.
-    environment.systemPackages = [pkgs.aos pkgs.tar];
+    # The only package on the system PATH is the aos/apm/apr CLI. Everything
+    # it shells out to (git-minimal, tar, nix, systemctl, …) rides in via its
+    # runtimeDeps and the hermetic wrapper in `pkgs/tools/aos/aos.nix`, so it
+    # need not be on PATH; all other tools are installed on demand with apm.
+    environment.systemPackages = [pkgs.aos];
 
     # `apm registry add` writes `~/.config/apm/registries.d/<name>.toml`
     # (crates/aos-package/src/lib.rs:1273; mkdir at :1245). Pre-
