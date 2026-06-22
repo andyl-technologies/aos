@@ -510,14 +510,12 @@ evaluation result have different invalidation rules:
         │
         ▼
   ┌───────────────────────────────────────────────────────────┐
-  │ 1. PARSE/COMPILE CACHE   key = realpath + content-hash      │
-  │    (blake3 of file bytes)                                   │
+  │ 1. PARSE/COMPILE CACHE   key = source BLAKE3 + schema/flags│
   │    value = compiled IR (arena AST + scope-resolved slots)   │
-  │    -> the package set is parsed ONCE; shared across runs    │
-  │       (persisted, content-addressed; see doc 04 & 12)       │
+  │    -> byte-identical source is parsed once; shared across   │
+  │       runs (persisted, content-addressed; realpath metadata)│
   └───────────────────────┬───────────────────────────────────┘
-                          │ (scopedImport stops here:
-                          │  reuses parse, re-evaluates)
+                          │
                           ▼
   ┌───────────────────────────────────────────────────────────┐
   │ 2. RESULT MEMO CACHE     key = realpath (canonicalized)     │
@@ -528,37 +526,39 @@ evaluation result have different invalidation rules:
   └───────────────────────────────────────────────────────────┘
 ```
 
-The **parse/compile cache** is keyed on *realpath plus content hash*. Realpath
-canonicalization (resolving symlinks) is mandatory for compatibility: C++ Nix
-keys import on the canonical path, and `nixpkgs` relies on this when the same
-file is reachable by multiple symlinked paths. The content hash (blake3, our
-durable content-addressed hashing choice; see
-[incremental cache](12-incremental-evaluation-cache.md)) lets the *persisted*
-artifact survive across runs and across CI machines — a file whose bytes are
-unchanged is never re-parsed, even in a fresh process. This is the parse-once
-property that makes whole-package-set evaluation start fast.
+The **parse/compile cache** is keyed on deterministic frontend inputs: source
+bytes hashed with BLAKE3, the parse-cache schema version, and parser flags.
+Realpath is recorded only as diagnostic metadata for this durable artifact, so
+byte-identical modules can share the same persisted resolved AST and IR even
+when they are reached through different paths. The evaluator remaps the cached
+file-local IR at each import site so module-relative path bases still come from
+the importing realpath. The lower-level `FileParseMemo` helper also exposes an
+in-process `(canonical realpath, BLAKE3(file bytes))` memo for path-backed
+frontends, but ordinary tree-walk import currently talks directly to the
+durable content-addressed cache.
 
 The **result memo cache** reproduces C++ Nix's `import` memoization. It is keyed
 on canonical path alone (matching Nix) and stores the *value*, so a second
 `import` of the same file is a hash-map hit returning an already-forced (or
 forcing-in-progress) thunk. `scopedImport` deliberately bypasses this level: it
-reuses the parse cache (parsing is pure and scope-independent up to the injected
-names) but allocates a *fresh* thunk evaluated under the extended scope every
-time, exactly as Nix does.
+allocates a *fresh* thunk evaluated under the extended scope every time, exactly
+as Nix does. The current tree-walk implementation also bypasses the durable
+parse cache for `scopedImport` and text-store imports; that keeps scoped global
+injection and generated-source imports out of the ordinary import fast path
+until their cache identity is modeled separately.
 
 ### 6.3 Interaction with the incremental cache
 
-The two-level import cache is the *in-process* fast path. It composes with the
-cross-run incremental evaluation cache (see
-[incremental cache](12-incremental-evaluation-cache.md)): the parse/compile
-cache is itself a content-addressed artifact persisted via the same mechanism,
-and the *result* of evaluating an imported file participates in early-cutoff
-memoization keyed on the file's expression hash plus captured environment.
-Editing a comment in an imported file changes its blake3 content hash (forcing a
-re-parse of *that file*) but, after re-evaluation, yields the same value-hash, so
-early cutoff stops propagation — downstream importers do not re-evaluate. This is
-the systemic win described in doc 12; `import` is its natural granularity
-boundary because files are the unit users actually edit.
+The completed P2 fast path is the in-process result memo plus the durable
+frontend parse/compile cache above. The remaining cross-run incremental
+evaluation row is the next layer described in
+[incremental cache](12-incremental-evaluation-cache.md): imported-file results
+should participate in early-cutoff memoization keyed on the file expression hash
+plus captured environment. Editing a comment in an imported file would then
+force a re-parse of that file but, after re-evaluation, yield the same
+value-hash, allowing early cutoff to stop propagation to downstream importers.
+`import` is the natural granularity boundary for that future layer because files
+are the unit users actually edit.
 
 ### 6.4 `findFile` and the lookup path
 
@@ -744,8 +744,8 @@ harness, never cut for scope.
 
 ### `import` and import caching
 
-- [ ] Two-level cache: content-addressed parse/compile cache (realpath + blake3) and Nix-faithful result memo (realpath only) ([§6.1](#61-semantics)–[§6.2](#62-the-two-level-cache)) — P2, `S-12`; gate: differential `.drv` harness (hazard #6).
-- [ ] `import` memoized, `scopedImport` deliberately **not** (reuses parse, re-evaluates) ([§6.1](#61-semantics), [§6.2](#62-the-two-level-cache)) — P2; gate: conformance 21.
+- [x] Two-level cache: ordinary filesystem imports use a durable content-addressed parse/compile cache keyed by source BLAKE3 plus schema/flags, and a Nix-faithful result memo keyed by canonical realpath only. Cached import IR is remapped per import site so byte-identical modules reached from different directories still preserve module-relative path bases; tests cover durable hit/miss stats, remapping for formals/inherits/builtins/with-vars, and result reuse ([§6.1](#61-semantics)–[§6.2](#62-the-two-level-cache)) — P2, `S-12`; gate: differential `.drv` harness (hazard #6).
+- [x] `import` is memoized, while `scopedImport` deliberately bypasses the result memo and re-evaluates under a fresh injected global scope. Current tree-walk `scopedImport` and text-store imports also bypass the durable parse cache; tests assert scoped imports trace twice and bypass parse-cache stats/artifacts ([§6.1](#61-semantics), [§6.2](#62-the-two-level-cache)) — P2; gate: conformance 21.
 - [ ] Composition with the cross-run incremental cache; import as the early-cutoff granularity boundary ([§6.3](#63-interaction-with-the-incremental-cache), [12](12-incremental-evaluation-cache.md)) — P2, `S-14`.
 - [ ] `findFile` / `<nixpkgs>` resolution honoring `NIX_PATH`/`-I` precedence and lookup caching ([§6.4](#64-findfile-and-the-lookup-path)) — P1; gate: differential `.drv` harness (hazard #7).
 
