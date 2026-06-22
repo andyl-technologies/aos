@@ -57,6 +57,7 @@ in
           tar xf $src
           cd qemu-${version}
           patch -p1 < ${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}
+          patch -p1 < ${./qemu-patches/0002-crucible-icount-no-realtime.patch}
           # Patch Python shebangs for Nix sandbox
           find . -type f -name '*.py' | while read f; do
             if head -1 "$f" | grep -q '^#!'; then
