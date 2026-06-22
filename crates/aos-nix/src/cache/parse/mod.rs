@@ -447,6 +447,71 @@ impl ParseArtifactBundle {
         ParseCacheMeta::from_toml(text)
     }
 
+    /// Validates bundled metadata against the bundled symbol and IR artifacts.
+    ///
+    /// The metadata must decode, carry `expected_schema_version`, and report
+    /// symbol and lowered-IR node counts that match the decoded `symbols.bin`
+    /// and `ir.bin` payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the metadata is malformed, carries a
+    /// different schema version, the symbols or IR artifact cannot be decoded,
+    /// or the decoded artifact counts do not match metadata.
+    pub fn validate_meta(
+        &self,
+        expected_schema_version: u32,
+    ) -> Result<ParseCacheMeta, ParseCacheError> {
+        let meta = self.decode_meta()?;
+        if meta.schema_version != expected_schema_version {
+            return Err(ParseCacheError::DecodeMeta {
+                message: format!(
+                    "metadata schema_version {} does not match expected {}",
+                    meta.schema_version, expected_schema_version
+                ),
+            });
+        }
+
+        let symbols = decode_symbols(&self.symbols).map_err(|message| {
+            ParseCacheError::DecodeArtifactBundle {
+                message: format!("failed to decode bundled symbols.bin: {message}"),
+            }
+        })?;
+        let symbol_count =
+            u32::try_from(symbols.len()).map_err(|_| ParseCacheError::DecodeArtifactBundle {
+                message: "bundled symbol_count exceeds u32".to_owned(),
+            })?;
+        if symbol_count != meta.symbol_count {
+            return Err(ParseCacheError::DecodeMeta {
+                message: format!(
+                    "metadata symbol_count {} does not match bundled symbols.bin count {}",
+                    meta.symbol_count, symbol_count
+                ),
+            });
+        }
+
+        let ir = decode_lowered_ir(&self.ir, symbols).map_err(|message| {
+            ParseCacheError::DecodeArtifactBundle {
+                message: format!("failed to decode bundled ir.bin: {message}"),
+            }
+        })?;
+        let node_count = u32::try_from(ir.arena.nodes().len()).map_err(|_| {
+            ParseCacheError::DecodeArtifactBundle {
+                message: "bundled node_count exceeds u32".to_owned(),
+            }
+        })?;
+        if node_count != meta.node_count {
+            return Err(ParseCacheError::DecodeMeta {
+                message: format!(
+                    "metadata node_count {} does not match bundled ir.bin node count {}",
+                    meta.node_count, node_count
+                ),
+            });
+        }
+
+        Ok(meta)
+    }
+
     /// Encodes this bundle as one stable little-endian payload.
     ///
     /// # Errors
@@ -715,32 +780,25 @@ impl ParseCacheEntry {
         })
     }
 
-    /// Validates bundle metadata before writing a parse-cache artifact bundle.
+    /// Validates bundled metadata and artifact counts before writing a bundle.
     ///
-    /// The bundle's `meta.toml` must decode and carry `expected_schema_version`
-    /// before any cache-entry files are created or overwritten. On success the
-    /// raw bundle is written with [`Self::write_artifact_bundle`] and the
-    /// decoded metadata is returned.
+    /// The bundle's metadata must decode, carry `expected_schema_version`, and
+    /// match the decoded symbol and lowered-IR node counts before any
+    /// cache-entry files are created or overwritten. On success the raw bundle
+    /// is written with [`Self::write_artifact_bundle`] and the decoded metadata
+    /// is returned.
     ///
     /// # Errors
     ///
-    /// Returns [`ParseCacheError`] if the bundle metadata is malformed, carries
-    /// a different schema version, the entry directory cannot be created, or
-    /// any bundled artifact file cannot be written.
+    /// Returns [`ParseCacheError`] if bundle validation fails, the entry
+    /// directory cannot be created, or any bundled artifact file cannot be
+    /// written.
     pub fn write_artifact_bundle_validated(
         &self,
         bundle: &ParseArtifactBundle,
         expected_schema_version: u32,
     ) -> Result<ParseCacheMeta, ParseCacheError> {
-        let meta = bundle.decode_meta()?;
-        if meta.schema_version != expected_schema_version {
-            return Err(ParseCacheError::DecodeMeta {
-                message: format!(
-                    "metadata schema_version {} does not match expected {}",
-                    meta.schema_version, expected_schema_version
-                ),
-            });
-        }
+        let meta = bundle.validate_meta(expected_schema_version)?;
         self.write_artifact_bundle(bundle)?;
         Ok(meta)
     }

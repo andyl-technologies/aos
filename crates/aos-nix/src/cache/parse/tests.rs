@@ -51,6 +51,15 @@ fn resolved_single_symbol(symbols: SymbolTable, symbol: Symbol) -> ResolvedAst {
     }
 }
 
+fn bundle_with_meta(bundle: &ParseArtifactBundle, meta: ParseCacheMeta) -> ParseArtifactBundle {
+    ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        meta.to_toml().into_bytes(),
+    )
+}
+
 #[test]
 fn keys_depend_on_source_schema_and_flags() {
     let flags = ParseCacheFlags::new();
@@ -344,12 +353,7 @@ fn artifact_bundle_validated_write_rejects_schema_mismatch_before_writing() {
         meta.node_count,
         meta.symbol_count,
     );
-    let wrong_schema_bundle = ParseArtifactBundle::new(
-        bundle.resolved_bytes(),
-        bundle.ir_bytes(),
-        bundle.symbols_bytes(),
-        wrong_meta.to_toml().into_bytes(),
-    );
+    let wrong_schema_bundle = bundle_with_meta(&bundle, wrong_meta);
     let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
 
     let error = hydrated
@@ -359,6 +363,76 @@ fn artifact_bundle_validated_write_rejects_schema_mismatch_before_writing() {
     assert!(matches!(
         error,
         ParseCacheError::DecodeMeta { message } if message.contains("schema_version")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_validated_write_rejects_symbol_count_mismatch_before_writing() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let meta = bundle.decode_meta().expect("bundle metadata decodes");
+    let wrong_meta = ParseCacheMeta::new(
+        meta.schema_version,
+        meta.source_hint,
+        meta.node_count,
+        meta.symbol_count + 1,
+    );
+    let wrong_count_bundle = bundle_with_meta(&bundle, wrong_meta);
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+
+    let error = hydrated
+        .write_artifact_bundle_validated(&wrong_count_bundle, cache.schema_version())
+        .expect_err("symbol-count mismatch errors");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeMeta { message } if message.contains("symbol_count")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_validated_write_rejects_node_count_mismatch_before_writing() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let meta = bundle.decode_meta().expect("bundle metadata decodes");
+    let wrong_meta = ParseCacheMeta::new(
+        meta.schema_version,
+        meta.source_hint,
+        meta.node_count + 1,
+        meta.symbol_count,
+    );
+    let wrong_count_bundle = bundle_with_meta(&bundle, wrong_meta);
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+
+    let error = hydrated
+        .write_artifact_bundle_validated(&wrong_count_bundle, cache.schema_version())
+        .expect_err("node-count mismatch errors");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeMeta { message } if message.contains("node_count")
     ));
     assert!(!hydrated.dir().exists());
 
