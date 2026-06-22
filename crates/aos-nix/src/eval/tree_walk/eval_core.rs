@@ -166,31 +166,37 @@ impl TreeWalk {
     /// if thunk forcing fails, or if the node kind is not yet implemented by
     /// this evaluator slice.
     pub fn eval_node(&mut self, id: IrId) -> Result<Value, TreeWalkError> {
-        let node = *self.node(id)?;
+        let node = *self
+            .node(id)
+            .map_err(|error| self.error_with_current_source(error))?;
         let value = match node.kind {
             IrKind::Int => {
-                let IrData::Int(value) = node.data else {
-                    return Err(self.invalid_payload(id, &node, "integer payload"));
-                };
-                Ok(Value::int(value))
+                if let IrData::Int(value) = node.data {
+                    Ok(Value::int(value))
+                } else {
+                    Err(self.invalid_payload(id, &node, "integer payload"))
+                }
             }
             IrKind::Float => {
-                let IrData::Float(value) = node.data else {
-                    return Err(self.invalid_payload(id, &node, "float payload"));
-                };
-                Ok(Value::float(value))
+                if let IrData::Float(value) = node.data {
+                    Ok(Value::float(value))
+                } else {
+                    Err(self.invalid_payload(id, &node, "float payload"))
+                }
             }
             IrKind::Bool => {
-                let IrData::Bool(value) = node.data else {
-                    return Err(self.invalid_payload(id, &node, "boolean payload"));
-                };
-                Ok(Value::bool(value))
+                if let IrData::Bool(value) = node.data {
+                    Ok(Value::bool(value))
+                } else {
+                    Err(self.invalid_payload(id, &node, "boolean payload"))
+                }
             }
             IrKind::Null => {
-                if node.data != IrData::None {
-                    return Err(self.invalid_payload(id, &node, "empty payload"));
+                if node.data == IrData::None {
+                    Ok(Value::null())
+                } else {
+                    Err(self.invalid_payload(id, &node, "empty payload"))
                 }
-                Ok(Value::null())
             }
             IrKind::Str | IrKind::Uri => self.eval_string(id, &node),
             IrKind::Path => self.eval_path(id, &node),
@@ -220,8 +226,42 @@ impl TreeWalk {
                 TreeWalkErrorKind::InvalidNodeKind { id, kind },
                 node.span,
             )),
-        }?;
+        }
+        .map_err(|error| self.error_with_current_source(error))?;
         self.force_node_result(id, node.span, value)
+            .map_err(|error| self.error_with_current_source(error))
+    }
+
+    fn error_with_current_source(&self, error: TreeWalkError) -> TreeWalkError {
+        if error.source().is_some() {
+            return error;
+        }
+        let Some(source) = self.error_source_for_current_module() else {
+            return error;
+        };
+        error.with_source(source)
+    }
+
+    pub(super) fn context_with_current_source(&self, message: Vec<u8>) -> EvalErrorContext {
+        let context = EvalErrorContext::new(message);
+        match self.error_source_for_current_module() {
+            Some(source) => context.with_source(source),
+            None => context,
+        }
+    }
+
+    fn error_source_for_current_module(&self) -> Option<EvalErrorSource> {
+        let Some(source) = self
+            .modules
+            .get(self.current_module.index())
+            .and_then(|module| module.source.as_ref())
+        else {
+            return None;
+        };
+        Some(EvalErrorSource::new(
+            source.name.clone(),
+            source.bytes.clone(),
+        ))
     }
 
     pub(super) fn force_node_result(

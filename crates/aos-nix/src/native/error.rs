@@ -224,9 +224,114 @@ fn native_eval_error_message(
     error: &TreeWalkError,
     diagnostic_source: Option<NativeDiagnosticSource<'_>>,
 ) -> String {
+    if error.source().is_some() {
+        return rendered_embedded_eval_diagnostic(error).unwrap_or_else(|| error.to_string());
+    }
     diagnostic_source
         .and_then(|source| rendered_eval_diagnostic(error, source))
         .unwrap_or_else(|| error.to_string())
+}
+
+fn rendered_embedded_eval_diagnostic(error: &TreeWalkError) -> Option<String> {
+    let source = error.source()?;
+    let source_text = std::str::from_utf8(source.bytes()).ok()?;
+    if !span_fits_source(error.span(), source_text) {
+        return None;
+    }
+    if !error
+        .labels()
+        .iter()
+        .all(|label| span_fits_source(label.span(), source_text))
+    {
+        return None;
+    }
+    if !error
+        .contexts()
+        .iter()
+        .filter(|context| context_matches_embedded_source(context, source))
+        .all(|context| span_fits_source(context.span(), source_text))
+    {
+        return None;
+    }
+
+    let name = String::from_utf8_lossy(source.name());
+    let diagnostic = EvalDiagnostic::new(name.as_ref(), source_text, error.clone());
+    render_fancy_report(&diagnostic).ok()
+}
+
+fn context_matches_embedded_source(
+    context: &crate::eval::tree_walk::EvalErrorContext,
+    source: &crate::eval::EvalErrorSource,
+) -> bool {
+    match context.source() {
+        Some(context_source) => context_source == source,
+        None => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::IrId;
+    use crate::eval::tree_walk::EvalErrorContext;
+    use crate::eval::{EvalErrorSource, TreeWalkError, TreeWalkErrorKind};
+    use crate::syntax::Span;
+    use crate::value::ValueTag;
+
+    #[test]
+    fn embedded_eval_diagnostic_filters_context_labels_from_other_sources() {
+        let child_source_text =
+            "1 + true\n# child-context-line\n\n\n\n# root-span-sentinel should not be labelled\n";
+        let child_source =
+            EvalErrorSource::new(b"child.nix".to_vec(), child_source_text.as_bytes().to_vec());
+        let root_source = EvalErrorSource::new(
+            b"root.nix".to_vec(),
+            br#"builtins.addErrorContext "root context" (import ./child.nix)"#.to_vec(),
+        );
+        let child_context_start = child_source_text
+            .find("child-context-line")
+            .expect("child context sentinel should be present");
+        let root_context_start = child_source_text
+            .find("root-span-sentinel")
+            .expect("root context sentinel should be present");
+        let error = TreeWalkError::new(
+            TreeWalkErrorKind::Type {
+                id: IrId::new(1),
+                expected: "number",
+                actual: ValueTag::Bool,
+            },
+            Span { start: 4, end: 8 },
+        )
+        .with_contexts(vec![
+            EvalErrorContext::new(b"root context".to_vec())
+                .with_span(Span {
+                    start: root_context_start as u32,
+                    end: (root_context_start + "root-span-sentinel".len()) as u32,
+                })
+                .with_source(root_source),
+            EvalErrorContext::new(b"child context".to_vec())
+                .with_span(Span {
+                    start: child_context_start as u32,
+                    end: (child_context_start + "child-context-line".len()) as u32,
+                })
+                .with_source(child_source.clone()),
+        ])
+        .with_source(child_source);
+
+        let report = rendered_embedded_eval_diagnostic(&error)
+            .expect("embedded diagnostic should render with mixed-source contexts");
+
+        assert!(
+            report.contains("while evaluating: root context"),
+            "{report}"
+        );
+        assert!(
+            report.contains("while evaluating: child context"),
+            "{report}"
+        );
+        assert!(report.contains("child-context-line"), "{report}");
+        assert!(!report.contains("root-span-sentinel"), "{report}");
+    }
 }
 
 fn rendered_eval_diagnostic(

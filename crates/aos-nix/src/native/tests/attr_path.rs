@@ -209,6 +209,101 @@ fn native_file_instantiation_reports_tree_walk_errors_with_source() -> Result<()
 }
 
 #[test]
+fn native_file_instantiation_reports_imported_tree_walk_errors_with_source() -> Result<()> {
+    let (native, root, _store) =
+        native_with_temp_store("aos-nix-native-instantiate-imported-eval-error")?;
+    let file = root.join("default.nix");
+    let child = root.join("child.nix");
+    fs::write(&file, b"{ broken = import ./child.nix; }")?;
+    fs::write(&child, b"1 + true")?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("imported tree-walk errors should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("imported type error should surface as a native eval error: {error:?}");
+    };
+    assert!(message.contains("type error"), "{message}");
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(
+        message.contains(&child.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("1 + true"), "{message}");
+    assert!(!message.contains("import ./child.nix"), "{message}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_reports_imported_context_labels_with_source() -> Result<()> {
+    let (native, root, _store) =
+        native_with_temp_store("aos-nix-native-instantiate-imported-eval-context")?;
+    let file = root.join("default.nix");
+    let child = root.join("child.nix");
+    fs::write(&file, b"{ broken = import ./child.nix; }")?;
+    fs::write(
+        &child,
+        br#"builtins.addErrorContext "child context" (1 + true)"#,
+    )?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("imported tree-walk errors with child contexts should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("imported type error should surface as a native eval error: {error:?}");
+    };
+    assert!(
+        message.contains("while evaluating: child context"),
+        "{message}"
+    );
+    assert!(message.contains("type error"), "{message}");
+    assert!(
+        message.contains(&child.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("1 + true"), "{message}");
+    assert!(message.contains("child context"), "{message}");
+    assert!(!message.contains("import ./child.nix"), "{message}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_does_not_render_non_utf8_imported_errors_against_root() -> Result<()> {
+    let (native, root, _store) =
+        native_with_temp_store("aos-nix-native-instantiate-imported-non-utf8-eval-error")?;
+    let file = root.join("default.nix");
+    let child = root.join("child.nix");
+    fs::write(&file, b"{ broken = import ./child.nix; }")?;
+    fs::write(&child, b"1 + true # \xff\n")?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("non-UTF8 imported tree-walk errors should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("imported type error should surface as a native eval error: {error:?}");
+    };
+    assert!(message.contains("type error"), "{message}");
+    assert!(
+        !message.contains(&file.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(!message.contains("import ./child.nix"), "{message}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_accepts_quoted_attr_path_segments() -> Result<()> {
     let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate-quoted")?;
     let dir = root.join("src");

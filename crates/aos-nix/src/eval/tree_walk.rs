@@ -255,7 +255,7 @@ pub use api::{
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::{ArithmeticOp, EvalErrorContext};
-pub use errors::{EvalErrorLabel, TreeWalkError};
+pub use errors::{EvalErrorLabel, EvalErrorSource, TreeWalkError};
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
 pub(crate) use options::{

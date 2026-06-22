@@ -28,6 +28,7 @@ pub struct TreeWalkError {
     pub(crate) span: Span,
     pub(crate) contexts: Vec<EvalErrorContext>,
     pub(crate) labels: Vec<EvalErrorLabel>,
+    pub(crate) source: Option<EvalErrorSource>,
 }
 
 impl TreeWalkError {
@@ -38,6 +39,7 @@ impl TreeWalkError {
             span,
             contexts: Vec::new(),
             labels: Vec::new(),
+            source: None,
         }
     }
 
@@ -71,6 +73,11 @@ impl TreeWalkError {
         self
     }
 
+    pub(crate) fn with_source(mut self, source: EvalErrorSource) -> Self {
+        self.source = Some(source);
+        self
+    }
+
     /// Returns diagnostic context messages from outermost to innermost.
     pub fn contexts(&self) -> &[EvalErrorContext] {
         &self.contexts
@@ -79,6 +86,11 @@ impl TreeWalkError {
     /// Returns additional source labels relevant to this error.
     pub fn labels(&self) -> &[EvalErrorLabel] {
         &self.labels
+    }
+
+    /// Returns the source file associated with this evaluation error, if known.
+    pub const fn source(&self) -> Option<&EvalErrorSource> {
+        self.source.as_ref()
     }
 
     pub(crate) fn try_prepend_context(
@@ -116,6 +128,29 @@ impl fmt::Display for TreeWalkError {
 
 impl std::error::Error for TreeWalkError {}
 
+/// Source bytes for the module where an evaluation error was raised.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvalErrorSource {
+    pub(crate) name: Vec<u8>,
+    pub(crate) bytes: Vec<u8>,
+}
+
+impl EvalErrorSource {
+    pub(crate) fn new(name: Vec<u8>, bytes: Vec<u8>) -> Self {
+        Self { name, bytes }
+    }
+
+    /// Returns the source name bytes, usually the canonical file path.
+    pub fn name(&self) -> &[u8] {
+        &self.name
+    }
+
+    /// Returns the source bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
 /// A secondary source label attached to a tree-walk evaluation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalErrorLabel {
@@ -140,6 +175,7 @@ impl EvalErrorLabel {
 pub struct EvalErrorContext {
     pub(crate) message: Vec<u8>,
     pub(crate) span: Span,
+    pub(crate) source: Option<EvalErrorSource>,
 }
 
 impl EvalErrorContext {
@@ -147,11 +183,17 @@ impl EvalErrorContext {
         Self {
             message,
             span: Span::default(),
+            source: None,
         }
     }
 
     pub(crate) fn with_span(mut self, span: Span) -> Self {
         self.span = span;
+        self
+    }
+
+    pub(crate) fn with_source(mut self, source: EvalErrorSource) -> Self {
+        self.source = Some(source);
         self
     }
 
@@ -163,5 +205,10 @@ impl EvalErrorContext {
     /// Returns the source span for the expression that attached this context.
     pub const fn span(&self) -> Span {
         self.span
+    }
+
+    /// Returns the source file associated with this context span, if known.
+    pub const fn source(&self) -> Option<&EvalErrorSource> {
+        self.source.as_ref()
     }
 }

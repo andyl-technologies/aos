@@ -649,7 +649,11 @@ impl TreeWalk {
             context_span,
             context_value,
         )?;
-        Err(error.try_prepend_context(call_id, call_span, EvalErrorContext::new(message))?)
+        Err(error.try_prepend_context(
+            call_id,
+            call_span,
+            self.context_with_current_source(message),
+        )?)
     }
 
     pub(super) fn add_error_context_value_to_error(
@@ -667,7 +671,11 @@ impl TreeWalk {
             context.span(),
             context_value,
         )?;
-        Err(error.try_prepend_context(call_id, call_span, EvalErrorContext::new(message))?)
+        Err(error.try_prepend_context(
+            call_id,
+            call_span,
+            self.context_with_current_source(message),
+        )?)
     }
 
     pub(super) fn coerce_add_error_context_message(
@@ -688,7 +696,7 @@ impl TreeWalk {
                     &error,
                 ) =>
             {
-                let context = EvalErrorContext::new(Self::copy_bytes_for_node(
+                let context = self.context_with_current_source(Self::copy_bytes_for_node(
                     call_id,
                     call_span,
                     ADD_ERROR_CONTEXT_MESSAGE_CONTEXT,

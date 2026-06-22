@@ -263,8 +263,24 @@ fn eval_error_labels(error: &TreeWalkError) -> Box<dyn Iterator<Item = LabeledSp
                 .map(|label| label_for_span(label.span(), label.label())),
         );
     }
-    labels.extend(error.contexts().iter().map(context_label));
+    labels.extend(
+        error
+            .contexts()
+            .iter()
+            .filter(|context| context_matches_error_source(error.source(), context))
+            .map(context_label),
+    );
     Box::new(labels.into_iter())
+}
+
+fn context_matches_error_source(
+    error_source: Option<&crate::eval::EvalErrorSource>,
+    context: &crate::eval::tree_walk::EvalErrorContext,
+) -> bool {
+    match (error_source, context.source()) {
+        (Some(error_source), Some(context_source)) => context_source == error_source,
+        _ => true,
+    }
 }
 
 fn context_label(context: &crate::eval::tree_walk::EvalErrorContext) -> LabeledSpan {
