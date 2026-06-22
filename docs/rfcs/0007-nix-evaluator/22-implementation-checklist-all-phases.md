@@ -437,8 +437,13 @@ and helps the oracle directly.
 
 **Deliverables.**
 
-- [ ] `heap/arena.rs` — Tier A bump-pointer arena finalized: allocate, never
-      free, drop wholesale at process exit (the per-invocation default, `C-10`).
+- [x] Current prerequisite already in place: P1 safe owned-chunk `BumpArena`
+      substrate from [06](06-memory-management-and-gc.md) — aligned monotonic
+      allocations through entry-point-shaped `aos_alloc_*` Rust helpers,
+      never-free typed handles, Rust-owned chunk drop, and arena accounting.
+- [ ] Final Tier-A runtime arena remains: `mmap`/`munmap` chunks, thread-local
+      per-worker arenas, CLI-wide Tier-A default, and byte-green proof under
+      Tier A (the per-invocation default, `C-10`).
 - [ ] `heap/gc.rs` — Tier B precise generational copying collector with a
       cache-resident nursery; precise (not conservative) so Boehm-style false
       retention is eliminated ([06](06-memory-management-and-gc.md)).
