@@ -111,6 +111,89 @@ mod tests {
     }
 
     #[test]
+    fn reduce_is_pure_over_scenario_and_schedule() {
+        let scenario =
+            ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=1");
+        let other_scenario =
+            ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=2");
+        let first_decision = Decision::RngDraw(RngDecision {
+            stream: RngStreamId {
+                name: String::from("node-a/faults"),
+            },
+            value: 7,
+        });
+        let second_decision = Decision::FaultFires(FaultDecision {
+            at: VirtualTime { ticks: 10 },
+            fault: FaultId {
+                name: String::from("link-drop"),
+            },
+            fired: true,
+        });
+        let schedule = Schedule::empty()
+            .appended(first_decision.clone())
+            .appended(second_decision.clone());
+        let reordered = Schedule::empty()
+            .appended(second_decision)
+            .appended(first_decision);
+
+        let first = reduce(&scenario, &schedule);
+        let second = reduce(&scenario, &schedule);
+        let changed_scenario = reduce(&other_scenario, &schedule);
+        let changed_order = reduce(&scenario, &reordered);
+
+        assert_eq!(first, second);
+        assert_ne!(first, changed_scenario);
+        assert_ne!(first, changed_order);
+    }
+
+    #[test]
+    fn reduce_is_prefix_closed_by_schedule_hash() {
+        let scenario =
+            ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=prefix");
+        let root = Configuration::genesis(scenario.clone());
+        let child = step(
+            &root,
+            Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime { ticks: 4 },
+                order: vec![EventKey { sequence: 1 }, EventKey { sequence: 2 }],
+            }),
+        );
+        let grandchild = step(
+            &child,
+            Decision::AppRandom(AppRandomDecision {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                stream: RngStreamId {
+                    name: String::from("app/request"),
+                },
+                request_id: 3,
+                width: 16,
+                value: 0xace,
+            }),
+        );
+        let child_prefix = match grandchild.schedule.prefix(1) {
+            Ok(prefix) => prefix,
+            Err(error) => panic!("valid prefix should not fail: {error}"),
+        };
+        let root_reduced = reduce(&scenario, &root.schedule);
+        let child_reduced = reduce(&scenario, &child.schedule);
+        let child_prefix_reduced = reduce(&scenario, &child_prefix);
+        let grandchild_reduced = reduce(&scenario, &grandchild.schedule);
+
+        assert_eq!(child.schedule, child_prefix);
+        assert_eq!(child_reduced, child_prefix_reduced);
+        assert_ne!(root_reduced, child_reduced);
+        assert_ne!(child_reduced, grandchild_reduced);
+        assert_ne!(root.content_hash(), child.content_hash());
+        assert_ne!(child.content_hash(), grandchild.content_hash());
+        assert_ne!(
+            child.schedule.content_hash(),
+            grandchild.schedule.content_hash()
+        );
+    }
+
+    #[test]
     fn backend_trait_is_object_safe() {
         struct StubBackend;
 
@@ -161,7 +244,7 @@ mod tests {
     #[test]
     fn engine_and_backend_errors_render_all_variants_deterministically() {
         let engine = EngineError::NotImplemented {
-            operation: "reduce",
+            operation: "instantiate",
         };
         let backend_not_implemented = BackendError::NotImplemented {
             operation: "snapshot",
@@ -170,7 +253,7 @@ mod tests {
             message: String::from("stable rejection"),
         };
 
-        assert_eq!(engine.to_string(), "reduce is not implemented yet");
+        assert_eq!(engine.to_string(), "instantiate is not implemented yet");
         assert_eq!(
             backend_not_implemented.to_string(),
             "backend operation snapshot is not implemented yet"

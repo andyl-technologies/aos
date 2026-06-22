@@ -102,8 +102,14 @@ const DEVICE_INJECTION_MARKERS: &[&str] = &[
 
 const REPLAY_ORACLE_MARKERS: &[&str] = &[
     "assert_replay_oracle_fixed_checkpoint_corpus(",
-    "assert_replay_oracle_in_search_sampling(",
-    "assert_replay_oracle_mismatch_bisects(",
+    "struct MaterializedCheckpoint",
+    "fn materialize_fat_checkpoint(",
+    "fn schedule_delta(",
+    "fn replay_schedule(",
+    "assert_replay_oracle_rejects_corrupt_configuration_metadata(",
+    "assert_replay_oracle_rejects_corrupt_schedule_delta_metadata(",
+    "assert_replay_oracle_excludes_observational_entries(",
+    "assert_replay_oracle_reports_first_mismatch(",
     "assert_twice_reduce_canonical_digest(",
     "SimDouble",
 ];
@@ -173,7 +179,7 @@ const ADVANCED_TEST_STANDARDS: &[AdvancedTestStandard] = &[
         required_markers: DEVICE_INJECTION_MARKERS,
     },
     AdvancedTestStandard {
-        id: "replay-oracle-two-mode",
+        id: "replay-oracle-fixed-corpus",
         gate: "gate:replay-oracle",
         package: "crucible",
         test_target: "gate_replay_oracle",

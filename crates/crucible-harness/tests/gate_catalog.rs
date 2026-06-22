@@ -50,7 +50,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:patch-microtests",
         "gate:perf-bench",
         "gate:qemu-inert",
-        "gate:replay-oracle",
         "gate:scheduler-liveness",
     ]);
 
@@ -76,6 +75,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:layer1-injection").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:replay-oracle").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

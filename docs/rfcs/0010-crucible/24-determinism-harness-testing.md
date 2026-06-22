@@ -886,7 +886,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-11** Implement `gate:content-address` (hash stability, equal
   content ⇒ equal id, single-byte change ⇒ different id, collision sampling). —
   satisfies [HARN-11]; spec §1.2.
-- [ ] **T-HARN-12** Implement the replay oracle and `gate:replay-oracle`
+- [x] **T-HARN-12** Implement the replay oracle and `gate:replay-oracle`
   (fat-hash == thin-from-ancestor-hash over a fixed corpus, canonical-state hash
   excluding observational entries). — satisfies [HARN-12]; spec §6.
 - [ ] **T-HARN-13** Wire random in-search oracle sampling: each materialized fat

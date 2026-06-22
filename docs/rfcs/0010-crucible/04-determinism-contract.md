@@ -707,7 +707,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   RNG, default-hasher maps on ordering-significant paths, and nondeterministic
   `select` in the engine. — satisfies [DET-24], [DET-26], routes [INV-9]; spec
   §4.7.
-- [ ] **T-DET-18** Establish purity of `reduce` as the determinism statement and
+- [x] **T-DET-18** Establish purity of `reduce` as the determinism statement and
   wire `gate:replay-oracle` to enforce [INV-2] continuously (fat ≡ thin;
   materialize ≡ re-reduce). — satisfies [DET-28], [DET-41], [INV-2]; spec §4.8,
   §4.11.

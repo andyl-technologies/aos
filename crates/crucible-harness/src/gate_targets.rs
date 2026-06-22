@@ -125,7 +125,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible",
         test_target: "gate_replay_oracle",
         required_features: &["test-double"],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:content-address",

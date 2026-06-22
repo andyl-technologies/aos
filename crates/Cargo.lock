@@ -1500,6 +1500,7 @@ dependencies = [
 name = "crucible"
 version = "0.1.0"
 dependencies = [
+ "crucible-harness",
  "crucible-sim",
  "thiserror",
 ]
