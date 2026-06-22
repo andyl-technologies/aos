@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use aos_core::error::AosError;
-use aos_core::nix::diff::{DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure};
+use aos_core::nix::diff::{
+    DiffMode, DiffSide, DrvDiff, DrvDiffPair, DrvDiffReport, diff_closure, diff_drv_pair,
+};
 use aos_core::nix::{
     NixCli, NixEval, NixEvalConfig, NixEvalMode, NixInstantiateStats, NixRunner,
     select_native_diff_candidate_with_config,
@@ -156,8 +158,65 @@ pub fn run(
             printer.plain(&format!("  - {}", render_diff(divergence)));
         }
         render_reproduction_hint(printer, &eval_config, file, attr, mode, "  ");
-        render_divergence_classes(printer, &eval_config, file, attr, &report, "  ");
+        render_eval_divergence_classes(printer, &eval_config, file, attr, &report, "  ");
         render_single_oracle_stats(printer, oracle_stats.as_ref());
+    }
+    Err(failure.into())
+}
+
+/// Runs the direct `.drv` pair comparison path.
+///
+/// # Errors
+///
+/// Returns an error if the harness cannot read the requested `.drv` pair or
+/// the derivations diverge under the requested comparison mode.
+pub fn run_pair(
+    printer: &Printer,
+    oracle_drv: &Path,
+    candidate_drv: &Path,
+    mode: DiffMode,
+) -> Result<()> {
+    let report = diff_drv_pair(oracle_drv, candidate_drv, mode)?;
+    let failure = report_failure(&report);
+
+    if printer.json_if_active(&drv_pair_report_json(
+        &report,
+        oracle_drv,
+        candidate_drv,
+        failure.as_ref(),
+    )) {
+        if let Some(failure) = failure {
+            return Err(failure.into());
+        } else {
+            return Ok(());
+        }
+    }
+
+    let Some(failure) = failure else {
+        printer.success(&format!(
+            "drv pair matched: oracle={} candidate={} ({mode:?})",
+            oracle_drv.display(),
+            candidate_drv.display(),
+        ));
+        return Ok(());
+    };
+
+    if printer.mode() == OutputMode::Quiet {
+        printer.error(&failure.to_string());
+    } else if report.divergences.is_empty() {
+        printer.warning(&failure.to_string());
+    } else {
+        printer.warning(&format!(
+            "drv pair found {} divergence(s): oracle={} candidate={}",
+            report.divergences.len(),
+            oracle_drv.display(),
+            candidate_drv.display(),
+        ));
+        for divergence in &report.divergences {
+            printer.plain(&format!("  - {}", render_diff(divergence)));
+        }
+        render_node_reproduction_hint(printer, oracle_drv, candidate_drv, mode, "  ");
+        render_pair_divergence_classes(printer, &report, "  ");
     }
     Err(failure.into())
 }
@@ -287,7 +346,7 @@ fn run_all(
                 for divergence in &report.divergences {
                     printer.plain(&format!("      - {}", render_diff(divergence)));
                 }
-                render_divergence_classes(
+                render_eval_divergence_classes(
                     printer,
                     eval_config,
                     file,
@@ -496,6 +555,30 @@ fn report_json(
     value
 }
 
+fn drv_pair_report_json(
+    report: &DrvDiffReport,
+    oracle_drv: &Path,
+    candidate_drv: &Path,
+    failure: Option<&NixDiffReportedFailure>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "mode": mode_name(report.mode),
+        "oracle": "oracle-drv",
+        "candidate": "candidate-drv",
+        "oracle_drv": oracle_drv.to_string_lossy(),
+        "candidate_drv": candidate_drv.to_string_lossy(),
+        "reproduce": node_reproduction_command(oracle_drv, candidate_drv, report.mode),
+        "matched": failure.is_none(),
+        "error": failure.map(ToString::to_string),
+        "oracle_root": report.oracle_root.as_ref().map(|path| path.to_string_lossy().to_string()),
+        "candidate_root": report.candidate_root.as_ref().map(|path| path.to_string_lossy().to_string()),
+        "root_divergences": report.root_divergences.iter().map(pair_json).collect::<Vec<_>>(),
+        "contaminated_divergences": report.contaminated_divergences.iter().map(pair_json).collect::<Vec<_>>(),
+        "root_reports": root_pair_reports_json(report),
+        "divergences": report.divergences.iter().map(diff_json).collect::<Vec<_>>(),
+    })
+}
+
 fn corpus_json(
     reports: &[AttrDiffReport],
     candidate_name: &str,
@@ -633,6 +716,14 @@ fn root_reports_json(
         .collect()
 }
 
+fn root_pair_reports_json(report: &DrvDiffReport) -> Vec<serde_json::Value> {
+    report
+        .root_divergences
+        .iter()
+        .map(|pair| root_pair_report_json(report, pair))
+        .collect()
+}
+
 fn root_report_json(
     report: &DrvDiffReport,
     eval_config: &NixEvalConfig,
@@ -640,15 +731,34 @@ fn root_report_json(
     attr: &str,
     pair: &DrvDiffPair,
 ) -> serde_json::Value {
-    serde_json::json!({
-        "file": file.to_string_lossy(),
-        "attr": attr,
+    let mut value = root_pair_report_json(report, pair);
+    if let serde_json::Value::Object(object) = &mut value {
+        object.insert(
+            "file".to_string(),
+            file.to_string_lossy().into_owned().into(),
+        );
+        object.insert("attr".to_string(), attr.to_string().into());
+        object.insert(
+            "reproduce".to_string(),
+            reproduction_command(eval_config, file, attr, report.mode).into(),
+        );
+    }
+    value
+}
+
+fn root_pair_report_json(report: &DrvDiffReport, pair: &DrvDiffPair) -> serde_json::Value {
+    let mut value = serde_json::json!({
         "mode": mode_name(report.mode),
-        "reproduce": reproduction_command(eval_config, file, attr, report.mode),
         "oracle": pair.oracle.to_string_lossy(),
         "candidate": pair.candidate.to_string_lossy(),
         "divergences": pair_divergences(report, pair).map(diff_json).collect::<Vec<_>>(),
-    })
+    });
+    if let (serde_json::Value::Object(object), Some(command)) =
+        (&mut value, node_reproduction_for_pair(report, pair))
+    {
+        object.insert("node_reproduce".to_string(), command.into());
+    }
+    value
 }
 
 fn pair_divergences<'a>(
@@ -753,13 +863,27 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
     }
 }
 
-fn render_divergence_classes(
+fn render_eval_divergence_classes(
     printer: &Printer,
     eval_config: &NixEvalConfig,
     file: &Path,
     attr: &str,
     report: &DrvDiffReport,
     indent: &str,
+) {
+    let reproduction = reproduction_command(eval_config, file, attr, report.mode);
+    render_divergence_classes(printer, report, indent, Some(&reproduction));
+}
+
+fn render_pair_divergence_classes(printer: &Printer, report: &DrvDiffReport, indent: &str) {
+    render_divergence_classes(printer, report, indent, None);
+}
+
+fn render_divergence_classes(
+    printer: &Printer,
+    report: &DrvDiffReport,
+    indent: &str,
+    eval_reproduction: Option<&str>,
 ) {
     if !report.root_divergences.is_empty() {
         printer.plain(&format!("{indent}root divergence reports:"));
@@ -769,10 +893,12 @@ fn render_divergence_classes(
                 pair.oracle.display(),
                 pair.candidate.display()
             ));
-            printer.plain(&format!(
-                "{indent}    reproduce: {}",
-                reproduction_command(eval_config, file, attr, report.mode)
-            ));
+            if let Some(command) = eval_reproduction {
+                printer.plain(&format!("{indent}    reproduce: {command}"));
+            }
+            if let Some(command) = node_reproduction_for_pair(report, pair) {
+                printer.plain(&format!("{indent}    node reproduce: {command}"));
+            }
             let mut rendered = false;
             for divergence in pair_divergences(report, pair) {
                 rendered = true;
@@ -808,6 +934,19 @@ fn render_reproduction_hint(
     printer.plain(&format!(
         "{indent}reproduce: {}",
         reproduction_command(eval_config, file, attr, mode)
+    ));
+}
+
+fn render_node_reproduction_hint(
+    printer: &Printer,
+    oracle_drv: &Path,
+    candidate_drv: &Path,
+    mode: DiffMode,
+    indent: &str,
+) {
+    printer.plain(&format!(
+        "{indent}node reproduce: {}",
+        node_reproduction_command(oracle_drv, candidate_drv, mode)
     ));
 }
 
@@ -859,6 +998,32 @@ fn reproduction_args(
         file.to_string_lossy().into_owned(),
     ]);
     args
+}
+
+fn node_reproduction_command(oracle_drv: &Path, candidate_drv: &Path, mode: DiffMode) -> String {
+    node_reproduction_args(oracle_drv, candidate_drv, mode)
+        .iter()
+        .map(|arg| shell_word(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn node_reproduction_for_pair(report: &DrvDiffReport, pair: &DrvDiffPair) -> Option<String> {
+    report
+        .file_backed_pairs
+        .iter()
+        .any(|file_backed_pair| file_backed_pair == pair)
+        .then(|| node_reproduction_command(&pair.oracle, &pair.candidate, report.mode))
+}
+
+fn node_reproduction_args(oracle_drv: &Path, candidate_drv: &Path, mode: DiffMode) -> Vec<String> {
+    vec![
+        "aos".to_string(),
+        "nix-diff".to_string(),
+        format!("--oracle-drv={}", oracle_drv.to_string_lossy()),
+        format!("--candidate-drv={}", candidate_drv.to_string_lossy()),
+        format!("--mode={}", mode_name(mode)),
+    ]
 }
 
 fn shell_word(value: &str) -> String {
@@ -1086,6 +1251,7 @@ const fn side_name(side: DiffSide) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     fn repro_config() -> NixEvalConfig {
@@ -1119,6 +1285,7 @@ mod tests {
                 candidate: PathBuf::from("/nix/store/candidate.drv"),
             }],
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -1157,6 +1324,7 @@ mod tests {
             value["root_reports"][0]["reproduce"],
             "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte -- default.nix"
         );
+        assert!(value["root_reports"][0].get("node_reproduce").is_none());
         assert_eq!(value["root_reports"][0]["oracle"], "/nix/store/oracle.drv");
         assert_eq!(
             value["root_reports"][0]["candidate"],
@@ -1176,6 +1344,98 @@ mod tests {
     }
 
     #[test]
+    fn drv_pair_report_json_renders_direct_node_reproduction() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_drv = temp.path().join("oracle.drv");
+        let candidate_drv = temp.path().join("candidate.drv");
+        fs::write(&oracle_drv, b"oracle drv")?;
+        fs::write(&candidate_drv, b"candidate drv")?;
+        let pair = DrvDiffPair {
+            oracle: oracle_drv.clone(),
+            candidate: candidate_drv.clone(),
+        };
+        let report = DrvDiffReport {
+            mode: DiffMode::Structural,
+            oracle_root: Some(oracle_drv.clone()),
+            candidate_root: Some(candidate_drv.clone()),
+            divergences: vec![DrvDiff::Structural {
+                oracle: oracle_drv.clone(),
+                candidate: candidate_drv.clone(),
+                field: "environment".to_string(),
+            }],
+            root_divergences: vec![pair.clone()],
+            contaminated_divergences: Vec::new(),
+            file_backed_pairs: vec![pair],
+        };
+        let failure = report_failure(&report);
+
+        let value = drv_pair_report_json(&report, &oracle_drv, &candidate_drv, failure.as_ref());
+
+        assert_eq!(value["mode"], "structural");
+        assert_eq!(value["oracle"], "oracle-drv");
+        assert_eq!(value["candidate"], "candidate-drv");
+        assert_eq!(
+            value["oracle_drv"],
+            oracle_drv.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            value["candidate_drv"],
+            candidate_drv.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            value["reproduce"],
+            node_reproduction_command(&oracle_drv, &candidate_drv, DiffMode::Structural)
+        );
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["error"], "drv diff found 1 divergence(s)");
+        assert_eq!(
+            value["root_reports"][0]["node_reproduce"],
+            node_reproduction_command(&oracle_drv, &candidate_drv, DiffMode::Structural)
+        );
+        assert_eq!(
+            value["root_reports"][0]["divergences"][0]["kind"],
+            "structural"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn root_report_json_omits_node_reproduction_without_file_backed_provenance() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_drv = temp.path().join("oracle.drv");
+        let candidate_drv = temp.path().join("candidate.drv");
+        fs::write(&oracle_drv, b"stale oracle drv")?;
+        fs::write(&candidate_drv, b"stale candidate drv")?;
+        let report = DrvDiffReport {
+            mode: DiffMode::Byte,
+            oracle_root: Some(oracle_drv.clone()),
+            candidate_root: Some(candidate_drv.clone()),
+            divergences: vec![DrvDiff::Bytes {
+                oracle: oracle_drv.clone(),
+                candidate: candidate_drv.clone(),
+            }],
+            root_divergences: vec![DrvDiffPair {
+                oracle: oracle_drv,
+                candidate: candidate_drv,
+            }],
+            contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
+        };
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            report_failure(&report).as_ref(),
+            None,
+        );
+
+        assert!(value["root_reports"][0].get("node_reproduce").is_none());
+        Ok(())
+    }
+
+    #[test]
     fn report_json_renders_oracle_stats() {
         let report = DrvDiffReport {
             mode: DiffMode::Byte,
@@ -1184,6 +1444,7 @@ mod tests {
             divergences: Vec::new(),
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
         let stats = NixInstantiateStats {
             drv_path: PathBuf::from("/nix/store/stats.drv"),
@@ -1359,6 +1620,31 @@ mod tests {
             ),
             "aos --trace-verbose --eval-system=aos-test-target --restrict-eval --eval-allow-path=/aos/src --eval-allow-uri=https://cache.example/ nix-diff '--attr=pkgs.o'\\''clock' --mode=structural -- 'path with spaces/default.nix'"
         );
+
+        let node_args = node_reproduction_args(
+            Path::new("/tmp/oracle root.drv"),
+            Path::new("/tmp/candidate root.drv"),
+            DiffMode::Structural,
+        );
+        let node_args_as_str = node_args.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            node_args_as_str,
+            [
+                "aos",
+                "nix-diff",
+                "--oracle-drv=/tmp/oracle root.drv",
+                "--candidate-drv=/tmp/candidate root.drv",
+                "--mode=structural",
+            ]
+        );
+        assert_eq!(
+            node_reproduction_command(
+                Path::new("/tmp/oracle root.drv"),
+                Path::new("/tmp/candidate root.drv"),
+                DiffMode::Structural,
+            ),
+            "aos nix-diff '--oracle-drv=/tmp/oracle root.drv' '--candidate-drv=/tmp/candidate root.drv' --mode=structural"
+        );
         Ok(())
     }
 
@@ -1375,6 +1661,7 @@ mod tests {
             }],
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -1406,6 +1693,7 @@ mod tests {
             }],
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -1464,6 +1752,7 @@ mod tests {
             ],
             root_divergences: vec![pair.clone()],
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let kinds = pair_divergences(&report, &pair)
@@ -1536,6 +1825,7 @@ mod tests {
             ],
             root_divergences: vec![child.clone()],
             contaminated_divergences: vec![parent],
+            file_backed_pairs: Vec::new(),
         };
 
         let kinds = pair_divergences(&report, &child)
@@ -1558,6 +1848,7 @@ mod tests {
             }],
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report);
@@ -1590,6 +1881,7 @@ mod tests {
             divergences: Vec::new(),
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report).expect("empty comparison should fail");
@@ -1623,6 +1915,7 @@ mod tests {
             divergences: Vec::new(),
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
 
         let failure = report_failure(&report).expect("incomplete comparison should fail");
@@ -1645,6 +1938,7 @@ mod tests {
             }],
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
         let attr_report = AttrDiffReport {
             attr: "pkgs.hello".to_string(),
@@ -1693,6 +1987,7 @@ mod tests {
             divergences: Vec::new(),
             root_divergences: Vec::new(),
             contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
         };
         let attr_report = AttrDiffReport {
             attr: "pkgs.empty".to_string(),

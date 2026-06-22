@@ -146,8 +146,27 @@ async fn run(cli: &Cli) -> Result<()> {
         file,
         mode,
         oracle_stats,
+        oracle_drv,
+        candidate_drv,
     } = &cli.command
     {
+        match (oracle_drv, candidate_drv) {
+            (Some(oracle_drv), Some(candidate_drv)) => {
+                return run_nix_diff_pair_threaded(
+                    printer,
+                    oracle_drv.clone(),
+                    candidate_drv.clone(),
+                    (*mode).into(),
+                );
+            }
+            (Some(_), None) | (None, Some(_)) => {
+                return Err(AosError::InvalidArgument {
+                    message: "provide both --oracle-drv and --candidate-drv".to_string(),
+                }
+                .into());
+            }
+            (None, None) => {}
+        }
         let file = match file {
             Some(file) => file.clone(),
             None => NixRunner::find_root()?.join("default.nix"),
@@ -257,6 +276,26 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
         Commands::NixDiff { .. } => unreachable!(),
+    }
+}
+
+fn run_nix_diff_pair_threaded(
+    printer: Printer,
+    oracle_drv: PathBuf,
+    candidate_drv: PathBuf,
+    mode: aos_core::nix::diff::DiffMode,
+) -> Result<()> {
+    const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-diff".to_string())
+        .stack_size(NIX_DIFF_STACK_SIZE)
+        .spawn(move || commands::nix_diff::run_pair(&printer, &oracle_drv, &candidate_drv, mode))
+        .context("spawning nix-diff worker thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("nix-diff worker thread panicked"),
     }
 }
 
@@ -431,6 +470,8 @@ mod tests {
                 file: None,
                 mode: crate::cli::NixDiffMode::Byte,
                 oracle_stats: false,
+                oracle_drv: None,
+                candidate_drv: None,
             },
             verbose: 0,
             quiet: false,

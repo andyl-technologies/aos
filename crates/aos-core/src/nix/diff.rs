@@ -154,6 +154,11 @@ pub struct DrvDiffReport {
     /// does not inspect input derivations, so it leaves divergence nodes
     /// unclassified.
     pub contaminated_divergences: Vec<DrvDiffPair>,
+    /// Compared `.drv` pairs whose bytes came from filesystem paths on both sides.
+    ///
+    /// Only these pairs can be reproduced by a direct `.drv` pair command
+    /// without persisting in-memory closure bytes.
+    pub file_backed_pairs: Vec<DrvDiffPair>,
 }
 
 impl DrvDiffReport {
@@ -196,6 +201,7 @@ pub fn diff_closure(
         divergences: Vec::new(),
         root_divergences: Vec::new(),
         contaminated_divergences: Vec::new(),
+        file_backed_pairs: Vec::new(),
     };
 
     let (oracle_result, candidate_result) = match (oracle_result, candidate_result) {
@@ -227,6 +233,49 @@ pub fn diff_closure(
         }
     };
 
+    compare_instantiated_roots(oracle_result, candidate_result, mode, &mut report)?;
+
+    Ok(report)
+}
+
+/// Compares two existing `.drv` roots without evaluating a Nix expression.
+///
+/// This is the node-level rerun path for root-divergence reports: a developer
+/// can compare the exact pair of `.drv` files emitted by a wider
+/// [`diff_closure`] run without re-instantiating the original `(file, attr)`.
+///
+/// # Errors
+///
+/// Returns an error when byte or structural mode cannot read or parse a `.drv`
+/// file needed for closure traversal.
+pub fn diff_drv_pair(
+    oracle_drv: &Path,
+    candidate_drv: &Path,
+    mode: DiffMode,
+) -> Result<DrvDiffReport> {
+    let oracle_result = DiffInstantiation::file_backed(oracle_drv.to_path_buf());
+    let candidate_result = DiffInstantiation::file_backed(candidate_drv.to_path_buf());
+    let mut report = DrvDiffReport {
+        mode,
+        oracle_root: Some(oracle_result.root.clone()),
+        candidate_root: Some(candidate_result.root.clone()),
+        divergences: Vec::new(),
+        root_divergences: Vec::new(),
+        contaminated_divergences: Vec::new(),
+        file_backed_pairs: Vec::new(),
+    };
+
+    compare_instantiated_roots(oracle_result, candidate_result, mode, &mut report)?;
+
+    Ok(report)
+}
+
+fn compare_instantiated_roots(
+    oracle_result: DiffInstantiation,
+    candidate_result: DiffInstantiation,
+    mode: DiffMode,
+    report: &mut DrvDiffReport,
+) -> Result<()> {
     match mode {
         DiffMode::Path => {
             if oracle_result.root != candidate_result.root {
@@ -245,7 +294,7 @@ pub fn diff_closure(
                 mode == DiffMode::Structural,
                 &mut visited,
                 &mut graph,
-                &mut report,
+                report,
             )?;
             if oracle_result.root != candidate_result.root {
                 graph.record_divergence(DrvDiffPair::new(
@@ -257,11 +306,11 @@ pub fn diff_closure(
                     candidate: candidate_result.root,
                 });
             }
-            graph.classify(&mut report);
+            graph.classify(report);
         }
     }
 
-    Ok(report)
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -303,6 +352,10 @@ impl DiffInstantiation {
                 )
             }),
         }
+    }
+
+    fn is_file_backed(&self) -> bool {
+        matches!(self.bytes, DiffByteSource::FileSystem)
     }
 }
 
@@ -397,6 +450,9 @@ fn compare_drv_pair_at(
     graph.record_node(pair.clone());
     if !visited.insert((pair.oracle.clone(), pair.candidate.clone())) {
         return Ok(());
+    }
+    if oracle.is_file_backed() && candidate.is_file_backed() {
+        report.file_backed_pairs.push(pair.clone());
     }
 
     let oracle_bytes = oracle.read_drv_bytes(oracle_path, "oracle")?;
@@ -1338,6 +1394,36 @@ mod tests {
                 .any(|diff| matches!(diff, DrvDiff::Structural { field, .. }
                     if field == "environment"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn diff_drv_pair_compares_existing_drv_roots_without_evaluation() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let oracle_root = temp.path().join("oracle-root.drv");
+        let candidate_root = temp.path().join("candidate-root.drv");
+        fs::write(&oracle_root, structural_drv("oracle"))?;
+        fs::write(&candidate_root, structural_drv("candidate"))?;
+
+        let report = diff_drv_pair(&oracle_root, &candidate_root, DiffMode::Structural)?;
+
+        assert_eq!(report.oracle_root.as_deref(), Some(oracle_root.as_path()));
+        assert_eq!(
+            report.candidate_root.as_deref(),
+            Some(candidate_root.as_path())
+        );
+        assert!(report.divergences.iter().any(
+            |diff| matches!(diff, DrvDiff::Structural { oracle, candidate, field }
+                if oracle == &oracle_root && candidate == &candidate_root && field == "environment")
+        ));
+        assert_eq!(
+            report.root_divergences,
+            vec![DrvDiffPair {
+                oracle: oracle_root,
+                candidate: candidate_root,
+            }]
+        );
+        assert!(report.contaminated_divergences.is_empty());
         Ok(())
     }
 

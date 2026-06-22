@@ -187,24 +187,31 @@ pub enum Commands {
         #[arg(
             short = 'A',
             long,
-            conflicts_with_all = ["all", "systems"],
-            required_unless_present_any = ["all", "systems"]
+            conflicts_with_all = ["all", "systems", "oracle_drv", "candidate_drv"],
+            required_unless_present_any = ["all", "systems", "oracle_drv"]
         )]
         attr: Option<String>,
         /// Compare every derivation in the pkgs set
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
         all: bool,
         /// Compare every system toplevel
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
         systems: bool,
         /// Nix file to instantiate (default: repository default.nix)
+        #[arg(conflicts_with_all = ["oracle_drv", "candidate_drv"])]
         file: Option<std::path::PathBuf>,
         /// Comparison mode
         #[arg(long, value_enum, default_value_t = NixDiffMode::Byte)]
         mode: NixDiffMode,
         /// Capture raw NIX_SHOW_STATS JSON from the C++ Nix oracle
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["oracle_drv", "candidate_drv"])]
         oracle_stats: bool,
+        /// Existing oracle .drv path for direct node comparison
+        #[arg(long, value_name = "PATH", requires = "candidate_drv")]
+        oracle_drv: Option<std::path::PathBuf>,
+        /// Existing candidate .drv path for direct node comparison
+        #[arg(long, value_name = "PATH", requires = "oracle_drv")]
+        candidate_drv: Option<std::path::PathBuf>,
     },
     /// Show repository info
     Describe,
@@ -304,6 +311,8 @@ mod tests {
                 file,
                 mode,
                 oracle_stats,
+                oracle_drv,
+                candidate_drv,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.hello"));
                 assert!(!all);
@@ -311,6 +320,8 @@ mod tests {
                 assert_eq!(file, None);
                 assert_eq!(mode, NixDiffMode::Byte);
                 assert!(!oracle_stats);
+                assert_eq!(oracle_drv, None);
+                assert_eq!(candidate_drv, None);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -336,6 +347,8 @@ mod tests {
                 file,
                 mode,
                 oracle_stats,
+                oracle_drv,
+                candidate_drv,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
                 assert!(!all);
@@ -343,6 +356,8 @@ mod tests {
                 assert_eq!(file, Some(std::path::PathBuf::from("systems/base.nix")));
                 assert_eq!(mode, NixDiffMode::Path);
                 assert!(!oracle_stats);
+                assert_eq!(oracle_drv, None);
+                assert_eq!(candidate_drv, None);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -374,6 +389,49 @@ mod tests {
         match cli.command {
             Commands::NixDiff { oracle_stats, .. } => {
                 assert!(oracle_stats);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_direct_drv_pair() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+            "--mode",
+            "structural",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                attr,
+                all,
+                systems,
+                file,
+                mode,
+                oracle_stats,
+                oracle_drv,
+                candidate_drv,
+            } => {
+                assert_eq!(attr, None);
+                assert!(!all);
+                assert!(!systems);
+                assert_eq!(file, None);
+                assert_eq!(mode, NixDiffMode::Structural);
+                assert!(!oracle_stats);
+                assert_eq!(
+                    oracle_drv,
+                    Some(std::path::PathBuf::from("/tmp/oracle.drv"))
+                );
+                assert_eq!(
+                    candidate_drv,
+                    Some(std::path::PathBuf::from("/tmp/candidate.drv"))
+                );
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -450,6 +508,54 @@ mod tests {
     fn nix_diff_rejects_attr_with_systems() {
         let err = parse_cli_error(["aos", "nix-diff", "--systems", "--attr", "pkgs.hello"]);
 
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn nix_diff_rejects_direct_drv_pair_with_evaluator_inputs() {
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+            "--attr",
+            "pkgs.hello",
+        ]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+            "--all",
+        ]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+            "--oracle-stats",
+        ]);
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        let err = parse_cli_error([
+            "aos",
+            "nix-diff",
+            "--oracle-drv",
+            "/tmp/oracle.drv",
+            "--candidate-drv",
+            "/tmp/candidate.drv",
+            "default.nix",
+        ]);
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
