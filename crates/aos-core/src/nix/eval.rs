@@ -571,6 +571,23 @@ impl NixEvalConfig {
         self.store_dir.as_deref()
     }
 
+    /// Returns the configured Nix state directory, if one was provided.
+    pub fn state_dir(&self) -> Option<&str> {
+        self.state_dir.as_deref()
+    }
+
+    /// Returns the configured Nix log directory, if one was provided.
+    pub fn log_dir(&self) -> Option<&str> {
+        self.log_dir.as_deref()
+    }
+
+    /// Returns evaluator environment variables applied to C++ Nix subprocesses.
+    pub fn eval_env_vars(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.eval_env_vars
+            .iter()
+            .map(|(name, value)| (name.as_slice(), value.as_slice()))
+    }
+
     /// Returns the evaluator working directory, if one was provided.
     ///
     /// C++ Nix uses this as the subprocess current directory. Native

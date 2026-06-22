@@ -22,6 +22,9 @@ result-*
 # Doc index cache
 .aos-doc-cache.json
 
+# Local per-commit benchmark history
+.aos-benchmarks/
+
 # Per-operator ignition config (bakes in an SSH authorized_key; see
 # docs/boot/qemu-uefi.md §0 — explicitly "not checked in").
 /tests/ignition-test.json

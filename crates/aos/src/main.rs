@@ -188,6 +188,30 @@ async fn run(cli: &Cli) -> Result<()> {
         );
     }
 
+    if let Commands::NixBench {
+        attr,
+        file,
+        samples,
+        history,
+        no_record,
+        fail_on_regression,
+        regression_threshold,
+    } = &cli.command
+    {
+        return run_nix_bench_threaded(
+            printer,
+            cli.verbose,
+            eval_config,
+            file.clone(),
+            attr.clone(),
+            *samples,
+            history.clone(),
+            *no_record,
+            *fail_on_regression,
+            *regression_threshold,
+        );
+    }
+
     let nix = NixRunner::with_eval_config(cli.verbose, cli.quiet, eval_config)?;
 
     match &cli.command {
@@ -280,6 +304,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Package { .. } => unreachable!(),
         Commands::Cache { .. } => unreachable!(),
         Commands::NixDiff { .. } => unreachable!(),
+        Commands::NixBench { .. } => unreachable!(),
     }
 }
 
@@ -354,6 +379,45 @@ fn run_nix_diff_threaded(
     }
 }
 
+fn run_nix_bench_threaded(
+    printer: Printer,
+    verbose: u8,
+    eval_config: NixEvalConfig,
+    file: Option<PathBuf>,
+    attrs: Vec<String>,
+    samples: usize,
+    history: Option<PathBuf>,
+    no_record: bool,
+    fail_on_regression: bool,
+    regression_threshold: f64,
+) -> Result<()> {
+    const NIX_BENCH_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-bench".to_string())
+        .stack_size(NIX_BENCH_STACK_SIZE)
+        .spawn(move || {
+            commands::nix_bench::run(
+                &printer,
+                verbose,
+                eval_config,
+                file.as_deref(),
+                &attrs,
+                samples,
+                history.as_deref(),
+                no_record,
+                fail_on_regression,
+                regression_threshold,
+            )
+        })
+        .context("spawning nix-bench worker thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("nix-bench worker thread panicked"),
+    }
+}
+
 fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
     let mut eval_config = NixEvalConfig::new();
     if cli.impure_eval {
@@ -392,6 +456,9 @@ fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
     if err
         .downcast_ref::<commands::nix_diff::NixDiffReportedFailure>()
         .is_some()
+        || err
+            .downcast_ref::<commands::nix_bench::NixBenchRegressionFailure>()
+            .is_some()
     {
         return 1;
     }
