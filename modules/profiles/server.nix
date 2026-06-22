@@ -14,7 +14,6 @@
   ...
 }: let
   cfg = config.aos.profiles.server;
-  k3sCommon = import ../../pkgs/kubernetes/_k3s-common.nix {inherit lib pkgs;};
 in {
   options.aos.profiles.server = {
     enable = lib.mkOption {
@@ -60,68 +59,53 @@ in {
     # Security: standard level (SELinux enforcing, audit, firewall)
     aos.security.level = lib.mkDefault "standard";
 
-    # System packages for server administration
-    environment.systemPackages =
-      [
-        pkgs.procps-ng
-        pkgs.lsof
-        pkgs.iproute2
-        pkgs.ethtool
-        pkgs.curl
-        pkgs.jq
-        pkgs.git
-        pkgs.socat
-        pkgs.sqlite
-        pkgs.zstd
-        pkgs.nix
-      ]
-      ++ k3sCommon.runtimePath;
-
     aos.packages.aos-registry-server = {
       package = pkgs.aos-registry-server;
-      bundle = true;
+      bundle = lib.mkDefault false;
       preset = false;
     };
 
+    # Test fixtures: not baked into the production image by default. Test
+    # systems/fixtures that need them re-enable with `bundle = true`.
     aos.packages.aos-test-agent = {
       package = pkgs.aos-test-agent;
-      bundle = true;
+      bundle = lib.mkDefault false;
       preset = false;
     };
 
     aos.packages.k3s-control-plane = {
       package = lib.mkDefault pkgs.k3s-control-plane;
-      bundle = lib.mkDefault true;
+      bundle = lib.mkDefault false;
       preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-worker = {
       package = lib.mkDefault pkgs.k3s-worker;
-      bundle = lib.mkDefault true;
+      bundle = lib.mkDefault false;
       preset = lib.mkDefault false;
     };
 
     aos.packages.k3s-combined = {
       package = lib.mkDefault pkgs.k3s-combined;
-      bundle = lib.mkDefault true;
+      bundle = lib.mkDefault false;
       preset = lib.mkDefault false;
     };
 
     aos.packages.test-http-server = {
       package = pkgs.test-http-server;
-      bundle = true;
+      bundle = lib.mkDefault false;
       preset = false;
     };
 
     aos.packages.test-static-cache-server = {
       package = pkgs.test-static-cache-server;
-      bundle = true;
+      bundle = lib.mkDefault false;
       preset = false;
     };
 
     aos.packages.apm-systemd-client-test = {
       package = pkgs.apm-systemd-client-test;
-      bundle = true;
+      bundle = lib.mkDefault false;
       preset = false;
     };
   };

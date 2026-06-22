@@ -179,10 +179,6 @@ in {
       ];
     };
 
-    environment.systemPackages = [
-      pkgs.nftables
-      pkgs.iptables
-    ];
 
     # /etc/nftables.conf — complete nftables ruleset.
     environment.etc."nftables.conf" = {

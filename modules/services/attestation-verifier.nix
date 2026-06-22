@@ -108,7 +108,6 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.aos];
 
     systemd.services.aos-attestation-verifier = {
       description = "Verify AOS package attestation evidence";

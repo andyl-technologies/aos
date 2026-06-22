@@ -31,8 +31,8 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = [pkgs.aos-ebpf-lsm-policy];
-
+    # The policy package rides in via aos's runtimeDeps (AOS_EBPF_LSM_POLICY),
+    # so it need not be on PATH.
     systemd.services.aos-ebpf-lsm-policies = {
       description = "Load AOS fleet BPF-LSM policies";
       wantedBy = ["multi-user.target"];
