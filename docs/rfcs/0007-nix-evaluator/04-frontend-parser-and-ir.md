@@ -973,7 +973,12 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 - [x] String-fragment state machine: `StrStart`/`StrPart`/`DollarBrace`/… mode stack for double-quoted and indented strings (§3.3) — **P1**; corner-case suite.
 - [x] Indented-string de-indentation algorithm (common-indentation, blank-line, line-start `${}` rules) reproduced bit-for-bit, plus all escape forms (§3.3) — **P1**; dedicated corner-case conformance suite.
 - [x] Trivia emission (whitespace/comments) for tooling, skipped by the parser's `bump()`; trivia-suppressing pure-eval mode left as a single retained-trivia lexer for now (§3.2, §12 Q3) — **P1** baseline, `M-16` (measure-gated; single lexer is the default).
-- [x] Symbol interner at the lexer/parser seam: dense `u32` `Symbol`, shared append-only table, deterministic renumbering for cache serialization (§3.4) — **P1**, `S-11`.
+- [x] Symbol interner at the lexer/parser seam: file-local or explicitly
+      threaded append-only `SymbolTable`, dense `u32` `Symbol`, retained byte
+      spelling, and deterministic file-local renumbering for cache serialization.
+      The global/shared process-wide interner and cached sort ranks remain
+      tracked in [09](09-attribute-sets-hidden-classes-and-inline-caches.md)
+      (§3.4) — **P1**, `S-11`.
 
 ### Parser (§4)
 
