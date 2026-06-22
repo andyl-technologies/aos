@@ -1979,6 +1979,64 @@ mod tests {
     }
 
     #[test]
+    fn corpus_failure_rejects_one_divergent_attr_among_matches() {
+        let matched = AttrDiffReport {
+            attr: "pkgs.good".to_string(),
+            failure: None,
+            report: Some(DrvDiffReport {
+                mode: DiffMode::Byte,
+                oracle_root: Some(PathBuf::from("/nix/store/good.drv")),
+                candidate_root: Some(PathBuf::from("/nix/store/good.drv")),
+                divergences: Vec::new(),
+                root_divergences: Vec::new(),
+                contaminated_divergences: Vec::new(),
+                file_backed_pairs: Vec::new(),
+            }),
+            oracle_stats: None,
+        };
+        let divergent_report = DrvDiffReport {
+            mode: DiffMode::Byte,
+            oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
+            candidate_root: Some(PathBuf::from("/nix/store/candidate.drv")),
+            divergences: vec![DrvDiff::Bytes {
+                oracle: PathBuf::from("/nix/store/oracle.drv"),
+                candidate: PathBuf::from("/nix/store/candidate.drv"),
+            }],
+            root_divergences: Vec::new(),
+            contaminated_divergences: Vec::new(),
+            file_backed_pairs: Vec::new(),
+        };
+        let divergent = AttrDiffReport {
+            attr: "pkgs.bad".to_string(),
+            failure: report_failure(&divergent_report),
+            report: Some(divergent_report),
+            oracle_stats: None,
+        };
+        let reports = vec![matched, divergent];
+
+        let failure = corpus_failure(&reports).expect("one divergent attr should fail the corpus");
+
+        assert_eq!(
+            failure.to_string(),
+            "drv diff failed for 1 attribute(s) with 1 divergence(s)"
+        );
+
+        let value = corpus_json(
+            &reports,
+            "native-test",
+            &repro_config(),
+            Path::new("default.nix"),
+            DiffMode::Byte,
+            Some(&failure),
+        );
+
+        assert_eq!(value["matched"], false);
+        assert_eq!(value["attrs_checked"], 2);
+        assert_eq!(value["attrs_failed"], 1);
+        assert_eq!(value["divergence_count"], 1);
+    }
+
+    #[test]
     fn corpus_failure_counts_attrs_without_divergences() {
         let report = DrvDiffReport {
             mode: DiffMode::Path,
