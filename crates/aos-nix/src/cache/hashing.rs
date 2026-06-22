@@ -61,6 +61,11 @@ impl DurableBlake3Hash {
         Self(*hash.as_bytes())
     }
 
+    /// Wraps raw BLAKE3 digest bytes in the durable cache domain.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
     /// Returns the raw 32-byte BLAKE3 digest.
     pub const fn as_bytes(self) -> [u8; 32] {
         self.0
@@ -99,6 +104,7 @@ mod tests {
         assert_eq!(hash.as_bytes().len(), 32);
         assert_eq!(hash.to_hex().len(), 64);
         assert_eq!(hash.to_string(), hash.to_hex());
+        assert_eq!(DurableBlake3Hash::from_bytes(hash.as_bytes()), hash);
         assert_eq!(
             DurableBlake3Hash::from_blake3_hash(blake3::hash(b"cache input")),
             hash

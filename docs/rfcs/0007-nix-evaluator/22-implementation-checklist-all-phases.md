@@ -480,6 +480,12 @@ alone (`M-1`/`Q-A`).
       hash-to-offset index. This is addressing only; serialization, mmap
       packfile format, append/read, offset indexing, GC/repack, and harness
       proof remain open (`C-13`/`R-14`).
+- [x] Current immutable blob packfile codec substrate:
+      `PersistBlobPackHeader` validates fixed magic/version/header-length bytes,
+      and `PersistBlobRecordHeader` encodes each record's `DurableBlake3Hash`
+      plus payload length as stable little-endian metadata. This is format
+      metadata only; file creation, append/read, mmap, payload verification,
+      offset-index writes, GC/repack, and harness proof remain open (`C-13`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

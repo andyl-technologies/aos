@@ -17,6 +17,14 @@ use super::DurableBlake3Hash;
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
 pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 1;
+/// The fixed magic bytes at the start of every immutable blob packfile.
+pub const PERSIST_BLOB_PACK_MAGIC: [u8; 16] = *b"AOS-NIX-BLOBPACK";
+/// The immutable blob packfile format version.
+pub const PERSIST_BLOB_PACK_VERSION: u32 = 1;
+/// The encoded length of an immutable blob packfile header.
+pub const PERSIST_BLOB_PACK_HEADER_LEN: usize = 24;
+/// The encoded length of an immutable blob record header.
+pub const PERSIST_BLOB_RECORD_HEADER_LEN: usize = 40;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -80,6 +88,129 @@ impl PersistBlobKey {
         bytes[0] = self.store.index_tag();
         bytes[1..].copy_from_slice(&self.hash.as_bytes());
         bytes
+    }
+}
+
+/// The fixed header for an immutable blob packfile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistBlobPackHeader {
+    version: u32,
+}
+
+impl PersistBlobPackHeader {
+    /// Returns the current immutable blob packfile header.
+    pub const fn current() -> Self {
+        Self {
+            version: PERSIST_BLOB_PACK_VERSION,
+        }
+    }
+
+    /// Returns the immutable blob packfile format version.
+    pub const fn version(self) -> u32 {
+        self.version
+    }
+
+    /// Encodes the packfile header as stable little-endian bytes.
+    pub fn encode(self) -> [u8; PERSIST_BLOB_PACK_HEADER_LEN] {
+        let mut bytes = [0; PERSIST_BLOB_PACK_HEADER_LEN];
+        bytes[..16].copy_from_slice(&PERSIST_BLOB_PACK_MAGIC);
+        bytes[16..20].copy_from_slice(&self.version.to_le_bytes());
+        bytes[20..24].copy_from_slice(&(PERSIST_BLOB_PACK_HEADER_LEN as u32).to_le_bytes());
+        bytes
+    }
+
+    /// Decodes and validates a packfile header prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_BLOB_PACK_HEADER_LEN`], has the wrong magic bytes, declares an
+    /// unsupported version, or declares an unexpected header length.
+    pub fn decode(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_BLOB_PACK_HEADER_LEN {
+            return Err(PersistPackFormatError::ShortPackHeader {
+                expected: PERSIST_BLOB_PACK_HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut magic = [0; 16];
+        magic.copy_from_slice(&bytes[..16]);
+        if magic != PERSIST_BLOB_PACK_MAGIC {
+            return Err(PersistPackFormatError::InvalidPackMagic { actual: magic });
+        }
+
+        let version = read_u32(&bytes[16..20]);
+        if version != PERSIST_BLOB_PACK_VERSION {
+            return Err(PersistPackFormatError::UnsupportedPackVersion { version });
+        }
+
+        let header_len = read_u32(&bytes[20..24]);
+        if header_len as usize != PERSIST_BLOB_PACK_HEADER_LEN {
+            return Err(PersistPackFormatError::InvalidPackHeaderLength { header_len });
+        }
+
+        Ok(Self { version })
+    }
+}
+
+/// The fixed header for one immutable blob record in a packfile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistBlobRecordHeader {
+    hash: DurableBlake3Hash,
+    payload_len: u64,
+}
+
+impl PersistBlobRecordHeader {
+    /// Creates a blob record header for `hash` and `payload_len`.
+    pub const fn new(hash: DurableBlake3Hash, payload_len: u64) -> Self {
+        Self { hash, payload_len }
+    }
+
+    /// Returns the durable BLAKE3 content address carried by this record.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns the number of payload bytes following this record header.
+    pub const fn payload_len(self) -> u64 {
+        self.payload_len
+    }
+
+    /// Returns this record's typed lookup key in `store`.
+    pub const fn key(self, store: PersistBlobStore) -> PersistBlobKey {
+        PersistBlobKey::new(store, self.hash)
+    }
+
+    /// Encodes the record header as stable little-endian bytes.
+    pub fn encode(self) -> [u8; PERSIST_BLOB_RECORD_HEADER_LEN] {
+        let mut bytes = [0; PERSIST_BLOB_RECORD_HEADER_LEN];
+        bytes[..32].copy_from_slice(&self.hash.as_bytes());
+        bytes[32..40].copy_from_slice(&self.payload_len.to_le_bytes());
+        bytes
+    }
+
+    /// Decodes a blob record header prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError::ShortRecordHeader`] if `bytes` is
+    /// shorter than [`PERSIST_BLOB_RECORD_HEADER_LEN`].
+    pub fn decode(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_BLOB_RECORD_HEADER_LEN {
+            return Err(PersistPackFormatError::ShortRecordHeader {
+                expected: PERSIST_BLOB_RECORD_HEADER_LEN,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut hash = [0; 32];
+        hash.copy_from_slice(&bytes[..32]);
+        let payload_len = read_u64(&bytes[32..40]);
+        Ok(Self {
+            hash: DurableBlake3Hash::from_bytes(hash),
+            payload_len,
+        })
     }
 }
 
@@ -190,6 +321,45 @@ impl PersistCache {
     }
 }
 
+/// Immutable blob packfile metadata could not be decoded.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum PersistPackFormatError {
+    /// The packfile header was shorter than the fixed header length.
+    #[error("persistent blob pack header has {actual} bytes, expected at least {expected}")]
+    ShortPackHeader {
+        /// The required fixed header length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// The packfile header did not start with the expected magic bytes.
+    #[error("persistent blob pack header has invalid magic bytes {actual:?}")]
+    InvalidPackMagic {
+        /// The observed magic bytes.
+        actual: [u8; 16],
+    },
+    /// The packfile header declares an unsupported format version.
+    #[error("persistent blob pack header declares unsupported version {version}")]
+    UnsupportedPackVersion {
+        /// The unsupported format version.
+        version: u32,
+    },
+    /// The packfile header declares an unexpected encoded header length.
+    #[error("persistent blob pack header declares invalid header length {header_len}")]
+    InvalidPackHeaderLength {
+        /// The unexpected header length.
+        header_len: u32,
+    },
+    /// A record header was shorter than the fixed record header length.
+    #[error("persistent blob record header has {actual} bytes, expected at least {expected}")]
+    ShortRecordHeader {
+        /// The required fixed record header length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+}
+
 /// Persistent-cache layout initialization failed.
 #[derive(Debug, Error)]
 pub enum PersistError {
@@ -261,6 +431,18 @@ pub enum PersistError {
         /// The underlying filesystem error.
         source: io::Error,
     },
+}
+
+fn read_u32(bytes: &[u8]) -> u32 {
+    let mut raw = [0; 4];
+    raw.copy_from_slice(bytes);
+    u32::from_le_bytes(raw)
+}
+
+fn read_u64(bytes: &[u8]) -> u64 {
+    let mut raw = [0; 8];
+    raw.copy_from_slice(bytes);
+    u64::from_le_bytes(raw)
 }
 
 fn ensure_payload_dirs(layout: &PersistLayout) -> Result<(), PersistError> {
@@ -426,6 +608,129 @@ mod tests {
         assert_eq!(first_key.hash(), first);
         assert_eq!(first_key.index_bytes(), first_key_again.index_bytes());
         assert_ne!(first_key.index_bytes(), second_key.index_bytes());
+    }
+
+    #[test]
+    fn packfile_header_round_trips() {
+        let header = PersistBlobPackHeader::current();
+        let encoded = header.encode();
+
+        assert_eq!(encoded.len(), PERSIST_BLOB_PACK_HEADER_LEN);
+        assert_eq!(&encoded[..16], PERSIST_BLOB_PACK_MAGIC.as_slice());
+        assert_eq!(
+            &encoded[16..20],
+            PERSIST_BLOB_PACK_VERSION.to_le_bytes().as_slice()
+        );
+        assert_eq!(
+            &encoded[20..24],
+            (PERSIST_BLOB_PACK_HEADER_LEN as u32)
+                .to_le_bytes()
+                .as_slice()
+        );
+        assert_eq!(
+            PersistBlobPackHeader::decode(&encoded).expect("pack header decodes"),
+            header
+        );
+        assert_eq!(header.version(), PERSIST_BLOB_PACK_VERSION);
+    }
+
+    #[test]
+    fn packfile_header_decodes_from_prefix() {
+        let header = PersistBlobPackHeader::current();
+        let mut bytes = header.encode().to_vec();
+        bytes.extend_from_slice(b"trailing pack bytes");
+
+        assert_eq!(
+            PersistBlobPackHeader::decode(&bytes).expect("pack header decodes from prefix"),
+            header
+        );
+    }
+
+    #[test]
+    fn packfile_header_rejects_invalid_prefixes() {
+        let encoded = PersistBlobPackHeader::current().encode();
+
+        let error = PersistBlobPackHeader::decode(&encoded[..8]).expect_err("short header errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortPackHeader {
+                expected: PERSIST_BLOB_PACK_HEADER_LEN,
+                actual: 8,
+            }
+        );
+
+        let mut invalid_magic = encoded;
+        invalid_magic[0] = b'X';
+        let error = PersistBlobPackHeader::decode(&invalid_magic).expect_err("bad magic errors");
+        assert!(matches!(
+            error,
+            PersistPackFormatError::InvalidPackMagic { .. }
+        ));
+
+        let mut invalid_version = encoded;
+        invalid_version[16..20].copy_from_slice(&2u32.to_le_bytes());
+        let error =
+            PersistBlobPackHeader::decode(&invalid_version).expect_err("bad version errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::UnsupportedPackVersion { version: 2 }
+        );
+
+        let mut invalid_len = encoded;
+        invalid_len[20..24].copy_from_slice(&12u32.to_le_bytes());
+        let error =
+            PersistBlobPackHeader::decode(&invalid_len).expect_err("bad header length errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidPackHeaderLength { header_len: 12 }
+        );
+    }
+
+    #[test]
+    fn blob_record_header_round_trips() {
+        let hash = DurableBlake3Hash::for_bytes(b"record payload");
+        let header = PersistBlobRecordHeader::new(hash, 987);
+        let encoded = header.encode();
+
+        assert_eq!(encoded.len(), PERSIST_BLOB_RECORD_HEADER_LEN);
+        assert_eq!(&encoded[..32], hash.as_bytes().as_slice());
+        assert_eq!(&encoded[32..40], 987u64.to_le_bytes().as_slice());
+        assert_eq!(
+            PersistBlobRecordHeader::decode(&encoded).expect("record header decodes"),
+            header
+        );
+        assert_eq!(header.hash(), hash);
+        assert_eq!(header.payload_len(), 987);
+        assert_eq!(
+            header.key(PersistBlobStore::Values),
+            PersistBlobKey::for_value(hash)
+        );
+    }
+
+    #[test]
+    fn blob_record_header_decodes_from_prefix() {
+        let hash = DurableBlake3Hash::for_bytes(b"record payload");
+        let header = PersistBlobRecordHeader::new(hash, 987);
+        let mut bytes = header.encode().to_vec();
+        bytes.extend_from_slice(b"serialized payload bytes");
+
+        assert_eq!(
+            PersistBlobRecordHeader::decode(&bytes).expect("record header decodes from prefix"),
+            header
+        );
+    }
+
+    #[test]
+    fn blob_record_header_rejects_short_prefix() {
+        let error = PersistBlobRecordHeader::decode(&[0; 8]).expect_err("short record errors");
+
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortRecordHeader {
+                expected: PERSIST_BLOB_RECORD_HEADER_LEN,
+                actual: 8,
+            }
+        );
     }
 
     #[test]
