@@ -509,45 +509,60 @@ alone (`M-1`/`Q-A`).
       explicit caller-owned demand-graph wrapper, `ImpureInputTraceSource`
       abstracts evaluator trace providers, and `EvalOutcome` implements that
       trait so completed tree-walk evaluations can be manually observed by the
-      cache layer. This is an observation adapter only; automatic `NixNative`
-      ownership/use, demand/evaluating-node creation, automatic edges from
-      evaluator-created nodes to input leaves, currentTime taint propagation
-      through memoized nodes, persistence, `AOS_NIX_CACHE=0` control over this
-      runtime state, allowed-path/IFD/fetch trace coverage, and edge-exactness
-      harness coverage remain open (`R-10`/`S-14`).
+      cache layer. This is an observation adapter only; demand/evaluating-node
+      creation, automatic edges from evaluator-created nodes to input leaves,
+      currentTime taint propagation through memoized nodes, persistence,
+      allowed-path/IFD/fetch trace coverage, and edge-exactness harness
+      coverage remain open (`R-10`/`S-14`).
+- [x] Current EvalCache runtime enable/disable substrate:
+      `cache::EvalCacheRuntime` models disabled cache observation as a no-op
+      and enabled cache observation as delegation to an in-memory `EvalCache`;
+      `TreeWalkOptions::eval_cache_enabled` controls whether `NixNative` owns
+      an enabled runtime, and enabled native evaluations automatically observe
+      their `EvalOutcome` impure traces into that cache. This is automatic leaf
+      ingestion only; demand/evaluating-node creation, evaluator-node cache-key
+      integration, automatic edges from evaluator-created nodes to input
+      leaves, value memoization, currentTime taint propagation through memoized
+      nodes, persistence, and edge-exactness harness coverage remain open
+      (`R-10`/`S-14`).
 - [x] Current graph-side impure input edge substrate:
       `DemandGraph::observe_impure_trace_for_node` wires complete cacheable
       input leaves to a caller-supplied existing node, so later changed input
       observations dirty that node through ordinary dependency propagation;
       incomplete and uncacheable traces add no leaves or edges. This is
       graph-side edge wiring only; automatic demand/evaluating-node creation,
-      cache-key integration for evaluator nodes, automatic `NixNative`
-      ownership/use, value memoization, currentTime taint propagation through
-      memoized nodes, persistence, allowed-path/IFD/fetch trace coverage, and
-      edge-exactness harness coverage remain open (`R-10`/`S-14`).
+      cache-key integration for evaluator nodes, automatic edges from
+      evaluator-created nodes to input leaves, value memoization, currentTime
+      taint propagation through memoized nodes, persistence,
+      allowed-path/IFD/fetch trace coverage, and edge-exactness harness
+      coverage remain open (`R-10`/`S-14`).
 - [x] Current EvalCache trace-to-node edge adapter:
       `EvalCache::from_graph` wraps a prebuilt demand graph and
       `EvalCache::observe_impure_inputs_for_node` delegates an
       `ImpureInputTraceSource` to `DemandGraph::observe_impure_trace_for_node`
       for a caller-supplied existing node. This is an explicit adapter only;
       automatic demand/evaluating-node creation, evaluator-node cache-key
-      integration, automatic `NixNative` ownership/use, value memoization,
-      currentTime taint propagation through memoized nodes, persistence,
-      `AOS_NIX_CACHE=0` policy, allowed-path/IFD/fetch trace coverage, and
+      integration, automatic edges from evaluator-created nodes to input
+      leaves, value memoization, currentTime taint propagation through memoized
+      nodes, persistence, allowed-path/IFD/fetch trace coverage, and
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
       (`R-10`).
-- [x] Current precursor: AOS-configured parse-cache kill switch. Blank
+- [x] Current precursor: AOS-configured native-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
-      `TreeWalkOptions::parse_cache_root = <root>/parse`; native frontend
-      lowering and ordinary import parse-cache paths use the durable frontend
-      parse/IR artifact cache only when `parse_cache_root` is present. This
-      covers only the current parse-cache persistence layer, not the future
-      demand-graph/value memoization cache or in-process import result memo
-      ([12](12-incremental-evaluation-cache.md) §8.3).
+      `TreeWalkOptions::parse_cache_root = <root>/parse` and
+      `TreeWalkOptions::eval_cache_enabled = true`. Native frontend lowering
+      and ordinary import parse-cache paths use the durable frontend parse/IR
+      artifact cache only when `parse_cache_root` is present, and `NixNative`
+      keeps `EvalCacheRuntime` disabled when eval-cache ingestion is disabled.
+      This covers only the current parse-cache persistence layer and in-memory
+      impure-trace leaf ingestion, not value memoization,
+      demand/evaluating-node lifecycle, persistent demand graph/value cache, or
+      in-process import result memo ([12](12-incremental-evaluation-cache.md)
+      §8.3).
 - [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
       future incremental persistence/value memoization, and CI must periodically
       run cold cached-vs-uncached full-closure `.drv` revalidation

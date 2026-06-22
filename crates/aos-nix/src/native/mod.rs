@@ -11,10 +11,13 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
-use crate::cache::{ParseCache, ParseCacheError};
+#[cfg(test)]
+use crate::cache::EvalCache;
+use crate::cache::{EvalCacheRuntime, ParseCache, ParseCacheError};
 use crate::compile::{
     EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
 };
@@ -39,6 +42,7 @@ pub struct NixNative {
     verbose: u8,
     options: TreeWalkOptions,
     ifd_realizer: Option<IfdRealizer>,
+    eval_cache: Arc<Mutex<EvalCacheRuntime>>,
 }
 
 /// An evaluated derivation closure that has not been registered in the store.
@@ -90,6 +94,9 @@ impl NixNative {
     pub fn with_options(verbose: u8, options: TreeWalkOptions) -> Result<Self> {
         Ok(Self {
             verbose,
+            eval_cache: Arc::new(Mutex::new(EvalCacheRuntime::from_enabled(
+                options.eval_cache_enabled(),
+            ))),
             options,
             ifd_realizer: None,
         })
@@ -240,6 +247,15 @@ impl NixNative {
     }
 
     #[cfg(test)]
+    pub(crate) fn eval_cache_snapshot(&self) -> Option<EvalCache> {
+        self.eval_cache
+            .lock()
+            .expect("eval cache lock")
+            .cache()
+            .cloned()
+    }
+
+    #[cfg(test)]
     fn eval_derivation_path_source(
         &self,
         source: &str,
@@ -337,6 +353,7 @@ impl NixNative {
             Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
             None => native_eval_error(error, None),
         })?;
+        self.observe_eval_cache(&outcome);
         self.native_drv_closure_from_outcome(outcome)
     }
 
@@ -417,19 +434,23 @@ impl NixNative {
     }
 
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        eval_whnf_owned_with_options_and_realizer(
+        let outcome = eval_whnf_owned_with_options_and_realizer(
             ir,
             self.options.clone(),
             self.ifd_realizer.clone(),
-        )
+        )?;
+        self.observe_eval_cache(&outcome);
+        Ok(outcome)
     }
 
     fn eval_instantiation_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {
-        eval_whnf_owned_with_options_and_realizer(
+        let outcome = eval_whnf_owned_with_options_and_realizer(
             ir,
             self.instantiation_options(),
             self.ifd_realizer.clone(),
-        )
+        )?;
+        self.observe_eval_cache(&outcome);
+        Ok(outcome)
     }
 
     fn instantiation_options(&self) -> TreeWalkOptions {
@@ -437,6 +458,23 @@ impl NixNative {
         options.set_reject_ambient_search_path(true);
         options.set_reject_unconfigured_impure_builtin_constants(true);
         options
+    }
+
+    fn observe_eval_cache(&self, outcome: &EvalOutcome) {
+        let Ok(mut cache) = self.eval_cache.lock() else {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                "native evaluator cache lock was poisoned; skipping trace observation"
+            );
+            return;
+        };
+        if let Err(error) = cache.observe_impure_inputs(outcome) {
+            tracing::warn!(
+                target: "aos_nix::cache",
+                error = %error,
+                "native evaluator cache trace observation failed"
+            );
+        }
     }
 }
 

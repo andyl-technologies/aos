@@ -304,6 +304,7 @@ pub struct TreeWalkOptions {
     reject_ambient_search_path: bool,
     reject_unconfigured_impure_builtin_constants: bool,
     parse_cache_root: Option<PathBuf>,
+    eval_cache_enabled: bool,
     #[cfg(test)]
     fetch_tree_url_responses: BTreeMap<Vec<u8>, Vec<u8>>,
 }
@@ -329,6 +330,7 @@ impl Default for TreeWalkOptions {
             reject_ambient_search_path: false,
             reject_unconfigured_impure_builtin_constants: false,
             parse_cache_root: None,
+            eval_cache_enabled: false,
             #[cfg(test)]
             fetch_tree_url_responses: BTreeMap::new(),
         }

@@ -72,6 +72,18 @@ fn evaluates_uri_literals_as_strings() {
 }
 
 #[test]
+fn eval_cache_option_defaults_off_and_can_be_enabled() {
+    let mut options = TreeWalkOptions::new();
+
+    assert!(!options.eval_cache_enabled());
+    options.set_eval_cache_enabled(true);
+    assert!(options.eval_cache_enabled());
+
+    let options = TreeWalkOptions::with_eval_cache_enabled(true);
+    assert!(options.eval_cache_enabled());
+}
+
+#[test]
 fn unary_type_predicate_primops_classify_whnf_values() {
     assert_eq!(eval("builtins.isAttrs { a = 1; }").as_bool(), Ok(true));
     assert_eq!(eval("builtins.isAttrs [ 1 ]").as_bool(), Ok(false));

@@ -604,7 +604,9 @@ impl NixEvalConfig {
 
     /// Returns the native evaluator cache root, if one was provided.
     ///
-    /// The parse cache stores entries below this root's `parse/` child.
+    /// The parse cache stores entries below this root's `parse/` child. The
+    /// in-memory incremental eval-cache precursor also uses this setting as
+    /// its enable switch, but it does not persist demand-graph records yet.
     pub fn native_cache_root(&self) -> Option<&Path> {
         self.native_cache_root.as_deref()
     }
@@ -877,8 +879,10 @@ impl NixEvalConfig {
 
     /// Replaces the native evaluator cache root.
     ///
-    /// The parse cache stores entries below this root's `parse/` child. Use
-    /// [`Self::clear_native_cache_root`] for uncached native evaluation.
+    /// The parse cache stores entries below this root's `parse/` child. The
+    /// in-memory incremental eval-cache precursor also uses this setting as
+    /// its enable switch. Use [`Self::clear_native_cache_root`] for uncached
+    /// native evaluation.
     ///
     /// # Errors
     ///
@@ -2244,6 +2248,7 @@ fn tree_walk_options_from_config(config: &NixEvalConfig) -> Result<TreeWalkOptio
     }
     if let Some(cache_root) = config.native_cache_root() {
         options.set_parse_cache_root(cache_root.join("parse"));
+        options.set_eval_cache_enabled(true);
     }
     options.set_trace_verbose(config.trace_verbose());
     Ok(options)
@@ -2876,6 +2881,7 @@ mod tests {
             options.parse_cache_root(),
             Some(Path::new("/aos/cache/parse"))
         );
+        assert!(options.eval_cache_enabled());
         Ok(())
     }
 

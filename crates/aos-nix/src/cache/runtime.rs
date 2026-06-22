@@ -145,6 +145,106 @@ impl EvalCache {
     }
 }
 
+/// Optional evaluator cache runtime state.
+#[derive(Clone, Debug, Default)]
+pub enum EvalCacheRuntime {
+    /// Cache observation is disabled and all operations are no-ops.
+    #[default]
+    Disabled,
+    /// Cache observation is enabled against an in-memory [`EvalCache`].
+    Enabled(EvalCache),
+}
+
+impl EvalCacheRuntime {
+    /// Creates a disabled cache runtime.
+    pub fn disabled() -> Self {
+        Self::Disabled
+    }
+
+    /// Creates an enabled cache runtime with an empty cache.
+    pub fn enabled() -> Self {
+        Self::Enabled(EvalCache::new())
+    }
+
+    /// Creates a cache runtime from an enable switch.
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::enabled()
+        } else {
+            Self::disabled()
+        }
+    }
+
+    /// Returns whether cache observation is enabled.
+    pub const fn is_enabled(&self) -> bool {
+        matches!(self, Self::Enabled(_))
+    }
+
+    /// Returns the enabled cache, if observation is enabled.
+    pub const fn cache(&self) -> Option<&EvalCache> {
+        match self {
+            Self::Disabled => None,
+            Self::Enabled(cache) => Some(cache),
+        }
+    }
+
+    /// Returns the enabled cache mutably, if observation is enabled.
+    pub fn cache_mut(&mut self) -> Option<&mut EvalCache> {
+        match self {
+            Self::Disabled => None,
+            Self::Enabled(cache) => Some(cache),
+        }
+    }
+
+    /// Observes evaluator impure-input traces when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without examining `source` or
+    /// allocating demand-graph nodes. Enabled runtimes delegate to
+    /// [`EvalCache::observe_impure_inputs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to observe the trace.
+    pub fn observe_impure_inputs<S>(
+        &mut self,
+        source: &S,
+    ) -> Result<Option<ImpureTraceObservation>, DemandGraphError>
+    where
+        S: ImpureInputTraceSource + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache.observe_impure_inputs(source).map(Some)
+    }
+
+    /// Observes evaluator impure-input traces and wires them to a node when enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without validating `dependent`.
+    /// Enabled runtimes delegate to [`EvalCache::observe_impure_inputs_for_node`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to observe or wire the trace.
+    pub fn observe_impure_inputs_for_node<S>(
+        &mut self,
+        dependent: DemandNodeId,
+        source: &S,
+    ) -> Result<Option<ImpureTraceObservation>, DemandGraphError>
+    where
+        S: ImpureInputTraceSource + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_impure_inputs_for_node(dependent, source)
+            .map(Some)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,6 +314,92 @@ mod tests {
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.graph().len(), 2);
         assert_eq!(cache.into_graph().len(), 2);
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_observation_is_noop() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let observation = runtime
+            .observe_impure_inputs(&source)
+            .expect("disabled observation succeeds");
+
+        assert_eq!(observation, None);
+        assert!(!runtime.is_enabled());
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_does_not_classify_uncacheable_traces() {
+        let source = TraceSource {
+            trace: vec![ImpureInputFingerprint::current_time()],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let observation = runtime
+            .observe_impure_inputs(&source)
+            .expect("disabled observation succeeds");
+
+        assert_eq!(observation, None);
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_trace_observation() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::enabled();
+
+        let observation = runtime
+            .observe_impure_inputs(&source)
+            .expect("enabled observation succeeds")
+            .expect("enabled runtime observes traces");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        assert_eq!(runtime.cache().expect("cache is enabled").len(), 1);
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_delegates_trace_edges() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::Enabled(EvalCache::from_graph(DemandGraph::new()));
+        let dependent = runtime
+            .cache_mut()
+            .expect("cache is enabled")
+            .get_or_insert_expression_node(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"dependent")),
+            )
+            .expect("dependent inserts");
+
+        let observation = runtime
+            .observe_impure_inputs_for_node(dependent, &source)
+            .expect("enabled observation succeeds")
+            .expect("enabled runtime observes traces");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        let dependency = observation.leaves()[0].node();
+        assert!(
+            runtime
+                .cache()
+                .expect("cache is enabled")
+                .graph()
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .contains(&dependency)
+        );
     }
 
     #[test]

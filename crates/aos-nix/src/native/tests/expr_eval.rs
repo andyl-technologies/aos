@@ -63,6 +63,67 @@ fn native_expression_eval_uses_configured_parse_cache() -> Result<()> {
 }
 
 #[test]
+fn native_expression_eval_ingests_impure_trace_when_eval_cache_enabled() -> Result<()> {
+    let root = unique_temp_dir("native-expression-eval-cache");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let input = root.join("input.txt");
+    fs::write(&input, "cached")?;
+    let mut options = TreeWalkOptions::with_eval_mode(EvalMode::Impure);
+    options.set_eval_cache_enabled(true);
+    let native = NixNative::with_options(0, options)?;
+
+    assert!(
+        native
+            .eval_cache_snapshot()
+            .expect("cache is enabled")
+            .is_empty()
+    );
+    let source = format!(
+        "builtins.readFile {}",
+        nix_string_literal(&path_bytes(&input)?)?
+    );
+    let ir = native.lower_native_source(&source, None, None)?;
+    let outcome = native.eval_ir(&ir)?;
+    assert_eq!(
+        outcome.heap().get_string(outcome.value())?.bytes(),
+        b"cached"
+    );
+
+    let cache = native.eval_cache_snapshot().expect("cache is enabled");
+    assert_eq!(cache.len(), 1);
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_expression_eval_leaves_eval_cache_absent_when_disabled() -> Result<()> {
+    let root = unique_temp_dir("native-expression-eval-cache-disabled");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let input = root.join("input.txt");
+    fs::write(&input, "uncached")?;
+    let options = TreeWalkOptions::with_eval_mode(EvalMode::Impure);
+    let native = NixNative::with_options(0, options)?;
+
+    let source = format!(
+        "builtins.readFile {}",
+        nix_string_literal(&path_bytes(&input)?)?
+    );
+    let ir = native.lower_native_source(&source, None, None)?;
+    let outcome = native.eval_ir(&ir)?;
+    assert_eq!(
+        outcome.heap().get_string(outcome.value())?.bytes(),
+        b"uncached"
+    );
+    assert!(native.eval_cache_snapshot().is_none());
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_expression_parse_cache_preserves_frontend_error_spans() -> Result<()> {
     let root = unique_temp_dir("native-expression-parse-cache-error");
     fs::create_dir_all(&root)?;

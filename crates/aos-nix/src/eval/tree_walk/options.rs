@@ -167,6 +167,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with advisory eval-cache trace ingestion configured.
+    pub fn with_eval_cache_enabled(eval_cache_enabled: bool) -> Self {
+        let mut options = Self::default();
+        options.set_eval_cache_enabled(eval_cache_enabled);
+        options
+    }
+
     /// Replaces the configured Nix store directory.
     ///
     /// Empty store directories fall back to `/nix/store`. Absolute store
@@ -478,6 +485,16 @@ impl TreeWalkOptions {
         self.parse_cache_root = None;
     }
 
+    /// Enables or disables advisory incremental eval-cache trace ingestion.
+    ///
+    /// This only controls whether native evaluator handles own an in-memory
+    /// [`crate::cache::EvalCache`] and ingest completed evaluator traces into
+    /// it. It does not enable memo lookup, persistence, or demand-node
+    /// allocation in the tree-walk evaluator.
+    pub fn set_eval_cache_enabled(&mut self, eval_cache_enabled: bool) {
+        self.eval_cache_enabled = eval_cache_enabled;
+    }
+
     /// Returns the configured Nix store directory.
     pub fn store_dir(&self) -> &[u8] {
         &self.store_dir
@@ -587,6 +604,11 @@ impl TreeWalkOptions {
     /// Returns the configured parse-cache root directory, if any.
     pub fn parse_cache_root(&self) -> Option<&Path> {
         self.parse_cache_root.as_deref()
+    }
+
+    /// Returns whether advisory incremental eval-cache trace ingestion is enabled.
+    pub const fn eval_cache_enabled(&self) -> bool {
+        self.eval_cache_enabled
     }
 }
 
