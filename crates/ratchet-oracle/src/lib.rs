@@ -1,0 +1,27 @@
+//! `ratchet-oracle` -- the reference tree-walk evaluator for RFC-0007.
+//!
+//! This crate owns the strongly-connected oracle cluster carved out of the
+//! `aos-nix` monolith in RFC-0007 §1.1 Phase 1b: the safe tree-walk evaluator
+//! ([`eval`]), the runtime builtin execution layer ([`runtime`]), the
+//! incremental frontend cache ([`cache`]), byte-oriented Nix strings with their
+//! string contexts ([`string`]), and derivation materialization
+//! ([`drv_materialize`]). These modules mutually depend and form the safe
+//! reference implementation that faster execution tiers validate against.
+//!
+//! The crate sits above the value and frontend crates (`ratchet-value`,
+//! `ratchet-core`, `aos-nix-syntax`) and below the `aos-nix` umbrella, which
+//! re-exports these modules and adds the typed error taxonomy, diagnostics, and
+//! the `aos-core`-facing `native` handle.
+
+#![forbid(unsafe_code)]
+
+// Re-exports so the moved modules' paths to lower crates keep resolving.
+pub use aos_nix_syntax as syntax;
+pub use ratchet_core as compile;
+pub use ratchet_value::{attrs, heap, list, value};
+
+pub mod cache;
+pub mod drv_materialize;
+pub mod eval;
+pub mod runtime;
+pub mod string;

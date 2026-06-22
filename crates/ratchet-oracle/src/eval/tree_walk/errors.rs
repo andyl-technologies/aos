@@ -53,7 +53,7 @@ impl TreeWalkError {
         self.span
     }
 
-    pub(crate) fn with_span(mut self, span: Span) -> Self {
+    pub fn with_span(mut self, span: Span) -> Self {
         self.span = span;
         self
     }
@@ -63,17 +63,17 @@ impl TreeWalkError {
         self
     }
 
-    pub(crate) fn with_labels(mut self, labels: Vec<EvalErrorLabel>) -> Self {
+    pub fn with_labels(mut self, labels: Vec<EvalErrorLabel>) -> Self {
         self.labels = labels;
         self
     }
 
-    pub(crate) fn with_contexts(mut self, contexts: Vec<EvalErrorContext>) -> Self {
+    pub fn with_contexts(mut self, contexts: Vec<EvalErrorContext>) -> Self {
         self.contexts = contexts;
         self
     }
 
-    pub(crate) fn with_source(mut self, source: EvalErrorSource) -> Self {
+    pub fn with_source(mut self, source: EvalErrorSource) -> Self {
         self.source = Some(source);
         self
     }
@@ -136,7 +136,7 @@ pub struct EvalErrorSource {
 }
 
 impl EvalErrorSource {
-    pub(crate) fn new(name: Vec<u8>, bytes: Vec<u8>) -> Self {
+    pub fn new(name: Vec<u8>, bytes: Vec<u8>) -> Self {
         Self { name, bytes }
     }
 
@@ -154,8 +154,8 @@ impl EvalErrorSource {
 /// A secondary source label attached to a tree-walk evaluation error.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalErrorLabel {
-    pub(crate) span: Span,
-    pub(crate) label: &'static str,
+    pub span: Span,
+    pub label: &'static str,
 }
 
 impl EvalErrorLabel {
@@ -179,7 +179,7 @@ pub struct EvalErrorContext {
 }
 
 impl EvalErrorContext {
-    pub(crate) fn new(message: Vec<u8>) -> Self {
+    pub fn new(message: Vec<u8>) -> Self {
         Self {
             message,
             span: Span::default(),
@@ -187,12 +187,12 @@ impl EvalErrorContext {
         }
     }
 
-    pub(crate) fn with_span(mut self, span: Span) -> Self {
+    pub fn with_span(mut self, span: Span) -> Self {
         self.span = span;
         self
     }
 
-    pub(crate) fn with_source(mut self, source: EvalErrorSource) -> Self {
+    pub fn with_source(mut self, source: EvalErrorSource) -> Self {
         self.source = Some(source);
         self
     }

@@ -530,13 +530,13 @@ impl TreeWalkOptions {
         &self.allowed_uris
     }
 
-    pub(crate) fn path_is_allowed(&self, path: &[u8]) -> bool {
+    pub fn path_is_allowed(&self, path: &[u8]) -> bool {
         self.allowed_paths
             .iter()
             .any(|allowed| path_is_under_root(path, allowed))
     }
 
-    pub(crate) fn resolved_path_is_allowed(&self, path: &[u8]) -> bool {
+    pub fn resolved_path_is_allowed(&self, path: &[u8]) -> bool {
         self.path_is_allowed(path)
             || self
                 .allowed_paths
@@ -698,7 +698,7 @@ pub(crate) fn normalize_required_absolute_path(
     Ok(normalize_absolute_path_bytes(&path))
 }
 
-pub(crate) fn normalize_absolute_path_bytes(path: &[u8]) -> Vec<u8> {
+pub fn normalize_absolute_path_bytes(path: &[u8]) -> Vec<u8> {
     let mut components = Vec::new();
     for component in path.split(|byte| *byte == b'/') {
         if component.is_empty() || component == b"." {
@@ -731,7 +731,7 @@ pub(crate) fn path_is_under_root(path: &[u8], root: &[u8]) -> bool {
     path == root || (path.starts_with(root) && path.get(root.len()) == Some(&b'/'))
 }
 
-pub(crate) fn canonicalize_policy_path(path: &[u8]) -> Option<Vec<u8>> {
+pub fn canonicalize_policy_path(path: &[u8]) -> Option<Vec<u8>> {
     let path = Path::new(OsStr::from_bytes(path));
     let resolved = fs::canonicalize(path).ok()?;
     Some(normalize_absolute_path_bytes(

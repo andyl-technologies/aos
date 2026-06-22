@@ -11,7 +11,7 @@ use thiserror::Error;
 /// A failure while installing a native `.drv` file into the configured store.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 #[error("{message}")]
-pub(crate) struct DrvMaterializationError {
+pub struct DrvMaterializationError {
     message: String,
 }
 
@@ -24,7 +24,7 @@ impl DrvMaterializationError {
 }
 
 /// Writes `bytes` to `path` without leaving partial final-path contents behind.
-pub(crate) fn materialize_drv(path: &Path, bytes: &[u8]) -> Result<(), DrvMaterializationError> {
+pub fn materialize_drv(path: &Path, bytes: &[u8]) -> Result<(), DrvMaterializationError> {
     let parent = path.parent().ok_or_else(|| {
         DrvMaterializationError::new(format!(
             "native derivation path has no parent directory: {}",

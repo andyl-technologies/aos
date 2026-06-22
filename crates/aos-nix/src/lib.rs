@@ -49,19 +49,19 @@ compile_error!("aos-nix supports only x86-64 and AArch64 host architectures");
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("aos-nix supports only Linux and Darwin host operating systems");
 
-pub use ratchet_value::attrs;
-pub mod cache;
 pub use ratchet_core as compile;
+pub use ratchet_oracle::cache;
+pub use ratchet_value::attrs;
 pub mod diagnostic;
-mod drv_materialize;
+pub use ratchet_oracle::drv_materialize;
 pub mod error;
-pub mod eval;
+pub use ratchet_oracle::eval;
 pub use ratchet_value::heap;
 pub use ratchet_value::list;
 pub mod native;
-pub mod runtime;
-pub mod string;
 pub use aos_nix_syntax as syntax;
+pub use ratchet_oracle::runtime;
+pub use ratchet_oracle::string;
 pub use ratchet_value::value;
 
 pub use error::{NativeCliFallbackReason, NativeEvalError, SrcSpan};

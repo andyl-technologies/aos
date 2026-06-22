@@ -260,15 +260,16 @@ pub use api::{
     eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
-pub(crate) use errors::{ArithmeticOp, EvalErrorContext};
+pub(crate) use errors::ArithmeticOp;
+pub use errors::EvalErrorContext;
 pub use errors::{EvalErrorLabel, EvalErrorSource, TreeWalkError};
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
+pub use options::{canonicalize_policy_path, normalize_absolute_path_bytes};
 pub(crate) use options::{
-    canonicalize_policy_path, file_type_name, is_valid_store_path, join_path_literal,
-    join_search_path, normalize_absolute_path_bytes, path_exists_requires_directory,
-    path_is_under_root, path_without_trailing_path_markers, search_path_literal_lookup,
-    search_path_suffix, store_path_root,
+    file_type_name, is_valid_store_path, join_path_literal, join_search_path,
+    path_exists_requires_directory, path_is_under_root, path_without_trailing_path_markers,
+    search_path_literal_lookup, search_path_suffix, store_path_root,
 };
 pub use outcome::{
     EvalDerivation, EvalOutcome, EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput,

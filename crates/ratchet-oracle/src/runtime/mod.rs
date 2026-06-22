@@ -7,4 +7,4 @@
 //! no concrete evaluator. This module re-exports that metadata layer under its
 //! historical `crate::runtime::builtins` path for the runtime tiers.
 
-pub(crate) use crate::compile::builtins;
+pub use crate::compile::builtins;

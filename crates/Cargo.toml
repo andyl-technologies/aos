@@ -7,6 +7,7 @@ members = [
     "aos-nix-syntax",
     "ratchet-core",
     "ratchet-value",
+    "ratchet-oracle",
     "aos-net",
     "aos-proto",
     "aos-server",
@@ -116,6 +117,7 @@ aos-nix = { path = "aos-nix" }
 aos-nix-syntax = { path = "aos-nix-syntax" }
 ratchet-core = { path = "ratchet-core" }
 ratchet-value = { path = "ratchet-value" }
+ratchet-oracle = { path = "ratchet-oracle" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-server = { path = "aos-server" }

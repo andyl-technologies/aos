@@ -257,6 +257,7 @@ dependencies = [
  "nix-compat",
  "proptest",
  "ratchet-core",
+ "ratchet-oracle",
  "ratchet-value",
  "regex",
  "reqwest",
@@ -3667,6 +3668,38 @@ version = "0.1.0"
 dependencies = [
  "aos-nix-syntax",
  "thiserror",
+]
+
+[[package]]
+name = "ratchet-oracle"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-nix-syntax",
+ "base64",
+ "blake3",
+ "bzip2",
+ "flate2",
+ "git2",
+ "md-5",
+ "miette",
+ "nix-compat",
+ "proptest",
+ "ratchet-core",
+ "ratchet-value",
+ "regex",
+ "reqwest",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "tar",
+ "thiserror",
+ "toml",
+ "tracing",
+ "url",
+ "xxhash-rust",
+ "xz2",
+ "zstd",
 ]
 
 [[package]]
