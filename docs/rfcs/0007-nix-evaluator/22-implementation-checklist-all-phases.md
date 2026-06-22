@@ -505,6 +505,12 @@ alone (`M-1`/`Q-A`).
       setup, and reports corrupt non-empty packfiles instead of replacing them.
       Durable index integration, node metadata, mmap reads, writer batching,
       GC/repack, Attic transport, and harness proof remain open (`C-13`/`R-14`).
+- [x] Current key-routed blob IO substrate: `PersistCache::append_blob` and
+      `read_blob` route a `PersistBlobKey` to the value or file pack, preserving
+      namespace separation for identical payload hashes while reusing pack-level
+      hash and record verification. Durable index lookup/update, node metadata,
+      mmap reads, writer batching, GC/repack, Attic transport, and harness proof
+      remain open (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

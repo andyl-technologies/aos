@@ -602,6 +602,36 @@ impl PersistCache {
             PersistBlobStore::Files => &self.file_pack,
         }
     }
+
+    /// Appends a blob to the packfile selected by `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected packfile cannot be
+    /// opened, validated, or written, or if `payload` does not hash to
+    /// `key.hash()`.
+    pub fn append_blob(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobLocation, PersistBlobPackError> {
+        self.blob_pack(key.store()).append_blob(key.hash(), payload)
+    }
+
+    /// Reads a blob from the packfile selected by `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the selected packfile cannot be
+    /// opened or read, if `location` is invalid, or if record/payload hashes do
+    /// not match `key.hash()`.
+    pub fn read_blob(
+        &self,
+        key: PersistBlobKey,
+        location: PersistBlobLocation,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        self.blob_pack(key.store()).read_blob(location, key.hash())
+    }
 }
 
 /// Immutable blob packfile metadata could not be decoded.
@@ -1550,6 +1580,82 @@ mod tests {
                 .as_slice(),
             b"bad"
         );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_blob_io_is_routed_by_key_store() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"shared payload";
+        let hash = DurableBlake3Hash::for_bytes(payload);
+        let value_key = PersistBlobKey::for_value(hash);
+        let file_key = PersistBlobKey::for_file(hash);
+
+        let value_location = cache
+            .append_blob(value_key, payload)
+            .expect("value blob appends");
+        let file_location = cache
+            .append_blob(file_key, payload)
+            .expect("file blob appends");
+
+        assert_eq!(
+            value_location.record_offset(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            file_location.record_offset(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            cache
+                .read_blob(value_key, value_location)
+                .expect("value blob reads")
+                .as_slice(),
+            payload
+        );
+        assert_eq!(
+            cache
+                .read_blob(file_key, file_location)
+                .expect("file blob reads")
+                .as_slice(),
+            payload
+        );
+        assert_eq!(
+            fs::metadata(cache.value_pack().path())
+                .expect("value pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+                + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+                + payload.len() as u64
+        );
+        assert_eq!(
+            fs::metadata(cache.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+                + PERSIST_BLOB_RECORD_HEADER_LEN as u64
+                + payload.len() as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_blob_io_rejects_payload_hash_mismatch() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+
+        let error = cache
+            .append_blob(key, b"payload")
+            .expect_err("hash mismatch errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::PayloadHashMismatch { .. }
+        ));
 
         let _ = fs::remove_dir_all(root);
     }
