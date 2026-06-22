@@ -286,13 +286,14 @@ pub fn page_with_session(
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{page_title}</title>\n\
-         <link rel=\"stylesheet\" href=\"/_assets/style.css\">\n\
-         <script src=\"/_assets/app.js\" defer></script>\n</head>\n<body>\n\
+         <link rel=\"stylesheet\" href=\"/_assets/style.css?v={ver}\">\n\
+         <script src=\"/_assets/app.js?v={ver}\" defer></script>\n</head>\n<body>\n\
          <header class=\"masthead\">{brand_span}\
          <span class=\"crumbs\">{crumb_html}</span>{session}</header>\n\
          <main>\n{body}\n</main>\n\
          <footer class=\"statline\">{statline}</footer>\n</body>\n</html>\n",
         session = session.render(),
+        ver = crate::web::assets::asset_version(),
     )
 }
 
