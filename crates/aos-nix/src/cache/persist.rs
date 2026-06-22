@@ -11,12 +11,77 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
+use super::DurableBlake3Hash;
+
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
 /// The persistent eval-cache schema version.
 pub const PERSIST_CACHE_SCHEMA_VERSION: u32 = 1;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A content-addressed immutable blob namespace in the persistent cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersistBlobStore {
+    /// Serialized WHNF values owned by the constructive value store.
+    Values,
+    /// Serialized frontend artifacts and file-derived cache payloads.
+    Files,
+}
+
+impl PersistBlobStore {
+    const fn index_tag(self) -> u8 {
+        match self {
+            Self::Values => 1,
+            Self::Files => 2,
+        }
+    }
+}
+
+/// A typed immutable blob lookup key for the persistent hash-to-offset index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistBlobKey {
+    store: PersistBlobStore,
+    hash: DurableBlake3Hash,
+}
+
+impl PersistBlobKey {
+    /// Creates a persistent blob key in `store` for `hash`.
+    pub const fn new(store: PersistBlobStore, hash: DurableBlake3Hash) -> Self {
+        Self { store, hash }
+    }
+
+    /// Creates a persistent value-blob key for `hash`.
+    pub const fn for_value(hash: DurableBlake3Hash) -> Self {
+        Self::new(PersistBlobStore::Values, hash)
+    }
+
+    /// Creates a persistent file-blob key for `hash`.
+    pub const fn for_file(hash: DurableBlake3Hash) -> Self {
+        Self::new(PersistBlobStore::Files, hash)
+    }
+
+    /// Returns the immutable blob namespace addressed by this key.
+    pub const fn store(self) -> PersistBlobStore {
+        self.store
+    }
+
+    /// Returns the durable BLAKE3 content address carried by this key.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns the stable binary key for the future hash-to-offset index.
+    ///
+    /// The first byte separates the `values/` and `files/` namespaces; the
+    /// remaining 32 bytes are the durable BLAKE3 digest.
+    pub fn index_bytes(self) -> [u8; 33] {
+        let mut bytes = [0; 33];
+        bytes[0] = self.store.index_tag();
+        bytes[1..].copy_from_slice(&self.hash.as_bytes());
+        bytes
+    }
+}
 
 /// Filesystem paths for one persistent eval-cache root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,6 +118,32 @@ impl PersistLayout {
     /// Returns the durable file/frontend artifact directory.
     pub fn files_dir(&self) -> PathBuf {
         self.root.join("files")
+    }
+
+    /// Returns the append-only packfile path for immutable blobs in `store`.
+    ///
+    /// The helper only computes the path; callers remain responsible for the
+    /// packfile format, memory mapping, append protocol, and hash-to-offset
+    /// index updates.
+    pub fn blob_packfile_path(&self, store: PersistBlobStore) -> PathBuf {
+        self.blob_store_dir(store).join("pack.blob")
+    }
+
+    /// Returns the append-only packfile path for serialized value blobs.
+    pub fn value_packfile_path(&self) -> PathBuf {
+        self.blob_packfile_path(PersistBlobStore::Values)
+    }
+
+    /// Returns the append-only packfile path for serialized file blobs.
+    pub fn file_packfile_path(&self) -> PathBuf {
+        self.blob_packfile_path(PersistBlobStore::Files)
+    }
+
+    fn blob_store_dir(&self, store: PersistBlobStore) -> PathBuf {
+        match store {
+            PersistBlobStore::Values => self.values_dir(),
+            PersistBlobStore::Files => self.files_dir(),
+        }
     }
 }
 
@@ -284,6 +375,57 @@ mod tests {
             .expect("sentinel parent creates");
         fs::write(&path, b"keep me").expect("sentinel writes");
         path
+    }
+
+    #[test]
+    fn blob_packfile_paths_are_store_separated() {
+        let layout = PersistLayout::new(temp_root());
+
+        assert_eq!(
+            layout.blob_packfile_path(PersistBlobStore::Values),
+            layout.value_packfile_path()
+        );
+        assert_eq!(
+            layout.blob_packfile_path(PersistBlobStore::Files),
+            layout.file_packfile_path()
+        );
+        assert_eq!(
+            layout.value_packfile_path(),
+            layout.values_dir().join("pack.blob")
+        );
+        assert_eq!(
+            layout.file_packfile_path(),
+            layout.files_dir().join("pack.blob")
+        );
+        assert_ne!(layout.value_packfile_path(), layout.file_packfile_path());
+    }
+
+    #[test]
+    fn blob_index_keys_are_domain_separated_by_store() {
+        let hash = DurableBlake3Hash::for_bytes(b"same bytes");
+        let value_key = PersistBlobKey::for_value(hash).index_bytes();
+        let file_key = PersistBlobKey::for_file(hash).index_bytes();
+
+        assert_ne!(value_key, file_key);
+        assert_eq!(value_key[0], 1);
+        assert_eq!(file_key[0], 2);
+        assert_eq!(&value_key[1..], hash.as_bytes().as_slice());
+        assert_eq!(&file_key[1..], hash.as_bytes().as_slice());
+    }
+
+    #[test]
+    fn blob_index_keys_are_stable_content_addresses() {
+        let first = DurableBlake3Hash::for_bytes(b"first payload");
+        let first_again = DurableBlake3Hash::for_bytes(b"first payload");
+        let second = DurableBlake3Hash::for_bytes(b"second payload");
+        let first_key = PersistBlobKey::for_value(first);
+        let first_key_again = PersistBlobKey::for_value(first_again);
+        let second_key = PersistBlobKey::for_value(second);
+
+        assert_eq!(first_key.store(), PersistBlobStore::Values);
+        assert_eq!(first_key.hash(), first);
+        assert_eq!(first_key.index_bytes(), first_key_again.index_bytes());
+        assert_ne!(first_key.index_bytes(), second_key.index_bytes());
     }
 
     #[test]

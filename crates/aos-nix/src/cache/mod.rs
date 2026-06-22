@@ -31,7 +31,8 @@ pub use parse::{
     ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,
 };
 pub use persist::{
-    PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
+    PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistBlobKey, PersistBlobStore,
+    PersistCache, PersistError, PersistLayout,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,
