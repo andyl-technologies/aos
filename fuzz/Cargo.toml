@@ -1,0 +1,21 @@
+[package]
+name = "aos-nix-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+anyhow = "1"
+aos-nix = { path = "../crates/aos-nix" }
+arbitrary = "1"
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "parity_json"
+path = "fuzz_targets/parity_json.rs"
+test = false
+doc = false
+bench = false

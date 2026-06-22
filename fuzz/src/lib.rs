@@ -1,0 +1,368 @@
+//! Structure-aware fuzz harnesses for aos-nix parity checks.
+
+use std::collections::BTreeMap;
+use std::process::Command;
+use std::sync::OnceLock;
+
+use aos_nix::{NativeEvalError, NixNative};
+use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
+
+const MAX_SOURCE_LEN: usize = 4096;
+const PINNED_NIX_VERSION: &str = "2.24.12";
+const SOURCE_SEED_PREFIX: &str = "# aos-nix-fuzz-source\n";
+const ASCII_STRING_BYTES: &[u8] =
+    b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-";
+const IDENT_FIRST_BYTES: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_";
+const IDENT_REST_BYTES: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+
+/// Runs one JSON parity fuzz case.
+pub fn fuzz_parity_json(data: &[u8]) {
+    let Some(source) = source_from_fuzz_bytes(data) else {
+        return;
+    };
+    if source.len() > MAX_SOURCE_LEN {
+        return;
+    }
+
+    let candidate = eval_native_json(&source);
+    let Some(oracle) = eval_cpp_nix_json(&source) else {
+        let _ = candidate;
+        return;
+    };
+    let candidate = match candidate {
+        NativeJson::Ok(json) => Ok(json),
+        NativeJson::Unsupported => return,
+        NativeJson::Err(error) => Err(error),
+    };
+
+    match (candidate, oracle) {
+        (Ok(candidate), Ok(reference)) => {
+            assert_eq!(candidate, reference, "generated source diverged:\n{source}")
+        }
+        (Ok(candidate), Err(reference_error)) => panic!(
+            "aos-nix succeeded but C++ Nix failed for generated source:\n{source}\n\
+             aos-nix JSON: {candidate}\nC++ Nix error: {reference_error}"
+        ),
+        (Err(candidate_error), Ok(reference)) => panic!(
+            "aos-nix failed but C++ Nix succeeded for generated source:\n{source}\n\
+             aos-nix error: {candidate_error}\nC++ Nix JSON: {reference}"
+        ),
+        (Err(_), Err(_)) => {}
+    }
+}
+
+/// Returns the Nix source represented by a fuzzer input.
+pub fn source_from_fuzz_bytes(data: &[u8]) -> Option<String> {
+    if let Ok(source) = std::str::from_utf8(data) {
+        if let Some(source) = source.strip_prefix(SOURCE_SEED_PREFIX) {
+            return Some(source.trim().to_owned());
+        }
+    }
+
+    let mut unstructured = Unstructured::new(data);
+    let expr = GeneratedExpr::arbitrary(&mut unstructured).ok()?;
+    Some(expr.to_nix())
+}
+
+#[derive(Debug)]
+enum NativeJson {
+    Ok(String),
+    Unsupported,
+    Err(String),
+}
+
+fn eval_native_json(source: &str) -> NativeJson {
+    let native = match NixNative::new(0) {
+        Ok(native) => native,
+        Err(error) => return NativeJson::Err(error.to_string()),
+    };
+    match native.eval_expr(source) {
+        Ok(json) => NativeJson::Ok(trim_json_text(json)),
+        Err(error) if native_error_is_unsupported(&error) => NativeJson::Unsupported,
+        Err(error) => NativeJson::Err(error.to_string()),
+    }
+}
+
+fn native_error_is_unsupported(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<NativeEvalError>(),
+        Some(NativeEvalError::Unsupported { .. })
+    )
+}
+
+fn eval_cpp_nix_json(source: &str) -> Option<Result<String, String>> {
+    let oracle = oracle_command()?;
+    let output = Command::new(oracle)
+        .args(["--eval", "--strict", "--json", "--expr", source])
+        .output()
+        .unwrap_or_else(|error| panic!("C++ Nix oracle runs: {error}"));
+    if output.status.success() {
+        Some(Ok(trim_json_text(
+            String::from_utf8(output.stdout).unwrap_or_else(|error| {
+                panic!("C++ Nix oracle produced non-UTF-8 stdout: {error}")
+            }),
+        )))
+    } else {
+        Some(Err(String::from_utf8_lossy(&output.stderr).into_owned()))
+    }
+}
+
+fn oracle_command() -> Option<&'static str> {
+    static ORACLE: OnceLock<Option<String>> = OnceLock::new();
+    ORACLE
+        .get_or_init(|| {
+            let oracle = std::env::var("AOS_NIX_ORACLE").ok()?;
+            assert_pinned_cpp_nix_oracle(&oracle);
+            Some(oracle)
+        })
+        .as_deref()
+}
+
+fn assert_pinned_cpp_nix_oracle(oracle: &str) {
+    let output = Command::new(oracle)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|error| panic!("C++ Nix oracle version runs: {error}"));
+    assert!(
+        output.status.success(),
+        "C++ Nix oracle version failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let version = trim_json_text(
+        String::from_utf8(output.stdout)
+            .unwrap_or_else(|error| panic!("C++ Nix version is non-UTF-8: {error}")),
+    );
+    assert!(
+        version.ends_with(&format!(" {PINNED_NIX_VERSION}"))
+            || version.ends_with(&format!("(Nix) {PINNED_NIX_VERSION}")),
+        "expected pinned C++ Nix {PINNED_NIX_VERSION} oracle, got {version}"
+    );
+}
+
+fn trim_json_text(mut text: String) -> String {
+    while matches!(text.as_bytes().last(), Some(b'\n' | b'\r')) {
+        let _ = text.pop();
+    }
+    text
+}
+
+#[derive(Debug, Clone)]
+enum GeneratedExpr {
+    Int(u16),
+    Bool(bool),
+    String(String),
+    List(Vec<GeneratedExpr>),
+    Attrs(BTreeMap<String, GeneratedExpr>),
+    If {
+        condition: bool,
+        then_expr: Box<GeneratedExpr>,
+        else_expr: Box<GeneratedExpr>,
+    },
+    Let {
+        name: String,
+        value: Box<GeneratedExpr>,
+        body: Box<GeneratedExpr>,
+    },
+    Add(u16, u16),
+    ListConcat(Vec<GeneratedExpr>, Vec<GeneratedExpr>),
+    AttrUpdate(
+        BTreeMap<String, GeneratedExpr>,
+        BTreeMap<String, GeneratedExpr>,
+    ),
+}
+
+impl<'a> Arbitrary<'a> for GeneratedExpr {
+    fn arbitrary(unstructured: &mut Unstructured<'a>) -> ArbitraryResult<Self> {
+        Self::arbitrary_depth(unstructured, 4)
+    }
+}
+
+impl GeneratedExpr {
+    fn arbitrary_depth(unstructured: &mut Unstructured<'_>, depth: u8) -> ArbitraryResult<Self> {
+        if depth == 0 {
+            return Self::arbitrary_leaf(unstructured);
+        }
+
+        match unstructured.int_in_range(0..=9)? {
+            0 => Self::arbitrary_leaf(unstructured),
+            1 => Ok(Self::List(arbitrary_expr_vec(unstructured, depth - 1)?)),
+            2 => Ok(Self::Attrs(arbitrary_attr_map(unstructured, depth - 1)?)),
+            3 => Ok(Self::If {
+                condition: bool::arbitrary(unstructured)?,
+                then_expr: Box::new(Self::arbitrary_depth(unstructured, depth - 1)?),
+                else_expr: Box::new(Self::arbitrary_depth(unstructured, depth - 1)?),
+            }),
+            4 => Ok(Self::Let {
+                name: arbitrary_ident(unstructured)?,
+                value: Box::new(Self::arbitrary_depth(unstructured, depth - 1)?),
+                body: Box::new(Self::arbitrary_depth(unstructured, depth - 1)?),
+            }),
+            5 => Ok(Self::Add(
+                unstructured.int_in_range(0..=1000)?,
+                unstructured.int_in_range(0..=1000)?,
+            )),
+            6 => Ok(Self::ListConcat(
+                arbitrary_expr_vec(unstructured, depth - 1)?,
+                arbitrary_expr_vec(unstructured, depth - 1)?,
+            )),
+            7 => Ok(Self::AttrUpdate(
+                arbitrary_attr_map(unstructured, depth - 1)?,
+                arbitrary_attr_map(unstructured, depth - 1)?,
+            )),
+            _ => Self::arbitrary_leaf(unstructured),
+        }
+    }
+
+    fn arbitrary_leaf(unstructured: &mut Unstructured<'_>) -> ArbitraryResult<Self> {
+        match unstructured.int_in_range(0..=2)? {
+            0 => Ok(Self::Int(unstructured.int_in_range(0..=1000)?)),
+            1 => Ok(Self::Bool(bool::arbitrary(unstructured)?)),
+            _ => Ok(Self::String(arbitrary_ascii_string(unstructured)?)),
+        }
+    }
+
+    fn to_nix(&self) -> String {
+        match self {
+            Self::Int(value) => value.to_string(),
+            Self::Bool(true) => "true".to_owned(),
+            Self::Bool(false) => "false".to_owned(),
+            Self::String(value) => nix_string_literal(value),
+            Self::List(values) => {
+                let body = values
+                    .iter()
+                    .map(Self::to_nix)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("[ {body} ]")
+            }
+            Self::Attrs(attrs) => format_attrset(attrs),
+            Self::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => format!(
+                "(if {} then {} else {})",
+                if *condition { "true" } else { "false" },
+                then_expr.to_nix(),
+                else_expr.to_nix()
+            ),
+            Self::Let { name, value, body } => {
+                format!("(let {name} = {}; in {})", value.to_nix(), body.to_nix())
+            }
+            Self::Add(left, right) => format!("({left} + {right})"),
+            Self::ListConcat(left, right) => {
+                let left = Self::List(left.clone()).to_nix();
+                let right = Self::List(right.clone()).to_nix();
+                format!("({left} ++ {right})")
+            }
+            Self::AttrUpdate(left, right) => {
+                format!("({} // {})", format_attrset(left), format_attrset(right))
+            }
+        }
+    }
+}
+
+fn arbitrary_expr_vec(
+    unstructured: &mut Unstructured<'_>,
+    depth: u8,
+) -> ArbitraryResult<Vec<GeneratedExpr>> {
+    let count = unstructured.int_in_range(0..=4)?;
+    (0..count)
+        .map(|_| GeneratedExpr::arbitrary_depth(unstructured, depth))
+        .collect()
+}
+
+fn arbitrary_attr_map(
+    unstructured: &mut Unstructured<'_>,
+    depth: u8,
+) -> ArbitraryResult<BTreeMap<String, GeneratedExpr>> {
+    let count = unstructured.int_in_range(0..=4)?;
+    let mut attrs = BTreeMap::new();
+    for _ in 0..count {
+        attrs.insert(
+            arbitrary_ident(unstructured)?,
+            GeneratedExpr::arbitrary_depth(unstructured, depth)?,
+        );
+    }
+    Ok(attrs)
+}
+
+fn arbitrary_ident(unstructured: &mut Unstructured<'_>) -> ArbitraryResult<String> {
+    loop {
+        let len = unstructured.int_in_range(1..=6)?;
+        let mut bytes = Vec::with_capacity(len);
+        bytes.push(*unstructured.choose(IDENT_FIRST_BYTES)?);
+        for _ in 1..len {
+            bytes.push(*unstructured.choose(IDENT_REST_BYTES)?);
+        }
+        let ident = String::from_utf8(bytes).expect("identifier bytes are ASCII");
+        if !is_nix_keyword(&ident) {
+            return Ok(ident);
+        }
+    }
+}
+
+fn arbitrary_ascii_string(unstructured: &mut Unstructured<'_>) -> ArbitraryResult<String> {
+    let len = unstructured.int_in_range(0..=12)?;
+    let mut bytes = Vec::with_capacity(len);
+    for _ in 0..len {
+        bytes.push(*unstructured.choose(ASCII_STRING_BYTES)?);
+    }
+    Ok(String::from_utf8(bytes).expect("string bytes are ASCII"))
+}
+
+fn format_attrset(attrs: &BTreeMap<String, GeneratedExpr>) -> String {
+    let body = attrs
+        .iter()
+        .map(|(name, value)| format!("{} = {};", nix_string_literal(name), value.to_nix()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{{ {body} }}")
+}
+
+fn nix_string_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '$' => escaped.push_str("\\$"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character => escaped.push(character),
+        }
+    }
+    escaped.push('"');
+    escaped
+}
+
+fn is_nix_keyword(value: &str) -> bool {
+    matches!(
+        value,
+        "assert" | "else" | "if" | "in" | "inherit" | "let" | "or" | "rec" | "then" | "with"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_seed_prefix_uses_literal_nix_source() {
+        let source = source_from_fuzz_bytes(b"# aos-nix-fuzz-source\n{ b = 2; a = 1; }\n")
+            .expect("source seed decodes");
+
+        assert_eq!(source, "{ b = 2; a = 1; }");
+    }
+
+    #[test]
+    fn arbitrary_bytes_generate_bounded_nix_source() {
+        let source = source_from_fuzz_bytes(b"abcdef0123456789").expect("generated source exists");
+
+        assert!(source.len() <= MAX_SOURCE_LEN, "{source}");
+        let native = NixNative::new(0).expect("native evaluator initializes");
+        let _ = native.eval_expr(&source);
+    }
+}
