@@ -496,7 +496,21 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### Spans: diagnostics into the original `.nix` (§4)
 
-- [ ] Map each error `Span = (u32,u32)` to a miette `LabeledSpan` against a `NamedSource`; emit multiple labels for errors with two relevant locations (redefinition, operand type mismatch); spans survive the content-addressed parse cache and all execution tiers with zero fixup, so a cache-loaded or JIT-raised error points at the same bytes. Current tree-walk errors retain module source provenance on the error path, and imported frontend failures preserve their own source bytes and spans, so imported diagnostics can render against the imported file rather than the root (§4.1, §4.2) — **P1**, depends on the arena-AST spans of [04](04-frontend-parser-and-ir.md) §3.1.
+- [x] Current source-backed span labels: `SourceDiagnostic` maps
+      parser/lexer/resolver/lowering/tree-walk `Span = (u32,u32)` values to
+      miette `LabeledSpan`s against `NamedSource`; duplicate-attribute parse
+      errors and operand type errors emit multiple labels; tree-walk errors
+      carry module `EvalErrorSource` provenance plus context/label spans; and
+      imported frontend/tree-walk failures preserve source bytes so native
+      diagnostics can render against the imported file rather than the root
+      when the selected source is renderable and every span fits it (§4.1,
+      §4.2) — **P1**; gate today: focused diagnostic/native source tests.
+- [ ] Zero-fixup span survival remains: spans must survive the durable
+      content-addressed parse cache and every future execution tier so a
+      cache-loaded or JIT/deopt-raised error points at the same original bytes
+      without per-tier fixup (§4.1, §4.2) — **P1/P6/P7**, depends on the
+      arena-AST spans of [04](04-frontend-parser-and-ir.md) §3.1 and the
+      future tier/deopt paths.
 - [ ] Parse errors stop at the first error (no LSP recovery) with a byte-exact span; desugaring nodes carry sensible spans (§4.3, open question 4) — **P1** core; span-fidelity-through-desugaring is an ongoing fit-and-finish item.
 
 ### `--show-trace` parity: structural, not textual (§5)
