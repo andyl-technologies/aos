@@ -5,10 +5,12 @@
 //! in-process import/file memo keyed by canonical realpath and file-content
 //! hash.
 
+pub mod cutoff;
 pub mod hashing;
 pub mod key;
 pub mod parse;
 
+pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{

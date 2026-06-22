@@ -392,8 +392,13 @@ alone (`M-1`/`Q-A`).
       content + IR node position into demand-graph nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
       durable value hashes, and run the differential false-hit gate (`C-1`/`C-2`).
-- [ ] `cache/cutoff.rs` — early-cutoff: stop propagation when a recomputed
-      value-hash equals its prior value-hash.
+- [x] Current `cache/cutoff.rs` standalone decision primitive: typed
+      `ValueHash` plus `EarlyCutoff::decide(previous, recomputed)` returns
+      `CutOff` only when a prior value hash exists and equals the recomputed
+      value hash; missing or changed prior hashes return `Propagate`.
+- [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
+      produce canonical value hashes, compare old/new hashes, stop propagation
+      through dependents on no-change, and prove cached/uncached `.drv` parity.
 - [x] Current value-consing precursor outside future `value/hashcons.rs`: the P1
       evaluator heap already conses heap strings and path values in separate
       evaluator-local tables using `NixString::structural_hash_xxh3()` plus

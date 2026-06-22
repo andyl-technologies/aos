@@ -897,7 +897,8 @@ harness, never cut for scope.
 
 ### Early cutoff
 
-- [ ] Salsa red-green early cutoff: recompute, compare new vs old value-hash, stop propagation on no-change ([§4.1](#41-the-mechanism)) — P2, `S-14`; gate: differential `.drv` harness.
+- [x] Current standalone early-cutoff decision primitive: `cache::cutoff` defines a typed `ValueHash` wrapper for future `blake3(canonical(value))` hashes and `EarlyCutoff::decide(previous, recomputed)`, returning `CutOff` only when a prior value hash exists and equals the recomputed value hash, otherwise `Propagate`. This is the comparison primitive only; Salsa/DCG propagation, actual value-hash production, node invalidation, and harness proof remain open ([§4.1](#41-the-mechanism)) — P2 precursor, `S-14`; gate: `cache::cutoff` tests.
+- [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes, produce canonical value hashes, compare old/new hashes, stop propagation through dependents on no-change, and prove cached/uncached `.drv` parity ([§4.1](#41-the-mechanism)) — P2, `S-14`; gate: differential `.drv` harness.
 - [ ] `derivationStrict`-node early cutoff short-circuiting the SHA-256 `.drv`/store-path computation ([§4.3](#43-interaction-with-the-sha-256-boundary)) — P2; gate: harness.
 
 ### Hashing policy and the leak invariant
