@@ -246,6 +246,28 @@ async fn registry_settings_view(
                 .map(|b| (b.name, b.root, registry.prefix.clone())),
             None => None,
         };
+        // The owning org slug + the binary caches serving this registry.
+        let org_slug = match registry.org_id {
+            Some(id) => state
+                .db
+                .org_by_id(id)
+                .await?
+                .map(|o| o.slug)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let mut caches = Vec::new();
+        for link in state.db.cache_links_for_registry(registry.id).await? {
+            if let Some(cache) = state.db.cache_by_id(link.cache_id).await? {
+                if cache.deleted_at.is_none() {
+                    caches.push(console::RegistryCacheRow {
+                        cache_slug: cache.slug,
+                        advertised: link.advertised,
+                        roots_packages: link.roots_packages,
+                    });
+                }
+            }
+        }
         // Deletion is owner-only (the iam.admin verb).
         let can_delete = session
             .allows(&state.db, Permission::IamAdmin, &scope)
@@ -256,8 +278,10 @@ async fn registry_settings_view(
         Ok::<_, anyhow::Error>(console::registry_settings_page(
             &session.email,
             registry,
+            &org_slug,
             &session.csrf(),
             binding_ref,
+            &caches,
             can_delete,
             result,
             Instant::now(),
