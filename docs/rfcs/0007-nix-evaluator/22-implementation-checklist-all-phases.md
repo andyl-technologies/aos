@@ -524,6 +524,13 @@ alone (`M-1`/`Q-A`).
       cross-run reuse. This is a pure threshold decision only; cost measurement,
       reuse metadata, RAM-tier promotion, packfile writes, persistence
       integration, GC/repack, and AOS tuning remain open (`C-14`).
+- [x] Current explicit materialization-to-pack adapter:
+      `PersistCache::materialize_blob` consumes a caller-supplied
+      `MaterializationDecision`, skips without hashing/writing on
+      `KeepInMemory`, and appends through the key-routed blob pack on
+      `Materialize`. Cost measurement, reuse metadata, evaluator value
+      serialization, durable index updates, mmap reads, GC/repack, and AOS
+      tuning remain open (`C-14`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

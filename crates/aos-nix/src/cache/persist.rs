@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
-use super::DurableBlake3Hash;
+use super::{DurableBlake3Hash, MaterializationDecision};
 
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
@@ -270,6 +270,15 @@ impl PersistBlobLocation {
             payload_len: read_u64(&bytes[8..16]),
         })
     }
+}
+
+/// The result of applying a durable materialization decision to a blob.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PersistMaterialization {
+    /// The blob was appended to the selected persistent packfile.
+    Materialized(PersistBlobLocation),
+    /// The blob stayed in the in-process tier and no persistent bytes were written.
+    Skipped,
 }
 
 /// Filesystem paths for one persistent eval-cache root.
@@ -631,6 +640,33 @@ impl PersistCache {
         location: PersistBlobLocation,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
         self.blob_pack(key.store()).read_blob(location, key.hash())
+    }
+
+    /// Applies `decision` to `payload` in the packfile selected by `key`.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns
+    /// [`PersistMaterialization::Skipped`] without hashing or writing
+    /// `payload`. [`MaterializationDecision::Materialize`] appends the payload
+    /// through [`Self::append_blob`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
+    /// be opened, validated, or written, or when `payload` does not hash to
+    /// `key.hash()`.
+    pub fn materialize_blob(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+        decision: MaterializationDecision,
+    ) -> Result<PersistMaterialization, PersistBlobPackError> {
+        match decision {
+            MaterializationDecision::Materialize => self
+                .append_blob(key, payload)
+                .map(PersistMaterialization::Materialized),
+            MaterializationDecision::KeepInMemory => Ok(PersistMaterialization::Skipped),
+        }
     }
 }
 
@@ -1651,6 +1687,74 @@ mod tests {
         let error = cache
             .append_blob(key, b"payload")
             .expect_err("hash mismatch errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobPackError::PayloadHashMismatch { .. }
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_materialization_decision_can_skip_without_writing() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+
+        let result = cache
+            .materialize_blob(key, b"payload", MaterializationDecision::KeepInMemory)
+            .expect("skip succeeds");
+
+        assert_eq!(result, PersistMaterialization::Skipped);
+        assert_eq!(
+            fs::metadata(cache.value_pack().path())
+                .expect("value pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_materialization_decision_appends_when_requested() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"payload";
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+
+        let result = cache
+            .materialize_blob(key, payload, MaterializationDecision::Materialize)
+            .expect("materialization succeeds");
+
+        let PersistMaterialization::Materialized(location) = result else {
+            panic!("materialization should append");
+        };
+        assert_eq!(
+            location.record_offset(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            cache
+                .read_blob(key, location)
+                .expect("materialized blob reads")
+                .as_slice(),
+            payload
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_materialization_decision_propagates_append_errors() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+
+        let error = cache
+            .materialize_blob(key, b"payload", MaterializationDecision::Materialize)
+            .expect_err("materialization hash mismatch errors");
 
         assert!(matches!(
             error,

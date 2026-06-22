@@ -35,7 +35,7 @@ pub use persist::{
     PERSIST_BLOB_PACK_VERSION, PERSIST_BLOB_RECORD_HEADER_LEN, PERSIST_CACHE_FORMAT,
     PERSIST_CACHE_SCHEMA_VERSION, PersistBlobKey, PersistBlobLocation, PersistBlobPack,
     PersistBlobPackError, PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore,
-    PersistCache, PersistError, PersistLayout, PersistPackFormatError,
+    PersistCache, PersistError, PersistLayout, PersistMaterialization, PersistPackFormatError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,
