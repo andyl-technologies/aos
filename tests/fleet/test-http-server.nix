@@ -1,10 +1,22 @@
-{systems, ...}: {
+{
+  mkSystem,
+  systems,
+  ...
+}: let
+  # The server profile keeps test-http-server out of the production image
+  # (bundle = mkDefault false); re-bundle it here so the fleet seed can
+  # activate it at runtime (modules/profiles/server.nix).
+  serverWithHttp = mkSystem [
+    ../../systems/server.nix
+    {aos.packages.test-http-server.bundle = true;}
+  ];
+in {
   name = "test-http-server-pair";
   timeout = 240;
 
   machines = {
     server = {
-      system = systems.server;
+      system = serverWithHttp;
       packages = ["test-http-server"];
     };
 

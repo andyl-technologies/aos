@@ -20,10 +20,18 @@
 # binary. No `HOME` is needed: the `_test-systemd-client` op
 # early-returns before `ApmConfig::load`, so it reads no apm state.
 {
+  mkSystem,
   pkgs,
-  systems,
   ...
-}: {
+}: let
+  # The server profile keeps apm-systemd-client-test out of the production
+  # image (bundle = mkDefault false); re-bundle it so the fleet seed can
+  # activate it at runtime (modules/profiles/server.nix).
+  serverWithClientTest = mkSystem [
+    ../../systems/server.nix
+    {aos.packages.apm-systemd-client-test.bundle = true;}
+  ];
+in {
   name = "apm-systemd-client";
   # One VM boot + role activation + a 5s slow-service wait + a 1s
   # start-timeout + the failed-unit scan. Comfortably under 600s; the
@@ -34,7 +42,7 @@
   machines = {
     # Python global `vm`.
     vm = {
-      system = systems.server;
+      system = serverWithClientTest;
       # Exposed package activation measures PCR 15, so this package-backed
       # systemd-client test needs a vTPM even though the assertions are about
       # D-Bus job handling.

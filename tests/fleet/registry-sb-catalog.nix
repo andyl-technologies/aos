@@ -40,11 +40,25 @@
 #             enough for the NAR cache + imported store paths.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
+
+  # The server profile keeps the registry fixtures out of the production
+  # image (bundle = mkDefault false); re-bundle them for the registry
+  # machine so the fleet seed can activate them (modules/profiles/server.nix).
+  serverWithRegistry = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
 in {
   name = "registry-sb-catalog";
   # Two boots + registry/static-cache package activation + full-closure
@@ -55,7 +69,7 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.

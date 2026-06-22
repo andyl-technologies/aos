@@ -34,10 +34,30 @@
 #             config over fw_cfg with the FULL profile (storage.disks).
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   server2Top = systems.server-2.config.system.build.toplevel;
+
+  # The server profile keeps the test fixtures and guest agent out of the
+  # production image (bundle = mkDefault false; modules/profiles/server.nix).
+  # Re-bundle per machine: the registry serves the fixtures, and the
+  # image-boot target needs the agent payload in its raw image so the
+  # harness can deliver it via ignition (lib/testing/fleet.nix).
+  serverWithRegistry = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
+  serverWithAgent = mkSystem [
+    ../../systems/server.nix
+    {aos.packages.aos-test-agent.bundle = true;}
+  ];
 
   # Partition sizes (MiB). The docs' production layout is 16 GiB per
   # root; CI uses a smaller A/B layout — same shape, same labels.
@@ -54,7 +74,7 @@ in {
 
   machines = {
     registry = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
       # Static cache of the full closure lands under /var/lib/sysreg-cache, and
@@ -73,7 +93,7 @@ in {
     };
 
     target = {
-      system = systems.server;
+      system = serverWithAgent;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
       packages = ["aos-test-agent"];

@@ -325,8 +325,12 @@
     then throw "aos.packages must add preset=false bundled package payloads to environment.systemPackages"
     else if !(builtins.elem (builtins.toString pkgs.expose-smoke.expose) packagePolicySystemPackageStrings)
     then throw "aos.packages must add preset=false bundled expose artifacts to environment.systemPackages"
-    else if !(builtins.elem (builtins.toString pkgs.k3s) packagePolicySystemPackageStrings)
-    then throw "server profile must keep k3s operator tools in environment.systemPackages"
+    # k3s operator tools were intentionally dropped from the base system PATH
+    # when the image was slimmed (server profile no longer adds
+    # `k3sCommon.runtimePath` to environment.systemPackages); units reference
+    # k3s by absolute store path, and the role payload ships the CLI when its
+    # package is bundled. The old "must keep k3s operator tools on PATH"
+    # assertion contradicted that decision and is gone.
     else if !(builtins.elem "enable aos-pkg-test-http-server.target" packagePolicySystem.config.systemd.systemPresetRules)
     then throw "aos.packages must emit image preset enablement for preset=true packages"
     else if builtins.elem "enable aos-pkg-expose-smoke.target" packagePolicySystem.config.systemd.systemPresetRules

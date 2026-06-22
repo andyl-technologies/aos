@@ -22,9 +22,24 @@
 # `testScript` is Python (Machine API). The producer dance runs as one
 # `registry.succeed(textwrap.dedent("""..."""))` so shell vars stay in scope.
 {
+  lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
+  # The server profile keeps the registry fixtures out of the production
+  # image (bundle = mkDefault false); re-bundle them for the registry
+  # machine so the fleet seed can activate them (modules/profiles/server.nix).
+  serverWithRegistry = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages =
+        lib.genAttrs
+        ["aos-registry-server" "test-static-cache-server"]
+        (_: {bundle = true;});
+    }
+  ];
+
   # Fixed 32-char store hash → predictable store path and narinfo basename.
   pkg = {
     name = "relpkg";
@@ -51,7 +66,7 @@ in {
     };
 
     registry = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
       # The static cache and origin land under /var/lib (served on :8000);
       # the default 256 MiB /var is tight once the NAR is compressed in.
