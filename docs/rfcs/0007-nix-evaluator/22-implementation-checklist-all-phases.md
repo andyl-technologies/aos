@@ -612,6 +612,13 @@ alone (`M-1`/`Q-A`).
       `Materialize`. Cost measurement, reuse metadata, evaluator value
       serialization, durable index updates, mmap reads, GC/repack, and AOS
       tuning remain open (`C-14`).
+- [x] Current materialized blob index-entry accessor:
+      `PersistMaterialization::index_entry` returns the complete
+      `PersistBlobIndexEntry` only when a blob was materialized, binding the
+      caller-supplied blob key and pack location the future durable index would
+      store. This is accessor-only; durable index writes/reads, evaluator value
+      serialization, lookup paths, mmap reads, GC/repack, and AOS tuning remain
+      open (`C-13`/`C-14`).
 - [x] Current threshold-to-pack signal adapter:
       `PersistCache::materialize_blob_with_signals` evaluates caller-supplied
       `MaterializationSignals` at the persistence boundary, preserves the

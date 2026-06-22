@@ -613,6 +613,19 @@ pub enum PersistMaterialization {
     Skipped,
 }
 
+impl PersistMaterialization {
+    /// Returns the complete blob index entry when materialized.
+    ///
+    /// The caller must pass the same key that was used to materialize the blob;
+    /// this type only records the pack location returned by the append path.
+    pub const fn index_entry(self, key: PersistBlobKey) -> Option<PersistBlobIndexEntry> {
+        match self {
+            Self::Materialized(location) => Some(PersistBlobIndexEntry::new(key, location)),
+            Self::Skipped => None,
+        }
+    }
+}
+
 /// The result of applying a durable materialization decision to a file artifact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PersistFileArtifactMaterialization {
@@ -2808,6 +2821,7 @@ mod tests {
             .expect("skip succeeds");
 
         assert_eq!(result, PersistMaterialization::Skipped);
+        assert_eq!(result.index_entry(key), None);
         assert_eq!(
             fs::metadata(cache.value_pack().path())
                 .expect("value pack metadata")
@@ -2835,6 +2849,10 @@ mod tests {
         assert_eq!(
             location.record_offset(),
             PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            result.index_entry(key),
+            Some(PersistBlobIndexEntry::new(key, location))
         );
         assert_eq!(
             cache
@@ -2880,6 +2898,7 @@ mod tests {
             .expect("skip succeeds");
 
         assert_eq!(result, PersistMaterialization::Skipped);
+        assert_eq!(result.index_entry(key), None);
         assert_eq!(
             fs::metadata(cache.value_pack().path())
                 .expect("value pack metadata")
@@ -2904,6 +2923,10 @@ mod tests {
         let PersistMaterialization::Materialized(location) = result else {
             panic!("materialization should append");
         };
+        assert_eq!(
+            result.index_entry(key),
+            Some(PersistBlobIndexEntry::new(key, location))
+        );
         assert_eq!(
             cache
                 .read_blob(key, location)
