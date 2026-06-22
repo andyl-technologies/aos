@@ -114,6 +114,65 @@ fn architecture_red_placeholder_gates_are_wired() {
     }
 }
 
+#[test]
+fn canonical_gates_have_phase_gate_ci_targets() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let phase_gate_wiring =
+        fs::read_to_string(root.join("tests/crucible/phase1-phase-gate-wiring.nix"))?;
+    let mut missing = Vec::new();
+
+    for gate in canonical_gates() {
+        let needle = format!("gate = \"{}\";", gate.name);
+        if !phase_gate_wiring.contains(&needle) {
+            missing.push(format!(
+                "{}: canonical gate is absent from phase-gate CI target wiring",
+                gate.name
+            ));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "canonical gate CI target wiring drift:\n{}",
+        missing.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn gate_catalog_doc_lint_failure_modes_remain_wired() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let rfc_consistency =
+        fs::read_to_string(root.join("crates/crucible-harness/tests/rfc_consistency.rs"))?;
+    let mut missing = Vec::new();
+
+    for (label, content, needle) in [
+        (
+            "rfc_consistency.rs",
+            rfc_consistency.as_str(),
+            "failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));",
+        ),
+        (
+            "rfc_consistency.rs",
+            rfc_consistency.as_str(),
+            "rfc_consistency_rules_reject_undefined_and_unreferenced_gates",
+        ),
+    ] {
+        if !content.contains(needle) {
+            missing.push(format!("{label}: missing `{needle}`"));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "gate catalog doc-lint wiring drift:\n{}",
+        missing.join("\n")
+    );
+
+    Ok(())
+}
+
 fn workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     match manifest_dir.parent().and_then(Path::parent) {
