@@ -32,6 +32,12 @@ in
     pname = "nix";
     inherit version;
 
+    # `out` ships the CLI + shared libraries (the runtime image uses the nix
+    # CLI only); `dev` holds the headers and pkg-config files. Keeping the
+    # pkg-config out of `out` is what stops nix's `.pc` files from dragging
+    # boost's header output (`boost.dev`) back into the runtime closure.
+    outputs = ["out" "dev"];
+
     src = fetchurl {
       urls = [
         "https://github.com/NixOS/nix/archive/refs/tags/${version}.tar.gz"
@@ -48,6 +54,9 @@ in
       python3
       bison
       flex
+      # Boost headers for compilation only; the runtime lib reference comes
+      # from `boost` (the lib output) in runtimeDeps below.
+      boost.dev
     ];
     runtimeDeps = [
       curl
@@ -96,6 +105,12 @@ in
           # upstream in 2.28.0 (commit 6a1a3fa1c).
           sed -i "s|configdata.set_quoted('SYSTEM', host_machine.system())|configdata.set_quoted('SYSTEM', host_machine.cpu_family() + '-' + host_machine.system())|" \
             src/libstore/meson.build
+          # Boost is split across two outputs (headers in boost.dev, libs in
+          # boost). Point meson's Boost finder at each explicitly — these
+          # split-aware vars work where BOOST_ROOT (single prefix) would not.
+          export BOOST_INCLUDEDIR=${boost.dev}/include
+          export BOOST_LIBRARYDIR=${boost}/lib
+
           mkdir -p build && cd build
           meson setup .. \
             --prefix=$out \
@@ -121,6 +136,20 @@ in
               ln -s nix "$out/bin/$cmd"
             fi
           done
+
+          # Move build-against artifacts into $dev so the runtime $out (CLI +
+          # libs) carries no headers and no pkg-config. The pkg-config files
+          # reference boost's header output; leaving them in $out would pull
+          # boost.dev back into the runtime closure. Nothing on the appliance
+          # compiles against libnix, so $out needs neither.
+          mkdir -p "$dev"
+          if [ -d "$out/include" ]; then
+            mv "$out/include" "$dev/include"
+          fi
+          if [ -d "$out/lib/pkgconfig" ]; then
+            mkdir -p "$dev/lib"
+            mv "$out/lib/pkgconfig" "$dev/lib/pkgconfig"
+          fi
         '';
       }
     ];
