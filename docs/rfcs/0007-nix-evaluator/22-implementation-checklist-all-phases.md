@@ -462,10 +462,21 @@ alone (`M-1`/`Q-A`).
       `DemandCacheKey` construction from typed input identities,
       non-canonical `ValueHash` wrapping for observed input results, and
       `DemandGraph::observe_impure_input` insertion/reconsideration for
-      cacheable input leaves. This is graph bookkeeping only; `EvalOutcome`
-      trace ingestion, evaluating-node edges, currentTime taint propagation,
-      persistence, allowed-path/IFD/fetch interactions, and edge-exactness
-      harness coverage remain open (`R-10`/`S-14`).
+      cacheable input leaves. This is graph bookkeeping only; wiring
+      `EvalOutcome` traces from the evaluator/cache runtime, evaluating-node
+      edges, currentTime taint propagation, persistence, allowed-path/IFD/fetch
+      interactions, and edge-exactness harness coverage remain open
+      (`R-10`/`S-14`).
+- [x] Current cache-side impure trace ingestion substrate:
+      `DemandGraph::observe_impure_trace` consumes complete cacheable traces
+      into input leaf observations, reports incomplete traces as cache-unusable
+      before graph mutation, and reports uncacheable inputs such as
+      `currentTime` before graph mutation regardless of trace order. This is
+      cacheability/leaf ingestion only; wiring `EvalOutcome` traces from the
+      evaluator/cache runtime, evaluating-node edges, currentTime taint
+      propagation through memoized nodes, persistence, allowed-path/IFD/fetch
+      interactions, and edge-exactness harness coverage remain open
+      (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

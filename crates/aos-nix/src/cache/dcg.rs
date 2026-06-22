@@ -9,7 +9,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use thiserror::Error;
 
-use super::{CacheableInputFingerprint, CutoffDecision, DemandCacheKey, EarlyCutoff, ValueHash};
+use super::{
+    CacheableInputFingerprint, CutoffDecision, DemandCacheKey, EarlyCutoff, ImpureInputFingerprint,
+    UncacheableInput, ValueHash,
+};
 
 /// A stable id for one node in a [`DemandGraph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -148,6 +151,57 @@ impl ImpureInputObservation {
     }
 }
 
+/// The cacheability status for an ingested impure input trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImpureTraceStatus {
+    /// The trace was complete and contained only cacheable inputs.
+    Cacheable,
+    /// The evaluator could not produce a complete trace.
+    Incomplete,
+    /// The trace observed an input that makes the computation uncacheable.
+    Uncacheable(UncacheableInput),
+}
+
+/// The result of ingesting an evaluator impure-input observation trace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImpureTraceObservation {
+    status: ImpureTraceStatus,
+    leaves: Vec<ImpureInputObservation>,
+}
+
+impl ImpureTraceObservation {
+    fn cacheable(leaves: Vec<ImpureInputObservation>) -> Self {
+        Self {
+            status: ImpureTraceStatus::Cacheable,
+            leaves,
+        }
+    }
+
+    fn incomplete() -> Self {
+        Self {
+            status: ImpureTraceStatus::Incomplete,
+            leaves: Vec::new(),
+        }
+    }
+
+    fn uncacheable(input: UncacheableInput) -> Self {
+        Self {
+            status: ImpureTraceStatus::Uncacheable(input),
+            leaves: Vec::new(),
+        }
+    }
+
+    /// Returns the cacheability status for the ingested trace.
+    pub const fn status(&self) -> ImpureTraceStatus {
+        self.status
+    }
+
+    /// Returns per-leaf observations for cacheable traces.
+    pub fn leaves(&self) -> &[ImpureInputObservation] {
+        &self.leaves
+    }
+}
+
 /// An in-memory demand graph.
 #[derive(Clone, Debug, Default)]
 pub struct DemandGraph {
@@ -258,6 +312,49 @@ impl DemandGraph {
         Ok(ImpureInputObservation::Inserted { node })
     }
 
+    /// Ingests an evaluator impure-input observation trace.
+    ///
+    /// This method only turns trace entries into cache-side input leaves. It
+    /// does not create edges from an evaluating node to those leaves. Incomplete
+    /// or uncacheable traces are reported without mutating graph state.
+    /// Cacheable traces are applied incrementally after the pre-scan; errors
+    /// from leaf observation are not rolled back.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if leaf observation storage cannot be
+    /// reserved or if inserting/reconsidering a cacheable leaf fails.
+    pub fn observe_impure_trace(
+        &mut self,
+        trace: &[ImpureInputFingerprint],
+        complete: bool,
+    ) -> Result<ImpureTraceObservation, DemandGraphError> {
+        if !complete {
+            return Ok(ImpureTraceObservation::incomplete());
+        }
+        if let Some(input) = trace.iter().find_map(|fingerprint| match fingerprint {
+            ImpureInputFingerprint::Uncacheable(input) => Some(*input),
+            ImpureInputFingerprint::Cacheable(_) => None,
+        }) {
+            return Ok(ImpureTraceObservation::uncacheable(input));
+        }
+
+        let mut leaves = Vec::new();
+        leaves.try_reserve_exact(trace.len()).map_err(|_| {
+            DemandGraphError::TraceObservationAllocationFailed {
+                observations: trace.len(),
+            }
+        })?;
+        for fingerprint in trace {
+            let ImpureInputFingerprint::Cacheable(fingerprint) = fingerprint else {
+                unreachable!("uncacheable inputs were pre-scanned");
+            };
+            leaves.push(self.observe_impure_input(fingerprint)?);
+        }
+
+        Ok(ImpureTraceObservation::cacheable(leaves))
+    }
+
     /// Records that `dependent` reads `dependency`.
     ///
     /// # Errors
@@ -358,6 +455,12 @@ pub enum DemandGraphError {
         /// The requested key capacity.
         keys: usize,
     },
+    /// Trace observation storage could not reserve capacity.
+    #[error("demand graph failed to reserve {observations} trace observations")]
+    TraceObservationAllocationFailed {
+        /// The requested trace-observation capacity.
+        observations: usize,
+    },
     /// A node id does not belong to this graph.
     #[error("unknown demand graph node id {id:?}")]
     UnknownNode {
@@ -375,7 +478,9 @@ pub enum DemandGraphError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheExprIdentity, DurableBlake3Hash, ImpureInputFingerprint};
+    use crate::cache::{
+        CacheExprIdentity, DurableBlake3Hash, ImpureInputFingerprint, UncacheableInput,
+    };
     use crate::compile::IrId;
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
@@ -396,10 +501,146 @@ mod tests {
             .clone()
     }
 
+    fn read_file_trace(path: &[u8], contents: &[u8]) -> ImpureInputFingerprint {
+        ImpureInputFingerprint::read_file(path, contents).expect("input fingerprints")
+    }
+
     fn node_with_hash(graph: &mut DemandGraph, node: u32, label: &'static [u8]) -> DemandNodeId {
         graph
             .get_or_insert_node(key(node, label), Some(value_hash(label)))
             .expect("node inserts")
+    }
+
+    #[test]
+    fn incomplete_impure_trace_does_not_mutate_graph() {
+        let mut graph = DemandGraph::new();
+        let existing = node_with_hash(&mut graph, 1, b"existing");
+        let trace = [read_file_trace(b"/tmp/version", b"1")];
+
+        let observation = graph
+            .observe_impure_trace(&trace, false)
+            .expect("trace observes");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Incomplete);
+        assert!(observation.leaves().is_empty());
+        assert_eq!(graph.len(), 1);
+        assert_eq!(
+            graph.node(existing).expect("existing node").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
+    fn uncacheable_impure_trace_does_not_mutate_graph_in_any_order() {
+        let cacheable = read_file_trace(b"/tmp/version", b"1");
+        let uncacheable = ImpureInputFingerprint::current_time();
+
+        for trace in [
+            vec![cacheable.clone(), uncacheable.clone()],
+            vec![uncacheable, cacheable],
+        ] {
+            let mut graph = DemandGraph::new();
+            let existing = node_with_hash(&mut graph, 1, b"existing");
+
+            let observation = graph
+                .observe_impure_trace(&trace, true)
+                .expect("trace observes");
+
+            assert_eq!(
+                observation.status(),
+                ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+            );
+            assert!(observation.leaves().is_empty());
+            assert_eq!(graph.len(), 1);
+            assert_eq!(
+                graph.node(existing).expect("existing node").freshness(),
+                NodeFreshness::Clean
+            );
+        }
+    }
+
+    #[test]
+    fn cacheable_impure_trace_inserts_leaves() {
+        let mut graph = DemandGraph::new();
+        let trace = [
+            read_file_trace(b"/tmp/one", b"same"),
+            read_file_trace(b"/tmp/two", b"same"),
+        ];
+
+        let observation = graph
+            .observe_impure_trace(&trace, true)
+            .expect("trace observes");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        assert_eq!(observation.leaves().len(), 2);
+        assert!(matches!(
+            observation.leaves()[0],
+            ImpureInputObservation::Inserted { .. }
+        ));
+        assert!(matches!(
+            observation.leaves()[1],
+            ImpureInputObservation::Inserted { .. }
+        ));
+        assert_ne!(
+            observation.leaves()[0].node(),
+            observation.leaves()[1].node()
+        );
+        assert_eq!(graph.len(), 2);
+    }
+
+    #[test]
+    fn unchanged_cacheable_impure_trace_cuts_off() {
+        let mut graph = DemandGraph::new();
+        let trace = [read_file_trace(b"/tmp/version", b"1")];
+        let first = graph
+            .observe_impure_trace(&trace, true)
+            .expect("first trace observes");
+        let leaf = first.leaves()[0].node();
+
+        let second = graph
+            .observe_impure_trace(&trace, true)
+            .expect("second trace observes");
+
+        assert_eq!(second.status(), ImpureTraceStatus::Cacheable);
+        let [ImpureInputObservation::Reconsidered(reconsideration)] = second.leaves() else {
+            panic!("same trace reconsiders its existing leaf");
+        };
+        assert_eq!(reconsideration.node(), leaf);
+        assert_eq!(reconsideration.decision(), CutoffDecision::CutOff);
+        assert!(reconsideration.dirtied_dependents().is_empty());
+        assert_eq!(graph.len(), 1);
+    }
+
+    #[test]
+    fn changed_cacheable_impure_trace_dirties_dependents() {
+        let mut graph = DemandGraph::new();
+        let first = [read_file_trace(b"/tmp/version", b"1")];
+        let input = graph
+            .observe_impure_trace(&first, true)
+            .expect("first trace observes")
+            .leaves()[0]
+            .node();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        graph
+            .add_dependency(dependent, input)
+            .expect("dependency records");
+
+        let changed = [read_file_trace(b"/tmp/version", b"2")];
+        let observation = graph
+            .observe_impure_trace(&changed, true)
+            .expect("changed trace observes");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        let [ImpureInputObservation::Reconsidered(reconsideration)] = observation.leaves() else {
+            panic!("changed trace reconsiders its existing leaf");
+        };
+        assert_eq!(reconsideration.node(), input);
+        assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(reconsideration.dirtied_dependents(), &[dependent]);
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
     }
 
     #[test]
