@@ -1010,7 +1010,17 @@ Frontend is the **P1** foundation (decision `S-11`): every item below lands unde
 
 ### Parse/compile as demand-graph nodes (§9.6)
 
-- [ ] Lazy split: parse on first `import` demand, native-compile deferred until hot — parse and compile as two demand-graph nodes with different eagerness (§9.6) — **P1** parse-lazy committed; native-compile-on-heat ties to tiers ([08](08-execution-tiers-and-cranelift.md), **P6**); `C-19`/`C-20`.
+- [x] Current import parse-on-demand/cache path: ordinary filesystem `import`
+      reaches parsing/lowering through the evaluated import builtin, consults the
+      configured durable source-BLAKE3/schema/flags parse cache on demand,
+      remaps cached IR per import site, and pairs it with the canonical-realpath
+      result memo; scoped imports and text-store imports intentionally bypass the
+      durable parse cache (§9.6) — **P1** parse-lazy path.
+- [ ] Future demand-graph/native-compile split: model parse and compile as
+      separate demand-graph nodes with different eagerness, keep parse lazy on
+      import demand, and defer native compilation until heat/tier policy (§9.6);
+      native-compile-on-heat ties to tiers ([08](08-execution-tiers-and-cranelift.md),
+      **P6**); `C-19`/`C-20`.
 - [ ] Parallel parse/compile of independent files on the rayon work-stealing pool (§9.6) — **P3.5**, `C-19`; differential identity vs sequential oracle + `loom`/Miri audit (`R-4`).
 - [ ] Speculative prefetch along statically-known import edges, with the error-quarantine guardrail (speculative parse failure stashed, raised only on genuine demand) and bounded idle-worker scheduling (§9.6) — **P3.5/P8**, `C-19`/`M-23` (measure-gated aggressiveness, IN SCOPE); error-quarantine soundness via the effect-class discipline ([25](25-intermediate-representation.md) §5).
 
