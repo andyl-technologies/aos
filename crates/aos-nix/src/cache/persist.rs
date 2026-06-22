@@ -6,11 +6,13 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use thiserror::Error;
 
+use super::parse::{ParseCacheKey, ParseFileKey};
 use super::{DurableBlake3Hash, MaterializationDecision};
 
 /// The persistent eval-cache schema format marker.
@@ -25,10 +27,19 @@ pub const PERSIST_BLOB_PACK_VERSION: u32 = 1;
 pub const PERSIST_BLOB_PACK_HEADER_LEN: usize = 24;
 /// The encoded length of an immutable blob record header.
 pub const PERSIST_BLOB_RECORD_HEADER_LEN: usize = 40;
+/// The encoded length of a hash-to-offset index key.
+pub const PERSIST_BLOB_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of a hash-to-offset index value.
 pub const PERSIST_BLOB_INDEX_VALUE_LEN: usize = 16;
+/// The encoded length of a file-artifact index key.
+pub const PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN: usize = 33;
+/// The encoded length of a file-artifact index value.
+pub const PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN: usize =
+    PERSIST_BLOB_INDEX_KEY_LEN + PERSIST_BLOB_INDEX_VALUE_LEN;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
+const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
+const PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION: &[u8] = b"aos-nix-persist-file-artifact-key-v1";
 
 /// A content-addressed immutable blob namespace in the persistent cache.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +55,14 @@ impl PersistBlobStore {
         match self {
             Self::Values => 1,
             Self::Files => 2,
+        }
+    }
+
+    fn from_index_tag(tag: u8) -> Result<Self, PersistPackFormatError> {
+        match tag {
+            1 => Ok(Self::Values),
+            2 => Ok(Self::Files),
+            _ => Err(PersistPackFormatError::InvalidBlobIndexStoreTag { tag }),
         }
     }
 }
@@ -85,11 +104,30 @@ impl PersistBlobKey {
     ///
     /// The first byte separates the `values/` and `files/` namespaces; the
     /// remaining 32 bytes are the durable BLAKE3 digest.
-    pub fn index_bytes(self) -> [u8; 33] {
-        let mut bytes = [0; 33];
+    pub fn index_bytes(self) -> [u8; PERSIST_BLOB_INDEX_KEY_LEN] {
+        let mut bytes = [0; PERSIST_BLOB_INDEX_KEY_LEN];
         bytes[0] = self.store.index_tag();
         bytes[1..].copy_from_slice(&self.hash.as_bytes());
         bytes
+    }
+
+    /// Decodes the stable binary key for the future hash-to-offset index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_BLOB_INDEX_KEY_LEN`] or carries an unknown store tag.
+    pub fn decode_index_bytes(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_BLOB_INDEX_KEY_LEN {
+            return Err(PersistPackFormatError::ShortBlobIndexKey {
+                expected: PERSIST_BLOB_INDEX_KEY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let store = PersistBlobStore::from_index_tag(bytes[0])?;
+        let mut hash = [0; 32];
+        hash.copy_from_slice(&bytes[1..PERSIST_BLOB_INDEX_KEY_LEN]);
+        Ok(Self::new(store, DurableBlake3Hash::from_bytes(hash)))
     }
 }
 
@@ -269,6 +307,124 @@ impl PersistBlobLocation {
             record_offset: read_u64(&bytes[..8]),
             payload_len: read_u64(&bytes[8..16]),
         })
+    }
+}
+
+/// A stable index key for a durable frontend file artifact.
+///
+/// The key is derived from the canonical realpath bytes, the source-content
+/// hash, and the parse-cache key that includes parser schema and flags.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistFileArtifactKey {
+    hash: DurableBlake3Hash,
+}
+
+impl PersistFileArtifactKey {
+    /// Creates a persistent file-artifact index key from a parse file key.
+    pub fn from_parse_file_key(file_key: &ParseFileKey, parse_key: ParseCacheKey) -> Self {
+        Self::for_realpath_bytes(
+            file_key.realpath().as_os_str().as_bytes(),
+            file_key.content_hash(),
+            parse_key,
+        )
+    }
+
+    /// Creates a persistent file-artifact index key from raw canonical realpath bytes.
+    pub fn for_realpath_bytes(
+        realpath: &[u8],
+        content_hash: DurableBlake3Hash,
+        parse_key: ParseCacheKey,
+    ) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(PERSIST_FILE_ARTIFACT_KEY_PERSONALIZATION);
+        update_persist_index_chunk(&mut hasher, realpath);
+        hasher.update(&content_hash.as_bytes());
+        hasher.update(&parse_key.as_bytes());
+        Self {
+            hash: DurableBlake3Hash::from_hasher(hasher),
+        }
+    }
+
+    /// Returns the durable hash of the file-artifact mapping identity.
+    pub const fn hash(self) -> DurableBlake3Hash {
+        self.hash
+    }
+
+    /// Returns the stable binary key for the future file-artifact index.
+    pub fn index_bytes(self) -> [u8; PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN] {
+        let mut bytes = [0; PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN];
+        bytes[0] = PERSIST_FILE_ARTIFACT_INDEX_TAG;
+        bytes[1..].copy_from_slice(&self.hash.as_bytes());
+        bytes
+    }
+}
+
+/// A stable index value for a durable frontend file artifact.
+///
+/// The value points at a blob in the `files/` pack. The blob payload format is
+/// intentionally outside this codec; the pack still verifies the payload hash
+/// on read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistFileArtifactIndexValue {
+    blob_hash: DurableBlake3Hash,
+    location: PersistBlobLocation,
+}
+
+impl PersistFileArtifactIndexValue {
+    /// Creates a file-artifact index value for a `files/` blob hash and location.
+    pub const fn new(blob_hash: DurableBlake3Hash, location: PersistBlobLocation) -> Self {
+        Self {
+            blob_hash,
+            location,
+        }
+    }
+
+    /// Returns the durable hash of the file artifact blob.
+    pub const fn blob_hash(self) -> DurableBlake3Hash {
+        self.blob_hash
+    }
+
+    /// Returns the typed blob lookup key in the `files/` store.
+    pub const fn blob_key(self) -> PersistBlobKey {
+        PersistBlobKey::for_file(self.blob_hash)
+    }
+
+    /// Returns the blob packfile location.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+
+    /// Encodes this value as stable file-artifact index metadata.
+    pub fn encode_index_value(self) -> [u8; PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN] {
+        let mut bytes = [0; PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN];
+        bytes[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(&self.blob_key().index_bytes());
+        bytes[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&self.location.encode_index_value());
+        bytes
+    }
+
+    /// Decodes stable file-artifact index metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN`], if the embedded blob key is
+    /// malformed, or if the embedded blob key does not point at `files/`.
+    pub fn decode_index_value(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN {
+            return Err(PersistPackFormatError::ShortFileArtifactIndexValue {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let blob_key = PersistBlobKey::decode_index_bytes(&bytes[..PERSIST_BLOB_INDEX_KEY_LEN])?;
+        if blob_key.store() != PersistBlobStore::Files {
+            return Err(PersistPackFormatError::InvalidFileArtifactBlobStore {
+                store: blob_key.store(),
+            });
+        }
+        let location =
+            PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
+        Ok(Self::new(blob_key.hash(), location))
     }
 }
 
@@ -673,6 +829,20 @@ impl PersistCache {
 /// Immutable blob packfile metadata could not be decoded.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PersistPackFormatError {
+    /// A blob index key was shorter than the fixed encoded key length.
+    #[error("persistent blob index key has {actual} bytes, expected at least {expected}")]
+    ShortBlobIndexKey {
+        /// The required fixed index key length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A blob index key carried an unknown store tag.
+    #[error("persistent blob index key has invalid store tag {tag}")]
+    InvalidBlobIndexStoreTag {
+        /// The unknown store tag.
+        tag: u8,
+    },
     /// The packfile header was shorter than the fixed header length.
     #[error("persistent blob pack header has {actual} bytes, expected at least {expected}")]
     ShortPackHeader {
@@ -714,6 +884,22 @@ pub enum PersistPackFormatError {
         expected: usize,
         /// The available bytes.
         actual: usize,
+    },
+    /// A file-artifact index value was shorter than the fixed encoded length.
+    #[error(
+        "persistent file artifact index value has {actual} bytes, expected at least {expected}"
+    )]
+    ShortFileArtifactIndexValue {
+        /// The required fixed file-artifact index value length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A file-artifact index value pointed at a non-file blob store.
+    #[error("persistent file artifact index value points at {store:?}, expected Files")]
+    InvalidFileArtifactBlobStore {
+        /// The decoded blob store.
+        store: PersistBlobStore,
     },
 }
 
@@ -923,6 +1109,11 @@ fn read_u64(bytes: &[u8]) -> u64 {
     let mut raw = [0; 8];
     raw.copy_from_slice(bytes);
     u64::from_le_bytes(raw)
+}
+
+fn update_persist_index_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
 }
 
 fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackError> {
@@ -1193,6 +1384,36 @@ mod tests {
     }
 
     #[test]
+    fn blob_index_keys_decode_and_reject_invalid_prefixes() {
+        let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+        let mut encoded = key.index_bytes().to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(
+            PersistBlobKey::decode_index_bytes(&encoded).expect("blob index key decodes"),
+            key
+        );
+
+        let error =
+            PersistBlobKey::decode_index_bytes(&[0; 8]).expect_err("short index key errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortBlobIndexKey {
+                expected: PERSIST_BLOB_INDEX_KEY_LEN,
+                actual: 8,
+            }
+        );
+
+        let mut invalid_tag = key.index_bytes();
+        invalid_tag[0] = 99;
+        let error = PersistBlobKey::decode_index_bytes(&invalid_tag).expect_err("bad tag errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidBlobIndexStoreTag { tag: 99 }
+        );
+    }
+
+    #[test]
     fn blob_index_values_round_trip_locations() {
         let location = PersistBlobLocation::new(123, 456);
         let encoded = location.encode_index_value();
@@ -1229,6 +1450,94 @@ mod tests {
             PersistPackFormatError::ShortIndexValue {
                 expected: PERSIST_BLOB_INDEX_VALUE_LEN,
                 actual: 8,
+            }
+        );
+    }
+
+    #[test]
+    fn file_artifact_index_keys_include_path_content_and_parse_identity() {
+        use crate::cache::parse::{PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags};
+
+        let source = b"let x = 1; in x";
+        let flags = ParseCacheFlags::new();
+        let parse_key = ParseCacheKey::for_source(source, PARSE_CACHE_SCHEMA_VERSION, flags);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let same = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let other_path = PersistFileArtifactKey::for_realpath_bytes(
+            b"/src/other.nix",
+            file_key.content_hash(),
+            parse_key,
+        );
+        let changed_source = b"let x = 2; in x";
+        let changed_file_key = ParseFileKey::for_source("/src/default.nix", changed_source);
+        let changed_parse_key =
+            ParseCacheKey::for_source(changed_source, PARSE_CACHE_SCHEMA_VERSION, flags);
+        let changed_content =
+            PersistFileArtifactKey::from_parse_file_key(&changed_file_key, changed_parse_key);
+        let bumped_parse_key =
+            ParseCacheKey::for_source(source, PARSE_CACHE_SCHEMA_VERSION + 1, flags);
+        let changed_parse_identity =
+            PersistFileArtifactKey::from_parse_file_key(&file_key, bumped_parse_key);
+
+        assert_eq!(key, same);
+        assert_eq!(key.index_bytes().len(), PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN);
+        assert_eq!(key.index_bytes()[0], PERSIST_FILE_ARTIFACT_INDEX_TAG);
+        assert_ne!(key, other_path);
+        assert_ne!(key, changed_content);
+        assert_ne!(key, changed_parse_identity);
+    }
+
+    #[test]
+    fn file_artifact_index_values_round_trip_file_blob_locations() {
+        let blob_hash = DurableBlake3Hash::for_bytes(b"serialized IR artifact");
+        let location = PersistBlobLocation::new(123, 456);
+        let value = PersistFileArtifactIndexValue::new(blob_hash, location);
+        let mut encoded = value.encode_index_value().to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(
+            value.blob_key(),
+            PersistBlobKey::for_file(value.blob_hash())
+        );
+        assert_eq!(value.location(), location);
+        assert_eq!(
+            value.encode_index_value().len(),
+            PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN
+        );
+        assert_eq!(
+            PersistFileArtifactIndexValue::decode_index_value(&encoded)
+                .expect("file artifact value decodes"),
+            value
+        );
+    }
+
+    #[test]
+    fn file_artifact_index_values_reject_invalid_prefixes() {
+        let error = PersistFileArtifactIndexValue::decode_index_value(&[0; 8])
+            .expect_err("short file artifact index value errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortFileArtifactIndexValue {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN,
+                actual: 8,
+            }
+        );
+
+        let blob_hash = DurableBlake3Hash::for_bytes(b"serialized value");
+        let location = PersistBlobLocation::new(123, 456);
+        let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN];
+        encoded[..PERSIST_BLOB_INDEX_KEY_LEN]
+            .copy_from_slice(&PersistBlobKey::for_value(blob_hash).index_bytes());
+        encoded[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&location.encode_index_value());
+
+        let error = PersistFileArtifactIndexValue::decode_index_value(&encoded)
+            .expect_err("value blob store errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidFileArtifactBlobStore {
+                store: PersistBlobStore::Values,
             }
         );
     }

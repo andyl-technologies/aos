@@ -499,6 +499,14 @@ alone (`M-1`/`Q-A`).
       This is codec-only; LMDB/redb environments, tables, transactions, index
       writes/reads, mmap pointer reads, GC/repack, and harness proof remain open
       (`C-13`).
+- [x] Current file-artifact mapping codec substrate:
+      `PersistFileArtifactKey` derives a stable `files/` index key from
+      canonical realpath bytes, source content hash, and the
+      schema/flag-sensitive `ParseCacheKey`, while
+      `PersistFileArtifactIndexValue` encodes a `files/` blob key plus pack
+      location. This is codec-only; durable index engines, parse-artifact pack
+      payloads, lookup/write integration, mmap reads, GC/repack, Attic
+      transport, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current cache-level blob pack initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` handles after schema validation and owned-directory
