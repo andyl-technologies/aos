@@ -835,7 +835,15 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 ### Tier A — bump-pointer one-shot arena (§3)
 
-- [ ] Bump allocator: cursor add + limit compare + geometric `mmap` chunk growth; thread-local per worker; drop = per-chunk `munmap` (O(#chunks)) (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first); this alone services all CLI eval. Differential harness byte-green under Tier A.
+- [x] Current P1 safe owned-chunk bump arena: `BumpArena` serves aligned
+      monotonic allocations by cursor/limit checks inside owned `Box<[u64]>`
+      chunks, grows chunks geometrically or dedicates a chunk for oversized
+      allocations, never frees individual objects, releases owned chunks through
+      Rust drop, and exposes allocation stats/layout tests.
+- [ ] Final Tier-A runtime arena still open: geometric `mmap` chunk growth,
+      thread-local per-worker arenas, per-chunk `munmap` drop (O(#chunks)),
+      CLI-wide Tier-A default, and byte-green differential proof under Tier A
+      (§3.1–§3.2) — **P3**, `S-8`/`C-10` (per-invocation first).
 - [ ] Distinct permanent arena for hash-consed/shared values, never freed by a worker-arena drop (§3.2) — **P3**, ties to hash-consing ([05](05-value-representation.md) §5.5).
 - [ ] Configurable high-water memory budget (one knob) driving the three escalating responses (§3.6) — **P3**, `C-17`.
 
