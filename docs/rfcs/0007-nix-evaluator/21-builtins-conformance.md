@@ -27,7 +27,7 @@
 Each builtin is a checklist item:
 
 ```text
-- [ ] `name` (arg0 arg1 …) — one-line semantics + the parity hazard.
+STATUS `name` (arg0 arg1 …) — one-line semantics + the parity hazard.
       - edge case
       - edge case
 ```
