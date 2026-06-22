@@ -7,6 +7,29 @@
 
 use super::*;
 
+use crate::diagnostic::{EvalDiagnostic, render_fancy_report};
+
+#[derive(Clone, Copy)]
+pub(super) struct NativeDiagnosticSource<'a> {
+    name: &'static str,
+    source: &'a str,
+    source_map: Option<WrappedSourceMap>,
+}
+
+impl<'a> NativeDiagnosticSource<'a> {
+    pub(super) const fn new(
+        name: &'static str,
+        source: &'a str,
+        source_map: Option<WrappedSourceMap>,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            source_map,
+        }
+    }
+}
+
 pub(super) fn parse_cache_frontend_error(
     error: ParseCacheError,
     source_map: Option<WrappedSourceMap>,
@@ -57,6 +80,21 @@ pub(super) fn native_eval_error(
     error: TreeWalkError,
     source_map: Option<WrappedSourceMap>,
 ) -> NativeEvalError {
+    native_eval_error_impl(error, source_map, None)
+}
+
+pub(super) fn native_eval_error_with_source(
+    error: TreeWalkError,
+    source: NativeDiagnosticSource<'_>,
+) -> NativeEvalError {
+    native_eval_error_impl(error, source.source_map, Some(source))
+}
+
+fn native_eval_error_impl(
+    error: TreeWalkError,
+    source_map: Option<WrappedSourceMap>,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+) -> NativeEvalError {
     let kind = error.kind();
     if let Some(feature) = tree_walk_unsupported_feature(&kind) {
         return NativeEvalError::Unsupported {
@@ -67,8 +105,39 @@ pub(super) fn native_eval_error(
     }
 
     NativeEvalError::EvalError {
-        message: error.to_string(),
+        message: native_eval_error_message(&error, diagnostic_source),
     }
+}
+
+fn native_eval_error_message(
+    error: &TreeWalkError,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+) -> String {
+    diagnostic_source
+        .and_then(|source| rendered_eval_diagnostic(error, source))
+        .unwrap_or_else(|| error.to_string())
+}
+
+fn rendered_eval_diagnostic(
+    error: &TreeWalkError,
+    source: NativeDiagnosticSource<'_>,
+) -> Option<String> {
+    let span = match source.source_map {
+        Some(source_map) => wrapped_source_span(error.span(), source_map)?,
+        None => error.span(),
+    };
+    if !span_fits_source(span, source.source) {
+        return None;
+    }
+
+    let diagnostic = EvalDiagnostic::new(source.name, source.source, error.clone().with_span(span));
+    render_fancy_report(&diagnostic).ok()
+}
+
+fn span_fits_source(span: Span, source: &str) -> bool {
+    let start = span.start as usize;
+    let end = span.end.max(span.start.saturating_add(1)) as usize;
+    start < source.len() && end <= source.len()
 }
 
 fn tree_walk_unsupported_feature(kind: &TreeWalkErrorKind) -> Option<String> {
@@ -124,16 +193,17 @@ pub(super) fn source_span_from_wrapped(
     span: Span,
     source_map: WrappedSourceMap,
 ) -> Option<crate::error::SrcSpan> {
+    wrapped_source_span(span, source_map).map(src_span)
+}
+
+fn wrapped_source_span(span: Span, source_map: WrappedSourceMap) -> Option<Span> {
     let prefix_len = u32::try_from(source_map.prefix_len).ok()?;
     let expr_len = u32::try_from(source_map.expr_len).ok()?;
     let expr_end = prefix_len.checked_add(expr_len)?;
     if span.start < prefix_len || span.end > expr_end {
         return None;
     }
-    Some(src_span(Span::new(
-        span.start - prefix_len,
-        span.end - prefix_len,
-    )))
+    Some(Span::new(span.start - prefix_len, span.end - prefix_len))
 }
 
 const fn src_span(span: Span) -> crate::error::SrcSpan {

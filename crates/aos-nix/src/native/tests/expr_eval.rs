@@ -127,10 +127,14 @@ fn native_expression_eval_reports_semantic_errors() -> Result<()> {
         .eval_expr("1 + true")
         .expect_err("type errors are native evaluation errors");
 
-    assert!(matches!(
-        err.downcast_ref::<NativeEvalError>(),
-        Some(NativeEvalError::EvalError { message }) if message.contains("type error")
-    ));
+    let Some(NativeEvalError::EvalError { message }) = err.downcast_ref::<NativeEvalError>() else {
+        panic!("type error should surface as a native eval error: {err:?}");
+    };
+    assert!(message.contains("type error"), "{message}");
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(message.contains("expr.nix"), "{message}");
+    assert!(message.contains("1 + true"), "{message}");
+    assert!(!message.contains("builtins.toJSON"), "{message}");
 
     for source in ["length", "currentTime"] {
         let err = native

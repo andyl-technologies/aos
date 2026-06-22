@@ -49,6 +49,11 @@ impl TreeWalkError {
         self.span
     }
 
+    pub(crate) fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
+    }
+
     /// Returns diagnostic context messages from outermost to innermost.
     pub fn contexts(&self) -> &[EvalErrorContext] {
         &self.contexts

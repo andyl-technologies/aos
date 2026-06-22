@@ -215,9 +215,12 @@ impl NixNative {
         };
         let ir = self.lower_native_source(&source, Some(source_map))?;
         ensure_native_json_subset(&ir, expr.len(), &self.options)?;
-        let outcome = self
-            .eval_ir(&ir)
-            .map_err(|error| native_eval_error(error, Some(source_map)))?;
+        let outcome = self.eval_ir(&ir).map_err(|error| {
+            native_eval_error_with_source(
+                error,
+                NativeDiagnosticSource::new("expr.nix", expr, Some(source_map)),
+            )
+        })?;
         let string = outcome
             .heap()
             .get_string(outcome.value())
