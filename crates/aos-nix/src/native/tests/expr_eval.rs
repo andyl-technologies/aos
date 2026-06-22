@@ -111,6 +111,57 @@ fn assert_parse_source_report(err: &anyhow::Error) {
 }
 
 #[test]
+fn native_expression_scope_error_uses_source_report() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let err = native
+        .eval_expr("let ${name} = 1; in 1")
+        .expect_err("scope errors should stay fallback-eligible");
+
+    assert_scope_source_report(&err);
+    Ok(())
+}
+
+#[test]
+fn native_expression_parse_cache_preserves_scope_error_report() -> Result<()> {
+    let root = unique_temp_dir("native-expression-scope-cache-error");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let mut options = TreeWalkOptions::new();
+    options.set_parse_cache_root(root.join("parse"));
+    let native = NixNative::with_options(0, options)?;
+
+    let err = native
+        .eval_expr("let ${name} = 1; in 1")
+        .expect_err("scope errors should stay fallback-eligible through the cached path");
+
+    assert_scope_source_report(&err);
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn assert_scope_source_report(err: &anyhow::Error) {
+    let Some(NativeEvalError::Unsupported {
+        feature,
+        span: Some(_),
+    }) = err.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("scope errors should stay unsupported fallback errors: {err:?}");
+    };
+    assert!(
+        feature.contains("native expression resolve failure"),
+        "{feature}"
+    );
+    assert!(
+        feature.contains("aos_nix::resolve::dynamic_let_binding"),
+        "{feature}"
+    );
+    assert!(feature.contains("expr.nix"), "{feature}");
+    assert!(feature.contains("let ${name} = 1; in 1"), "{feature}");
+    assert!(!feature.contains("builtins.toJSON"), "{feature}");
+}
+
+#[test]
 fn configured_cpp_nix_native_expression_eval_matches_cli_json() -> Result<()> {
     let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
         eprintln!("AOS_NIX_ORACLE not set; skipping configured native eval_expr check");

@@ -373,13 +373,10 @@ impl NixNative {
     ) -> Result<Ir> {
         let parsed = parse_str(source)
             .map_err(|source| unsupported_parse_error(source, source_map, diagnostic_source))?;
-        let resolved = resolve(parsed).map_err(|source| {
-            unsupported_frontend_error("resolve", source.to_string(), source.span(), source_map)
-        })?;
-        lower(resolved).map_err(|source| {
-            unsupported_frontend_error("lower", source.to_string(), source.span(), source_map)
-                .into()
-        })
+        let resolved = resolve(parsed)
+            .map_err(|source| unsupported_scope_error(source, source_map, diagnostic_source))?;
+        lower(resolved)
+            .map_err(|source| unsupported_ir_error(source, source_map, diagnostic_source).into())
     }
 
     fn eval_ir(&self, ir: &Ir) -> Result<EvalOutcome, TreeWalkError> {

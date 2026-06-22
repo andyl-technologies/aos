@@ -10,6 +10,7 @@ use std::{error::Error, fmt, ops::Range};
 use miette::{Diagnostic, GraphicalReportHandler, LabeledSpan, NamedSource, Severity, SourceCode};
 
 use crate::{
+    compile::{IrError, IrErrorKind, ScopeError, ScopeErrorKind},
     eval::{TreeWalkError, TreeWalkErrorKind},
     syntax::{LexError, LexErrorKind, ParseError, ParseErrorKind, Span},
 };
@@ -22,6 +23,12 @@ pub type LexDiagnostic = SourceDiagnostic<LexError>;
 
 /// A source-backed tree-walk evaluator diagnostic.
 pub type EvalDiagnostic = SourceDiagnostic<TreeWalkError>;
+
+/// A source-backed scope-resolution diagnostic.
+pub type ScopeDiagnostic = SourceDiagnostic<ScopeError>;
+
+/// A source-backed IR-lowering diagnostic.
+pub type IrDiagnostic = SourceDiagnostic<IrError>;
 
 /// A typed native error paired with the source text that produced it.
 #[derive(Clone, Debug)]
@@ -135,6 +142,56 @@ impl Diagnostic for EvalDiagnostic {
     }
 }
 
+impl Diagnostic for ScopeDiagnostic {
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(scope_error_code(self.error.kind())))
+    }
+
+    fn severity(&self) -> Option<Severity> {
+        Some(Severity::Error)
+    }
+
+    fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        scope_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
+    }
+
+    fn source_code(&self) -> Option<&dyn SourceCode> {
+        Some(&self.source)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(label_for_span(
+            self.error.span(),
+            "scope-resolution error",
+        ))))
+    }
+}
+
+impl Diagnostic for IrDiagnostic {
+    fn code<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(ir_error_code(self.error.kind())))
+    }
+
+    fn severity(&self) -> Option<Severity> {
+        Some(Severity::Error)
+    }
+
+    fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        ir_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
+    }
+
+    fn source_code(&self) -> Option<&dyn SourceCode> {
+        Some(&self.source)
+    }
+
+    fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
+        Some(Box::new(std::iter::once(label_for_span(
+            self.error.span(),
+            "IR-lowering error",
+        ))))
+    }
+}
+
 /// Renders any miette diagnostic through the built-in fancy renderer.
 ///
 /// Callers should use this function as the report-printing seam instead of
@@ -222,6 +279,76 @@ fn parse_error_help(kind: &ParseErrorKind) -> Option<&'static str> {
     }
 }
 
+fn scope_error_code(kind: &ScopeErrorKind) -> &'static str {
+    match kind {
+        ScopeErrorKind::Ast(_) => "aos_nix::resolve::ast",
+        ScopeErrorKind::InvalidNodeId(_) => "aos_nix::resolve::invalid_node_id",
+        ScopeErrorKind::InvalidNodeShape { .. } => "aos_nix::resolve::invalid_node_shape",
+        ScopeErrorKind::TooManyFrames => "aos_nix::resolve::too_many_frames",
+        ScopeErrorKind::TooManyWithChains => "aos_nix::resolve::too_many_with_chains",
+        ScopeErrorKind::TooManyInheritGroups => "aos_nix::resolve::too_many_inherit_groups",
+        ScopeErrorKind::TooManySlots => "aos_nix::resolve::too_many_slots",
+        ScopeErrorKind::TooManyUpvalues => "aos_nix::resolve::too_many_upvalues",
+        ScopeErrorKind::UndefinedSymbol(_) => "aos_nix::resolve::undefined_symbol",
+        ScopeErrorKind::DynamicLetBinding => "aos_nix::resolve::dynamic_let_binding",
+        ScopeErrorKind::DynamicInheritTarget => "aos_nix::resolve::dynamic_inherit_target",
+    }
+}
+
+fn scope_error_help(kind: &ScopeErrorKind) -> Option<&'static str> {
+    match kind {
+        ScopeErrorKind::UndefinedSymbol(_) => {
+            Some("Define the name in scope or use a supported builtin.")
+        }
+        ScopeErrorKind::DynamicLetBinding => Some("Use a static attribute name for let bindings."),
+        ScopeErrorKind::DynamicInheritTarget => {
+            Some("Use a static attribute name for inherit targets.")
+        }
+        ScopeErrorKind::Ast(_)
+        | ScopeErrorKind::InvalidNodeId(_)
+        | ScopeErrorKind::InvalidNodeShape { .. }
+        | ScopeErrorKind::TooManyFrames
+        | ScopeErrorKind::TooManyWithChains
+        | ScopeErrorKind::TooManyInheritGroups
+        | ScopeErrorKind::TooManySlots
+        | ScopeErrorKind::TooManyUpvalues => None,
+    }
+}
+
+fn ir_error_code(kind: &IrErrorKind) -> &'static str {
+    match kind {
+        IrErrorKind::InvalidNodeId(_) => "aos_nix::lower::invalid_node_id",
+        IrErrorKind::InvalidChildSlice => "aos_nix::lower::invalid_child_slice",
+        IrErrorKind::InvalidWithChain { .. } => "aos_nix::lower::invalid_with_chain",
+        IrErrorKind::UnloweredWithScope { .. } => "aos_nix::lower::unlowered_with_scope",
+        IrErrorKind::InvalidNodeShape { .. } => "aos_nix::lower::invalid_node_shape",
+        IrErrorKind::TooManyNodes => "aos_nix::lower::too_many_nodes",
+        IrErrorKind::TooManyChildren => "aos_nix::lower::too_many_children",
+        IrErrorKind::TooManySideTableEntries => "aos_nix::lower::too_many_side_table_entries",
+        IrErrorKind::TooManyInlineCacheSites => "aos_nix::lower::too_many_inline_cache_sites",
+        IrErrorKind::InvalidBindingKey => "aos_nix::lower::invalid_binding_key",
+        IrErrorKind::InvalidInheritSource => "aos_nix::lower::invalid_inherit_source",
+        IrErrorKind::Ast(_) => "aos_nix::lower::ast",
+    }
+}
+
+fn ir_error_help(kind: &IrErrorKind) -> Option<&'static str> {
+    match kind {
+        IrErrorKind::InvalidBindingKey => Some("Use a static single-segment binding key."),
+        IrErrorKind::InvalidInheritSource => Some("Use a valid inherit source expression."),
+        IrErrorKind::InvalidNodeId(_)
+        | IrErrorKind::InvalidChildSlice
+        | IrErrorKind::InvalidWithChain { .. }
+        | IrErrorKind::UnloweredWithScope { .. }
+        | IrErrorKind::InvalidNodeShape { .. }
+        | IrErrorKind::TooManyNodes
+        | IrErrorKind::TooManyChildren
+        | IrErrorKind::TooManySideTableEntries
+        | IrErrorKind::TooManyInlineCacheSites
+        | IrErrorKind::Ast(_) => None,
+    }
+}
+
 fn eval_error_code(kind: &TreeWalkErrorKind) -> &'static str {
     match kind {
         TreeWalkErrorKind::Type { .. } => "aos_nix::eval::type",
@@ -295,6 +422,7 @@ fn eval_error_help(kind: &TreeWalkErrorKind) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::{
+        compile::{IrError, IrErrorKind, lower, resolve},
         eval::eval_whnf_owned,
         syntax::{Lexer, parse_str},
     };
@@ -338,15 +466,41 @@ mod tests {
     #[test]
     fn eval_diagnostic_keeps_error_class_in_code() {
         let source = "1 + \"x\"";
-        let ir =
-            crate::compile::lower(crate::compile::resolve(parse_str(source).unwrap()).unwrap())
-                .unwrap();
+        let ir = lower(resolve(parse_str(source).unwrap()).unwrap()).unwrap();
         let error = eval_whnf_owned(&ir).expect_err("type mismatch should fail");
         let diagnostic = EvalDiagnostic::new("expr.nix", source, error);
 
         assert_eq!(
             diagnostic.code().map(|code| code.to_string()),
             Some("aos_nix::eval::type".to_string())
+        );
+        assert!(diagnostic.help().is_some());
+        assert!(diagnostic.source_code().is_some());
+    }
+
+    #[test]
+    fn scope_diagnostic_reports_resolver_code_and_source() {
+        let source = "missing";
+        let error = resolve(parse_str(source).unwrap()).expect_err("missing name should fail");
+        let diagnostic = ScopeDiagnostic::new("expr.nix", source, error);
+
+        assert_eq!(
+            diagnostic.code().map(|code| code.to_string()),
+            Some("aos_nix::resolve::undefined_symbol".to_string())
+        );
+        assert!(diagnostic.help().is_some());
+        assert!(diagnostic.source_code().is_some());
+    }
+
+    #[test]
+    fn ir_diagnostic_reports_lowering_code_and_source() {
+        let source = "{ ${\"x\"} = 1; }";
+        let error = IrError::new(IrErrorKind::InvalidBindingKey, Span::new(2, 8));
+        let diagnostic = IrDiagnostic::new("expr.nix", source, error);
+
+        assert_eq!(
+            diagnostic.code().map(|code| code.to_string()),
+            Some("aos_nix::lower::invalid_binding_key".to_string())
         );
         assert!(diagnostic.help().is_some());
         assert!(diagnostic.source_code().is_some());

@@ -7,7 +7,10 @@
 
 use super::*;
 
-use crate::diagnostic::{EvalDiagnostic, ParseDiagnostic, render_fancy_report};
+use crate::compile::{IrError, ScopeError};
+use crate::diagnostic::{
+    EvalDiagnostic, IrDiagnostic, ParseDiagnostic, ScopeDiagnostic, render_fancy_report,
+};
 use crate::syntax::ParseError;
 
 #[derive(Clone, Copy)]
@@ -42,18 +45,14 @@ pub(super) fn parse_cache_frontend_error(
             source_map,
             diagnostic_source,
         )),
-        ParseCacheError::Scope { source } => Some(unsupported_frontend_error(
-            "resolve",
-            source.to_string(),
-            source.span(),
+        ParseCacheError::Scope { source } => Some(unsupported_scope_error(
+            source,
             source_map,
+            diagnostic_source,
         )),
-        ParseCacheError::LowerIr { source } => Some(unsupported_frontend_error(
-            "lower",
-            source.to_string(),
-            source.span(),
-            source_map,
-        )),
+        ParseCacheError::LowerIr { source } => {
+            Some(unsupported_ir_error(source, source_map, diagnostic_source))
+        }
         ParseCacheError::CanonicalizeSource { .. }
         | ParseCacheError::ReadSource { .. }
         | ParseCacheError::CreateDir { .. }
@@ -73,6 +72,34 @@ pub(super) fn unsupported_parse_error(
     let rendered = diagnostic_source.and_then(|source| rendered_parse_diagnostic(&error, source));
     unsupported_frontend_error(
         "parse",
+        rendered.unwrap_or_else(|| error.to_string()),
+        error.span(),
+        source_map,
+    )
+}
+
+pub(super) fn unsupported_scope_error(
+    error: ScopeError,
+    source_map: Option<WrappedSourceMap>,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+) -> NativeEvalError {
+    let rendered = diagnostic_source.and_then(|source| rendered_scope_diagnostic(&error, source));
+    unsupported_frontend_error(
+        "resolve",
+        rendered.unwrap_or_else(|| error.to_string()),
+        error.span(),
+        source_map,
+    )
+}
+
+pub(super) fn unsupported_ir_error(
+    error: IrError,
+    source_map: Option<WrappedSourceMap>,
+    diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+) -> NativeEvalError {
+    let rendered = diagnostic_source.and_then(|source| rendered_ir_diagnostic(&error, source));
+    unsupported_frontend_error(
+        "lower",
         rendered.unwrap_or_else(|| error.to_string()),
         error.span(),
         source_map,
@@ -107,6 +134,43 @@ fn rendered_parse_diagnostic(
         source.name,
         source.source,
         ParseError::new(error.kind().clone(), span),
+    );
+    render_fancy_report(&diagnostic).ok()
+}
+
+fn rendered_scope_diagnostic(
+    error: &ScopeError,
+    source: NativeDiagnosticSource<'_>,
+) -> Option<String> {
+    let span = match source.source_map {
+        Some(source_map) => wrapped_source_span(error.span(), source_map)?,
+        None => error.span(),
+    };
+    if !span_fits_source(span, source.source) {
+        return None;
+    }
+
+    let diagnostic = ScopeDiagnostic::new(
+        source.name,
+        source.source,
+        ScopeError::new(error.kind().clone(), span),
+    );
+    render_fancy_report(&diagnostic).ok()
+}
+
+fn rendered_ir_diagnostic(error: &IrError, source: NativeDiagnosticSource<'_>) -> Option<String> {
+    let span = match source.source_map {
+        Some(source_map) => wrapped_source_span(error.span(), source_map)?,
+        None => error.span(),
+    };
+    if !span_fits_source(span, source.source) {
+        return None;
+    }
+
+    let diagnostic = IrDiagnostic::new(
+        source.name,
+        source.source,
+        IrError::new(error.kind().clone(), span),
     );
     render_fancy_report(&diagnostic).ok()
 }
