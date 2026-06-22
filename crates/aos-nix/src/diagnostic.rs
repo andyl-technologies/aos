@@ -458,6 +458,9 @@ fn eval_error_code(kind: &TreeWalkErrorKind) -> &'static str {
         | TreeWalkErrorKind::UnsupportedImportFromDerivation { .. } => {
             "aos_nix::eval::import_from_derivation"
         }
+        TreeWalkErrorKind::ImportParse { .. } => "aos_nix::eval::import_parse",
+        TreeWalkErrorKind::ImportScope { .. } => "aos_nix::eval::import_scope",
+        TreeWalkErrorKind::ImportLower { .. } => "aos_nix::eval::import_lower",
         TreeWalkErrorKind::UnsupportedPrimOp { .. }
         | TreeWalkErrorKind::UnsupportedBuiltinAttr { .. }
         | TreeWalkErrorKind::UnsupportedFetchTreeFeature { .. }
@@ -502,7 +505,7 @@ fn eval_error_help(kind: &TreeWalkErrorKind) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::{
-        compile::{IrError, IrErrorKind, lower, resolve},
+        compile::{IrError, IrErrorKind, IrId, lower, resolve},
         eval::eval_whnf_owned,
         syntax::{Lexer, parse_str},
     };
@@ -601,6 +604,48 @@ mod tests {
             report.contains("Use a value with the type expected here."),
             "{report}"
         );
+    }
+
+    #[test]
+    fn eval_diagnostic_reports_import_frontend_codes() {
+        let source = "bad";
+        let path = b"/child.nix".to_vec();
+        for (kind, expected) in [
+            (
+                TreeWalkErrorKind::ImportParse {
+                    id: IrId::new(1),
+                    path: path.clone(),
+                    message: "parse failed".to_owned(),
+                },
+                "aos_nix::eval::import_parse",
+            ),
+            (
+                TreeWalkErrorKind::ImportScope {
+                    id: IrId::new(1),
+                    path: path.clone(),
+                    message: "scope failed".to_owned(),
+                },
+                "aos_nix::eval::import_scope",
+            ),
+            (
+                TreeWalkErrorKind::ImportLower {
+                    id: IrId::new(1),
+                    path: path.clone(),
+                    message: "lower failed".to_owned(),
+                },
+                "aos_nix::eval::import_lower",
+            ),
+        ] {
+            let diagnostic = EvalDiagnostic::new(
+                "child.nix",
+                source,
+                TreeWalkError::new(kind, Span::new(0, 3)),
+            );
+            assert_eq!(
+                diagnostic.code().map(|code| code.to_string()),
+                Some(expected.to_owned())
+            );
+        }
     }
 
     #[test]
