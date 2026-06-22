@@ -8,6 +8,7 @@
 pub mod cutoff;
 pub mod dcg;
 pub mod hashing;
+pub mod input;
 pub mod key;
 pub mod parse;
 pub mod persist;
@@ -17,6 +18,10 @@ pub use dcg::{
     DemandGraph, DemandGraphError, DemandNode, DemandNodeId, NodeFreshness, Reconsideration,
 };
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
+pub use input::{
+    CacheableInputFingerprint, DirEntryInput, FileTypeForInput, ImpureInputFingerprint,
+    ImpureInputIdentity, ImpureInputKind, ImpureInputMode, InputFingerprintError, UncacheableInput,
+};
 pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
     CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseCache,

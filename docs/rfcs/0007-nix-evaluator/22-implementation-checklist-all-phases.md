@@ -442,8 +442,17 @@ alone (`M-1`/`Q-A`).
       serialized node/value/file records, Attic transport, GC/repack, and
       cached/uncached harness proof (`C-13`/`R-14`); transport stays **beside**
       `NixEval`, on the Attic content-addressed path (`C-3`).
-- [ ] Impure-input edges: `readFile`/`readDir`/`getEnv` keyed as explicit
-      content-hash inputs; `currentTime` not cached (`R-10`).
+- [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
+      identities and deterministic durable observation hashes for
+      `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
+      an explicit uncacheable `currentTime` marker. This is a fingerprinting
+      primitive only; tree-walk builtins, demand-graph leaves,
+      allowed-path/IFD/fetch interactions, and edge-exactness harness coverage
+      remain open (`R-10`).
+- [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
+      `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
+      demand-graph inputs; `currentTime` taints dependent memos as uncacheable
+      (`R-10`).
 - [x] Current precursor: AOS-configured parse-cache kill switch. Blank
       `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
       `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
