@@ -62,6 +62,14 @@ in {
       # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
       # producer headroom as the server closure grows.
       varSizeMiB = 4096;
+      # `apr cache generate` zstd-compresses the full server-2 + bc closure
+      # (~1.5 GiB) while the image-boot target hammers the same host with UEFI
+      # partitioning/mkfs. At the 2 GiB default the producer's working set
+      # (closure + OS) thrashes page cache and the publish overruns the 1200 s
+      # agent deadline; 6 GiB keeps the closure resident. This is the one
+      # machine in the fleet that genuinely needs more than the default — every
+      # other VM runs at 2 GiB (see lib/testing/fleet-spec.nix `memoryMiB`).
+      memoryMiB = 6144;
     };
 
     target = {

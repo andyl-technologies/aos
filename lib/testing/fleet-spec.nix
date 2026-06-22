@@ -135,6 +135,22 @@
         '';
       };
 
+      memoryMiB = mkOption {
+        type = positiveInt;
+        default = 2048;
+        description = ''
+          RAM in MiB handed to this machine's QEMU (`-m`). The default
+          fits a full systemd boot plus the role under test; the
+          gzip-compressed initrd unpacks into a tmpfs that is freed at
+          switch-root, so peak boot footprint stays well under it. Raise
+          it only for machines that run a memory-hungry workload in the
+          guest (e.g. a k3s control plane). Lower it for lean single-role
+          machines where host RAM is the constraint and many VMs run at
+          once. Both the sandboxed driver and the interactive launcher
+          honor this value.
+        '';
+      };
+
       varSizeMiB = mkOption {
         type = positiveInt;
         default = 256;

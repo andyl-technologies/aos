@@ -72,10 +72,14 @@ in {
       registry.wait_until_succeeds(
           "systemctl is-active test-static-cache-server.socket", timeout=120
       )
-      registry.succeed("mkdir -p /var/lib/relreg-cache && chmod a+rX /var/lib/relreg-cache")
+      registry.succeed("mkdir -p /var/lib/sysreg-cache && chmod a+rX /var/lib/sysreg-cache")
       registry.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
+      # Probe the served cache dir, not the server root: the static cache
+      # server's Landlock grant only covers /var/lib/sysreg-cache, so a GET on
+      # `/` (which would list /var/lib) is denied. The dir exists (created
+      # above) and is empty until the release, so this lists 200.
       client.wait_until_succeeds(
-          "curl -sf --max-time 5 http://registry:8000/ -o /dev/null", timeout=120
+          "curl -sf --max-time 5 http://registry:8000/sysreg-cache/ -o /dev/null", timeout=120
       )
 
       # Pre-condition: the package is absent on the client before install.
@@ -161,9 +165,9 @@ in {
             --license MIT \\
             --maintainer test \\
             --key "$KEY" \\
-            --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache 2>&1
-          chmod -R a+rX /var/lib/relreg-cache
+            --cache-url http://registry:8000/sysreg-cache \\
+            --upload-url file:///var/lib/sysreg-cache 2>&1
+          chmod -R a+rX /var/lib/sysreg-cache
 
           # 2.4 Push the released registry (package, pointer, tag) to gitd.
           git -C "$REG_DIR" push origin "$DEFAULT_BRANCH" --tags
@@ -175,8 +179,8 @@ in {
       assert "Released relreg ${pkg.version}" in release, release
 
       # The static cache landed at the served directory.
-      registry.succeed("test -d /var/lib/relreg-cache/nar")
-      target_url = "http://registry:8000/relreg-cache/nix-cache-info"
+      registry.succeed("test -d /var/lib/sysreg-cache/nar")
+      target_url = "http://registry:8000/sysreg-cache/nix-cache-info"
       client.wait_until_succeeds(f"curl -sf --max-time 5 {target_url}", timeout=60)
 
       # ── 3. Consumer adds the registry and installs from the cache ──────
@@ -205,7 +209,7 @@ in {
 
       # The registry's static cache server logged a NAR GET from the client.
       journal = registry.succeed("journalctl -u test-static-cache-server --no-pager")
-      assert "GET /relreg-cache/nar/" in journal, journal
+      assert "GET /sysreg-cache/nar/" in journal, journal
 
       # ── 4. Skip path: re-releasing the same closure regenerates nothing ──
       second = registry.succeed(textwrap.dedent("""
@@ -226,8 +230,8 @@ in {
             --license MIT \\
             --maintainer test \\
             --key "$KEY" \\
-            --cache-url http://registry:8000/relreg-cache \\
-            --upload-url file:///var/lib/relreg-cache 2>&1
+            --cache-url http://registry:8000/sysreg-cache \\
+            --upload-url file:///var/lib/sysreg-cache 2>&1
       """), timeout=300)
       print("=== second apr release output ===\n" + second)
       assert "Generated static cache: 0 narinfos, 0 NARs" in second, second
