@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -109,7 +110,11 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
     }
-    let options = match lang_case_options(case.category, &case.flags) {
+    let lang_dir = case
+        .source
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no lang corpus parent directory", case.name))?;
+    let options = match lang_case_options(case.category, &case.flags, lang_dir) {
         Ok(options) => options,
         Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
     };
@@ -158,9 +163,14 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
 fn lang_case_options(
     category: LangCategory,
     flags: &[String],
+    lang_dir: &Path,
 ) -> std::result::Result<TreeWalkOptions, String> {
     if flags.is_empty() {
-        return Ok(TreeWalkOptions::default());
+        let mut options = base_eval_options(lang_dir)?;
+        if category == LangCategory::EvalOkay {
+            add_eval_okay_default_nix_path(&mut options, flags)?;
+        }
+        return Ok(options);
     }
 
     if matches!(category, LangCategory::ParseFail | LangCategory::ParseOkay) {
@@ -168,27 +178,45 @@ fn lang_case_options(
     }
 
     match category {
-        LangCategory::EvalOkay => eval_okay_options(flags),
-        LangCategory::EvalFail => eval_fail_options(flags),
+        LangCategory::EvalOkay => eval_okay_options(flags, lang_dir),
+        LangCategory::EvalFail => eval_fail_options(flags, lang_dir),
         LangCategory::ParseFail | LangCategory::ParseOkay => unreachable!(),
     }
 }
 
-fn eval_okay_options(flags: &[String]) -> std::result::Result<TreeWalkOptions, String> {
-    if flags
-        .iter()
-        .all(|flag| matches!(flag.as_str(), "--eval" | "--strict"))
-    {
-        Ok(TreeWalkOptions::default())
-    } else {
-        Err(unsupported_flags_message(flags))
+fn eval_okay_options(
+    flags: &[String],
+    lang_dir: &Path,
+) -> std::result::Result<TreeWalkOptions, String> {
+    let mut options = base_eval_options(lang_dir)?;
+
+    let mut index = 0;
+    while let Some(flag) = flags.get(index) {
+        match flag.as_str() {
+            "--eval" | "--strict" => {}
+            "-I" => {
+                index += 1;
+                let Some(entry) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                add_search_path_entry(&mut options, entry, flags)?;
+            }
+            _ => return Err(unsupported_flags_message(flags)),
+        }
+        index += 1;
     }
+
+    add_eval_okay_default_nix_path(&mut options, flags)?;
+    Ok(options)
 }
 
-fn eval_fail_options(flags: &[String]) -> std::result::Result<TreeWalkOptions, String> {
+fn eval_fail_options(
+    flags: &[String],
+    lang_dir: &Path,
+) -> std::result::Result<TreeWalkOptions, String> {
     if flags.len() == 2 && flags[0] == "--max-call-depth" {
         let max_call_depth = parse_max_call_depth_flag(&flags[1], flags)?;
-        let mut options = TreeWalkOptions::default();
+        let mut options = base_eval_options(lang_dir)?;
         options.set_max_call_depth(max_call_depth);
         return Ok(options);
     }
@@ -205,10 +233,56 @@ fn eval_fail_options(flags: &[String]) -> std::result::Result<TreeWalkOptions, S
     }
 
     if saw_eval && saw_strict {
-        Ok(TreeWalkOptions::default())
+        base_eval_options(lang_dir)
     } else {
         Err(unsupported_flags_message(flags))
     }
+}
+
+fn base_eval_options(lang_dir: &Path) -> std::result::Result<TreeWalkOptions, String> {
+    let mut options = TreeWalkOptions::default();
+    options
+        .set_path_literal_base(path_bytes(lang_dir))
+        .map_err(|error| error.to_string())?;
+    if let Some(parent) = lang_dir.parent() {
+        options
+            .set_search_path_base(path_bytes(parent))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(options)
+}
+
+fn add_eval_okay_default_nix_path(
+    options: &mut TreeWalkOptions,
+    flags: &[String],
+) -> std::result::Result<(), String> {
+    add_search_path_entry(options, "lang/dir3", flags)?;
+    add_search_path_entry(options, "lang/dir4", flags)?;
+    Ok(())
+}
+
+fn add_search_path_entry(
+    options: &mut TreeWalkOptions,
+    entry: &str,
+    flags: &[String],
+) -> std::result::Result<(), String> {
+    let (prefix, path) = split_search_path_entry(entry);
+    options
+        .add_nix_path_entry(prefix.to_vec(), path.to_vec())
+        .map_err(|_| unsupported_flags_message(flags))
+}
+
+fn split_search_path_entry(entry: &str) -> (&[u8], &[u8]) {
+    let bytes = entry.as_bytes();
+    if let Some(index) = bytes.iter().position(|byte| *byte == b'=') {
+        (&bytes[..index], &bytes[index + 1..])
+    } else {
+        (b"", bytes)
+    }
+}
+
+fn path_bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_bytes().to_vec()
 }
 
 fn parse_max_call_depth_flag(value: &str, flags: &[String]) -> std::result::Result<usize, String> {
@@ -267,6 +341,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
         ]
     );
     assert!(
@@ -311,6 +386,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ("eval-okay-recursive-list-long", CaseOutcome::Passed),
             ("eval-okay-recursive-list-nested", CaseOutcome::Passed),
             ("eval-okay-recursive-list-siblings", CaseOutcome::Passed),
+            ("eval-okay-search-path", CaseOutcome::Passed),
             ("eval-okay-string", CaseOutcome::Passed),
             ("eval-okay-string-interpolation", CaseOutcome::Passed),
             ("eval-okay-with-flags", CaseOutcome::Passed),
@@ -333,6 +409,7 @@ fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
 
 #[test]
 fn lang_sh_noop_eval_flags_are_supported() {
+    let lang_dir = fixture_lang_dir();
     let strict_eval_flags = ["--eval", "--strict"]
         .into_iter()
         .map(str::to_owned)
@@ -346,20 +423,23 @@ fn lang_sh_noop_eval_flags_are_supported() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
-    assert!(lang_case_options(LangCategory::EvalOkay, &strict_eval_flags).is_ok());
-    assert!(lang_case_options(LangCategory::EvalFail, &eval_fail_no_trace_flags).is_ok());
+    assert!(lang_case_options(LangCategory::EvalOkay, &strict_eval_flags, &lang_dir).is_ok());
+    assert!(
+        lang_case_options(LangCategory::EvalFail, &eval_fail_no_trace_flags, &lang_dir).is_ok()
+    );
     assert_eq!(
-        lang_case_options(LangCategory::EvalFail, &trace_only_flags),
+        lang_case_options(LangCategory::EvalFail, &trace_only_flags, &lang_dir),
         Err("case carries unsupported flags: --no-show-trace".to_owned())
     );
     assert_eq!(
-        lang_case_options(LangCategory::ParseOkay, &strict_eval_flags),
+        lang_case_options(LangCategory::ParseOkay, &strict_eval_flags, &lang_dir),
         Err("case carries unsupported flags: --eval --strict".to_owned())
     );
 }
 
 #[test]
 fn lang_sh_max_call_depth_flag_configures_eval() {
+    let lang_dir = fixture_lang_dir();
     let max_call_depth_flags = ["--max-call-depth", "3"]
         .into_iter()
         .map(str::to_owned)
@@ -373,21 +453,47 @@ fn lang_sh_max_call_depth_flag_configures_eval() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
-    let options = lang_case_options(LangCategory::EvalFail, &max_call_depth_flags)
+    let options = lang_case_options(LangCategory::EvalFail, &max_call_depth_flags, &lang_dir)
         .expect("max-call-depth flag should be supported");
     assert_eq!(options.max_call_depth(), 3);
     assert_eq!(
-        lang_case_options(LangCategory::EvalFail, &max_call_depth_with_trace_flags),
+        lang_case_options(
+            LangCategory::EvalFail,
+            &max_call_depth_with_trace_flags,
+            &lang_dir
+        ),
         Err("case carries unsupported flags: --max-call-depth 3 --no-show-trace".to_owned())
     );
     assert_eq!(
-        lang_case_options(LangCategory::EvalFail, &max_call_depth_with_eval_flags),
+        lang_case_options(
+            LangCategory::EvalFail,
+            &max_call_depth_with_eval_flags,
+            &lang_dir
+        ),
         Err("case carries unsupported flags: --max-call-depth 3 --eval --strict".to_owned())
     );
 }
 
 #[test]
+fn lang_sh_search_path_flags_configure_eval_okay() {
+    let lang_dir = fixture_lang_dir();
+    let search_path_flags = ["-I", "lang/dir1", "-I", "lang/dir2", "-I", "dir5=lang/dir3"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let options = lang_case_options(LangCategory::EvalOkay, &search_path_flags, &lang_dir)
+        .expect("search-path flags should be supported");
+    assert_eq!(
+        options.search_path_base(),
+        path_bytes(&lang_dir.parent().unwrap())
+    );
+    assert_eq!(options.nix_path().len(), 5);
+}
+
+#[test]
 fn lang_sh_capability_flags_remain_skipped() {
+    let lang_dir = fixture_lang_dir();
     let autoarg_flags = [
         "--arg",
         "lib",
@@ -403,7 +509,7 @@ fn lang_sh_capability_flags_remain_skipped() {
     .collect::<Vec<_>>();
 
     assert_eq!(
-        lang_case_options(LangCategory::EvalOkay, &autoarg_flags),
+        lang_case_options(LangCategory::EvalOkay, &autoarg_flags, &lang_dir),
         Err(
             "case carries unsupported flags: --arg lib import(lang/lib.nix) --argstr xyzzy xyzzy! -A result"
                 .to_owned()
