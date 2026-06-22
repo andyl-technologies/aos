@@ -929,6 +929,7 @@ impl TreeWalk {
             .as_os_str()
             .as_bytes()
             .to_vec();
+        self.record_impure_input_result(ImpureInputFingerprint::import(&path, &source));
         if let Some(cached) = self.load_parse_cached_import(
             argument,
             argument_span,

@@ -449,6 +449,15 @@ alone (`M-1`/`Q-A`).
       primitive only; tree-walk builtins, demand-graph leaves,
       allowed-path/IFD/fetch interactions, and edge-exactness harness coverage
       remain open (`R-10`).
+- [x] Current tree-walk impure-input observation trace: successful ordinary
+      filesystem `import`, `readFile`, `readDir`, `readFileType`,
+      `pathExists`, and impure-mode `getEnv` calls append `cache/input.rs`
+      fingerprints to `TreeWalk`/`EvalOutcome`; selected `currentTime` appends
+      an uncacheable marker. Trace construction failures mark the trace
+      incomplete/cache-unusable without changing Nix evaluation semantics. This
+      is an evaluator observation surface only; demand-graph leaves,
+      dependency wiring, persistence, allowed-path/IFD/fetch interactions, and
+      edge-exactness harness coverage remain open (`R-10`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

@@ -15,6 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use crate::cache::{DirEntryInput, FileTypeForInput, ImpureInputFingerprint, ImpureInputMode};
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode,
     IrShape, IrWithChain, lower as lower_ir, resolve as resolve_ast,

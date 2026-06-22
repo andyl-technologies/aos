@@ -161,12 +161,12 @@ impl TreeWalk {
         value: Value,
     ) -> Result<Value, TreeWalkError> {
         let name = self.context_free_string_bytes(argument, argument_span, value, "getEnv")?;
-        let env_value = if self.options.eval_mode() == EvalMode::Pure {
-            &[][..]
-        } else {
-            self.options.env_var(&name).unwrap_or_default()
+        if self.options.eval_mode() == EvalMode::Pure {
+            return self.alloc_static_string(id, span, b"");
         }
-        .to_vec();
+        let observed = self.options.env_var(&name);
+        let env_value = observed.unwrap_or_default().to_vec();
+        self.record_impure_input_result(ImpureInputFingerprint::get_env(&name, observed));
         self.alloc_static_string(id, span, &env_value)
     }
 
@@ -193,25 +193,34 @@ impl TreeWalk {
                 path_without_trailing_path_markers(&path),
             )))
         };
-        match metadata {
-            Ok(metadata) => Ok(Value::bool(!must_be_dir || metadata.is_dir())),
+        let exists = match metadata {
+            Ok(metadata) => Ok(!must_be_dir || metadata.is_dir()),
             Err(source)
                 if matches!(
                     source.kind(),
                     io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
                 ) =>
             {
-                Ok(Value::bool(false))
+                Ok(false)
             }
             Err(source) => Err(TreeWalkError::new(
                 TreeWalkErrorKind::PathStat {
                     id: argument,
-                    path,
+                    path: path.clone(),
                     message: source.to_string(),
                 },
                 argument_span,
             )),
-        }
+        }?;
+        let mode = if must_be_dir {
+            ImpureInputMode::RequireDirectory
+        } else {
+            ImpureInputMode::Default
+        };
+        self.record_impure_input_result(ImpureInputFingerprint::path_exists_with_mode(
+            &path, mode, exists,
+        ));
+        Ok(Value::bool(exists))
     }
 
     pub(super) fn path_exists_requires_directory(
@@ -257,6 +266,8 @@ impl TreeWalk {
             )
         })?;
         let mut attrs = Vec::new();
+        let mut trace_entries = Vec::new();
+        let mut trace_entries_complete = self.impure_input_trace_complete;
         for entry in entries {
             let entry = entry.map_err(|source| {
                 TreeWalkError::new(
@@ -270,6 +281,18 @@ impl TreeWalk {
             })?;
             let file_name = entry.file_name();
             let name = file_name.as_bytes();
+            let trace_name = if trace_entries_complete {
+                let mut trace_name = Vec::new();
+                if trace_name.try_reserve_exact(name.len()).is_ok() {
+                    trace_name.extend_from_slice(name);
+                    Some(trace_name)
+                } else {
+                    trace_entries_complete = false;
+                    None
+                }
+            } else {
+                None
+            };
             let symbol = self.symbols.intern(name).map_err(|source| {
                 TreeWalkError::new(
                     TreeWalkErrorKind::SymbolIntern {
@@ -289,11 +312,28 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
+            if let Some(trace_name) = trace_name {
+                if trace_entries.try_reserve_exact(1).is_ok() {
+                    trace_entries.push((trace_name, Self::file_type_for_impure_input(file_type)));
+                } else {
+                    trace_entries_complete = false;
+                }
+            }
             let value = self.alloc_static_string(id, span, file_type_name(file_type))?;
             attrs.push(AttrEntry::new(symbol, value));
         }
         let attrs = FlatAttrs::new(attrs, &self.symbols)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        if trace_entries_complete {
+            self.record_impure_input_result(ImpureInputFingerprint::read_dir(
+                &path,
+                trace_entries
+                    .iter()
+                    .map(|(name, file_type)| DirEntryInput::new(name.as_slice(), *file_type)),
+            ));
+        } else {
+            self.mark_impure_input_trace_incomplete();
+        }
         self.heap
             .alloc_attrs(0, attrs)
             .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
@@ -353,6 +393,7 @@ impl TreeWalk {
                 argument_span,
             ));
         }
+        self.record_impure_input_result(ImpureInputFingerprint::read_file(&path, &contents));
         self.alloc_static_string(id, span, &contents)
     }
 
@@ -385,7 +426,12 @@ impl TreeWalk {
                     argument_span,
                 )
             })?;
-        self.alloc_static_string(id, span, file_type_name(file_type.file_type()))
+        let file_type = file_type.file_type();
+        self.record_impure_input_result(ImpureInputFingerprint::read_file_type(
+            &path,
+            Self::file_type_for_impure_input(file_type),
+        ));
+        self.alloc_static_string(id, span, file_type_name(file_type))
     }
 
     pub(super) fn eval_path_primop(

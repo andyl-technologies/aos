@@ -41,6 +41,8 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
         stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
         derivations,
     }
 }

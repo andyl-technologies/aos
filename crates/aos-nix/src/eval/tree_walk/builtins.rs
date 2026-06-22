@@ -75,6 +75,7 @@ impl BuiltinExecutor for TreeWalk {
                     }
                     return unsupported_builtin_attr(id, span, symbol);
                 };
+                eval.record_impure_input(ImpureInputFingerprint::current_time());
                 Ok(Value::int(current_time))
             }
             BuiltinExecution::StoreDirValue => {

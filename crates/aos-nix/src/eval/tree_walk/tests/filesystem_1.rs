@@ -500,6 +500,48 @@ fn path_exists_primop_checks_filesystem_presence() {
 }
 
 #[test]
+fn path_exists_primop_records_impure_input_trace_with_mode() {
+    let dir = unique_temp_dir("path-exists-trace");
+    let file = dir.join("regular.txt");
+    fs::write(&file, b"data").expect("regular file writes");
+    let file_path = path_source(&file);
+    let directory_required_path = format!("{file_path}/");
+
+    let existing = eval_whnf_owned(&lower(&format!(
+        "builtins.pathExists {}",
+        nix_string_literal(&file_path)
+    )))
+    .expect("source evaluates");
+    let existing_expected = vec![
+        ImpureInputFingerprint::path_exists(file_path.as_bytes(), true)
+            .expect("fingerprint builds"),
+    ];
+    assert_eq!(existing.value().as_bool(), Ok(true));
+    assert_eq!(existing.impure_input_trace(), existing_expected.as_slice());
+
+    let directory_required = eval_whnf_owned(&lower(&format!(
+        "builtins.pathExists {}",
+        nix_string_literal(&directory_required_path)
+    )))
+    .expect("source evaluates");
+    let directory_required_expected = vec![
+        ImpureInputFingerprint::path_exists_with_mode(
+            directory_required_path.as_bytes(),
+            ImpureInputMode::RequireDirectory,
+            false,
+        )
+        .expect("fingerprint builds"),
+    ];
+    assert_eq!(directory_required.value().as_bool(), Ok(false));
+    assert_eq!(
+        directory_required.impure_input_trace(),
+        directory_required_expected.as_slice()
+    );
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn path_exists_primop_type_checks_and_rejects_relative_strings() {
     let ir = lower("builtins.pathExists 1");
     let root = ir.arena.node(ir.root).expect("root exists");
@@ -638,6 +680,25 @@ fn read_file_type_primop_reports_filesystem_node_types() {
 }
 
 #[test]
+fn read_file_type_primop_records_impure_input_trace() {
+    let (dir, path) = temp_file_with_bytes("read-file-type-trace", b"data");
+    let path = path_source(&path);
+    let outcome = eval_whnf_owned(&lower(&format!(
+        "builtins.readFileType {}",
+        nix_string_literal(&path)
+    )))
+    .expect("source evaluates");
+    let expected = vec![
+        ImpureInputFingerprint::read_file_type(path.as_bytes(), FileTypeForInput::Regular)
+            .expect("fingerprint builds"),
+    ];
+
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn read_file_type_primop_reports_stat_errors() {
     let dir = unique_temp_dir("read-file-type-missing");
     let missing_path = path_source(&dir.join("missing"));
@@ -714,6 +775,39 @@ fn read_dir_primop_lists_entry_types() {
         )),
         b"regular"
     );
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn read_dir_primop_records_impure_input_trace() {
+    let dir = unique_temp_dir("read-dir-trace");
+    let regular = dir.join("regular");
+    let nested = dir.join("nested");
+    let link = dir.join("link");
+    fs::write(&regular, b"data").expect("regular file writes");
+    fs::create_dir(&nested).expect("nested directory creates");
+    std::os::unix::fs::symlink(&regular, &link).expect("symlink creates");
+    let dir_path = path_source(&dir);
+
+    let outcome = eval_whnf_owned(&lower(&format!(
+        "builtins.readDir {}",
+        nix_string_literal(&dir_path)
+    )))
+    .expect("source evaluates");
+    let expected = vec![
+        ImpureInputFingerprint::read_dir(
+            dir_path.as_bytes(),
+            [
+                DirEntryInput::new(b"regular", FileTypeForInput::Regular),
+                DirEntryInput::new(b"nested", FileTypeForInput::Directory),
+                DirEntryInput::new(b"link", FileTypeForInput::Symlink),
+            ],
+        )
+        .expect("fingerprint builds"),
+    ];
+
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
 
     fs::remove_dir_all(dir).expect("temp directory removes");
 }

@@ -28,6 +28,8 @@ impl TreeWalk {
             stats: EvalStats::default(),
             trace_output: Vec::new(),
             warning_output: Vec::new(),
+            impure_input_trace: Vec::new(),
+            impure_input_trace_complete: true,
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
             find_file_cache_hits: 0,
@@ -77,6 +79,16 @@ impl TreeWalk {
     /// Returns user-facing warning output emitted so far.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    /// Returns impure evaluator inputs observed so far.
+    pub fn impure_input_trace(&self) -> &[ImpureInputFingerprint] {
+        &self.impure_input_trace
+    }
+
+    /// Returns whether the impure input trace is complete and cache-usable.
+    pub const fn impure_input_trace_complete(&self) -> bool {
+        self.impure_input_trace_complete
     }
 
     /// Returns a snapshot of mirrored evaluator counters.

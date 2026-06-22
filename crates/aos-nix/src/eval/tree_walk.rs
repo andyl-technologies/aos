@@ -49,7 +49,10 @@ use super::heap::{
 use super::module::{EvalModuleId, EvalNodeRef};
 use super::thunk::{ForceClaim, ForceError, ThunkState};
 use crate::attrs::{AttrEntry, AttrError, AttrPosition, FlatAttrs};
-use crate::cache::{CachedParse, ParseCache, ParseCacheError};
+use crate::cache::{
+    CachedParse, DirEntryInput, FileTypeForInput, ImpureInputFingerprint, ImpureInputMode,
+    InputFingerprintError, ParseCache, ParseCacheError,
+};
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
     IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
@@ -627,6 +630,8 @@ pub struct TreeWalk {
     stats: EvalStats,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
+    impure_input_trace: Vec<ImpureInputFingerprint>,
+    impure_input_trace_complete: bool,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
     find_file_cache_hits: usize,
@@ -730,6 +735,7 @@ mod eval_core;
 mod eval_derivation;
 mod eval_hash;
 mod eval_import;
+mod eval_impure_inputs;
 mod eval_list_filter;
 mod eval_list_group;
 mod eval_list_map;

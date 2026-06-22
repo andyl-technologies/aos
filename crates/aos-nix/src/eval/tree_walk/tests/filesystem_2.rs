@@ -42,6 +42,73 @@ fn get_env_primop_reads_configured_environment() {
 }
 
 #[test]
+fn get_env_primop_records_impure_input_trace() {
+    let outcome = eval_whnf_owned_with_options(
+        &lower("builtins.getEnv \"HOME\""),
+        TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec()),
+    )
+    .expect("source evaluates");
+    let string = outcome
+        .heap()
+        .get_string(outcome.value())
+        .expect("result is a string");
+    let expected = vec![
+        ImpureInputFingerprint::get_env(b"HOME", Some(b"/home/aos")).expect("fingerprint builds"),
+    ];
+
+    assert_eq!(string.bytes(), b"/home/aos");
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
+
+    let pure_outcome = eval_whnf_owned_with_options(&lower("builtins.getEnv \"HOME\""), {
+        let mut options = TreeWalkOptions::with_env_var(b"HOME".to_vec(), b"/home/aos".to_vec());
+        options.set_eval_mode(EvalMode::Pure);
+        options
+    })
+    .expect("source evaluates");
+    assert!(pure_outcome.impure_input_trace().is_empty());
+    assert!(pure_outcome.impure_input_trace_complete());
+}
+
+#[test]
+fn current_time_records_uncacheable_impure_input_trace() {
+    let outcome = eval_whnf_owned_with_options(
+        &lower("builtins.currentTime"),
+        TreeWalkOptions::with_current_time(1_700_000_000).expect("currentTime configures"),
+    )
+    .expect("source evaluates");
+
+    assert_eq!(outcome.value().as_int(), Ok(1_700_000_000));
+    assert_eq!(
+        outcome.impure_input_trace(),
+        [ImpureInputFingerprint::current_time()].as_slice()
+    );
+}
+
+#[test]
+fn filesystem_import_records_impure_input_trace() {
+    let dir = unique_temp_dir("import-trace");
+    let path = dir.join("imported.nix");
+    let source = b"{ value = 7; }";
+    fs::write(&path, source).expect("import source writes");
+    let canonical_path = path_source(&fs::canonicalize(&path).expect("path canonicalizes"));
+    let path = path_source(&path);
+    let outcome = eval_whnf_owned(&lower(&format!(
+        "(import {}).value",
+        nix_string_literal(&path)
+    )))
+    .expect("source evaluates");
+    let expected = vec![
+        ImpureInputFingerprint::import(canonical_path.as_bytes(), source)
+            .expect("fingerprint builds"),
+    ];
+
+    assert_eq!(outcome.value().as_int(), Ok(7));
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
 fn get_env_primop_type_checks_argument() {
     let ir = lower("builtins.getEnv 1");
     let root = ir.arena.node(ir.root).expect("root exists");
@@ -158,6 +225,25 @@ fn read_file_primop_reads_file_contents() {
         ),
         b"local"
     );
+
+    fs::remove_dir_all(dir).expect("temp directory removes");
+}
+
+#[test]
+fn read_file_primop_records_impure_input_trace() {
+    let (dir, path) = temp_file_with_bytes("read-file-trace", b"trace-data");
+    let path = path_source(&path);
+    let outcome = eval_whnf_owned(&lower(&format!(
+        "builtins.readFile {}",
+        nix_string_literal(&path)
+    )))
+    .expect("source evaluates");
+    let expected = vec![
+        ImpureInputFingerprint::read_file(path.as_bytes(), b"trace-data")
+            .expect("fingerprint builds"),
+    ];
+
+    assert_eq!(outcome.impure_input_trace(), expected.as_slice());
 
     fs::remove_dir_all(dir).expect("temp directory removes");
 }

@@ -10,6 +10,8 @@ pub struct EvalOutcome {
     pub(crate) stats: EvalStats,
     pub(crate) trace_output: Vec<EvalTraceOutput>,
     pub(crate) warning_output: Vec<EvalWarningOutput>,
+    pub(crate) impure_input_trace: Vec<ImpureInputFingerprint>,
+    pub(crate) impure_input_trace_complete: bool,
     pub(crate) derivations: Vec<EvalDerivation>,
 }
 
@@ -37,6 +39,16 @@ impl EvalOutcome {
     /// Returns user-facing warning output emitted during evaluation.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    /// Returns impure evaluator inputs observed during evaluation.
+    pub fn impure_input_trace(&self) -> &[ImpureInputFingerprint] {
+        &self.impure_input_trace
+    }
+
+    /// Returns whether the impure input trace is complete and cache-usable.
+    pub const fn impure_input_trace_complete(&self) -> bool {
+        self.impure_input_trace_complete
     }
 
     /// Returns derivations observed while evaluating the root expression.

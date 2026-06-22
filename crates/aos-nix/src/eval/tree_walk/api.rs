@@ -90,6 +90,8 @@ pub fn eval_whnf_owned_with_options_and_realizer(
         stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
         derivations,
     })
 }
@@ -159,6 +161,8 @@ fn eval_instantiation_attr_path_with_evaluator(
         stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
+        impure_input_trace: evaluator.impure_input_trace,
+        impure_input_trace_complete: evaluator.impure_input_trace_complete,
         derivations,
     })
 }
