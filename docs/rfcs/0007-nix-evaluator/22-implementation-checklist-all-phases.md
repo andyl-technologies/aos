@@ -394,8 +394,19 @@ alone (`M-1`/`Q-A`).
       **beside** `NixEval`, on the Attic content-addressed path (`C-3`).
 - [ ] Impure-input edges: `readFile`/`readDir`/`getEnv` keyed as explicit
       content-hash inputs; `currentTime` not cached (`R-10`).
-- [ ] `AOS_NIX_CACHE=0` bypass for minimal-reproducer parity checks; periodic
-      cold re-validation job in CI ([12](12-incremental-evaluation-cache.md) §8.3).
+- [x] Current precursor: AOS-configured parse-cache kill switch. Blank
+      `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears
+      `NixEvalConfig::native_cache_root`; only a valid absolute root maps to
+      `TreeWalkOptions::parse_cache_root = <root>/parse`; native frontend
+      lowering and ordinary import parse-cache paths use the durable frontend
+      parse/IR artifact cache only when `parse_cache_root` is present. This
+      covers only the current parse-cache persistence layer, not the future
+      demand-graph/value memoization cache or in-process import result memo
+      ([12](12-incremental-evaluation-cache.md) §8.3).
+- [ ] Full Phase-2 cache-off safety net remains: `AOS_NIX_CACHE=0` must bypass
+      future incremental persistence/value memoization, and CI must periodically
+      run cold cached-vs-uncached full-closure `.drv` revalidation
+      ([12](12-incremental-evaluation-cache.md) §8.3).
 
 **Conformance (hold parity).**
 
