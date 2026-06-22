@@ -4,6 +4,12 @@ use std::collections::BTreeMap;
 use std::process::Command;
 use std::sync::OnceLock;
 
+use aos_nix::compile::{Ir, lower, resolve};
+use aos_nix::eval::{
+    InternalDiffError, InternalDiffTier, TreeWalkError, TreeWalkOptions, compare_raw_with_oracle,
+    eval_raw_bytes_with_options,
+};
+use aos_nix::syntax::parse_bytes;
 use aos_nix::{NativeEvalError, NixNative};
 use arbitrary::{Arbitrary, Result as ArbitraryResult, Unstructured};
 
@@ -51,6 +57,42 @@ pub fn fuzz_parity_json(data: &[u8]) {
     }
 }
 
+/// Runs one internal raw-value differential fuzz case.
+pub fn fuzz_internal_diff_raw(data: &[u8]) {
+    let Some(source) = source_from_fuzz_bytes(data) else {
+        return;
+    };
+    if source.len() > MAX_SOURCE_LEN {
+        return;
+    }
+
+    let Some(ir) = lower_fuzz_source(&source) else {
+        return;
+    };
+
+    match compare_raw_with_oracle(&MirrorInternalDiffTier, &ir, TreeWalkOptions::default()) {
+        Ok(_) | Err(InternalDiffError::Oracle { .. }) => {}
+        Err(InternalDiffError::Candidate {
+            tier,
+            source: error,
+        }) => panic!(
+            "{tier} failed while tree-walk oracle accepted generated source:\n{error}\n\
+             generated source:\n{}",
+            source
+        ),
+        Err(InternalDiffError::Divergence {
+            tier,
+            oracle,
+            candidate,
+        }) => panic!(
+            "{tier} diverged from tree-walk oracle for generated source:\n{source}\n\
+             oracle raw: {}\ncandidate raw: {}",
+            String::from_utf8_lossy(&oracle),
+            String::from_utf8_lossy(&candidate)
+        ),
+    }
+}
+
 /// Returns the Nix source represented by a fuzzer input.
 pub fn source_from_fuzz_bytes(data: &[u8]) -> Option<String> {
     if let Ok(source) = std::str::from_utf8(data) {
@@ -62,6 +104,24 @@ pub fn source_from_fuzz_bytes(data: &[u8]) -> Option<String> {
     let mut unstructured = Unstructured::new(data);
     let expr = GeneratedExpr::arbitrary(&mut unstructured).ok()?;
     Some(expr.to_nix())
+}
+
+struct MirrorInternalDiffTier;
+
+impl InternalDiffTier for MirrorInternalDiffTier {
+    fn name(&self) -> &'static str {
+        "tree-walk-mirror"
+    }
+
+    fn eval_raw(&self, ir: &Ir, options: TreeWalkOptions) -> Result<Vec<u8>, TreeWalkError> {
+        eval_raw_bytes_with_options(ir, options)
+    }
+}
+
+fn lower_fuzz_source(source: &str) -> Option<Ir> {
+    let parsed = parse_bytes(source.as_bytes()).ok()?;
+    let resolved = resolve(parsed).ok()?;
+    lower(resolved).ok()
 }
 
 #[derive(Debug)]
@@ -364,5 +424,12 @@ mod tests {
         assert!(source.len() <= MAX_SOURCE_LEN, "{source}");
         let native = NixNative::new(0).expect("native evaluator initializes");
         let _ = native.eval_expr(&source);
+    }
+
+    #[test]
+    fn internal_diff_fuzzer_accepts_source_seed() {
+        fuzz_internal_diff_raw(
+            b"# aos-nix-fuzz-source\nlet x = 1 + 2; in { value = x; list = [ true \"ok\" ]; }\n",
+        );
     }
 }

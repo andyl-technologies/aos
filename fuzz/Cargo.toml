@@ -19,3 +19,10 @@ path = "fuzz_targets/parity_json.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "internal_diff_raw"
+path = "fuzz_targets/internal_diff_raw.rs"
+test = false
+doc = false
+bench = false
