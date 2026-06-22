@@ -47,7 +47,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:divergence-bisect",
         "gate:e2e-determinism",
         "gate:fleet-equivalence",
-        "gate:layer1-injection",
         "gate:patch-microtests",
         "gate:perf-bench",
         "gate:qemu-inert",
@@ -73,6 +72,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:single-vm-fingerprint").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:layer1-injection").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

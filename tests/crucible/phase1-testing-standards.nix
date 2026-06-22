@@ -4,6 +4,8 @@
 }: let
   cratesDir = ../../crates;
   testingStandardsRust = builtins.readFile ../../crates/crucible-harness/tests/testing_standards.rs;
+  testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
+  testingStandardsCode = testingStandardsRust + "\n" + testingStandardsSupport;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -346,8 +348,8 @@
       gate = "gate:layer1-injection";
       ownerPackages = ["crucible-device" "crucible-protocol" "crucible-shmem"];
       layers = ["L1"];
-      shape = "twice-reduce-compare-by-hash";
-      backend = "sim-double";
+      shape = "observed-injection-icount-vectors";
+      backend = "in-process";
     }
     {
       gate = "gate:abi-conformance";
@@ -430,7 +432,6 @@
 
   hashCompareGates = [
     "gate:layer0-determinism"
-    "gate:layer1-injection"
     "gate:replay-oracle"
     "gate:content-address"
     "gate:scheduler-liveness"
@@ -536,15 +537,32 @@
     code = scrubCommentsAndStrings content;
     lower = lowerAscii code;
     placeholder = hasInfix "#[ignore" content && hasInfix "panic!" content;
-    spscConcurrencyTarget = target.package == "crucible-shmem" && target.gate == "gate:layer1-injection";
+    protocolDataPlaneTarget = target.package == "crucible-protocol" && target.gate == "gate:layer1-injection";
   in
-    lib.optionals (!placeholder && !spscConcurrencyTarget && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
+    lib.optionals (!placeholder && standard.shape == "twice-reduce-compare-by-hash" && !(hasInfix twiceReduceHelper code)) [
       "${target.package}:${target.testTarget} must call ${twiceReduceHelper} to drive twice and compare canonical digests"
     ]
-    ++ lib.optionals (!placeholder && !spscConcurrencyTarget && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
+    ++ lib.optionals (!placeholder && protocolDataPlaneTarget && standard.shape == "observed-injection-icount-vectors" && (
+      !(hasInfix "RUNTIME_DATA_PLANE_CONTRACT" code)
+      || !(hasInfix "control_channel_carries_runtime_frames" code)
+      || !(hasInfix "control_channel_carries_delivery_icounts" code)
+      || !(hasInfix "control_channel_silent_between_setup_ack_and_quit" code)
+    )) [
+      "${target.package}:${target.testTarget} must prove runtime injection data stays out of the control protocol"
+    ]
+    ++ lib.optionals (!placeholder && !protocolDataPlaneTarget && standard.shape == "observed-injection-icount-vectors" && (
+      !(hasInfix "run_two_vm_injection" code)
+      || !(hasInfix "struct ObservedInjection" code)
+      || !(hasInfix "producer_host_tick" code)
+      || !(hasInfix "assert_eq!(producer_skewed, consumer_skewed);" code)
+      || !(hasInfix "assert_ne!(producer_skewed, consumer_skewed);" code)
+    )) [
+      "${target.package}:${target.testTarget} must compare observed injection icount vectors across host interleavings with a host-timing negative control"
+    ]
+    ++ lib.optionals (!placeholder && builtins.any (pattern: hasInfix pattern lower) dumpComparePatterns) [
       "${target.package}:${target.testTarget} must compare canonical digests, not formatted dumps"
     ]
-    ++ lib.optionals (!placeholder && !spscConcurrencyTarget && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
+    ++ lib.optionals (!placeholder && standard.backend == "sim-double" && !(hasInfix "SimDouble" code)) [
       "${target.package}:${target.testTarget} must exercise the SimDouble backend"
     ];
 
@@ -656,7 +674,7 @@
       );
   in
     builtins.filter (
-      source: !(source.package == "crucible-harness" && source.testTarget == "testing_standards")
+      source: !(source.package == "crucible-harness" && builtins.elem source.testTarget ["testing_standards" "support/testing_standards"])
     ) (integrationSources ++ unitSources);
 
   testSources = lib.concatMap (ownership: testSourcesForPackage ownership.package) crateOwnership;
@@ -681,6 +699,7 @@
       "FLAKY_ESCAPE_PATTERNS"
       "CRATE_TESTING_OWNERSHIP"
       "TwiceReduceCompareByHash"
+      "ObservedInjectionIcountVectors"
       "SimDouble"
       "RealQemu"
       "flaky_escape_failures"
@@ -691,7 +710,7 @@
   in
     lib.concatMap (
       required:
-        lib.optionals (!(hasInfix required testingStandardsRust)) [
+        lib.optionals (!(hasInfix required testingStandardsCode)) [
           "crates/crucible-harness/tests/testing_standards.rs: missing testing-standard wiring `${required}`"
         ]
     )

@@ -4,6 +4,8 @@
 }: let
   cratesDir = ../../crates;
   standardsRust = builtins.readFile ../../crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs;
+  standardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/concurrency_abi_oracle_standards.rs;
+  standardsCode = standardsRust + "\n" + standardsSupport;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -256,7 +258,7 @@
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:replay-oracle";
@@ -340,12 +342,13 @@
     "regression_corpus"
   ];
 
-  deviceWireFuzzMarkers = [
-    "assert_device_wire_fuzz_corpus("
-    "assert_ninep_wire_handler_fuzz_corpus("
-    "assert_block_wire_handler_fuzz_corpus("
-    "assert_clean_reject_or_deterministic_decode("
-    "regression_corpus"
+  deviceInjectionMarkers = [
+    "run_two_vm_injection"
+    "struct ObservedInjection"
+    "producer_host_tick"
+    "HostStep::Observe"
+    "assert_eq!(producer_skewed, consumer_skewed);"
+    "assert_ne!(producer_skewed, consumer_skewed);"
   ];
 
   replayOracleMarkers = [
@@ -412,13 +415,13 @@
       requiredMarkers = protocolCodecFuzzMarkers;
     }
     {
-      id = "device-wire-fuzzing";
+      id = "device-injection-determinism";
       gate = "gate:layer1-injection";
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      kind = "wire-fuzzing";
-      requiredMarkers = deviceWireFuzzMarkers;
+      kind = "injection-determinism";
+      requiredMarkers = deviceInjectionMarkers;
     }
     {
       id = "replay-oracle-two-mode";
@@ -566,7 +569,7 @@
     "ATOMIC_PRIMITIVE_MARKERS"
     "concurrent_primitive_before_model_failures"
     "PROTOCOL_CODEC_FUZZ_MARKERS"
-    "DEVICE_WIRE_FUZZ_MARKERS"
+    "DEVICE_INJECTION_MARKERS"
     "REPLAY_ORACLE_MARKERS"
     "advanced_standard_regression_failures"
     "spsc_ring_unsafe_without_model_failures"
@@ -581,7 +584,7 @@
   rustHarnessFailures =
     lib.concatMap (
       required:
-        lib.optionals (!(hasInfix required standardsRust)) [
+        lib.optionals (!(hasInfix required standardsCode)) [
           "crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
         ]
     )

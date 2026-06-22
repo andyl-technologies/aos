@@ -39,6 +39,7 @@ enum TestBackend {
 enum TestShape {
     StaticLint,
     TwiceReduceCompareByHash,
+    ObservedInjectionIcountVectors,
     FingerprintCompare,
     AbiGoldenVectors,
     QemuInertCompare,
@@ -90,8 +91,8 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         gate: "gate:layer1-injection",
         owner_packages: &["crucible-device", "crucible-protocol", "crucible-shmem"],
         layers: &[Layer::L1],
-        shape: TestShape::TwiceReduceCompareByHash,
-        backend: TestBackend::SimDouble,
+        shape: TestShape::ObservedInjectionIcountVectors,
+        backend: TestBackend::InProcess,
     },
     GateTestingStandard {
         gate: "gate:abi-conformance",
@@ -264,7 +265,6 @@ const FLAKY_ESCAPE_PATTERNS: &[&str] = &[
 ];
 const HASH_COMPARE_GATES: &[&str] = &[
     "gate:layer0-determinism",
-    "gate:layer1-injection",
     "gate:replay-oracle",
     "gate:content-address",
     "gate:scheduler-liveness",
