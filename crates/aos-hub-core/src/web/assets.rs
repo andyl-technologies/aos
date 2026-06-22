@@ -25,6 +25,29 @@ pub const STYLESHEET: &str = include_str!("static_assets/style.css");
 /// without JS.
 pub const APP_JS: &str = include_str!("static_assets/app.js");
 
+/// A short content hash of the CSS + JS bundle, for cache-busting asset URLs.
+///
+/// `/_assets/style.css` and `/_assets/app.js` are served at stable paths by the
+/// deployment's static-asset layer with a multi-hour/day cache, so a browser
+/// would keep the old CSS/JS for up to a day after a hub upgrade. Linking them
+/// as `…/style.css?v=<version>` makes the URL change whenever the asset's bytes
+/// change, so a deploy's new styles/scripts reach browsers immediately (the
+/// query is ignored for asset matching but is part of the browser cache key).
+///
+/// Computed once from the embedded bytes; stable for a given build.
+#[must_use]
+pub fn asset_version() -> &'static str {
+    use sha2::{Digest, Sha256};
+    use std::sync::OnceLock;
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let mut hasher = Sha256::new();
+        hasher.update(STYLESHEET.as_bytes());
+        hasher.update(APP_JS.as_bytes());
+        hex::encode(hasher.finalize())[..8].to_string()
+    })
+}
+
 /// JetBrains Mono Regular (OFL), self-hosted — no font CDNs, ever.
 pub const FONT_REGULAR: &[u8] = include_bytes!("static_assets/JetBrainsMono-Regular.woff2");
 
