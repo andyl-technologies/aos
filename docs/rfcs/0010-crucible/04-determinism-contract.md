@@ -683,7 +683,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   determinism gate across the elimination set, with per-source micro-tests that
   fail if any of E1–E10, E13–E17 is reintroduced. — satisfies [DET-18],
   [DET-3], [NG-6]; spec §4.6.
-- [ ] **T-DET-11** Specify and implement the icount-stamped injection contract in
+- [x] **T-DET-11** Specify and implement the icount-stamped injection contract in
   the shared-memory ABI: every input carries an in-band delivery icount; the
   consumer is time-driven, not arrival-driven. — satisfies [DET-11], [DET-13],
   [DET-34]; spec §4.4, §4.9.
