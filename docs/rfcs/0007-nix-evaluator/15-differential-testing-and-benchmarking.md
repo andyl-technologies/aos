@@ -845,10 +845,19 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       bootstrap, `gcc3_4`→`gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM). Zero
       divergent root nodes (§2.4). This is C1 stated as a number: not "98%," but
       every node in every closure.
-- [ ] **Conformance green.** The reused C++ Nix language suite (§3) passes in all
-      four categories (`eval-okay`/`eval-fail`/`parse-okay`/`parse-fail`) for the
-      AOS subset, with every exclusion a *documented, intentional* `skip` entry
-      (§3.4, criterion **C2**) — no silent omissions.
+- [x] **Conformance runner checkpoint recorded.** The `lang_conformance` runner
+      reuses the C++ Nix language suite (§3) in all four categories
+      (`eval-okay`/`eval-fail`/`parse-okay`/`parse-fail`), runs a local fixture
+      covering those categories by default, and, when `AOS_NIX_LANG_TESTS` is set
+      to the pinned corpus, checks the exact Nix `2.24.12` case-name snapshot and
+      allowed skip set. The recorded configured checkpoint is `178 passed`,
+      `31 skipped`, `0 failed`, with intentional skips named in
+      `LANG_CASE_EXCLUSIONS` (§3.4, criterion **C2** support).
+- [ ] **Cutover-time conformance green remains.** At the default-on decision
+      point, CI/gating must run the configured C++ Nix language suite for the AOS
+      subset and require every supported case green with only documented,
+      intentional skips; no silent omissions against the pinned case snapshot
+      (§3.4, criterion **C2**).
 - [ ] **Fuzzing quiescent.** At least **1,000 CPU-hours** of parity fuzzing (§7.2)
       against C++ Nix have accumulated since the last evaluator-affecting change
       with **zero** new divergences, *and* the internal differential fuzzer (§7.1)
