@@ -212,6 +212,28 @@ async fn run(cli: &Cli) -> Result<()> {
         );
     }
 
+    if let Commands::NixMeasure {
+        attr,
+        file,
+        history,
+        no_record,
+        min_eval_fraction,
+        fail_on_stop,
+    } = &cli.command
+    {
+        return run_nix_measure_threaded(
+            printer,
+            cli.verbose,
+            eval_config,
+            file.clone(),
+            attr.clone(),
+            history.clone(),
+            *no_record,
+            *min_eval_fraction,
+            *fail_on_stop,
+        );
+    }
+
     let nix = NixRunner::with_eval_config(cli.verbose, cli.quiet, eval_config)?;
 
     match &cli.command {
@@ -305,6 +327,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Cache { .. } => unreachable!(),
         Commands::NixDiff { .. } => unreachable!(),
         Commands::NixBench { .. } => unreachable!(),
+        Commands::NixMeasure { .. } => unreachable!(),
     }
 }
 
@@ -418,6 +441,43 @@ fn run_nix_bench_threaded(
     }
 }
 
+fn run_nix_measure_threaded(
+    printer: Printer,
+    verbose: u8,
+    eval_config: NixEvalConfig,
+    file: Option<PathBuf>,
+    attrs: Vec<String>,
+    history: Option<PathBuf>,
+    no_record: bool,
+    min_eval_fraction: f64,
+    fail_on_stop: bool,
+) -> Result<()> {
+    const NIX_MEASURE_STACK_SIZE: usize = 32 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .name("aos-nix-measure".to_string())
+        .stack_size(NIX_MEASURE_STACK_SIZE)
+        .spawn(move || {
+            commands::nix_measure::run(
+                &printer,
+                verbose,
+                eval_config,
+                file.as_deref(),
+                &attrs,
+                history.as_deref(),
+                no_record,
+                min_eval_fraction,
+                fail_on_stop,
+            )
+        })
+        .context("spawning nix-measure worker thread")?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => anyhow::bail!("nix-measure worker thread panicked"),
+    }
+}
+
 fn eval_config_from_cli(cli: &Cli) -> Result<NixEvalConfig> {
     let mut eval_config = NixEvalConfig::new();
     if cli.impure_eval {
@@ -458,6 +518,9 @@ fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
         .is_some()
         || err
             .downcast_ref::<commands::nix_bench::NixBenchRegressionFailure>()
+            .is_some()
+        || err
+            .downcast_ref::<commands::nix_measure::NixMeasureStopFailure>()
             .is_some()
     {
         return 1;

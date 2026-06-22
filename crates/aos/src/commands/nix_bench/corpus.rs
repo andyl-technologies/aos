@@ -154,15 +154,15 @@ const DIAGNOSTIC_CORPUS_BUILDER: &str =
     "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-bench-diagnostic-builder";
 
 #[derive(Debug, Clone)]
-pub(super) struct BenchmarkSpec {
-    pub(super) name: String,
-    pub(super) file: PathBuf,
-    pub(super) attr: String,
-    pub(super) category: String,
-    pub(super) temperature: String,
+pub(crate) struct BenchmarkSpec {
+    pub(crate) name: String,
+    pub(crate) file: PathBuf,
+    pub(crate) attr: String,
+    pub(crate) category: String,
+    pub(crate) temperature: String,
 }
 
-pub(super) fn benchmark_specs(
+pub(crate) fn benchmark_specs(
     oracle: &NixCli,
     root: &Path,
     file: &Path,
@@ -196,7 +196,7 @@ pub(super) fn benchmark_specs(
     Ok(specs)
 }
 
-pub(super) fn explicit_benchmark_specs(file: &Path, attrs: &[String]) -> Vec<BenchmarkSpec> {
+pub(crate) fn explicit_benchmark_specs(file: &Path, attrs: &[String]) -> Vec<BenchmarkSpec> {
     attrs
         .iter()
         .map(|attr| benchmark_spec(file.to_path_buf(), attr.clone(), "explicit"))
@@ -333,7 +333,7 @@ in
     ))
 }
 
-pub(super) fn toolchain_attr_expr(file: &Path) -> Result<String> {
+pub(crate) fn toolchain_attr_expr(file: &Path) -> Result<String> {
     let file = nix_path_literal(file)?;
     let wanted = EXPLICIT_TOOLCHAIN_CORPUS_ATTRS
         .iter()

@@ -253,6 +253,27 @@ pub enum Commands {
         #[arg(long, default_value_t = crate::commands::nix_bench::default_regression_threshold())]
         regression_threshold: f64,
     },
+    /// Run the RFC 0007 opening measurement gate
+    NixMeasure {
+        /// Attribute to measure (repeatable)
+        #[arg(short = 'A', long)]
+        attr: Vec<String>,
+        /// Nix file to instantiate (default: repository default.nix)
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+        /// Measurement history JSONL path
+        #[arg(long, value_name = "PATH")]
+        history: Option<std::path::PathBuf>,
+        /// Do not append this run to measurement history
+        #[arg(long)]
+        no_record: bool,
+        /// Minimum mean eval/build fraction required to proceed
+        #[arg(long, default_value_t = crate::commands::nix_measure::default_min_eval_fraction())]
+        min_eval_fraction: f64,
+        /// Exit non-zero when the measurement gate says stop
+        #[arg(long)]
+        fail_on_stop: bool,
+    },
     /// Show repository info
     Describe,
     /// Prefetch source hashes (parallel downloads with mirror failover)
@@ -650,6 +671,81 @@ mod tests {
                 assert_eq!(regression_threshold, 0.2);
             }
             _ => panic!("expected nix-bench command"),
+        }
+    }
+
+    #[test]
+    fn nix_measure_parses_defaults() {
+        let cli = parse_cli(["aos", "nix-measure"]);
+
+        match cli.command {
+            Commands::NixMeasure {
+                attr,
+                file,
+                history,
+                no_record,
+                min_eval_fraction,
+                fail_on_stop,
+            } => {
+                assert!(attr.is_empty());
+                assert_eq!(file, None);
+                assert_eq!(history, None);
+                assert!(!no_record);
+                assert_eq!(
+                    min_eval_fraction,
+                    crate::commands::nix_measure::default_min_eval_fraction()
+                );
+                assert!(!fail_on_stop);
+            }
+            _ => panic!("expected nix-measure command"),
+        }
+    }
+
+    #[test]
+    fn nix_measure_parses_explicit_options() {
+        let cli = parse_cli([
+            "aos",
+            "nix-measure",
+            "--attr",
+            "pkgs.zlib",
+            "-A",
+            "systems.server.build.toplevel",
+            "--file",
+            "default.nix",
+            "--history",
+            "/tmp/measure.jsonl",
+            "--no-record",
+            "--min-eval-fraction",
+            "0.25",
+            "--fail-on-stop",
+        ]);
+
+        match cli.command {
+            Commands::NixMeasure {
+                attr,
+                file,
+                history,
+                no_record,
+                min_eval_fraction,
+                fail_on_stop,
+            } => {
+                assert_eq!(
+                    attr,
+                    vec![
+                        "pkgs.zlib".to_string(),
+                        "systems.server.build.toplevel".to_string()
+                    ]
+                );
+                assert_eq!(file, Some(std::path::PathBuf::from("default.nix")));
+                assert_eq!(
+                    history,
+                    Some(std::path::PathBuf::from("/tmp/measure.jsonl"))
+                );
+                assert!(no_record);
+                assert_eq!(min_eval_fraction, 0.25);
+                assert!(fail_on_stop);
+            }
+            _ => panic!("expected nix-measure command"),
         }
     }
 

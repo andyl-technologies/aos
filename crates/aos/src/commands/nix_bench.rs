@@ -1,6 +1,6 @@
 //! `aos nix-bench` -- record per-commit Nix evaluation benchmarks.
 
-mod corpus;
+pub(crate) mod corpus;
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};

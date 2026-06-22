@@ -455,6 +455,16 @@ impl NixRunner {
         Ok(())
     }
 
+    /// Verifies that `nix-build` is available on `PATH`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixNotFound`] if `nix-build` cannot be located.
+    pub fn ensure_nix_build_available() -> Result<()> {
+        which("nix-build").map_err(|_| AosError::NixNotFound)?;
+        Ok(())
+    }
+
     /// Core runner: spawn a Nix subprocess and capture its output.
     ///
     /// Evaluation commands stream the child's stderr so successful
