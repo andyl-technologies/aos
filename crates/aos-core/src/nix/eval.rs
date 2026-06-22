@@ -2198,6 +2198,12 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::ffi::OsStrExt;
+    #[cfg(feature = "native-eval")]
+    use std::sync::{Arc, Mutex};
+    #[cfg(feature = "native-eval")]
+    use tracing::field::{Field, Visit};
+    #[cfg(feature = "native-eval")]
+    use tracing::{Event, Level, Metadata, Subscriber, span};
 
     #[cfg(unix)]
     fn command_env_bytes(command: &Command, name: &[u8]) -> Option<Vec<u8>> {
@@ -2213,6 +2219,81 @@ mod tests {
             (key.to_string_lossy() == name)
                 .then(|| value.map(|value| value.to_string_lossy().into_owned().into_bytes()))?
         })
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[derive(Clone)]
+    struct FallbackWarningSubscriber {
+        events: Arc<Mutex<Vec<(Level, String)>>>,
+    }
+
+    #[cfg(feature = "native-eval")]
+    impl Subscriber for FallbackWarningSubscriber {
+        fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+            *metadata.level() <= Level::WARN
+        }
+
+        fn new_span(&self, _span: &span::Attributes<'_>) -> span::Id {
+            span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+        fn enter(&self, _span: &span::Id) {}
+        fn exit(&self, _span: &span::Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = FallbackWarningFields::default();
+            event.record(&mut visitor);
+            self.events
+                .lock()
+                .expect("recorded fallback events lock")
+                .push((*event.metadata().level(), visitor.render()));
+        }
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[derive(Default)]
+    struct FallbackWarningFields {
+        message: String,
+        fields: Vec<String>,
+    }
+
+    #[cfg(feature = "native-eval")]
+    impl FallbackWarningFields {
+        fn render(self) -> String {
+            let mut output = self.message;
+            for field in self.fields {
+                if !output.is_empty() {
+                    output.push(' ');
+                }
+                output.push_str(&field);
+            }
+            output
+        }
+    }
+
+    #[cfg(feature = "native-eval")]
+    impl Visit for FallbackWarningFields {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            } else {
+                self.fields.push(format!("{}={value:?}", field.name()));
+            }
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields.push(format!("{}={value}", field.name()));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "message" {
+                self.message = value.to_string();
+            } else {
+                self.fields.push(format!("{}={value}", field.name()));
+            }
+        }
     }
 
     #[test]
@@ -3180,6 +3261,39 @@ mod tests {
         let internal_stats = native_fallback_stats();
         assert!(internal_stats.internal() >= internal_after);
         assert!(internal_stats.total() >= unsupported_after.saturating_add(internal_after));
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn native_fallback_warning_records_reason_and_counter() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = FallbackWarningSubscriber {
+            events: Arc::clone(&events),
+        };
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let before = native_fallback_stats();
+        let error: anyhow::Error = NativeEvalError::unsupported("missing primop").into();
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            warn_native_cli_fallback(&error, NativeCliFallbackReason::Unsupported);
+        });
+
+        let after = native_fallback_stats();
+        assert!(after.unsupported() > before.unsupported());
+        let events = events.lock().expect("recorded fallback events lock");
+        assert!(events.iter().any(|(level, _)| *level == Level::WARN));
+        let logged = events
+            .iter()
+            .map(|(_, event)| event.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("native eval fell back to nix-cli"),
+            "{logged}"
+        );
+        assert!(logged.contains("error=native Nix evaluator does not yet support missing primop"));
+        assert!(logged.contains("fallback_reason=Unsupported"), "{logged}");
+        assert!(logged.contains("fallback_count="), "{logged}");
     }
 
     #[cfg(feature = "native-eval")]

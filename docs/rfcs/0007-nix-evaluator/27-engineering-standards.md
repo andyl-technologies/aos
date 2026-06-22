@@ -272,7 +272,7 @@ error type is itself a parity surface.
   glue) where errors are about to be rendered and exit. It MUST NOT appear in the
   eval core: a `thiserror` enum that loses its variant to `anyhow::Error` has
   thrown away the class the parity gate reads. (The one sanctioned bridge is
-  `NativeEvalError::Internal(anyhow::Error)` at the seam — [14](14-integration-with-aos.md) §6.1 — which exists precisely to corral
+  `NativeEvalError::Internal { message }` at the seam — [14](14-integration-with-aos.md) §6.1 — which exists precisely to corral
   "an aos-nix bug happened" at the boundary.)
 
 - **Propagate with `?`. No `.unwrap()`/`.expect()` in production.** The workspace

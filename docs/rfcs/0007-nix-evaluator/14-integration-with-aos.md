@@ -415,8 +415,9 @@ and why the default stays `Off`.
 
 ## 6. Failure model and fallback
 
-`NixNative` can fail in two qualitatively different ways, and the integration
-treats them very differently.
+`NixNative` failures are sorted into retryable native gaps, semantic Nix
+failures, and internal native bugs; the integration treats those categories very
+differently.
 
 ### 6.1 Capability failures — fall back transparently
 
@@ -434,12 +435,16 @@ pub enum NativeEvalError {
     Unsupported { feature: String, span: Option<SrcSpan> },
     /// A genuine evaluation error (type error, `throw`, assertion).
     /// Both evaluators would fail; do NOT fall back — surface it.
-    EvalError(NixThrow),
+    EvalError { message: String },
     /// An internal invariant was violated (a bug in aos-nix). Fall back
     /// AND emit a loud diagnostic for the bug tracker.
-    Internal(anyhow::Error),
+    Internal { message: String },
 }
 ```
+
+The current adapter boundary preserves semantic failures as user-facing message
+text. A structured `NixThrow` payload is future hardening, not part of the
+checked P1 seam contract.
 
 In `On` mode, the `instantiate` wrapper catches `Unsupported` (and, more
 defensively, `Internal`) and **transparently re-runs the whole top-level
@@ -927,7 +932,7 @@ The seam itself is the *least clever* part of the RFC and is **P1** scope (`S-16
 
 ### Failure model and fallback (§6)
 
-- [ ] `NativeEvalError` taxonomy — `Unsupported{feature,span}` (transparent `NixCli` retry), `EvalError(NixThrow)` (surface as-is, do **not** fall back), `Internal` (fall back + loud diagnostic) — with a counter so fallbacks are visible, not silent (§6.1) — **P1**, `S-16`; the `Unsupported`-vs-`EvalError` split is what the harness error-parity check guards.
+- [x] `NativeEvalError` taxonomy — `Unsupported { feature, span: Option<SrcSpan> }` (transparent `NixCli` retry, preserving a span where the native frontend has one), message-only `EvalError { message }` (semantic native evaluation failures surface as-is and do **not** fall back), `Internal { message }` (fall back + `tracing::warn!` diagnostic) — with per-reason fallback counters so retries are visible, not silent (§6.1) — **P1**, `S-16`; the `Unsupported`-vs-`EvalError` split is what the harness error-parity check guards, while structured thrown payloads remain future hardening beyond the current adapter boundary.
 - [ ] Divergence handling: there is no in-process signal, so it is defended by the four layers — default `Off`, `Shadow`, `AOS_NIX_NATIVE_VERIFY` sampling canary, permanent `NixCli` fallback — never self-corrected at runtime (§6.2, §7.2) — rollout **Phases A–E**, `C-18`.
 
 ### The acceptance gate and staged flip (§7)
