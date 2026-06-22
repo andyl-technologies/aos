@@ -1,7 +1,11 @@
 //! `aos nix-diff` -- compare evaluator `.drv` output.
 
 use std::collections::BTreeSet;
+use std::env;
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
@@ -148,6 +152,49 @@ const GCC_TOOLCHAIN_TIER_COMPONENTS: &[&str] = &[
     "xz",
     "bzip2",
     "patchelf",
+];
+
+const AOS_NIX_LANG_TESTS_ENV: &str = "AOS_NIX_LANG_TESTS";
+const CONFORMANCE_CORPUS_ATTRSET: &str = "conformance";
+const CONFORMANCE_CORPUS_BUILDER: &str =
+    "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-nix-conformance-builder";
+const LANG_CASE_EXCLUSION_NAMES: &[&str] = &[
+    "parse-fail-patterns-1",
+    "eval-fail-derivation-name",
+    "eval-fail-dup-dynamic-attrs",
+    "eval-fail-infinite-recursion-lambda",
+    "eval-fail-set-override",
+    "eval-fail-toJSON-non-utf-8",
+    "eval-okay-arithmetic",
+    "eval-okay-attrs",
+    "eval-okay-attrs2",
+    "eval-okay-attrs6",
+    "eval-okay-builtins",
+    "eval-okay-curpos",
+    "eval-okay-eq-derivations",
+    "eval-okay-flatten",
+    "eval-okay-foldlStrict-lazy-initial-accumulator",
+    "eval-okay-getattrpos",
+    "eval-okay-getattrpos-functionargs",
+    "eval-okay-inherit-attr-pos",
+    "eval-okay-inherit-from",
+    "eval-okay-let",
+    "eval-okay-list",
+    "eval-okay-overrides",
+    "eval-okay-print",
+    "eval-okay-redefine-builtin",
+    "eval-okay-remove",
+    "eval-okay-scope-4",
+    "eval-okay-scope-6",
+    "eval-okay-search-path",
+    "eval-okay-symlink-resolution",
+    "eval-okay-with",
+];
+const CONFORMANCE_WRAPPER_ONLY_EXCLUSION_NAMES: &[&str] = &[
+    // `lang.sh` fixes HOME and TEST_VAR for these cases; `nix-diff` has no
+    // per-attribute environment override, so the dedicated runner owns them.
+    "eval-okay-getenv",
+    "eval-okay-path-string-interpolation",
 ];
 
 /// Error returned after `aos nix-diff` has already rendered a failure report.
@@ -386,8 +433,8 @@ fn run_all(
     mode: DiffMode,
     oracle_stats: bool,
 ) -> Result<()> {
-    let attrs = corpus_attrs(oracle, file, include_packages, include_systems)?;
-    if attrs.is_empty() {
+    let corpus = corpus_entries(oracle, file, include_packages, include_systems)?;
+    if corpus.entries.is_empty() {
         return Err(AosError::InvalidArgument {
             message: "nix-diff corpus selection found no derivations".to_string(),
         }
@@ -396,20 +443,21 @@ fn run_all(
 
     printer.info(&format!(
         "Comparing {} selected derivation(s)...",
-        attrs.len()
+        corpus.entries.len()
     ));
 
-    let mut reports = Vec::with_capacity(attrs.len());
-    for attr in attrs {
+    let mut reports = Vec::with_capacity(corpus.entries.len());
+    for entry in &corpus.entries {
         let stats = if oracle_stats {
             match oracle
-                .instantiate_with_stats(file, &attr)
-                .with_context(|| format!("capturing nix-cli stats for {attr}"))
+                .instantiate_with_stats(&entry.file, &entry.attr)
+                .with_context(|| format!("capturing nix-cli stats for {}", entry.attr))
             {
                 Ok(stats) => Some(stats),
                 Err(error) => {
                     reports.push(AttrDiffReport {
-                        attr,
+                        file: entry.file.clone(),
+                        attr: entry.attr.clone(),
                         report: None,
                         failure: Some(NixDiffReportedFailure::attr_error(format!("{error:#}"))),
                         oracle_stats: None,
@@ -420,13 +468,14 @@ fn run_all(
         } else {
             None
         };
-        match diff_closure(oracle, candidate, file, &attr, mode)
-            .with_context(|| format!("diffing {attr}"))
+        match diff_closure(oracle, candidate, &entry.file, &entry.attr, mode)
+            .with_context(|| format!("diffing {}", entry.attr))
         {
             Ok(report) => {
                 let failure = report_failure(&report);
                 reports.push(AttrDiffReport {
-                    attr,
+                    file: entry.file.clone(),
+                    attr: entry.attr.clone(),
                     report: Some(report),
                     failure,
                     oracle_stats: stats,
@@ -434,7 +483,8 @@ fn run_all(
             }
             Err(error) => {
                 reports.push(AttrDiffReport {
-                    attr,
+                    file: entry.file.clone(),
+                    attr: entry.attr.clone(),
                     report: None,
                     failure: Some(NixDiffReportedFailure::attr_error(format!("{error:#}"))),
                     oracle_stats: stats,
@@ -486,11 +536,15 @@ fn run_all(
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "drv diff failed".to_string());
-            printer.plain(&format!("  - {}: {failure}", attr_report.attr));
+            printer.plain(&format!(
+                "  - {} {}: {failure}",
+                attr_report.file.display(),
+                attr_report.attr
+            ));
             render_reproduction_hint(
                 printer,
                 &eval_config,
-                file,
+                &attr_report.file,
                 &attr_report.attr,
                 mode,
                 "      ",
@@ -502,7 +556,7 @@ fn run_all(
                 render_eval_divergence_classes(
                     printer,
                     eval_config,
-                    file,
+                    &attr_report.file,
                     &attr_report.attr,
                     report,
                     "      ",
@@ -516,38 +570,488 @@ fn run_all(
 
 #[derive(Debug)]
 struct AttrDiffReport {
+    file: PathBuf,
     attr: String,
     report: Option<DrvDiffReport>,
     failure: Option<NixDiffReportedFailure>,
     oracle_stats: Option<NixInstantiateStats>,
 }
 
-fn corpus_attrs(
+#[derive(Debug)]
+struct CorpusSelection {
+    entries: Vec<CorpusEntry>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct CorpusEntry {
+    file: PathBuf,
+    attr: String,
+}
+
+fn corpus_entries(
     oracle: &NixCli,
     file: &Path,
     include_packages: bool,
     include_systems: bool,
-) -> Result<Vec<String>> {
-    let mut attrs = Vec::new();
+) -> Result<CorpusSelection> {
+    let mut entries = Vec::new();
     let mut seen = BTreeSet::new();
 
     if include_packages {
-        extend_unique(&mut attrs, &mut seen, package_attrs(oracle, file)?);
-        extend_unique(&mut attrs, &mut seen, toolchain_attrs(oracle, file)?);
-    }
-    if include_systems {
-        extend_unique(&mut attrs, &mut seen, system_attrs(oracle, file)?);
-    }
-
-    Ok(attrs)
-}
-
-fn extend_unique(attrs: &mut Vec<String>, seen: &mut BTreeSet<String>, new_attrs: Vec<String>) {
-    for attr in new_attrs {
-        if seen.insert(attr.clone()) {
-            attrs.push(attr);
+        extend_unique_attrs(&mut entries, &mut seen, file, package_attrs(oracle, file)?);
+        extend_unique_attrs(
+            &mut entries,
+            &mut seen,
+            file,
+            toolchain_attrs(oracle, file)?,
+        );
+        if let Some(generated) = generated_conformance_corpus_from_env()? {
+            extend_unique_entries(&mut entries, &mut seen, generated.entries);
         }
     }
+    if include_systems {
+        extend_unique_attrs(&mut entries, &mut seen, file, system_attrs(oracle, file)?);
+    }
+
+    Ok(CorpusSelection { entries })
+}
+
+fn extend_unique_attrs(
+    entries: &mut Vec<CorpusEntry>,
+    seen: &mut BTreeSet<(PathBuf, String)>,
+    file: &Path,
+    new_attrs: Vec<String>,
+) {
+    let new_entries = new_attrs
+        .into_iter()
+        .map(|attr| CorpusEntry {
+            file: file.to_path_buf(),
+            attr,
+        })
+        .collect();
+    extend_unique_entries(entries, seen, new_entries);
+}
+
+fn extend_unique_entries(
+    entries: &mut Vec<CorpusEntry>,
+    seen: &mut BTreeSet<(PathBuf, String)>,
+    new_entries: Vec<CorpusEntry>,
+) {
+    for entry in new_entries {
+        if seen.insert((entry.file.clone(), entry.attr.clone())) {
+            entries.push(entry);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GeneratedConformanceCorpus {
+    entries: Vec<CorpusEntry>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct LangCase {
+    name: String,
+    source: PathBuf,
+    expected: Option<PathBuf>,
+    expected_xml: Option<PathBuf>,
+    flags: Vec<String>,
+    disabled: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum LangAutoArg {
+    Expr { name: String, expr: String },
+    Str { name: String, value: String },
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct LangCaseConfig {
+    auto_args: Vec<LangAutoArg>,
+    attr_path: Vec<String>,
+}
+
+fn generated_conformance_corpus_from_env() -> Result<Option<GeneratedConformanceCorpus>> {
+    let Some(lang_dir) = env::var_os(AOS_NIX_LANG_TESTS_ENV) else {
+        return Ok(None);
+    };
+    let lang_dir = PathBuf::from(lang_dir);
+    generated_conformance_corpus(&lang_dir).map(Some)
+}
+
+fn generated_conformance_corpus(lang_dir: &Path) -> Result<GeneratedConformanceCorpus> {
+    let cases = discover_eval_okay_lang_cases(lang_dir)?;
+    let rendered_cases = cases
+        .iter()
+        .map(|case| render_conformance_case(case, lang_dir))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    if rendered_cases.is_empty() {
+        return Err(AosError::InvalidArgument {
+            message: format!(
+                "{AOS_NIX_LANG_TESTS_ENV}={} did not contain any supported eval-okay conformance cases",
+                lang_dir.display()
+            ),
+        }
+        .into());
+    }
+
+    let dir = create_persistent_conformance_corpus_dir()?;
+    let file = dir.join("corpus.nix");
+    fs::write(&file, render_conformance_file(&rendered_cases))
+        .with_context(|| format!("writing generated conformance corpus {}", file.display()))?;
+    let entries = rendered_cases
+        .into_iter()
+        .map(|case| CorpusEntry {
+            file: file.clone(),
+            attr: format!("{CONFORMANCE_CORPUS_ATTRSET}.{}", case.attr),
+        })
+        .collect();
+
+    Ok(GeneratedConformanceCorpus { entries })
+}
+
+fn create_persistent_conformance_corpus_dir() -> Result<PathBuf> {
+    let tmp = env::temp_dir();
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_nanos();
+    for attempt in 0..100_u32 {
+        let dir = tmp.join(format!("aos-nix-diff-conformance-{pid}-{nanos}-{attempt}"));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("creating {}", dir.display()));
+            }
+        }
+    }
+    Err(AosError::InvalidArgument {
+        message: "failed to allocate a temporary nix-diff conformance corpus directory".to_string(),
+    }
+    .into())
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct RenderedConformanceCase {
+    attr: String,
+    name: String,
+    value_expr: String,
+}
+
+fn render_conformance_file(cases: &[RenderedConformanceCase]) -> String {
+    let mut file = String::from(
+        r#"let
+  system =
+    if builtins ? currentSystem
+    then builtins.currentSystem
+    else "x86_64-linux";
+  mkCase = name: value:
+    let
+      json = builtins.tryEval (builtins.toJSON value);
+      rendered =
+        if json.success
+        then json.value
+        else builtins.seq value "__aos_nix_non_json__";
+    in
+      derivationStrict {
+        inherit name system;
+        builder = "#,
+    );
+    file.push_str(&nix_string_literal(CONFORMANCE_CORPUS_BUILDER));
+    file.push_str(
+        r#";
+        args = [];
+        evaluated = rendered;
+      };
+in
+{
+  conformance = {
+"#,
+    );
+    for case in cases {
+        file.push_str("    ");
+        file.push_str(&case.attr);
+        file.push_str(" = mkCase ");
+        file.push_str(&nix_string_literal(&format!("aos-nix-lang-{}", case.name)));
+        file.push_str(" (\n");
+        push_indented(&mut file, &case.value_expr, "      ");
+        file.push_str("\n    );\n");
+    }
+    file.push_str("  };\n}\n");
+    file
+}
+
+fn push_indented(out: &mut String, text: &str, indent: &str) {
+    for (index, line) in text.lines().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(indent);
+        out.push_str(line);
+    }
+}
+
+fn discover_eval_okay_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
+    let mut cases = Vec::new();
+    for entry in fs::read_dir(lang_dir)
+        .with_context(|| format!("reading lang corpus directory {}", lang_dir.display()))?
+    {
+        let entry = entry
+            .with_context(|| format!("reading lang corpus entry in {}", lang_dir.display()))?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("nix") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let stem = stem.to_owned();
+        if !stem.starts_with("eval-okay-") {
+            continue;
+        }
+        cases.push(LangCase {
+            name: stem.clone(),
+            source: path,
+            expected: Some(lang_dir.join(format!("{stem}.exp"))),
+            expected_xml: lang_dir
+                .join(format!("{stem}.exp.xml"))
+                .exists()
+                .then(|| lang_dir.join(format!("{stem}.exp.xml"))),
+            flags: read_lang_case_flags(lang_dir, &stem)?,
+            disabled: lang_dir.join(format!("{stem}.exp-disabled")).exists(),
+        });
+    }
+    cases.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(cases)
+}
+
+fn read_lang_case_flags(lang_dir: &Path, stem: &str) -> Result<Vec<String>> {
+    let path = lang_dir.join(format!("{stem}.flags"));
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(text
+        .lines()
+        .map(|line| line.split('#').next().unwrap_or_default())
+        .flat_map(str::split_whitespace)
+        .map(str::to_owned)
+        .collect())
+}
+
+fn render_conformance_case(
+    case: &LangCase,
+    lang_dir: &Path,
+) -> Result<Option<RenderedConformanceCase>> {
+    if !is_supported_conformance_case(case)? {
+        return Ok(None);
+    }
+    let attr = conformance_case_attr(&case.name)?;
+    let config = match parse_eval_okay_flags(&case.flags, lang_dir) {
+        Ok(config) => config,
+        Err(()) => return Ok(None),
+    };
+    let mut value_expr = render_case_import(&case.source)?;
+    if !config.auto_args.is_empty() {
+        value_expr = render_auto_arg_application(&value_expr, &config.auto_args)?;
+    }
+    if !config.attr_path.is_empty() {
+        value_expr = format!("({value_expr})");
+        for segment in &config.attr_path {
+            value_expr.push('.');
+            value_expr.push_str(segment);
+        }
+    }
+    if case.expected_xml.is_some() {
+        value_expr = format!("builtins.toXML ({value_expr})");
+    }
+    Ok(Some(RenderedConformanceCase {
+        attr,
+        name: case.name.clone(),
+        value_expr,
+    }))
+}
+
+fn is_supported_conformance_case(case: &LangCase) -> Result<bool> {
+    if case.disabled
+        || LANG_CASE_EXCLUSION_NAMES.contains(&case.name.as_str())
+        || CONFORMANCE_WRAPPER_ONLY_EXCLUSION_NAMES.contains(&case.name.as_str())
+    {
+        return Ok(false);
+    }
+    if case_expected_mentions_repeated_value(case)? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn case_expected_mentions_repeated_value(case: &LangCase) -> Result<bool> {
+    let Some(path) = case.expected.as_ref() else {
+        return Ok(false);
+    };
+    if !path.exists() {
+        return Ok(false);
+    }
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(bytes
+        .windows("repeated".len())
+        .any(|window| window == b"repeated"))
+}
+
+fn conformance_case_attr(name: &str) -> Result<String> {
+    if !name
+        .bytes()
+        .all(|byte| matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_'))
+    {
+        return Err(AosError::InvalidArgument {
+            message: format!("unsupported conformance case name for attr path: {name}"),
+        }
+        .into());
+    }
+    Ok(name.to_owned())
+}
+
+fn parse_eval_okay_flags(
+    flags: &[String],
+    lang_dir: &Path,
+) -> std::result::Result<LangCaseConfig, ()> {
+    let mut auto_args = Vec::new();
+    let mut attr_path = Vec::new();
+    let mut index = 0;
+    while let Some(flag) = flags.get(index) {
+        match flag.as_str() {
+            "--eval" | "--strict" => {}
+            "--arg" => {
+                index += 1;
+                let Some(name) = flags.get(index) else {
+                    return Err(());
+                };
+                index += 1;
+                let Some(expr) = flags.get(index) else {
+                    return Err(());
+                };
+                validate_lang_identifier(name)?;
+                auto_args.push(LangAutoArg::Expr {
+                    name: name.clone(),
+                    expr: render_auto_arg_expr(expr, lang_dir)?,
+                });
+            }
+            "--argstr" => {
+                index += 1;
+                let Some(name) = flags.get(index) else {
+                    return Err(());
+                };
+                index += 1;
+                let Some(value) = flags.get(index) else {
+                    return Err(());
+                };
+                validate_lang_identifier(name)?;
+                auto_args.push(LangAutoArg::Str {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+            "-A" => {
+                if !attr_path.is_empty() {
+                    return Err(());
+                }
+                index += 1;
+                let Some(attr) = flags.get(index) else {
+                    return Err(());
+                };
+                attr_path = parse_lang_attr_path(attr)?;
+            }
+            _ => return Err(()),
+        }
+        index += 1;
+    }
+    Ok(LangCaseConfig {
+        auto_args,
+        attr_path,
+    })
+}
+
+fn render_auto_arg_application(source_expr: &str, auto_args: &[LangAutoArg]) -> Result<String> {
+    let mut rendered = String::new();
+    rendered.push_str("((");
+    rendered.push_str(source_expr);
+    rendered.push_str(") { ");
+    for auto_arg in auto_args {
+        match auto_arg {
+            LangAutoArg::Expr { name, expr } => {
+                rendered.push_str(name);
+                rendered.push_str(" = ");
+                rendered.push_str(expr);
+                rendered.push_str("; ");
+            }
+            LangAutoArg::Str { name, value } => {
+                rendered.push_str(name);
+                rendered.push_str(" = ");
+                rendered.push_str(&nix_string_literal(value));
+                rendered.push_str("; ");
+            }
+        }
+    }
+    rendered.push_str("})");
+    Ok(rendered)
+}
+
+fn render_auto_arg_expr(expr: &str, lang_dir: &Path) -> std::result::Result<String, ()> {
+    let Some(path) = expr
+        .strip_prefix("import(")
+        .and_then(|expr| expr.strip_suffix(')'))
+    else {
+        return Err(());
+    };
+    if path.contains("${") {
+        return Err(());
+    }
+    let path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        lang_dir.parent().ok_or(())?.join(path)
+    };
+    render_case_import(&path).map_err(|_| ())
+}
+
+fn render_case_import(path: &Path) -> Result<String> {
+    let path = absolute_path_for_nix(path)?;
+    let path = path
+        .to_str()
+        .with_context(|| format!("nix file path is not valid UTF-8: {}", path.display()))?;
+    Ok(format!(
+        "import (builtins.toPath {})",
+        nix_string_literal(path)
+    ))
+}
+
+fn parse_lang_attr_path(attr: &str) -> std::result::Result<Vec<String>, ()> {
+    attr.split('.')
+        .map(|segment| {
+            validate_lang_identifier(segment)?;
+            Ok(segment.to_owned())
+        })
+        .collect()
+}
+
+fn validate_lang_identifier(value: &str) -> std::result::Result<(), ()> {
+    let Some((first, rest)) = value.as_bytes().split_first() else {
+        return Err(());
+    };
+    if !matches!(first, b'_' | b'a'..=b'z' | b'A'..=b'Z')
+        || !rest
+            .iter()
+            .all(|byte| matches!(byte, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
+    {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn package_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
@@ -854,7 +1358,7 @@ fn corpus_json(
         "attrs_checked": reports.len(),
         "attrs_failed": failed_attrs,
         "divergence_count": divergence_count,
-        "reports": reports.iter().map(|report| attr_report_json(report, candidate_name, eval_config, file, mode)).collect::<Vec<_>>(),
+        "reports": reports.iter().map(|report| attr_report_json(report, candidate_name, eval_config, mode)).collect::<Vec<_>>(),
     });
     if let (serde_json::Value::Object(object), Some(summary)) =
         (&mut value, corpus_oracle_stats_aggregate(reports))
@@ -868,7 +1372,6 @@ fn attr_report_json(
     report: &AttrDiffReport,
     candidate_name: &str,
     eval_config: &NixEvalConfig,
-    file: &Path,
     mode: DiffMode,
 ) -> serde_json::Value {
     let Some(diff_report) = &report.report else {
@@ -877,8 +1380,8 @@ fn attr_report_json(
             "mode": mode_name(mode),
             "oracle": "nix-cli",
             "candidate": candidate_name,
-            "file": file.to_string_lossy(),
-            "reproduce": reproduction_command(eval_config, file, &report.attr, mode),
+            "file": report.file.to_string_lossy(),
+            "reproduce": reproduction_command(eval_config, &report.file, &report.attr, mode),
             "matched": false,
             "error": report.failure.as_ref().map(ToString::to_string),
             "oracle_root": null,
@@ -896,7 +1399,7 @@ fn attr_report_json(
         diff_report,
         candidate_name,
         eval_config,
-        file,
+        &report.file,
         &report.attr,
         report.failure.as_ref(),
         report.oracle_stats.as_ref(),
@@ -908,7 +1411,12 @@ fn attr_report_json(
         );
         object.insert(
             "reproduce".to_string(),
-            serde_json::Value::String(reproduction_command(eval_config, file, &report.attr, mode)),
+            serde_json::Value::String(reproduction_command(
+                eval_config,
+                &report.file,
+                &report.attr,
+                mode,
+            )),
         );
     }
     value
@@ -1826,6 +2334,7 @@ mod tests {
     fn corpus_oracle_stats_summary_renders_elapsed_aggregate() {
         let reports = vec![
             AttrDiffReport {
+                file: PathBuf::from("default.nix"),
                 attr: "pkgs.fast".to_string(),
                 report: None,
                 failure: None,
@@ -1836,6 +2345,7 @@ mod tests {
                 }),
             },
             AttrDiffReport {
+                file: PathBuf::from("default.nix"),
                 attr: "pkgs.slow".to_string(),
                 report: None,
                 failure: None,
@@ -1846,6 +2356,7 @@ mod tests {
                 }),
             },
             AttrDiffReport {
+                file: PathBuf::from("default.nix"),
                 attr: "pkgs.skipped".to_string(),
                 report: None,
                 failure: None,
@@ -1867,6 +2378,7 @@ mod tests {
     fn corpus_json_renders_oracle_stats_summary() {
         let reports = vec![
             AttrDiffReport {
+                file: PathBuf::from("default.nix"),
                 attr: "pkgs.fast".to_string(),
                 report: None,
                 failure: None,
@@ -1877,6 +2389,7 @@ mod tests {
                 }),
             },
             AttrDiffReport {
+                file: PathBuf::from("default.nix"),
                 attr: "pkgs.slow".to_string(),
                 report: None,
                 failure: None,
@@ -2301,6 +2814,7 @@ mod tests {
             node_artifacts: Vec::new(),
         };
         let attr_report = AttrDiffReport {
+            file: PathBuf::from("default.nix"),
             attr: "pkgs.hello".to_string(),
             failure: report_failure(&report),
             report: Some(report),
@@ -2341,6 +2855,7 @@ mod tests {
     #[test]
     fn corpus_failure_rejects_one_divergent_attr_among_matches() {
         let matched = AttrDiffReport {
+            file: PathBuf::from("default.nix"),
             attr: "pkgs.good".to_string(),
             failure: None,
             report: Some(DrvDiffReport {
@@ -2369,6 +2884,7 @@ mod tests {
             node_artifacts: Vec::new(),
         };
         let divergent = AttrDiffReport {
+            file: PathBuf::from("default.nix"),
             attr: "pkgs.bad".to_string(),
             failure: report_failure(&divergent_report),
             report: Some(divergent_report),
@@ -2411,6 +2927,7 @@ mod tests {
             node_artifacts: Vec::new(),
         };
         let attr_report = AttrDiffReport {
+            file: PathBuf::from("default.nix"),
             attr: "pkgs.empty".to_string(),
             failure: report_failure(&report),
             report: Some(report),
@@ -2425,6 +2942,7 @@ mod tests {
     #[test]
     fn corpus_json_renders_hard_attr_errors() {
         let attr_report = AttrDiffReport {
+            file: PathBuf::from("default.nix"),
             attr: "pkgs.bad".to_string(),
             report: None,
             failure: Some(NixDiffReportedFailure::attr_error(
@@ -2535,25 +3053,161 @@ mod tests {
         Ok(())
     }
 
+    fn fixture_lang_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("aos-nix")
+            .join("tests")
+            .join("fixtures")
+            .join("lang")
+    }
+
+    #[test]
+    fn conformance_corpus_generates_eval_okay_derivation_attrs() -> Result<()> {
+        let generated = generated_conformance_corpus(&fixture_lang_dir())?;
+        let attrs = generated
+            .entries
+            .iter()
+            .map(|entry| entry.attr.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(attrs.contains(&"conformance.eval-okay-number"));
+        assert!(attrs.contains(&"conformance.eval-okay-autoargs"));
+        assert!(attrs.contains(&"conformance.eval-okay-string"));
+        assert!(!attrs.contains(&"conformance.eval-okay-disabled"));
+        assert!(!attrs.contains(&"conformance.eval-okay-search-path"));
+        assert!(!attrs.contains(&"conformance.eval-okay-recursive"));
+        assert!(
+            generated
+                .entries
+                .iter()
+                .all(|entry| entry.file.ends_with("corpus.nix"))
+        );
+
+        let generated_file = generated
+            .entries
+            .first()
+            .map(|entry| entry.file.clone())
+            .ok_or_else(|| anyhow::anyhow!("generated fixture corpus should have entries"))?;
+        let generated_text = fs::read_to_string(&generated_file)?;
+        assert!(generated_text.contains("conformance = {"));
+        assert!(generated_text.contains("eval-okay-number = mkCase"));
+        assert!(generated_text.contains("builtins.tryEval (builtins.toJSON value)"));
+        assert!(generated_text.contains("((import (builtins.toPath"));
+        assert!(generated_text.contains("xyzzy = \"xyzzy!\";"));
+        assert!(generated_text.contains(".result"));
+        assert!(!generated_text.contains("eval-okay-disabled = mkCase"));
+        assert!(!generated_text.contains("eval-okay-recursive = mkCase"));
+
+        if let Some(dir) = generated_file.parent() {
+            fs::remove_dir_all(dir)?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn conformance_flag_parser_handles_autoargs_and_attr_selection() -> Result<()> {
+        let flags = vec![
+            "--arg".to_string(),
+            "lib".to_string(),
+            "import(lang/lib.nix)".to_string(),
+            "--argstr".to_string(),
+            "xyzzy".to_string(),
+            "xyzzy!".to_string(),
+            "-A".to_string(),
+            "result".to_string(),
+        ];
+
+        let config = parse_eval_okay_flags(&flags, &fixture_lang_dir()).map_err(|()| {
+            anyhow::anyhow!("fixture flags should be supported by conformance wrapper")
+        })?;
+
+        assert_eq!(
+            config.auto_args,
+            vec![
+                LangAutoArg::Expr {
+                    name: "lib".to_string(),
+                    expr: render_case_import(&fixture_lang_dir().join("lib.nix"))?,
+                },
+                LangAutoArg::Str {
+                    name: "xyzzy".to_string(),
+                    value: "xyzzy!".to_string(),
+                },
+            ]
+        );
+        assert_eq!(config.attr_path, vec!["result".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn conformance_flag_parser_rejects_command_line_only_flags() {
+        let flags = vec![
+            "--extra-experimental-features".to_string(),
+            "parse-toml-timestamps".to_string(),
+        ];
+
+        assert!(parse_eval_okay_flags(&flags, &fixture_lang_dir()).is_err());
+    }
+
+    #[test]
+    fn conformance_corpus_skips_lang_sh_environment_sensitive_cases() -> Result<()> {
+        for name in ["eval-okay-getenv", "eval-okay-path-string-interpolation"] {
+            let case = LangCase {
+                name: name.to_string(),
+                source: fixture_lang_dir().join(format!("{name}.nix")),
+                expected: None,
+                expected_xml: None,
+                flags: Vec::new(),
+                disabled: false,
+            };
+
+            assert!(!is_supported_conformance_case(&case)?, "{name}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn extend_unique_preserves_first_seen_order() {
-        let mut attrs = vec!["pkgs.hello".to_string()];
-        let mut seen = attrs.iter().cloned().collect::<BTreeSet<_>>();
+        let root = PathBuf::from("default.nix");
+        let generated = PathBuf::from("/tmp/generated/corpus.nix");
+        let mut entries = vec![CorpusEntry {
+            file: root.clone(),
+            attr: "pkgs.hello".to_string(),
+        }];
+        let mut seen = entries
+            .iter()
+            .map(|entry| (entry.file.clone(), entry.attr.clone()))
+            .collect::<BTreeSet<_>>();
 
-        extend_unique(
-            &mut attrs,
+        extend_unique_entries(
+            &mut entries,
             &mut seen,
             vec![
-                "pkgs.hello".to_string(),
-                "systems.server.build.toplevel".to_string(),
+                CorpusEntry {
+                    file: root.clone(),
+                    attr: "pkgs.hello".to_string(),
+                },
+                CorpusEntry {
+                    file: root,
+                    attr: "systems.server.build.toplevel".to_string(),
+                },
+                CorpusEntry {
+                    file: generated,
+                    attr: "conformance.eval-okay-number".to_string(),
+                },
             ],
         );
 
         assert_eq!(
-            attrs,
+            entries
+                .iter()
+                .map(|entry| entry.attr.as_str())
+                .collect::<Vec<_>>(),
             vec![
-                "pkgs.hello".to_string(),
-                "systems.server.build.toplevel".to_string()
+                "pkgs.hello",
+                "systems.server.build.toplevel",
+                "conformance.eval-okay-number"
             ]
         );
     }
