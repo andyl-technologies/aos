@@ -132,7 +132,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:layer0-determinism",
         phase: GatePhase::Phase1,
         owner: "crucible-sim",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:single-vm-fingerprint",

@@ -64,6 +64,7 @@ in {
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
+    layer0Determinism = import ./phase1-layer0-determinism.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
@@ -78,20 +79,23 @@ in {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.harnessLint";
       };
-      layer0Determinism = redGate {
+      layer0Determinism = import ./phase1-layer0-determinism.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.layer0Determinism";
-        gateName = "gate:layer0-determinism";
-        owner = "crucible-sim";
-        phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-5" "T-DET-1" "T-DET-4" "T-DET-5" "T-DET-6" "T-DET-7"];
-        dependencies = [
-          (import ./phase1-deterministic-launch.nix {inherit pkgs lib;})
-          (import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;})
-          (import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;})
-          (import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;})
-          (import ./phase1-contract-a-isolation.nix {inherit pkgs lib;})
+        taskIds = [
+          "T-PLAN-3"
+          "T-HARN-5"
+          "T-DET-1"
+          "T-DET-2"
+          "T-DET-3"
+          "T-DET-4"
+          "T-DET-5"
+          "T-DET-6"
+          "T-DET-7"
+          "T-DET-8"
+          "T-DET-9"
+          "T-DET-10"
         ];
-        reason = "L0 aggregate suite is intentionally pending after completed launch, entropy, and Contract A isolation leaf checks";
       };
       contentAddress = redGate {
         attrPath = "checks.crucible.phase1.gates.contentAddress";

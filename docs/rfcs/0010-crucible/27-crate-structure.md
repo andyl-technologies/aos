@@ -449,7 +449,7 @@ contract and which crate realizes a file.
 | Crate | Owning RFC file(s) | Determinism gate(s) |
 | --- | --- | --- |
 | `crucible-sim` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
-| `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:harness-lint` |
+| `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:layer0-determinism`, `gate:harness-lint` |
 | `crucible-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance` |
 | `crucible-protocol` | [`14`](14-protocol.md) | `gate:abi-conformance`, `gate:harness-lint` |
 | `crucible-device` | [`15`](15-io-subnodes.md) | `gate:layer1-injection`, `gate:harness-lint` |
@@ -549,7 +549,7 @@ enters a release build.
 | Gate | Lives in | Run as |
 | --- | --- | --- |
 | `gate:harness-lint` | `crucible-harness` + workspace `cargo` lints | every PR (Phase 0) |
-| `gate:layer0-determinism` | `crucible-sim` `tests/`, `crucible` `tests/` (`--features test-double`) | reduce-twice equality |
+| `gate:layer0-determinism` | `crucible-sim` `tests/`, `crucible-assert` `tests/`, `crucible` `tests/` (`--features test-double`) | reduce-twice equality |
 | `gate:single-vm-fingerprint` | `crucible-qemu` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
 | `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
 | `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` | frozen golden vectors |

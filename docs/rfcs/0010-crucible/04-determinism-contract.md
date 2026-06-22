@@ -679,7 +679,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.
-- [ ] **T-DET-10** Implement `gate:layer0-determinism`: the aggregate single-VM
+- [x] **T-DET-10** Implement `gate:layer0-determinism`: the aggregate single-VM
   determinism gate across the elimination set, with per-source micro-tests that
   fail if any of E1–E10, E13–E17 is reintroduced. — satisfies [DET-18],
   [DET-3], [NG-6]; spec §4.6.

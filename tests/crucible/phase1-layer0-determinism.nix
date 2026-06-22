@@ -1,0 +1,334 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase1.layer0Determinism",
+  taskIds ? ["T-DET-10"],
+}: let
+  deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
+  qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
+  guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
+  kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
+  contractAIsolation = import ./phase1-contract-a-isolation.nix {inherit pkgs lib;};
+  noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
+  icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
+  singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {inherit pkgs lib;};
+
+  simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
+  engineGate = builtins.readFile ../../crates/crucible/tests/gate_layer0_determinism.rs;
+  assertGate = builtins.readFile ../../crates/crucible-assert/tests/gate_layer0_determinism.rs;
+  assertLib = builtins.readFile ../../crates/crucible-assert/src/lib.rs;
+  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
+  defaultChecks = builtins.readFile ./default.nix;
+  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+
+  hasInfix = needle: haystack: let
+    needleLen = builtins.stringLength needle;
+    haystackLen = builtins.stringLength haystack;
+    maxStart = haystackLen - needleLen;
+    indexes =
+      if needleLen == 0
+      then [0]
+      else if maxStart < 0
+      then []
+      else builtins.genList (index: index) (maxStart + 1);
+  in
+    builtins.any (index:
+      builtins.substring index needleLen haystack == needle)
+    indexes;
+
+  failuresFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (!(hasInfix requirement.needle content)) [
+          "${fileLabel}: missing ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  forbiddenFor = fileLabel: content: requirements:
+    lib.concatMap (
+      requirement:
+        lib.optionals (hasInfix requirement.needle content) [
+          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
+        ]
+    )
+    requirements;
+
+  failures =
+    failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" simGate [
+      {
+        label = "reduce-twice Contract A gate test";
+        needle = "gate_layer0_determinism_reduces_fixed_contract_a_twice";
+      }
+      {
+        label = "fixed input sensitivity";
+        needle = "gate_layer0_determinism_is_sensitive_to_each_fixed_input";
+      }
+      {
+        label = "named decision stream stability";
+        needle = "gate_layer0_determinism_keeps_named_streams_stable_under_entity_addition";
+      }
+      {
+        label = "recorded input ordering rejection";
+        needle = "gate_layer0_determinism_rejects_unordered_recorded_inputs";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" simGate [
+      {
+        label = "ignored placeholder";
+        needle = "#[ignore";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_layer0_determinism.rs" engineGate [
+      {
+        label = "sim backend reduce-twice gate test";
+        needle = "gate_layer0_determinism_reduces_sim_backend_twice";
+      }
+      {
+        label = "explicit schedule ordering";
+        needle = "gate_layer0_determinism_keeps_schedule_decisions_explicitly_ordered";
+      }
+      {
+        label = "scheduler total-order property";
+        needle = "gate_layer0_determinism_orders_scheduler_event_keys_canonically";
+      }
+      {
+        label = "prefix rejection property";
+        needle = "gate_layer0_determinism_rejects_implicit_schedule_prefixes";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/tests/gate_layer0_determinism.rs" engineGate [
+      {
+        label = "ignored placeholder";
+        needle = "#[ignore";
+      }
+    ]
+    ++ failuresFor "crates/crucible-assert/src/lib.rs" assertLib [
+      {
+        label = "assertion vocabulary version";
+        needle = "ASSERTION_VOCABULARY_VERSION";
+      }
+      {
+        label = "assertion kind data contract";
+        needle = "pub enum AssertionKind";
+      }
+      {
+        label = "assertion spec data contract";
+        needle = "pub struct AssertionSpec";
+      }
+    ]
+    ++ failuresFor "crates/crucible-assert/tests/gate_layer0_determinism.rs" assertGate [
+      {
+        label = "canonical assertion ids";
+        needle = "gate_layer0_determinism_assertion_ids_are_canonical";
+      }
+      {
+        label = "stable assertion ordering";
+        needle = "gate_layer0_determinism_assertion_order_is_stable";
+      }
+      {
+        label = "ambiguous subject rejection";
+        needle = "gate_layer0_determinism_assertions_reject_ambiguous_subjects";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-assert/tests/gate_layer0_determinism.rs" assertGate [
+      {
+        label = "ignored placeholder";
+        needle = "#[ignore";
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+      {
+        label = "crucible-sim layer0 target implemented";
+        needle = "package: \"crucible-sim\",\n        test_target: \"gate_layer0_determinism\",\n        required_features: &[],\n        placeholder: false,";
+      }
+      {
+        label = "crucible-assert layer0 target implemented";
+        needle = "package: \"crucible-assert\",\n        test_target: \"gate_layer0_determinism\",\n        required_features: &[],\n        placeholder: false,";
+      }
+      {
+        label = "crucible layer0 target implemented";
+        needle = "package: \"crucible\",\n        test_target: \"gate_layer0_determinism\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+      {
+        label = "implemented canonical layer0 gate status";
+        needle = "name: \"gate:layer0-determinism\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-sim\",\n        status: GateStatus::Implemented,";
+      }
+    ]
+    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+      {
+        label = "layer0 implemented status assertion";
+        needle = "find_gate(\"gate:layer0-determinism\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
+      {
+        label = "implemented layer0 targets in Nix lint";
+        needle = "placeholder = false;";
+      }
+      {
+        label = "updated placeholder count";
+        needle = "placeholder_targets=24";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase1 exposes layer0 determinism check";
+        needle = "layer0Determinism = import ./phase1-layer0-determinism.nix";
+      }
+      {
+        label = "layer0 gate no longer uses red placeholder";
+        needle = "attrPath = \"checks.crucible.phase1.gates.layer0Determinism\"";
+      }
+      {
+        label = "layer0 gate lists T-DET-10";
+        needle = "\"T-DET-10\"";
+      }
+    ]
+    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+      {
+        label = "T-DET-10 checklist complete";
+        needle = "- [x] **T-DET-10**";
+      }
+    ];
+in
+  if failures != []
+  then throw "crucible phase1 layer0 determinism check failed:\n${builtins.concatStringsSep "\n" failures}"
+  else
+    pkgs.mkDerivation {
+      pname = "crucible-phase1-layer0-determinism";
+      version = "0";
+      src = null;
+
+      buildDeps = [
+        pkgs.coreutils
+        pkgs.grep
+      ];
+
+      phases = [
+        {
+          name = "record-layer0-determinism";
+          script = ''
+            set -eu
+            mkdir -p "$out"
+
+            require_line() {
+              result="$1/result"
+              line="$2"
+              grep -Fxq "$line" "$result" || {
+                echo "dependency missing evidence: $line" >&2
+                cat "$result" >&2
+                exit 1
+              }
+            }
+
+            require_leaf() {
+              dependency="$1"
+              shift
+              require_line "$dependency" "PASS"
+              for line in "$@"; do
+                require_line "$dependency" "$line"
+              done
+            }
+
+            require_leaf ${deterministicLaunch} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-1" \
+              "cpu=qemu64,-rdrand,-rdseed" \
+              "accelerator=tcg,thread=single" \
+              "smp_vcpus=1" \
+              "icount=shift=0,sleep=off,align=off" \
+              "rtc=base=2026-01-01T00:00:00,clock=vm" \
+              "timers=virtual-clock-driven" \
+              "interrupt_timing=icount-tb-boundaries" \
+              "virtual_time_ns=icount<<shift" \
+              "tsc_source=icount" \
+              "machine_reset=deterministic-zeroed-ram-fixed-devices" \
+              "ram_reset=zeroed-fresh-anonymous-memory" \
+              "input_policy=no-interactive-input"
+            require_leaf ${qemuDeterministicEntropy} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-4" \
+              "qemu_seed_option_controls_guest_random=true" \
+              "qemu_seed_option_controls_glib_global_prng=true" \
+              "patched_fixture_exercised=true"
+            require_leaf ${guestEntropyLaunch} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-5" \
+              "firmware_seed_source=scenario-seed" \
+              "hwrng_same_seed_reproducible=true" \
+              "guest_csprng_same_seed_reproducible=true" \
+              "cpu_entropy_features=rdrand-disabled,rdseed-disabled" \
+              "kernel_random_trust=random.trust_cpu=off,random.trust_bootloader=off" \
+              "host_guest_entropy_sources=disabled"
+            require_leaf ${kaslrAslrDefault} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-6" \
+              "global_default=nokaslr,norandmaps"
+            require_leaf ${contractAIsolation} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-7" \
+              "driver=crucible-sim::contract_a::ContractADriver" \
+              "inputs=icount-stamped-recorded-list" \
+              "live_scheduler_transport=false" \
+              "rr_vcpu_cursor=fixed-content-addressed" \
+              "recorded_inputs_enforced=monotonic-within-run"
+            require_leaf ${noWarpWithPlugin} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-3" \
+              "time_control_predicate=qemu_plugin_has_time_control" \
+              "wall_clock_warp_under_time_control=false" \
+              "notify_preserved_under_time_control=true"
+            require_leaf ${icountNoRealtime} \
+              "gate=gate:layer0-determinism" \
+              "tasks=T-DET-2" \
+              "qemu_mode=ICOUNT_PRECISE" \
+              "realtime_deadline_in_precise_budget=false"
+            require_leaf ${singleVmFingerprint} \
+              "gate=gate:single-vm-fingerprint" \
+              "real_qemu_source=checks.crucible.phase0.s1Fingerprint" \
+              "run_model=run-twice-and-diff" \
+              "scenario=stock-linux-diskless-initramfs-workload" \
+              "host_adversary=jitter-load" \
+              "samples=32" \
+              "horizon_icount=3200000000" \
+              "mismatch_policy=first-mismatch-is-failure"
+
+            cat > "$out/result" <<'RESULT'
+            PASS
+            check=${attrPath}
+            gate=gate:layer0-determinism
+            tasks=${builtins.concatStringsSep "," taskIds}
+            crates=crucible-sim,crucible-assert,crucible
+            cargo_targets=crucible-sim::gate_layer0_determinism,crucible-assert::gate_layer0_determinism,crucible::gate_layer0_determinism
+            aggregate_model=leaf-evidence-plus-crate-gate-targets
+            reduce_twice_digest_compare=true
+            scheduler_ordering_properties=true
+            decision_stream_entity_addition_stability=true
+            elimination_sources=E1,E2,E3,E4,E5,E6,E7,E8,E9,E10,E13,E14,E15,E16,E17
+            evidence.E1=deterministicLaunch.cpu+guestEntropyLaunch.cpu_entropy_features
+            evidence.E2=noWarpWithPlugin.wall_clock_warp_under_time_control
+            evidence.E3=icountNoRealtime.realtime_deadline_in_precise_budget
+            evidence.E4=deterministicLaunch.tsc_source
+            evidence.E5=deterministicLaunch.rtc+virtual_time_ns
+            evidence.E6=deterministicLaunch.timers
+            evidence.E7=deterministicLaunch.interrupt_timing
+            evidence.E8=guestEntropyLaunch.firmware_seed_source+guest_csprng_same_seed_reproducible
+            evidence.E9=qemuDeterministicEntropy.qemu_seed_option_controls_guest_random+qemu_seed_option_controls_glib_global_prng
+            evidence.E10=deterministicLaunch.cpu+singleVmFingerprint.run_model
+            evidence.E13=deterministicLaunch.smp_vcpus+contractAIsolation.rr_vcpu_cursor
+            evidence.E14=noWarpWithPlugin.time_control_predicate+notify_preserved_under_time_control
+            evidence.E15=deterministicLaunch.cpu+singleVmFingerprint.run_model
+            evidence.E16=deterministicLaunch.machine_reset+ram_reset
+            evidence.E17=deterministicLaunch.input_policy+contractAIsolation.recorded_inputs_enforced
+            leaf_checks=deterministicLaunch,qemuDeterministicEntropy,guestEntropyLaunch,kaslrAslrDefault,contractAIsolation,noWarpWithPlugin,icountNoRealtime,singleVmFingerprint
+            RESULT
+          '';
+        }
+      ];
+    }
