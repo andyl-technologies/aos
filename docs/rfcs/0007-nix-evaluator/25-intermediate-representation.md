@@ -697,7 +697,7 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 ### Scope-resolved typed form (§3)
 
 - [ ] Born-resolved invariant: no name lookup survives except `WithVar`; lexical access is `(depth, slot)` array indexing (§3 item 1) — **P1**, `S-19`/`S-11`.
-- [ ] Exact per-lambda capture list in `FrameInfo.captures` (free-var set, nothing more) — precondition for cheap GC tracing and escape analysis (§3 item 2) — **P1**.
+- [x] Exact per-lambda capture list in `FrameInfo.captures` (free-var set, nothing more) — precondition for cheap GC tracing and escape analysis (§3 item 2) — **P1**. Implemented by resolver capture bookkeeping: `lookup_symbol` identifies the binding frame/slot, `record_captures` records `Upvalue { depth, slot }` only for intervening lambda frames, stores captures in a deduplicating `BTreeSet`, and finalizes each `FrameInfo` with a sorted boxed capture slice. Covered by `resolves_let_lambda_to_de_bruijn_slots`, `nested_lambdas_record_transitive_capture_sets`, and lambda-shadowing/default tests that keep local slots out of capture lists. The later GC tracing and escape-analysis consumers remain tracked by their own memory/analysis rows.
 - [ ] Explicit thunk placement: `ThunkAlloc` materialized conservatively (everything non-trivial), with thunk *placement* part of the IR contract (§3 item 3) — **P1**; strictness later *removes* `ThunkAlloc` nodes (**P4**, [07](07-laziness-and-whole-program-analyses.md)).
 
 ### Runtime-concept encodings (§4)
