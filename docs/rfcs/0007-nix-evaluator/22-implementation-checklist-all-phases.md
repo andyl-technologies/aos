@@ -568,6 +568,13 @@ alone (`M-1`/`Q-A`).
       through the `files/` pack. This is a typed buffered read helper only;
       durable index lookup, parse-artifact payload decoding, mmap reads, cache
       hit integration, GC/repack, and harness proof remain open (`C-13`).
+- [x] Current explicit file-artifact bundle hydration adapter:
+      `PersistCache::hydrate_file_artifact_bundle` reads a typed `files/`
+      artifact value, decodes the `ParseArtifactBundle` payload, and writes it
+      into a caller-supplied `ParseCacheEntry`. This is explicit hydration only;
+      durable index lookup, automatic cache-hit selection, source/key equality
+      proof, mmap reads, semantic validation before writing, GC/repack, and
+      harness proof remain open (`C-13`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
