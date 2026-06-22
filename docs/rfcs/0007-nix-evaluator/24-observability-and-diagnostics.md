@@ -511,7 +511,16 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       without per-tier fixup (§4.1, §4.2) — **P1/P6/P7**, depends on the
       arena-AST spans of [04](04-frontend-parser-and-ir.md) §3.1 and the
       future tier/deopt paths.
-- [ ] Parse errors stop at the first error (no LSP recovery) with a byte-exact span; desugaring nodes carry sensible spans (§4.3, open question 4) — **P1** core; span-fidelity-through-desugaring is an ongoing fit-and-finish item.
+- [x] Current fail-fast parser diagnostic core: parsing returns one
+      `ParseError`, has no recovery/accumulation API, carries a byte `Span`,
+      and reports the first error encountered by the fail-fast parser; focused
+      tests assert the first significant token after skipped trivia is reported
+      at the exact source byte (§4.3) — **P1** core; gate today: parser
+      diagnostic tests.
+- [ ] Span fidelity through desugaring remains: synthesized/desugared nodes from
+      attr-path nesting, `inherit`, indented-string de-indentation, and other
+      rewrites must consistently point diagnostics at sensible original bytes
+      (§4.3, open question 4) — **P1** fit-and-finish.
 
 ### `--show-trace` parity: structural, not textual (§5)
 
