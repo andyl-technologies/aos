@@ -115,14 +115,14 @@
       package = "crucible";
       testTarget = "gate_content_address";
       requiredFeatures = ["test-double"];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:content-address";
       package = "crucible-sim";
       testTarget = "gate_content_address";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:scheduler-liveness";
@@ -252,8 +252,9 @@
       else "";
     manifestTargetHasRequiredFeature =
       builtins.any (
-          cargoTest:
-          cargoTest ? name
+        cargoTest:
+          cargoTest
+          ? name
           && cargoTest.name == target.testTarget
           && cargoTest ? "required-features"
           && builtins.elem "test-double" cargoTest."required-features"
@@ -265,7 +266,8 @@
     manifestTargetHasPath =
       builtins.any (
         cargoTest:
-          cargoTest ? name
+          cargoTest
+          ? name
           && cargoTest.name == target.testTarget
           && cargoTest ? path
           && cargoTest.path == "tests/${target.testTarget}.rs"
@@ -318,21 +320,21 @@
         test = [];
       }
       ++ lib.concatMap targetFailures [
-      {
-        gate = "gate:replay-oracle";
-        package = "crucible";
-        testTarget = "gate_replay_oracle";
-        requiredFeatures = [];
-        placeholder = true;
-      }
-      {
-        gate = "gate:unknown";
-        package = "crucible-harness";
-        testTarget = "unknown_gate";
-        requiredFeatures = [];
-        placeholder = true;
-      }
-    ];
+        {
+          gate = "gate:replay-oracle";
+          package = "crucible";
+          testTarget = "gate_replay_oracle";
+          requiredFeatures = [];
+          placeholder = true;
+        }
+        {
+          gate = "gate:unknown";
+          package = "crucible-harness";
+          testTarget = "unknown_gate";
+          requiredFeatures = [];
+          placeholder = true;
+        }
+      ];
     hasFinding = needle:
       builtins.any (finding: hasInfix needle finding) findings;
   in
@@ -372,7 +374,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=21
+            placeholder_targets=19
             RESULT
           '';
         }

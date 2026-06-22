@@ -132,14 +132,14 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible",
         test_target: "gate_content_address",
         required_features: &["test-double"],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:content-address",
         package: "crucible-sim",
         test_target: "gate_content_address",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:scheduler-liveness",

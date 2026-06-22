@@ -4,6 +4,7 @@
 }: let
   root = ../..;
   engineModel = builtins.readFile ../../crates/crucible/src/model.rs;
+  engineModelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
   engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   rustFilesUnder = relativeRoot: let
@@ -558,6 +559,9 @@
       label = "scenario definition material constructor";
       needle = "pub fn from_canonical_material(domain: &str, material: &str) -> Self";
     }
+  ];
+
+  engineModelCanonicalRequirements = [
     {
       label = "stable material hasher";
       needle = "let mut hasher = MaterialHasher::new();";
@@ -589,11 +593,11 @@
 
   failures =
     failuresFor "crates/crucible/src/model.rs" engineModel engineModelRequirements
+    ++ failuresFor "crates/crucible/src/model/canonical.rs" engineModelCanonical engineModelCanonicalRequirements
     ++ failuresFor "crates/crucible/src/lib.rs" engineLib engineLibRequirements
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo qemuCargoRequirements
     ++ failuresFor "crates/crucible-qemu/src/launch*.rs" launchRust sourceRequirements
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements
-    ;
+    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest testRequirements;
 in
   if failures != []
   then throw "crucible phase1 deterministic launch check failed:\n${builtins.concatStringsSep "\n" failures}"

@@ -150,7 +150,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:content-address",
         phase: GatePhase::Phase1,
         owner: "crucible",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:replay-oracle",
