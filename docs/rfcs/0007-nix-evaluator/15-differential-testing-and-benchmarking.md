@@ -960,7 +960,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 ### Conformance-suite reuse (§3)
 
 - [ ] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2) — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
-- [ ] Error-**class** parity (type stays type, `throw` stays `throw`, assert stays assert) — hard; error-**text** parity a non-goal for the first gate, with documented intentional `skip` exclusions for unused corners only (§3.3, §3.4) — **P1**; the basis for the `EvalError`-vs-`Unsupported` fallback ([14](14-integration-with-aos.md) §6).
+- [x] Error-**class** parity (type stays type, `throw` stays `throw`, assert stays assert): `cpp_nix_error_classes_match_tree_walk` is a pinned-oracle/configured conformance gate for representative parse-fail, type-error, `throw`, assert, and `abort` failures, while error-**text** parity remains a non-goal for the first gate (§3.3, §3.4) — **P1**; the basis for the `EvalError`-vs-`Unsupported` fallback ([14](14-integration-with-aos.md) §6). Full upstream `tests/functional/lang` reuse remains tracked by the preceding corpus row.
 
 ### The tree-walk oracle and the fuzzers (§7)
 

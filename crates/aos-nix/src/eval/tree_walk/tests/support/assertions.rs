@@ -4,6 +4,94 @@ use super::super::*;
 use super::eval::lower;
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EvalErrorClass {
+    Parse,
+    Type,
+    Throw,
+    Assertion,
+    Abort,
+}
+
+pub(crate) fn assert_cpp_nix_error_classes_match_tree_walk(oracle: &str) {
+    assert_pinned_cpp_nix_oracle(oracle);
+
+    for (source, expected) in [
+        ("if true then 1", EvalErrorClass::Parse),
+        ("if 1 then 2 else 3", EvalErrorClass::Type),
+        (
+            r#"builtins.throw "class-throw-sentinel""#,
+            EvalErrorClass::Throw,
+        ),
+        ("assert false; 2", EvalErrorClass::Assertion),
+        (
+            r#"builtins.abort "class-abort-sentinel""#,
+            EvalErrorClass::Abort,
+        ),
+    ] {
+        assert_eq!(
+            cpp_nix_eval_failure_class(oracle, source),
+            expected,
+            "C++ Nix oracle error class diverged for {source:?}",
+        );
+        assert_eq!(
+            tree_walk_eval_failure_class(source),
+            expected,
+            "tree-walk error class diverged for {source:?}",
+        );
+    }
+}
+
+fn cpp_nix_eval_failure_class(oracle: &str, source: &str) -> EvalErrorClass {
+    let output = Command::new(oracle)
+        .args(["--eval", "--strict", "--json", "--expr", source])
+        .output()
+        .expect("C++ Nix oracle evaluates expression");
+    assert!(
+        !output.status.success(),
+        "C++ Nix oracle unexpectedly accepted {source:?}: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    classify_cpp_nix_eval_failure(&stderr)
+        .unwrap_or_else(|| panic!("unclassified C++ Nix error for {source:?}: {stderr}"))
+}
+
+fn classify_cpp_nix_eval_failure(stderr: &str) -> Option<EvalErrorClass> {
+    if stderr.contains("syntax error") {
+        Some(EvalErrorClass::Parse)
+    } else if stderr.contains("evaluation aborted")
+        || stderr.contains("calling the 'abort' builtin")
+    {
+        Some(EvalErrorClass::Abort)
+    } else if stderr.contains("calling the 'throw' builtin") {
+        Some(EvalErrorClass::Throw)
+    } else if stderr.contains("assertion") && stderr.contains("failed") {
+        Some(EvalErrorClass::Assertion)
+    } else if stderr.contains("expected ") && stderr.contains(" but found ") {
+        Some(EvalErrorClass::Type)
+    } else {
+        None
+    }
+}
+
+fn tree_walk_eval_failure_class(source: &str) -> EvalErrorClass {
+    let parsed = match parse_str(source) {
+        Ok(parsed) => parsed,
+        Err(_) => return EvalErrorClass::Parse,
+    };
+    let resolved = resolve_ast(parsed).expect("source resolves");
+    let ir = lower_ir(resolved).expect("source lowers");
+    let error = eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
+    match error.kind() {
+        TreeWalkErrorKind::Type { .. } => EvalErrorClass::Type,
+        TreeWalkErrorKind::Thrown { .. } => EvalErrorClass::Throw,
+        TreeWalkErrorKind::AssertionFailed { .. } => EvalErrorClass::Assertion,
+        TreeWalkErrorKind::Aborted { .. } => EvalErrorClass::Abort,
+        kind => panic!("unclassified tree-walk error for {source:?}: {kind:?}"),
+    }
+}
+
 pub(crate) fn assert_cpp_nix_json_matches_tree_walk(oracle: &str, source: &str) {
     let reference = cpp_nix_eval_json(oracle, source);
     let candidate = eval_json_bytes(source);

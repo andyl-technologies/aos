@@ -360,6 +360,22 @@ fn configured_cpp_nix_control_flow_and_error_semantics_match_tree_walk() {
 }
 
 #[test]
+#[ignore = "requires the pinned C++ Nix 2.24.12 nix-instantiate oracle"]
+fn cpp_nix_error_classes_match_tree_walk() {
+    let oracle = cpp_nix_oracle();
+    assert_cpp_nix_error_classes_match_tree_walk(&oracle);
+}
+
+#[test]
+fn configured_cpp_nix_error_classes_match_tree_walk() {
+    let Ok(oracle) = std::env::var("AOS_NIX_ORACLE") else {
+        eprintln!("AOS_NIX_ORACLE not set; skipping configured C++ Nix error-class check");
+        return;
+    };
+    assert_cpp_nix_error_classes_match_tree_walk(&oracle);
+}
+
+#[test]
 #[ignore = "requires a C++ Nix 2.24.x nix-instantiate oracle"]
 fn cpp_nix_import_semantics_match_tree_walk() {
     let oracle = cpp_nix_oracle();
