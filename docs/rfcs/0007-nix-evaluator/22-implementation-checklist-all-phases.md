@@ -548,6 +548,12 @@ alone (`M-1`/`Q-A`).
       payload format, automatic parse-cache integration, durable index updates,
       lookup, mmap reads, GC/repack, and harness proof remain open
       (`C-13`/`C-14`).
+- [x] Current explicit file-artifact read adapter:
+      `PersistCache::read_file_artifact` consumes a typed
+      `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
+      through the `files/` pack. This is a typed buffered read helper only;
+      durable index lookup, parse-artifact payload decoding, mmap reads, cache
+      hit integration, GC/repack, and harness proof remain open (`C-13`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

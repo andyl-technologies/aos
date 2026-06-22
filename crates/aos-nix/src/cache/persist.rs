@@ -896,6 +896,23 @@ impl PersistCache {
             }
         }
     }
+
+    /// Reads and verifies a materialized frontend file artifact.
+    ///
+    /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
+    /// the future file-artifact index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] if the `files/` pack cannot be opened
+    /// or read, if `index_value` points at an invalid location, or if the record
+    /// or payload hash does not match `index_value`.
+    pub fn read_file_artifact(
+        &self,
+        index_value: PersistFileArtifactIndexValue,
+    ) -> Result<Vec<u8>, PersistBlobPackError> {
+        self.read_blob(index_value.blob_key(), index_value.location())
+    }
 }
 
 /// Immutable blob packfile metadata could not be decoded.
@@ -2224,7 +2241,7 @@ mod tests {
         );
         assert_eq!(
             cache
-                .read_blob(index_value.blob_key(), index_value.location())
+                .read_file_artifact(index_value)
                 .expect("file artifact blob reads")
                 .as_slice(),
             payload
