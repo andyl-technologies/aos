@@ -40,6 +40,9 @@ pub const PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of a file-artifact index value.
 pub const PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN: usize =
     PERSIST_BLOB_INDEX_KEY_LEN + PERSIST_BLOB_INDEX_VALUE_LEN;
+/// The encoded length of a complete file-artifact index entry.
+pub const PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN: usize =
+    PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN + PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN;
 /// The encoded length of durable materialization reuse metadata.
 pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 
@@ -455,6 +458,62 @@ impl PersistFileArtifactIndexValue {
         let location =
             PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
         Ok(Self::new(blob_key.hash(), location))
+    }
+}
+
+/// A complete key/value record for the future file-artifact index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistFileArtifactIndexEntry {
+    key: PersistFileArtifactKey,
+    value: PersistFileArtifactIndexValue,
+}
+
+impl PersistFileArtifactIndexEntry {
+    /// Creates a file-artifact index entry from its mapping key and value.
+    pub const fn new(key: PersistFileArtifactKey, value: PersistFileArtifactIndexValue) -> Self {
+        Self { key, value }
+    }
+
+    /// Returns the file-artifact mapping key.
+    pub const fn key(self) -> PersistFileArtifactKey {
+        self.key
+    }
+
+    /// Returns the file-artifact blob lookup value.
+    pub const fn value(self) -> PersistFileArtifactIndexValue {
+        self.value
+    }
+
+    /// Encodes this record as stable file-artifact index bytes.
+    pub fn encode_index_entry(self) -> [u8; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN] {
+        let mut bytes = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
+        bytes[..PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
+        bytes[PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN..]
+            .copy_from_slice(&self.value.encode_index_value());
+        bytes
+    }
+
+    /// Decodes a complete file-artifact index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN`], if the key is malformed, or
+    /// if the value is malformed.
+    pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN {
+            return Err(PersistPackFormatError::ShortFileArtifactIndexEntry {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let key = PersistFileArtifactKey::decode_index_bytes(
+            &bytes[..PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN],
+        )?;
+        let value = PersistFileArtifactIndexValue::decode_index_value(
+            &bytes[PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN..],
+        )?;
+        Ok(Self::new(key, value))
     }
 }
 
@@ -1218,6 +1277,16 @@ pub enum PersistPackFormatError {
         /// The available bytes.
         actual: usize,
     },
+    /// A file-artifact index entry was shorter than the fixed encoded length.
+    #[error(
+        "persistent file artifact index entry has {actual} bytes, expected at least {expected}"
+    )]
+    ShortFileArtifactIndexEntry {
+        /// The required fixed file-artifact index entry length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
     /// A file-artifact index value pointed at a non-file blob store.
     #[error("persistent file artifact index value points at {store:?}, expected Files")]
     InvalidFileArtifactBlobStore {
@@ -1972,6 +2041,76 @@ mod tests {
 
         let error = PersistFileArtifactIndexValue::decode_index_value(&encoded)
             .expect_err("value blob store errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidFileArtifactBlobStore {
+                store: PersistBlobStore::Values,
+            }
+        );
+    }
+
+    #[test]
+    fn file_artifact_index_entries_round_trip_key_value_records() {
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let value = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+            PersistBlobLocation::new(123, 456),
+        );
+        let entry = PersistFileArtifactIndexEntry::new(key, value);
+        let mut encoded = entry.encode_index_entry().to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(entry.key(), key);
+        assert_eq!(entry.value(), value);
+        assert_eq!(
+            entry.encode_index_entry().len(),
+            PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN
+        );
+        assert_eq!(
+            PersistFileArtifactIndexEntry::decode_index_entry(&encoded)
+                .expect("file artifact entry decodes"),
+            entry
+        );
+    }
+
+    #[test]
+    fn file_artifact_index_entries_reject_invalid_prefixes() {
+        let error = PersistFileArtifactIndexEntry::decode_index_entry(&[0; 8])
+            .expect_err("short file artifact entry errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortFileArtifactIndexEntry {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
+                actual: 8,
+            }
+        );
+
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let value = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+            PersistBlobLocation::new(123, 456),
+        );
+        let entry = PersistFileArtifactIndexEntry::new(key, value);
+
+        let mut invalid_key = entry.encode_index_entry();
+        invalid_key[0] = 99;
+        let error = PersistFileArtifactIndexEntry::decode_index_entry(&invalid_key)
+            .expect_err("bad entry key tag errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidFileArtifactIndexTag { tag: 99 }
+        );
+
+        let mut invalid_value = entry.encode_index_entry();
+        invalid_value[PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN] = PersistBlobStore::Values.index_tag();
+        let error = PersistFileArtifactIndexEntry::decode_index_entry(&invalid_value)
+            .expect_err("bad entry value store errors");
         assert_eq!(
             error,
             PersistPackFormatError::InvalidFileArtifactBlobStore {

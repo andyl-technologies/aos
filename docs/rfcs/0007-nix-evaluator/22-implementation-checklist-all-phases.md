@@ -515,6 +515,13 @@ alone (`M-1`/`Q-A`).
       engines, lookup/write integration, parse-artifact payload validation,
       mmap reads, GC/repack, Attic transport, and harness proof remain open
       (`C-13`).
+- [x] Current file-artifact index entry codec:
+      `PersistFileArtifactIndexEntry` binds a decoded file-artifact mapping key
+      to its `files/` blob index value in one stable fixed-width record,
+      preserving malformed embedded key/value validation through the existing
+      codecs. This is codec-only; durable index engines, lookup/write
+      integration, parse-artifact payload validation, mmap reads, GC/repack,
+      Attic transport, and harness proof remain open (`C-13`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and

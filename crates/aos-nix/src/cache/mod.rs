@@ -34,13 +34,14 @@ pub use parse::{
 pub use persist::{
     PERSIST_BLOB_INDEX_KEY_LEN, PERSIST_BLOB_INDEX_VALUE_LEN, PERSIST_BLOB_PACK_HEADER_LEN,
     PERSIST_BLOB_PACK_MAGIC, PERSIST_BLOB_PACK_VERSION, PERSIST_BLOB_RECORD_HEADER_LEN,
-    PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN,
-    PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN, PERSIST_MATERIALIZATION_REUSE_LEN, PersistBlobKey,
-    PersistBlobLocation, PersistBlobPack, PersistBlobPackError, PersistBlobPackHeader,
-    PersistBlobRecordHeader, PersistBlobStore, PersistCache, PersistError,
-    PersistFileArtifactHydrationError, PersistFileArtifactIndexValue, PersistFileArtifactKey,
-    PersistFileArtifactMaterialization, PersistLayout, PersistMaterialization,
-    PersistPackFormatError, PersistParseArtifactMaterializationError,
+    PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
+    PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN, PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN,
+    PERSIST_MATERIALIZATION_REUSE_LEN, PersistBlobKey, PersistBlobLocation, PersistBlobPack,
+    PersistBlobPackError, PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore,
+    PersistCache, PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndexEntry,
+    PersistFileArtifactIndexValue, PersistFileArtifactKey, PersistFileArtifactMaterialization,
+    PersistLayout, PersistMaterialization, PersistPackFormatError,
+    PersistParseArtifactMaterializationError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
