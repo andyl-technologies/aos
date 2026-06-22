@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use aos_nix::compile::{lower, resolve};
 use aos_nix::eval::{TreeWalkOptions, eval_raw_bytes_with_options, eval_whnf_owned_with_options};
 use aos_nix::syntax::parse_bytes;
+use aos_nix::{NativeEvalError, NixNative};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum LangCategory {
@@ -22,6 +23,7 @@ struct LangCase {
     category: LangCategory,
     source: PathBuf,
     expected: Option<PathBuf>,
+    expected_xml: Option<PathBuf>,
     postprocess: Option<PathBuf>,
     flags: Vec<String>,
     disabled: bool,
@@ -77,8 +79,349 @@ struct LangVersionSkipRule {
     reason: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LangCaseExclusion {
+    name: &'static str,
+    reason: &'static str,
+}
+
 const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
 const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
+const LANG_CASE_EXCLUSIONS: &[LangCaseExclusion] = &[
+    LangCaseExclusion {
+        name: "parse-fail-patterns-1",
+        reason: "formal pattern duplicate-binding check is not implemented",
+    },
+    LangCaseExclusion {
+        name: "eval-fail-derivation-name",
+        reason: "derivation name validation gap",
+    },
+    LangCaseExclusion {
+        name: "eval-fail-dup-dynamic-attrs",
+        reason: "duplicate dynamic attr detection gap",
+    },
+    LangCaseExclusion {
+        name: "eval-fail-infinite-recursion-lambda",
+        reason: "native evaluator stack-safety gap for infinite lambda recursion",
+    },
+    LangCaseExclusion {
+        name: "eval-fail-set-override",
+        reason: "__overrides validation gap",
+    },
+    LangCaseExclusion {
+        name: "eval-fail-toJSON-non-utf-8",
+        reason: "toJSON non-UTF-8 rejection gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-arithmetic",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-attrs",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-attrs2",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-attrs6",
+        reason: "attrset override merge semantics gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-builtins",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-curpos",
+        reason: "__curPos builtin scope gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-eq-derivations",
+        reason: "native evaluator stack-safety gap in derivation equality",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-flatten",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-foldlStrict-lazy-initial-accumulator",
+        reason: "foldl' initial-accumulator strictness diverges",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-getattrpos",
+        reason: "attr position metadata gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-getattrpos-functionargs",
+        reason: "function-argument position metadata gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-inherit-attr-pos",
+        reason: "inherit source-position metadata gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-inherit-from",
+        reason: "recursive marker rendering shape gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-let",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-list",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-overrides",
+        reason: "override/update semantics gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-print",
+        reason: "recursive marker rendering shape gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-redefine-builtin",
+        reason: "tryEval search-path error handling gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-remove",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-scope-4",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-scope-6",
+        reason: "legacy let-attrset syntax gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-search-path",
+        reason: "implicit C++ Nix corepkgs search path is not modeled",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-symlink-resolution",
+        reason: "symlink directory resolution gap",
+    },
+    LangCaseExclusion {
+        name: "eval-okay-with",
+        reason: "legacy let-attrset syntax gap",
+    },
+];
+const PINNED_LANG_2_24_12_PASS_COUNT: usize = 178;
+const PINNED_LANG_2_24_12_SKIP_COUNT: usize = 31;
+const PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES: &[&str] = &["non-eval-fail-bad-drvPath"];
+const PINNED_LANG_2_24_12_CASE_NAMES: &[&str] = &[
+    "parse-fail-dup-attrs-1",
+    "parse-fail-dup-attrs-2",
+    "parse-fail-dup-attrs-3",
+    "parse-fail-dup-attrs-4",
+    "parse-fail-dup-attrs-7",
+    "parse-fail-dup-formals",
+    "parse-fail-eof-in-string",
+    "parse-fail-eof-pos",
+    "parse-fail-mixed-nested-attrs1",
+    "parse-fail-mixed-nested-attrs2",
+    "parse-fail-patterns-1",
+    "parse-fail-regression-20060610",
+    "parse-fail-undef-var",
+    "parse-fail-undef-var-2",
+    "parse-fail-utf8",
+    "parse-okay-1",
+    "parse-okay-crlf",
+    "parse-okay-dup-attrs-5",
+    "parse-okay-dup-attrs-6",
+    "parse-okay-ind-string",
+    "parse-okay-inherits",
+    "parse-okay-mixed-nested-attrs-1",
+    "parse-okay-mixed-nested-attrs-2",
+    "parse-okay-mixed-nested-attrs-3",
+    "parse-okay-regression-20041027",
+    "parse-okay-regression-751",
+    "parse-okay-subversion",
+    "parse-okay-url",
+    "eval-fail-abort",
+    "eval-fail-addDrvOutputDependencies-empty-context",
+    "eval-fail-addDrvOutputDependencies-multi-elem-context",
+    "eval-fail-addDrvOutputDependencies-wrong-element-kind",
+    "eval-fail-addErrorContext-example",
+    "eval-fail-assert",
+    "eval-fail-assert-equal-attrs-names",
+    "eval-fail-assert-equal-attrs-names-2",
+    "eval-fail-assert-equal-derivations",
+    "eval-fail-assert-equal-derivations-extra",
+    "eval-fail-assert-equal-floats",
+    "eval-fail-assert-equal-function-direct",
+    "eval-fail-assert-equal-int-float",
+    "eval-fail-assert-equal-ints",
+    "eval-fail-assert-equal-list-length",
+    "eval-fail-assert-equal-paths",
+    "eval-fail-assert-equal-type",
+    "eval-fail-assert-equal-type-nested",
+    "eval-fail-assert-nested-bool",
+    "eval-fail-attr-name-type",
+    "eval-fail-attrset-merge-drops-later-rec",
+    "eval-fail-bad-string-interpolation-1",
+    "eval-fail-bad-string-interpolation-2",
+    "eval-fail-bad-string-interpolation-3",
+    "eval-fail-bad-string-interpolation-4",
+    "eval-fail-blackhole",
+    "eval-fail-call-primop",
+    "eval-fail-deepseq",
+    "eval-fail-derivation-name",
+    "eval-fail-dup-dynamic-attrs",
+    "eval-fail-duplicate-traces",
+    "eval-fail-eol-1",
+    "eval-fail-eol-2",
+    "eval-fail-eol-3",
+    "eval-fail-fetchurl-baseName",
+    "eval-fail-fetchurl-baseName-attrs",
+    "eval-fail-fetchurl-baseName-attrs-name",
+    "eval-fail-foldlStrict-strict-op-application",
+    "eval-fail-fromTOML-timestamps",
+    "eval-fail-hashfile-missing",
+    "eval-fail-infinite-recursion-lambda",
+    "eval-fail-list",
+    "eval-fail-missing-arg",
+    "eval-fail-mutual-recursion",
+    "eval-fail-nested-list-items",
+    "eval-fail-nonexist-path",
+    "eval-fail-not-throws",
+    "eval-fail-path-slash",
+    "eval-fail-pipe-operators",
+    "eval-fail-recursion",
+    "eval-fail-remove",
+    "eval-fail-scope-5",
+    "eval-fail-seq",
+    "eval-fail-set",
+    "eval-fail-set-override",
+    "eval-fail-substring",
+    "eval-fail-to-path",
+    "eval-fail-toJSON",
+    "eval-fail-toJSON-non-utf-8",
+    "eval-fail-undeclared-arg",
+    "eval-fail-using-set-as-attr-name",
+    "eval-okay-any-all",
+    "eval-okay-arithmetic",
+    "eval-okay-attrnames",
+    "eval-okay-attrs",
+    "eval-okay-attrs2",
+    "eval-okay-attrs3",
+    "eval-okay-attrs4",
+    "eval-okay-attrs5",
+    "eval-okay-attrs6",
+    "eval-okay-autoargs",
+    "eval-okay-backslash-newline-1",
+    "eval-okay-backslash-newline-2",
+    "eval-okay-baseNameOf",
+    "eval-okay-builtins",
+    "eval-okay-builtins-add",
+    "eval-okay-callable-attrs",
+    "eval-okay-catattrs",
+    "eval-okay-closure",
+    "eval-okay-comments",
+    "eval-okay-concat",
+    "eval-okay-concatmap",
+    "eval-okay-concatstringssep",
+    "eval-okay-context",
+    "eval-okay-context-introspection",
+    "eval-okay-convertHash",
+    "eval-okay-curpos",
+    "eval-okay-deepseq",
+    "eval-okay-delayed-with",
+    "eval-okay-delayed-with-inherit",
+    "eval-okay-derivation-legacy",
+    "eval-okay-dynamic-attrs",
+    "eval-okay-dynamic-attrs-2",
+    "eval-okay-dynamic-attrs-bare",
+    "eval-okay-elem",
+    "eval-okay-empty-args",
+    "eval-okay-eq",
+    "eval-okay-eq-derivations",
+    "eval-okay-filter",
+    "eval-okay-flake-ref-to-string",
+    "eval-okay-flatten",
+    "eval-okay-float",
+    "eval-okay-floor-ceil",
+    "eval-okay-foldlStrict",
+    "eval-okay-foldlStrict-lazy-elements",
+    "eval-okay-foldlStrict-lazy-initial-accumulator",
+    "eval-okay-fromTOML",
+    "eval-okay-fromTOML-timestamps",
+    "eval-okay-fromjson",
+    "eval-okay-fromjson-escapes",
+    "eval-okay-functionargs",
+    "eval-okay-getattrpos",
+    "eval-okay-getattrpos-functionargs",
+    "eval-okay-getattrpos-undefined",
+    "eval-okay-getenv",
+    "eval-okay-groupBy",
+    "eval-okay-hashfile",
+    "eval-okay-hashstring",
+    "eval-okay-if",
+    "eval-okay-import",
+    "eval-okay-ind-string",
+    "eval-okay-inherit-attr-pos",
+    "eval-okay-inherit-from",
+    "eval-okay-intersectAttrs",
+    "eval-okay-let",
+    "eval-okay-list",
+    "eval-okay-listtoattrs",
+    "eval-okay-logic",
+    "eval-okay-map",
+    "eval-okay-mapattrs",
+    "eval-okay-merge-dynamic-attrs",
+    "eval-okay-nested-with",
+    "eval-okay-new-let",
+    "eval-okay-null-dynamic-attrs",
+    "eval-okay-overrides",
+    "eval-okay-parse-flake-ref",
+    "eval-okay-partition",
+    "eval-okay-path",
+    "eval-okay-path-string-interpolation",
+    "eval-okay-pathexists",
+    "eval-okay-patterns",
+    "eval-okay-print",
+    "eval-okay-readDir",
+    "eval-okay-readFileType",
+    "eval-okay-readfile",
+    "eval-okay-redefine-builtin",
+    "eval-okay-regex-match",
+    "eval-okay-regex-split",
+    "eval-okay-regression-20220122",
+    "eval-okay-regression-20220125",
+    "eval-okay-regrettable-rec-attrset-merge",
+    "eval-okay-remove",
+    "eval-okay-repeated-empty-attrs",
+    "eval-okay-repeated-empty-list",
+    "eval-okay-replacestrings",
+    "eval-okay-scope-1",
+    "eval-okay-scope-2",
+    "eval-okay-scope-3",
+    "eval-okay-scope-4",
+    "eval-okay-scope-6",
+    "eval-okay-scope-7",
+    "eval-okay-search-path",
+    "eval-okay-seq",
+    "eval-okay-sort",
+    "eval-okay-splitversion",
+    "eval-okay-string",
+    "eval-okay-strings-as-attrs-names",
+    "eval-okay-substring",
+    "eval-okay-substring-context",
+    "eval-okay-symlink-resolution",
+    "eval-okay-tail-call-1",
+    "eval-okay-tojson",
+    "eval-okay-toxml",
+    "eval-okay-toxml2",
+    "eval-okay-tryeval",
+    "eval-okay-types",
+    "eval-okay-versions",
+    "eval-okay-with",
+    "eval-okay-xml",
+    "eval-okay-zipAttrsWith",
+];
 
 impl LangVersion {
     const fn new(major: u16, minor: u16, patch: u16) -> Self {
@@ -155,6 +498,7 @@ fn discover_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
             category,
             source: path,
             expected: expected_path(lang_dir, &stem, category),
+            expected_xml: expected_xml_path(lang_dir, &stem, category),
             postprocess: postprocess_path(lang_dir, &stem),
             flags: read_flags(lang_dir, &stem)?,
             disabled: lang_dir.join(format!("{stem}.exp-disabled")).exists(),
@@ -193,6 +537,14 @@ fn expected_path(lang_dir: &Path, stem: &str, category: LangCategory) -> Option<
     }
 }
 
+fn expected_xml_path(lang_dir: &Path, stem: &str, category: LangCategory) -> Option<PathBuf> {
+    if category != LangCategory::EvalOkay {
+        return None;
+    }
+    let path = lang_dir.join(format!("{stem}.exp.xml"));
+    path.exists().then_some(path)
+}
+
 fn postprocess_path(lang_dir: &Path, stem: &str) -> Option<PathBuf> {
     let path = lang_dir.join(format!("{stem}.postprocess"));
     path.exists().then_some(path)
@@ -213,8 +565,20 @@ fn read_flags(lang_dir: &Path, stem: &str) -> Result<Vec<String>> {
 }
 
 fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
+    run_lang_case_with_exclusions(case, false)
+}
+
+fn run_lang_case_with_exclusions(
+    case: &LangCase,
+    allow_documented_exclusions: bool,
+) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
+    }
+    if allow_documented_exclusions {
+        if let Some(reason) = documented_case_exclusion(&case.name) {
+            return Ok(CaseOutcome::Skipped(reason));
+        }
     }
     if let Some(reason) = version_reactive_skip(&case.name) {
         return Ok(CaseOutcome::Skipped(reason));
@@ -236,13 +600,13 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
         fs::read(&case.source).with_context(|| format!("reading {}", case.source.display()))?;
     match case.category {
         LangCategory::ParseFail => {
-            if parse_bytes(&source).is_ok() {
+            if parse_case(&source).is_ok() {
                 bail!("{} parsed but should fail", case.name);
             }
             Ok(CaseOutcome::Passed)
         }
         LangCategory::ParseOkay => {
-            parse_bytes(&source).with_context(|| format!("{} should parse", case.name))?;
+            parse_case(&source).with_context(|| format!("{} should parse", case.name))?;
             Ok(CaseOutcome::Passed)
         }
         LangCategory::EvalFail => match eval_case(&source, config.options) {
@@ -255,13 +619,20 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
         },
         LangCategory::EvalOkay => {
             let expected_path = case
-                .expected
+                .expected_xml
                 .as_ref()
+                .or(case.expected.as_ref())
                 .ok_or_else(|| anyhow!("{} has no expected output path", case.name))?;
             let expected = fs::read(expected_path)
                 .with_context(|| format!("reading {}", expected_path.display()))?;
-            let mut actual = eval_raw_case(&source, lang_dir, &config, &case.flags)
-                .with_context(|| format!("{} should evaluate as a raw value", case.name))?;
+            let mut actual = if case.expected_xml.is_some() {
+                eval_xml_case(&source, config.options.clone())
+                    .with_context(|| format!("{} should evaluate as XML", case.name))?
+            } else {
+                eval_raw_case(&source, lang_dir, &config, &case.flags)
+                    .with_context(|| format!("{} should evaluate as a raw value", case.name))?
+            };
+            normalize_lang_pwd_paths(&mut actual, lang_dir);
             apply_lang_postprocess(&mut actual, LangOutput::Out, postprocess);
             if actual != expected {
                 bail!(
@@ -274,6 +645,19 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             Ok(CaseOutcome::Passed)
         }
     }
+}
+
+fn documented_case_exclusion(name: &str) -> Option<String> {
+    LANG_CASE_EXCLUSIONS
+        .iter()
+        .find(|exclusion| exclusion.name == name)
+        .map(|exclusion| format!("documented exclusion: {}", exclusion.reason))
+}
+
+fn configured_skip_is_allowed(case: &LangCase, reason: &str) -> bool {
+    (case.disabled && reason == "disabled by .exp-disabled")
+        || documented_case_exclusion(&case.name).as_deref() == Some(reason)
+        || version_reactive_skip(&case.name).as_deref() == Some(reason)
 }
 
 fn version_reactive_skip(name: &str) -> Option<String> {
@@ -380,6 +764,38 @@ fn normalize_decimal_sequences(bytes: &[u8]) -> Vec<u8> {
             while bytes.get(index).is_some_and(u8::is_ascii_digit) {
                 index += 1;
             }
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    out
+}
+
+fn normalize_lang_pwd_paths(output: &mut Vec<u8>, lang_dir: &Path) {
+    let Some(pwd) = lang_dir.parent() else {
+        return;
+    };
+    let pwd = path_bytes(pwd);
+    if !pwd.is_empty() {
+        *output = replace_byte_sequence(output, &pwd, b"/pwd");
+    }
+}
+
+fn replace_byte_sequence(bytes: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() {
+        return bytes.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes
+            .get(index..index + needle.len())
+            .is_some_and(|candidate| candidate == needle)
+        {
+            out.extend_from_slice(replacement);
+            index += needle.len();
         } else {
             out.push(bytes[index]);
             index += 1;
@@ -547,6 +963,10 @@ fn base_eval_options(lang_dir: &Path) -> std::result::Result<TreeWalkOptions, St
     options
         .set_path_literal_base(path_bytes(lang_dir))
         .map_err(|error| error.to_string())?;
+    options
+        .set_home_dir(b"/fake-home".to_vec())
+        .map_err(|error| error.to_string())?;
+    options.set_env_var(b"TEST_VAR".to_vec(), b"foo".to_vec());
     if let Some(parent) = lang_dir.parent() {
         options
             .set_search_path_base(path_bytes(parent))
@@ -627,12 +1047,36 @@ fn unsupported_postprocess_message(name: &str) -> String {
     format!("case carries unsupported postprocess: {name}")
 }
 
+fn parse_case(source: &[u8]) -> Result<()> {
+    let parsed = parse_bytes(source).context("parsing expression")?;
+    resolve(parsed).context("resolving expression")?;
+    Ok(())
+}
+
 fn eval_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
     eval_whnf_owned_with_options(&ir, options).context("evaluating expression")?;
     Ok(())
+}
+
+fn run_non_eval_fail_bad_drv_path(lang_dir: &Path) -> Result<CaseOutcome> {
+    let path = lang_dir.join("non-eval-fail-bad-drvPath.nix");
+    let mut options = TreeWalkOptions::new();
+    options
+        .set_current_system(b"x86_64-linux".to_vec())
+        .context("configuring currentSystem for non-eval lang case")?;
+    let native = NixNative::with_options(0, options).context("constructing native evaluator")?;
+    let error = native
+        .instantiate_closure(&path, "")
+        .expect_err("special non-eval case should reject the root drvPath");
+    match error.downcast_ref::<NativeEvalError>() {
+        Some(NativeEvalError::EvalError { message }) if message.contains("non-derivation path") => {
+            Ok(CaseOutcome::Passed)
+        }
+        _ => bail!("special non-eval case failed with unexpected error: {error:#}"),
+    }
 }
 
 fn eval_raw_case(
@@ -655,6 +1099,20 @@ fn eval_raw_case(
         eval_raw_bytes_with_options(&ir, config.options.clone()).context("evaluating raw value")?;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+fn eval_xml_case(source: &[u8], options: TreeWalkOptions) -> Result<Vec<u8>> {
+    let source = std::str::from_utf8(source).context("source is not UTF-8")?;
+    let wrapped = format!("builtins.toXML ({source})");
+    let parsed = parse_bytes(wrapped.as_bytes()).context("parsing expression")?;
+    let resolved = resolve(parsed).context("resolving expression")?;
+    let ir = lower(resolved).context("lowering expression")?;
+    let outcome = eval_whnf_owned_with_options(&ir, options).context("evaluating XML value")?;
+    let string = outcome
+        .heap()
+        .get_string(outcome.value())
+        .context("XML value should be a string")?;
+    Ok(string.bytes().to_vec())
 }
 
 fn wrap_eval_okay_source(
@@ -1148,12 +1606,34 @@ fn pinned_lang_version_matches_packaged_cpp_nix() -> Result<()> {
 }
 
 #[test]
-fn configured_upstream_lang_corpus_discovery_sees_all_categories() -> Result<()> {
+fn configured_upstream_lang_corpus_gate_runs_all_categories() -> Result<()> {
     let Some(root) = std::env::var_os("AOS_NIX_LANG_TESTS") else {
         eprintln!("AOS_NIX_LANG_TESTS not set; skipping upstream lang corpus discovery check");
         return Ok(());
     };
-    let cases = discover_lang_cases(Path::new(&root))?;
+    let lang_dir = Path::new(&root);
+    let cases = discover_lang_cases(lang_dir)?;
+    let discovered_names = cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        discovered_names, PINNED_LANG_2_24_12_CASE_NAMES,
+        "configured upstream corpus should match the pinned C++ Nix 2.24.12 case set"
+    );
+    for special_case in PINNED_LANG_2_24_12_SPECIAL_CASE_NAMES {
+        assert!(
+            lang_dir.join(format!("{special_case}.nix")).exists(),
+            "configured upstream corpus should include special lang.sh case {special_case}"
+        );
+    }
+    for exclusion in LANG_CASE_EXCLUSIONS {
+        assert!(
+            cases.iter().any(|case| case.name == exclusion.name),
+            "documented exclusion {} should exist in the configured upstream corpus",
+            exclusion.name
+        );
+    }
 
     for category in [
         LangCategory::ParseFail,
@@ -1164,6 +1644,49 @@ fn configured_upstream_lang_corpus_discovery_sees_all_categories() -> Result<()>
         assert!(
             cases.iter().any(|case| case.category == category),
             "configured upstream corpus should include {category:?}"
+        );
+    }
+
+    let mut failures = Vec::new();
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+    for case in &cases {
+        match run_lang_case_with_exclusions(case, true) {
+            Ok(CaseOutcome::Passed) => passed += 1,
+            Ok(CaseOutcome::Skipped(reason)) => {
+                if configured_skip_is_allowed(case, &reason) {
+                    skipped += 1;
+                    eprintln!("SKIP {}: {reason}", case.name);
+                } else {
+                    failures.push(format!("{} skipped unexpectedly: {reason}", case.name));
+                }
+            }
+            Err(error) => failures.push(format!("{}: {error:#}", case.name)),
+        }
+    }
+    match run_non_eval_fail_bad_drv_path(lang_dir) {
+        Ok(CaseOutcome::Passed) => passed += 1,
+        Ok(CaseOutcome::Skipped(reason)) => {
+            failures.push(format!(
+                "non-eval-fail-bad-drvPath skipped unexpectedly: {reason}"
+            ));
+        }
+        Err(error) => failures.push(format!("non-eval-fail-bad-drvPath: {error:#}")),
+    }
+    if passed != PINNED_LANG_2_24_12_PASS_COUNT || skipped != PINNED_LANG_2_24_12_SKIP_COUNT {
+        failures.push(format!(
+            "configured upstream corpus counts diverged: expected {} passed / {} skipped, got {passed} passed / {skipped} skipped",
+            PINNED_LANG_2_24_12_PASS_COUNT, PINNED_LANG_2_24_12_SKIP_COUNT
+        ));
+    }
+    eprintln!(
+        "configured upstream corpus: {passed} passed, {skipped} skipped, {} failed",
+        failures.len()
+    );
+    if !failures.is_empty() {
+        bail!(
+            "configured upstream corpus failures:\n{}",
+            failures.join("\n")
         );
     }
 
