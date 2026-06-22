@@ -1094,25 +1094,19 @@ pub fn orgs_page(
 #[must_use]
 pub fn new_org_page(email: &str, csrf: &str, error: Option<&str>, started: Instant) -> String {
     let mut body = String::from("<h1>Create an organization</h1>\n");
-    body.push_str(
-        "<p class=\"dim\">An organization is your tenant boundary: it owns projects, \
-         storage bindings, and registries. You become its first owner.</p>\n",
-    );
     if let Some(error) = error {
         let _ = writeln!(body, "<p class=\"bad\">{}</p>", escape(error));
     }
     body.push_str("<form class=\"console\" method=\"post\" action=\"/new\">\n");
     body.push_str(&csrf_field(csrf));
+    // The slug placeholder shows the format; the only non-obvious fact is that it
+    // is permanent, kept as a terse field hint rather than a paragraph.
     body.push_str(
         "<label>slug <input type=\"text\" name=\"slug\" required \
-         placeholder=\"acme\"></label>\n\
+         placeholder=\"acme\"> <span class=\"dim\">permanent</span></label>\n\
          <label>display name <input type=\"text\" name=\"name\" required \
          placeholder=\"Acme, Inc.\"></label>\n\
          <button>create organization</button>\n</form>\n",
-    );
-    body.push_str(
-        "<p class=\"dim\">The slug is the URL-safe handle every registry under the org \
-         is addressed by; it cannot be changed later.</p>\n",
     );
     page_with_session(
         "create organization",
@@ -1262,66 +1256,57 @@ pub fn org_dashboard(
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/projects\">\n{csrf}\
-             <label>path <input type=\"text\" name=\"path\" placeholder=\"infra/prod\"></label>\n\
+             <label>path <input type=\"text\" name=\"path\" placeholder=\"infra/prod\"> \
+             <span class=\"dim\">optional</span></label>\n\
              <label>name <input type=\"text\" name=\"name\" required placeholder=\"Production\"></label>\n\
              <button>create project</button>\n</form>\n",
             org = escape(slug),
             csrf = csrf_field(csrf),
         );
-        body.push_str(
-            "<p class=\"dim\">The path is the materialized prefix registries are nested under \
-             (leave blank for an org-root project).</p>\n",
-        );
     }
 
     body.push_str("<h2>Storage bindings</h2>\n");
-    if bindings.is_empty() {
-        body.push_str("<p class=\"dim\">No storage bindings.</p>\n");
-    } else {
-        let rows: Vec<Vec<String>> = bindings
-            .iter()
-            .map(|b| {
-                let action = if can_configure {
-                    format!(
-                        "<form class=\"console\" method=\"post\" \
-                         action=\"/-/org/{org}/bindings/delete\" style=\"display:inline\">{csrf}\
-                         <input type=\"hidden\" name=\"id\" value=\"{id}\">\
-                         <button class=\"danger\">delete</button></form>",
-                        org = escape(slug),
-                        csrf = csrf_field(csrf),
-                        id = b.id,
-                    )
-                } else {
-                    String::new()
-                };
-                let location = if b.kind == "local_fs" {
-                    format!("<code>{}</code>", escape(&b.root))
-                } else {
-                    // Object store: show endpoint + bucket + access mode, never
-                    // the sealed credential.
-                    let endpoint = b.public_base_url.as_deref().unwrap_or("");
-                    format!(
-                        "<code>{endpoint}/{bucket}</code> · {access}",
-                        endpoint = escape(endpoint.trim_end_matches('/')),
-                        bucket = escape(&b.root),
-                        access = escape(&b.access),
-                    )
-                };
-                vec![escape(&b.name), escape(&b.kind), location, action]
-            })
-            .collect();
-        body.push_str(&table(&["name", "kind", "location", ""], &rows));
-    }
-    // New registries use the deployment's default storage automatically — no
-    // binding required. A custom binding points an org at its *own* external
-    // object store (or a host directory) instead.
-    let _ = write!(
-        body,
-        "<p class=\"dim\">New registries use {default} automatically — no storage binding is \
-         required. Add a binding below only to serve a registry from your own S3/R2 bucket (or a \
-         host directory).</p>\n",
-        default = escape(RuntimeKind::current().default_storage_label()),
-    );
+    // The deployment's default storage is always present and is what new
+    // registries use with no binding at all. Render it as the first row — a
+    // `default` chip, "automatic" location, no delete — so it is *apparent* that
+    // storage already works and any custom binding is purely additive (no prose
+    // needed to say so).
+    let mut rows: Vec<Vec<String>> = vec![vec![
+        "<span class=\"chip\">default</span>".to_string(),
+        escape(RuntimeKind::current().default_storage_kind()),
+        "<span class=\"dim\">automatic</span>".to_string(),
+        String::new(),
+    ]];
+    rows.extend(bindings.iter().map(|b| {
+        let action = if can_configure {
+            format!(
+                "<form class=\"console\" method=\"post\" \
+                 action=\"/-/org/{org}/bindings/delete\" style=\"display:inline\">{csrf}\
+                 <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                 <button class=\"danger\">delete</button></form>",
+                org = escape(slug),
+                csrf = csrf_field(csrf),
+                id = b.id,
+            )
+        } else {
+            String::new()
+        };
+        let location = if b.kind == "local_fs" {
+            format!("<code>{}</code>", escape(&b.root))
+        } else {
+            // Object store: show endpoint + bucket + access mode, never the
+            // sealed credential.
+            let endpoint = b.public_base_url.as_deref().unwrap_or("");
+            format!(
+                "<code>{endpoint}/{bucket}</code> · {access}",
+                endpoint = escape(endpoint.trim_end_matches('/')),
+                bucket = escape(&b.root),
+                access = escape(&b.access),
+            )
+        };
+        vec![escape(&b.name), escape(&b.kind), location, action]
+    }));
+    body.push_str(&table(&["name", "kind", "location", ""], &rows));
     if can_configure {
         let creatable = RuntimeKind::current().creatable_binding_kinds();
         body.push_str("<h3>Add a storage binding</h3>\n");
@@ -1345,7 +1330,7 @@ pub fn org_dashboard(
              <div class=\"s3-only\">\n\
              <label>endpoint <input type=\"text\" name=\"endpoint\" \
              placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
-             <label>region <input type=\"text\" name=\"region\" placeholder=\"auto\"></label>\n\
+             <label>region <input type=\"text\" name=\"region\" value=\"auto\"></label>\n\
              <label>access <select name=\"access\">\
              <option value=\"private\">private (read/write, credentialed)</option>\
              <option value=\"public\">public (read-only, no credentials)</option></select></label>\n\
@@ -1358,13 +1343,6 @@ pub fn org_dashboard(
             org = escape(slug),
             csrf = csrf_field(csrf),
             kinds = kind_options,
-        );
-        body.push_str(
-            "<p class=\"dim\">A <code>local_fs</code> path is an absolute host path with no \
-             <code>..</code>. For <code>s3</code>/<code>r2</code>, the bucket plus each registry's \
-             slug form the key prefix; a private binding's credentials are sealed at rest and the \
-             secret is never shown again. Cloudflare R2 uses region <code>auto</code> and an \
-             endpoint like <code>https://&lt;account&gt;.r2.cloudflarestorage.com</code>.</p>\n",
         );
     }
 
@@ -1434,10 +1412,6 @@ pub fn org_dashboard(
              <button>send invitation</button>\n</form>\n",
             escape(&org.slug),
             csrf_field(csrf),
-        );
-        body.push_str(
-            "<p class=\"dim\">Invitations create a pending membership the invitee accepts; \
-             removing a member also deadens every token they minted.</p>\n",
         );
     }
 
@@ -1589,10 +1563,11 @@ pub fn new_registry_page(
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
-         <label>prefix (optional — defaults to the registry slug) \
-         <input type=\"text\" name=\"prefix\" placeholder=\"optional — defaults to the registry slug\"></label>\n\
-         <label>trust anchors\n<textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
-         placeholder=\"release:Ed25519:base64...\"></textarea></label>\n\
+         <label>prefix <span class=\"dim\">optional</span> \
+         <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"></label>\n\
+         <label>trust anchors <span class=\"dim\">optional</span>\n\
+         <textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
+         placeholder=\"release:Ed25519:base64...&#10;(one per line)\"></textarea></label>\n\
          <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
          require signatures</label>\n\
          <button>create registry</button>\n</form>\n",
@@ -1600,13 +1575,6 @@ pub fn new_registry_page(
         csrf = csrf_field(csrf),
         projects = project_options,
         bindings = binding_options,
-    );
-    body.push_str(
-        "<p class=\"dim\">The registry is created at <code>{org}/{project}/{name}</code> and \
-         indexed lazily from its surface. Leaving the storage binding on \
-         <em>Default storage</em> uses this deployment's own storage; the prefix \
-         auto-derives from the registry name when left blank. One trust anchor per \
-         line, in <code>name:Ed25519:&lt;base64&gt;</code> form.</p>\n",
     );
 
     page_with_session(
