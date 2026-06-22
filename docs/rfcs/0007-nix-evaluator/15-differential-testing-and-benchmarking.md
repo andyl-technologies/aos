@@ -331,6 +331,12 @@ not hand-maintained:
   ladder (`gcc3_4` → `gcc14`), the Rust bootstrap (mrustc → rustc), the JDK
   8→25 chain, the Bazel and LLVM trees — the long, expensive, foundational
   closures whose divergence is the most expensive possible event.
+  `aos nix-diff --all` now overlays a filtered explicit toolchain attr list on
+  top of the auto-discovered `pkgs.*` derivations, covering the exposed
+  `stdenv`/source-bootstrap roots plus the Rust, OpenJDK, Bazel, LLVM, Go,
+  Python, CMake, Meson, and Ninja toolchain packages. The remaining gap is
+  exposing every intermediate GCC ladder tier as addressable roots rather than
+  only the source bootstrap and current production `stdenv` tier.
 - **A conformance corpus** (§3), independent of the AOS package set, pinning
   pure-language semantics.
 
@@ -956,7 +962,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 - [x] `DiffMode::{Path, Byte, Structural}` — Path for triage, Byte as the authoritative gate, Structural parsing both ATerms via `nix-compat` to localize the first differing field and disambiguate the bug class (§2.3) — **P1**, `S-13`.
 - [ ] Root-vs-contaminated bisection: topologically order the divergent set, report nodes with no divergent input as the roots, collapse the contaminated rest; per-root self-contained reproduction (§2.4): `DrvDiffReport` classifies root versus contaminated divergence nodes, `aos nix-diff` renders both classes, and human/JSON reports carry the Nix file, attr, mode, eval policy/system/allowlist flags, copyable full-comparison reproduction command, exact root oracle/candidate pair, and pair-local byte/structural/input-output diff context. File-backed root pairs also carry a direct `aos nix-diff --oracle-drv ... --candidate-drv ...` node-level rerun command. Remaining before completion: persist or bundle in-memory native closure bytes so root reports from the native diff path can always provide a runnable direct node-level artifact — **P1**, `C-18`.
 - [x] Two incarnations over one implementation: the Rust integration test (`crates/aos-core/tests/drv_diff.rs`) runs through the hermetic `pkgs.aos`/flake `checks.aos` path with `cargoTestFlags = "--workspace --features aos-core/native-eval"`, and the `aos nix-diff` subcommand provides interactive localization over the same `diff_closure` implementation (§2.5) — **P1**, `S-2`.
-- [ ] The auto-derived corpus from the AOS package set: all packages, all `systems/` toplevels, the toolchain closure explicitly (source bootstrap, `gcc3_4→gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM), plus the conformance corpus — grows automatically as AOS gains packages (§2.7) — **P1**, `S-2`.
+- [ ] The auto-derived corpus from the AOS package set: all packages, all `systems/` toplevels, the toolchain closure explicitly (source bootstrap, `gcc3_4→gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM), plus the conformance corpus — grows automatically as AOS gains packages (§2.7). Current status: `aos nix-diff --all` auto-enumerates top-level `pkgs.*` derivations and overlays `EXPLICIT_TOOLCHAIN_CORPUS_ATTRS`, filtered by `toolchain_attr_expr`, for exposed `stdenv`/source-bootstrap roots and the Rust/OpenJDK/Bazel/LLVM/Go/Python/CMake/Meson/Ninja package chains; `--systems` enumerates every `systems.<name>.build.toplevel`. Remaining before completion: expose every intermediate GCC ladder tier as runnable attr roots and reuse the conformance corpus — **P1**, `S-2`.
 - [x] The binary all-or-nothing gate semantics: `aos nix-diff --all`/`--systems` aggregates every attr report through `corpus_failure`, and any failed attr or divergence returns a failing `NixDiffReportedFailure`/JSON `"matched": false`; there is no "98% passing" unlock for default-on (§2.2) — **P1**, `C-18`/`S-2`.
 
 ### Conformance-suite reuse (§3)

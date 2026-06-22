@@ -15,6 +15,108 @@ use aos_core::nix::{
 };
 use aos_core::output::{OutputMode, Printer};
 
+const EXPLICIT_TOOLCHAIN_CORPUS_ATTRS: &[&str] = &[
+    "stdenv.stdenv",
+    "stdenv.cc",
+    "stdenv.gcc",
+    "stdenv.gccStage2",
+    "stdenv.glibc",
+    "stdenv.binutils",
+    "stdenv.bash",
+    "stdenv.coreutils",
+    "stdenv.gnumake",
+    "stdenv.sed",
+    "stdenv.grep",
+    "stdenv.findutils",
+    "stdenv.gawk",
+    "stdenv.diffutils",
+    "stdenv.tar",
+    "stdenv.gzip",
+    "stdenv.patch",
+    "stdenv.bootstrap.gcc",
+    "stdenv.bootstrap.glibc",
+    "stdenv.bootstrap.binutils",
+    "stdenv.bootstrap.bash",
+    "stdenv.bootstrap.gnumake",
+    "stdenv.bootstrap.sed",
+    "stdenv.bootstrap.grep",
+    "stdenv.bootstrap.patch",
+    "stdenv.bootstrap.coreutils",
+    "stdenv.bootstrap.gawk",
+    "stdenv.bootstrap.findutils",
+    "stdenv.bootstrap.diffutils",
+    "stdenv.bootstrap.tar",
+    "stdenv.bootstrap.gzip",
+    "pkgs.bootstrapTools",
+    "pkgs.cc",
+    "pkgs.gcc",
+    "pkgs.gccUnwrapped",
+    "pkgs.glibc",
+    "pkgs.binutils",
+    "pkgs.rust-1_74",
+    "pkgs.rust-1_75",
+    "pkgs.rust-1_76",
+    "pkgs.rust-1_77",
+    "pkgs.rust-1_78",
+    "pkgs.rust-1_79",
+    "pkgs.rust-1_80",
+    "pkgs.rust-1_81",
+    "pkgs.rust-1_82",
+    "pkgs.rust-1_83",
+    "pkgs.rust-1_84",
+    "pkgs.rust-1_85",
+    "pkgs.rust-1_86",
+    "pkgs.rust-1_87",
+    "pkgs.rust-1_88",
+    "pkgs.rust-1_89",
+    "pkgs.rust-1_90",
+    "pkgs.rust-1_91",
+    "pkgs.rust-1_92",
+    "pkgs.rust",
+    "pkgs.openjdk-7",
+    "pkgs.openjdk-8",
+    "pkgs.openjdk-9",
+    "pkgs.openjdk-10",
+    "pkgs.openjdk-11",
+    "pkgs.openjdk-12",
+    "pkgs.openjdk-13",
+    "pkgs.openjdk-14",
+    "pkgs.openjdk-15",
+    "pkgs.openjdk-16",
+    "pkgs.openjdk-17",
+    "pkgs.openjdk-18",
+    "pkgs.openjdk-19",
+    "pkgs.openjdk-20",
+    "pkgs.openjdk-21",
+    "pkgs.openjdk-22",
+    "pkgs.openjdk-23",
+    "pkgs.openjdk-24",
+    "pkgs.openjdk",
+    "pkgs.bazel-bootstrap",
+    "pkgs.bazel-7",
+    "pkgs.bazel-8",
+    "pkgs.bazel-9",
+    "pkgs.bazel",
+    "pkgs.llvm-17",
+    "pkgs.llvm-18",
+    "pkgs.llvm-19",
+    "pkgs.llvm-20",
+    "pkgs.llvm-21",
+    "pkgs.llvm-22",
+    "pkgs.llvm",
+    "pkgs.go-1_4",
+    "pkgs.go-1_17",
+    "pkgs.go-1_20",
+    "pkgs.go-1_22",
+    "pkgs.go-1_24",
+    "pkgs.go",
+    "pkgs.python3-3_12",
+    "pkgs.python3",
+    "pkgs.cmake",
+    "pkgs.meson",
+    "pkgs.ninja",
+];
+
 /// Error returned after `aos nix-diff` has already rendered a failure report.
 #[derive(Debug, Clone)]
 pub struct NixDiffReportedFailure {
@@ -380,6 +482,7 @@ fn corpus_attrs(
 
     if include_packages {
         extend_unique(&mut attrs, &mut seen, package_attrs(oracle, file)?);
+        extend_unique(&mut attrs, &mut seen, toolchain_attrs(oracle, file)?);
     }
     if include_systems {
         extend_unique(&mut attrs, &mut seen, system_attrs(oracle, file)?);
@@ -406,6 +509,12 @@ fn package_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
         .into_iter()
         .map(|name| format!("pkgs.{name}"))
         .collect())
+}
+
+fn toolchain_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
+    let expr = toolchain_attr_expr(file)?;
+    let raw = oracle.eval_expr(&expr)?;
+    serde_json::from_str(&raw).context("parsing nix-diff explicit toolchain attribute list")
 }
 
 fn system_attrs(oracle: &NixCli, file: &Path) -> Result<Vec<String>> {
@@ -437,6 +546,56 @@ in
   builtins.filter shouldCheck (builtins.attrNames pkgs)
 "#,
         nix_string_literal(file)
+    ))
+}
+
+fn toolchain_attr_expr(file: &Path) -> Result<String> {
+    let file = absolute_path_for_nix(file)?;
+    let file = file
+        .to_str()
+        .with_context(|| format!("nix file path is not valid UTF-8: {}", file.display()))?;
+    let wanted = EXPLICIT_TOOLCHAIN_CORPUS_ATTRS
+        .iter()
+        .map(|attr| {
+            let path = attr
+                .split('.')
+                .map(nix_string_literal)
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!(
+                "{{ attr = {}; path = [ {path} ]; }}",
+                nix_string_literal(attr)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n    ");
+
+    Ok(format!(
+        r#"
+let
+  loaded = import (builtins.toPath {});
+  root = if builtins.isFunction loaded then loaded {{}} else loaded;
+  missing = {{ __aosNixDiffMissing = true; }};
+  wanted = [
+    {}
+  ];
+  isDerivation = value:
+    builtins.isAttrs value && (value ? type) && value.type == "derivation";
+  getPath = path:
+    builtins.foldl' (
+      value: name:
+        if builtins.isAttrs value && builtins.hasAttr name value
+        then builtins.getAttr name value
+        else missing
+    ) root path;
+  shouldCheck = item:
+    let probe = builtins.tryEval (isDerivation (getPath item.path));
+    in if probe.success then probe.value else false;
+in
+  builtins.map (item: item.attr) (builtins.filter shouldCheck wanted)
+"#,
+        nix_string_literal(file),
+        wanted
     ))
 }
 
@@ -2123,6 +2282,36 @@ mod tests {
 
         assert!(expr.contains("root ? systems"));
         assert!(expr.contains("systems.${name}.build.toplevel"));
+        assert!(!expr.contains("builtins.toPath \"default.nix\""));
+
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_toolchain_corpus_names_foundational_roots() {
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"stdenv.bootstrap.gcc"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"stdenv.gccStage2"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.rust-1_74"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.rust"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.openjdk-8"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.openjdk"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.bazel-bootstrap"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.bazel"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.llvm-17"));
+        assert!(EXPLICIT_TOOLCHAIN_CORPUS_ATTRS.contains(&"pkgs.llvm"));
+    }
+
+    #[test]
+    fn toolchain_attr_expr_absolutizes_and_filters_existing_derivations() -> Result<()> {
+        let expr = toolchain_attr_expr(Path::new("default.nix"))?;
+
+        assert!(expr.contains("builtins.hasAttr name value"));
+        assert!(expr.contains("builtins.tryEval"));
+        assert!(expr.contains("if probe.success then probe.value else false"));
+        assert!(expr.contains(
+            "attr = \"stdenv.bootstrap.gcc\"; path = [ \"stdenv\" \"bootstrap\" \"gcc\" ];"
+        ));
+        assert!(expr.contains("attr = \"pkgs.rust-1_74\"; path = [ \"pkgs\" \"rust-1_74\" ];"));
         assert!(!expr.contains("builtins.toPath \"default.nix\""));
 
         Ok(())
