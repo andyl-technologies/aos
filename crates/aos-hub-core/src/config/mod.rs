@@ -652,10 +652,8 @@ pub async fn change_registry_visibility(
     // Notify subscribers of the visibility flip. Additive and non-fatal: the
     // change is already applied and audited; a webhook failure must not undo it.
     if let Some(org_id) = record.org_id {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+        // Cross-platform clock — `SystemTime::now()` panics on the Worker (wasm32).
+        let now = crate::clock::now_unix_secs();
         let event = crate::webhook::WebhookEvent::VisibilityChanged {
             registry: record.slug.clone(),
             old: old_visibility,
