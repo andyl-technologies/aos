@@ -36,6 +36,9 @@ pub const PERSIST_BLOB_RECORD_HEADER_LEN: usize = 40;
 pub const PERSIST_BLOB_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of a hash-to-offset index value.
 pub const PERSIST_BLOB_INDEX_VALUE_LEN: usize = 16;
+/// The encoded length of a complete hash-to-offset index entry.
+pub const PERSIST_BLOB_INDEX_ENTRY_LEN: usize =
+    PERSIST_BLOB_INDEX_KEY_LEN + PERSIST_BLOB_INDEX_VALUE_LEN;
 /// The encoded length of a file-artifact index key.
 pub const PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of a file-artifact index value.
@@ -317,6 +320,59 @@ impl PersistBlobLocation {
             record_offset: read_u64(&bytes[..8]),
             payload_len: read_u64(&bytes[8..16]),
         })
+    }
+}
+
+/// A complete key/value record for the future hash-to-offset index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistBlobIndexEntry {
+    key: PersistBlobKey,
+    location: PersistBlobLocation,
+}
+
+impl PersistBlobIndexEntry {
+    /// Creates a blob index entry from its lookup key and pack location.
+    pub const fn new(key: PersistBlobKey, location: PersistBlobLocation) -> Self {
+        Self { key, location }
+    }
+
+    /// Returns the blob lookup key.
+    pub const fn key(self) -> PersistBlobKey {
+        self.key
+    }
+
+    /// Returns the blob pack location.
+    pub const fn location(self) -> PersistBlobLocation {
+        self.location
+    }
+
+    /// Encodes this record as stable hash-to-offset index bytes.
+    pub fn encode_index_entry(self) -> [u8; PERSIST_BLOB_INDEX_ENTRY_LEN] {
+        let mut bytes = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
+        bytes[..PERSIST_BLOB_INDEX_KEY_LEN].copy_from_slice(&self.key.index_bytes());
+        bytes[PERSIST_BLOB_INDEX_KEY_LEN..].copy_from_slice(&self.location.encode_index_value());
+        bytes
+    }
+
+    /// Decodes a complete hash-to-offset index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_BLOB_INDEX_ENTRY_LEN`] or if the embedded key/value codecs
+    /// reject their prefixes.
+    pub fn decode_index_entry(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_BLOB_INDEX_ENTRY_LEN {
+            return Err(PersistPackFormatError::ShortBlobIndexEntry {
+                expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        let key = PersistBlobKey::decode_index_bytes(&bytes[..PERSIST_BLOB_INDEX_KEY_LEN])?;
+        let location = PersistBlobLocation::decode_index_value(
+            &bytes[PERSIST_BLOB_INDEX_KEY_LEN..PERSIST_BLOB_INDEX_ENTRY_LEN],
+        )?;
+        Ok(Self::new(key, location))
     }
 }
 
@@ -1318,6 +1374,14 @@ pub enum PersistPackFormatError {
         /// The available bytes.
         actual: usize,
     },
+    /// A blob index entry was shorter than the fixed encoded length.
+    #[error("persistent blob index entry has {actual} bytes, expected at least {expected}")]
+    ShortBlobIndexEntry {
+        /// The required fixed blob index entry length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
     /// A file-artifact index value was shorter than the fixed encoded length.
     #[error(
         "persistent file artifact index value has {actual} bytes, expected at least {expected}"
@@ -2216,6 +2280,57 @@ mod tests {
                 expected: PERSIST_MATERIALIZATION_REUSE_LEN,
                 actual: 8,
             }
+        );
+    }
+
+    #[test]
+    fn blob_index_entries_round_trip_key_value_records() {
+        let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+        let location = PersistBlobLocation::new(123, 456);
+        let entry = PersistBlobIndexEntry::new(key, location);
+        let entry_bytes = entry.encode_index_entry();
+        let mut encoded = entry_bytes.to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(entry.key(), key);
+        assert_eq!(entry.location(), location);
+        assert_eq!(entry_bytes.len(), PERSIST_BLOB_INDEX_ENTRY_LEN);
+        assert_eq!(
+            &entry_bytes[..PERSIST_BLOB_INDEX_KEY_LEN],
+            key.index_bytes().as_slice()
+        );
+        assert_eq!(
+            &entry_bytes[PERSIST_BLOB_INDEX_KEY_LEN..],
+            location.encode_index_value().as_slice()
+        );
+        assert_eq!(
+            PersistBlobIndexEntry::decode_index_entry(&encoded).expect("blob index entry decodes"),
+            entry
+        );
+    }
+
+    #[test]
+    fn blob_index_entries_reject_invalid_prefixes() {
+        let error =
+            PersistBlobIndexEntry::decode_index_entry(&[0; 8]).expect_err("short entry errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortBlobIndexEntry {
+                expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
+                actual: 8,
+            }
+        );
+
+        let key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"payload"));
+        let location = PersistBlobLocation::new(123, 456);
+        let entry = PersistBlobIndexEntry::new(key, location);
+        let mut invalid_key = entry.encode_index_entry();
+        invalid_key[0] = 99;
+        let error = PersistBlobIndexEntry::decode_index_entry(&invalid_key)
+            .expect_err("bad embedded blob key errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidBlobIndexStoreTag { tag: 99 }
         );
     }
 

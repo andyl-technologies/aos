@@ -499,6 +499,13 @@ alone (`M-1`/`Q-A`).
       This is codec-only; LMDB/redb environments, tables, transactions, index
       writes/reads, mmap pointer reads, GC/repack, and harness proof remain open
       (`C-13`).
+- [x] Current hash-to-offset index entry codec:
+      `PersistBlobIndexEntry` binds a decoded `PersistBlobKey` to its
+      `PersistBlobLocation` in one stable fixed-width record, preserving
+      short-prefix and malformed embedded-key validation through the existing
+      codecs. This is codec-only; LMDB/redb environments, tables, transactions,
+      index writes/reads, mmap pointer reads, GC/repack, and harness proof remain
+      open (`C-13`).
 - [x] Current file-artifact mapping codec substrate:
       `PersistFileArtifactKey` derives a stable `files/` index key from
       canonical realpath bytes, source content hash, and the
