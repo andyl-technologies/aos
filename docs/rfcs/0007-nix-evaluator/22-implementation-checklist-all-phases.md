@@ -506,6 +506,14 @@ alone (`M-1`/`Q-A`).
       codecs. This is codec-only; LMDB/redb environments, tables, transactions,
       index writes/reads, mmap pointer reads, GC/repack, and harness proof remain
       open (`C-13`).
+- [x] Current fixed-record blob index file substrate:
+      `PersistBlobIndex` opens/creates a sidecar index file, appends fixed-width
+      `PersistBlobIndexEntry` records, rejects truncated record tails on open,
+      and linearly scans records to return the newest matching hash-to-offset
+      location. This is a simple durable sidecar only; LMDB/redb MVCC tables,
+      transactions, writer batching/locking, integration with
+      `PersistCache::append_blob`/`read_blob`, mmap pointer reads, GC/repack, and
+      harness proof remain open (`C-13`).
 - [x] Current file-artifact mapping codec substrate:
       `PersistFileArtifactKey` derives a stable `files/` index key from
       canonical realpath bytes, source content hash, and the

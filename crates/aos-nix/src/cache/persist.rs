@@ -376,6 +376,109 @@ impl PersistBlobIndexEntry {
     }
 }
 
+/// A fixed-record hash-to-offset index file for immutable blob pack entries.
+///
+/// This is a simple durable substrate for tests and future cache integration.
+/// It is not the final LMDB/redb metadata engine: writes append one fixed
+/// record at a time, and lookups scan records linearly and return the newest
+/// matching entry.
+#[derive(Clone, Debug)]
+pub struct PersistBlobIndex {
+    path: PathBuf,
+}
+
+impl PersistBlobIndex {
+    /// Opens or initializes a fixed-record blob index file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if parent directories or the index
+    /// file cannot be created/opened, or if the existing file ends with a
+    /// partial fixed-width record.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistBlobIndexError> {
+        let path = path.into();
+        ensure_blob_index_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this index file's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one hash-to-offset index entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be opened,
+    /// validated, written, or flushed.
+    pub fn append_entry(&self, entry: PersistBlobIndexEntry) -> Result<(), PersistBlobIndexError> {
+        ensure_blob_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistBlobIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.write_all(&entry.encode_index_entry())
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistBlobIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Looks up the newest location for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the index cannot be opened, read,
+    /// or decoded.
+    pub fn lookup(
+        &self,
+        key: PersistBlobKey,
+    ) -> Result<Option<PersistBlobLocation>, PersistBlobIndexError> {
+        ensure_blob_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistBlobIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistBlobIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_blob_index_len(&self.path, len)?;
+
+        let mut found = None;
+        let records = len / PERSIST_BLOB_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_BLOB_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded)
+                .map_err(|source| PersistBlobIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                })?;
+            let entry = PersistBlobIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                PersistBlobIndexError::Format {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            if entry.key() == key {
+                found = Some(entry.location());
+            }
+        }
+        Ok(found)
+    }
+}
+
 /// A stable index key for a durable frontend file artifact.
 ///
 /// The key is derived from the canonical realpath bytes, the source-content
@@ -722,6 +825,11 @@ impl PersistLayout {
         self.blob_store_dir(store).join("pack.blob")
     }
 
+    /// Returns the fixed-record hash-to-offset index path for blobs in `store`.
+    pub fn blob_index_path(&self, store: PersistBlobStore) -> PathBuf {
+        self.blob_store_dir(store).join("index.blob")
+    }
+
     /// Returns the append-only packfile path for serialized value blobs.
     pub fn value_packfile_path(&self) -> PathBuf {
         self.blob_packfile_path(PersistBlobStore::Values)
@@ -730,6 +838,16 @@ impl PersistLayout {
     /// Returns the append-only packfile path for serialized file blobs.
     pub fn file_packfile_path(&self) -> PathBuf {
         self.blob_packfile_path(PersistBlobStore::Files)
+    }
+
+    /// Returns the fixed-record hash-to-offset index path for serialized values.
+    pub fn value_index_path(&self) -> PathBuf {
+        self.blob_index_path(PersistBlobStore::Values)
+    }
+
+    /// Returns the fixed-record hash-to-offset index path for serialized files.
+    pub fn file_index_path(&self) -> PathBuf {
+        self.blob_index_path(PersistBlobStore::Files)
     }
 
     fn blob_store_dir(&self, store: PersistBlobStore) -> PathBuf {
@@ -1433,6 +1551,59 @@ pub enum PersistPackFormatError {
     },
 }
 
+/// Fixed-record blob index file IO failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexError {
+    /// The index parent directory could not be created.
+    #[error("failed to create persistent blob index parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be opened.
+    #[error("failed to open persistent blob index {path:?}")]
+    Open {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Index file metadata could not be read.
+    #[error("failed to read persistent blob index metadata {path:?}")]
+    Metadata {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be read.
+    #[error("failed to read persistent blob index {path:?}")]
+    Read {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be written.
+    #[error("failed to write persistent blob index {path:?}")]
+    Write {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file has malformed fixed-record bytes.
+    #[error("persistent blob index {path:?} has invalid format: {source}")]
+    Format {
+        /// The index file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+}
+
 /// Immutable blob packfile IO failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobPackError {
@@ -1706,6 +1877,54 @@ fn update_persist_index_chunk(hasher: &mut blake3::Hasher, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
+fn ensure_blob_index_file(path: &Path) -> Result<(), PersistBlobIndexError> {
+    ensure_blob_index_parent(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| PersistBlobIndexError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| PersistBlobIndexError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    validate_blob_index_len(path, len)
+}
+
+fn ensure_blob_index_parent(path: &Path) -> Result<(), PersistBlobIndexError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|source| PersistBlobIndexError::CreateParent {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+fn validate_blob_index_len(path: &Path, len: u64) -> Result<(), PersistBlobIndexError> {
+    let remainder = len % PERSIST_BLOB_INDEX_ENTRY_LEN as u64;
+    if remainder == 0 {
+        return Ok(());
+    }
+    Err(PersistBlobIndexError::Format {
+        path: path.to_path_buf(),
+        source: PersistPackFormatError::ShortBlobIndexEntry {
+            expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
+            actual: remainder as usize,
+        },
+    })
+}
+
 fn ensure_blob_pack_file(path: &Path) -> Result<(), PersistBlobPackError> {
     ensure_blob_pack_parent(path)?;
     let mut file = OpenOptions::new()
@@ -1971,6 +2190,29 @@ mod tests {
             layout.files_dir().join("pack.blob")
         );
         assert_ne!(layout.value_packfile_path(), layout.file_packfile_path());
+    }
+
+    #[test]
+    fn blob_index_paths_are_store_separated() {
+        let layout = PersistLayout::new(temp_root());
+
+        assert_eq!(
+            layout.blob_index_path(PersistBlobStore::Values),
+            layout.value_index_path()
+        );
+        assert_eq!(
+            layout.blob_index_path(PersistBlobStore::Files),
+            layout.file_index_path()
+        );
+        assert_eq!(
+            layout.value_index_path(),
+            layout.values_dir().join("index.blob")
+        );
+        assert_eq!(
+            layout.file_index_path(),
+            layout.files_dir().join("index.blob")
+        );
+        assert_ne!(layout.value_index_path(), layout.file_index_path());
     }
 
     #[test]
@@ -2345,6 +2587,94 @@ mod tests {
             error,
             PersistPackFormatError::InvalidBlobIndexStoreTag { tag: 99 }
         );
+    }
+
+    #[test]
+    fn blob_index_appends_and_finds_latest_matching_entry() {
+        let root = temp_root();
+        let index_path = root.join("values").join("index.blob");
+        let index = PersistBlobIndex::open(&index_path).expect("index opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+        let other_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(b"other payload"));
+        let first = PersistBlobLocation::new(123, 456);
+        let other = PersistBlobLocation::new(789, 10);
+        let latest = PersistBlobLocation::new(999, 11);
+
+        assert_eq!(index.path(), index_path.as_path());
+        assert_eq!(index.lookup(key).expect("empty lookup succeeds"), None);
+
+        index
+            .append_entry(PersistBlobIndexEntry::new(key, first))
+            .expect("first entry appends");
+        index
+            .append_entry(PersistBlobIndexEntry::new(other_key, other))
+            .expect("other entry appends");
+        index
+            .append_entry(PersistBlobIndexEntry::new(key, latest))
+            .expect("latest entry appends");
+
+        assert_eq!(
+            index.lookup(key).expect("key lookup succeeds"),
+            Some(latest)
+        );
+        assert_eq!(
+            index.lookup(other_key).expect("other lookup succeeds"),
+            Some(other)
+        );
+        assert_eq!(
+            fs::metadata(index.path()).expect("index metadata").len(),
+            (PERSIST_BLOB_INDEX_ENTRY_LEN * 3) as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blob_index_open_rejects_truncated_records() {
+        let root = temp_root();
+        let index_path = root.join("values").join("index.blob");
+        fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+        fs::write(&index_path, b"partial").expect("partial index writes");
+
+        let error = PersistBlobIndex::open(&index_path).expect_err("truncated index errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobIndexError::Format {
+                source: PersistPackFormatError::ShortBlobIndexEntry {
+                    expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
+                    actual: 7,
+                },
+                ..
+            }
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn blob_index_lookup_rejects_malformed_records() {
+        let root = temp_root();
+        let index_path = root.join("values").join("index.blob");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"payload"));
+        let location = PersistBlobLocation::new(123, 456);
+        let mut encoded = PersistBlobIndexEntry::new(key, location).encode_index_entry();
+        encoded[0] = 99;
+        fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+        fs::write(&index_path, encoded).expect("malformed index writes");
+        let index = PersistBlobIndex::open(&index_path).expect("index opens by length");
+
+        let error = index.lookup(key).expect_err("malformed record errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobIndexError::Format {
+                source: PersistPackFormatError::InvalidBlobIndexStoreTag { tag: 99 },
+                ..
+            }
+        ));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
