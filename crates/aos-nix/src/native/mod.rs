@@ -7,6 +7,8 @@
 //! Phase-1 subset.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::fs;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -17,17 +19,18 @@ use crate::compile::{
     EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
 };
 use crate::drv_materialize::materialize_drv;
-use crate::error::{NativeEvalError, SrcSpan};
+use crate::error::NativeEvalError;
+use crate::eval::tree_walk::{canonicalize_policy_path, normalize_absolute_path_bytes};
 use crate::eval::{
     EvalErrorLabel, EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind,
-    TreeWalkOptions, eval_instantiation_attr_path_owned_with_options_and_realizer,
+    TreeWalkOptions, eval_instantiation_attr_path_owned_with_options_source_and_realizer,
     eval_whnf_owned_with_options_and_realizer,
 };
 use crate::runtime::builtins::{
     Builtin, BuiltinAvailability, NativeCliFallbackFeature, is_unshadowable_global_name,
     lookup_builtin,
 };
-use crate::syntax::{Span, parse_str};
+use crate::syntax::{Span, parse_bytes};
 use crate::value::{Value, ValueTag};
 
 /// In-process RFC-0007 evaluator handle.
@@ -290,26 +293,50 @@ impl NixNative {
         attr: &str,
     ) -> Result<NativeDrvClosure> {
         let attr_path = attr_path_drv_path_segments(attr)?;
-        let source = file_import_source(file)?;
-        let ir = self.lower_native_source(&source, None, None)?;
+        let mut options = self.instantiation_options();
+        let file = native_source_file(file, &options)?;
+        let source_name = path_bytes(&file)?;
+        let source_name_text = String::from_utf8_lossy(&source_name);
+        let source = fs::read(&file).map_err(|source| NativeEvalError::EvalError {
+            message: format!(
+                "failed to read native instantiation source {}: {source}",
+                source_name_text
+            ),
+        })?;
+        let diagnostic_source = std::str::from_utf8(&source)
+            .ok()
+            .map(|source| NativeDiagnosticSource::new(source_name_text.as_ref(), source, None));
+        let base = file.parent().unwrap_or_else(|| Path::new("/"));
+        options.set_path_literal_base(path_bytes(base)?)?;
+        let ir = self.lower_native_source_bytes(
+            &source,
+            Some(source_name_text.to_string()),
+            None,
+            diagnostic_source,
+        )?;
         if let Some((feature, span)) = native_instantiation_cli_fallback_feature(&ir, &self.options)
         {
             return Err(NativeEvalError::Unsupported {
                 feature: feature.to_string(),
-                span: Some(SrcSpan {
+                span: Some(crate::error::SrcSpan {
                     start: span.start,
                     end: span.end,
                 }),
             }
             .into());
         }
-        let outcome = eval_instantiation_attr_path_owned_with_options_and_realizer(
+        let outcome = eval_instantiation_attr_path_owned_with_options_source_and_realizer(
             &ir,
             &attr_path,
-            self.instantiation_options(),
+            options,
+            source_name.clone(),
+            source.clone(),
             self.ifd_realizer.clone(),
         )
-        .map_err(|error| native_eval_error(error, None))?;
+        .map_err(|error| match diagnostic_source {
+            Some(diagnostic_source) => native_eval_error_with_source(error, diagnostic_source),
+            None => native_eval_error(error, None),
+        })?;
         self.native_drv_closure_from_outcome(outcome)
     }
 
@@ -347,9 +374,19 @@ impl NixNative {
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
+        self.lower_native_source_bytes(source.as_bytes(), None, source_map, diagnostic_source)
+    }
+
+    fn lower_native_source_bytes(
+        &self,
+        source: &[u8],
+        source_hint: Option<String>,
+        source_map: Option<WrappedSourceMap>,
+        diagnostic_source: Option<NativeDiagnosticSource<'_>>,
+    ) -> Result<Ir> {
         if let Some(root) = self.options.parse_cache_root() {
             let cache = ParseCache::new(root);
-            match cache.load_or_parse_bytes(source.as_bytes(), None) {
+            match cache.load_or_parse_bytes(source, source_hint) {
                 Ok(cached) => {
                     return Ok(cached.ir);
                 }
@@ -367,11 +404,11 @@ impl NixNative {
     }
 
     fn lower_native_source_uncached(
-        source: &str,
+        source: &[u8],
         source_map: Option<WrappedSourceMap>,
         diagnostic_source: Option<NativeDiagnosticSource<'_>>,
     ) -> Result<Ir> {
-        let parsed = parse_str(source)
+        let parsed = parse_bytes(source)
             .map_err(|source| unsupported_parse_error(source, source_map, diagnostic_source))?;
         let resolved = resolve(parsed)
             .map_err(|source| unsupported_scope_error(source, source_map, diagnostic_source))?;
@@ -400,6 +437,70 @@ impl NixNative {
         options.set_reject_ambient_search_path(true);
         options.set_reject_unconfigured_impure_builtin_constants(true);
         options
+    }
+}
+
+fn native_source_file(file: &Path, options: &TreeWalkOptions) -> Result<PathBuf> {
+    let requested = PathBuf::from(std::ffi::OsString::from_vec(path_bytes(file)?));
+    check_native_filesystem_path_access(options, requested.as_os_str().as_bytes())?;
+    let metadata = fs::metadata(&requested).map_err(|source| NativeEvalError::EvalError {
+        message: format!(
+            "failed to stat native instantiation source {}: {source}",
+            requested.display()
+        ),
+    })?;
+    let target = if metadata.is_dir() {
+        let target = requested.join("default.nix");
+        check_native_filesystem_path_access(options, target.as_os_str().as_bytes())?;
+        target
+    } else {
+        requested
+    };
+    fs::canonicalize(&target).map_err(|source| {
+        NativeEvalError::EvalError {
+            message: format!(
+                "failed to resolve native instantiation source {}: {source}",
+                target.display()
+            ),
+        }
+        .into()
+    })
+}
+
+fn check_native_filesystem_path_access(options: &TreeWalkOptions, path: &[u8]) -> Result<()> {
+    if options.eval_mode() == EvalMode::Impure {
+        return Ok(());
+    }
+    if !Path::new(OsStr::from_bytes(path)).is_absolute() {
+        return Err(NativeEvalError::EvalError {
+            message: format!(
+                "{:?} evaluation requires an absolute native instantiation source path: {}",
+                options.eval_mode(),
+                String::from_utf8_lossy(path)
+            ),
+        }
+        .into());
+    }
+
+    let normalized = normalize_absolute_path_bytes(path);
+    if options.path_is_allowed(&normalized) {
+        if let Some(resolved) = canonicalize_policy_path(path) {
+            if !options.resolved_path_is_allowed(&resolved) {
+                return Err(native_filesystem_access_denied(options.eval_mode(), &resolved).into());
+            }
+        }
+        return Ok(());
+    }
+
+    Err(native_filesystem_access_denied(options.eval_mode(), &normalized).into())
+}
+
+fn native_filesystem_access_denied(mode: EvalMode, path: &[u8]) -> NativeEvalError {
+    NativeEvalError::EvalError {
+        message: format!(
+            "{mode:?} evaluation forbids filesystem access to native instantiation source {}",
+            String::from_utf8_lossy(path)
+        ),
     }
 }
 

@@ -25,11 +25,6 @@ pub(super) fn derivation_path_wrapper_source(expr: &str) -> String {
     format!("{DRV_PATH_WRAPPER_PREFIX}{expr}{DRV_PATH_WRAPPER_SUFFIX}")
 }
 
-pub(super) fn file_import_source(file: &Path) -> Result<String> {
-    let file = nix_string_literal(&path_bytes(file)?)?;
-    Ok(format!("import {file}"))
-}
-
 pub(super) fn derivation_path_from_value(
     value: Value,
     heap: &crate::eval::EvalHeap,
@@ -133,6 +128,7 @@ pub(super) fn path_bytes(path: &Path) -> Result<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn nix_string_literal(bytes: &[u8]) -> Result<String> {
     let mut out = String::new();
     out.push('"');

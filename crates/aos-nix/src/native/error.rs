@@ -15,14 +15,14 @@ use crate::syntax::{ParseError, ParseErrorKind};
 
 #[derive(Clone, Copy)]
 pub(super) struct NativeDiagnosticSource<'a> {
-    name: &'static str,
+    name: &'a str,
     source: &'a str,
     source_map: Option<WrappedSourceMap>,
 }
 
 impl<'a> NativeDiagnosticSource<'a> {
     pub(super) const fn new(
-        name: &'static str,
+        name: &'a str,
         source: &'a str,
         source_map: Option<WrappedSourceMap>,
     ) -> Self {

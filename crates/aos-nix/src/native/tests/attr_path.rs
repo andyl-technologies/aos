@@ -30,6 +30,102 @@ fn native_instantiation_imports_file_attr_path() -> Result<()> {
 }
 
 #[test]
+fn native_instantiation_imports_directory_default_file() -> Result<()> {
+    let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate-dir")?;
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("default.nix"),
+        r#"{
+          pkgs.hello = derivationStrict {
+            name = "dir-default";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          };
+        }"#,
+    )?;
+
+    let path = native.instantiate(&dir, "pkgs.hello")?;
+
+    assert!(path.starts_with(&store), "{}", path.display());
+    assert!(path.to_string_lossy().ends_with("-dir-default.drv"));
+    let _ = assert_materialized_drv(&path)?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_instantiation_restricted_mode_rejects_unallowed_root_file_before_parse() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-restricted-denied");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let file = root.join("default.nix");
+    fs::write(&file, b"let { body = 1; }")?;
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_eval_mode(EvalMode::Restricted);
+    let native = NixNative::with_options(0, options)?;
+
+    let error = native
+        .instantiate(&file, "")
+        .expect_err("restricted mode should reject unallowed root files before parsing");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("restricted path policy should surface as a native eval error: {error:?}");
+    };
+    assert!(
+        message.contains("Restricted evaluation forbids filesystem access"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&file.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(
+        !message.contains("native expression parse failure"),
+        "{message}"
+    );
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_instantiation_restricted_mode_accepts_allowed_directory_root_file() -> Result<()> {
+    let root = unique_temp_dir("aos-nix-native-instantiate-restricted-allowed");
+    fs::create_dir_all(&root)?;
+    let root = fs::canonicalize(root)?;
+    let store = root.join("store");
+    let dir = root.join("src");
+    fs::create_dir_all(&dir)?;
+    fs::write(
+        dir.join("default.nix"),
+        r#"{
+          pkgs.hello = derivationStrict {
+            name = "restricted-allowed";
+            system = "x86_64-linux";
+            builder = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-builder";
+          };
+        }"#,
+    )?;
+    let mut options = TreeWalkOptions::with_store_dir(store.as_os_str().as_bytes().to_vec())?;
+    options.set_eval_mode(EvalMode::Restricted);
+    options.add_allowed_path(root.as_os_str().as_bytes().to_vec())?;
+    let native = NixNative::with_options(0, options)?;
+
+    let path = native.instantiate(&dir, "pkgs.hello")?;
+
+    assert!(path.starts_with(&store), "{}", path.display());
+    assert!(path.to_string_lossy().ends_with("-restricted-allowed.drv"));
+    let _ = assert_materialized_drv(&path)?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn native_instantiation_empty_attr_path_selects_root() -> Result<()> {
     let (native, root, store) = native_with_temp_store("aos-nix-native-instantiate-empty-attr")?;
     let dir = root.join("src");
@@ -49,6 +145,64 @@ fn native_instantiation_empty_attr_path_selects_root() -> Result<()> {
     assert!(path.starts_with(&store), "{}", path.display());
     assert!(path.to_string_lossy().ends_with("-root.drv"));
     let _ = assert_materialized_drv(&path)?;
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_reports_parse_errors_with_source() -> Result<()> {
+    let (native, root, _store) = native_with_temp_store("aos-nix-native-instantiate-parse-error")?;
+    let file = root.join("default.nix");
+    fs::write(&file, b"let { body = 1; }")?;
+
+    let error = native
+        .instantiate(&file, "")
+        .expect_err("file parse errors should stay fallback-eligible");
+
+    let Some(NativeEvalError::Unsupported { feature, .. }) =
+        error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("parse errors should surface as unsupported fallback errors: {error:?}");
+    };
+    assert!(
+        feature.contains("native expression parse failure"),
+        "{feature}"
+    );
+    assert!(feature.contains("aos_nix::parse::"), "{feature}");
+    assert!(
+        feature.contains(&file.to_string_lossy().to_string()),
+        "{feature}"
+    );
+    assert!(feature.contains("let { body = 1; }"), "{feature}");
+    assert!(!feature.contains("import "), "{feature}");
+
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn native_file_instantiation_reports_tree_walk_errors_with_source() -> Result<()> {
+    let (native, root, _store) = native_with_temp_store("aos-nix-native-instantiate-eval-error")?;
+    let file = root.join("default.nix");
+    fs::write(&file, b"{ broken = 1 + true; }")?;
+
+    let error = native
+        .instantiate(&file, "broken")
+        .expect_err("file tree-walk errors should not instantiate");
+
+    let Some(NativeEvalError::EvalError { message }) = error.downcast_ref::<NativeEvalError>()
+    else {
+        panic!("type error should surface as a native eval error: {error:?}");
+    };
+    assert!(message.contains("type error"), "{message}");
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(
+        message.contains(&file.to_string_lossy().to_string()),
+        "{message}"
+    );
+    assert!(message.contains("1 + true"), "{message}");
+    assert!(!message.contains("import "), "{message}");
 
     fs::remove_dir_all(root)?;
     Ok(())
