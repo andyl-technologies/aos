@@ -852,7 +852,7 @@ information that cannot be recomputed.
   constructor; property-test that equal `(def, schedule)` ⇒ equal id and unequal
   schedule ⇒ unequal id. — satisfies [EXEC-1], [EXEC-2], [EXEC-3], [EXEC-4],
   [EXEC-5]; spec §2.
-- [ ] **T-EXEC-2** Implement the closed `Decision` taxonomy and `Schedule`
+- [x] **T-EXEC-2** Implement the closed `Decision` taxonomy and `Schedule`
   (prefix/appended) with per-stream RNG draw recording; test that unrelated
   `World` edits don't perturb other streams' draws. — satisfies [EXEC-6],
   [EXEC-7], [EXEC-8], [EXEC-9]; spec §3.
