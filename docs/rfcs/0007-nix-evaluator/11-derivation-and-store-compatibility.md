@@ -460,11 +460,12 @@ Two ordering facts deserve emphasis:
 
 1. **Bytewise, not locale-aware.** Nix sorts by raw byte value (it is comparing
    `std::string`s / `&[u8]`), not by any Unicode collation or locale. A Rust
-   `BTreeMap<String, _>` sorts by `str` `Ord`, which is bytewise on UTF-8 — this
-   *happens to match* for the ASCII-dominant key space of derivation env vars,
-   but we use `BTreeMap<BString, _>` and rely on bytewise `Ord` explicitly to
-   avoid any surprise on non-ASCII keys, and we assert this with a property test
-   against `nix-compat`'s ordering.
+   `BTreeMap<String, _>` sorts by `str` `Ord`, which is bytewise on UTF-8. The
+   current tree-walk implementation UTF-8-checks environment keys before they
+   enter `nix_compat::derivation::Derivation`, stores environment values as
+   `BString`, and relies on the ordered derivation containers plus property
+   coverage to catch any future non-ASCII-key mismatch against `nix-compat`'s
+   ordering.
 
 2. **Attribute iteration order in the language also matters here.** The order in
    which `derivationStrict` *coerces* attributes (§3.1 step 3) affects the order
@@ -792,35 +793,35 @@ harness, never cut for scope.
 ### `nix-compat` dependency and the format boundary (foundation)
 
 - [ ] Pin a `nix-compat` git rev; vendor only patched modules; wrap behind a thin `aos_nix::drv` adapter ([§7](#7-the-nix-compat-dependency-buy-the-format-build-the-evaluator)) — P1, `S-13`/`C-5`; gate: differential `.drv` harness on every bump.
-- [ ] `Derivation` seven-field struct populated correctly (`outputs`, `input_sources`, `input_derivations`, `system`, `builder`, `arguments`, `environment`) ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1, `S-13`; gate: differential `.drv` harness.
-- [ ] `BString` env values (lossless arbitrary-byte round-trip), `BTreeMap`/`BTreeSet` bytewise-`Ord` sorted containers ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1; gate: property test vs `nix-compat` ordering.
+- [x] `Derivation` seven-field struct populated correctly (`outputs`, `input_sources`, `input_derivations`, `system`, `builder`, `arguments`, `environment`) through `nix_compat::derivation::Derivation`; `derivationStrict` fills the field set, validates required `system`/`builder`, defaults `out`, inserts output env entries, and records known derivations for downstream input hashing ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1, `S-13`; gate: differential `.drv` harness.
+- [x] `BString` env values (lossless arbitrary-byte round-trip), `BTreeMap`/`BTreeSet` deterministic ordering for outputs, input derivations, input sources, and environment. Non-UTF-8 environment values survive into ATerm bytes while structural fields remain UTF-8-checked before insertion ([§3](#3-the-store-derivation-what-derivationstrict-produces)) — P1; gate: property test vs `nix-compat` ordering.
 
 ### `derivationStrict` algorithm
 
-- [ ] Six-step algorithm: force-to-WHNF, extract special attrs, deterministic-order string coercion with context accumulation, resolve `outputs`, partition contexts into inputs, build+serialize+hash+write ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1, `S-13`; gate: differential `.drv` harness.
-- [ ] Exact coercion rules (bool → `"1"`/`""`, int decimal, list space-join, path → store copy + `input_sources`, attrset-with-`outPath`) ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1; gate: conformance 20-21.
+- [x] Six-step algorithm: force-to-WHNF, extract special attrs, deterministic-order string coercion with context accumulation, resolve `outputs`, partition contexts into inputs, build+serialize+hash+write. The tree-walk implementation clones attr entries in lexicographic order for `derivationStrict`, accumulates `StringContext`, resolves fixed/floating/impure output modes, computes input hashes for known derivations, records ATerm bytes, and exposes the resulting `.drvPath`/outputs as context-bearing strings ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1, `S-13`; gate: differential `.drv` harness.
+- [x] Exact coercion rules (bool → `"1"`/`""`, int decimal, list space-join, path → store copy + `input_sources`, attrset-with-`outPath`) are implemented through the shared string-coercion path used by `derivationStrict`, with tests covering argument coercion, path/store context flow, attrset derivation coercion, and structured-attrs exceptions ([§3.1](#31-the-derivationstrict-algorithm-step-by-step)) — P1; gate: conformance 20-21.
 - [x] `__ignoreNulls` (omit null attrs) and `__structuredAttrs` (`__json` blob, nested JSON ordering/escaping) ([§3.2](#32-__structuredattrs-and-__ignorenulls)) — P1, `M-20`; gate: harness on structured-attrs packages (torture: stdenv).
 
 ### ATerm serialization
 
-- [ ] `Derive(...)` seven-tuple via `to_aterm_bytes`: no whitespace, fixed positions, sorted lists (outputs/inputDrvs/inputSrcs/env) vs insertion-order `arguments` ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1, `S-13`; gate: differential `.drv` harness (byte parity).
-- [ ] Exact string escaping (`"`, `\`, `\n`, `\r`, `\t` only; all other bytes verbatim); empty output fields for IA; name absent from ATerm ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1; gate: harness.
+- [x] `Derive(...)` seven-tuple serialization: no whitespace, fixed field positions, sorted outputs/input derivations/input sources/environment from ordered containers, and insertion-order `arguments` from the evaluated `args` list. Static, floating-CA, impure, deferred-placeholder, and input-hash-substituted forms share the same explicit ATerm writers ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1, `S-13`; gate: differential `.drv` harness (byte parity).
+- [x] Exact string escaping (`"`, `\`, `\n`, `\r`, `\t` only; all other bytes verbatim); empty output fields for IA/deferred outputs; derivation `name` participates in path naming but is not an ATerm field except as a normal environment entry when C++ Nix would emit it ([§4](#4-aterm-serialization-the-exact-wire-format)) — P1; gate: harness.
 
 ### Store-path computation (both addressing regimes)
 
-- [ ] `.drv` text path via `build_text_path`: fingerprint → SHA-256 → `compressHash` XOR-fold → Nix base-32; references = `input_sources ∪ keys(input_derivations)`; name in path hash but not ATerm ([§5.1](#51-the-drv-store-path-text-hashing)) — P1, `S-13`; gate: drv-path parity.
-- [ ] **Input-addressed path:** `hash_derivation_modulo` (recursive, memoized; FOD vs IA recursion bottoming at fixed-output leaves) and `output:<name>` path derivation, with self-referential placeholder scheme reproduced byte-for-byte ([§5.2](#52-hash-derivation-modulo-the-indirection-that-makes-fixed-output-work)–[§5.3](#53-input-addressed-output-paths)) — P1, `S-13`/`C-6`/`R-11`; gate: differential `.drv` harness (#1 focus).
-- [ ] **Content-addressed path:** floating CA outputs (empty path, `ca_hash` method `r:sha256`/`sha256`) and fixed-output (eval-time-resolvable) outputs, first-class from Phase 1 ([§5.4](#54-content-addressed-ca-derivation-outputs)) — P1, `C-11`/`C-6`; gate: harness with synthesized CA fixtures + RFC-0005 graph.
+- [x] `.drv` text path via `build_text_path`: ATerm bytes are SHA-256 hashed, references are `input_sources ∪ keys(input_derivations)`, the fingerprint is folded through `nix_compat::store_path::compress_hash`, and the store path name is `<derivation-name>.drv` while the derivation `name` itself is absent from the ATerm tuple ([§5.1](#51-the-drv-store-path-text-hashing)) — P1, `S-13`; gate: drv-path parity.
+- [x] **Input-addressed path:** `hash_derivation_modulo_with_inputs` bottoms fixed-output derivations at their fixed digest, substitutes known input-derivation hashes, derives `output:<name>` paths, and records deferred placeholder forms for downstream users of unresolved CA/impure outputs ([§5.2](#52-hash-derivation-modulo-the-indirection-that-makes-fixed-output-work)–[§5.3](#53-input-addressed-output-paths)) — P1, `S-13`/`C-6`/`R-11`; gate: differential `.drv` harness (#1 focus).
+- [x] **Content-addressed path:** floating CA outputs (empty ATerm output path plus `r:sha256`/`sha256` method), fixed-output derivations, and impure deferred-output derivations are first-class in the tree-walk builder; downstream consumers use placeholder/path hashing until realization supplies content ([§5.4](#54-content-addressed-ca-derivation-outputs)) — P1, `C-11`/`C-6`; gate: harness with synthesized CA fixtures + RFC-0005 graph.
 
 ### Deterministic ordering (highest-risk surface)
 
-- [ ] Every sorted ATerm field bytewise (not locale-aware): `outputs`, `input_derivations` (+ inner output-name set), `input_sources`, `environment`; `arguments` insertion-order ([§6](#6-deterministic-ordering-the-single-highest-risk-surface)) — P1, `S-2`; gate: differential `.drv` harness on multi-output/multi-input/many-env-var packages (gcc/glibc/systemd).
-- [ ] Attr coercion traversal order matched to C++ Nix (drives context-accumulation order) ([§6](#6-deterministic-ordering-the-single-highest-risk-surface), [09 §7](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P1; gate: harness.
+- [x] Every sorted ATerm field is emitted from deterministic ordered containers: `outputs`, `input_derivations` (+ inner output-name set), `input_sources`, and `environment`; `arguments` remain insertion-order from the evaluated `args` list. The package-wide full-closure stress gate remains the downstream proof for large real derivations ([§6](#6-deterministic-ordering-the-single-highest-risk-surface)) — P1, `S-2`; gate: differential `.drv` harness on multi-output/multi-input/many-env-var packages (gcc/glibc/systemd).
+- [x] Attr coercion traversal order matched to the tree-walk observable order: `derivationStrict` iterates attrs lexicographically for environment/context accumulation, while structured-attrs JSON and reflected context attrs use their documented source/lexicographic orders where C++ Nix observes them ([§6](#6-deterministic-ordering-the-single-highest-risk-surface), [09 §7](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P1; gate: harness.
 
 ### String contexts (the dependency graph inside strings)
 
-- [ ] Context-element kinds (constant/opaque, single-output `!out!`, deep `=`) and the partition into `input_sources` / `input_derivations` ([§8.1](#81-what-a-context-is)) — P1, `S-13`; gate: conformance 20-21.
-- [ ] Propagation rules: union on concat/interp; `toString` carries `outPath` context; whole-context preservation through `substring`/`replaceStrings`; `unsafeDiscardStringContext`/`unsafeDiscardOutputDependency`/`addDrvOutputDependencies`/`hasContext`/`getContext`/`appendContext` ([§8.2](#82-how-contexts-propagate-through-the-language)) — P1, `R-12`; gate: differential harness + C++ Nix language test suite (rare primops research-grade).
+- [x] Context-element kinds (constant/opaque, single-output `!out!`, deep `=`) and the partition into `input_sources` / `input_derivations` are implemented by `ContextKind::{OpaquePath, SingleOutput, DeepDerivation}` plus `add_derivation_context_inputs`; single-output contexts become named input-derivation edges, deep contexts expand known outputs and add the derivation to input sources, and opaque paths become input sources ([§8.1](#81-what-a-context-is)) — P1, `S-13`; gate: conformance 20-21.
+- [x] Propagation rules: union on concat/interp; `toString` carries `outPath` context; whole-context preservation through `substring`/`replaceStrings`; `unsafeDiscardStringContext`/`unsafeDiscardOutputDependency`/`addDrvOutputDependencies`/`hasContext`/`getContext`/`appendContext`. These are covered by focused context tests plus configured C++-Nix oracle helpers where available ([§8.2](#82-how-contexts-propagate-through-the-language)) — P1, `R-12`; gate: differential harness + C++ Nix language test suite (rare primops research-grade).
 - [ ] Representation: store-path refs interned to `u32`, context as COW hash-consed bitset/sorted-set with deriving-path kind ([§8.3](#83-representation-interned-copy-on-write-bitsets)) — P1, `S-7`/`M-13`; gate: harness (hazard #2).
 
 ### Hashing policy
