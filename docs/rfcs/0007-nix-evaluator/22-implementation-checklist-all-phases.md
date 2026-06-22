@@ -675,6 +675,18 @@ alone (`M-1`/`Q-A`).
       payload format, automatic parse-cache integration, durable index updates,
       lookup, mmap reads, GC/repack, and harness proof remain open
       (`C-13`/`C-14`).
+- [x] Current explicit indexed file-artifact materialization adapters:
+      `PersistCache::materialize_file_artifact_indexed` and
+      `materialize_file_artifact_indexed_with_signals` preserve
+      skip-without-hash/write behavior, and on `Materialize` append the payload
+      through `append_blob_indexed` before recording the realpath/content/parse
+      mapping through `record_file_artifact`. Successful indexed
+      materialization records both the `files/` blob hash-to-offset sidecar
+      entry and the file-artifact mapping sidecar entry. This is explicit
+      non-transactional indexed materialization only; automatic parse-cache
+      integration, parse-entry indexed materialization, durable hit selection,
+      mmap reads, GC/repack, and harness proof remain open
+      (`C-13`/`C-14`/`R-10`).
 - [x] Current materialized file-artifact index-entry accessor:
       `PersistFileArtifactMaterialization::index_entry` returns the complete
       `PersistFileArtifactIndexEntry` only when an artifact was materialized,

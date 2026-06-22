@@ -1542,6 +1542,56 @@ impl PersistCache {
         }
     }
 
+    /// Applies `decision` to a frontend file artifact and records index entries.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without hashing or writing `payload`. [`MaterializationDecision::Materialize`]
+    /// hashes `payload`, appends it to the `files/` pack through
+    /// [`Self::append_blob_indexed`], and records the file-artifact mapping
+    /// through [`Self::record_file_artifact`].
+    ///
+    /// This helper is explicit and non-transactional: if the blob append or
+    /// blob-index write succeeds but the file-artifact index write fails, the
+    /// blob bytes and any blob hash-to-offset record remain without a
+    /// corresponding file-artifact mapping record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexedWriteError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
+    /// appended/indexed, or when the file-artifact mapping cannot be recorded.
+    pub fn materialize_file_artifact_indexed(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        decision: MaterializationDecision,
+    ) -> Result<PersistFileArtifactMaterialization, PersistFileArtifactIndexedWriteError> {
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
+            }
+            MaterializationDecision::Materialize => {
+                let blob_hash = DurableBlake3Hash::for_bytes(payload);
+                let blob_entry = self
+                    .append_blob_indexed(PersistBlobKey::for_file(blob_hash), payload)
+                    .map_err(|source| PersistFileArtifactIndexedWriteError::Blob { source })?;
+                let index_value =
+                    PersistFileArtifactIndexValue::new(blob_hash, blob_entry.location());
+                self.record_file_artifact(PersistFileArtifactIndexEntry::new(
+                    artifact_key,
+                    index_value,
+                ))
+                .map_err(|source| PersistFileArtifactIndexedWriteError::Index { source })?;
+                Ok(PersistFileArtifactMaterialization::Materialized {
+                    artifact_key,
+                    index_value,
+                })
+            }
+        }
+    }
+
     /// Applies materialization threshold signals to a frontend file artifact.
     ///
     /// The signals are evaluated with [`MaterializationSignals::decide`] and
@@ -1560,6 +1610,26 @@ impl PersistCache {
         signals: MaterializationSignals,
     ) -> Result<PersistFileArtifactMaterialization, PersistBlobPackError> {
         self.materialize_file_artifact(file_key, parse_key, payload, signals.decide())
+    }
+
+    /// Applies materialization threshold signals to indexed file-artifact materialization.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_file_artifact_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexedWriteError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the `files/` blob cannot be
+    /// appended/indexed, or when the file-artifact mapping cannot be recorded.
+    pub fn materialize_file_artifact_indexed_with_signals(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistFileArtifactMaterialization, PersistFileArtifactIndexedWriteError> {
+        self.materialize_file_artifact_indexed(file_key, parse_key, payload, signals.decide())
     }
 
     /// Reads and verifies a materialized frontend file artifact.
@@ -1992,6 +2062,24 @@ pub enum PersistBlobIndexedReadError {
     Read {
         /// The underlying packfile error.
         source: PersistBlobPackError,
+    },
+}
+
+/// Indexed file-artifact materialization failed.
+#[derive(Debug, Error)]
+pub enum PersistFileArtifactIndexedWriteError {
+    /// The artifact payload could not be appended to the `files/` blob pack or
+    /// recorded in the blob sidecar index.
+    #[error("failed to append indexed persistent file artifact blob")]
+    Blob {
+        /// The underlying indexed blob write error.
+        source: PersistBlobIndexedWriteError,
+    },
+    /// The file-artifact mapping could not be recorded in the sidecar index.
+    #[error("failed to record persistent file artifact mapping")]
+    Index {
+        /// The underlying file-artifact index error.
+        source: PersistFileArtifactIndexError,
     },
 }
 
@@ -4281,6 +4369,127 @@ mod tests {
     }
 
     #[test]
+    fn cache_indexed_file_artifact_materialization_can_skip_without_writing() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+
+        let result = cache
+            .materialize_file_artifact_indexed(
+                &file_key,
+                parse_key,
+                b"serialized IR artifact",
+                MaterializationDecision::KeepInMemory,
+            )
+            .expect("indexed file artifact skip succeeds");
+
+        assert_eq!(
+            result,
+            PersistFileArtifactMaterialization::Skipped { artifact_key }
+        );
+        assert_eq!(
+            cache
+                .lookup_file_artifact(artifact_key)
+                .expect("file artifact lookup succeeds"),
+            None
+        );
+        assert_eq!(
+            fs::metadata(cache.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            fs::metadata(cache.file_index().path())
+                .expect("file blob index metadata")
+                .len(),
+            0
+        );
+        assert_eq!(
+            fs::metadata(cache.file_artifact_index().path())
+                .expect("file artifact index metadata")
+                .len(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_indexed_file_artifact_materialization_updates_blob_and_mapping_indexes() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let payload = b"serialized IR artifact";
+
+        let result = cache
+            .materialize_file_artifact_indexed(
+                &file_key,
+                parse_key,
+                payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("indexed file artifact materializes");
+
+        let Some(index_entry) = result.index_entry() else {
+            panic!("file artifact should materialize");
+        };
+        let index_value = index_entry.value();
+        assert_eq!(index_entry.key(), artifact_key);
+        assert_eq!(
+            index_value.blob_hash(),
+            DurableBlake3Hash::for_bytes(payload)
+        );
+        assert_eq!(
+            cache
+                .lookup_blob_location(index_value.blob_key())
+                .expect("file blob lookup succeeds"),
+            Some(index_value.location())
+        );
+        assert_eq!(
+            cache
+                .lookup_file_artifact(artifact_key)
+                .expect("file artifact lookup succeeds"),
+            Some(index_value)
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(index_value.blob_key())
+                .expect("indexed file blob reads")
+                .expect("indexed file blob exists")
+                .as_slice(),
+            payload
+        );
+        assert_eq!(
+            cache
+                .read_file_artifact(index_value)
+                .expect("file artifact reads")
+                .as_slice(),
+            payload
+        );
+        assert_eq!(
+            fs::metadata(cache.file_index().path())
+                .expect("file blob index metadata")
+                .len(),
+            PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+        );
+        assert_eq!(
+            fs::metadata(cache.file_artifact_index().path())
+                .expect("file artifact index metadata")
+                .len(),
+            PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cache_file_artifact_materialization_signals_can_skip_without_writing() {
         let root = temp_root();
         let cache = PersistCache::open(&root).expect("cache opens");
@@ -4339,6 +4548,83 @@ mod tests {
                 .expect("file artifact blob reads")
                 .as_slice(),
             payload
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_indexed_file_artifact_materialization_signals_append_when_threshold_passes() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let payload = b"serialized IR artifact";
+
+        let result = cache
+            .materialize_file_artifact_indexed_with_signals(
+                &file_key,
+                parse_key,
+                payload,
+                profitable_materialization_signals(true),
+            )
+            .expect("indexed file artifact materializes");
+
+        let Some(index_value) = result.index_value() else {
+            panic!("file artifact should materialize");
+        };
+        assert_eq!(
+            cache
+                .lookup_file_artifact(artifact_key)
+                .expect("file artifact lookup succeeds"),
+            Some(index_value)
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(index_value.blob_key())
+                .expect("indexed file blob reads")
+                .expect("indexed file blob exists")
+                .as_slice(),
+            payload
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_indexed_file_artifact_materialization_reports_mapping_index_errors() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let payload = b"serialized IR artifact";
+        let blob_key = PersistBlobKey::for_file(DurableBlake3Hash::for_bytes(payload));
+        fs::remove_file(cache.file_artifact_index().path()).expect("index file removes");
+        fs::create_dir(cache.file_artifact_index().path()).expect("index path becomes directory");
+
+        let error = cache
+            .materialize_file_artifact_indexed(
+                &file_key,
+                parse_key,
+                payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect_err("mapping index write errors");
+
+        assert!(matches!(
+            error,
+            PersistFileArtifactIndexedWriteError::Index {
+                source: PersistFileArtifactIndexError::Open { .. },
+            }
+        ));
+        assert!(
+            cache
+                .lookup_blob_location(blob_key)
+                .expect("file blob index lookup succeeds")
+                .is_some()
         );
 
         let _ = fs::remove_dir_all(root);

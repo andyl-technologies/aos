@@ -42,8 +42,9 @@ pub use persist::{
     PersistBlobPackError, PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore,
     PersistCache, PersistError, PersistFileArtifactHydrationError, PersistFileArtifactIndex,
     PersistFileArtifactIndexEntry, PersistFileArtifactIndexError, PersistFileArtifactIndexValue,
-    PersistFileArtifactKey, PersistFileArtifactMaterialization, PersistLayout,
-    PersistMaterialization, PersistPackFormatError, PersistParseArtifactMaterializationError,
+    PersistFileArtifactIndexedWriteError, PersistFileArtifactKey,
+    PersistFileArtifactMaterialization, PersistLayout, PersistMaterialization,
+    PersistPackFormatError, PersistParseArtifactMaterializationError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
