@@ -195,6 +195,7 @@ async fn run(cli: &Cli) -> Result<()> {
         history,
         no_record,
         fail_on_regression,
+        require_perf_win,
         regression_threshold,
     } = &cli.command
     {
@@ -208,6 +209,7 @@ async fn run(cli: &Cli) -> Result<()> {
             history.clone(),
             *no_record,
             *fail_on_regression,
+            *require_perf_win,
             *regression_threshold,
         );
     }
@@ -412,6 +414,7 @@ fn run_nix_bench_threaded(
     history: Option<PathBuf>,
     no_record: bool,
     fail_on_regression: bool,
+    require_perf_win: bool,
     regression_threshold: f64,
 ) -> Result<()> {
     const NIX_BENCH_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -430,6 +433,7 @@ fn run_nix_bench_threaded(
                 history.as_deref(),
                 no_record,
                 fail_on_regression,
+                require_perf_win,
                 regression_threshold,
             )
         })
@@ -518,6 +522,9 @@ fn handle_error(cli: &Cli, err: anyhow::Error) -> i32 {
         .is_some()
         || err
             .downcast_ref::<commands::nix_bench::NixBenchRegressionFailure>()
+            .is_some()
+        || err
+            .downcast_ref::<commands::nix_bench::NixBenchAdmissibilityFailure>()
             .is_some()
         || err
             .downcast_ref::<commands::nix_measure::NixMeasureStopFailure>()

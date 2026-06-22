@@ -62,6 +62,33 @@ impl std::fmt::Display for NixBenchRegressionFailure {
 
 impl std::error::Error for NixBenchRegressionFailure {}
 
+/// Error returned when a benchmark run is not admissible as a perf win.
+#[derive(Debug, Clone)]
+pub struct NixBenchAdmissibilityFailure {
+    message: String,
+}
+
+impl NixBenchAdmissibilityFailure {
+    fn new(reasons: &[String]) -> Self {
+        let detail = if reasons.is_empty() {
+            "no admission reason was recorded".to_string()
+        } else {
+            reasons.join("; ")
+        };
+        Self {
+            message: format!("nix benchmark is not admissible as a perf win: {detail}"),
+        }
+    }
+}
+
+impl std::fmt::Display for NixBenchAdmissibilityFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NixBenchAdmissibilityFailure {}
+
 /// Error returned when the benchmark parity gate finds a `.drv` divergence.
 #[derive(Debug, Clone)]
 pub struct NixBenchParityFailure {
@@ -102,7 +129,8 @@ impl std::error::Error for NixBenchParityFailure {}
 /// initialized, a selected benchmark diverges at the parity gate, Nix cannot
 /// instantiate a selected attribute with `NIX_SHOW_STATS`, history cannot be
 /// read or written, or `fail_on_regression` is set and a significant
-/// regression is detected.
+/// regression is detected. It also returns an error when `require_perf_win` is
+/// set and the run is not admissible as a performance win.
 pub fn run(
     printer: &Printer,
     verbose: u8,
@@ -113,6 +141,7 @@ pub fn run(
     history: Option<&Path>,
     no_record: bool,
     fail_on_regression: bool,
+    require_perf_win: bool,
     regression_threshold: f64,
 ) -> Result<()> {
     validate_args(samples, regression_threshold)?;
@@ -182,39 +211,37 @@ pub fn run(
         })
         .count();
     let failure = (regression_count > 0).then(|| NixBenchRegressionFailure::new(regression_count));
-    let blocked = fail_on_regression && failure.is_some();
+    let admissibility =
+        BenchmarkAdmissibility::evaluate(&outcomes, require_perf_win, regression_count);
+    let admissibility_failure = (require_perf_win && !admissibility.admitted)
+        .then(|| NixBenchAdmissibilityFailure::new(&admissibility.failure_reasons));
+    let blocked = (fail_on_regression && failure.is_some()) || admissibility_failure.is_some();
 
     if printer.json_if_active(&run_json(
         &run,
         &outcomes,
+        &admissibility,
         &history,
         !no_record,
         blocked,
         failure.as_ref(),
+        admissibility_failure.as_ref(),
     )) {
-        if blocked {
-            if let Some(failure) = failure.clone() {
-                return Err(failure.into());
-            }
-        }
-        return Ok(());
+        return finish_benchmark_run(blocked, failure, admissibility_failure);
     }
 
     render_human_report(
         printer,
         &run,
         &outcomes,
+        &admissibility,
         &history,
         !no_record,
         failure.as_ref(),
+        admissibility_failure.as_ref(),
     );
 
-    if blocked {
-        if let Some(failure) = failure {
-            return Err(failure.into());
-        }
-    }
-    Ok(())
+    finish_benchmark_run(blocked, failure, admissibility_failure)
 }
 
 /// Returns the default sample count used by the CLI.
@@ -521,7 +548,89 @@ struct BenchmarkComparison {
     z_score: Option<f64>,
     significant: bool,
     regression: bool,
+    improvement: bool,
     stats_delta: BTreeMap<String, StatsDelta>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct BenchmarkAdmissibility {
+    required: bool,
+    admitted: bool,
+    parity_green: bool,
+    regression_free: bool,
+    real_workload_improvement: bool,
+    counter_breakdown: bool,
+    compared_real_workloads: usize,
+    improving_real_workloads: usize,
+    failure_reasons: Vec<String>,
+}
+
+impl BenchmarkAdmissibility {
+    fn evaluate(outcomes: &[BenchmarkOutcome], required: bool, regression_count: usize) -> Self {
+        let parity_green = outcomes.iter().all(|outcome| {
+            let parity = &outcome.record.parity;
+            parity.matched
+                && parity.mode == "byte"
+                && parity.divergence_count == 0
+                && parity.root_divergence_count == 0
+                && parity.contaminated_divergence_count == 0
+        });
+        let regression_free = regression_count == 0;
+        let real_comparisons = outcomes
+            .iter()
+            .filter(|outcome| is_real_workload(&outcome.record))
+            .filter_map(|outcome| outcome.comparison.as_ref())
+            .collect::<Vec<_>>();
+        let compared_real_workloads = real_comparisons.len();
+        let improving_real = real_comparisons
+            .iter()
+            .copied()
+            .filter(|comparison| comparison.improvement)
+            .collect::<Vec<_>>();
+        let improving_real_workloads = improving_real.len();
+        let real_workload_improvement = improving_real_workloads > 0;
+        let counter_breakdown = improving_real
+            .iter()
+            .any(|comparison| !comparison.stats_delta.is_empty());
+
+        let mut failure_reasons = Vec::new();
+        if !parity_green {
+            failure_reasons.push("the .drv parity gate did not prove byte parity".to_string());
+        }
+        if !regression_free {
+            let plural = if regression_count == 1 { "" } else { "s" };
+            failure_reasons.push(format!(
+                "{regression_count} benchmark regression{plural} found"
+            ));
+        }
+        if compared_real_workloads == 0 {
+            failure_reasons
+                .push("no non-diagnostic workload had a comparable baseline".to_string());
+        } else if !real_workload_improvement {
+            failure_reasons.push(
+                "no non-diagnostic workload improved past the configured threshold".to_string(),
+            );
+        }
+        if real_workload_improvement && !counter_breakdown {
+            failure_reasons.push(
+                "improving non-diagnostic workloads had no stats delta breakdown".to_string(),
+            );
+        }
+
+        let admitted =
+            parity_green && regression_free && real_workload_improvement && counter_breakdown;
+        Self {
+            required,
+            admitted,
+            parity_green,
+            regression_free,
+            real_workload_improvement,
+            counter_breakdown,
+            compared_real_workloads,
+            improving_real_workloads,
+            failure_reasons,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -658,8 +767,9 @@ fn compare_benchmarks(
     } else {
         0.0
     };
-    let (significant, z_score) = significance(current, previous.record, delta_seconds);
+    let (significant, z_score) = significant_movement(current, previous.record, delta_seconds);
     let regression = delta_percent > threshold && significant;
+    let improvement = delta_percent < -threshold && significant;
 
     BenchmarkComparison {
         previous_commit: previous.commit.to_string(),
@@ -671,16 +781,17 @@ fn compare_benchmarks(
         z_score,
         significant,
         regression,
+        improvement,
         stats_delta: stats_delta(&current.summary, &previous.record.summary),
     }
 }
 
-fn significance(
+fn significant_movement(
     current: &BenchmarkRecord,
     previous: &BenchmarkRecord,
     delta_seconds: f64,
 ) -> (bool, Option<f64>) {
-    if delta_seconds <= 0.0 {
+    if delta_seconds == 0.0 {
         return (false, None);
     }
     if current.summary.samples < 2 || previous.summary.samples < 2 {
@@ -696,8 +807,12 @@ fn significance(
         return (true, None);
     }
 
-    let z_score = delta_seconds / standard_error;
+    let z_score = delta_seconds.abs() / standard_error;
     (z_score >= SIGNIFICANCE_Z, Some(z_score))
+}
+
+fn is_real_workload(record: &BenchmarkRecord) -> bool {
+    record.category != "diagnostic"
 }
 
 fn stats_delta(
@@ -806,11 +921,14 @@ fn append_history(path: &Path, record: &BenchmarkRunRecord) -> Result<()> {
 fn run_json(
     run: &BenchmarkRunRecord,
     outcomes: &[BenchmarkOutcome],
+    admissibility: &BenchmarkAdmissibility,
     history: &Path,
     recorded: bool,
     blocked: bool,
     failure: Option<&NixBenchRegressionFailure>,
+    admissibility_failure: Option<&NixBenchAdmissibilityFailure>,
 ) -> serde_json::Value {
+    let errors = benchmark_error_messages(failure, admissibility_failure);
     serde_json::json!({
         "version": run.version,
         "commit": run.commit,
@@ -822,7 +940,9 @@ fn run_json(
         "regression_count": outcomes.iter().filter(|outcome| {
             outcome.comparison.as_ref().is_some_and(|comparison| comparison.regression)
         }).count(),
-        "error": failure.map(ToString::to_string),
+        "admissibility": admissibility,
+        "error": errors.first(),
+        "errors": errors,
         "benchmarks": outcomes.iter().map(outcome_json).collect::<Vec<_>>(),
     })
 }
@@ -846,16 +966,21 @@ fn render_human_report(
     printer: &Printer,
     run: &BenchmarkRunRecord,
     outcomes: &[BenchmarkOutcome],
+    admissibility: &BenchmarkAdmissibility,
     history: &Path,
     recorded: bool,
     failure: Option<&NixBenchRegressionFailure>,
+    admissibility_failure: Option<&NixBenchAdmissibilityFailure>,
 ) {
-    if let Some(failure) = failure {
+    let errors = benchmark_error_messages(failure, admissibility_failure);
+    if let Some(error) = errors.first() {
         if printer.mode() == OutputMode::Quiet {
-            printer.error(&failure.to_string());
+            printer.error(error);
             return;
         }
-        printer.warning(&failure.to_string());
+        for error in errors {
+            printer.warning(&error);
+        }
     } else {
         printer.success(&format!(
             "nix benchmark completed for {} benchmark(s) at {}",
@@ -871,6 +996,15 @@ fn render_human_report(
     for outcome in outcomes {
         render_outcome(printer, outcome);
     }
+    printer.plain(&format!(
+        "  admissibility: admitted={} required={} parity={} regressions={} real_improvements={} stats_breakdown={}",
+        admissibility.admitted,
+        admissibility.required,
+        admissibility.parity_green,
+        admissibility.regression_free,
+        admissibility.improving_real_workloads,
+        admissibility.counter_breakdown
+    ));
     if recorded {
         printer.plain(&format!("  history: {}", history.display()));
     } else {
@@ -903,6 +1037,9 @@ fn render_outcome(printer: &Printer, outcome: &BenchmarkOutcome) {
         if comparison.regression {
             line.push_str(" REGRESSION");
         }
+        if comparison.improvement {
+            line.push_str(" IMPROVEMENT");
+        }
         let stats = render_stats_delta(comparison);
         if !stats.is_empty() {
             line.push_str(&format!(" stats_delta=[{stats}]"));
@@ -911,6 +1048,37 @@ fn render_outcome(printer: &Printer, outcome: &BenchmarkOutcome) {
         line.push_str(" baseline=none");
     }
     printer.plain(&line);
+}
+
+fn benchmark_error_messages(
+    failure: Option<&NixBenchRegressionFailure>,
+    admissibility_failure: Option<&NixBenchAdmissibilityFailure>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if let Some(failure) = failure {
+        errors.push(failure.to_string());
+    }
+    if let Some(failure) = admissibility_failure {
+        errors.push(failure.to_string());
+    }
+    errors
+}
+
+fn finish_benchmark_run(
+    blocked: bool,
+    failure: Option<NixBenchRegressionFailure>,
+    admissibility_failure: Option<NixBenchAdmissibilityFailure>,
+) -> Result<()> {
+    if !blocked {
+        return Ok(());
+    }
+    if let Some(failure) = admissibility_failure {
+        return Err(failure.into());
+    }
+    if let Some(failure) = failure {
+        return Err(failure.into());
+    }
+    Ok(())
 }
 
 fn render_stats_delta(comparison: &BenchmarkComparison) -> String {

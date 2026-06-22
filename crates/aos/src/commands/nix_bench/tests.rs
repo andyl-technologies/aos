@@ -20,12 +20,42 @@ fn sample(elapsed_seconds: f64, cpu_time: f64, thunks: u64) -> BenchmarkSample {
     }
 }
 
+fn sample_without_stats(elapsed_seconds: f64) -> BenchmarkSample {
+    BenchmarkSample {
+        elapsed_seconds,
+        elapsed_nanos: duration_nanos(Duration::from_secs_f64(elapsed_seconds)),
+        drv_path: "/nix/store/example.drv".to_string(),
+        stats: serde_json::json!({}),
+    }
+}
+
 fn record(name: &str, samples: Vec<BenchmarkSample>) -> BenchmarkRecord {
     record_with_context(
         name,
         samples,
         context("/repo/default.nix", Some("x86_64-linux")),
     )
+}
+
+fn outcome(
+    category: &str,
+    previous: BenchmarkRecord,
+    mut current: BenchmarkRecord,
+    threshold: f64,
+) -> BenchmarkOutcome {
+    current.category = category.to_string();
+    let comparison = compare_benchmarks(
+        &current,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        threshold,
+    );
+    BenchmarkOutcome {
+        record: current,
+        comparison: Some(comparison),
+    }
 }
 
 fn record_with_context(
@@ -187,6 +217,7 @@ fn comparison_flags_significant_regression_with_stats_delta() {
 
     assert!(comparison.significant);
     assert!(comparison.regression);
+    assert!(!comparison.improvement);
     assert!(
         comparison
             .z_score
@@ -198,6 +229,141 @@ fn comparison_flags_significant_regression_with_stats_delta() {
             .get("nrThunks")
             .map(|delta| delta.delta),
         Some(5.0)
+    );
+}
+
+#[test]
+fn comparison_flags_significant_improvement_with_stats_delta() {
+    let previous = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample(1.00, 0.50, 10),
+            sample(1.01, 0.51, 10),
+            sample(0.99, 0.49, 10),
+        ],
+    );
+    let current = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample(0.80, 0.40, 8),
+            sample(0.81, 0.41, 8),
+            sample(0.79, 0.39, 8),
+        ],
+    );
+
+    let comparison = compare_benchmarks(
+        &current,
+        PreviousBenchmark {
+            commit: "previous",
+            record: &previous,
+        },
+        0.10,
+    );
+
+    assert!(comparison.significant);
+    assert!(!comparison.regression);
+    assert!(comparison.improvement);
+    assert_eq!(
+        comparison
+            .stats_delta
+            .get("nrThunks")
+            .map(|delta| delta.delta),
+        Some(-2.0)
+    );
+}
+
+#[test]
+fn admissibility_accepts_real_workload_improvement_with_stats_delta() {
+    let previous = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample(1.00, 0.50, 10),
+            sample(1.01, 0.51, 10),
+            sample(0.99, 0.49, 10),
+        ],
+    );
+    let current = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample(0.80, 0.40, 8),
+            sample(0.81, 0.41, 8),
+            sample(0.79, 0.39, 8),
+        ],
+    );
+    let outcomes = vec![outcome("leaf", previous, current, 0.10)];
+
+    let admissibility = BenchmarkAdmissibility::evaluate(&outcomes, true, 0);
+
+    assert!(admissibility.admitted);
+    assert!(admissibility.parity_green);
+    assert!(admissibility.regression_free);
+    assert!(admissibility.real_workload_improvement);
+    assert!(admissibility.counter_breakdown);
+    assert!(admissibility.failure_reasons.is_empty());
+}
+
+#[test]
+fn admissibility_rejects_diagnostic_only_improvement() {
+    let previous = record(
+        "diagnostic:cold:diagnostic.attrset_access",
+        vec![
+            sample(1.00, 0.50, 10),
+            sample(1.01, 0.51, 10),
+            sample(0.99, 0.49, 10),
+        ],
+    );
+    let current = record(
+        "diagnostic:cold:diagnostic.attrset_access",
+        vec![
+            sample(0.80, 0.40, 8),
+            sample(0.81, 0.41, 8),
+            sample(0.79, 0.39, 8),
+        ],
+    );
+    let outcomes = vec![outcome("diagnostic", previous, current, 0.10)];
+
+    let admissibility = BenchmarkAdmissibility::evaluate(&outcomes, true, 0);
+
+    assert!(!admissibility.admitted);
+    assert!(!admissibility.real_workload_improvement);
+    assert!(
+        admissibility
+            .failure_reasons
+            .iter()
+            .any(|reason| reason.contains("no non-diagnostic workload"))
+    );
+}
+
+#[test]
+fn admissibility_rejects_improvement_without_stats_delta() {
+    let previous = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample_without_stats(1.00),
+            sample_without_stats(1.01),
+            sample_without_stats(0.99),
+        ],
+    );
+    let current = record(
+        "leaf:cold:pkgs.zlib",
+        vec![
+            sample_without_stats(0.80),
+            sample_without_stats(0.81),
+            sample_without_stats(0.79),
+        ],
+    );
+    let outcomes = vec![outcome("leaf", previous, current, 0.10)];
+
+    let admissibility = BenchmarkAdmissibility::evaluate(&outcomes, true, 0);
+
+    assert!(!admissibility.admitted);
+    assert!(admissibility.real_workload_improvement);
+    assert!(!admissibility.counter_breakdown);
+    assert!(
+        admissibility
+            .failure_reasons
+            .iter()
+            .any(|reason| reason.contains("stats delta"))
     );
 }
 

@@ -249,7 +249,10 @@ pub enum Commands {
         /// Exit non-zero on significant regressions
         #[arg(long)]
         fail_on_regression: bool,
-        /// Relative regression threshold before warning or blocking
+        /// Exit non-zero unless this run is admissible as a perf win
+        #[arg(long)]
+        require_perf_win: bool,
+        /// Relative movement threshold for regressions and required perf wins
         #[arg(long, default_value_t = crate::commands::nix_bench::default_regression_threshold())]
         regression_threshold: f64,
     },
@@ -605,6 +608,7 @@ mod tests {
                 history,
                 no_record,
                 fail_on_regression,
+                require_perf_win,
                 regression_threshold,
             } => {
                 assert!(attr.is_empty());
@@ -613,6 +617,7 @@ mod tests {
                 assert_eq!(history, None);
                 assert!(!no_record);
                 assert!(!fail_on_regression);
+                assert!(!require_perf_win);
                 assert_eq!(
                     regression_threshold,
                     crate::commands::nix_bench::default_regression_threshold()
@@ -639,6 +644,7 @@ mod tests {
             "/tmp/history.jsonl",
             "--no-record",
             "--fail-on-regression",
+            "--require-perf-win",
             "--regression-threshold",
             "0.2",
         ]);
@@ -651,6 +657,7 @@ mod tests {
                 history,
                 no_record,
                 fail_on_regression,
+                require_perf_win,
                 regression_threshold,
             } => {
                 assert_eq!(
@@ -668,6 +675,7 @@ mod tests {
                 );
                 assert!(no_record);
                 assert!(fail_on_regression);
+                assert!(require_perf_win);
                 assert_eq!(regression_threshold, 0.2);
             }
             _ => panic!("expected nix-bench command"),
