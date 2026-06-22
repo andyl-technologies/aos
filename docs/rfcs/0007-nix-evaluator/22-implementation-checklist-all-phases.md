@@ -649,6 +649,14 @@ alone (`M-1`/`Q-A`).
       durable index lookup, automatic cache-hit selection, semantic validation
       before writing, mmap reads, GC/repack, and harness proof remain open
       (`C-13`).
+- [x] Current indexed file-artifact bundle hydration adapter:
+      `PersistCache::hydrate_file_artifact_bundle_from_entry` consumes a
+      complete `PersistFileArtifactIndexEntry`, verifies its key against the
+      requested `ParseFileKey`/`ParseCacheKey`, and delegates matching entries
+      to bundle hydration. This is explicit entry-shaped hydration only;
+      durable index lookup, automatic cache-hit selection, semantic validation
+      before writing, mmap reads, GC/repack, and harness proof remain open
+      (`C-13`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus
