@@ -7,10 +7,9 @@
 //! described by its indexed RFC-0010 files. It is an unsafe-boundary crate
 //! because future implementations may cross FFI and raw descriptor boundaries.
 //!
-//! Module map: the crate root currently reserves the host-QEMU boundary; future
-//! modules will split launch construction, QMP, shared-memory mapping, and the
-//! engine backend adapter. The `launch` module owns the deterministic
-//! Contract-A launch profile and canonical QEMU argument construction.
+//! Module map: [`launch`] owns the deterministic Contract-A launch profile and
+//! canonical QEMU argument construction; [`single_vm_fingerprint`] owns the
+//! safe run-twice-and-diff hook consumed by `gate:single-vm-fingerprint`.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -21,8 +20,17 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 mod launch;
+mod single_vm_fingerprint;
 
 pub use launch::{
     DeterministicLaunchProfile, DiskImageMode, GuestEntropySeed, GuestEntropySeedFile,
     IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+};
+pub use single_vm_fingerprint::{
+    SINGLE_VM_FINGERPRINT_DIGEST_BYTES, SingleVmFingerprintEventBoundary,
+    SingleVmFingerprintGateError, SingleVmFingerprintGateReport, SingleVmFingerprintMismatch,
+    SingleVmFingerprintMismatchKind, SingleVmFingerprintRunError, SingleVmFingerprintRunOrdinal,
+    SingleVmFingerprintRunRequest, SingleVmFingerprintRunner, SingleVmFingerprintSample,
+    SingleVmFingerprintScenario, SingleVmFingerprintStream, SingleVmFingerprintTrigger,
+    SingleVmHostProfile, compare_single_vm_fingerprint_streams, run_single_vm_fingerprint_gate,
 };

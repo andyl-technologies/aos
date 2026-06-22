@@ -676,7 +676,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   register/memory/device digest), computed black-box from the host, with a fixed
   content-addressed definition. — satisfies [DET-29], [DET-31], [DET-17]; spec
   §4.8.
-- [ ] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
+- [x] **T-DET-9** Implement `gate:single-vm-fingerprint`: run-twice-and-diff a
   single VM, asserting identical fingerprint sequences. — satisfies [DET-1],
   [DET-2], [DET-30]; spec §4.8, §4.11.
 - [ ] **T-DET-10** Implement `gate:layer0-determinism`: the aggregate single-VM

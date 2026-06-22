@@ -54,7 +54,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:qemu-inert",
         "gate:replay-oracle",
         "gate:scheduler-liveness",
-        "gate:single-vm-fingerprint",
     ]);
 
     assert_eq!(placeholders, expected);
@@ -67,6 +66,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     }
     assert!(matches!(
         find_gate("gate:harness-lint").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:single-vm-fingerprint").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 
