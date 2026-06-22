@@ -2506,10 +2506,15 @@ impl Database {
             .await?
             .context("registry row missing after upsert")?
             .get(0)?;
+        // A freshly-created registry has nothing published yet, so it starts in
+        // the terminal `empty` state — not `indexing` (which reads as work in
+        // progress). The indexer's transient-error guard protects this state, so
+        // a flaky `info/refs` read can't bump an empty registry to `pending`; the
+        // first successful surface read after a publish moves it to `fresh`.
         self.backend
             .execute(
                 "INSERT INTO registry_index (registry_id, state)
-             VALUES (?1, 'indexing')
+             VALUES (?1, 'empty')
              ON CONFLICT(registry_id) DO NOTHING",
                 &vals![id],
             )
@@ -5296,10 +5301,15 @@ impl Database {
                 ],
             )
             .await?;
+        // A freshly-created registry has nothing published yet, so it starts in
+        // the terminal `empty` state — not `indexing` (which reads as work in
+        // progress). The indexer's transient-error guard protects this state, so
+        // a flaky `info/refs` read can't bump an empty registry to `pending`; the
+        // first successful surface read after a publish moves it to `fresh`.
         self.backend
             .execute(
                 "INSERT INTO registry_index (registry_id, state)
-             VALUES (?1, 'indexing')
+             VALUES (?1, 'empty')
              ON CONFLICT(registry_id) DO NOTHING",
                 &vals![id],
             )
@@ -10581,7 +10591,7 @@ mod tests {
         assert!(reg.require_signatures);
         assert_eq!(
             db.index_status(reg.id).await.unwrap().unwrap().state,
-            "indexing"
+            "empty"
         );
     }
 

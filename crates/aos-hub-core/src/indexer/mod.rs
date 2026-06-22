@@ -280,13 +280,17 @@ pub async fn index_registry(
             // `failed` (which would leave the registry stuck showing "index
             // failed: ... (10001)" until a manual re-index). Record the benign
             // `pending` state so the next scheduled pass retries — but do not
-            // regress a registry that already has a good (`fresh`) index, so a
-            // brief backend hiccup never hides a healthy registry's releases.
-            let already_fresh = db
-                .index_status(registry.id)
-                .await?
-                .is_some_and(|status| status.state == "fresh");
-            if !already_fresh {
+            // regress a registry that already holds a *terminal* index: a `fresh`
+            // index (don't hide a healthy registry's releases on a hiccup) or an
+            // `empty` one. The latter matters because R2 throws this same 10001
+            // for a *missing* key, so an empty registry's `info/refs` read flaps
+            // between a clean "absent" (→ `empty`) and a 10001 (→ here): without
+            // this guard it would oscillate empty↔pending pass to pass. Once
+            // empty, it stays empty until a surface is actually read.
+            let already_terminal = db.index_status(registry.id).await?.is_some_and(|status| {
+                status.state == "fresh" || status.state == "empty"
+            });
+            if !already_terminal {
                 db.mark_index_pending(registry.id).await?;
             }
             return Ok(pending_outcome());
@@ -943,11 +947,22 @@ mod tests {
                 .into(),
         };
 
-        // A retryable R2 10001 on the surface read must NOT mark the index failed
-        // — a never-indexed registry is recorded as the benign `pending` state so
-        // the next pass retries.
+        // A freshly-created registry starts `empty`. A retryable R2 10001 on the
+        // surface read must NOT mark it `failed`, and must NOT regress it off the
+        // terminal `empty` state — R2 throws this same 10001 for a missing key,
+        // so an empty registry's read flaps; the guard keeps it empty.
         let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
-        assert!(outcome.pending, "a transient backend error is a pending run");
+        assert!(outcome.pending, "a transient backend error is a no-content run");
+        let status = db.index_status(id).await.unwrap().unwrap();
+        assert_eq!(status.state, "empty", "empty must survive a transient error");
+        assert!(status.error.is_none());
+
+        // From a non-terminal state (here, a prior hard failure), the same
+        // transient error records the benign `pending` retry state — still never
+        // leaving the index stuck on `failed`.
+        db.mark_index_failed(id, "boom").await.unwrap();
+        let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();
+        assert!(outcome.pending);
         let status = db.index_status(id).await.unwrap().unwrap();
         assert_eq!(status.state, "pending");
         assert!(status.error.is_none(), "pending carries no error message");

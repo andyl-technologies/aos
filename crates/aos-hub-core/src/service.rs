@@ -934,7 +934,7 @@ impl RpcService {
             .map(|(id, key, status)| pb::RosterKey { id, key, status })
             .collect();
         let status = status.unwrap_or(IndexStatus {
-            state: "indexing".into(),
+            state: "empty".into(),
             error: None,
             last_indexed_commit: None,
             name: None,
