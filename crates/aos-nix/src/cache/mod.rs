@@ -12,6 +12,7 @@ pub mod input;
 pub mod key;
 pub mod parse;
 pub mod persist;
+pub mod runtime;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
 pub use dcg::{
@@ -31,3 +32,4 @@ pub use parse::{
 pub use persist::{
     PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
 };
+pub use runtime::{EvalCache, ImpureInputTraceSource};

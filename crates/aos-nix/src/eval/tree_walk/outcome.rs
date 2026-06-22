@@ -1,6 +1,7 @@
 //! Evaluation outcome, derivation, statistics, trace, IFD-realization, and warning types.
 
 use super::*;
+use crate::cache::ImpureInputTraceSource;
 
 /// A tree-walk evaluation result with its owning evaluator heap.
 #[derive(Debug)]
@@ -86,6 +87,16 @@ impl EvalOutcome {
             self.trace_output,
             self.warning_output,
         )
+    }
+}
+
+impl ImpureInputTraceSource for EvalOutcome {
+    fn impure_input_trace(&self) -> &[ImpureInputFingerprint] {
+        &self.impure_input_trace
+    }
+
+    fn impure_input_trace_complete(&self) -> bool {
+        self.impure_input_trace_complete
     }
 }
 

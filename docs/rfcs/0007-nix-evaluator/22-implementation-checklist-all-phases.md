@@ -477,6 +477,16 @@ alone (`M-1`/`Q-A`).
       propagation through memoized nodes, persistence, allowed-path/IFD/fetch
       interactions, and edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
+- [x] Current EvalOutcome trace-to-cache substrate: `cache::EvalCache` is an
+      explicit caller-owned demand-graph wrapper, `ImpureInputTraceSource`
+      abstracts evaluator trace providers, and `EvalOutcome` implements that
+      trait so completed tree-walk evaluations can be manually observed by the
+      cache layer. This is an observation adapter only; automatic `NixNative`
+      ownership/use, demand/evaluating-node creation, edges from evaluator nodes
+      to input leaves, currentTime taint propagation through memoized nodes,
+      persistence, `AOS_NIX_CACHE=0` control over this runtime state,
+      allowed-path/IFD/fetch trace coverage, and edge-exactness harness coverage
+      remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

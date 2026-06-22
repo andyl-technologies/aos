@@ -82,6 +82,17 @@ fn current_time_records_uncacheable_impure_input_trace() {
         outcome.impure_input_trace(),
         [ImpureInputFingerprint::current_time()].as_slice()
     );
+
+    let mut cache = EvalCache::new();
+    let observation = cache
+        .observe_impure_inputs(&outcome)
+        .expect("outcome trace observes");
+    assert_eq!(
+        observation.status(),
+        ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+    );
+    assert!(observation.leaves().is_empty());
+    assert!(cache.is_empty());
 }
 
 #[test]
@@ -244,6 +255,14 @@ fn read_file_primop_records_impure_input_trace() {
     ];
 
     assert_eq!(outcome.impure_input_trace(), expected.as_slice());
+
+    let mut cache = EvalCache::new();
+    let observation = cache
+        .observe_impure_inputs(&outcome)
+        .expect("outcome trace observes");
+    assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+    assert_eq!(observation.leaves().len(), 1);
+    assert_eq!(cache.len(), 1);
 
     fs::remove_dir_all(dir).expect("temp directory removes");
 }
