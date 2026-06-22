@@ -12,6 +12,7 @@ pub mod input;
 pub mod key;
 pub mod parse;
 pub mod persist;
+pub mod policy;
 pub mod runtime;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash, ValueHashError};
@@ -32,6 +33,7 @@ pub use parse::{
 pub use persist::{
     PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
 };
+pub use policy::{MemoizationClass, MemoizationDecision, MemoizationSignals, MemoizationSubject};
 pub use runtime::{
     EvalCache, EvalCacheRuntime, ExpressionTraceObservation, ImpureInputTraceSource,
 };

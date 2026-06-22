@@ -409,6 +409,14 @@ alone (`M-1`/`Q-A`).
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
       durable value hashes, and run the differential false-hit gate (`C-1`/`C-2`).
+- [x] Current memoization-granularity policy substrate: `cache::policy` defines
+      `MemoizationSubject` defaults for the always/conditional/never classes and
+      `MemoizationClass::decide` admits conditional work only when both
+      used-many and cheap-value-hash signals are present. This is policy
+      vocabulary only; evaluator subject selection, demand/cardinality signal
+      production, hit/overhead tracing, `force_memoized` use,
+      persistence/materialization decisions, and measured AOS tuning remain open
+      (`M-11`).
 - [x] Current `cache/cutoff.rs` standalone decision primitive: typed
       `ValueHash` plus `EarlyCutoff::decide(previous, recomputed)` returns
       `CutOff` only when a prior value hash exists and equals the recomputed
