@@ -33,6 +33,10 @@
   /* A stronger, darker rule reserved for section-heading underlines — clearly
    * distinct from every (light) table rule. ~half ink over paper. */
   --rule-strong: color-mix(in srgb, var(--ink) 45%, var(--paper));
+  /* Width of the label column in console forms. Shared by the label grid and
+   * the submit-button indent so the action always lines up with the controls. */
+  --form-label-col: 11rem;
+  --form-col-gap: 0.7rem;
   --dim: #6e6a5e;
   --ok: #1c6f4a;
   --warn: #9c5a00;
@@ -476,12 +480,23 @@ form.console { margin: 0.9rem 0 1.8rem; }
  * so the controls line up across the whole form. */
 form.console label {
   display: grid;
-  grid-template-columns: 11rem 1fr;
+  grid-template-columns: var(--form-label-col) 1fr;
   align-items: baseline;
-  column-gap: 0.7rem;
+  column-gap: var(--form-col-gap);
   row-gap: 0.2rem;
   margin: 0.5rem 0;
   max-width: 42rem;
+}
+/* The submit row of a stacked (block) console form is a distinct action region:
+ * clearly separated from the fields above. Inline action forms (delete/role/GC,
+ * style="display:inline") are excluded so their buttons stay compact in place. */
+form.console:not([style]) > button { margin-top: 1.5rem; }
+/* In a label-grid form, align the submit with the control column — not the label
+ * column — so it reads as the action for the inputs (the horizontal-form
+ * convention). Only forms that actually have a label grid are indented, so a
+ * button-only form (e.g. "sign out everywhere") isn't pushed off to the right. */
+form.console:not([style]):has(label) > button {
+  margin-left: calc(var(--form-label-col) + var(--form-col-gap));
 }
 /* The control fills the second column (any text-like input, select, textarea). */
 form.console label input:not([type="checkbox"]):not([type="radio"]),
