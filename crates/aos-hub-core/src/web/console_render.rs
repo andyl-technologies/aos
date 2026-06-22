@@ -1321,17 +1321,17 @@ pub fn org_dashboard(
              <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
              <span class=\"dim\">optional</span></label>\n\
              <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-             <label>visibility{vis} <select name=\"visibility\">\
+             <label><span class=\"lbl\">visibility{vis}</span> <select name=\"visibility\">\
              <option value=\"private\">private</option>\
              <option value=\"internal\">internal</option>\
              <option value=\"public\">public</option></select></label>\n\
-             <label>priority{prio} <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
-             <label>compression{comp} <select name=\"compression\">\
+             <label><span class=\"lbl\">priority{prio}</span> <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+             <label><span class=\"lbl\">compression{comp}</span> <select name=\"compression\">\
              <option value=\"zstd\">zstd</option>\
              <option value=\"xz\">xz</option>\
              <option value=\"none\">none</option></select></label>\n\
-             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
-             advertise mass-query{mq}</label>\n\
+             <label><span class=\"lbl\">advertise mass-query{mq}</span> \
+             <input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked></label>\n\
              <button>create cache</button>\n</form>\n",
             org = escape(slug),
             csrf = csrf_field(csrf),
@@ -1449,14 +1449,14 @@ pub fn org_dashboard(
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\" \
              data-binding-kind>\n{csrf}\
              <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
-             <label>kind{kind_help} <select name=\"kind\">{kinds}</select></label>\n\
+             <label><span class=\"lbl\">kind{kind_help}</span> <select name=\"kind\">{kinds}</select></label>\n\
              <label><span><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span></span> \
              <input type=\"text\" name=\"root\" required placeholder=\"/srv/registries/acme\"></label>\n\
              <div class=\"s3-only\">\n\
              <label>endpoint <input type=\"text\" name=\"endpoint\" \
              placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
              <label>region <input type=\"text\" name=\"region\" value=\"auto\"></label>\n\
-             <label>access{access_help} <select name=\"access\">\
+             <label><span class=\"lbl\">access{access_help}</span> <select name=\"access\">\
              <option value=\"private\">private (read/write, credentialed)</option>\
              <option value=\"public\">public (read-only, no credentials)</option></select></label>\n\
              <label class=\"private-only\">access key id \
@@ -1648,8 +1648,8 @@ pub fn cache_page(
              <label>visibility <select name=\"visibility\">{vis_pub}{vis_int}{vis_priv}</select></label>\n\
              <label>priority <input type=\"number\" name=\"priority\" value=\"{prio}\"></label>\n\
              <label>compression <select name=\"compression\">{c_zstd}{c_xz}{c_none}</select></label>\n\
-             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\"{mass}> \
-             advertise mass-query</label>\n\
+             <label><span class=\"lbl\">advertise mass-query</span> \
+             <input type=\"checkbox\" name=\"want_mass_query\" value=\"1\"{mass}></label>\n\
              <button>save</button>\n</form>\n",
             org = escape(org_slug),
             slug = escape(&cache.slug),
@@ -1714,10 +1714,10 @@ pub fn cache_page(
             "<h3>Link a registry</h3>\n\
              <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\">{csrf}\
              <label>registry <select name=\"registry\">{regs}</select></label>\n\
-             <label><input type=\"checkbox\" name=\"advertised\" value=\"1\" checked> \
-             advertise to consumers{adv_help}</label>\n\
-             <label><input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked> \
-             pin GC roots from its packages{roots_help}</label>\n\
+             <label><span class=\"lbl\">advertise to consumers{adv_help}</span> \
+             <input type=\"checkbox\" name=\"advertised\" value=\"1\" checked></label>\n\
+             <label><span class=\"lbl\">pin GC roots from its packages{roots_help}</span> \
+             <input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked></label>\n\
              <button>link</button>\n</form>\n",
             org = escape(org_slug),
             slug = escape(&cache.slug),
@@ -1886,19 +1886,19 @@ pub fn new_registry_page(
          <label>name <input type=\"text\" name=\"name\" required placeholder=\"cdn\"></label>\n\
          <label>project <select name=\"project_path\">{projects}</select></label>\n\
          <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-         <label>visibility{vis_help} <select name=\"visibility\">\
+         <label><span class=\"lbl\">visibility{vis_help}</span> <select name=\"visibility\">\
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
          <label>prefix \
          <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"> \
          <span class=\"dim\">optional</span></label>\n\
-         <label>trust anchors{trust_help} \
+         <label><span class=\"lbl\">trust anchors{trust_help}</span> \
          <textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
          placeholder=\"release:Ed25519:base64...&#10;(one per line)\"></textarea> \
          <span class=\"dim\">optional</span></label>\n\
-         <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
-         require signatures{sig_help}</label>\n\
+         <label><span class=\"lbl\">require signatures{sig_help}</span> \
+         <input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked></label>\n\
          <button>create registry</button>\n</form>\n",
         org = escape(org_slug),
         csrf = csrf_field(csrf),
@@ -2010,7 +2010,7 @@ pub fn registry_settings_page(
     let _ = write!(
         body,
         "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/crawl\">\n{csrf}\
-         <label>policy{policy_help} <select name=\"policy\">{crawl_options}</select></label>\n\
+         <label><span class=\"lbl\">policy{policy_help}</span> <select name=\"policy\">{crawl_options}</select></label>\n\
          <button>change crawl policy</button>\n</form>\n",
         slug = escape(slug),
         csrf = csrf_field(csrf),
@@ -2230,8 +2230,8 @@ pub fn tokens_page(
         let _ = write!(
             body,
             "<form class=\"console\" method=\"post\" action=\"/{}/-/settings/tokens\">\n{}\
-             <label><input type=\"checkbox\" name=\"perm_read\" value=\"1\" checked> read</label>\n\
-             <label><input type=\"checkbox\" name=\"perm_publish\" value=\"1\"> publish</label>\n\
+             <label><span class=\"lbl\">read</span> <input type=\"checkbox\" name=\"perm_read\" value=\"1\" checked></label>\n\
+             <label><span class=\"lbl\">publish</span> <input type=\"checkbox\" name=\"perm_publish\" value=\"1\"></label>\n\
              <button>create token</button>\n</form>\n",
             escape(slug),
             csrf_field(csrf),
@@ -2719,8 +2719,8 @@ pub fn org_webhooks_page(
     for (event, label) in WEBHOOK_EVENT_TYPES {
         let _ = write!(
             body,
-            "<label><input type=\"checkbox\" name=\"events\" value=\"{event}\"> \
-             <code>{event}</code> — {label}</label>\n",
+            "<label><span class=\"lbl\"><code>{event}</code> — {label}</span> \
+             <input type=\"checkbox\" name=\"events\" value=\"{event}\"></label>\n",
         );
     }
     body.push_str("</fieldset>\n");
@@ -2826,10 +2826,10 @@ pub fn org_sso_page(
     let enforce = idp.is_some_and(|c| c.enforce_sso);
     let _ = write!(
         body,
-        "<label><input type=\"checkbox\" name=\"allow_jit\" value=\"1\"{jit}> \
-         just-in-time provision unknown users</label>\n\
-         <label><input type=\"checkbox\" name=\"enforce_sso\" value=\"1\"{enforce}> \
-         force org members through SSO</label>\n\
+        "<label><span class=\"lbl\">just-in-time provision unknown users</span> \
+         <input type=\"checkbox\" name=\"allow_jit\" value=\"1\"{jit}></label>\n\
+         <label><span class=\"lbl\">force org members through SSO</span> \
+         <input type=\"checkbox\" name=\"enforce_sso\" value=\"1\"{enforce}></label>\n\
          <button>save identity provider</button>\n</form>\n",
         jit = if jit { " checked" } else { "" },
         enforce = if enforce { " checked" } else { "" },
@@ -3059,10 +3059,10 @@ pub fn serving_page(
          <label>base path <input type=\"text\" name=\"base_path\" placeholder=\"(domain root)\"></label>\n\
          <label>mode <select name=\"mode\"><option value=\"direct\">direct</option>\
          <option value=\"proxied\">proxied</option></select></label>\n\
-         <label><input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked> serves git</label>\n\
-         <label><input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked> serves cache</label>\n\
-         <label><input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked> serves web</label>\n\
-         <label><input type=\"checkbox\" name=\"advertised\" value=\"1\"> advertise to consumers</label>\n\
+         <label><span class=\"lbl\">serves git</span> <input type=\"checkbox\" name=\"serves_git\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">serves cache</span> <input type=\"checkbox\" name=\"serves_cache\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">serves web</span> <input type=\"checkbox\" name=\"serves_web\" value=\"1\" checked></label>\n\
+         <label><span class=\"lbl\">advertise to consumers</span> <input type=\"checkbox\" name=\"advertised\" value=\"1\"></label>\n\
          <label>consumer priority <input type=\"text\" name=\"consumer_priority\" value=\"100\"></label>\n\
          <button>add frontend</button>\n</form>\n",
         slug = escape(slug),
@@ -3116,7 +3116,7 @@ pub fn serving_page(
          placeholder=\"https://upstream.example/registry\"></label>\n\
          <label>mode <select name=\"mode\"><option value=\"full\"{full}>full (scheduled copy)</option>\
          <option value=\"pullthrough\"{pull}>pullthrough (fetch-on-miss)</option></select></label>\n\
-         <label><input type=\"checkbox\" name=\"verify\" value=\"1\"{verify}> verify upstream signatures</label>\n\
+         <label><span class=\"lbl\">verify upstream signatures</span> <input type=\"checkbox\" name=\"verify\" value=\"1\"{verify}></label>\n\
          <label>schedule (seconds) <input type=\"text\" name=\"schedule_secs\" value=\"{secs}\"></label>\n\
          <button>save mirror</button>\n</form>\n",
         if mirror.is_some() { "Update mirror" } else { "Mark as mirror" },
