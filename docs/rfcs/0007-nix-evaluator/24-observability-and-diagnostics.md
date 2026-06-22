@@ -557,14 +557,23 @@ The governing rule binds every item: **presentation is not parity.** How an erro
       operation plus file/attr/drv context when available (§7.1) — `D-OBS-4`;
       gate today: `aos-core` eval/runner instrumentation tests, including the
       `native-eval` feature-gated counter and divergence-context tests.
-- [ ] All-internal and `aos-nix` subsystem instrumentation remains: add
-      statistics counters for thunks forced/allocated/elided, inline-cache
-      hits/misses, shape transitions, tier promotions, deopts, cache
-      hits/early-cutoffs, and any other cache/shape/tier counters as those
-      subsystems land; align fields with `NIX_SHOW_STATS` where relevant; and
-      promote divergence events into the full self-contained report surface
-      (§7.1) — counters land as each subsystem does (cache **P2**, shapes
-      **P5**, tiers **P6/P7**); `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
+- [x] Current `aos-nix` stats schema/substrate: `EvalStats` exposes the stable
+      observability counter schema, owned tree-walk outcomes and
+      `TreeWalk::stats()` snapshots carry it, successful public evaluation paths
+      emit stable field names on the `aos_nix::eval::stats` tracing target, and
+      the P1 tree-walk currently increments implemented thunk
+      allocation/force/reuse, cache hit/miss, and heap/arena-derived fields
+      while future subsystem fields remain schema-stable zeroes until those
+      subsystems land (§7.1; [15](15-differential-testing-and-benchmarking.md)
+      §4.2) — `D-OBS-4`; gate: stats outcome/tracing tests plus the
+      `aos-nix` check.
+- [ ] Full all-internal and `aos-nix` subsystem instrumentation remains: wire
+      real early-cutoff, inline-cache, shape-transition, tier-promotion, deopt,
+      GC, and any other cache/shape/tier counters as those subsystems land;
+      align fields with `NIX_SHOW_STATS` where relevant; and promote divergence
+      events into the full self-contained report surface (§7.1) — counters land
+      as each subsystem does (cache **P2**, shapes **P5**, tiers **P6/P7**);
+      `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
 - [x] Current `builtins.trace` / `builtins.traceVerbose` user-facing output
       path stays out of internal `tracing`: tree-walk emits `trace: ...` to
       its stderr sink, records `EvalTraceOutput`, and returns the second
