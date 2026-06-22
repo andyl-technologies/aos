@@ -16,8 +16,7 @@ const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "tcg,thread=single";
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
-const DEFAULT_KERNEL_CMDLINE: &str =
-    "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off";
+const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const GUEST_ENTROPY_FW_CFG_NAME: &str = "opt/crucible/seed";
@@ -228,6 +227,23 @@ impl LaunchProfileCandidate {
             LaunchProfileError::KernelBootloaderRandomTrustNotDisabled,
             LaunchProfileError::KernelTrustsBootloaderRandom,
             LaunchProfileError::KernelBootloaderRandomTrustAmbiguous,
+        )?;
+        reject_kernel_cmdline_key(
+            &self.kernel_cmdline,
+            "kaslr",
+            LaunchProfileError::KernelKaslrExplicitlyEnabled,
+        )?;
+        require_kernel_bare_flag_once(
+            &self.kernel_cmdline,
+            "nokaslr",
+            LaunchProfileError::KernelKaslrNotDisabled,
+            LaunchProfileError::KernelKaslrFlagAmbiguous,
+        )?;
+        require_kernel_bare_flag_once(
+            &self.kernel_cmdline,
+            "norandmaps",
+            LaunchProfileError::UserspaceAslrNotDisabled,
+            LaunchProfileError::UserspaceAslrFlagAmbiguous,
         )?;
         if self.run_seed != self.scenario_seed {
             return Err(LaunchProfileError::RunSeedDiffersFromScenarioSeed {
@@ -588,6 +604,21 @@ pub enum LaunchProfileError {
     /// The kernel command line specified bootloader random trust more than once.
     #[error("kernel command line must specify `random.trust_bootloader=off` exactly once")]
     KernelBootloaderRandomTrustAmbiguous,
+    /// The kernel command line explicitly enabled kernel address randomization.
+    #[error("kernel command line must not include `kaslr`")]
+    KernelKaslrExplicitlyEnabled,
+    /// The kernel command line did not disable kernel address randomization.
+    #[error("kernel command line must include `nokaslr` exactly once")]
+    KernelKaslrNotDisabled,
+    /// The kernel command line specified the KASLR disable flag ambiguously.
+    #[error("kernel command line must include bare `nokaslr` exactly once")]
+    KernelKaslrFlagAmbiguous,
+    /// The kernel command line did not disable userspace address randomization.
+    #[error("kernel command line must include `norandmaps` exactly once")]
+    UserspaceAslrNotDisabled,
+    /// The kernel command line specified the userspace ASLR disable flag ambiguously.
+    #[error("kernel command line must include bare `norandmaps` exactly once")]
+    UserspaceAslrFlagAmbiguous,
     /// The deterministic QEMU run seed diverged from the scenario seed.
     #[error("QEMU run seed {run_seed} must equal scenario seed {scenario_seed}")]
     RunSeedDiffersFromScenarioSeed {
@@ -727,6 +758,30 @@ fn require_kernel_random_trust_off(
     }
 }
 
+fn require_kernel_bare_flag_once(
+    cmdline: &str,
+    key: &str,
+    missing: LaunchProfileError,
+    ambiguous: LaunchProfileError,
+) -> Result<(), LaunchProfileError> {
+    match kernel_cmdline_value(cmdline, key) {
+        KernelCmdlineValue::Single("") => Ok(()),
+        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(ambiguous),
+        KernelCmdlineValue::Missing => Err(missing),
+    }
+}
+
+fn reject_kernel_cmdline_key(
+    cmdline: &str,
+    key: &str,
+    error: LaunchProfileError,
+) -> Result<(), LaunchProfileError> {
+    match kernel_cmdline_value(cmdline, key) {
+        KernelCmdlineValue::Missing => Ok(()),
+        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(error),
+    }
+}
+
 enum KernelCmdlineValue<'a> {
     Missing,
     Single(&'a str),
@@ -738,7 +793,7 @@ fn kernel_cmdline_value<'a>(cmdline: &'a str, key: &str) -> KernelCmdlineValue<'
 
     for argument in cmdline.split_ascii_whitespace() {
         let candidate = if argument == key {
-            Some("on")
+            Some("")
         } else {
             argument
                 .strip_prefix(key)

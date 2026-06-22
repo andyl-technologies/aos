@@ -319,8 +319,8 @@ differ.
 | E8 | Guest entropy pool seeding (`getrandom`, `/dev/urandom`, `random.trust_cpu`) | Guest CSPRNG seeded from true entropy diverges | Seed the guest deterministically via firmware (`fw_cfg`) random-seed and/or controlled RDRAND; the seed is a pure function of the scenario seed (4.7) | launch |
 | E9 | QEMU-internal use of host RNG (`qemu_guest_getrandom`, glib `GRand`) | QEMU device models / MACs / IDs draw from host entropy, perturbing device state in `T` | Seed QEMU's guest-random and glib PRNG deterministically from the run seed (`qemu-deterministic-getrandom`, `qemu-deterministic-glib-prng`) | patch |
 | E10 | CPU model variation | Different host CPUs expose different feature bits / instruction semantics | Fixed `-cpu <model>` (never `-cpu host`); the model is part of the scenario hash | launch |
-| E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | If boot entropy is fully seeded (E8), KASLR draws from a deterministic pool and *may* already be deterministic; `nokaslr` is the conservative belt-and-braces. Whether `nokaslr` is *required* given full seeding is an OPEN QUESTION (4.9). | launch |
-| E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | Same as E11: deterministic once entropy is seeded; `norandmaps` is the conservative default pending the E11 spike | launch |
+| E11 | Kernel address-space randomization (KASLR) | Randomized kernel base changes addresses throughout `T` | `nokaslr` is the shipped conservative default. S6/T-RISK-6 verified KASLR can be reproducible with fully seeded boot entropy, so re-enabling it is allowed only as a recorded per-image capability, not a global default flip. | launch |
+| E12 | Userspace ASLR (`norandmaps`) | Randomized mmap/stack/brk bases change `T` | `norandmaps` is the shipped conservative default. S6/T-RISK-6 verified userspace ASLR can be reproducible with fully seeded boot entropy, so re-enabling it is allowed only as a recorded per-image capability, not a global default flip. | launch |
 | E13 | Multi-vCPU instruction interleaving (MTTCG excluded; multi-vCPU = single-threaded RR-TCG) | Concurrent vCPUs would interleave nondeterministically under MTTCG (`thread=multi`) | MTTCG is excluded; all `N` vCPUs time-share ONE host thread under single-threaded round-robin TCG with `-icount`, switching at a fixed content-addressed `rr_switch_quantum` in node-icount (never QEMU's adaptive `rr_quantum`, never realtime). The interleaving is then a pure function of `(image, cmdline, seed, I, rr_switch_quantum, N)` | launch + patch |
 | E14 | Host thread scheduling of QEMU threads | Order of QEMU's own threads (vCPU, iothread, main loop) affects timing | Single vCPU plus icount makes guest progress independent of host thread order; the plugin's synchronous time-control handshake forces a defined order at idle/advance points | plugin + patch |
 | E15 | Floating-point nondeterminism | FP results vary by rounding mode / FMA contraction / library | Under a fixed `-cpu` and TCG soft-float, FP is a deterministic function of inputs; cross-host reproducibility holds because TCG emulates, not delegates to host FPU. No action beyond E10 | (covered by E10) |
@@ -525,13 +525,12 @@ disposition, and (where unresolved) flagged as a spike forward-referencing
   fat checkpoint. Until verified, snapshot-based resume is gated behind a spike.
   *Gate:* `gate:replay-oracle`. *Spec:* §4.9 (E20), forward-ref 30.
 
-- **[DET-33]** **KASLR/ASLR necessity (spike).** It MUST be determined whether
-  `nokaslr`/`norandmaps` are *required* or merely conservative: if all boot
-  entropy (E8) is seeded deterministically, kernel/userspace randomization draws
-  from a deterministic pool and may already be bit-stable. The default ships with
-  randomization disabled (E11, E12); the spike establishes whether it can be
-  re-enabled (which would broaden "any unmodified guest" fidelity). *Gate:*
-  `gate:single-vm-fingerprint`. *Spec:* §4.9 (E11, E12), forward-ref 30.
+- **[DET-33]** **KASLR/ASLR necessity (spike).** S6/T-RISK-6 determined that
+  kernel/userspace randomization can be bit-stable when all boot entropy (E8) is
+  seeded deterministically. The default still ships with randomization disabled
+  (E11, E12); re-enabling it is a recorded per-image capability, not a global
+  default flip. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §4.9 (E11, E12),
+  forward-ref 30.
 
 - **[DET-34]** **Producer→consumer visibility is icount-not-wallclock.** The
   shared-memory transport MUST be designed so that a payload's *presence* on a
@@ -665,8 +664,10 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   (`fw_cfg` random-seed) / controlled RDRAND as a pure function of the scenario
   seed; verify no path seeds the guest CSPRNG from host entropy. — satisfies
   [DET-22], [DET-18] (E8); spec §4.6 (E8).
-- [ ] **T-DET-6** Ship `nokaslr`/`norandmaps` as the conservative default and
-  file the spike on whether they are required given fully-seeded boot entropy. —
+- [x] **T-DET-6** Ship `nokaslr`/`norandmaps` as the conservative default and
+  file the spike on whether they are required given fully-seeded boot entropy.
+  Phase 0 retired [RISK-13] with `T-RISK-6`, recording that randomization may be
+  enabled as a per-image capability but is not a global default flip. —
   satisfies [DET-18] (E11, E12), [DET-33]; spec §4.6 (E11, E12), §4.9.
 - [ ] **T-DET-7** Implement Contract A in isolation: a single-VM driver that
   feeds an icount-stamped recorded input list `I` and runs `run` with no
