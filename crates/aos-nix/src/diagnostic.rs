@@ -15,6 +15,8 @@ use crate::{
     syntax::{LexError, LexErrorKind, ParseError, ParseErrorKind, Span},
 };
 
+const DIAGNOSTIC_URL: &str = "https://github.com/andyl-technologies/aos/blob/main/docs/rfcs/0007-nix-evaluator/24-observability-and-diagnostics.md";
+
 /// A source-backed parser diagnostic.
 pub type ParseDiagnostic = SourceDiagnostic<ParseError>;
 
@@ -80,6 +82,10 @@ impl Diagnostic for ParseDiagnostic {
         parse_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
     }
 
+    fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(DIAGNOSTIC_URL))
+    }
+
     fn source_code(&self) -> Option<&dyn SourceCode> {
         Some(&self.source)
     }
@@ -103,6 +109,10 @@ impl Diagnostic for LexDiagnostic {
 
     fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         lex_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
+    }
+
+    fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(DIAGNOSTIC_URL))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -130,6 +140,10 @@ impl Diagnostic for EvalDiagnostic {
         eval_error_help(&self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
     }
 
+    fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(DIAGNOSTIC_URL))
+    }
+
     fn source_code(&self) -> Option<&dyn SourceCode> {
         Some(&self.source)
     }
@@ -155,6 +169,10 @@ impl Diagnostic for ScopeDiagnostic {
         scope_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
     }
 
+    fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(DIAGNOSTIC_URL))
+    }
+
     fn source_code(&self) -> Option<&dyn SourceCode> {
         Some(&self.source)
     }
@@ -178,6 +196,10 @@ impl Diagnostic for IrDiagnostic {
 
     fn help<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
         ir_error_help(self.error.kind()).map(|help| Box::new(help) as Box<dyn fmt::Display>)
+    }
+
+    fn url<'a>(&'a self) -> Option<Box<dyn fmt::Display + 'a>> {
+        Some(Box::new(DIAGNOSTIC_URL))
     }
 
     fn source_code(&self) -> Option<&dyn SourceCode> {
@@ -439,6 +461,7 @@ mod tests {
             diagnostic.code().map(|code| code.to_string()),
             Some("aos_nix::parse::unexpected_token".to_string())
         );
+        assert!(diagnostic.url().is_some());
 
         let labels = diagnostic
             .labels()
@@ -460,6 +483,7 @@ mod tests {
             Some("aos_nix::lex::unexpected_byte".to_string())
         );
         assert!(diagnostic.help().is_some());
+        assert!(diagnostic.url().is_some());
         assert!(diagnostic.source_code().is_some());
     }
 
@@ -475,6 +499,7 @@ mod tests {
             Some("aos_nix::eval::type".to_string())
         );
         assert!(diagnostic.help().is_some());
+        assert!(diagnostic.url().is_some());
         assert!(diagnostic.source_code().is_some());
     }
 
@@ -489,6 +514,7 @@ mod tests {
             Some("aos_nix::resolve::undefined_symbol".to_string())
         );
         assert!(diagnostic.help().is_some());
+        assert!(diagnostic.url().is_some());
         assert!(diagnostic.source_code().is_some());
     }
 
@@ -503,6 +529,7 @@ mod tests {
             Some("aos_nix::lower::invalid_binding_key".to_string())
         );
         assert!(diagnostic.help().is_some());
+        assert!(diagnostic.url().is_some());
         assert!(diagnostic.source_code().is_some());
     }
 
