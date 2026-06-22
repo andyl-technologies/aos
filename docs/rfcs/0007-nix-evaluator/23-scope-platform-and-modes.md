@@ -527,7 +527,17 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### Multi-arch portability and the host-independence invariant (§3)
 
-- [ ] Support x86-64 and aarch64 hosts (both AOS targets), 32-bit unsupported — the NaN-boxed/tagged value layout assumes 64-bit words, 8-byte-aligned heap objects, canonical addresses, which hold on both and on neither 32-bit target (§3.1) — **P1** value layout (`S-6`/`M-4`), Cranelift dual-backend **P6** (`S-3`); `C-24`.
+- [x] Current Phase-1 host-support fence: `aos-nix` rejects unsupported host
+      classes at compile time, requiring 64-bit pointer width,
+      x86-64/AArch64 host architecture, and Linux/Darwin host OS; crate docs
+      record the current value-ABI matrix, and current-host value-layout tests
+      assert the active build matches it (§3.1) — **P1** value layout
+      (`S-6`/`M-4`); gate today: current-host `aos-nix` check/value tests.
+- [ ] Full multi-arch support remains: verify value-representation assumptions
+      across every supported host, run actual cross-build/cross-host validation
+      for x86-64 and AArch64 Linux/Darwin, keep 32-bit hosts rejected, and wire
+      the future Cranelift x86-64+AArch64 dual backend (§3.1) — **P1** value
+      layout (`S-6`/`M-4`), Cranelift dual-backend **P6** (`S-3`); `C-24`.
 - [ ] The critical invariant — host architecture affects eval *speed* (codegen, register allocation, in-memory IC shapes), **never** eval *output*: the same `builtins.currentSystem` yields the byte-identical `.drv` on an x86-64 and an aarch64 host (§3.2, §3.3) — **P1**, `C-24`; defense-in-depth is the same JIT-vs-oracle relation.
 - [ ] The cross-host harness obligation: instantiate the AOS closure on an x86-64 builder and an aarch64 builder (pinning `currentSystem` identically) and assert byte-identical `.drv` closures to each other and to `NixCli` — over and above the per-host gate (§3.3) — gated by [15](15-differential-testing-and-benchmarking.md), `C-24`.
 - [x] Wire `currentSystem` to the configured **target** system string from the same `system`-setting/override channel C++ Nix uses, not an introspected host triple. `NixEvalConfig` now renders `--option system <target>` for C++ Nix, feeds the same value into native `TreeWalkOptions`, and is shared by `NixCli`, `NixRunner`, native fallback, shadow evaluation, and `nix repl`; `builtins.system` stays absent because it is not in the pinned C++ Nix 2.24.12 builtin surface (§3.4) — **P1**, `C-24`.
