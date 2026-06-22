@@ -109,11 +109,8 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
     }
-    if !case.flags.is_empty() {
-        return Ok(CaseOutcome::Skipped(format!(
-            "case carries unsupported flags: {}",
-            case.flags.join(" ")
-        )));
+    if let Some(reason) = unsupported_flags_message(case.category, &case.flags) {
+        return Ok(CaseOutcome::Skipped(reason));
     }
 
     let source =
@@ -157,6 +154,35 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     }
 }
 
+fn unsupported_flags_message(category: LangCategory, flags: &[String]) -> Option<String> {
+    if flags.is_empty() || supports_noop_lang_flags(category, flags) {
+        None
+    } else {
+        Some(format!(
+            "case carries unsupported flags: {}",
+            flags.join(" ")
+        ))
+    }
+}
+
+fn supports_noop_lang_flags(category: LangCategory, flags: &[String]) -> bool {
+    match category {
+        LangCategory::EvalOkay => flags.iter().all(|flag| is_strict_eval_flag(flag)),
+        LangCategory::EvalFail => {
+            flags.iter().all(|flag| {
+                is_strict_eval_flag(flag)
+                    || matches!(flag.as_str(), "--show-trace" | "--no-show-trace")
+            }) && flags.iter().any(|flag| flag == "--eval")
+                && flags.iter().any(|flag| flag == "--strict")
+        }
+        LangCategory::ParseFail | LangCategory::ParseOkay => false,
+    }
+}
+
+fn is_strict_eval_flag(flag: &str) -> bool {
+    matches!(flag, "--eval" | "--strict")
+}
+
 fn eval_case(source: &[u8]) -> Result<()> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
@@ -190,6 +216,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
         vec![
             LangCategory::ParseFail,
             LangCategory::ParseOkay,
+            LangCategory::EvalFail,
             LangCategory::EvalFail,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
@@ -233,6 +260,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ("parse-fail-missing-then", CaseOutcome::Passed),
             ("parse-okay-simple", CaseOutcome::Passed),
             ("eval-fail-type", CaseOutcome::Passed),
+            ("eval-fail-with-flags", CaseOutcome::Passed),
             ("eval-okay-attrs", CaseOutcome::Passed),
             (
                 "eval-okay-disabled",
@@ -247,10 +275,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ("eval-okay-recursive-list-siblings", CaseOutcome::Passed),
             ("eval-okay-string", CaseOutcome::Passed),
             ("eval-okay-string-interpolation", CaseOutcome::Passed),
-            (
-                "eval-okay-with-flags",
-                CaseOutcome::Skipped("case carries unsupported flags: --eval --strict".to_owned())
-            ),
+            ("eval-okay-with-flags", CaseOutcome::Passed),
         ]
     );
 
@@ -263,6 +288,64 @@ fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
     assert_eq!(eval_raw_case(b"x: x")?, b"<LAMBDA>\n");
 
     Ok(())
+}
+
+#[test]
+fn lang_sh_noop_eval_flags_are_supported() {
+    let strict_eval_flags = ["--eval", "--strict"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let eval_fail_no_trace_flags = ["--eval", "--strict", "--no-show-trace"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let trace_only_flags = ["--no-show-trace"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        unsupported_flags_message(LangCategory::EvalOkay, &strict_eval_flags),
+        None
+    );
+    assert_eq!(
+        unsupported_flags_message(LangCategory::EvalFail, &eval_fail_no_trace_flags),
+        None
+    );
+    assert_eq!(
+        unsupported_flags_message(LangCategory::EvalFail, &trace_only_flags),
+        Some("case carries unsupported flags: --no-show-trace".to_owned())
+    );
+    assert_eq!(
+        unsupported_flags_message(LangCategory::ParseOkay, &strict_eval_flags),
+        Some("case carries unsupported flags: --eval --strict".to_owned())
+    );
+}
+
+#[test]
+fn lang_sh_capability_flags_remain_skipped() {
+    let autoarg_flags = [
+        "--arg",
+        "lib",
+        "import(lang/lib.nix)",
+        "--argstr",
+        "xyzzy",
+        "xyzzy!",
+        "-A",
+        "result",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+
+    assert_eq!(
+        unsupported_flags_message(LangCategory::EvalOkay, &autoarg_flags),
+        Some(
+            "case carries unsupported flags: --arg lib import(lang/lib.nix) --argstr xyzzy xyzzy! -A result"
+                .to_owned()
+        )
+    );
 }
 
 #[test]
