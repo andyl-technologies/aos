@@ -75,9 +75,6 @@
   };
 in {
   config = {
-    # Ignition ships the binary in every stage-2 installation too so
-    # operators can re-run or inspect state after first boot.
-    environment.systemPackages = [pkgs.ignition];
 
     # Initrd services. The cpio assembler in modules/base/initrd-builder.nix
     # picks these up via `system.build.systemdInitrdUnits`.

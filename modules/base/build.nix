@@ -498,6 +498,11 @@ in {
       + ":"
       + makeSbinPath config.environment.systemPackages;
 
+    # The minimal-distro baseline on the interactive PATH. This is the single
+    # intentional place for it; feature modules must NOT add to systemPackages
+    # (their services reference tools by absolute store path), so the login
+    # PATH stays a deliberate core set rather than an accretion of every
+    # feature's tools. Anything beyond this is an apm install.
     environment.systemPackages = [
       pkgs.bash
       pkgs.coreutils
