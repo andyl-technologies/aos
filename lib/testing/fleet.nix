@@ -56,9 +56,80 @@
   # callers needing more should add to the lists in lockstep.
   uriEncode =
     builtins.replaceStrings
-    ["%" "\n" "#" "?" " " "&" "+" "=" "[" "]"]
-    ["%25" "%0A" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
+    ["%" "\n" "\"" "\\" "{" "}" ":" "," "#" "?" " " "&" "+" "=" "[" "]"]
+    ["%25" "%0A" "%22" "%5C" "%7B" "%7D" "%3A" "%2C" "%23" "%3F" "%20" "%26" "%2B" "%3D" "%5B" "%5D"];
   dataUrl = content: "data:,${uriEncode content}";
+
+  mkFleetPackageFragment = m: let
+    hasPackage = package: builtins.elem package m.packages;
+    mkDir = path: {
+      inherit path;
+      mode = 493; # 0755
+      overwrite = true;
+    };
+    mkFile = path: text: {
+      inherit path;
+      mode = 420; # 0644
+      overwrite = true;
+      contents.source = dataUrl text;
+    };
+    mkLink = path: target: {
+      inherit path target;
+      hard = false;
+      overwrite = true;
+    };
+    agentPackage = m.system.config.aos.packages.aos-test-agent.package or pkgs.aos-test-agent;
+    agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
+    agentUnit = ''
+      [Unit]
+      Description=AOS VM Test Guest Agent
+
+      [Service]
+      Type=simple
+      ExecStart=${agentPath}
+      Restart=on-failure
+      RestartSec=1
+      Environment=PATH=${pkgs.coreutils}/bin:${pkgs.bash}/bin:${pkgs.systemd}/bin:${pkgs.systemd}/sbin
+
+      [Install]
+      WantedBy=multi-user.target
+    '';
+    agentDirs = lib.optionals (hasPackage "aos-test-agent") [
+      (mkDir "/etc/systemd/system")
+      (mkDir "/etc/systemd/system/multi-user.target.wants")
+    ];
+    agentFiles =
+      lib.optional (hasPackage "aos-test-agent")
+      (mkFile "/etc/systemd/system/aos-test-agent.service" agentUnit);
+    agentLinks =
+      lib.optional (hasPackage "aos-test-agent")
+      (mkLink "/etc/systemd/system/multi-user.target.wants/aos-test-agent.service" "../aos-test-agent.service");
+  in
+    if m.packages == []
+    then {
+      storage = {
+        directories = [];
+        files = [];
+        links = [];
+      };
+    }
+    else {
+      storage = {
+        directories =
+          [
+            (mkDir "/etc/aos/packages.d")
+          ]
+          ++ agentDirs;
+        files =
+          [
+            (mkFile "/etc/aos/packages.d/fleet-seed" (
+              lib.concatMapStrings (package: "${package}\n") m.packages
+            ))
+          ]
+          ++ agentFiles;
+        links = agentLinks;
+      };
+    };
 
   # ── Per-machine derivation order ───────────────────────────────────
   # Drives IP, MAC, banner ordering. `lib.imap` is the AOS lib's
@@ -69,12 +140,12 @@
   #
   # The guest agent reaches every fleet machine one of two ways: baked
   # into the /var seed (kernel boot + `varProvisioning = "baked"`, the
-  # default), or delivered as the bundled `aos-test-agent` role's
-  # ignition merge (image boot, or `varProvisioning = "ignition"` —
-  # neither ships a baked seed). The driver waits on *every* machine's
-  # agent, so a machine that bakes no seed always needs that role. Inject
-  # it here rather than making each test name it: agent delivery is a
-  # harness concern, not a property of the machine under test.
+  # default), or delivered through the bundled `aos-test-agent` package
+  # fragment (image boot, or `varProvisioning = "ignition"` — neither
+  # ships a baked seed). The driver waits on *every* machine's agent, so a
+  # machine that bakes no seed always needs that package. Inject it here
+  # rather than making each test name it: agent delivery is a harness
+  # concern, not a property of the machine under test.
   mkMachinesWithIndex = machines: let
     machineNames = builtins.attrNames machines;
   in
@@ -82,27 +153,29 @@
       m = machines.${mname};
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
+      packages = m.packages or [];
       # `baked` /var seeds the agent at build time; every other shape
-      # relies on the role's first-boot ignition merge.
+      # relies on the package ignition fragment.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
-      agentBundled = m.system.config.aos.roles.aos-test-agent.bundle or false;
-      roles =
-        if bakesAgent || builtins.elem "aos-test-agent" m.roles
-        then m.roles
+      agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
+      packagesWithAgent =
+        if bakesAgent || builtins.elem "aos-test-agent" packages
+        then packages
         else if agentBundled
-        then m.roles ++ ["aos-test-agent"]
+        then packages ++ ["aos-test-agent"]
         else
           throw ''
             fleet: machine "${mname}" boots without a baked /var seed
             (bootMode = "${bootMode}", varProvisioning = "${varProvisioning}"),
-            so the test guest agent must arrive via the aos-test-agent role
-            — but that role is not bundled on its system. Set
-            `aos.roles.aos-test-agent.bundle = true` on the machine's system
+            so the test guest agent must arrive via the aos-test-agent package
+            — but that package is not bundled on its system. Set
+            `aos.packages.aos-test-agent.bundle = true` on the machine's system
             (the server profile already does).
           '';
     in {
       inherit (m) system instanceMetadata;
-      inherit roles bootMode varProvisioning;
+      inherit bootMode varProvisioning;
+      packages = packagesWithAgent;
       # `extraClosures` / `varSizeMiB` / `imageDiskMiB` default on the
       # fleet machine type, so the `or` fallbacks only matter for callers
       # bypassing fleet-spec validation.
@@ -205,7 +278,7 @@
 
   # ── Compose final ignition for one machine ──────────────────────────
   # Identity fragment is always present; the optional debug fragment is
-  # layered between identity and user/role merges; user-supplied
+  # layered between identity and user metadata; user-supplied
   # `instanceMetadata` then layers on top. Identity files use stable
   # paths (`/etc/hostname`, `/etc/hosts`,
   # `/etc/systemd/network/10-fleet-eth0.network`); the debug fragment
@@ -225,14 +298,19 @@
       then debug m
       else {storage.files = [];};
 
+    mPackages = mkFleetPackageFragment m;
     identityPaths = builtins.map (f: f.path) mIdentity.storage.files;
     debugPaths = builtins.map (f: f.path) mDebug.storage.files;
-    reservedPaths = identityPaths ++ debugPaths;
+    packageStorage = mPackages.storage;
+    packageFiles = packageStorage.files or [];
+    packageLinks = packageStorage.links or [];
+    packageDirs = packageStorage.directories or [];
+    packagePaths =
+      builtins.map (f: f.path) packageFiles
+      ++ builtins.map (l: l.path) packageLinks
+      ++ builtins.map (d: d.path) packageDirs;
+    reservedPaths = identityPaths ++ debugPaths ++ packagePaths;
 
-    roleMerges =
-      builtins.map
-      (r: {source = "file:///etc/aos/ignition-roles/${r}";})
-      m.roles;
     userCfg =
       if m.instanceMetadata != null
       then m.instanceMetadata.config
@@ -256,6 +334,12 @@
     userIgnitionConfig = maybeNull (userIgnition.config or null) {};
     userMerges = maybeNull (userIgnitionConfig.merge or null) [];
     userFiles = maybeNull (userStorage.files or null) [];
+    userLinks = maybeNull (userStorage.links or null) [];
+    userDirs = maybeNull (userStorage.directories or null) [];
+    userEntries =
+      builtins.map (f: {inherit (f) path;}) userFiles
+      ++ builtins.map (l: {inherit (l) path;}) userLinks
+      ++ builtins.map (d: {inherit (d) path;}) userDirs;
 
     # Kernel-boot "ignition" var: the base disk ships boot+root-a+swap
     # only; ignition creates and formats /var (partition 4) on first boot
@@ -263,7 +347,7 @@
     # copy. Mirrors production (modules/services/ignition.nix) and lets
     # machines differing only in /var size share one base image. sizeMiB=0
     # fills the grown tail; the agent then arrives via the aos-test-agent
-    # role merge rather than a baked /var seed.
+    # package fragment rather than a baked /var seed.
     varStorage =
       if (m.varProvisioning or "baked") == "ignition"
       then {
@@ -294,31 +378,27 @@
     collisions =
       builtins.filter
       (f: builtins.elem f.path reservedPaths)
-      userFiles;
+      userEntries;
   in
     if collisions != []
     then
       throw ''
-        fleet '${name}': machine "${m.name}" instanceMetadata.config.storage.files
+        fleet '${name}': machine "${m.name}" instanceMetadata.config.storage
         collides with reserved path(s):
           ${lib.concatStringsSep ", " (builtins.map (f: f.path) collisions)}
         Reserved paths: ${lib.concatStringsSep ", " reservedPaths}.
-        Pick a different path, or move the override into a role.
+        Pick a different path, or move the override into a package or harness fragment.
       ''
     else
       userCfg
       // {
-        # `merge` is reconstructed as `roleMerges ++ userMerges` — both
-        # contribute, role merges first. The collision check above only
-        # inspects `storage.files`; merge entries aren't path-scoped and
-        # are safe to concatenate.
         ignition =
           userIgnition
           // {
             config =
               userIgnitionConfig
               // {
-                merge = roleMerges ++ userMerges;
+                merge = userMerges;
               };
           };
         storage =
@@ -328,7 +408,10 @@
             files =
               mIdentity.storage.files
               ++ mDebug.storage.files
+              ++ packageFiles
               ++ userFiles;
+            links = packageLinks ++ userLinks;
+            directories = packageDirs ++ userDirs;
           };
       };
 
@@ -348,13 +431,13 @@
     builtins.map (
       m:
         {
-          inherit (m) name ip mac debugMac index system roles bootMode tpm varProvisioning varSizeMiB;
+          inherit (m) name ip mac debugMac index system packages bootMode tpm varProvisioning varSizeMiB;
         }
         // (
           if m.bootMode == "image"
           then {
             # Image boot: the production raw image IS the disk; the
-            # composed ignition config (identity + roles + user
+            # composed ignition config (identity + packages + user
             # fragment) rides fw_cfg as a bare config.json, validated
             # against the FULL profile — storage.disks/filesystems are
             # exactly what these machines exercise.
@@ -392,7 +475,7 @@
   # ============================================================
   mkFleetTest = spec: let
     # spec is already validated against fleetSpecType by the discoverer
-    # — including the per-machine `roles` enum-against-`config.aos.roles`.
+    # — including the per-machine `packages` enum-against-`config.aos.packages`.
     inherit (spec) name testScript timeout machines;
     bootTimeout = spec.bootTimeout or null;
 
@@ -789,5 +872,5 @@
       ];
     };
 in {
-  inherit mkFleetTest mkFleetTestInteractive;
+  inherit mkFleetTest mkFleetTestInteractive uriEncode dataUrl;
 }

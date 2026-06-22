@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
@@ -309,6 +309,21 @@ impl SystemdClient {
     pub async fn start_unit(&self, name: &str) -> Result<JobOutcome> {
         let path = self.manager.start_unit(name, "replace").await?;
         self.await_job(path).await
+    }
+
+    /// Queue a start job for `name` without awaiting the job result.
+    ///
+    /// This matches `systemctl start --no-block`: systemd validates and queues
+    /// the job, then the caller continues while the unit reaches its terminal
+    /// state asynchronously.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the D-Bus call fails, for example when systemd
+    /// rejects the unit name or cannot queue the job.
+    pub async fn start_unit_no_wait(&self, name: &str) -> Result<()> {
+        self.manager.start_unit(name, "replace").await?;
+        Ok(())
     }
 
     /// Stop `name` (mode `"replace"`) and await the job's terminal result.
@@ -694,11 +709,6 @@ impl Drop for SystemdClient {
         }
         let _ = &self.conn;
     }
-}
-
-/// Whether a zbus error is systemd's `NoSuchUnit` method error.
-fn is_no_such_unit(e: &zbus::Error) -> bool {
-    matches!(e, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
 }
 
 /// Capture `systemctl status --no-pager --full <unit>` for human display. This

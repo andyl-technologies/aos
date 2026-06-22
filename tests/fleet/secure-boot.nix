@@ -17,7 +17,7 @@
 #      serial shows a firmware rejection.
 #
 # Single image-boot machine (server-secureboot: server + signed image +
-# the bundled aos-test-agent role). This is the first CI proof that the
+# the bundled aos-test-agent package). This is the first CI proof that the
 # sd-boot/UKI chain is signed AND that the firmware rejects tampering.
 {
   lib,
@@ -93,6 +93,7 @@ in {
       system = systems.server-secureboot;
       bootMode = "image";
       imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;
@@ -137,7 +138,7 @@ in {
 
       # ════ 3. Reboot into enforcing mode; signed UKI must load ═════════
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
       assert efivar_byte("SetupMode") == 0, "should remain in User Mode"
       # bootctl status exits non-zero on benign warnings while still

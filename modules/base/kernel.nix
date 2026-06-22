@@ -96,9 +96,8 @@ in {
     };
 
     # /etc/modules-load.d/aos-kernel.conf — modules to load at boot.
-    # `lib.unique` collapses duplicates: each enabled k3s role sets
-    # `aos.kernel.modules`, and listOf-merge concatenates the definitions,
-    # so br_netfilter/vxlan/ip_set would otherwise be listed three times.
+    # `lib.unique` collapses duplicates from modules that add the same kernel
+    # module through `aos.kernel.modules`.
     environment.etc."modules-load.d/aos-kernel.conf" = {
       text = ''
         # /etc/modules-load.d/aos-kernel.conf

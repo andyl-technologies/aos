@@ -10,11 +10,21 @@
   openssh,
   perl,
   openssl,
+  aos-landlock,
+  aos-selinux-run,
+  aos-verity-root-guard,
+  aos-ebpf-net-policy,
+  aos-ebpf-lsm-policy,
+  checkpolicy,
+  policycoreutils,
   pkg-config,
   protobuf,
+  semodule-utils,
   systemd,
   tar,
+  tpm2-tools,
   which,
+  zlib,
   zstd,
 }: let
   version = "0.1.0";
@@ -31,6 +41,7 @@
   #                 here it must be present for those git operations to work
   #   nix           nix / nix-store: cache and store operations
   #   openssh       ssh-keygen, for `git -c gpg.format=ssh tag -s` release signing
+  #   systemd       systemctl, for runtime package preset/attach reconciliation
   #   zstd          pack-delta compression and store decompression
   #   tar           extracting tree subpaths from `git archive` output
   #   which         check_command_exists() preflight in the drain/sysroot path
@@ -43,7 +54,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash git gnupg nix openssh zstd tar which systemd];
+  runtimeTools = [bash git gnupg nix openssh systemd zstd tar which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;
@@ -66,7 +77,7 @@ in
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    runtimeDeps = [openssl] ++ runtimeTools;
+    runtimeDeps = [openssl zlib aos-landlock aos-selinux-run aos-verity-root-guard aos-ebpf-net-policy aos-ebpf-lsm-policy checkpolicy policycoreutils semodule-utils tpm2-tools] ++ runtimeTools;
 
     preBuild = ''
       export OPENSSL_DIR="${openssl}"
@@ -75,6 +86,23 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export PROTOC="${protobuf}/bin/protoc"
+      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
+      export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
+      export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
+      export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
+      export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
+      export AOS_TPM2_QUOTE="${tpm2-tools}/bin/tpm2_quote"
+      export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
+      export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
+      export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
+      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
+      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
+      export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
+      export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+      export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
+      export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
     '';
 
     doCheck = true;
@@ -96,6 +124,23 @@ in
             cat > $out/bin/$name << 'WRAPPER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
+      export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
+      export AOS_SELINUX_RUNNER="${aos-selinux-run}/bin/aos-selinux-run"
+      export AOS_VERITY_ROOT_GUARD="${aos-verity-root-guard}/bin/aos-verity-root-guard"
+      export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
+      export AOS_TPM2_CREATEEK="${tpm2-tools}/bin/tpm2_createek"
+      export AOS_TPM2_CREATEAK="${tpm2-tools}/bin/tpm2_createak"
+      export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
+      export AOS_TPM2_QUOTE="${tpm2-tools}/bin/tpm2_quote"
+      export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
+      export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
+      export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
+      export AOS_EBPF_NET_POLICY="${aos-ebpf-net-policy}/bin/aos-ebpf-net-policy"
+      export AOS_EBPF_NET_POLICY_OBJECT="${aos-ebpf-net-policy}/lib/bpf/aos-ebpf-net-policy.bpf.o"
+      export AOS_EBPF_LSM_POLICY="${aos-ebpf-lsm-policy}/bin/aos-ebpf-lsm-policy"
+      export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
+      export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
+      export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
       export PATH="@PATH@"
       exec "@SELF@" "$@"
       WRAPPER

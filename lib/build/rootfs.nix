@@ -124,6 +124,7 @@ in
     TOPLEVEL = toString toplevel;
     KERNEL = toString kernel;
     REGINFO = toString regInfo;
+    SYSTEMD_PRESETS = toString system.config.system.build.systemdSystemPresets;
     SYSTEMD = toString pkgs.systemd;
     COREUTILS = toString pkgs.coreutils;
     # `$BASH` is a bash built-in pointing at the bash executable
@@ -158,6 +159,7 @@ in
           mkdir -p rootfs/nix.lower/store
           mkdir -p rootfs/nix
           mkdir -p rootfs/usr/bin rootfs/usr/lib
+          mkdir -p rootfs/usr/lib/systemd/system-preset
           ln -sfn bin rootfs/usr/sbin
           ln -sfn usr/bin rootfs/bin
           ln -sfn usr/bin rootfs/sbin
@@ -217,10 +219,13 @@ in
           # compat symlink. Many daemons still reference /var/run paths.
           ln -sfn /run rootfs/var/run
 
-          # ── 6. /run/current-system → toplevel ───────────────────────────
+          # ── 6. Systemd preset policy ────────────────────────────────────
+          cp -a "$SYSTEMD_PRESETS"/. rootfs/usr/lib/systemd/system-preset/
+
+          # ── 7. /run/current-system → toplevel ───────────────────────────
           ln -sfn "$TOPLEVEL" rootfs/run/current-system
 
-          # ── 7. /aos-toplevel seed pointer ──────────────────────────────
+          # ── 8. /aos-toplevel seed pointer ──────────────────────────────
           # First-boot bootstrap: aos-seed-profiles.service reads this
           # symlink to populate /var/lib/profiles/system/gen-1/toplevel
           # without referencing config.system.build.toplevel directly
@@ -230,7 +235,7 @@ in
           # edge. See spec v12 §6.1.
           ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
 
-          # ── 8. /aos-registration Nix DB seed ───────────────────────────
+          # ── 9. /aos-registration Nix DB seed ───────────────────────────
           # Stage-2 loads this plain text `nix-store --load-db` stream to
           # register the image closure without canonicalising/chowning store
           # contents. Copy the bytes instead of symlinking the derivation.
@@ -244,10 +249,10 @@ in
           # file on the wrong side of the overlay (and on every
           # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-          # ── 9. Symlink farm for caller-supplied packages ───────────────
+          # ── 10. Symlink farm for caller-supplied packages ───────────────
           ${symlinkFarmScript}
 
-          # ── 10. Caller-supplied postPopulate hook ──────────────────────
+          # ── 11. Caller-supplied postPopulate hook ──────────────────────
           ${postPopulate}
         '';
       }

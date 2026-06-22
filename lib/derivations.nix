@@ -504,6 +504,7 @@
     postInstall ? "",
     passthru ? {},
     checks ? null,
+    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -646,6 +647,7 @@
       "postInstall"
       "passthru"
       "checks"
+      "expose"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -851,8 +853,18 @@
           passthru
           // {
             inherit phases;
-          };
+          }
+          // (
+            if expose != null
+            then {inherit expose;}
+            else {}
+          );
       }
+      // (
+        if expose != null
+        then {inherit expose;}
+        else {}
+      )
       // (
         if checks != null
         then {inherit checks;}

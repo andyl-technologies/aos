@@ -57,7 +57,7 @@
   #              announce a partition that doesn't exist.
   #   4  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
   #              test-specific overrides (host SSH key, SELinux off,
-  #              test units) and role state used by fleet tests.
+  #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
   #
@@ -66,8 +66,8 @@
   # widen that scope: the test units (aos-test.target,
   # aos-test-agent.service) and the per-test fallbacks (nsswitch.conf,
   # etc.) also live there. This is a deliberate test-only deviation;
-  # production roles must use the `environment.etc` route through the
-  # EROFS image.
+  # production package policy must use the `environment.etc` route
+  # through the EROFS image.
   #
   # `mkTestDisk` is a function of `{system, extraClosures, varSizeMiB}`:
   # two callers passing identical inputs reference the same Nix derivation,
@@ -88,13 +88,17 @@
     # Only consulted when `varProvisioning == "baked"`; under "ignition"
     # the image carries no /var partition and the size is applied at boot.
     varSizeMiB ? 256,
+    # Most VM tests run without an SELinux policy and need the test
+    # /var/etc lower to keep SELinux disabled. SELinux-specific tests
+    # opt out so the system-generated /etc/selinux/config is visible.
+    seedSELinuxDisabledConfig ? true,
     # How /var is provisioned. "baked" (default): /var is partition 4 of
     # this image, formatted and seeded at build time. "ignition": the
     # image is boot+root-a+swap only — ignition creates and formats /var
     # on first boot (see lib/testing/fleet.nix), so machines differing
     # only in /var size share one base image. The build-time `varSeed` is
     # skipped under "ignition"; the guest agent arrives via the
-    # `aos-test-agent` role instead.
+    # `aos-test-agent` package instead.
     varProvisioning ? "baked",
   }: let
     systemPackages = system.config.environment.systemPackages;
@@ -228,8 +232,9 @@
       # only fall back to vsock when no virtio port shows up after a
       # short wait (Firecracker's transport).
       # The script body lives in agent/aos-test-agent.sh — shared with
-      # the aos-test-agent role (modules/roles/aos-test-agent.nix),
-      # which bakes the same bytes into image-boot fleet machines.
+      # the aos-test-agent exposed package
+      # (pkgs/tests/aos-test-agent.nix), which bakes the same bytes
+      # into image-boot fleet machines.
       # One source of truth for the agent protocol.
       cp ${./agent/aos-test-agent.sh} rootfs/opt/aos-test/bin/aos-test-agent
       chmod +x rootfs/opt/aos-test/bin/aos-test-agent
@@ -250,16 +255,18 @@
       mkdir -p var/etc/systemd/system/multi-user.target.wants
       mkdir -p var/etc/systemd/system/aos-test.target.wants
       mkdir -p var/etc/ssh
-      mkdir -p var/etc/selinux
+      ${lib.optionalString seedSELinuxDisabledConfig ''
+        mkdir -p var/etc/selinux
 
-      # SELinux off — the test rootfs has no policy files; enforcing
-      # mode would freeze systemd. The toplevel may write
-      # /etc/selinux/config from modules/security/selinux.nix; the
-      # var entry shadows it via the /var/etc overlay lower.
-      cat > var/etc/selinux/config << 'SELINUXCFG'
-      SELINUX=disabled
-      SELINUXTYPE=targeted
-      SELINUXCFG
+        # SELinux off — most test rootfs images have no policy files;
+        # enforcing mode would freeze systemd. The toplevel may write
+        # /etc/selinux/config from modules/security/selinux.nix; this
+        # var entry shadows it via the /var/etc overlay lower.
+        cat > var/etc/selinux/config << 'SELINUXCFG'
+        SELINUX=disabled
+        SELINUXTYPE=targeted
+        SELINUXCFG
+      ''}
 
       # Empty fstab — systemd-fstab-generator synthesises
       # sysroot.mount from `root=` on the cmdline; mount-var.service
@@ -421,16 +428,16 @@
             ROOT_START=$(( BOOT_START + BOOT_SECTORS ))
             SWAP_START=$(( ROOT_START + ROOT_SECTORS ))
             ${
-      if bakeVar
-      then ''
-        VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
-        VAR_START=$((  SWAP_START + SWAP_SECTORS ))
-        DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
-      ''
-      else ''
-        DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
-      ''
-    }
+              if bakeVar
+              then ''
+                VAR_SECTORS=$(( VAR_SIZE_MIB * 1024 * 1024 / 512 ))
+                VAR_START=$((  SWAP_START + SWAP_SECTORS ))
+                DISK_SECTORS=$(( VAR_START + VAR_SECTORS + 2048 ))
+              ''
+              else ''
+                DISK_SECTORS=$(( SWAP_START + SWAP_SECTORS + 2048 ))
+              ''
+            }
             DISK_BYTES=$(( DISK_SECTORS * 512 ))
 
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
@@ -623,6 +630,7 @@
     testScript ? null,
     timeout ? 120,
     memory ? null,
+    seedSELinuxDisabledConfig ? true,
   }:
     assert (instanceMetadata != null -> system != null)
     || throw "mkVMTest '${name}': instanceMetadata requires system mode (got rootfsDeps or neither)";
@@ -641,7 +649,7 @@
         }
       else if system != null
       then let
-        systemDisk = mkTestDisk {inherit system;};
+        systemDisk = mkTestDisk {inherit system seedSELinuxDisabledConfig;};
         systemKernel = system.config.system.build.kernel;
         systemInitrd = system.config.system.build.initrd;
 

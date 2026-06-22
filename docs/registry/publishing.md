@@ -173,11 +173,14 @@ The third `/releases` path segment is **everything after `major.minor`** — e.g
    `security.rs` `parse_signing_key` `name:Ed25519:<base64>`).
 
 Release tags carry no in-band expiry, which fits releases being
-immutable and carrying a long CDN TTL. Freshness is enforced out of band — low CDN
-TTL on `/channels` (and `info/refs`, `objects/info`), the consumer's own
-max-staleness policy, and the monotonic anti-rollback floor — rather than a signed
-`valid_until` inside the tag. The trade-off: this is weaker than an in-band signed
-expiry against a frozen-but-validly-signed mirror.
+immutable and carrying a long CDN TTL. Release freshness is carried by committed
+AOS-TUF metadata: `tuf/timestamp.json` is a signed, short-lived pointer to the
+snapshot hash. Moving-ref consumers enforce that timestamp before accepting the
+package catalog; explicit commit/tag/version pins verify signatures, hashes, and
+metadata version floors when TUF exists without expiring old immutable release
+snapshots.
+Channel partition freshness remains the low CDN TTL plus the consumer's
+max-staleness policy and monotonic anti-rollback floor.
 
 The Nix binary-cache / NAR substituter location lives in the committed repo-root
 `registry.toml` `[[caches]]` (a tree file authenticated transitively by the signed

@@ -26,7 +26,7 @@
   checks = import ./checks.nix;
 in {
   inherit (vm) mkVMTest mkTestDisk;
-  inherit (fleet) mkFleetTest;
+  inherit (fleet) mkFleetTest uriEncode dataUrl;
   inherit (firecracker) mkFirecrackerRootfs;
   inherit
     (integration)

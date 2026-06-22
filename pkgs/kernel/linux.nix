@@ -16,6 +16,8 @@
   bc,
   binutils,
   gcc-libs,
+  dwarves,
+  python3,
   # Optional: extra kernel config fragment text to merge after the base
   # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
   extraConfig ? "",
@@ -52,6 +54,8 @@ in
       elfutils
       bc
       binutils
+      dwarves
+      python3
     ];
     runtimeDeps = [kmod];
     propagatedDeps = [];
@@ -70,6 +74,11 @@ in
         script = ''
           tar xf $src
           cd linux-${linuxSource.version}
+          for f in $(find . -type f -name '*.py'); do
+            case "$(head -n 1 "$f")" in
+              '#!'*python*) sed -i "1s|.*|#!${python3}/bin/python3|" "$f" ;;
+            esac
+          done
         '';
       }
       {

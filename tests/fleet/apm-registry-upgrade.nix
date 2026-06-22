@@ -9,10 +9,9 @@
 #      (`apr publish --sysroot`) against its real /nix/store (the closure
 #      is pre-staged there via extraClosures and registered by
 #      aos-nix-db.service), generates a static cache of the FULL closure
-#      (`apr cache generate`) into /var/lib (served by the
-#      test-http-server role's python http.server on :8000; its
-#      WorkingDirectory is %S = /var/lib), and pushes the registry repo
-#      to the gitd-served bare origin on :9418.
+#      (`apr cache generate`) into /var/lib/sysreg-cache (served by the
+#      static-cache exposed package on :8000), and pushes the registry repo to the
+#      gitd-served bare origin on :9418.
 #   2. target VM stages the registry in SYSTEM scope (/etc/apm/
 #      registries.d + git clone into /var/lib/apm/registries; `apm
 #      update` has no --system flag, same pattern as tests/vm/apm/
@@ -26,24 +25,45 @@
 #      apm-system-upgrade.nix (same assertion battery), then rollback.
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=192.168.50.11):
-#   registry: aos-registry-server (gitd :9418) + test-http-server (:8000)
+#   registry: aos-registry-server package (gitd :9418, cache :15000)
+#             + static-cache package (:8000)
 #             + extraClosures = [server2Top] (the producer owns the
 #             closure) + a /var big enough for the compressed full-closure
 #             static cache (~540 MiB).
-#   target:   test-http-server role only (same reconcile surface as
+#   target:   direct upgrade HTTP fixture (same reconcile surface as
 #             apm-system-upgrade.nix so its assertions carry over). No
 #             extraClosures; the delta must come off the wire, but a
 #             /var big enough for the NAR cache + imported store paths
 #             (the /nix overlay upper lives on the var partition).
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
+  fleetSystem = evaluated: {
+    inherit (evaluated) config options;
+    build = {
+      toplevel = evaluated.config.system.build.toplevel;
+      kernel = evaluated.config.system.build.kernel;
+      initrd = evaluated.config.system.build.initrd;
+      image = evaluated.config.system.build.image;
+    };
+    checks = evaluated.config.system.build.checks;
+  };
+
+  targetSystem = fleetSystem (mkSystem [
+    ../../systems/server.nix
+    (import ../../systems/_upgrade-http-fixture.nix {
+      inherit lib pkgs;
+      generation = 1;
+    })
+  ]);
+
   server2Top = systems.server-2.config.system.build.toplevel;
 in {
   name = "apm-registry-upgrade";
-  # Two VM boots + role activation + full-closure static cache generation
+  # Two VM boots + fixture/package activation + full-closure static cache generation
   # (zstd over ~1.6 GB) + ~270 MiB cross-VM NAR transfer + import + live
   # switch + rollback. Generous budget for sandbox CPU/IO contention.
   timeout = 1800;
@@ -51,7 +71,7 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top];
       # `apr cache generate` rewrites the FULL ~1.5 GiB system closure into
       # the registry store under /var/lib AND writes the compressed static
@@ -66,8 +86,7 @@ in {
     };
 
     target = {
-      system = systems.server;
-      roles = ["test-http-server"];
+      system = targetSystem;
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache (~270 MiB compressed for the gen-2 delta)
       # AND the imported store paths (the /nix overlay upper lives on
@@ -83,11 +102,20 @@ in {
       import json
       import textwrap
 
-      # -- 1. Both machines up; registry roles active --------------------
+      # -- 1. Both machines up; registry packages active -----------------
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       target.wait_until_succeeds(
           "systemctl is-active test-http-server.service", timeout=120
       )
@@ -119,9 +147,11 @@ in {
           f"unexpected baseline keepalive {baseline_keepalive!r}"
       )
       nftd_before = target.succeed(
-          "cat /etc/nftables.d/50-role-test-http-server.nft"
+          "cat /etc/nftables.conf"
       )
       assert "8443" not in nftd_before, "gen-1 should not yet open port 8443"
+      sysctld_before = target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf")
+      assert "tcp_keepalive_time" not in sysctld_before, sysctld_before
 
       # test-http-server's unit is byte-identical across gens; the
       # reconciler must leave it untouched. Asserted after the upgrade.
@@ -132,7 +162,7 @@ in {
       # -- 3. Producer: publish the gen-2 closure to the registry --------
       # One bash block: registry create, sysroot
       # publish against the real /nix/store, full-closure static cache into
-      # /var/lib (served on :8000), commit+tag+push to the gitd origin.
+      # /var/lib/sysreg-cache (served on :8000), commit+tag+push to the gitd origin.
       # `apr publish` shells out to `nix path-info` (a nix-command CLI), so
       # a writable conf dir enables the feature, same as tests/vm/apm's
       # setupNixEnv. Generous timeout: the cache step zstd-compresses the
@@ -186,6 +216,10 @@ in {
       """), timeout=1200)
 
       # Cache reachable from the target over the fleet L2.
+      registry.wait_until_succeeds(
+          "curl -sf --max-time 5 http://127.0.0.1:8000/sysreg-cache/nix-cache-info",
+          timeout=60,
+      )
       target.wait_until_succeeds(
           "curl -sf --max-time 5 http://registry:8000/sysreg-cache/nix-cache-info",
           timeout=60,
@@ -235,7 +269,7 @@ in {
 
       # The registry's http.server logged NAR GETs from the target;
       # network-transfer proof on the serving side.
-      journal = registry.succeed("journalctl -u test-http-server --no-pager")
+      journal = registry.succeed("journalctl -u test-static-cache-server --no-pager")
       assert "GET /sysreg-cache/nar/" in journal, (
           "no NAR fetch logged by the registry's static cache server"
       )
@@ -259,11 +293,11 @@ in {
       osrel = target.succeed("cat /etc/os-release")
       assert "VERSION_ID=test-2" in osrel, osrel
 
-      # -- 9. Role drop-ins regenerated; reconciliation applied them -----
-      nftd = target.succeed("cat /etc/nftables.d/50-role-test-http-server.nft")
-      assert "8443" in nftd, "new nftables drop-in missing port 8443"
+      # -- 9. Base /etc policy regenerated; reconciliation applied it ---
+      nftd = target.succeed("cat /etc/nftables.conf")
+      assert "8443" in nftd, "new nftables ruleset missing port 8443"
       sysctld = target.succeed(
-          "cat /etc/sysctl.d/70-role-test-http-server.conf"
+          "cat /etc/sysctl.d/10-aos-kernel.conf"
       )
       assert "tcp_keepalive_time = 300" in sysctld, sysctld
       post_keepalive = target.succeed(

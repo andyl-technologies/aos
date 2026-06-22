@@ -121,7 +121,9 @@ pub async fn run(
             if let Err(error) =
                 prune_runtime_uppers(config.scope, &removed_generations, Path::new(RUN_ETC_DIR))
             {
-                printer.warning(&format!("could not reclaim runtime /etc upper(s): {error:#}"));
+                printer.warning(&format!(
+                    "could not reclaim runtime /etc upper(s): {error:#}"
+                ));
             }
 
             if json_mode {

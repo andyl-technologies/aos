@@ -4,13 +4,13 @@
 # consumer install across the fleet's multicast L2:
 #
 #   registry (192.168.50.11): aos-registry-server (gitd :9418) +
-#     test-http-server (:8000, serving %S = /var/lib). The producer
+#     test-static-cache-server (:8000, serving /var/lib). The producer
 #     fabricates a store path, `apr create`s a signed registry, and runs a
 #     SINGLE `apr release` that publishes the package, stages + uploads the
 #     static binary cache to a served directory, advertises the `[[caches]]`
 #     pointer, and signs the release tag — then pushes the registry git to the
 #     gitd origin so the consumer can clone it.
-#   client (192.168.50.10): roleless. `apm registry add` over git://, then
+#   client (192.168.50.10): package-less. `apm registry add` over git://, then
 #     `apm install` pulls the NAR from the HTTP-served static cache.
 #
 # Unlike apm-e2e.nix (which drives `aos cache push` + a hand-written package
@@ -32,14 +32,14 @@
     version = "1.0.0";
     storeHash = "cccccccccccccccccccccccccccccccc";
   };
-  # The aos-registry-server role exports AOS_ROOT here, so the fabricated path
+  # The aos-registry-server package exports AOS_ROOT here, so the fabricated path
   # lives at $AOS_ROOT/store/<hash>-name-version and apr reads it via the same
   # AOS_ROOT-aware nix environment.
   serverStoreRoot = "/var/lib/aos-registry-server/store-root";
   storePath = "${serverStoreRoot}/store/${pkg.storeHash}-${pkg.name}-${pkg.version}";
 in {
   name = "apr-release-e2e";
-  # Two VM boots + role activation + fabrication + `apr release` (publish +
+  # Two VM boots + package activation + fabrication + `apr release` (publish +
   # static-cache zstd + upload + sign) + a second skip-only release + consumer
   # add/install. Generous budget for sandbox CPU/IO contention.
   timeout = 900;
@@ -48,12 +48,12 @@ in {
     # Lexicographic order → client=192.168.50.10, registry=192.168.50.11.
     client = {
       system = systems.server;
-      # No role. `apm` ships via modules/base/apm.nix.
+      # No test package. `apm` ships via modules/base/apm.nix.
     };
 
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       # The static cache and origin land under /var/lib (served on :8000);
       # the default 256 MiB /var is tight once the NAR is compressed in.
       varSizeMiB = 1024;
@@ -65,9 +65,15 @@ in {
     ''
       import textwrap
 
-      # ── 1. Registry roles up; cache reachable from the client over L2 ──
+      # ── 1. Registry packages up; cache reachable from the client over L2 ──
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
+      registry.succeed("mkdir -p /var/lib/relreg-cache && chmod a+rX /var/lib/relreg-cache")
       registry.wait_until_succeeds("systemctl is-active aos-nix-db.service", timeout=120)
       client.wait_until_succeeds(
           "curl -sf --max-time 5 http://registry:8000/ -o /dev/null", timeout=120
@@ -80,6 +86,7 @@ in {
       # Python f-string → literal `{`/`}` in the embedded shell must be doubled.
       release = registry.succeed(textwrap.dedent(f"""
           set -euo pipefail
+          exec 2>&1
           export HOME=/tmp AOS_ROOT=${serverStoreRoot}
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
@@ -198,12 +205,13 @@ in {
       )
 
       # The registry's static cache server logged a NAR GET from the client.
-      journal = registry.succeed("journalctl -u test-http-server --no-pager")
+      journal = registry.succeed("journalctl -u test-static-cache-server --no-pager")
       assert "GET /relreg-cache/nar/" in journal, journal
 
       # ── 4. Skip path: re-releasing the same closure regenerates nothing ──
       second = registry.succeed(textwrap.dedent("""
           set -euo pipefail
+          exec 2>&1
           export HOME=/tmp AOS_ROOT=${serverStoreRoot}
           export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
           export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test

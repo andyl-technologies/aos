@@ -365,7 +365,7 @@ would block a decrement anyway. See
 | Tamper / MITM | signed semver + partition tags pin every object by sha256; loose-object Merkle DAG |
 | Cross-serving a valid tag at the wrong path | **name-binding**: embedded tag name must equal the serving path's expected name |
 | Rollback to an older release | consumer **monotonic floor** (never moves below current release) |
-| Stale / frozen mirror | **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + the consumer's **max-staleness** policy + the monotonic anti-rollback floor. Weaker than an in-band signed expiry against a frozen-but-validly-signed mirror — no `valid_until` exists |
+| Stale / frozen mirror | AOS-TUF `timestamp.json` gives signed expiry over release metadata; **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + consumer **max-staleness** + the monotonic anti-rollback floor bound rollout pointers |
 
 Full threat model in [`signing-and-trust.md`](./signing-and-trust.md).
 
