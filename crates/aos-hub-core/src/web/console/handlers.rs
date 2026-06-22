@@ -1454,6 +1454,22 @@ pub(crate) async fn org_dashboard(
         };
         let projects = deps.db.list_projects(org.id).await?;
         let bindings = deps.db.list_storage_bindings(org.id).await?;
+        let mut caches = Vec::new();
+        for c in deps.db.list_caches_for_org(org.id).await? {
+            if c.deleted_at.is_some() {
+                continue;
+            }
+            let usage = deps.db.cache_usage(c.id).await?;
+            caches.push(console::CacheSummary {
+                slug: c.slug,
+                name: c.name,
+                visibility: c.visibility,
+                signed: c.hosted_key_id.is_some(),
+                priority: c.priority,
+                used_bytes: usage.used_bytes,
+                object_count: usage.object_count,
+            });
+        }
         let registries: Vec<RegistryRecord> = deps
             .db
             .list_registries()
@@ -1479,6 +1495,7 @@ pub(crate) async fn org_dashboard(
             &registries,
             &members,
             &bindings,
+            &caches,
             can_manage,
             can_audit,
             can_configure,
@@ -1554,6 +1571,549 @@ pub(crate) async fn org_audit(
     match result {
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+// -- binary caches ----------------------------------------------------------
+
+/// `POST /-/org/{org}/caches` form: a new managed binary cache.
+#[derive(serde::Deserialize)]
+pub(crate) struct NewCacheForm {
+    #[serde(default)]
+    csrf: String,
+    slug: String,
+    #[serde(default)]
+    name: String,
+    /// Storage binding (by name) the cache's objects live in.
+    binding: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    priority: String,
+    #[serde(default)]
+    compression: String,
+    #[serde(default)]
+    want_mass_query: Option<String>,
+}
+
+/// `POST /-/org/{org}/caches/{slug}` form: mutable cache settings.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheUpdateForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    visibility: String,
+    #[serde(default)]
+    priority: String,
+    #[serde(default)]
+    compression: String,
+    #[serde(default)]
+    want_mass_query: Option<String>,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/link` form.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheLinkForm {
+    #[serde(default)]
+    csrf: String,
+    registry: String,
+    #[serde(default)]
+    advertised: Option<String>,
+    #[serde(default)]
+    roots_packages: Option<String>,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/unlink` form.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheUnlinkForm {
+    #[serde(default)]
+    csrf: String,
+    registry: String,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/gc` form.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheGcForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    dry_run: Option<String>,
+}
+
+/// `POST /-/org/{org}/caches/{slug}/delete` form.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheConfirmForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    confirm: String,
+}
+
+/// Normalize a visibility form value, defaulting to `private`.
+fn cache_visibility(raw: &str) -> Option<&'static str> {
+    match raw.trim() {
+        "" | "private" => Some("private"),
+        "internal" => Some("internal"),
+        "public" => Some("public"),
+        _ => None,
+    }
+}
+
+/// Render a cache's detail page (`cache_page`), gathering usage, links, and the
+/// org's linkable registries. `notice` surfaces the last action's outcome.
+///
+/// Returns `404` when the cache is missing or not owned by `org`.
+async fn render_cache_detail(
+    deps: &ConsoleDeps,
+    session: &Session,
+    org: &OrgRecord,
+    cache: &crate::db::Cache,
+    can_admin: bool,
+    notice: Option<&str>,
+    started: Instant,
+) -> Response {
+    let result = async {
+        let usage = deps.db.cache_usage(cache.id).await?;
+        let binding = deps
+            .db
+            .storage_binding(cache.storage_binding_id)
+            .await?
+            .map(|b| b.name)
+            .unwrap_or_default();
+        let org_registries: Vec<RegistryRecord> = deps
+            .db
+            .list_registries()
+            .await?
+            .into_iter()
+            .filter(|r| r.org_id == Some(org.id))
+            .collect();
+        let id_to_slug: std::collections::HashMap<i64, String> = org_registries
+            .iter()
+            .map(|r| (r.id, r.slug.clone()))
+            .collect();
+        let mut link_rows = Vec::new();
+        let mut linked: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        for l in deps.db.list_cache_links(cache.id).await? {
+            linked.insert(l.registry_id);
+            if let Some(slug) = id_to_slug.get(&l.registry_id) {
+                link_rows.push(console::CacheLinkRow {
+                    registry_slug: slug.clone(),
+                    roots_packages: l.roots_packages,
+                    advertised: l.advertised,
+                });
+            }
+        }
+        let linkable: Vec<String> = org_registries
+            .iter()
+            .filter(|r| !linked.contains(&r.id))
+            .map(|r| r.slug.clone())
+            .collect();
+        Ok::<_, anyhow::Error>(console::cache_page(
+            &session.email,
+            &org.slug,
+            &session.csrf(),
+            cache,
+            &binding,
+            &usage,
+            &link_rows,
+            &linkable,
+            can_admin,
+            notice,
+            started,
+        ))
+    }
+    .await;
+    match result {
+        Ok(html) => Html(html).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// Resolve `(org, cache)` for a cache console route, enforcing that the cache
+/// belongs to the org. Returns the deny/redirect response on any failure.
+async fn cache_in_org(
+    deps: &ConsoleDeps,
+    org_slug: &str,
+    cache_slug: &str,
+) -> Result<(OrgRecord, crate::db::Cache), Response> {
+    let Some(org) = deps
+        .db
+        .org_by_slug(org_slug)
+        .await
+        .map_err(internal)?
+    else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    let Some(cache) = deps
+        .db
+        .cache_by_slug(cache_slug)
+        .await
+        .map_err(internal)?
+    else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    if cache.org_id != Some(org.id) || cache.deleted_at.is_some() {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok((org, cache))
+}
+
+/// `GET /-/org/{org}/caches/{slug}` — a cache's detail page.
+pub(crate) async fn cache_detail(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    let scope = Scope::parse(&org_slug);
+    if !session.allows(&deps.db, Permission::Read, &scope).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let can_admin = session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await;
+    render_cache_detail(&deps, &session, &org, &cache, can_admin, None, started).await
+}
+
+/// `POST /-/org/{org}/caches` — create a managed binary cache.
+pub(crate) async fn org_create_cache(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<NewCacheForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let slug = form.slug.trim();
+    if slug.is_empty() {
+        return (StatusCode::BAD_REQUEST, "cache slug is required").into_response();
+    }
+    let Some(visibility) = cache_visibility(&form.visibility) else {
+        return (StatusCode::BAD_REQUEST, "invalid visibility").into_response();
+    };
+    let priority = form.priority.trim().parse::<i64>().unwrap_or(40);
+    let compression = match form.compression.trim() {
+        "" | "zstd" => "zstd",
+        "xz" => "xz",
+        "none" => "none",
+        other => return (StatusCode::BAD_REQUEST, format!("invalid compression '{other}'")).into_response(),
+    };
+    let result = async {
+        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
+            return Ok(None);
+        };
+        let Some(binding) = deps
+            .db
+            .storage_binding_by_name(org.id, form.binding.trim())
+            .await?
+        else {
+            return Ok(Some(Err("unknown storage binding".to_string())));
+        };
+        let name = if form.name.trim().is_empty() {
+            slug
+        } else {
+            form.name.trim()
+        };
+        match deps
+            .db
+            .create_cache(
+                Some(org.id),
+                slug,
+                name,
+                binding.id,
+                "",
+                None,
+                visibility,
+                priority,
+                compression,
+                form.want_mass_query.is_some(),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err(e) => return Ok(Some(Err(format!("{e:#}")))),
+        }
+        deps.db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "cache.create",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(slug),
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(Some(Ok(())))
+    }
+    .await;
+    match result {
+        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/caches/{slug}")).into_response(),
+        Ok(Some(Err(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}` — update a cache's mutable settings.
+pub(crate) async fn cache_update(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheUpdateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let Some(visibility) = cache_visibility(&form.visibility) else {
+        return (StatusCode::BAD_REQUEST, "invalid visibility").into_response();
+    };
+    let name = if form.name.trim().is_empty() {
+        cache.name.clone()
+    } else {
+        form.name.trim().to_string()
+    };
+    let priority = form.priority.trim().parse::<i64>().unwrap_or(cache.priority);
+    let compression = match form.compression.trim() {
+        "" => cache.compression.clone(),
+        c @ ("zstd" | "xz" | "none") => c.to_string(),
+        other => return (StatusCode::BAD_REQUEST, format!("invalid compression '{other}'")).into_response(),
+    };
+    let result = deps
+        .db
+        .update_cache(
+            cache.id,
+            &name,
+            visibility,
+            priority,
+            &compression,
+            form.want_mass_query.is_some(),
+            cache.hosted_key_id,
+        )
+        .await;
+    match result {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/link` — link a registry to the cache.
+pub(crate) async fn cache_link(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheLinkForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let result = async {
+        let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? else {
+            return Ok(Some("unknown registry"));
+        };
+        if registry.org_id != Some(org.id) {
+            return Ok(Some("registry is not in this organization"));
+        }
+        deps.db
+            .link_cache(
+                cache.id,
+                registry.id,
+                form.roots_packages.is_some(),
+                form.advertised.is_some(),
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(None)
+    }
+    .await;
+    match result {
+        Ok(None) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/unlink` — remove a cache⇄registry link.
+pub(crate) async fn cache_unlink(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheUnlinkForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let result = async {
+        if let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? {
+            deps.db.unlink_cache(cache.id, registry.id).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match result {
+        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Err(err) => internal(err),
+    }
+}
+
+/// `POST /-/org/{org}/caches/{slug}/gc` — sweep the cache (dry run or delete).
+pub(crate) async fn cache_gc(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheGcForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    let dry_run = form.dry_run.is_some();
+    let now = crate::clock::now_unix_secs();
+    let notice = match crate::gc::sweep_cache(&deps.db, deps.surface_write.as_ref(), &cache, dry_run, now).await
+    {
+        Ok(stats) => {
+            let freed = crate::web::render::human_size(stats.freed_bytes.max(0) as u64);
+            if dry_run {
+                format!(
+                    "Dry run: {} of {} objects collectable, {} reclaimable.",
+                    stats.deleted_objects, stats.scanned, freed
+                )
+            } else {
+                format!(
+                    "Collected {} objects, reclaimed {} ({} retained).",
+                    stats.deleted_objects, freed, stats.retained
+                )
+            }
+        }
+        Err(err) => format!("GC failed: {err:#}"),
+    };
+    render_cache_detail(&deps, &session, &org, &cache, true, Some(&notice), started).await
+}
+
+/// `POST /-/org/{org}/caches/{slug}/delete` — soft-delete a cache (typed slug
+/// confirmation).
+pub(crate) async fn cache_delete(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheConfirmForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    let scope = Scope::parse(&org_slug);
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    {
+        return *deny;
+    }
+    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
+        Ok(pair) => pair,
+        Err(resp) => return resp,
+    };
+    if form.confirm.trim() != cache_slug {
+        return (StatusCode::BAD_REQUEST, "type the cache slug to confirm").into_response();
+    }
+    // A 30-day grace window before the cache's objects are eligible for purge,
+    // mirroring the org soft-delete.
+    let purge_after = crate::clock::now_unix_secs() + 30 * 86_400;
+    let result = async {
+        deps.db.soft_delete_cache(cache.id, purge_after).await?;
+        deps.db
+            .record_audit(
+                "user",
+                Some(session.auth.user_id),
+                &session.email,
+                "cache.delete",
+                &org_slug,
+                None,
+                None,
+                None,
+                Some(&cache_slug),
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match result {
+        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
         Err(err) => internal(err),
     }
 }

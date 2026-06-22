@@ -30,12 +30,13 @@ use crate::binding::RuntimeKind;
 use crate::clock::Instant;
 
 use crate::db::{
-    AuditRow, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord, IdpConfigRecord,
-    IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord, ProjectRecord, RegistryRecord,
-    ReleaseRow, SignupPolicy, StorageBindingRecord, WebauthnCredentialRecord, WebhookRecord,
+    AuditRow, Cache, CacheUsage, ChangesetRow, ChannelSummary, FrontendRecord, HostedKeyRecord,
+    IdpConfigRecord, IndexStatus, MirrorSource, OrgDomainRecord, OrgRecord, ProjectRecord,
+    RegistryRecord, ReleaseRow, SignupPolicy, StorageBindingRecord, WebauthnCredentialRecord,
+    WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
-use crate::web::render::{escape, key_fingerprint, table};
+use crate::web::render::{escape, human_size, key_fingerprint, table};
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,
 /// keys, audit). Mirrors the browse tier's list size so both paginate alike.
@@ -1134,6 +1135,34 @@ pub struct MemberRow {
     pub role: String,
 }
 
+/// A binary cache row for the org dashboard list: identity, access, and usage.
+pub struct CacheSummary {
+    /// URL slug the cache is served under.
+    pub slug: String,
+    /// Display name.
+    pub name: String,
+    /// Access scope (`public`/`internal`/`private`).
+    pub visibility: String,
+    /// Whether the cache signs its `.narinfo` with a hosted key.
+    pub signed: bool,
+    /// `nix-cache-info` priority (lower = preferred substituter).
+    pub priority: i64,
+    /// Sum of object sizes in bytes.
+    pub used_bytes: i64,
+    /// Number of indexed objects.
+    pub object_count: i64,
+}
+
+/// A linked registry shown on a cache's detail page.
+pub struct CacheLinkRow {
+    /// The linked registry's slug.
+    pub registry_slug: String,
+    /// The registry's live store paths pin GC roots in this cache.
+    pub roots_packages: bool,
+    /// This cache's URL is advertised in the registry's cache stack.
+    pub advertised: bool,
+}
+
 /// The org dashboard: projects, registries, members, bindings, audit link.
 ///
 /// `can_manage_members` gates the member-management controls (invite/remove)
@@ -1153,6 +1182,7 @@ pub fn org_dashboard(
     registries: &[RegistryRecord],
     members: &[MemberRow],
     bindings: &[StorageBindingRecord],
+    caches: &[CacheSummary],
     can_manage_members: bool,
     can_read_audit: bool,
     can_configure: bool,
@@ -1347,6 +1377,82 @@ pub fn org_dashboard(
         );
     }
 
+    // -- Binary caches -------------------------------------------------------
+    body.push_str("<h2>Binary caches</h2>\n");
+    if caches.is_empty() {
+        body.push_str("<p class=\"dim\">No binary caches.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = caches
+            .iter()
+            .map(|c| {
+                let signed = if c.signed {
+                    "<span class=\"chip\">signed</span>".to_string()
+                } else {
+                    String::new()
+                };
+                vec![
+                    format!(
+                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                        org = escape(slug),
+                        slug = escape(&c.slug),
+                    ),
+                    escape(&c.visibility),
+                    signed,
+                    c.priority.to_string(),
+                    c.object_count.to_string(),
+                    human_size(c.used_bytes.max(0) as u64),
+                ]
+            })
+            .collect();
+        body.push_str(&table(
+            &["cache", "visibility", "", "priority", "objects", "size"],
+            &rows,
+        ));
+    }
+    if can_configure {
+        // A cache roots its NAR/narinfo surface on a storage binding, so one must
+        // exist first; the select is empty (and the create disabled in practice)
+        // until then.
+        let mut binding_options = String::new();
+        for b in bindings {
+            let _ = write!(
+                binding_options,
+                "<option value=\"{name}\">{name}</option>",
+                name = escape(&b.name),
+            );
+        }
+        if bindings.is_empty() {
+            body.push_str(
+                "<p class=\"dim\">Add a storage binding above to host a cache's objects.</p>\n",
+            );
+        } else {
+            body.push_str("<h3>Create a binary cache</h3>\n");
+            let _ = write!(
+                body,
+                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
+                 <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
+                 <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
+                 <span class=\"dim\">optional</span></label>\n\
+                 <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
+                 <label>visibility <select name=\"visibility\">\
+                 <option value=\"private\">private</option>\
+                 <option value=\"internal\">internal</option>\
+                 <option value=\"public\">public</option></select></label>\n\
+                 <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+                 <label>compression <select name=\"compression\">\
+                 <option value=\"zstd\">zstd</option>\
+                 <option value=\"xz\">xz</option>\
+                 <option value=\"none\">none</option></select></label>\n\
+                 <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
+                 advertise mass-query</label>\n\
+                 <button>create cache</button>\n</form>\n",
+                org = escape(slug),
+                csrf = csrf_field(csrf),
+                bindings = binding_options,
+            );
+        }
+    }
+
     body.push_str("<h2>Members</h2>\n");
     let rows: Vec<Vec<String>> = mem_pager
         .slice(members)
@@ -1437,6 +1543,204 @@ pub fn org_dashboard(
         &[
             ("/-/orgs".into(), "organizations".into()),
             (String::new(), org.slug.clone()),
+        ],
+        &body,
+        &StateLine::timed(started),
+        &indicator(email),
+    )
+}
+
+/// A managed binary cache's detail page: configuration, usage, linked
+/// registries, and (for an admin) the update / link / GC / delete controls.
+///
+/// `can_admin` gates every mutating form; a plain member sees the read-only
+/// configuration and usage. `linkable` is the org's registries available to link
+/// (already-linked ones are omitted). `notice` renders the outcome of the last
+/// action (e.g. a GC sweep summary).
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn cache_page(
+    email: &str,
+    org_slug: &str,
+    csrf: &str,
+    cache: &Cache,
+    binding_name: &str,
+    usage: &CacheUsage,
+    links: &[CacheLinkRow],
+    linkable: &[String],
+    can_admin: bool,
+    notice: Option<&str>,
+    started: Instant,
+) -> String {
+    let mut body = format!("<h1>Cache · {}</h1>\n", escape(&cache.slug));
+    if let Some(notice) = notice {
+        let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
+    }
+
+    // Usage + identity chips.
+    let signed = if cache.hosted_key_id.is_some() {
+        " · <span class=\"chip\">signed</span>"
+    } else {
+        ""
+    };
+    let _ = write!(
+        body,
+        "<p class=\"chips\"><span class=\"chip\">{vis}</span>\
+         <span class=\"chip\">priority {prio}</span>\
+         <span class=\"chip\">{comp}</span>{signed}</p>\n\
+         <p class=\"dim\">{objects} objects · {size} · {links} linked · created {ago}</p>\n",
+        vis = escape(&cache.visibility),
+        prio = cache.priority,
+        comp = escape(&cache.compression),
+        signed = signed,
+        objects = usage.object_count,
+        size = human_size(usage.used_bytes.max(0) as u64),
+        links = links.len(),
+        ago = ago(cache.created_at),
+    );
+
+    // Surface location (admin-only detail — never the credential).
+    if can_admin {
+        let _ = write!(
+            body,
+            "<p class=\"dim\">binding <code>{binding}</code>{prefix}</p>\n",
+            binding = escape(binding_name),
+            prefix = if cache.prefix.is_empty() {
+                String::new()
+            } else {
+                format!(" · prefix <code>{}</code>", escape(&cache.prefix))
+            },
+        );
+    }
+
+    if can_admin {
+        // -- Settings --------------------------------------------------------
+        body.push_str("<h2>Settings</h2>\n");
+        let opt = |value: &str, current: &str, label: &str| {
+            let sel = if value == current { " selected" } else { "" };
+            format!("<option value=\"{value}\"{sel}>{label}</option>")
+        };
+        let mass = if cache.want_mass_query { " checked" } else { "" };
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}\">{csrf}\
+             <label>name <input type=\"text\" name=\"name\" value=\"{name}\"></label>\n\
+             <label>visibility <select name=\"visibility\">{vis_pub}{vis_int}{vis_priv}</select></label>\n\
+             <label>priority <input type=\"number\" name=\"priority\" value=\"{prio}\"></label>\n\
+             <label>compression <select name=\"compression\">{c_zstd}{c_xz}{c_none}</select></label>\n\
+             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\"{mass}> \
+             advertise mass-query</label>\n\
+             <button>save</button>\n</form>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            csrf = csrf_field(csrf),
+            name = escape(&cache.name),
+            prio = cache.priority,
+            vis_pub = opt("public", &cache.visibility, "public"),
+            vis_int = opt("internal", &cache.visibility, "internal"),
+            vis_priv = opt("private", &cache.visibility, "private"),
+            c_zstd = opt("zstd", &cache.compression, "zstd"),
+            c_xz = opt("xz", &cache.compression, "xz"),
+            c_none = opt("none", &cache.compression, "none"),
+            mass = mass,
+        );
+    }
+
+    // -- Linked registries ---------------------------------------------------
+    body.push_str("<h2>Linked registries</h2>\n");
+    if links.is_empty() {
+        body.push_str("<p class=\"dim\">No linked registries.</p>\n");
+    } else {
+        let rows: Vec<Vec<String>> = links
+            .iter()
+            .map(|l| {
+                let mut flags = Vec::new();
+                if l.advertised {
+                    flags.push("<span class=\"chip\">advertised</span>");
+                }
+                if l.roots_packages {
+                    flags.push("<span class=\"chip\">gc roots</span>");
+                }
+                let action = if can_admin {
+                    format!(
+                        "<form class=\"console\" method=\"post\" \
+                         action=\"/-/org/{org}/caches/{slug}/unlink\" style=\"display:inline\">{csrf}\
+                         <input type=\"hidden\" name=\"registry\" value=\"{reg}\">\
+                         <button class=\"danger\">unlink</button></form>",
+                        org = escape(org_slug),
+                        slug = escape(&cache.slug),
+                        csrf = csrf_field(csrf),
+                        reg = escape(&l.registry_slug),
+                    )
+                } else {
+                    String::new()
+                };
+                vec![escape(&l.registry_slug), flags.join(" "), action]
+            })
+            .collect();
+        body.push_str(&table(&["registry", "", ""], &rows));
+    }
+    if can_admin && !linkable.is_empty() {
+        let mut reg_options = String::new();
+        for slug in linkable {
+            let _ = write!(
+                reg_options,
+                "<option value=\"{s}\">{s}</option>",
+                s = escape(slug),
+            );
+        }
+        let _ = write!(
+            body,
+            "<h3>Link a registry</h3>\n\
+             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\">{csrf}\
+             <label>registry <select name=\"registry\">{regs}</select></label>\n\
+             <label><input type=\"checkbox\" name=\"advertised\" value=\"1\" checked> \
+             advertise to consumers</label>\n\
+             <label><input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked> \
+             pin GC roots from its packages</label>\n\
+             <button>link</button>\n</form>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            csrf = csrf_field(csrf),
+            regs = reg_options,
+        );
+    }
+
+    if can_admin {
+        // -- Garbage collection ---------------------------------------------
+        body.push_str("<h2>Garbage collection</h2>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
+             style=\"display:inline\">{csrf}\
+             <input type=\"hidden\" name=\"dry_run\" value=\"1\"><button>preview (dry run)</button></form>\n\
+             <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/gc\" \
+             style=\"display:inline\">{csrf}<button class=\"danger\">collect now</button></form>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            csrf = csrf_field(csrf),
+        );
+
+        // -- Delete ----------------------------------------------------------
+        body.push_str("<h2 class=\"danger\">Delete cache</h2>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/delete\">{csrf}\
+             <label>type <code>{slug}</code> to confirm \
+             <input type=\"text\" name=\"confirm\" autocomplete=\"off\"></label>\n\
+             <button class=\"danger\">delete cache</button>\n</form>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            csrf = csrf_field(csrf),
+        );
+    }
+
+    page_with_session(
+        &format!("cache {}", cache.slug),
+        &[
+            ("/-/orgs".into(), "organizations".into()),
+            (format!("/-/org/{org_slug}"), org_slug.to_string()),
+            (String::new(), format!("cache {}", cache.slug)),
         ],
         &body,
         &StateLine::timed(started),
@@ -3065,4 +3369,104 @@ fn registry_crumbs(slug: &str) -> Vec<(String, String)> {
         ("/".to_string(), "registries".to_string()),
         (format!("/{slug}/"), slug.to_string()),
     ]
+}
+
+#[cfg(test)]
+mod cache_render_tests {
+    use super::*;
+
+    fn cache() -> Cache {
+        Cache {
+            id: 1,
+            org_id: Some(1),
+            slug: "build".into(),
+            name: "Build cache".into(),
+            storage_binding_id: 1,
+            prefix: String::new(),
+            hosted_key_id: Some(7),
+            visibility: "public".into(),
+            priority: 40,
+            compression: "zstd".into(),
+            want_mass_query: true,
+            created_at: 1_700_000_000,
+            deleted_at: None,
+            purge_after: None,
+        }
+    }
+
+    fn usage() -> CacheUsage {
+        CacheUsage {
+            used_bytes: 2 * 1024 * 1024,
+            object_count: 3,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn admin_sees_every_control() {
+        let html = cache_page(
+            "a@b.com",
+            "acme",
+            "csrf-tok",
+            &cache(),
+            "primary",
+            &usage(),
+            &[],
+            &["cdn".to_string()],
+            true,
+            None,
+            Instant::now(),
+        );
+        // Identity + usage are shown.
+        assert!(html.contains("Cache · build"));
+        assert!(html.contains("2.0 MiB"));
+        assert!(html.contains("<span class=\"chip\">signed</span>"));
+        // Every admin control is present.
+        assert!(html.contains("/-/org/acme/caches/build/link"));
+        assert!(html.contains("/-/org/acme/caches/build/gc"));
+        assert!(html.contains("/-/org/acme/caches/build/delete"));
+        assert!(html.contains("save"));
+        // The CSRF token is wired into the forms.
+        assert!(html.contains("csrf-tok"));
+    }
+
+    #[test]
+    fn member_sees_no_mutating_forms() {
+        let html = cache_page(
+            "a@b.com",
+            "acme",
+            "csrf-tok",
+            &cache(),
+            "primary",
+            &usage(),
+            &[],
+            &["cdn".to_string()],
+            false,
+            None,
+            Instant::now(),
+        );
+        assert!(html.contains("Cache · build"));
+        // No admin forms for a plain member.
+        assert!(!html.contains("/caches/build/delete"));
+        assert!(!html.contains("/caches/build/gc"));
+        assert!(!html.contains("/caches/build/link"));
+    }
+
+    #[test]
+    fn gc_notice_is_surfaced() {
+        let html = cache_page(
+            "a@b.com",
+            "acme",
+            "csrf-tok",
+            &cache(),
+            "primary",
+            &usage(),
+            &[],
+            &[],
+            true,
+            Some("Collected 5 objects, reclaimed 1.0 MiB (3 retained)."),
+            Instant::now(),
+        );
+        assert!(html.contains("Collected 5 objects"));
+    }
 }
