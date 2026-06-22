@@ -1050,6 +1050,8 @@ pub struct PersistCache {
     layout: PersistLayout,
     value_pack: PersistBlobPack,
     file_pack: PersistBlobPack,
+    value_index: PersistBlobIndex,
+    file_index: PersistBlobIndex,
 }
 
 impl PersistCache {
@@ -1095,10 +1097,26 @@ impl PersistCache {
                 source,
             }
         })?;
+        let value_index_path = layout.value_index_path();
+        let value_index = PersistBlobIndex::open(value_index_path.clone()).map_err(|source| {
+            PersistError::OpenBlobIndex {
+                path: value_index_path,
+                source,
+            }
+        })?;
+        let file_index_path = layout.file_index_path();
+        let file_index = PersistBlobIndex::open(file_index_path.clone()).map_err(|source| {
+            PersistError::OpenBlobIndex {
+                path: file_index_path,
+                source,
+            }
+        })?;
         Ok(Self {
             layout,
             value_pack,
             file_pack,
+            value_index,
+            file_index,
         })
     }
 
@@ -1115,6 +1133,24 @@ impl PersistCache {
     /// Returns the immutable file/frontend artifact blob packfile.
     pub const fn file_pack(&self) -> &PersistBlobPack {
         &self.file_pack
+    }
+
+    /// Returns the fixed-record blob index for serialized value blobs.
+    pub const fn value_index(&self) -> &PersistBlobIndex {
+        &self.value_index
+    }
+
+    /// Returns the fixed-record blob index for serialized file blobs.
+    pub const fn file_index(&self) -> &PersistBlobIndex {
+        &self.file_index
+    }
+
+    /// Returns the fixed-record blob index for `store`.
+    pub const fn blob_index(&self, store: PersistBlobStore) -> &PersistBlobIndex {
+        match store {
+            PersistBlobStore::Values => &self.value_index,
+            PersistBlobStore::Files => &self.file_index,
+        }
     }
 
     /// Returns the immutable blob packfile for `store`.
@@ -1857,6 +1893,14 @@ pub enum PersistError {
         path: PathBuf,
         /// The underlying packfile error.
         source: PersistBlobPackError,
+    },
+    /// A value/file blob index file could not be initialized.
+    #[error("failed to initialize persistent blob index {path}")]
+    OpenBlobIndex {
+        /// The blob index file path.
+        path: PathBuf,
+        /// The underlying index error.
+        source: PersistBlobIndexError,
     },
 }
 
@@ -3007,6 +3051,8 @@ mod tests {
         assert!(layout.files_dir().is_dir());
         assert_eq!(cache.value_pack().path(), layout.value_packfile_path());
         assert_eq!(cache.file_pack().path(), layout.file_packfile_path());
+        assert_eq!(cache.value_index().path(), layout.value_index_path());
+        assert_eq!(cache.file_index().path(), layout.file_index_path());
         assert_eq!(
             cache.blob_pack(PersistBlobStore::Values).path(),
             layout.value_packfile_path()
@@ -3014,6 +3060,14 @@ mod tests {
         assert_eq!(
             cache.blob_pack(PersistBlobStore::Files).path(),
             layout.file_packfile_path()
+        );
+        assert_eq!(
+            cache.blob_index(PersistBlobStore::Values).path(),
+            layout.value_index_path()
+        );
+        assert_eq!(
+            cache.blob_index(PersistBlobStore::Files).path(),
+            layout.file_index_path()
         );
         assert_eq!(
             fs::read(layout.value_packfile_path())
@@ -3026,6 +3080,18 @@ mod tests {
                 .expect("file pack header reads")
                 .as_slice(),
             PersistBlobPackHeader::current().encode().as_slice()
+        );
+        assert_eq!(
+            fs::metadata(layout.value_index_path())
+                .expect("value index metadata")
+                .len(),
+            0
+        );
+        assert_eq!(
+            fs::metadata(layout.file_index_path())
+                .expect("file index metadata")
+                .len(),
+            0
         );
         assert_eq!(
             fs::read_to_string(layout.schema_path()).expect("schema reads"),
@@ -3059,6 +3125,35 @@ mod tests {
                 .expect("corrupt pack reads")
                 .as_slice(),
             b"bad"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_blob_index_errors_without_rewriting() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let layout = cache.layout().clone();
+        fs::write(layout.value_index_path(), b"partial").expect("value index corrupts");
+
+        let error = PersistCache::open(&root).expect_err("corrupt value index errors");
+
+        assert!(matches!(
+            error,
+            PersistError::OpenBlobIndex {
+                source: PersistBlobIndexError::Format {
+                    source: PersistPackFormatError::ShortBlobIndexEntry { actual: 7, .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(layout.value_index_path())
+                .expect("corrupt index reads")
+                .as_slice(),
+            b"partial"
         );
 
         let _ = fs::remove_dir_all(root);

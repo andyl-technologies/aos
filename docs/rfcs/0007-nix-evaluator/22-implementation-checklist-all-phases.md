@@ -568,12 +568,14 @@ alone (`M-1`/`Q-A`).
       entry hydration only; durable index lookup, automatic file-artifact
       materialization, semantic validation before write, mmap reads, cache-hit
       integration, and harness proof remain open (`C-13`).
-- [x] Current cache-level blob pack initialization substrate:
+- [x] Current cache-level blob pack/index initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
-      `PersistBlobPack` handles after schema validation and owned-directory
-      setup, and reports corrupt non-empty packfiles instead of replacing them.
-      Durable index integration, node metadata, mmap reads, writer batching,
-      GC/repack, Attic transport, and harness proof remain open (`C-13`/`R-14`).
+      `PersistBlobPack` and `PersistBlobIndex` handles after schema validation
+      and owned-directory setup, and reports corrupt non-empty packfiles or
+      malformed fixed-record indexes instead of replacing them. Automatic index
+      updates/lookups from cache append/read calls, node metadata, mmap reads,
+      writer batching, GC/repack, Attic transport, and harness proof remain open
+      (`C-13`/`R-14`).
 - [x] Current key-routed blob IO substrate: `PersistCache::append_blob` and
       `read_blob` route a `PersistBlobKey` to the value or file pack, preserving
       namespace separation for identical payload hashes while reusing pack-level
