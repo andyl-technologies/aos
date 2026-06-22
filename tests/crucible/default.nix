@@ -53,6 +53,7 @@ in {
     crateSpecIndex = import ./phase1-crate-spec-index.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     concurrencyAbiOracleStandards = import ./phase1-concurrency-abi-oracle-standards.nix {inherit pkgs lib;};
+    decisionRng = import ./phase1-decision-rng.nix {inherit pkgs lib;};
     determinismCoreCoverage = import ./phase1-determinism-core-coverage.nix {inherit pkgs lib;};
     deterministicLaunch = import ./phase1-deterministic-launch.nix {inherit pkgs lib;};
     determinismReview = import ./phase1-determinism-review.nix {inherit pkgs lib;};
