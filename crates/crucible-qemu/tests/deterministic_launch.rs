@@ -49,6 +49,7 @@ fn default_launch_profile_pins_contract_a_arguments() {
         args.windows(2)
             .any(|window| window == ["-rtc", "base=2026-01-01T00:00:00,clock=vm"])
     );
+    assert!(args.windows(2).any(|window| window == ["-seed", "1097729"]));
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
 }
@@ -146,6 +147,8 @@ fn launch_hash_material_records_every_determinism_field() {
         "ram_reset=zeroed-fresh-anonymous-memory",
         "disk_image_mode=copy-on-write-overlay",
         "input_policy=no-interactive-input",
+        "qemu_run_seed=1097729",
+        "qemu_run_seed_controls=guest-random,glib-global-prng",
         "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off",
     ] {
         assert!(material.contains(expected), "missing {expected}");
@@ -167,12 +170,15 @@ fn launch_hash_material_records_every_determinism_field() {
             .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet"),
     )
     .scenario_hash_material();
+    let run_seed = deterministic(LaunchProfileCandidate::default().with_run_seed(0x1234))
+        .scenario_hash_material();
 
     assert_ne!(material, shifted);
     assert_ne!(material, machine);
     assert_ne!(material, memory);
     assert_ne!(material, epoch);
     assert_ne!(material, cmdline);
+    assert_ne!(material, run_seed);
 }
 
 #[test]

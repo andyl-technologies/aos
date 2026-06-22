@@ -15,6 +15,7 @@ const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "tcg,thread=single";
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off";
+const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const MAX_ICOUNT_SHIFT: u8 = 62;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -38,6 +39,8 @@ pub struct LaunchProfileCandidate {
     pub rtc_clock: String,
     /// The guest kernel command line.
     pub kernel_cmdline: String,
+    /// The run seed passed to QEMU's deterministic random path.
+    pub run_seed: u64,
     /// The reset discipline for RAM and emulated devices.
     pub machine_reset: MachineResetMode,
     /// The backing-image write policy.
@@ -58,6 +61,7 @@ impl Default for LaunchProfileCandidate {
             rtc_epoch_utc: DEFAULT_RTC_EPOCH_UTC.to_owned(),
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
+            run_seed: DEFAULT_RUN_SEED,
             machine_reset: MachineResetMode::Deterministic,
             disk_image_mode: DiskImageMode::CopyOnWriteOverlay,
             input_policy: InputPolicy::NoInteractiveInput,
@@ -126,6 +130,13 @@ impl LaunchProfileCandidate {
     #[must_use]
     pub fn with_kernel_cmdline(mut self, kernel_cmdline: impl Into<String>) -> Self {
         self.kernel_cmdline = kernel_cmdline.into();
+        self
+    }
+
+    /// Returns a candidate with a different deterministic run seed.
+    #[must_use]
+    pub fn with_run_seed(mut self, run_seed: u64) -> Self {
+        self.run_seed = run_seed;
         self
     }
 
@@ -210,6 +221,7 @@ impl LaunchProfileCandidate {
             icount_shift,
             rtc_epoch_utc: self.rtc_epoch_utc,
             kernel_cmdline: self.kernel_cmdline,
+            run_seed: self.run_seed,
         })
     }
 }
@@ -223,6 +235,7 @@ pub struct DeterministicLaunchProfile {
     icount_shift: u8,
     rtc_epoch_utc: String,
     kernel_cmdline: String,
+    run_seed: u64,
 }
 
 impl DeterministicLaunchProfile {
@@ -264,6 +277,8 @@ impl DeterministicLaunchProfile {
             format!("shift={},sleep=off,align=off", self.icount_shift),
             "-rtc".to_owned(),
             format!("base={},clock=vm", self.rtc_epoch_utc),
+            "-seed".to_owned(),
+            self.run_seed.to_string(),
             "-append".to_owned(),
             self.kernel_cmdline.clone(),
         ]
@@ -287,6 +302,8 @@ impl DeterministicLaunchProfile {
             "ram_reset=zeroed-fresh-anonymous-memory".to_owned(),
             "disk_image_mode=copy-on-write-overlay".to_owned(),
             "input_policy=no-interactive-input".to_owned(),
+            format!("qemu_run_seed={}", self.run_seed),
+            "qemu_run_seed_controls=guest-random,glib-global-prng".to_owned(),
             format!("kernel_cmdline={}", self.kernel_cmdline),
         ]
         .join("\n")

@@ -658,7 +658,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   holds time control, preserving the clock-notify wakeup path; micro-test that
   the virtual clock advances only by icount and plugin-authorized jumps. —
   satisfies [DET-10], [DET-18] (E2); spec §4.6 (E2).
-- [ ] **T-DET-4** Seed QEMU-internal entropy deterministically (guest-random and
+- [x] **T-DET-4** Seed QEMU-internal entropy deterministically (guest-random and
   glib PRNG) from the run seed so device MACs/IDs and internal draws are
   reproducible in `T`. — satisfies [DET-21], [DET-18] (E9); spec §4.6 (E9).
 - [ ] **T-DET-5** Seed guest entropy deterministically via firmware
