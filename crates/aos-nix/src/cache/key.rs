@@ -14,6 +14,7 @@ use super::hashing::{DurableBlake3Hash, HotXxh3Hash};
 use crate::compile::IrId;
 
 const KEY_DOMAIN_VERSION: &[u8] = b"aos-nix-demand-cache-key-v1";
+const IMPURE_INPUT_KEY_DOMAIN_VERSION: &[u8] = b"aos-nix-impure-input-cache-key-v1";
 
 /// The stable identity of one lowered expression within a source artifact.
 ///
@@ -55,6 +56,18 @@ impl CacheExprIdentity {
 pub struct DemandCacheKey(HotXxh3Hash);
 
 impl DemandCacheKey {
+    /// Creates a demand-cache key for an impure input identity.
+    ///
+    /// This key domain is distinct from expression/free-variable keys. The
+    /// caller supplies the typed identity hash from `cache::input`; the
+    /// observed input result belongs in the node value hash, not in the key.
+    pub fn for_impure_input(identity_hash: DurableBlake3Hash) -> Self {
+        let mut hasher = Xxh3::new();
+        hasher.write(IMPURE_INPUT_KEY_DOMAIN_VERSION);
+        hasher.write(&identity_hash.as_bytes());
+        Self(HotXxh3Hash::from_xxh3(hasher.finish()))
+    }
+
     /// Combines an expression identity with canonical free-variable value hashes.
     ///
     /// `free_var_value_hashes` must already be in canonical slot order. The
@@ -129,6 +142,25 @@ mod tests {
 
     fn value_hash(bytes: &[u8]) -> DurableBlake3Hash {
         DurableBlake3Hash::for_bytes(bytes)
+    }
+
+    #[test]
+    fn impure_input_keys_are_domain_separated_from_expression_keys() {
+        let hash = value_hash(b"same durable bytes");
+        let input_key = DemandCacheKey::for_impure_input(hash);
+        let expression_key =
+            DemandCacheKey::for_free_vars(CacheExprIdentity::new(hash, IrId::new(0)), [hash])
+                .expect("expression key builds");
+
+        assert_ne!(input_key, expression_key);
+    }
+
+    #[test]
+    fn impure_input_identity_changes_key() {
+        let first = DemandCacheKey::for_impure_input(value_hash(b"input one"));
+        let second = DemandCacheKey::for_impure_input(value_hash(b"input two"));
+
+        assert_ne!(first, second);
     }
 
     #[test]

@@ -20,6 +20,14 @@ impl ValueHash {
     pub const fn from_canonical_value_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
     }
+
+    /// Wraps a durable BLAKE3 hash of an impure input observation.
+    ///
+    /// This constructor is for demand-graph leaf nodes whose "value" is an
+    /// observed filesystem or environment result, not a canonical Nix value.
+    pub const fn from_impure_input_observation_hash(hash: DurableBlake3Hash) -> Self {
+        Self(hash)
+    }
 }
 
 /// The propagation decision for one reconsidered cache node.
@@ -58,6 +66,18 @@ mod tests {
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
+    fn input_hash(bytes: &[u8]) -> ValueHash {
+        ValueHash::from_impure_input_observation_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
+    #[test]
+    fn impure_input_observation_hashes_participate_in_cutoff_decisions() {
+        let hash = input_hash(b"same input result");
+        let decision = EarlyCutoff::decide(Some(hash), hash);
+
+        assert_eq!(decision, CutoffDecision::CutOff);
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use thiserror::Error;
 
-use super::{CutoffDecision, DemandCacheKey, EarlyCutoff, ValueHash};
+use super::{CacheableInputFingerprint, CutoffDecision, DemandCacheKey, EarlyCutoff, ValueHash};
 
 /// A stable id for one node in a [`DemandGraph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -126,6 +126,28 @@ impl Reconsideration {
     }
 }
 
+/// The result of observing one cacheable impure input leaf.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImpureInputObservation {
+    /// The input identity had no existing node, so a clean leaf was inserted.
+    Inserted {
+        /// The inserted leaf node.
+        node: DemandNodeId,
+    },
+    /// An existing leaf was reconsidered against the new observation hash.
+    Reconsidered(Reconsideration),
+}
+
+impl ImpureInputObservation {
+    /// Returns the observed leaf node.
+    pub const fn node(&self) -> DemandNodeId {
+        match self {
+            Self::Inserted { node } => *node,
+            Self::Reconsidered(reconsideration) => reconsideration.node(),
+        }
+    }
+}
+
 /// An in-memory demand graph.
 #[derive(Clone, Debug, Default)]
 pub struct DemandGraph {
@@ -204,6 +226,36 @@ impl DemandGraph {
         self.nodes.push(DemandNode::new(key, value_hash));
         self.by_key.insert(key, id);
         Ok(id)
+    }
+
+    /// Observes one cacheable impure input as a demand-graph leaf.
+    ///
+    /// New input identities insert a clean leaf with the observed-result hash.
+    /// Existing leaves are reconsidered through the ordinary early-cutoff path,
+    /// so changed observations dirty direct dependents while unchanged
+    /// observations cut off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::TooManyNodes`] if the graph cannot address
+    /// another node. Returns an allocation error if node or key storage cannot
+    /// reserve capacity.
+    pub fn observe_impure_input(
+        &mut self,
+        fingerprint: &CacheableInputFingerprint,
+    ) -> Result<ImpureInputObservation, DemandGraphError> {
+        let key = DemandCacheKey::for_impure_input(fingerprint.identity().hash());
+        let observed =
+            ValueHash::from_impure_input_observation_hash(fingerprint.observation_hash());
+
+        if let Some(id) = self.node_id_for_key(key) {
+            return self
+                .reconsider_node(id, observed)
+                .map(ImpureInputObservation::Reconsidered);
+        }
+
+        let node = self.get_or_insert_node(key, Some(observed))?;
+        Ok(ImpureInputObservation::Inserted { node })
     }
 
     /// Records that `dependent` reads `dependency`.
@@ -323,7 +375,7 @@ pub enum DemandGraphError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{CacheExprIdentity, DurableBlake3Hash};
+    use crate::cache::{CacheExprIdentity, DurableBlake3Hash, ImpureInputFingerprint};
     use crate::compile::IrId;
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
@@ -336,10 +388,115 @@ mod tests {
             .expect("key builds")
     }
 
+    fn read_file_input(path: &[u8], contents: &[u8]) -> CacheableInputFingerprint {
+        ImpureInputFingerprint::read_file(path, contents)
+            .expect("input fingerprints")
+            .as_cacheable()
+            .expect("readFile is cacheable")
+            .clone()
+    }
+
     fn node_with_hash(graph: &mut DemandGraph, node: u32, label: &'static [u8]) -> DemandNodeId {
         graph
             .get_or_insert_node(key(node, label), Some(value_hash(label)))
             .expect("node inserts")
+    }
+
+    #[test]
+    fn impure_input_observation_inserts_clean_leaf() {
+        let mut graph = DemandGraph::new();
+        let fingerprint = read_file_input(b"/tmp/version", b"1");
+        let observed = graph
+            .observe_impure_input(&fingerprint)
+            .expect("input observes");
+        let ImpureInputObservation::Inserted { node } = observed else {
+            panic!("first observation inserts");
+        };
+
+        assert_eq!(observed.node(), node);
+        assert_eq!(graph.len(), 1);
+        assert_eq!(
+            graph.node(node).expect("node exists").freshness(),
+            NodeFreshness::Clean
+        );
+        assert_eq!(
+            graph.node(node).expect("node exists").value_hash(),
+            Some(ValueHash::from_impure_input_observation_hash(
+                fingerprint.observation_hash()
+            ))
+        );
+    }
+
+    #[test]
+    fn unchanged_impure_input_observation_cuts_off() {
+        let mut graph = DemandGraph::new();
+        let fingerprint = read_file_input(b"/tmp/version", b"1");
+        let first = graph
+            .observe_impure_input(&fingerprint)
+            .expect("input inserts")
+            .node();
+        let second = graph
+            .observe_impure_input(&fingerprint)
+            .expect("input reconsiders");
+        let ImpureInputObservation::Reconsidered(reconsideration) = second else {
+            panic!("second observation reconsiders");
+        };
+
+        assert_eq!(reconsideration.node(), first);
+        assert_eq!(reconsideration.decision(), CutoffDecision::CutOff);
+        assert!(reconsideration.dirtied_dependents().is_empty());
+    }
+
+    #[test]
+    fn changed_impure_input_observation_dirties_dependents() {
+        let mut graph = DemandGraph::new();
+        let first = read_file_input(b"/tmp/version", b"1");
+        let input = graph
+            .observe_impure_input(&first)
+            .expect("input inserts")
+            .node();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        graph
+            .add_dependency(dependent, input)
+            .expect("dependency records");
+
+        let changed = read_file_input(b"/tmp/version", b"2");
+        let observation = graph
+            .observe_impure_input(&changed)
+            .expect("input reconsiders");
+        let ImpureInputObservation::Reconsidered(reconsideration) = observation else {
+            panic!("changed observation reconsiders");
+        };
+
+        assert_eq!(reconsideration.node(), input);
+        assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(reconsideration.dirtied_dependents(), &[dependent]);
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
+        assert_eq!(
+            graph.node(input).expect("input exists").value_hash(),
+            Some(ValueHash::from_impure_input_observation_hash(
+                changed.observation_hash()
+            ))
+        );
+    }
+
+    #[test]
+    fn impure_input_identity_changes_leaf_key() {
+        let mut graph = DemandGraph::new();
+        let first = graph
+            .observe_impure_input(&read_file_input(b"/tmp/one", b"same"))
+            .expect("first input inserts")
+            .node();
+        let second = graph
+            .observe_impure_input(&read_file_input(b"/tmp/two", b"same"))
+            .expect("second input inserts")
+            .node();
+
+        assert_ne!(first, second);
+        assert_eq!(graph.len(), 2);
     }
 
     #[test]

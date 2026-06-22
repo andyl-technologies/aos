@@ -15,7 +15,8 @@ pub mod persist;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
 pub use dcg::{
-    DemandGraph, DemandGraphError, DemandNode, DemandNodeId, NodeFreshness, Reconsideration,
+    DemandGraph, DemandGraphError, DemandNode, DemandNodeId, ImpureInputObservation, NodeFreshness,
+    Reconsideration,
 };
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
 pub use input::{

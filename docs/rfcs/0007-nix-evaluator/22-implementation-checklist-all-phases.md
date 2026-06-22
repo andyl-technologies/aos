@@ -386,7 +386,7 @@ alone (`M-1`/`Q-A`).
 - [ ] Full demand-driven incremental graph remains: create nodes on actual
       force/eval demand, capture dependencies dynamically Adapton-style,
       separate inner/outer observers, schedule transitive
-      propagation/recomputation, integrate impure leaves and persistence, and
+      propagation/recomputation, integrate impure-input leaves and persistence, and
       prove cached/uncached `.drv` parity.
 - [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
       plus opaque `DemandCacheKey` compute one order-sensitive xxh3 key over a
@@ -458,6 +458,14 @@ alone (`M-1`/`Q-A`).
       is an evaluator observation surface only; demand-graph leaves,
       dependency wiring, persistence, allowed-path/IFD/fetch interactions, and
       edge-exactness harness coverage remain open (`R-10`).
+- [x] Current cache-side impure leaf substrate: domain-separated
+      `DemandCacheKey` construction from typed input identities,
+      non-canonical `ValueHash` wrapping for observed input results, and
+      `DemandGraph::observe_impure_input` insertion/reconsideration for
+      cacheable input leaves. This is graph bookkeeping only; `EvalOutcome`
+      trace ingestion, evaluating-node edges, currentTime taint propagation,
+      persistence, allowed-path/IFD/fetch interactions, and edge-exactness
+      harness coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable
