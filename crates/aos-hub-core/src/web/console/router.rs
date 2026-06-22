@@ -194,6 +194,12 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             }),
         )
         .route(
+            "/account/passkeys/remove",
+            post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
+                send_bridge(handlers::passkeys_remove(from_state(s), h, f))
+            }),
+        )
+        .route(
             "/account/passkeys/begin",
             post(|State(s): State<SharedState>, h: HeaderMap, f: axum::extract::Form<_>| {
                 send_bridge(handlers::passkeys_begin(from_state(s), h, f))
