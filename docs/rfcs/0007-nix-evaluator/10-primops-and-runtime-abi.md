@@ -797,7 +797,21 @@ harness, never cut for scope.
 
 ### Compatibility-hazard gate
 
-- [ ] All ten §8 hazards (forcing order, context propagation, `derivationStrict` ordering, `toJSON`/`hashString` bytes, `sort`, import memoization, `findFile`, `builtins` order/membership, `tryEval` catchability, int/float semantics) under adversarial differential coverage ([§8](#8-compatibility-hazards-specific-to-this-layer)) — P1, `S-2`; gate: differential `.drv` harness.
+- [x] Current P1 focused hazard coverage exists for all ten §8 hazards (forcing
+      order, context propagation, `derivationStrict` ordering,
+      `toJSON`/`hashString` bytes, `sort`, import memoization, `findFile`,
+      `builtins` order/membership, `tryEval` catchability, and int/float
+      semantics). The checked rows in doc 10/doc 11/doc 20/doc 21, the
+      configured C++ Nix oracle suites, and the property tests cover these
+      hazard surfaces directly. This is focused/unit/property/configured-oracle
+      coverage only; it is not the full transitive `.drv` closure acceptance
+      gate and does not claim byte-green behavior over the AOS corpus ([§8](#8-compatibility-hazards-specific-to-this-layer)) — P1 surface coverage, `S-2`.
+- [ ] Full adversarial differential `.drv` closure hazard gate: keep all ten
+      §8 hazards byte-green over the auto-derived AOS package/system/toolchain
+      corpus and its transitive closure before any default-on/cutover credit is
+      claimed ([§8](#8-compatibility-hazards-specific-to-this-layer),
+      [15](15-differential-testing-and-benchmarking.md) §8.1) — P1, `S-2`;
+      gate: full differential `.drv` harness.
 
 ---
 
