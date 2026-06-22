@@ -66,6 +66,11 @@ impl TreeWalkError {
         self
     }
 
+    pub(crate) fn with_contexts(mut self, contexts: Vec<EvalErrorContext>) -> Self {
+        self.contexts = contexts;
+        self
+    }
+
     /// Returns diagnostic context messages from outermost to innermost.
     pub fn contexts(&self) -> &[EvalErrorContext] {
         &self.contexts
@@ -91,7 +96,7 @@ impl TreeWalkError {
                 span,
             )
         })?;
-        self.contexts.insert(0, context);
+        self.contexts.insert(0, context.with_span(span));
         Ok(self)
     }
 }
@@ -134,15 +139,29 @@ impl EvalErrorLabel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvalErrorContext {
     pub(crate) message: Vec<u8>,
+    pub(crate) span: Span,
 }
 
 impl EvalErrorContext {
     pub(crate) fn new(message: Vec<u8>) -> Self {
-        Self { message }
+        Self {
+            message,
+            span: Span::default(),
+        }
+    }
+
+    pub(crate) fn with_span(mut self, span: Span) -> Self {
+        self.span = span;
+        self
     }
 
     /// Returns the context message bytes.
     pub fn message(&self) -> &[u8] {
         &self.message
+    }
+
+    /// Returns the source span for the expression that attached this context.
+    pub const fn span(&self) -> Span {
+        self.span
     }
 }

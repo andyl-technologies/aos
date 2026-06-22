@@ -246,18 +246,33 @@ fn parse_error_labels(
 }
 
 fn eval_error_labels(error: &TreeWalkError) -> Box<dyn Iterator<Item = LabeledSpan> + '_> {
-    if error.labels().is_empty() {
-        return Box::new(std::iter::once(label_for_span(
-            error.span(),
-            "evaluation error",
-        )));
-    }
-    Box::new(
+    let mut labels = Vec::with_capacity(
         error
             .labels()
-            .iter()
-            .map(|label| label_for_span(label.span(), label.label())),
-    )
+            .len()
+            .max(1)
+            .saturating_add(error.contexts().len()),
+    );
+    if error.labels().is_empty() {
+        labels.push(label_for_span(error.span(), "evaluation error"));
+    } else {
+        labels.extend(
+            error
+                .labels()
+                .iter()
+                .map(|label| label_for_span(label.span(), label.label())),
+        );
+    }
+    labels.extend(error.contexts().iter().map(context_label));
+    Box::new(labels.into_iter())
+}
+
+fn context_label(context: &crate::eval::tree_walk::EvalErrorContext) -> LabeledSpan {
+    let label = format!(
+        "while evaluating: {}",
+        String::from_utf8_lossy(context.message())
+    );
+    LabeledSpan::new_with_span(Some(label), span_range(context.span()))
 }
 
 fn span_range(span: Span) -> Range<usize> {
@@ -577,6 +592,35 @@ mod tests {
         assert_eval_operand_labels("1 + \"x\"", "1", "\"x\"");
         assert_eval_operand_labels("1 > \"x\"", "1", "\"x\"");
         assert_eval_operand_labels("1 <= \"x\"", "1", "\"x\"");
+    }
+
+    #[test]
+    fn eval_diagnostic_reports_add_error_context_labels() {
+        let source = r#"builtins.addErrorContext "outer" (builtins.addErrorContext "inner" (builtins.throw "boom"))"#;
+        let ir = lower(resolve(parse_str(source).unwrap()).unwrap()).unwrap();
+        let error = eval_whnf_owned(&ir).expect_err("nested context should still throw");
+        let diagnostic = EvalDiagnostic::new("expr.nix", source, error);
+
+        let labels = diagnostic
+            .labels()
+            .expect("context diagnostic has labels")
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 3);
+        assert_eq!(labels[0].label(), Some("evaluation error"));
+        assert_eq!(labels[1].label(), Some("while evaluating: outer"));
+        assert_eq!(
+            labels[1].offset(),
+            source.find("builtins.addErrorContext").unwrap()
+        );
+        assert_eq!(labels[2].label(), Some("while evaluating: inner"));
+        assert_eq!(
+            labels[2].offset(),
+            source.rfind("builtins.addErrorContext").unwrap()
+        );
+
+        let report = render_fancy_report(&diagnostic).expect("diagnostic renders");
+        assert!(report.contains("while evaluating: outer"), "{report}");
+        assert!(report.contains("while evaluating: inner"), "{report}");
     }
 
     fn assert_eval_operand_labels(source: &str, left: &str, right: &str) {

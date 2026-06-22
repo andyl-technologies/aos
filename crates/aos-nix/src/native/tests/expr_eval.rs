@@ -276,6 +276,24 @@ fn native_expression_type_error_reports_operand_labels() -> Result<()> {
 }
 
 #[test]
+fn native_expression_type_error_reports_add_error_context_labels() -> Result<()> {
+    let native = NixNative::new(0)?;
+    let source = r#"builtins.addErrorContext "ctx" (1 + true)"#;
+    let err = native
+        .eval_expr(source)
+        .expect_err("type errors with logical context are native evaluation errors");
+
+    let Some(NativeEvalError::EvalError { message }) = err.downcast_ref::<NativeEvalError>() else {
+        panic!("type error should surface as a native eval error: {err:?}");
+    };
+    assert!(message.contains("aos_nix::eval::type"), "{message}");
+    assert!(message.contains("while evaluating: ctx"), "{message}");
+    assert!(message.contains(source), "{message}");
+    assert!(!message.contains("builtins.toJSON"), "{message}");
+    Ok(())
+}
+
+#[test]
 fn native_json_preflight_ignores_malformed_empty_builtins_attr_paths() {
     use crate::compile::{IrArena, IrInlineCacheSiteId, IrNode};
     use crate::syntax::SymbolTable;

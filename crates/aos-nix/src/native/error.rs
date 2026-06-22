@@ -249,6 +249,13 @@ fn rendered_eval_diagnostic(
     {
         return None;
     }
+    if !error
+        .contexts()
+        .iter()
+        .all(|context| span_fits_source(context.span(), source.source))
+    {
+        return None;
+    }
 
     let diagnostic = EvalDiagnostic::new(source.name, source.source, error);
     render_fancy_report(&diagnostic).ok()
@@ -273,7 +280,18 @@ fn eval_error_for_source(
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(error.with_labels(labels))
+    let contexts = error
+        .contexts()
+        .iter()
+        .map(|context| {
+            Some(
+                context
+                    .clone()
+                    .with_span(wrapped_source_span(context.span(), source_map)?),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(error.with_labels(labels).with_contexts(contexts))
 }
 
 fn span_fits_source(span: Span, source: &str) -> bool {
