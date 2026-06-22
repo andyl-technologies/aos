@@ -875,7 +875,21 @@ harness, never cut for scope.
       cross-thread publication, and loom/Miri/TSan proof) layered over the serial
       state machine ([§1.2](#12-the-execution-unit-thunk-and-lambda), [13 §3.5](13-parallelism-and-concurrency.md#35-thunks-in-parallel)) — P3.5, `C-12`; gate: conformance 20-21 plus concurrency tests.
 - [ ] Degenerate per-site inline cache on tier-0 select nodes (optional, toggleable off for cross-checking) ([§4](#4-the-compilation-pipeline), [09 §5.3](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P5.
-- [ ] Source-span-carrying evaluation traces / stepping for `.drv`-divergence debugging ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1.
+- [x] Current Tier-0 source-span diagnostic substrate: source-backed diagnostics
+      cover lexer/parser/scope/IR/tree-walk errors, imported source provenance,
+      operand and logical eval-context labels, and `addErrorContext` context
+      ordering; this is the diagnostic substrate tracked in [24](24-observability-and-diagnostics.md),
+      not a stepping/debugger UI ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1. Covered by
+      `parse_diagnostic_reports_code_label_and_source`,
+      `eval_diagnostic_reports_operand_type_spans`,
+      `eval_diagnostic_reports_add_error_context_labels`,
+      `embedded_eval_diagnostic_filters_context_labels_from_other_sources`, and
+      `add_error_context_preserves_outer_to_inner_context_order`.
+- [ ] Full source-span evaluation trace and stepping workflow remains: a trace
+      stream/step controls, full `--show-trace` reconstruction, debugger or REPL
+      integration, and `.drv` divergence-debugging workflow over those traces
+      ([§2.1](#21-tier-0--the-tree-walk-oracle); [24](24-observability-and-diagnostics.md)
+      §5–§6) — P1.
 
 ### Runtime ABI and symbol table (the tier-invariant spine)
 
