@@ -6,7 +6,7 @@
 
 use super::{
     CacheExprIdentity, DemandGraph, DemandGraphError, DemandNodeId, DurableBlake3Hash,
-    ImpureInputFingerprint, ImpureTraceObservation, Reconsideration, ValueHash,
+    ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus, Reconsideration, ValueHash,
 };
 use crate::value::Value;
 
@@ -17,6 +17,34 @@ pub trait ImpureInputTraceSource {
 
     /// Returns whether the trace is complete enough to be cache-usable.
     fn impure_input_trace_complete(&self) -> bool;
+}
+
+/// The result of observing one expression evaluation's impure-input trace.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpressionTraceObservation {
+    node: Option<DemandNodeId>,
+    trace: ImpureTraceObservation,
+}
+
+impl ExpressionTraceObservation {
+    fn new(node: Option<DemandNodeId>, trace: ImpureTraceObservation) -> Self {
+        Self { node, trace }
+    }
+
+    /// Returns the expression node wired to cacheable input leaves, if any.
+    pub const fn node(&self) -> Option<DemandNodeId> {
+        self.node
+    }
+
+    /// Returns the observed impure trace cacheability and leaves.
+    pub const fn trace(&self) -> &ImpureTraceObservation {
+        &self.trace
+    }
+
+    /// Consumes this observation into its node and trace parts.
+    pub fn into_parts(self) -> (Option<DemandNodeId>, ImpureTraceObservation) {
+        (self.node, self.trace)
+    }
 }
 
 /// Explicit evaluator cache state owned by the caller.
@@ -125,6 +153,50 @@ impl EvalCache {
             source.impure_input_trace(),
             source.impure_input_trace_complete(),
         )
+    }
+
+    /// Observes an expression evaluation trace and wires cacheable leaves to its node.
+    ///
+    /// This first observes the trace. Incomplete or uncacheable traces return
+    /// their status without creating an expression node. Complete cacheable
+    /// traces get or insert the caller-supplied expression node and then add
+    /// dependencies from that node to the observed input leaves.
+    ///
+    /// This is still an explicit adapter: callers supply expression identity,
+    /// ordered free-variable value hashes, and the optional current value hash.
+    /// It does not compute evaluator identities, perform memo lookup, or own
+    /// dynamic evaluator node lifecycle.
+    ///
+    /// Successful leaf observations are not rolled back if expression-node
+    /// allocation or edge wiring later fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if trace observation fails, expression
+    /// cache-key construction or insertion fails, or dependency edge insertion
+    /// fails.
+    pub fn observe_expression_impure_inputs<I, T>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value_hash: Option<ValueHash>,
+        source: &T,
+    ) -> Result<ExpressionTraceObservation, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        T: ImpureInputTraceSource + ?Sized,
+    {
+        let trace = self.observe_impure_inputs(source)?;
+        if trace.status() != ImpureTraceStatus::Cacheable {
+            return Ok(ExpressionTraceObservation::new(None, trace));
+        }
+
+        let node =
+            self.get_or_insert_expression_node(identity, free_var_value_hashes, value_hash)?;
+        for leaf in trace.leaves() {
+            self.graph.add_dependency(node, leaf.node())?;
+        }
+        Ok(ExpressionTraceObservation::new(Some(node), trace))
     }
 
     /// Reconsiders one node from a recomputed inline scalar value.
@@ -241,6 +313,35 @@ impl EvalCacheRuntime {
         };
         cache
             .observe_impure_inputs_for_node(dependent, source)
+            .map(Some)
+    }
+
+    /// Observes one expression evaluation trace when cache observation is enabled.
+    ///
+    /// Disabled runtimes return `Ok(None)` without examining `source` or
+    /// allocating demand-graph nodes. Enabled runtimes delegate to
+    /// [`EvalCache::observe_expression_impure_inputs`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] only when the enabled underlying cache
+    /// fails to observe, allocate, or wire the expression trace.
+    pub fn observe_expression_impure_inputs<I, S>(
+        &mut self,
+        identity: CacheExprIdentity,
+        free_var_value_hashes: I,
+        value_hash: Option<ValueHash>,
+        source: &S,
+    ) -> Result<Option<ExpressionTraceObservation>, DemandGraphError>
+    where
+        I: IntoIterator<Item = DurableBlake3Hash>,
+        S: ImpureInputTraceSource + ?Sized,
+    {
+        let Some(cache) = self.cache_mut() else {
+            return Ok(None);
+        };
+        cache
+            .observe_expression_impure_inputs(identity, free_var_value_hashes, value_hash, source)
             .map(Some)
     }
 }
@@ -497,6 +598,109 @@ mod tests {
                 .dependencies()
                 .contains(&dependency)
         );
+    }
+
+    #[test]
+    fn eval_cache_expression_trace_adapter_wires_cacheable_inputs() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+
+        let observation = cache
+            .observe_expression_impure_inputs(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &source,
+            )
+            .expect("expression trace observes");
+
+        assert_eq!(observation.trace().status(), ImpureTraceStatus::Cacheable);
+        let node = observation.node().expect("cacheable trace creates node");
+        let dependency = observation.trace().leaves()[0].node();
+        assert!(
+            cache
+                .graph()
+                .node(node)
+                .expect("expression node exists")
+                .dependencies()
+                .contains(&dependency)
+        );
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn eval_cache_expression_trace_adapter_skips_node_for_uncacheable_trace() {
+        let source = TraceSource {
+            trace: vec![
+                read_file_trace(b"/tmp/version", b"1"),
+                ImpureInputFingerprint::current_time(),
+            ],
+            complete: true,
+        };
+        let mut cache = EvalCache::new();
+
+        let observation = cache
+            .observe_expression_impure_inputs(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &source,
+            )
+            .expect("expression trace observes");
+
+        assert_eq!(
+            observation.trace().status(),
+            ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+        );
+        assert_eq!(observation.node(), None);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn disabled_eval_cache_runtime_expression_trace_is_noop() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::disabled();
+
+        let observation = runtime
+            .observe_expression_impure_inputs(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &source,
+            )
+            .expect("disabled expression observation succeeds");
+
+        assert_eq!(observation, None);
+        assert!(runtime.cache().is_none());
+    }
+
+    #[test]
+    fn enabled_eval_cache_runtime_expression_trace_delegates() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: true,
+        };
+        let mut runtime = EvalCacheRuntime::enabled();
+
+        let observation = runtime
+            .observe_expression_impure_inputs(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &source,
+            )
+            .expect("enabled expression observation succeeds")
+            .expect("enabled runtime observes expression trace");
+
+        assert_eq!(observation.trace().status(), ImpureTraceStatus::Cacheable);
+        assert!(observation.node().is_some());
+        assert_eq!(runtime.cache().expect("cache is enabled").len(), 2);
     }
 
     #[test]

@@ -402,9 +402,9 @@ alone (`M-1`/`Q-A`).
       and optional node value hash; existing nodes keep their first value hash.
       This is explicit allocation/keying only; canonical free-variable
       discovery/order from strictness/escape analysis, real durable value-hash
-      production, `force_memoized`, evaluator node lifecycle, automatic
-      `NixNative` ownership/use, persistence, currentTime taint propagation, and
-      cached/uncached harness proof remain open (`C-1`/`C-2`/`S-14`).
+      production, `force_memoized`, automatic evaluator expression-node
+      lifecycle, persistence, currentTime taint propagation, and cached/uncached
+      harness proof remain open (`C-1`/`C-2`/`S-14`).
 - [ ] Full cache-key integration remains: feed source content + IR node position
       from the evaluator into demand-graph expression nodes, reuse the
       strictness/escape free-variable set for canonical slot ordering, feed real
@@ -546,6 +546,18 @@ alone (`M-1`/`Q-A`).
       leaves, value memoization, currentTime taint propagation through memoized
       nodes, persistence, allowed-path/IFD/fetch trace coverage, and
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
+- [x] Current explicit expression-trace edge adapter:
+      `EvalCache::observe_expression_impure_inputs` and
+      `EvalCacheRuntime::observe_expression_impure_inputs` first
+      observe/classify a completed trace, skip expression-node creation for
+      incomplete or uncacheable traces, and for complete cacheable traces get
+      or insert a caller-supplied expression node before wiring input leaves to
+      it. This is
+      still explicit caller-driven wiring; automatic evaluator demand-node
+      lifecycle, evaluator-produced expression identities/free-variable value
+      hashes, value memoization, currentTime taint propagation through memoized
+      nodes, persistence, and edge-exactness harness coverage remain open
+      (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

@@ -32,4 +32,6 @@ pub use parse::{
 pub use persist::{
     PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
 };
-pub use runtime::{EvalCache, EvalCacheRuntime, ImpureInputTraceSource};
+pub use runtime::{
+    EvalCache, EvalCacheRuntime, ExpressionTraceObservation, ImpureInputTraceSource,
+};
