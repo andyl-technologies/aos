@@ -701,7 +701,7 @@ ordering, and context partition live in
 [derivation and store compatibility](11-derivation-and-store-compatibility.md).
 Here we enumerate only the *builtin surface* and the attributes it consumes.
 
-- [ ] `derivationStrict` (attrs) — **the real primop.** Forces `attrs` eagerly,
+- [x] `derivationStrict` (attrs) — **the real primop.** Forces `attrs` eagerly,
       extracts the special attributes, coerces the rest to env vars in
       deterministic attr order (accumulating context), partitions context into
       `input_derivations`/`input_sources`, computes drv path and output paths via
@@ -735,6 +735,16 @@ Here we enumerate only the *builtin surface* and the attributes it consumes.
       - Input-addressed is the **default** (no `outputHash`, no
         `__contentAddressed`): output path = `hashDerivationModulo`-derived
         (§5.2/§5.3 of doc 11).
+      - **Implemented evidence**: the tree-walk `derivationStrict`
+        implementation clones attr entries in lexicographic order, handles
+        structured attrs / ignore-nulls / fixed-output / floating-CA / impure /
+        reference-constraint markers, records ATerm bytes and known derivations,
+        and exposes context-bearing `.drvPath` / output strings. The checked doc
+        11 derivation rows own the wire-format details; focused unit/property
+        tests cover the special attrs above, output back-patching, context
+        partitioning, hash-modulo paths, first-class calls, invalid cases, and
+        deterministic env ordering. Full transitive-closure byte parity remains
+        the separate acceptance gate in doc 11/doc 15.
 - [x] `derivation` (attrs) — **the core wrapper**, not a primop in the same
       sense: in the pinned C++ Nix it is the thin Nix function
       `<nix/derivation-internal.nix>` that defaults `outputs` to `[ "out" ]`,
@@ -1022,8 +1032,10 @@ differential coverage (cross-referenced to the hazards in
 [derivation and store compatibility](11-derivation-and-store-compatibility.md) §6
 and [primops and the runtime ABI](10-primops-and-runtime-abi.md) §8):
 
-- [ ] `derivationStrict` — env coercion order, context partition, hash-modulo,
-      output back-patching, `__structuredAttrs`/`__ignoreNulls`/fixed-output/CA.
+- [x] `derivationStrict` — env coercion order, context partition, hash-modulo,
+      output back-patching, `__structuredAttrs`/`__ignoreNulls`/fixed-output/CA;
+      covered by the checked doc 11 derivation rows plus focused
+      `derivation_strict*` tests. Full closure parity remains the separate gate.
 - [x] `toJSON` — key order, number/float formatting, escape set, deep forcing.
 - [x] `hashString` / `hashFile` / `convertHash` — algorithm set, hex/base32
       output, the Nix base32 alphabet.
