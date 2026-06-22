@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
 use super::parse::{
-    ParseArtifactBundle, ParseCacheEntry, ParseCacheError, ParseCacheKey, ParseFileKey,
+    PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle, ParseCacheEntry, ParseCacheError,
+    ParseCacheKey, ParseFileKey,
 };
 use super::{
     DurableBlake3Hash, MaterializationDecision, MaterializationReuse, MaterializationSignals,
@@ -1090,14 +1091,17 @@ impl PersistCache {
     /// Reads a materialized parse-artifact bundle into a parse-cache entry.
     ///
     /// This adapter consumes a caller-supplied file-artifact index value and
-    /// target entry. It does not perform durable index lookup or decide whether
-    /// the hydrated entry should be used for a cache hit.
+    /// target entry. The decoded bundle must validate against the current
+    /// parse-cache schema before any entry files are written. This adapter does
+    /// not perform durable index lookup or decide whether the hydrated entry
+    /// should be used for a cache hit.
     ///
     /// # Errors
     ///
     /// Returns [`PersistFileArtifactHydrationError`] if the artifact cannot be
     /// read from the `files/` pack, if the payload is not a valid
-    /// [`ParseArtifactBundle`], or if the target entry cannot be written.
+    /// [`ParseArtifactBundle`], if the bundle metadata/artifact counts do not
+    /// validate, or if the target entry cannot be written.
     pub fn hydrate_file_artifact_bundle(
         &self,
         index_value: PersistFileArtifactIndexValue,
@@ -1108,6 +1112,9 @@ impl PersistCache {
             .map_err(|source| PersistFileArtifactHydrationError::Read { source })?;
         let bundle = ParseArtifactBundle::decode(&payload)
             .map_err(|source| PersistFileArtifactHydrationError::Decode { source })?;
+        bundle
+            .validate_meta(PARSE_CACHE_SCHEMA_VERSION)
+            .map_err(|source| PersistFileArtifactHydrationError::Validate { source })?;
         entry
             .write_artifact_bundle(&bundle)
             .map_err(|source| PersistFileArtifactHydrationError::Write { source })
@@ -1123,8 +1130,9 @@ impl PersistCache {
     ///
     /// Returns [`PersistFileArtifactHydrationError`] if `artifact_key` does not
     /// match `file_key`/`parse_key`, if the artifact cannot be read from the
-    /// `files/` pack, if the payload is not a valid [`ParseArtifactBundle`], or
-    /// if the target entry cannot be written.
+    /// `files/` pack, if the payload is not a valid [`ParseArtifactBundle`], if
+    /// the bundle metadata/artifact counts do not validate, or if the target
+    /// entry cannot be written.
     pub fn hydrate_file_artifact_bundle_for_key(
         &self,
         file_key: &ParseFileKey,
@@ -1154,7 +1162,8 @@ impl PersistCache {
     /// Returns [`PersistFileArtifactHydrationError`] if `index_entry.key()`
     /// does not match `file_key`/`parse_key`, if the artifact cannot be read
     /// from the `files/` pack, if the payload is not a valid
-    /// [`ParseArtifactBundle`], or if the target entry cannot be written.
+    /// [`ParseArtifactBundle`], if the bundle metadata/artifact counts do not
+    /// validate, or if the target entry cannot be written.
     pub fn hydrate_file_artifact_bundle_from_entry(
         &self,
         file_key: &ParseFileKey,
@@ -1483,6 +1492,12 @@ pub enum PersistFileArtifactHydrationError {
     #[error("failed to decode persistent file artifact bundle")]
     Decode {
         /// The underlying bundle decode error.
+        source: ParseCacheError,
+    },
+    /// The decoded artifact bundle failed parse-cache schema/count validation.
+    #[error("failed to validate persistent file artifact bundle")]
+    Validate {
+        /// The underlying parse-cache validation error.
         source: ParseCacheError,
     },
     /// The decoded artifact bundle could not be written to the target entry.
@@ -1835,6 +1850,18 @@ mod tests {
         use crate::cache::parse::{PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags};
 
         ParseCacheKey::for_source(source, PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags::new())
+    }
+
+    fn bundle_with_meta(
+        bundle: &ParseArtifactBundle,
+        meta: crate::cache::parse::ParseCacheMeta,
+    ) -> ParseArtifactBundle {
+        ParseArtifactBundle::new(
+            bundle.resolved_bytes(),
+            bundle.ir_bytes(),
+            bundle.symbols_bytes(),
+            meta.to_toml().into_bytes(),
+        )
     }
 
     fn profitable_materialization_signals(
@@ -2986,6 +3013,59 @@ mod tests {
             .read_resolved()
             .expect("hydrated resolved artifact reads");
         assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_file_artifact_hydration_validates_bundle_before_write() {
+        use crate::cache::parse::{ParseCache, ParseCacheMeta};
+
+        let root = temp_root();
+        let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+        let parse_cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+        let parsed = parse_cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses");
+        let bundle = parsed
+            .entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads");
+        let meta = bundle.decode_meta().expect("bundle metadata decodes");
+        let wrong_meta = ParseCacheMeta::new(
+            meta.schema_version,
+            meta.source_hint,
+            meta.node_count + 1,
+            meta.symbol_count,
+        );
+        let wrong_bundle = bundle_with_meta(&bundle, wrong_meta);
+        let payload = wrong_bundle.encode().expect("bundle encodes");
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let materialized = persist
+            .materialize_file_artifact(
+                &file_key,
+                parsed.key,
+                &payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("bundle materializes");
+        let Some(index_value) = materialized.index_value() else {
+            panic!("bundle should materialize");
+        };
+        let hydrated = ParseCacheEntry::new(root.join("hydrated-entry"));
+
+        let error = persist
+            .hydrate_file_artifact_bundle(index_value, &hydrated)
+            .expect_err("invalid bundle metadata fails hydration");
+
+        assert!(matches!(
+            error,
+            PersistFileArtifactHydrationError::Validate {
+                source: ParseCacheError::DecodeMeta { message },
+            } if message.contains("node_count")
+        ));
+        assert!(!hydrated.dir().exists());
 
         let _ = fs::remove_dir_all(root);
     }
