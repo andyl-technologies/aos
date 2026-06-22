@@ -430,8 +430,81 @@
     sync();
   }
 
+  // Attached help (web/help.rs): turn a `?` marker's hidden segmented card into
+  // a positioned popover. Hover + focus open it; click pins it; Esc / click-away
+  // close. Position is fixed coords measured from the marker, flipped/clamped to
+  // stay on-screen, so a card never clips inside a table or off the edge. The
+  // no-JS floor is the marker's native `title` tooltip.
+  function initHelp() {
+    var open = null; // currently-open .help-card
+    var pinned = false;
+
+    function close() {
+      if (open) {
+        open.classList.remove("open");
+        open = null;
+        pinned = false;
+      }
+    }
+    function place(mark, card) {
+      if (open && open !== card) close();
+      open = card;
+      card.classList.add("open"); // make it measurable
+      var r = mark.getBoundingClientRect();
+      var cw = card.offsetWidth;
+      var ch = card.offsetHeight;
+      var pad = 8;
+      var left = r.left;
+      if (left + cw > window.innerWidth - pad) left = window.innerWidth - pad - cw;
+      if (left < pad) left = pad;
+      var top = r.bottom + 6;
+      if (top + ch > window.innerHeight - pad) {
+        var above = r.top - ch - 6; // flip above when it would overflow the bottom
+        top = above >= pad ? above : pad;
+      }
+      card.style.left = Math.round(left) + "px";
+      card.style.top = Math.round(top) + "px";
+    }
+
+    document.querySelectorAll(".help").forEach(function (h) {
+      var mark = h.querySelector(".help-mark");
+      var card = h.querySelector(".help-card");
+      if (!mark || !card) return;
+      mark.setAttribute("aria-expanded", "false");
+      mark.addEventListener("mouseenter", function () {
+        if (!pinned) place(mark, card);
+      });
+      h.addEventListener("mouseleave", function () {
+        if (!pinned) close();
+      });
+      mark.addEventListener("focus", function () {
+        if (!pinned) place(mark, card);
+      });
+      mark.addEventListener("blur", function () {
+        if (!pinned) close();
+      });
+      mark.addEventListener("click", function (e) {
+        e.preventDefault();
+        if (pinned && open === card) {
+          close();
+        } else {
+          place(mark, card);
+          pinned = true;
+          mark.setAttribute("aria-expanded", "true");
+        }
+      });
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") close();
+    });
+    document.addEventListener("click", function (e) {
+      if (open && !e.target.closest(".help")) close();
+    });
+  }
+
   document.querySelectorAll("form[data-live]").forEach(initLiveSearch);
   document.querySelectorAll(".code-editor").forEach(initCodeEditor);
   document.querySelectorAll("[data-filter-widget]").forEach(initFilterBox);
   document.querySelectorAll("form[data-binding-kind]").forEach(initBindingForm);
+  initHelp();
 })();

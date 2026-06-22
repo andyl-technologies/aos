@@ -36,6 +36,7 @@ use crate::db::{
     WebhookRecord,
 };
 use crate::domain::{iam, Permission, Role, Scope};
+use crate::web::help;
 use crate::web::render::{escape, human_size, key_fingerprint, table};
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,
@@ -1319,21 +1320,25 @@ pub fn org_dashboard(
              <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
              <span class=\"dim\">optional</span></label>\n\
              <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-             <label>visibility <select name=\"visibility\">\
+             <label>visibility{vis} <select name=\"visibility\">\
              <option value=\"private\">private</option>\
              <option value=\"internal\">internal</option>\
              <option value=\"public\">public</option></select></label>\n\
-             <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
-             <label>compression <select name=\"compression\">\
+             <label>priority{prio} <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+             <label>compression{comp} <select name=\"compression\">\
              <option value=\"zstd\">zstd</option>\
              <option value=\"xz\">xz</option>\
              <option value=\"none\">none</option></select></label>\n\
              <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
-             advertise mass-query</label>\n\
+             advertise mass-query{mq}</label>\n\
              <button>create cache</button>\n</form>\n",
             org = escape(slug),
             csrf = csrf_field(csrf),
             bindings = binding_options,
+            vis = help::marker("cache.visibility"),
+            prio = help::marker("cache.priority"),
+            comp = help::marker("cache.compression"),
+            mq = help::marker("cache.mass_query"),
         );
     }
 
@@ -1443,14 +1448,14 @@ pub fn org_dashboard(
             "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/bindings\" \
              data-binding-kind>\n{csrf}\
              <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
-             <label>kind <select name=\"kind\">{kinds}</select></label>\n\
+             <label>kind{kind_help} <select name=\"kind\">{kinds}</select></label>\n\
              <label><span><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span></span> \
              <input type=\"text\" name=\"root\" required placeholder=\"/srv/registries/acme\"></label>\n\
              <div class=\"s3-only\">\n\
              <label>endpoint <input type=\"text\" name=\"endpoint\" \
              placeholder=\"https://&lt;account&gt;.r2.cloudflarestorage.com\"></label>\n\
              <label>region <input type=\"text\" name=\"region\" value=\"auto\"></label>\n\
-             <label>access <select name=\"access\">\
+             <label>access{access_help} <select name=\"access\">\
              <option value=\"private\">private (read/write, credentialed)</option>\
              <option value=\"public\">public (read-only, no credentials)</option></select></label>\n\
              <label class=\"private-only\">access key id \
@@ -1462,6 +1467,8 @@ pub fn org_dashboard(
             org = escape(slug),
             csrf = csrf_field(csrf),
             kinds = kind_options,
+            kind_help = help::marker("binding.kind"),
+            access_help = help::marker("binding.access"),
         );
     }
 
@@ -1707,14 +1714,16 @@ pub fn cache_page(
              <form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/link\">{csrf}\
              <label>registry <select name=\"registry\">{regs}</select></label>\n\
              <label><input type=\"checkbox\" name=\"advertised\" value=\"1\" checked> \
-             advertise to consumers</label>\n\
+             advertise to consumers{adv_help}</label>\n\
              <label><input type=\"checkbox\" name=\"roots_packages\" value=\"1\" checked> \
-             pin GC roots from its packages</label>\n\
+             pin GC roots from its packages{roots_help}</label>\n\
              <button>link</button>\n</form>\n",
             org = escape(org_slug),
             slug = escape(&cache.slug),
             csrf = csrf_field(csrf),
             regs = reg_options,
+            adv_help = help::marker("link.advertised"),
+            roots_help = help::marker("link.roots_packages"),
         );
     }
 
@@ -1876,22 +1885,25 @@ pub fn new_registry_page(
          <label>name <input type=\"text\" name=\"name\" required placeholder=\"cdn\"></label>\n\
          <label>project <select name=\"project_path\">{projects}</select></label>\n\
          <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-         <label>visibility <select name=\"visibility\">\
+         <label>visibility{vis_help} <select name=\"visibility\">\
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
          <label>prefix \
          <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"> \
          <span class=\"dim\">optional</span></label>\n\
-         <label>trust anchors \
+         <label>trust anchors{trust_help} \
          <textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
          placeholder=\"release:Ed25519:base64...&#10;(one per line)\"></textarea> \
          <span class=\"dim\">optional</span></label>\n\
          <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
-         require signatures</label>\n\
+         require signatures{sig_help}</label>\n\
          <button>create registry</button>\n</form>\n",
         org = escape(org_slug),
         csrf = csrf_field(csrf),
+        vis_help = help::marker("registry.visibility"),
+        trust_help = help::marker("registry.trust_anchors"),
+        sig_help = help::marker("registry.require_signatures"),
         projects = project_options,
         bindings = binding_options,
     );
@@ -1997,18 +2009,12 @@ pub fn registry_settings_page(
     let _ = write!(
         body,
         "<form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/crawl\">\n{csrf}\
-         <label>policy <select name=\"policy\">{crawl_options}</select></label>\n\
+         <label>policy{policy_help} <select name=\"policy\">{crawl_options}</select></label>\n\
          <button>change crawl policy</button>\n</form>\n",
         slug = escape(slug),
         csrf = csrf_field(csrf),
         crawl_options = crawl_options,
-    );
-    body.push_str(
-        "<p class=\"dim\">Controls the generated <code>robots.txt</code>. \
-         <strong>allow_all</strong> lets every crawler index; \
-         <strong>allow_no_ai</strong> blocks known AI crawlers (GPTBot, ClaudeBot, …); \
-         <strong>deny_all</strong> blocks every crawler. \
-         A confirmation-gated change-set, recorded in the audit feed.</p>\n",
+        policy_help = help::marker("registry.crawl_policy"),
     );
 
     // Storage (read-only). Three cases: a custom binding, the deployment's
@@ -2935,11 +2941,10 @@ pub fn instance_settings_page(
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
-    body.push_str("<h2>Signup policy</h2>\n");
-    body.push_str(
-        "<p class=\"dim\">Who may create a new organization. <code>invite_only</code> requires \
-         an existing membership, an invitation, or an instance admin; <code>open</code> lets any \
-         signed-in user create one.</p>\n",
+    let _ = write!(
+        body,
+        "<h2>Signup policy{help}</h2>\n",
+        help = help::marker("instance.signup_policy"),
     );
     let open_sel = if matches!(policy, SignupPolicy::Open) {
         " checked"
