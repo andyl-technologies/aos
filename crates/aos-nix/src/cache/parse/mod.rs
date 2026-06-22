@@ -715,6 +715,36 @@ impl ParseCacheEntry {
         })
     }
 
+    /// Validates bundle metadata before writing a parse-cache artifact bundle.
+    ///
+    /// The bundle's `meta.toml` must decode and carry `expected_schema_version`
+    /// before any cache-entry files are created or overwritten. On success the
+    /// raw bundle is written with [`Self::write_artifact_bundle`] and the
+    /// decoded metadata is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the bundle metadata is malformed, carries
+    /// a different schema version, the entry directory cannot be created, or
+    /// any bundled artifact file cannot be written.
+    pub fn write_artifact_bundle_validated(
+        &self,
+        bundle: &ParseArtifactBundle,
+        expected_schema_version: u32,
+    ) -> Result<ParseCacheMeta, ParseCacheError> {
+        let meta = bundle.decode_meta()?;
+        if meta.schema_version != expected_schema_version {
+            return Err(ParseCacheError::DecodeMeta {
+                message: format!(
+                    "metadata schema_version {} does not match expected {}",
+                    meta.schema_version, expected_schema_version
+                ),
+            });
+        }
+        self.write_artifact_bundle(bundle)?;
+        Ok(meta)
+    }
+
     /// Reads a resolved AST artifact from this cache entry.
     ///
     /// # Errors

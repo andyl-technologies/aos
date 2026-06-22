@@ -295,6 +295,77 @@ fn artifact_bundle_hydrates_entry_files() {
 }
 
 #[test]
+fn artifact_bundle_validated_write_checks_metadata_before_hydration() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+
+    let meta = hydrated
+        .write_artifact_bundle_validated(&bundle, cache.schema_version())
+        .expect("validated artifact bundle hydrates");
+
+    assert_eq!(meta.schema_version, cache.schema_version());
+    assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads"),
+        bundle
+    );
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_validated_write_rejects_schema_mismatch_before_writing() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let meta = bundle.decode_meta().expect("bundle metadata decodes");
+    let wrong_meta = ParseCacheMeta::new(
+        cache.schema_version() + 1,
+        meta.source_hint,
+        meta.node_count,
+        meta.symbol_count,
+    );
+    let wrong_schema_bundle = ParseArtifactBundle::new(
+        bundle.resolved_bytes(),
+        bundle.ir_bytes(),
+        bundle.symbols_bytes(),
+        wrong_meta.to_toml().into_bytes(),
+    );
+    let hydrated = ParseCacheEntry::new(root.join("validated-entry"));
+
+    let error = hydrated
+        .write_artifact_bundle_validated(&wrong_schema_bundle, cache.schema_version())
+        .expect_err("schema mismatch errors");
+
+    assert!(matches!(
+        error,
+        ParseCacheError::DecodeMeta { message } if message.contains("schema_version")
+    ));
+    assert!(!hydrated.dir().exists());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn artifact_bundle_rejects_invalid_payloads() {
     let short = ParseArtifactBundle::decode(b"bad").expect_err("short bundle errors");
     assert!(matches!(

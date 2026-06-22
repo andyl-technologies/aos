@@ -536,6 +536,13 @@ alone (`M-1`/`Q-A`).
       types, and out-of-range integers. This is metadata validation only;
       artifact semantic validation, keyed hydration enforcement, durable index
       lookup, cache-hit integration, and harness proof remain open (`C-13`).
+- [x] Current metadata-validated bundle hydration writer:
+      `ParseCacheEntry::write_artifact_bundle_validated` decodes bundled
+      metadata and checks `schema_version` before creating or overwriting entry
+      files, then delegates successful writes to the existing metadata-last
+      bundle writer. This is metadata validation only; artifact count
+      cross-check, keyed hydration enforcement, durable index lookup, cache-hit
+      integration, and harness proof remain open (`C-13`).
 - [x] Current parse-artifact bundle hydration adapter:
       `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
       entry, clearing `meta.toml` before payload writes and committing metadata
