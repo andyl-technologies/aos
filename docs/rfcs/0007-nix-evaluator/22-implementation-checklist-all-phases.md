@@ -182,9 +182,13 @@ hold invariant.
       sequential correctness oracle ([08](08-execution-tiers-and-cranelift.md)
       §2.1). The P3.5 parallel thunk protocol, full conformance, and full
       `.drv` parity gates remain separate open rows.
-- [ ] `runtime/builtins/` — the primop surface ([10](10-primops-and-runtime-abi.md))
-      as plain Rust, interned-symbol dispatch; `import` cached by realpath +
-      content hash (`S-12`).
+- [x] `runtime/builtins/` declaration/registry/dispatch substrate: generated
+      builtin inventory, sorted registry, compile-time lookup table, direct and
+      first-class call metadata, interned-`Symbol` lookup into generated
+      dispatch, and ordinary filesystem `import` result/parse caching
+      (`S-12`), excluding `scopedImport` and text-store parse-cache paths. Full
+      primop semantics remain tracked by [10](10-primops-and-runtime-abi.md)'s
+      open full-surface row and the conformance gates.
 - [ ] Compatibility core: `store/derivation.rs` (`derivationStrict` →
       `nix-compat` `Derivation` → ATerm → SHA-256 output paths; never reimplement
       `compressHash`; **IA *and* CA** derivations from the start — floating +

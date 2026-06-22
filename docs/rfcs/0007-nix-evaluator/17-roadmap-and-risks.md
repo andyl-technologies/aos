@@ -522,9 +522,16 @@ AOS package set. Build it in this order.
       and [pure builtins](21-builtins-conformance.md) must diff-green under this
       oracle. **Parity is a Phase-1 requirement, then held invariant** through
       every later optimization (see [all-phases checklist](22-implementation-checklist-all-phases.md)).
-- [ ] `runtime/builtins/` — the primop surface ([10](10-primops-and-runtime-abi.md))
-      as plain Rust, dispatched by an interned-symbol table (PHF can wait).
-      `import` caches parsed+compiled files by realpath + content hash.
+- [x] `runtime/builtins/` declaration/registry/dispatch substrate: the
+      `define_builtins!` inventory, sorted `BuiltinRegistry`, compile-time
+      `BuiltinLookupTable`, direct/first-class arity, effect, availability, and
+      native-fallback metadata, plus generated `select`/`apply_direct`/`apply`
+      dispatch after interned `Symbol` lookup resolves to a declaration.
+      Ordinary filesystem `import` uses a canonical-realpath result cache plus
+      a durable parse/compile cache keyed by source blake3, schema version, and
+      parser flags; `scopedImport` and text-store imports intentionally bypass
+      the durable parse cache. Full primop semantics remain tracked by the open
+      [10](10-primops-and-runtime-abi.md) full-surface row and conformance gate.
 
 **Compatibility core ([11](11-derivation-and-store-compatibility.md)).**
 
