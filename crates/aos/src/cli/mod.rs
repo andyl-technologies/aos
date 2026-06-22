@@ -212,6 +212,22 @@ pub enum Commands {
         /// Existing candidate .drv path for direct node comparison
         #[arg(long, value_name = "PATH", requires = "oracle_drv")]
         candidate_drv: Option<std::path::PathBuf>,
+        /// Oracle closure bundle for direct node comparison
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "oracle_drv",
+            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats"]
+        )]
+        oracle_drv_bundle: Option<std::path::PathBuf>,
+        /// Candidate closure bundle for direct node comparison
+        #[arg(
+            long,
+            value_name = "PATH",
+            requires = "candidate_drv",
+            conflicts_with_all = ["all", "systems", "attr", "file", "oracle_stats"]
+        )]
+        candidate_drv_bundle: Option<std::path::PathBuf>,
     },
     /// Show repository info
     Describe,
@@ -313,6 +329,8 @@ mod tests {
                 oracle_stats,
                 oracle_drv,
                 candidate_drv,
+                oracle_drv_bundle,
+                candidate_drv_bundle,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.hello"));
                 assert!(!all);
@@ -322,6 +340,8 @@ mod tests {
                 assert!(!oracle_stats);
                 assert_eq!(oracle_drv, None);
                 assert_eq!(candidate_drv, None);
+                assert_eq!(oracle_drv_bundle, None);
+                assert_eq!(candidate_drv_bundle, None);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -349,6 +369,8 @@ mod tests {
                 oracle_stats,
                 oracle_drv,
                 candidate_drv,
+                oracle_drv_bundle,
+                candidate_drv_bundle,
             } => {
                 assert_eq!(attr.as_deref(), Some("pkgs.busybox"));
                 assert!(!all);
@@ -358,6 +380,8 @@ mod tests {
                 assert!(!oracle_stats);
                 assert_eq!(oracle_drv, None);
                 assert_eq!(candidate_drv, None);
+                assert_eq!(oracle_drv_bundle, None);
+                assert_eq!(candidate_drv_bundle, None);
             }
             _ => panic!("expected nix-diff command"),
         }
@@ -417,6 +441,8 @@ mod tests {
                 oracle_stats,
                 oracle_drv,
                 candidate_drv,
+                oracle_drv_bundle,
+                candidate_drv_bundle,
             } => {
                 assert_eq!(attr, None);
                 assert!(!all);
@@ -431,6 +457,38 @@ mod tests {
                 assert_eq!(
                     candidate_drv,
                     Some(std::path::PathBuf::from("/tmp/candidate.drv"))
+                );
+                assert_eq!(oracle_drv_bundle, None);
+                assert_eq!(candidate_drv_bundle, None);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
+    fn nix_diff_parses_direct_drv_pair_bundles() {
+        let cli = parse_cli([
+            "aos",
+            "nix-diff",
+            "--oracle-drv=/nix/store/oracle.drv",
+            "--candidate-drv=/nix/store/candidate.drv",
+            "--oracle-drv-bundle=/tmp/oracle.json",
+            "--candidate-drv-bundle=/tmp/candidate.json",
+        ]);
+
+        match cli.command {
+            Commands::NixDiff {
+                oracle_drv_bundle,
+                candidate_drv_bundle,
+                ..
+            } => {
+                assert_eq!(
+                    oracle_drv_bundle,
+                    Some(std::path::PathBuf::from("/tmp/oracle.json"))
+                );
+                assert_eq!(
+                    candidate_drv_bundle,
+                    Some(std::path::PathBuf::from("/tmp/candidate.json"))
                 );
             }
             _ => panic!("expected nix-diff command"),

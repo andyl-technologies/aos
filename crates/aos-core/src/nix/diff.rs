@@ -8,10 +8,15 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
+use base64::Engine;
 use nix_compat::derivation::Derivation;
+use serde::{Deserialize, Serialize};
 
 use super::drv::{DrvInput, parse_drv_input_drvs_from_bytes};
 use super::{DrvClosure, NixEval};
@@ -131,6 +136,17 @@ impl DrvDiffPair {
     }
 }
 
+/// Persisted closure bytes for a direct node-level reproduction command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrvDiffNodeArtifact {
+    /// Logical oracle/candidate `.drv` pair this artifact reproduces.
+    pub pair: DrvDiffPair,
+    /// Bundle containing oracle-side in-memory closure bytes, when needed.
+    pub oracle_bundle: Option<PathBuf>,
+    /// Bundle containing candidate-side in-memory closure bytes, when needed.
+    pub candidate_bundle: Option<PathBuf>,
+}
+
 /// Result of comparing two evaluator outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrvDiffReport {
@@ -159,6 +175,11 @@ pub struct DrvDiffReport {
     /// Only these pairs can be reproduced by a direct `.drv` pair command
     /// without persisting in-memory closure bytes.
     pub file_backed_pairs: Vec<DrvDiffPair>,
+    /// Direct node-level artifacts for pairs whose closure bytes were in memory.
+    ///
+    /// Each artifact points at JSON bundle files that preserve the original
+    /// logical `.drv` paths and the exact ATerm bytes for closure traversal.
+    pub node_artifacts: Vec<DrvDiffNodeArtifact>,
 }
 
 impl DrvDiffReport {
@@ -202,6 +223,7 @@ pub fn diff_closure(
         root_divergences: Vec::new(),
         contaminated_divergences: Vec::new(),
         file_backed_pairs: Vec::new(),
+        node_artifacts: Vec::new(),
     };
 
     let (oracle_result, candidate_result) = match (oracle_result, candidate_result) {
@@ -253,8 +275,45 @@ pub fn diff_drv_pair(
     candidate_drv: &Path,
     mode: DiffMode,
 ) -> Result<DrvDiffReport> {
+    diff_drv_pair_with_bundles(oracle_drv, candidate_drv, None, None, mode)
+}
+
+/// Compares two existing `.drv` roots, optionally using persisted closure bundles.
+///
+/// Bundle files are produced by root-divergence reports when one side of the
+/// wider diff came from in-memory native closure bytes. The logical root paths
+/// remain the original `.drv` paths; the bundles provide bytes for traversing
+/// those roots and their input derivations.
+///
+/// # Errors
+///
+/// Returns an error when a bundle cannot be read, decoded, or used for byte or
+/// structural traversal.
+pub fn diff_drv_pair_with_bundles(
+    oracle_drv: &Path,
+    candidate_drv: &Path,
+    oracle_bundle: Option<&Path>,
+    candidate_bundle: Option<&Path>,
+    mode: DiffMode,
+) -> Result<DrvDiffReport> {
     let oracle_result = DiffInstantiation::file_backed(oracle_drv.to_path_buf());
     let candidate_result = DiffInstantiation::file_backed(candidate_drv.to_path_buf());
+    let oracle_result = match oracle_bundle {
+        Some(bundle) => DiffInstantiation::bundle_backed(
+            oracle_drv.to_path_buf(),
+            bundle.to_path_buf(),
+            read_drv_closure_bundle(bundle)?,
+        ),
+        None => oracle_result,
+    };
+    let candidate_result = match candidate_bundle {
+        Some(bundle) => DiffInstantiation::bundle_backed(
+            candidate_drv.to_path_buf(),
+            bundle.to_path_buf(),
+            read_drv_closure_bundle(bundle)?,
+        ),
+        None => candidate_result,
+    };
     let mut report = DrvDiffReport {
         mode,
         oracle_root: Some(oracle_result.root.clone()),
@@ -263,6 +322,7 @@ pub fn diff_drv_pair(
         root_divergences: Vec::new(),
         contaminated_divergences: Vec::new(),
         file_backed_pairs: Vec::new(),
+        node_artifacts: Vec::new(),
     };
 
     compare_instantiated_roots(oracle_result, candidate_result, mode, &mut report)?;
@@ -288,19 +348,27 @@ fn compare_instantiated_roots(
         DiffMode::Byte | DiffMode::Structural => {
             let mut visited = BTreeSet::new();
             let mut graph = ClosureDiffGraph::default();
+            let mut artifacts = DiffArtifactState::default();
             compare_drv_pair(
                 &oracle_result,
                 &candidate_result,
                 mode == DiffMode::Structural,
                 &mut visited,
                 &mut graph,
+                &mut artifacts,
                 report,
             )?;
             if oracle_result.root != candidate_result.root {
-                graph.record_divergence(DrvDiffPair::new(
-                    oracle_result.root.clone(),
-                    candidate_result.root.clone(),
-                ));
+                let pair =
+                    DrvDiffPair::new(oracle_result.root.clone(), candidate_result.root.clone());
+                graph.record_divergence(pair.clone());
+                record_node_artifact(
+                    &mut artifacts,
+                    report,
+                    &pair,
+                    &oracle_result,
+                    &candidate_result,
+                )?;
                 report.divergences.push(DrvDiff::RootPath {
                     oracle: oracle_result.root,
                     candidate: candidate_result.root,
@@ -323,6 +391,10 @@ struct DiffInstantiation {
 enum DiffByteSource {
     FileSystem,
     Memory(BTreeMap<PathBuf, Vec<u8>>),
+    Bundle {
+        path: PathBuf,
+        drvs: BTreeMap<PathBuf, Vec<u8>>,
+    },
 }
 
 impl DiffInstantiation {
@@ -341,21 +413,44 @@ impl DiffInstantiation {
         }
     }
 
+    fn bundle_backed(root: PathBuf, path: PathBuf, drvs: BTreeMap<PathBuf, Vec<u8>>) -> Self {
+        Self {
+            root,
+            bytes: DiffByteSource::Bundle { path, drvs },
+        }
+    }
+
     fn read_drv_bytes(&self, path: &Path, label: &str) -> Result<Vec<u8>> {
         match &self.bytes {
             DiffByteSource::FileSystem => std::fs::read(path)
                 .with_context(|| format!("reading {label} drv {}", path.display())),
-            DiffByteSource::Memory(drvs) => drvs.get(path).cloned().with_context(|| {
-                format!(
-                    "{label} evaluator did not provide in-memory drv bytes for {}",
-                    path.display()
-                )
-            }),
+            DiffByteSource::Memory(drvs) | DiffByteSource::Bundle { drvs, .. } => {
+                drvs.get(path).cloned().with_context(|| {
+                    format!(
+                        "{label} evaluator did not provide in-memory drv bytes for {}",
+                        path.display()
+                    )
+                })
+            }
         }
     }
 
     fn is_file_backed(&self) -> bool {
         matches!(self.bytes, DiffByteSource::FileSystem)
+    }
+
+    fn bundle_path(&self) -> Option<&Path> {
+        match &self.bytes {
+            DiffByteSource::Bundle { path, .. } => Some(path),
+            DiffByteSource::FileSystem | DiffByteSource::Memory(_) => None,
+        }
+    }
+
+    fn memory_drvs(&self) -> Option<&BTreeMap<PathBuf, Vec<u8>>> {
+        match &self.bytes {
+            DiffByteSource::Memory(drvs) => Some(drvs),
+            DiffByteSource::FileSystem | DiffByteSource::Bundle { .. } => None,
+        }
     }
 }
 
@@ -397,6 +492,163 @@ impl ClosureDiffGraph {
     }
 }
 
+#[derive(Default)]
+struct DiffArtifactState {
+    dir: Option<PathBuf>,
+    oracle_bundle: Option<PathBuf>,
+    candidate_bundle: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DrvClosureBundleFile {
+    version: u32,
+    drvs: BTreeMap<String, String>,
+}
+
+const DRV_CLOSURE_BUNDLE_VERSION: u32 = 1;
+
+fn record_node_artifact(
+    artifacts: &mut DiffArtifactState,
+    report: &mut DrvDiffReport,
+    pair: &DrvDiffPair,
+    oracle: &DiffInstantiation,
+    candidate: &DiffInstantiation,
+) -> Result<()> {
+    if report
+        .node_artifacts
+        .iter()
+        .any(|artifact| artifact.pair == *pair)
+    {
+        return Ok(());
+    }
+
+    let oracle_bundle = artifact_bundle_path(artifacts, oracle, DiffSide::Oracle)?;
+    let candidate_bundle = artifact_bundle_path(artifacts, candidate, DiffSide::Candidate)?;
+    if oracle_bundle.is_none() && candidate_bundle.is_none() {
+        return Ok(());
+    }
+
+    report.node_artifacts.push(DrvDiffNodeArtifact {
+        pair: pair.clone(),
+        oracle_bundle,
+        candidate_bundle,
+    });
+    Ok(())
+}
+
+fn artifact_bundle_path(
+    artifacts: &mut DiffArtifactState,
+    instantiation: &DiffInstantiation,
+    side: DiffSide,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = instantiation.bundle_path() {
+        return Ok(Some(path.to_path_buf()));
+    }
+    let Some(drvs) = instantiation.memory_drvs() else {
+        return Ok(None);
+    };
+
+    match side {
+        DiffSide::Oracle => {
+            if artifacts.oracle_bundle.is_none() {
+                let dir = artifact_dir(artifacts)?;
+                let path = dir.join("oracle-drv-closure.json");
+                write_drv_closure_bundle(&path, drvs)?;
+                artifacts.oracle_bundle = Some(path);
+            }
+            Ok(artifacts.oracle_bundle.clone())
+        }
+        DiffSide::Candidate => {
+            if artifacts.candidate_bundle.is_none() {
+                let dir = artifact_dir(artifacts)?;
+                let path = dir.join("candidate-drv-closure.json");
+                write_drv_closure_bundle(&path, drvs)?;
+                artifacts.candidate_bundle = Some(path);
+            }
+            Ok(artifacts.candidate_bundle.clone())
+        }
+    }
+}
+
+fn artifact_dir(artifacts: &mut DiffArtifactState) -> Result<&Path> {
+    if artifacts.dir.is_none() {
+        artifacts.dir = Some(create_persistent_artifact_dir()?);
+    }
+    artifacts
+        .dir
+        .as_deref()
+        .context("nix-diff artifact directory was not initialized")
+}
+
+fn create_persistent_artifact_dir() -> Result<PathBuf> {
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    for attempt in 0..100_u32 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system time is before UNIX_EPOCH")?
+            .as_nanos();
+        let dir = tmp.join(format!("aos-nix-diff-{pid}-{nanos}-{attempt}"));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating nix-diff artifact dir {}", dir.display()));
+            }
+        }
+    }
+    anyhow::bail!(
+        "creating unique nix-diff artifact directory in {}",
+        tmp.display()
+    )
+}
+
+fn write_drv_closure_bundle(path: &Path, drvs: &BTreeMap<PathBuf, Vec<u8>>) -> Result<()> {
+    let encoded = DrvClosureBundleFile {
+        version: DRV_CLOSURE_BUNDLE_VERSION,
+        drvs: drvs
+            .iter()
+            .map(|(path, bytes)| {
+                let path = path
+                    .to_str()
+                    .with_context(|| format!("drv path is not UTF-8: {}", path.display()))?;
+                Ok((
+                    path.to_string(),
+                    base64::engine::general_purpose::STANDARD.encode(bytes),
+                ))
+            })
+            .collect::<Result<_>>()?,
+    };
+    let text = serde_json::to_vec_pretty(&encoded).context("serializing drv closure bundle")?;
+    fs::write(path, text).with_context(|| format!("writing drv closure bundle {}", path.display()))
+}
+
+fn read_drv_closure_bundle(path: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>> {
+    let text =
+        fs::read(path).with_context(|| format!("reading drv closure bundle {}", path.display()))?;
+    let bundle: DrvClosureBundleFile =
+        serde_json::from_slice(&text).context("parsing drv closure bundle")?;
+    if bundle.version != DRV_CLOSURE_BUNDLE_VERSION {
+        anyhow::bail!(
+            "unsupported drv closure bundle version {} in {}",
+            bundle.version,
+            path.display()
+        );
+    }
+
+    bundle
+        .drvs
+        .into_iter()
+        .map(|(path, encoded)| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .with_context(|| format!("decoding bundle bytes for {path}"))?;
+            Ok((PathBuf::from(path), bytes))
+        })
+        .collect()
+}
+
 fn instantiate_for_mode(
     eval: &dyn NixEval,
     file: &Path,
@@ -422,6 +674,7 @@ fn compare_drv_pair(
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     graph: &mut ClosureDiffGraph,
+    artifacts: &mut DiffArtifactState,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
     compare_drv_pair_at(
@@ -432,6 +685,7 @@ fn compare_drv_pair(
         structural,
         visited,
         graph,
+        artifacts,
         report,
     )
 }
@@ -444,6 +698,7 @@ fn compare_drv_pair_at(
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     graph: &mut ClosureDiffGraph,
+    artifacts: &mut DiffArtifactState,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
     let pair = DrvDiffPair::new(oracle_path.to_path_buf(), candidate_path.to_path_buf());
@@ -458,6 +713,9 @@ fn compare_drv_pair_at(
     let oracle_bytes = oracle.read_drv_bytes(oracle_path, "oracle")?;
     let candidate_bytes = candidate.read_drv_bytes(candidate_path, "candidate")?;
     let bytes_differ = oracle_bytes != candidate_bytes;
+    if bytes_differ {
+        record_node_artifact(artifacts, report, &pair, oracle, candidate)?;
+    }
     if structural && bytes_differ {
         graph.record_divergence(pair.clone());
         report.divergences.push(DrvDiff::Bytes {
@@ -513,6 +771,7 @@ fn compare_drv_pair_at(
             structural,
             visited,
             graph,
+            artifacts,
             report,
         )?;
     }
@@ -537,6 +796,7 @@ fn compare_input_pair(
     structural: bool,
     visited: &mut BTreeSet<(PathBuf, PathBuf)>,
     graph: &mut ClosureDiffGraph,
+    artifacts: &mut DiffArtifactState,
     report: &mut DrvDiffReport,
 ) -> Result<()> {
     let oracle_path = PathBuf::from(&oracle.drv_path);
@@ -563,6 +823,7 @@ fn compare_input_pair(
         structural,
         visited,
         graph,
+        artifacts,
         report,
     )
 }
@@ -1120,6 +1381,76 @@ mod tests {
                 candidate: candidate_root,
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn byte_mode_bundles_in_memory_root_artifacts_for_direct_reruns() -> Result<()> {
+        let oracle_input =
+            PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-oracle-input.drv");
+        let candidate_input =
+            PathBuf::from("/nix/store/dddddddddddddddddddddddddddddddd-candidate-input.drv");
+        let oracle_root =
+            PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-oracle-root.drv");
+        let candidate_root =
+            PathBuf::from("/nix/store/ffffffffffffffffffffffffffffffff-candidate-root.drv");
+        let mut oracle_bytes = BTreeMap::new();
+        oracle_bytes.insert(oracle_input.clone(), drv(&[], "input").into_bytes());
+        oracle_bytes.insert(
+            oracle_root.clone(),
+            drv(&[(path_str(&oracle_input)?, &["out"])], "root").into_bytes(),
+        );
+        let mut candidate_bytes = BTreeMap::new();
+        candidate_bytes.insert(
+            candidate_input.clone(),
+            drv(&[], "input-changed").into_bytes(),
+        );
+        candidate_bytes.insert(
+            candidate_root.clone(),
+            drv(&[(path_str(&candidate_input)?, &["out"])], "root").into_bytes(),
+        );
+        let oracle = FakeEval::path_with_bytes(oracle_root, oracle_bytes);
+        let candidate = FakeEval::path_with_bytes(candidate_root, candidate_bytes);
+
+        let report = diff_closure(
+            &oracle,
+            &candidate,
+            Path::new("default.nix"),
+            "pkg",
+            DiffMode::Byte,
+        )?;
+
+        let root_pair = &report.root_divergences[0];
+        let artifact = report
+            .node_artifacts
+            .iter()
+            .find(|artifact| artifact.pair == *root_pair)
+            .context("root divergence should have a node artifact")?;
+        let oracle_bundle = artifact
+            .oracle_bundle
+            .as_deref()
+            .context("oracle bundle should be persisted")?;
+        let candidate_bundle = artifact
+            .candidate_bundle
+            .as_deref()
+            .context("candidate bundle should be persisted")?;
+        assert!(oracle_bundle.exists());
+        assert!(candidate_bundle.exists());
+
+        let rerun = diff_drv_pair_with_bundles(
+            &root_pair.oracle,
+            &root_pair.candidate,
+            Some(oracle_bundle),
+            Some(candidate_bundle),
+            DiffMode::Byte,
+        )?;
+
+        assert!(!rerun.is_match());
+        assert!(rerun.divergences.iter().any(|diff| matches!(
+            diff,
+            DrvDiff::Bytes { oracle, candidate }
+                if oracle == &root_pair.oracle && candidate == &root_pair.candidate
+        )));
         Ok(())
     }
 

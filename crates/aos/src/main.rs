@@ -148,6 +148,8 @@ async fn run(cli: &Cli) -> Result<()> {
         oracle_stats,
         oracle_drv,
         candidate_drv,
+        oracle_drv_bundle,
+        candidate_drv_bundle,
     } = &cli.command
     {
         match (oracle_drv, candidate_drv) {
@@ -156,6 +158,8 @@ async fn run(cli: &Cli) -> Result<()> {
                     printer,
                     oracle_drv.clone(),
                     candidate_drv.clone(),
+                    oracle_drv_bundle.clone(),
+                    candidate_drv_bundle.clone(),
                     (*mode).into(),
                 );
             }
@@ -283,6 +287,8 @@ fn run_nix_diff_pair_threaded(
     printer: Printer,
     oracle_drv: PathBuf,
     candidate_drv: PathBuf,
+    oracle_bundle: Option<PathBuf>,
+    candidate_bundle: Option<PathBuf>,
     mode: aos_core::nix::diff::DiffMode,
 ) -> Result<()> {
     const NIX_DIFF_STACK_SIZE: usize = 32 * 1024 * 1024;
@@ -290,7 +296,16 @@ fn run_nix_diff_pair_threaded(
     let handle = std::thread::Builder::new()
         .name("aos-nix-diff".to_string())
         .stack_size(NIX_DIFF_STACK_SIZE)
-        .spawn(move || commands::nix_diff::run_pair(&printer, &oracle_drv, &candidate_drv, mode))
+        .spawn(move || {
+            commands::nix_diff::run_pair(
+                &printer,
+                &oracle_drv,
+                &candidate_drv,
+                oracle_bundle.as_deref(),
+                candidate_bundle.as_deref(),
+                mode,
+            )
+        })
         .context("spawning nix-diff worker thread")?;
 
     match handle.join() {
@@ -472,6 +487,8 @@ mod tests {
                 oracle_stats: false,
                 oracle_drv: None,
                 candidate_drv: None,
+                oracle_drv_bundle: None,
+                candidate_drv_bundle: None,
             },
             verbose: 0,
             quiet: false,
