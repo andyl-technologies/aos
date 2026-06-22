@@ -10,6 +10,7 @@ pub mod dcg;
 pub mod hashing;
 pub mod key;
 pub mod parse;
+pub mod persist;
 
 pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
 pub use dcg::{
@@ -20,4 +21,7 @@ pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
     CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
     ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,
+};
+pub use persist::{
+    PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
 };

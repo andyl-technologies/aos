@@ -431,9 +431,17 @@ alone (`M-1`/`Q-A`).
       durable/shared value and file CA keys, full type-enforced leak-invariant
       boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
       reach Nix-observed store-path or `.drv` SHA-256 inputs (`S-15`).
-- [ ] `cache/persist.rs` — versioned on-disk `nodes/values/files` schema with a
-      schema-version field and discard-on-mismatch (`R-14`); transport stays
-      **beside** `NixEval`, on the Attic content-addressed path (`C-3`).
+- [x] Current `cache/persist.rs` layout/schema substrate: creates an
+      evaluator-cache root with versioned `nodes/`, `values/`, `files/`, and
+      `schema.toml` metadata carrying a stable format marker plus schema
+      version; matching schemas preserve payloads, well-formed version mismatch
+      discards only owned payload paths, and malformed/wrong-format metadata
+      errors without deleting payloads.
+- [ ] Full P2 persistence remains: custom mmap packfile for immutable
+      `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
+      serialized node/value/file records, Attic transport, GC/repack, and
+      cached/uncached harness proof (`C-13`/`R-14`); transport stays **beside**
+      `NixEval`, on the Attic content-addressed path (`C-3`).
 - [ ] Impure-input edges: `readFile`/`readDir`/`getEnv` keyed as explicit
       content-hash inputs; `currentTime` not cached (`R-10`).
 - [x] Current precursor: AOS-configured parse-cache kill switch. Blank
