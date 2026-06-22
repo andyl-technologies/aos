@@ -14,11 +14,42 @@ pub struct ContentHash {
     pub bytes: [u8; 32],
 }
 
+impl ContentHash {
+    /// Computes a stable content hash from canonical material.
+    ///
+    /// `domain` separates independently versioned material streams, and
+    /// `material` is the canonical byte representation of the addressed
+    /// content.
+    #[must_use]
+    pub fn from_canonical_material(domain: &str, material: &str) -> Self {
+        let mut hasher = MaterialHasher::new();
+        hasher.write_bytes("crucible.content-hash.v1".as_bytes());
+        hasher.write_bytes(domain.as_bytes());
+        hasher.write_bytes(material.as_bytes());
+        Self {
+            bytes: hasher.finish(),
+        }
+    }
+}
+
 /// A handle to an immutable scenario definition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ScenarioDef {
     /// The content address of the scenario definition.
     pub id: ContentHash,
+}
+
+impl ScenarioDef {
+    /// Builds a scenario definition from canonical material.
+    ///
+    /// This helper is the engine-side content-addressing entry point for
+    /// backend-produced canonical material.
+    #[must_use]
+    pub fn from_canonical_material(domain: &str, material: &str) -> Self {
+        Self {
+            id: ContentHash::from_canonical_material(domain, material),
+        }
+    }
 }
 
 /// The only identity-bearing execution configuration.
@@ -428,3 +459,83 @@ impl fmt::Display for EngineError {
 }
 
 impl Error for EngineError {}
+
+struct MaterialHasher {
+    lanes: [u64; 4],
+    bytes_written: u64,
+}
+
+impl MaterialHasher {
+    fn new() -> Self {
+        Self {
+            lanes: [
+                0x243f_6a88_85a3_08d3,
+                0x1319_8a2e_0370_7344,
+                0xa409_3822_299f_31d0,
+                0x082e_fa98_ec4e_6c89,
+            ],
+            bytes_written: 0,
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        self.write_u64(bytes.len() as u64);
+
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let mut word = [0; 8];
+            word.copy_from_slice(chunk);
+            self.mix_word(u64::from_le_bytes(word));
+        }
+
+        let remainder = chunks.remainder();
+        if !remainder.is_empty() {
+            let mut word = [0; 8];
+            for (index, byte) in remainder.iter().enumerate() {
+                word[index] = *byte;
+            }
+            self.mix_word(u64::from_le_bytes(word));
+        }
+
+        self.bytes_written = self.bytes_written.wrapping_add(bytes.len() as u64);
+    }
+
+    fn finish(&self) -> [u8; 32] {
+        let mut lanes = self.lanes;
+        for (index, lane) in lanes.iter_mut().enumerate() {
+            let salt = (index as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            *lane = finalize_hash_word(lane.wrapping_add(self.bytes_written).wrapping_add(salt));
+        }
+
+        let mut bytes = [0; 32];
+        for (index, lane) in lanes.iter().enumerate() {
+            bytes[index * 8..index * 8 + 8].copy_from_slice(&lane.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.mix_word(value);
+        self.bytes_written = self.bytes_written.wrapping_add(8);
+    }
+
+    fn mix_word(&mut self, word: u64) {
+        for (index, lane) in self.lanes.iter_mut().enumerate() {
+            let rotation = 13 + (index as u32 * 7);
+            let salt = (index as u64).wrapping_mul(0xd6e8_feb8_6659_fd93);
+            *lane ^= word.wrapping_add(salt);
+            *lane = lane
+                .rotate_left(rotation)
+                .wrapping_mul(0x9e37_79b1_85eb_ca87);
+            *lane ^= *lane >> 33;
+        }
+    }
+}
+
+fn finalize_hash_word(mut word: u64) -> u64 {
+    word ^= word >> 30;
+    word = word.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    word ^= word >> 27;
+    word = word.wrapping_mul(0x94d0_49bb_1331_11eb);
+    word ^ (word >> 31)
+}

@@ -643,7 +643,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 > They populate Phase 1 (the determinism / harness / transport / API
 > foundation).
 
-- [ ] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
+- [x] **T-DET-1** Pin the launch configuration for intra-VM hermeticity: fixed
   `-cpu <model>` (no RDRAND/RDSEED, never `-cpu host`), `-smp 1`, `-accel tcg`,
   fixed `-icount shift=N` (never `auto`), deterministic machine reset, fixed RTC
   epoch; record all of it in the scenario hash; make a VM's notion of time its
