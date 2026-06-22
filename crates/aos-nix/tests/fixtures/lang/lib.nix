@@ -1,0 +1,3 @@
+{
+  concat = builtins.concatStringsSep "";
+}

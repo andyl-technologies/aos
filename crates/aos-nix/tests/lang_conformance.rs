@@ -32,6 +32,19 @@ enum CaseOutcome {
     Skipped(String),
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LangEvalConfig {
+    options: TreeWalkOptions,
+    auto_args: Vec<LangAutoArg>,
+    attr_path: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LangAutoArg {
+    Expr { name: String, expr: String },
+    Str { name: String, value: String },
+}
+
 fn discover_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
     let mut cases = Vec::new();
     for entry in fs::read_dir(lang_dir)
@@ -114,8 +127,8 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
         .source
         .parent()
         .ok_or_else(|| anyhow!("{} has no lang corpus parent directory", case.name))?;
-    let options = match lang_case_options(case.category, &case.flags, lang_dir) {
-        Ok(options) => options,
+    let config = match lang_case_config(case.category, &case.flags, lang_dir) {
+        Ok(config) => config,
         Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
     };
 
@@ -133,7 +146,7 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             Ok(CaseOutcome::Passed)
         }
         LangCategory::EvalFail => {
-            if eval_case(&source, options).is_ok() {
+            if eval_case(&source, config.options).is_ok() {
                 bail!("{} evaluated but should fail", case.name);
             }
             Ok(CaseOutcome::Passed)
@@ -145,7 +158,7 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
                 .ok_or_else(|| anyhow!("{} has no expected output path", case.name))?;
             let expected = fs::read(expected_path)
                 .with_context(|| format!("reading {}", expected_path.display()))?;
-            let actual = eval_raw_case(&source, options)
+            let actual = eval_raw_case(&source, lang_dir, &config, &case.flags)
                 .with_context(|| format!("{} should evaluate as a raw value", case.name))?;
             if actual != expected {
                 bail!(
@@ -165,12 +178,20 @@ fn lang_case_options(
     flags: &[String],
     lang_dir: &Path,
 ) -> std::result::Result<TreeWalkOptions, String> {
+    Ok(lang_case_config(category, flags, lang_dir)?.options)
+}
+
+fn lang_case_config(
+    category: LangCategory,
+    flags: &[String],
+    lang_dir: &Path,
+) -> std::result::Result<LangEvalConfig, String> {
     if flags.is_empty() {
         let mut options = base_eval_options(lang_dir)?;
         if category == LangCategory::EvalOkay {
             add_eval_okay_default_nix_path(&mut options, flags)?;
         }
-        return Ok(options);
+        return Ok(LangEvalConfig::from_options(options));
     }
 
     if matches!(category, LangCategory::ParseFail | LangCategory::ParseOkay) {
@@ -187,8 +208,10 @@ fn lang_case_options(
 fn eval_okay_options(
     flags: &[String],
     lang_dir: &Path,
-) -> std::result::Result<TreeWalkOptions, String> {
+) -> std::result::Result<LangEvalConfig, String> {
     let mut options = base_eval_options(lang_dir)?;
+    let mut auto_args = Vec::new();
+    let mut attr_path = Vec::new();
 
     let mut index = 0;
     while let Some(flag) = flags.get(index) {
@@ -211,24 +234,69 @@ fn eval_okay_options(
                     _ => return Err(unsupported_flags_message(flags)),
                 }
             }
+            "--arg" => {
+                index += 1;
+                let Some(name) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                index += 1;
+                let Some(expr) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                validate_auto_arg_name(name, flags)?;
+                render_auto_arg_expr(expr, lang_dir, flags)?;
+                auto_args.push(LangAutoArg::Expr {
+                    name: name.clone(),
+                    expr: expr.clone(),
+                });
+            }
+            "--argstr" => {
+                index += 1;
+                let Some(name) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                index += 1;
+                let Some(value) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                validate_auto_arg_name(name, flags)?;
+                auto_args.push(LangAutoArg::Str {
+                    name: name.clone(),
+                    value: value.clone(),
+                });
+            }
+            "-A" => {
+                if !attr_path.is_empty() {
+                    return Err(unsupported_flags_message(flags));
+                }
+                index += 1;
+                let Some(attr) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                attr_path = parse_lang_attr_path(attr, flags)?;
+            }
             _ => return Err(unsupported_flags_message(flags)),
         }
         index += 1;
     }
 
     add_eval_okay_default_nix_path(&mut options, flags)?;
-    Ok(options)
+    Ok(LangEvalConfig {
+        options,
+        auto_args,
+        attr_path,
+    })
 }
 
 fn eval_fail_options(
     flags: &[String],
     lang_dir: &Path,
-) -> std::result::Result<TreeWalkOptions, String> {
+) -> std::result::Result<LangEvalConfig, String> {
     if flags.len() == 2 && flags[0] == "--max-call-depth" {
         let max_call_depth = parse_max_call_depth_flag(&flags[1], flags)?;
         let mut options = base_eval_options(lang_dir)?;
         options.set_max_call_depth(max_call_depth);
-        return Ok(options);
+        return Ok(LangEvalConfig::from_options(options));
     }
 
     let mut saw_eval = false;
@@ -243,9 +311,19 @@ fn eval_fail_options(
     }
 
     if saw_eval && saw_strict {
-        base_eval_options(lang_dir)
+        base_eval_options(lang_dir).map(LangEvalConfig::from_options)
     } else {
         Err(unsupported_flags_message(flags))
+    }
+}
+
+impl LangEvalConfig {
+    fn from_options(options: TreeWalkOptions) -> Self {
+        Self {
+            options,
+            auto_args: Vec::new(),
+            attr_path: Vec::new(),
+        }
     }
 }
 
@@ -299,6 +377,33 @@ fn parse_max_call_depth_flag(value: &str, flags: &[String]) -> std::result::Resu
     value.parse().map_err(|_| unsupported_flags_message(flags))
 }
 
+fn validate_auto_arg_name(name: &str, flags: &[String]) -> std::result::Result<(), String> {
+    validate_simple_identifier(name.as_bytes(), flags)
+}
+
+fn parse_lang_attr_path(attr: &str, flags: &[String]) -> std::result::Result<Vec<Vec<u8>>, String> {
+    let mut segments = Vec::new();
+    for segment in attr.split('.') {
+        validate_simple_identifier(segment.as_bytes(), flags)?;
+        segments.push(segment.as_bytes().to_vec());
+    }
+    Ok(segments)
+}
+
+fn validate_simple_identifier(bytes: &[u8], flags: &[String]) -> std::result::Result<(), String> {
+    let Some((first, rest)) = bytes.split_first() else {
+        return Err(unsupported_flags_message(flags));
+    };
+    if !matches!(first, b'_' | b'a'..=b'z' | b'A'..=b'Z')
+        || !rest
+            .iter()
+            .all(|byte| matches!(byte, b'_' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'))
+    {
+        return Err(unsupported_flags_message(flags));
+    }
+    Ok(())
+}
+
 fn unsupported_flags_message(flags: &[String]) -> String {
     format!("case carries unsupported flags: {}", flags.join(" "))
 }
@@ -311,13 +416,129 @@ fn eval_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
     Ok(())
 }
 
-fn eval_raw_case(source: &[u8], options: TreeWalkOptions) -> Result<Vec<u8>> {
-    let parsed = parse_bytes(source).context("parsing expression")?;
+fn eval_raw_case(
+    source: &[u8],
+    lang_dir: &Path,
+    config: &LangEvalConfig,
+    flags: &[String],
+) -> Result<Vec<u8>> {
+    let source = if config.auto_args.is_empty() && config.attr_path.is_empty() {
+        source.to_vec()
+    } else {
+        wrap_eval_okay_source(source, lang_dir, config, flags)
+            .map(String::into_bytes)
+            .map_err(anyhow::Error::msg)?
+    };
+    let parsed = parse_bytes(&source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    let mut bytes = eval_raw_bytes_with_options(&ir, options).context("evaluating raw value")?;
+    let mut bytes =
+        eval_raw_bytes_with_options(&ir, config.options.clone()).context("evaluating raw value")?;
     bytes.push(b'\n');
     Ok(bytes)
+}
+
+fn wrap_eval_okay_source(
+    source: &[u8],
+    lang_dir: &Path,
+    config: &LangEvalConfig,
+    flags: &[String],
+) -> std::result::Result<String, String> {
+    let source = std::str::from_utf8(source).map_err(|_| unsupported_flags_message(flags))?;
+    let mut wrapped = String::new();
+    wrapped.push_str("((");
+    wrapped.push_str(source);
+    wrapped.push(')');
+    if !config.auto_args.is_empty() {
+        wrapped.push_str(" { ");
+        for auto_arg in &config.auto_args {
+            match auto_arg {
+                LangAutoArg::Expr { name, expr } => {
+                    wrapped.push_str(name);
+                    wrapped.push_str(" = ");
+                    wrapped.push_str(&render_auto_arg_expr(expr, lang_dir, flags)?);
+                    wrapped.push_str("; ");
+                }
+                LangAutoArg::Str { name, value } => {
+                    wrapped.push_str(name);
+                    wrapped.push_str(" = ");
+                    wrapped.push_str(&nix_string_literal(value.as_bytes(), flags)?);
+                    wrapped.push_str("; ");
+                }
+            }
+        }
+        wrapped.push('}');
+    }
+    wrapped.push(')');
+    for segment in &config.attr_path {
+        wrapped.push('.');
+        wrapped.push_str(&nix_string_literal(segment, flags)?);
+    }
+    Ok(wrapped)
+}
+
+fn render_auto_arg_expr(
+    expr: &str,
+    lang_dir: &Path,
+    flags: &[String],
+) -> std::result::Result<String, String> {
+    let Some(path) = expr
+        .strip_prefix("import(")
+        .and_then(|expr| expr.strip_suffix(')'))
+    else {
+        return Err(unsupported_flags_message(flags));
+    };
+    if path.contains("${") {
+        return Err(unsupported_flags_message(flags));
+    }
+    let path = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        lang_dir
+            .parent()
+            .ok_or_else(|| unsupported_flags_message(flags))?
+            .join(path)
+    };
+    if !path.exists() {
+        return Err(unsupported_flags_message(flags));
+    }
+    Ok(format!(
+        "import {}",
+        nix_path_literal(path.as_os_str().as_bytes(), flags)?
+    ))
+}
+
+fn nix_path_literal(path: &[u8], flags: &[String]) -> std::result::Result<String, String> {
+    if !path.iter().all(
+        |byte| matches!(byte, b'/' | b'.' | b'_' | b'-' | b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9'),
+    ) {
+        return Err(unsupported_flags_message(flags));
+    }
+    String::from_utf8(path.to_vec()).map_err(|_| unsupported_flags_message(flags))
+}
+
+fn nix_string_literal(bytes: &[u8], flags: &[String]) -> std::result::Result<String, String> {
+    let mut out = String::new();
+    out.push('"');
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            b'$' if bytes.get(cursor + 1) == Some(&b'{') => {
+                out.push_str("\\${");
+                cursor += 1;
+            }
+            b' '..=b'~' => out.push(bytes[cursor] as char),
+            _ => return Err(unsupported_flags_message(flags)),
+        }
+        cursor += 1;
+    }
+    out.push('"');
+    Ok(out)
 }
 
 fn fixture_lang_dir() -> PathBuf {
@@ -339,6 +560,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::EvalFail,
             LangCategory::EvalFail,
             LangCategory::EvalFail,
+            LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
@@ -386,6 +608,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ("eval-fail-type", CaseOutcome::Passed),
             ("eval-fail-with-flags", CaseOutcome::Passed),
             ("eval-okay-attrs", CaseOutcome::Passed),
+            ("eval-okay-autoargs", CaseOutcome::Passed),
             (
                 "eval-okay-disabled",
                 CaseOutcome::Skipped("disabled by .exp-disabled".to_owned())
@@ -410,9 +633,11 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
 
 #[test]
 fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
+    let flags = Vec::new();
+    let config = LangEvalConfig::from_options(TreeWalkOptions::default());
     assert!(eval_case(b"x: x", TreeWalkOptions::default()).is_ok());
     assert_eq!(
-        eval_raw_case(b"x: x", TreeWalkOptions::default())?,
+        eval_raw_case(b"x: x", &fixture_lang_dir(), &config, &flags)?,
         b"<LAMBDA>\n"
     );
 
@@ -545,7 +770,7 @@ fn lang_sh_experimental_feature_flags_configure_eval_okay() {
 }
 
 #[test]
-fn lang_sh_capability_flags_remain_skipped() {
+fn lang_sh_autoarg_flags_configure_eval_okay() {
     let lang_dir = fixture_lang_dir();
     let autoarg_flags = [
         "--arg",
@@ -560,13 +785,57 @@ fn lang_sh_capability_flags_remain_skipped() {
     .into_iter()
     .map(str::to_owned)
     .collect::<Vec<_>>();
+    let unsupported_autoarg_flags = ["--arg", "lib", "builtins"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let unsupported_name_flags = ["--argstr", "bad-name", "value"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let unsupported_attr_flags = ["-A", "\"quoted.attr\""]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let config = lang_case_config(LangCategory::EvalOkay, &autoarg_flags, &lang_dir)
+        .expect("autoarg flags should be supported");
+    assert_eq!(config.auto_args.len(), 2);
+    assert_eq!(config.attr_path, vec![b"result".to_vec()]);
+    assert_eq!(config.options.nix_path().len(), 2);
 
     assert_eq!(
-        lang_case_options(LangCategory::EvalOkay, &autoarg_flags, &lang_dir),
-        Err(
-            "case carries unsupported flags: --arg lib import(lang/lib.nix) --argstr xyzzy xyzzy! -A result"
-                .to_owned()
+        wrap_eval_okay_source(
+            b"{ lib, xyzzy }: { result = xyzzy; }",
+            &lang_dir,
+            &config,
+            &autoarg_flags
         )
+        .expect("autoarg source should wrap"),
+        format!(
+            "(({{ lib, xyzzy }}: {{ result = xyzzy; }}) {{ lib = import {}/lib.nix; xyzzy = \"xyzzy!\"; }}).\"result\"",
+            lang_dir.display()
+        )
+    );
+    assert_eq!(
+        nix_string_literal(b"${oops}", &autoarg_flags).expect("string literal should escape"),
+        "\"\\${oops}\""
+    );
+    assert_eq!(
+        lang_case_config(
+            LangCategory::EvalOkay,
+            &unsupported_autoarg_flags,
+            &lang_dir
+        ),
+        Err("case carries unsupported flags: --arg lib builtins".to_owned())
+    );
+    assert_eq!(
+        lang_case_config(LangCategory::EvalOkay, &unsupported_name_flags, &lang_dir),
+        Err("case carries unsupported flags: --argstr bad-name value".to_owned())
+    );
+    assert_eq!(
+        lang_case_config(LangCategory::EvalOkay, &unsupported_attr_flags, &lang_dir),
+        Err("case carries unsupported flags: -A \"quoted.attr\"".to_owned())
     );
 }
 
