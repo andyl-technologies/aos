@@ -1163,6 +1163,17 @@ pub struct CacheLinkRow {
     pub advertised: bool,
 }
 
+/// A linked binary cache shown on a *registry's* settings page (the reverse of
+/// [`CacheLinkRow`]).
+pub struct RegistryCacheRow {
+    /// The linked cache's slug.
+    pub cache_slug: String,
+    /// This cache is advertised in the registry's consumer cache stack.
+    pub advertised: bool,
+    /// The registry's live store paths pin GC roots in this cache.
+    pub roots_packages: bool,
+}
+
 /// The org dashboard: projects, registries, members, bindings, audit link.
 ///
 /// `can_manage_members` gates the member-management controls (invite/remove)
@@ -1905,11 +1916,14 @@ pub fn new_registry_page(
 /// [`config::change_registry_visibility`]: crate::config::change_registry_visibility
 #[must_use]
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn registry_settings_page(
     email: &str,
     registry: &RegistryRecord,
+    org_slug: &str,
     csrf: &str,
     binding: Option<(&str, &str, &str)>,
+    caches: &[RegistryCacheRow],
     can_delete: bool,
     result: Option<&str>,
     started: Instant,
@@ -1989,7 +2003,9 @@ pub fn registry_settings_page(
          A confirmation-gated change-set, recorded in the audit feed.</p>\n",
     );
 
-    // Storage (read-only).
+    // Storage (read-only). Three cases: a custom binding, the deployment's
+    // default storage (a managed registry with no binding), or a phase-1
+    // source-URL mirror (read-only upstream, no writable surface here).
     body.push_str("<h2>Storage</h2>\n");
     match binding {
         Some((name, root, prefix)) => {
@@ -2001,8 +2017,61 @@ pub fn registry_settings_page(
                 escape(if prefix.is_empty() { "(none)" } else { prefix }),
             );
         }
-        None => body
-            .push_str("<p class=\"dim\">No storage binding (a phase-1 source-URL registry).</p>\n"),
+        None if !registry.source_url.is_empty() => {
+            let _ = writeln!(
+                body,
+                "<p><span class=\"chip\">source mirror</span> serves a read-only upstream \
+                 surface · <code>{}</code></p>",
+                escape(&registry.source_url),
+            );
+        }
+        None => {
+            let prefix = if registry.prefix.is_empty() {
+                registry.slug.as_str()
+            } else {
+                registry.prefix.as_str()
+            };
+            let _ = writeln!(
+                body,
+                "<p><span class=\"chip\">default storage</span> · prefix <code>{}</code></p>",
+                escape(prefix),
+            );
+        }
+    }
+
+    // Binary caches serving this registry (the reverse of a cache's
+    // linked-registries list). Managed from each cache's page; shown here so the
+    // association is visible from the registry side too.
+    body.push_str("<h2>Binary caches</h2>\n");
+    if caches.is_empty() {
+        body.push_str(
+            "<p class=\"dim\">No binary caches serve this registry. Link one from a cache's \
+             page to advertise it to consumers and pin GC roots from this registry's packages.</p>\n",
+        );
+    } else {
+        let rows: Vec<Vec<String>> = caches
+            .iter()
+            .map(|c| {
+                let label = if org_slug.is_empty() {
+                    escape(&c.cache_slug)
+                } else {
+                    format!(
+                        "<a href=\"/-/org/{org}/caches/{slug}\">{slug}</a>",
+                        org = escape(org_slug),
+                        slug = escape(&c.cache_slug),
+                    )
+                };
+                let mut flags = Vec::new();
+                if c.advertised {
+                    flags.push("<span class=\"chip\">advertised</span>");
+                }
+                if c.roots_packages {
+                    flags.push("<span class=\"chip\">gc roots</span>");
+                }
+                vec![label, flags.join(" ")]
+            })
+            .collect();
+        body.push_str(&table(&["cache", ""], &rows));
     }
 
     // Trust anchors (read-only — editing is the signed keys.toml flow).

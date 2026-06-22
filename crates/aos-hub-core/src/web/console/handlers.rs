@@ -3421,6 +3421,24 @@ async fn registry_settings_view(
                 .map(|b| (b.name, b.root, registry.prefix.clone())),
             None => None,
         };
+        // Resolve the owning org slug (for cache links) and the binary caches
+        // that serve this registry — the reverse of a cache's linked registries.
+        let org_slug = match registry.org_id {
+            Some(id) => deps.db.org_by_id(id).await?.map(|o| o.slug).unwrap_or_default(),
+            None => String::new(),
+        };
+        let mut caches = Vec::new();
+        for link in deps.db.cache_links_for_registry(registry.id).await? {
+            if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
+                if cache.deleted_at.is_none() {
+                    caches.push(console::RegistryCacheRow {
+                        cache_slug: cache.slug,
+                        advertised: link.advertised,
+                        roots_packages: link.roots_packages,
+                    });
+                }
+            }
+        }
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
         let binding_ref = binding
             .as_ref()
@@ -3428,8 +3446,10 @@ async fn registry_settings_view(
         Ok::<_, anyhow::Error>(console::registry_settings_page(
             &session.email,
             registry,
+            &org_slug,
             &session.csrf(),
             binding_ref,
+            &caches,
             can_delete,
             result,
             started,

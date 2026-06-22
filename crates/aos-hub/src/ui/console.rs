@@ -30,5 +30,5 @@ pub use aos_hub_core::web::console_render::{
     login_page, login_sent_page, login_sso_page, new_org_page, new_registry_page, org_dashboard,
     org_hosted_keys_page, org_sso_page, org_webhooks_page, orgs_page, passkeys_page, publishes_page,
     registry_settings_page, serving_page, tokens_page, ChangeRequestView, MemberRow,
-    WEBHOOK_EVENT_TYPES,
+    RegistryCacheRow, WEBHOOK_EVENT_TYPES,
 };
