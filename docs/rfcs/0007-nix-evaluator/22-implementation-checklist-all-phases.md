@@ -165,10 +165,13 @@ hold invariant.
 - [x] `NixEval` seam wired in `aos-core` ([14](14-integration-with-aos.md) §3):
       trait defined, `NixCli` as first impl, stub `NixNative` behind
       `AOS_NIX_NATIVE` (default off).
-- [ ] Frontend: `syntax/lexer.rs`, `syntax/ast.rs` (compact arena AST, `u32`
-      NodeIds), `syntax/parser.rs` (recursive-descent + Pratt; rnix is
-      test-only, `C-7`), `compile/scope.rs` (de Bruijn `(depth, slot)`),
-      `cache/parse.rs` (blake3 content-addressed parse cache).
+- [x] Frontend: `syntax/lexer`, `syntax/ast` compact arena AST with `u32`
+      `NodeId`s and child slices, `syntax/parser` recursive-descent + Pratt
+      parser (rnix remains test-only, `C-7`), `compile/scope` rewriting
+      expression identifiers to `LocalVar { slot }`,
+      `UpvalVar { depth, slot }`, `WithVar`, or `GlobalVar`, and
+      `cache::parse` blake3 content-addressed parse cache over source bytes,
+      schema version, and parser flags.
 - [x] Value + heap subset: `value.rs` (16-byte tagged `Value`, **no NaN-boxing**,
       `S-6`/`M-4`), `heap/arena.rs` (bump-arena Tier A, allocate-never-free,
       all alloc behind `aos_alloc_*`), `attrs.rs` (sorted-vec + binary-search,
