@@ -23,6 +23,7 @@ in self
 impl BuiltinExecutor for TreeWalk {
     type Value = crate::value::Value;
     type Error = TreeWalkError;
+    type Arg = EvalPrimOpArg;
 
     fn builtin_is_available(&self, builtin: Builtin) -> bool {
         match builtin.availability() {

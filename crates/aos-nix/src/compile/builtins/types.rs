@@ -665,6 +665,13 @@ pub(crate) trait BuiltinExecutor {
     /// Error type returned by the executor.
     type Error;
 
+    /// First-class argument record forced before a builtin is applied as a value.
+    ///
+    /// The metadata layer is agnostic to the concrete primop argument type; each
+    /// evaluator tier supplies its own (the tree-walk oracle uses
+    /// `crate::eval::heap::EvalPrimOpArg`).
+    type Arg;
+
     /// Returns whether `builtin` is visible in the current evaluator options.
     fn builtin_is_available(&self, builtin: Builtin) -> bool;
 
@@ -706,7 +713,7 @@ pub(crate) trait BuiltinExecutor {
         &mut self,
         builtin: Builtin,
         call: BuiltinCall,
-        args: &[EvalPrimOpArg],
+        args: &[Self::Arg],
     ) -> Result<Self::Value, Self::Error>;
 }
 
@@ -836,11 +843,7 @@ pub(crate) trait BuiltinDefinition {
     }
 
     /// Applies this builtin after it has been selected as a first-class value.
-    fn apply<E>(
-        eval: &mut E,
-        call: BuiltinCall,
-        args: &[EvalPrimOpArg],
-    ) -> Result<E::Value, E::Error>
+    fn apply<E>(eval: &mut E, call: BuiltinCall, args: &[E::Arg]) -> Result<E::Value, E::Error>
     where
         E: BuiltinExecutor,
     {

@@ -242,6 +242,7 @@ struct RecordingExecutor {
 impl BuiltinExecutor for RecordingExecutor {
     type Value = &'static str;
     type Error = &'static str;
+    type Arg = ();
 
     fn builtin_is_available(&self, builtin: Builtin) -> bool {
         builtin.name() == b"length"
@@ -273,7 +274,7 @@ impl BuiltinExecutor for RecordingExecutor {
         &mut self,
         builtin: Builtin,
         _call: BuiltinCall,
-        _args: &[EvalPrimOpArg],
+        _args: &[Self::Arg],
     ) -> Result<Self::Value, Self::Error> {
         self.calls.push(("apply", builtin));
         Ok("applied")

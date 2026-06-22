@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 
 use super::{FrameInfo, ResolvedAst};
-use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin, lookup_builtin};
+use crate::compile::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin, lookup_builtin};
 use crate::syntax::{
     AstErrorKind, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, Span, Symbol,
     SymbolTable, UnaryOpKind,

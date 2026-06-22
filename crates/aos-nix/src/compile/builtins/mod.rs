@@ -17,7 +17,6 @@
 //! - `lookup` — the compile-time perfect-hash name lookup table.
 
 pub(super) use crate::compile::{IrId, IrNode};
-pub(super) use crate::eval::heap::EvalPrimOpArg;
 pub(super) use crate::syntax::{Span, Symbol};
 
 #[macro_use]

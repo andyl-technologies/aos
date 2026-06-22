@@ -3,7 +3,15 @@
 //! The compile layer starts with scope resolution: it rewrites expression
 //! identifiers into de Bruijn-style variable accesses and records the frame side
 //! tables that later lowering, interpretation, and serialization consume.
+//!
+//! The `builtins` submodule owns the builtin *metadata* layer — the declaration
+//! inventory, name lookup, direct-lowering classification, and the abstract
+//! [`builtins::BuiltinExecutor`] adapter trait. Lowering and scope resolution
+//! consume this metadata without depending on any concrete evaluator. Runtime
+//! tiers (the tree-walk oracle) implement the executor trait and supply the
+//! builtin *execution* behavior, so the dependency runs runtime -> compile.
 
+pub(crate) mod builtins;
 pub mod ir;
 pub mod scope;
 

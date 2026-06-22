@@ -19,7 +19,7 @@ use std::convert::TryFrom;
 
 use thiserror::Error;
 
-use crate::runtime::builtins::{is_known_builtin_attr, is_unshadowable_global_name};
+use crate::compile::builtins::{is_known_builtin_attr, is_unshadowable_global_name};
 use crate::syntax::{
     AstArena, AstError, AstErrorKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParsedAst,
     Span, Symbol, SymbolTable,

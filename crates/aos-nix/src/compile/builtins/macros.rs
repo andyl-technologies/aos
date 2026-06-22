@@ -128,7 +128,7 @@ macro_rules! define_builtins {
                 self,
                 eval: &mut E,
                 call: BuiltinCall,
-                args: &[EvalPrimOpArg],
+                args: &[E::Arg],
             ) -> Result<E::Value, E::Error>
             where
                 E: BuiltinExecutor,
