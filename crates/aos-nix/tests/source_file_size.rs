@@ -19,16 +19,28 @@ const MAX_LINES: usize = 1000;
 
 /// Files exempt from [`MAX_LINES`], each justified.
 ///
-/// Paths are relative to `src/`, slash-separated.
+/// Paths are crate-qualified and relative to the workspace `crates/` directory,
+/// slash-separated (e.g. `ratchet-oracle/src/...`).
 ///
-/// - `eval/tree_walk/error_kind.rs` is a single exhaustive `TreeWalkErrorKind`
-///   enum. Splitting one error enum would fragment the parity-relevant
-///   error-class surface (§4 — "merging or renaming a variant ... is a parity
-///   event"), so the §2 "a cohesive unit beats a contrived split" exception
-///   applies: one indivisible type, one file.
-const ALLOWLIST: &[&str] = &["eval/tree_walk/error_kind.rs"];
+/// - `ratchet-oracle/src/eval/tree_walk/error_kind.rs` is a single exhaustive
+///   `TreeWalkErrorKind` enum. Splitting one error enum would fragment the
+///   parity-relevant error-class surface (§4 — "merging or renaming a variant
+///   ... is a parity event"), so the §2 "a cohesive unit beats a contrived
+///   split" exception applies: one indivisible type, one file.
+const ALLOWLIST: &[&str] = &["ratchet-oracle/src/eval/tree_walk/error_kind.rs"];
 
-/// Fails when any `src/**.rs` file exceeds the RFC-0007 §2 line cap.
+/// True for a workspace crate dir governed by the RFC-0007 §2 cap: the Nix
+/// dialect band (`aos-nix`, `aos-nix-*`) and the engine band (`ratchet-*`).
+/// Other workspace crates (`aos`, `aos-core`, ...) are outside this RFC's scope.
+fn is_rfc0007_crate(name: &str) -> bool {
+    name == "aos-nix" || name.starts_with("aos-nix-") || name.starts_with("ratchet-")
+}
+
+/// Fails when any `src/**.rs` file in an RFC-0007 crate exceeds the §2 line cap.
+///
+/// Scans every `aos-nix*` / `ratchet-*` crate under the workspace `crates/`
+/// directory, so the cap follows code as it is re-layered across crates
+/// (Phase 1b) rather than being escaped by moving a file to a new crate.
 ///
 /// # Panics
 ///
@@ -36,9 +48,23 @@ const ALLOWLIST: &[&str] = &["eval/tree_walk/error_kind.rs"];
 /// count, with remediation guidance.
 #[test]
 fn no_source_file_exceeds_line_cap() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // CARGO_MANIFEST_DIR is `crates/aos-nix`; its parent is the workspace
+    // `crates/` directory holding every member crate.
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("aos-nix crate dir has a parent (the workspace crates/ dir)")
+        .to_path_buf();
+
     let mut offenders: Vec<(String, usize)> = Vec::new();
-    collect_offenders(&src, &src, &mut offenders);
+    let members = fs::read_dir(&crates_dir).expect("read workspace crates/ dir");
+    for member in members.flatten() {
+        let name = member.file_name().to_string_lossy().into_owned();
+        if !member.path().is_dir() || !is_rfc0007_crate(&name) {
+            continue;
+        }
+        let src = member.path().join("src");
+        collect_offenders(&crates_dir, &src, &mut offenders);
+    }
     offenders.sort();
 
     assert!(

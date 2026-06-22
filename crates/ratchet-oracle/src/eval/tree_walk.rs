@@ -749,6 +749,7 @@ mod eval_primop_apply;
 mod eval_primop_bind;
 mod eval_raw;
 mod eval_regex;
+mod eval_session;
 mod eval_sort;
 mod eval_source;
 mod eval_stats;
