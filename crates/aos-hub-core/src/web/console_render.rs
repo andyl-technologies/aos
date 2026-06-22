@@ -1325,7 +1325,7 @@ pub fn org_dashboard(
              data-binding-kind>\n{csrf}\
              <label>name <input type=\"text\" name=\"name\" required placeholder=\"primary\"></label>\n\
              <label>kind <select name=\"kind\">{kinds}</select></label>\n\
-             <label><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span> \
+             <label><span><span class=\"local-only\">path</span><span class=\"s3-only\">bucket</span></span> \
              <input type=\"text\" name=\"root\" required placeholder=\"/srv/registries/acme\"></label>\n\
              <div class=\"s3-only\">\n\
              <label>endpoint <input type=\"text\" name=\"endpoint\" \
@@ -1563,11 +1563,13 @@ pub fn new_registry_page(
          <option value=\"private\">private</option>\
          <option value=\"internal\">internal</option>\
          <option value=\"public\">public</option></select></label>\n\
-         <label>prefix <span class=\"dim\">optional</span> \
-         <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"></label>\n\
-         <label>trust anchors <span class=\"dim\">optional</span>\n\
+         <label>prefix \
+         <input type=\"text\" name=\"prefix\" placeholder=\"defaults to the registry slug\"> \
+         <span class=\"dim\">optional</span></label>\n\
+         <label>trust anchors \
          <textarea name=\"trust_keys\" rows=\"4\" cols=\"80\" \
-         placeholder=\"release:Ed25519:base64...&#10;(one per line)\"></textarea></label>\n\
+         placeholder=\"release:Ed25519:base64...&#10;(one per line)\"></textarea> \
+         <span class=\"dim\">optional</span></label>\n\
          <label><input type=\"checkbox\" name=\"require_signatures\" value=\"1\" checked> \
          require signatures</label>\n\
          <button>create registry</button>\n</form>\n",
