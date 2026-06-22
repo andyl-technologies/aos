@@ -478,6 +478,14 @@ alone (`M-1`/`Q-A`).
       serialized node/value/file records, Attic transport, GC/repack, and
       cached/uncached harness proof (`C-13`/`R-14`); transport stays **beside**
       `NixEval`, on the Attic content-addressed path (`C-3`).
+- [x] Current materialization-threshold policy substrate: `cache::policy`
+      defines caller-supplied `MaterializationCosts` and
+      `MaterializationSignals`, computes `write_cost = hash + serialize + IO`
+      with saturation, and returns `Materialize` only when
+      `eval_cost > write_cost` and the caller-supplied reuse signal predicts
+      cross-run reuse. This is a pure threshold decision only; cost measurement,
+      reuse metadata, RAM-tier promotion, packfile writes, persistence
+      integration, GC/repack, and AOS tuning remain open (`C-14`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

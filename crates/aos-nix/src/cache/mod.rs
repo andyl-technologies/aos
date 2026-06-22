@@ -33,7 +33,10 @@ pub use parse::{
 pub use persist::{
     PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION, PersistCache, PersistError, PersistLayout,
 };
-pub use policy::{MemoizationClass, MemoizationDecision, MemoizationSignals, MemoizationSubject};
+pub use policy::{
+    MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,
+    MemoizationDecision, MemoizationSignals, MemoizationSubject,
+};
 pub use runtime::{
     EvalCache, EvalCacheRuntime, ExpressionTraceObservation, ImpureInputTraceSource,
 };
