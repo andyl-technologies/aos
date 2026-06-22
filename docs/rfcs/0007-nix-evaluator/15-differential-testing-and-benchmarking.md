@@ -858,11 +858,18 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       subset and require every supported case green with only documented,
       intentional skips; no silent omissions against the pinned case snapshot
       (§3.4, criterion **C2**).
-- [ ] **Fuzzing quiescent.** At least **1,000 CPU-hours** of parity fuzzing (§7.2)
-      against C++ Nix have accumulated since the last evaluator-affecting change
-      with **zero** new divergences, *and* the internal differential fuzzer (§7.1)
-      and property tests (§7.3) are green. "Zero new divergences" resets the clock
-      on any evaluator change — a late fix re-arms the fuzzing budget.
+- [x] **Fuzz/property substrate wired.** The internal differential oracle and
+      `fuzz/internal_diff_raw` scaffold, the `fuzz/parity_json` scaffold with
+      checked-in source seeds and C++ comparison conditional on `AOS_NIX_ORACLE`,
+      and bounded `proptest` invariant tests are wired for the P1 tree-walk layer
+      (§7.1-§7.3). Optimized-tier fuzzing remains dormant until P6/P7 tiers
+      implement real `InternalDiffTier` candidates.
+- [ ] **Fuzzing quiescence remains.** After the last evaluator-affecting change,
+      accumulate the required parity-fuzzer CPU budget against C++ Nix with zero
+      new divergences, keep the internal differential fuzzer active for any
+      optimized tiers that exist, and keep property tests green before default-on
+      (§7.1-§7.3). "Zero new divergences" resets the clock on any evaluator
+      change — a late fix re-arms the fuzzing budget.
 - [ ] **Shadow mode silent.** At least **4 weeks** of shadow mode (§2.6) across at
       least **10,000** real CI evaluations with **zero** divergences reported —
       real traffic, not the enumerated corpus, so it covers the configurations the
