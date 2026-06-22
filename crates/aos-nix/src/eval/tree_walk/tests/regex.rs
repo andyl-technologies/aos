@@ -563,10 +563,12 @@ fn filesystem_builtins_realize_ifd_context_before_reading_paths() {
                  data = builtins.appendContext {data} ctx;
                  dir = builtins.appendContext {output} ctx;
                  imported = builtins.appendContext {imported} ctx;
+                 copied = builtins.path {{ path = data; name = "ifd-copied"; recursive = false; }};
                in builtins.readFile data == "hello"
                   && builtins.elem "data.txt" (builtins.attrNames (builtins.readDir dir))
                   && builtins.pathExists data
                   && builtins.readFileType data == "regular"
+                  && builtins.isString copied
                   && builtins.readFile data == "hello"
                   && import imported == 41"#,
         drv = nix_string_literal(&path_source(&drv_path)),
@@ -589,6 +591,7 @@ fn filesystem_builtins_realize_ifd_context_before_reading_paths() {
     assert!(requests.iter().any(|(_, op, _)| *op == "readDir"));
     assert!(requests.iter().any(|(_, op, _)| *op == "pathExists"));
     assert!(requests.iter().any(|(_, op, _)| *op == "readFileType"));
+    assert!(requests.iter().any(|(_, op, _)| *op == "path"));
     assert!(requests.iter().any(|(_, op, _)| *op == "import"));
     assert_eq!(
         requests

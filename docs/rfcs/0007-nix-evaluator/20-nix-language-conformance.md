@@ -815,16 +815,20 @@ re-associates an expression and changes its value). Precedence 1 binds tightest.
       changes the *scope* the imported file evaluates in, unlike plain `import`).
       Verified injected globals, builtin/import shadowing, escaped values, plain
       import freshness, and deliberate non-memoization against pinned Nix.
-- [ ] **Import-from-derivation (IFD)** — importing/reading a path that is a
+- [x] **Import-from-derivation (IFD)** — importing/reading a path that is a
       *derivation output* forces that derivation to be **built** before evaluation
-      can continue. Since aos-nix is eval-only (it does not build), reproduce the
-      *semantics*: detect IFD, drive the build through the store layer
-      (`NixCli`/the daemon — see
-      [integration with AOS](14-integration-with-aos.md)), and continue eval with
-      the realized path. The *result* (which store paths/`.drv`s are produced)
-      must match C++ Nix. Verify IFD detection points (`import`, `readFile`,
-      `readDir`, path coercion of a drv output) against pinned Nix. **High-risk:
-      IFD blurs the eval/build boundary the architecture relies on (doc 01 §1.1).**
+      can continue. aos-nix detects derivation-output string contexts at the
+      shared filesystem/source-path coercion boundary, materializes known native
+      `.drv` closures before the build handoff, and invokes an `IfdRealizer`
+      callback before retrying the filesystem read. `aos-core` wires native
+      evaluators to a `NixCli::realise`-backed realizer for the current eval
+      config; missing/failed realizers remain explicit fallback-eligible errors.
+      Focused tree-walk/native tests cover no-realizer errors, restricted-mode
+      denial before realization, mixed opaque/derivation context rejection,
+      realization before `readFile`, `readDir`, `pathExists`, `readFileType`,
+      `builtins.path` source coercion, and `import`, plus native instantiation
+      materializing known `.drv` closures before calling the realizer. The full
+      transitive `.drv`/output-path byte gate remains tracked in docs 11 and 15.
 
 ---
 
