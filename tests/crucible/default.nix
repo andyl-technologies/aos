@@ -66,6 +66,7 @@ in {
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
     layer0Determinism = import ./phase1-layer0-determinism.nix {inherit pkgs lib;};
+    lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};

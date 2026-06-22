@@ -687,7 +687,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   the shared-memory ABI: every input carries an in-band delivery icount; the
   consumer is time-driven, not arrival-driven. — satisfies [DET-11], [DET-13],
   [DET-34]; spec §4.4, §4.9.
-- [ ] **T-DET-12** Enforce the lookahead gate so a node cannot advance past an
+- [x] **T-DET-12** Enforce the lookahead gate so a node cannot advance past an
   input's possible delivery icount; a node that ran past a delivery icount fails
   loudly. — satisfies [DET-12]; spec §4.4.
 - [ ] **T-DET-13** Implement the deterministic tie-break for same-icount inputs
