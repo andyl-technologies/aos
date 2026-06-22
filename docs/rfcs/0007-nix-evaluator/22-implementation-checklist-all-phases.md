@@ -381,8 +381,17 @@ alone (`M-1`/`Q-A`).
 - [ ] `cache/dcg.rs` — the demand-driven incremental computation graph (Salsa /
       Adapton / *Build Systems à la Carte* model): nodes, demand edges,
       change-propagation, early cutoff ([12](12-incremental-evaluation-cache.md) §1).
-- [ ] `cache/key.rs` — the cache key combiner: an **ordered, length-prefixed**
-      free-variable combiner hashed once, **never bare XOR** (`C-1`).
+- [x] Current `cache/key.rs` standalone combiner substrate: `CacheExprIdentity`
+      plus opaque `DemandCacheKey` compute one order-sensitive xxh3 key over a
+      domain/version prefix, expression identity bytes, and caller-supplied
+      free-variable value hashes encoded as length-prefixed chunks. This checks
+      the C-1 combiner rule only, not demand-graph integration, canonical
+      free-variable set/order production, real durable value-hash production, or
+      false-hit harness coverage.
+- [ ] Full cache-key integration remains: wire expression identity from source
+      content + IR node position into demand-graph nodes, reuse the
+      strictness/escape free-variable set for canonical slot ordering, feed real
+      durable value hashes, and run the differential false-hit gate (`C-1`/`C-2`).
 - [ ] `cache/cutoff.rs` — early-cutoff: stop propagation when a recomputed
       value-hash equals its prior value-hash.
 - [x] Current value-consing precursor outside future `value/hashcons.rs`: the P1

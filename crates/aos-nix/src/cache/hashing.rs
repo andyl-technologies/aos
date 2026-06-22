@@ -30,6 +30,11 @@ impl HotXxh3Hash {
         value.hash(&mut hasher);
         Self(hasher.finish())
     }
+
+    /// Wraps an xxh3 result that was already computed in the hot hash domain.
+    pub(crate) const fn from_xxh3(raw: u64) -> Self {
+        Self(raw)
+    }
 }
 
 /// A durable BLAKE3 hash used for evaluator cache content addresses.

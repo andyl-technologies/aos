@@ -6,9 +6,11 @@
 //! hash.
 
 pub mod hashing;
+pub mod key;
 pub mod parse;
 
 pub use hashing::{DurableBlake3Hash, HotXxh3Hash};
+pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
     CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
     ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,
