@@ -515,7 +515,20 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### `--show-trace` parity: structural, not textual (§5)
 
-- [ ] Reconstruct the `--show-trace` frame chain from the evaluator's own *logical* eval/force-context stack (an `addErrorContext`-equivalent threaded onto the context), **not** the OS call stack: `TreeWalkError` now retains `addErrorContext` messages with source spans and the miette surface renders those contexts as evaluation-context labels, but full summarized/full `--show-trace` rendering remains open. This is mandatory because under the fiber model the native stack reflects scheduling, not Nix evaluation order (§5.1) — **P1** logical stack, validated against the fiber model ([13](13-parallel-evaluation.md) §5.5, **P3.5**); `D-OBS-2`.
+- [x] Current logical eval-context substrate: `TreeWalkError` retains
+      `addErrorContext`-equivalent `EvalErrorContext` messages with source
+      spans/sources in outer-to-inner order, independent of OS stack frames, and
+      the miette surface renders matching contexts as `while evaluating: ...`
+      evaluation-context labels (§5.1) — **P1** logical stack substrate,
+      `D-OBS-2`; gate today: focused `addErrorContext`/diagnostic/native source
+      tests.
+- [ ] Full `--show-trace` reconstruction remains: assemble summarized/full
+      trace frame chains from the evaluator's logical eval/force-context stack,
+      add any C++-Nix-required implicit frames beyond current `addErrorContext`
+      contexts, and validate the result under the future fiber scheduler where
+      the native stack reflects scheduling rather than Nix evaluation order
+      (§5.1) — **P1** logical stack, validated against the fiber model
+      ([13](13-parallel-evaluation.md) §5.5, **P3.5**); `D-OBS-2`.
 - [ ] Target structural parity (same frames, same order, same file:line:col from spans); frame *wording* best-effort; assemble the full chain only when tracing is requested, summarized by default, with lazy-vs-eager frame-string materialization a measure-first question (§5.2, §5.3, open question 1) — **P1**, `D-OBS-2`; text parity soft-gated like all error text (§3).
 
 ### The native-backed REPL (§6)
