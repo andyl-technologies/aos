@@ -690,7 +690,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-12** Enforce the lookahead gate so a node cannot advance past an
   input's possible delivery icount; a node that ran past a delivery icount fails
   loudly. — satisfies [DET-12]; spec §4.4.
-- [ ] **T-DET-13** Implement the deterministic tie-break for same-icount inputs
+- [x] **T-DET-13** Implement the deterministic tie-break for same-icount inputs
   using `(virtual_time, node_id, sequence)`. — satisfies [DET-14], routes
   [INV-3]; spec §4.4.
 - [ ] **T-DET-14** Implement `gate:layer1-injection`: two-VM run-twice-and-diff

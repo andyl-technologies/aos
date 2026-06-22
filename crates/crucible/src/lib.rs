@@ -36,7 +36,7 @@ pub use model::{
 pub use scheduler::{
     ControlOperation, ControlOperationKind, IoCompletion, QuantumLoop, QuantumOutcome,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
-    SchedulerNodeId, SchedulingNodeKind,
+    SchedulerNodeId, SchedulingNodeKind, ordered_scheduled_events,
 };
 #[cfg(feature = "test-double")]
 pub use sim_backend::{SimBackend, SimBackendState};
