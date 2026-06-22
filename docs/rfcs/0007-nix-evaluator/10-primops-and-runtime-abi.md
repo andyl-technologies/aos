@@ -176,6 +176,15 @@ divergence because forcing order changes which `builtins.trace` lines fire and,
 more importantly for the gate, which thunks evaluate and in what order errors
 surface.
 
+The current tree-walk implementation keeps that contract at the same boundary:
+static direct calls and first-class `PrimopApp` calls both enter the builtin
+body with lazy `Value`s, and each builtin forces only the positions C++ Nix
+forces. Focused tests cover strict numeric/comparison arguments, lazy
+`seq`/`deepSeq` boundaries, list combinator order, string-context and hashing
+argument order, import/path effects, trace firing, and failed-thunk retry; the
+configured C++ Nix oracle suites exercise the same direct and first-class
+surfaces. Future JIT inlining must preserve this exact body-level contract.
+
 ```text
   PRIMOP CALL FRAME (uniform across tiers)
   ┌──────────────────────────────────────────────────────────┐
@@ -726,7 +735,7 @@ harness, never cut for scope.
 - [ ] `// SAFETY:` discipline at every `unsafe` boundary; the safe tree-walk oracle is what miri/sanitizers run against ([§2.1](#21-the-one-calling-convention)) — P1/P6, `S-17`; gate: miri/sanitizer CI on the safe tree.
 - [x] Arity + currying via `PrimopApp` partial-application value; under-application is a WHNF function value ([§2.2](#22-arity-currying-and-overunder-application)) — P1, `S-12`; gate: conformance 21. Implemented in the tree-walk oracle as `EvalPrimOp { symbol, args }` plus `EvalPrimOpArg`: builtin declarations expose `first_class_arity`, selecting a first-class builtin allocates an unapplied `EvalPrimOp`, applying fewer than `arity` arguments allocates a new partially applied `EvalPrimOp`, saturated first-class application dispatches through the registered builtin, and `ValueTag::Primop` is treated as a callable WHNF by `isFunction`/`typeOf`. Covered by `runtime::builtins::tests::builtin_declarations_record_first_class_arity_by_category`, heap primop record tests, `unary_type_predicate_primops_classify_whnf_values`, `type_of_primop_returns_nix_type_names`, `first_class_binary_builtin_selects_are_curried`, and broad first-class builtin tests for unary/binary/ternary primops including `map`, `filter`, `foldl'`, `scopedImport`, and `findFile`. This checkoff covers the tree-walk behavior required by the conformance-21 builtin catalog; the reusable external conformance-suite harness remains tracked in [15](15-differential-testing-and-benchmarking.md), and direct static-call/first-class forcing-order parity remains tracked by the next unchecked row.
 - [ ] Tier-2 inlining of the `PrimopApp` wrapper at proven-monomorphic saturated call sites ([§2.2](#22-arity-currying-and-overunder-application)) — P7.
-- [ ] Argument-forcing order/timing matched to `primops.cc` per position (strict vs lazy, e.g. `seq`/`deepSeq`) ([§2.3](#23-argument-forcing-is-part-of-the-contract)) — P1, `S-12`; gate: differential `.drv` harness (compatibility hazard #1).
+- [x] Tree-walk argument-forcing order/timing matched to `primops.cc` for the implemented P1 builtin surface: direct static calls and first-class `PrimopApp` calls share the same builtin bodies; strict numeric/comparison positions, lazy `seq`/`deepSeq`, list combinators (`map`/`filter`/`partition`/`foldl'`/`sort`/`elem`/`genList`), attr/string-context/hash/path/import effects, trace firing, and failed-thunk retry are covered by focused tests plus configured C++ Nix oracle suites. Future JIT inlining/lowering must preserve the same contract, the full `.drv` closure gate remains tracked in doc 15, and flake fetchers remain their own conditional rows in doc 21/doc 23 ([§2.3](#23-argument-forcing-is-part-of-the-contract)) — P1 complete / P6+ pending; gate: differential `.drv` harness (compatibility hazard #1).
 
 ### The runtime symbol table
 
