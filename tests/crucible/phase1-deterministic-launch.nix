@@ -94,6 +94,14 @@
       needle = "random.trust_bootloader=off";
     }
     {
+      label = "kernel randomization disabled by default";
+      needle = "nokaslr";
+    }
+    {
+      label = "userspace randomization disabled by default";
+      needle = "norandmaps";
+    }
+    {
       label = "single vCPU default";
       needle = "smp_vcpus: 1,";
     }
@@ -188,6 +196,30 @@
     {
       label = "kernel cmdline exact value parser";
       needle = "fn kernel_cmdline_value";
+    }
+    {
+      label = "KASLR enablement rejection";
+      needle = "KernelKaslrExplicitlyEnabled";
+    }
+    {
+      label = "missing nokaslr rejection";
+      needle = "KernelKaslrNotDisabled";
+    }
+    {
+      label = "ambiguous nokaslr rejection";
+      needle = "KernelKaslrFlagAmbiguous";
+    }
+    {
+      label = "missing norandmaps rejection";
+      needle = "UserspaceAslrNotDisabled";
+    }
+    {
+      label = "ambiguous norandmaps rejection";
+      needle = "UserspaceAslrFlagAmbiguous";
+    }
+    {
+      label = "bare flag parser";
+      needle = "fn require_kernel_bare_flag_once";
     }
     {
       label = "run seed scenario seed unification";
@@ -393,6 +425,14 @@
       needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
     }
     {
+      label = "nokaslr append assertion";
+      needle = "arg == \"nokaslr\"";
+    }
+    {
+      label = "norandmaps append assertion";
+      needle = "arg == \"norandmaps\"";
+    }
+    {
       label = "missing random.trust_cpu rejection assertion";
       needle = "LaunchProfileError::KernelCpuRandomTrustNotDisabled";
     }
@@ -407,6 +447,18 @@
     {
       label = "duplicate random.trust_bootloader rejection assertion";
       needle = "LaunchProfileError::KernelBootloaderRandomTrustAmbiguous";
+    }
+    {
+      label = "missing nokaslr rejection assertion";
+      needle = "LaunchProfileError::KernelKaslrNotDisabled";
+    }
+    {
+      label = "missing norandmaps rejection assertion";
+      needle = "LaunchProfileError::UserspaceAslrNotDisabled";
+    }
+    {
+      label = "explicit kaslr rejection assertion";
+      needle = "LaunchProfileError::KernelKaslrExplicitlyEnabled";
     }
     {
       label = "split seed rejection assertion";

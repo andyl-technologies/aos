@@ -62,6 +62,16 @@ fn default_launch_profile_pins_contract_a_arguments() {
         args.windows(2)
             .any(|window| window == ["-device", "virtio-rng-pci,rng=crucible-rng0"])
     );
+    let append = args
+        .windows(2)
+        .find_map(|window| (window[0] == "-append").then_some(window[1].as_str()))
+        .unwrap_or_default();
+    assert!(append.split_ascii_whitespace().any(|arg| arg == "nokaslr"));
+    assert!(
+        append
+            .split_ascii_whitespace()
+            .any(|arg| arg == "norandmaps")
+    );
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
 }
@@ -141,6 +151,46 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
             )
             .try_into_deterministic(),
         Err(LaunchProfileError::KernelBootloaderRandomTrustAmbiguous)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet norandmaps random.trust_cpu=off random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelKaslrNotDisabled)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet nokaslr random.trust_cpu=off random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::UserspaceAslrNotDisabled)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet kaslr nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelKaslrExplicitlyEnabled)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet nokaslr nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelKaslrFlagAmbiguous)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps=0 random.trust_cpu=off random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::UserspaceAslrFlagAmbiguous)
     );
     assert_eq!(
         LaunchProfileCandidate {
@@ -223,7 +273,7 @@ fn launch_hash_material_records_every_determinism_field() {
         "guest_entropy_rng_object=rng-builtin,id=crucible-rng0",
         "guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0",
         "guest_entropy_host_sources=disabled",
-        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off",
+        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off",
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
@@ -249,7 +299,7 @@ fn launch_hash_material_records_every_determinism_field() {
         deterministic(LaunchProfileCandidate::default().with_rtc_epoch_utc("2026-01-02T00:00:00"))
             .scenario_hash_material();
     let cmdline = deterministic(LaunchProfileCandidate::default().with_kernel_cmdline(
-        "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off net.ifnames=0",
+        "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0",
     ))
     .scenario_hash_material();
     let scenario_seed = deterministic(LaunchProfileCandidate::default().with_scenario_seed(0x1234))
