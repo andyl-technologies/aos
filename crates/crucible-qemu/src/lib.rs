@@ -9,7 +9,8 @@
 //!
 //! Module map: the crate root currently reserves the host-QEMU boundary; future
 //! modules will split launch construction, QMP, shared-memory mapping, and the
-//! engine backend adapter.
+//! engine backend adapter. The `launch` module owns the deterministic
+//! Contract-A launch profile and canonical QEMU argument construction.
 //!
 //! Unsafe boundary discipline: descriptor, shared-memory, monitor, and FFI
 //! details stay private; public callers use a safe host-driver API that
@@ -18,3 +19,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+mod launch;
+
+pub use launch::{
+    DeterministicLaunchProfile, DiskImageMode, IcountShiftSetting, InputPolicy,
+    LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+};

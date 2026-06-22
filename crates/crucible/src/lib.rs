@@ -10,7 +10,7 @@
 //!
 //! Module map: [`model`] owns the content-addressed execution vocabulary,
 //! [`backend`] owns the VM backend boundary, [`scheduler`] owns the
-//! quantum-loop boundary, and `sim_backend` provides the gated in-process test
+//! quantum-loop boundary, `sim_backend` provides the gated in-process test
 //! double.
 
 #![forbid(unsafe_code)]
@@ -90,6 +90,22 @@ mod tests {
             error.to_string(),
             "schedule prefix length 2 exceeds available length 1"
         );
+    }
+
+    #[test]
+    fn canonical_material_builds_stable_scenario_identity() {
+        let first =
+            ScenarioDef::from_canonical_material("crucible.test.scenario", "field=a\nvalue=1");
+        let second =
+            ScenarioDef::from_canonical_material("crucible.test.scenario", "field=a\nvalue=1");
+        let changed_material =
+            ScenarioDef::from_canonical_material("crucible.test.scenario", "field=a\nvalue=2");
+        let changed_domain =
+            ScenarioDef::from_canonical_material("crucible.test.other", "field=a\nvalue=1");
+
+        assert_eq!(first, second);
+        assert_ne!(first.id, changed_material.id);
+        assert_ne!(first.id, changed_domain.id);
     }
 
     #[test]
