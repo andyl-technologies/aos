@@ -537,6 +537,17 @@ alone (`M-1`/`Q-A`).
       codecs. This is codec-only; durable index engines, lookup/write
       integration, parse-artifact payload validation, mmap reads, GC/repack,
       Attic transport, and harness proof remain open (`C-13`).
+- [x] Current fixed-record file-artifact index file substrate:
+      `PersistFileArtifactIndex` opens/creates the
+      `nodes/file-artifacts.index` sidecar, appends fixed-width
+      `PersistFileArtifactIndexEntry` records, rejects truncated record tails on
+      open, and linearly scans records to return the newest file-artifact
+      mapping value; `PersistCache::open` initializes/exposes it and
+      `record_file_artifact`/`lookup_file_artifact` wrap explicit writes and
+      lookups. This is a simple durable sidecar only; LMDB/redb MVCC tables,
+      transactions, automatic materialization writes, parse-cache hit
+      integration, mmap reads, writer batching/locking, GC/repack, Attic
+      transport, and harness proof remain open (`C-13`/`R-10`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and

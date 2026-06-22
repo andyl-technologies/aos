@@ -677,6 +677,114 @@ impl PersistFileArtifactIndexEntry {
     }
 }
 
+/// A fixed-record index file for durable frontend file-artifact mappings.
+///
+/// This is a simple durable substrate for tests and future cache integration.
+/// It is not the final LMDB/redb metadata engine: writes append one fixed
+/// record at a time, and lookups scan records linearly and return the newest
+/// matching entry.
+#[derive(Clone, Debug)]
+pub struct PersistFileArtifactIndex {
+    path: PathBuf,
+}
+
+impl PersistFileArtifactIndex {
+    /// Opens or initializes a fixed-record file-artifact index file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if parent directories or the
+    /// index file cannot be created/opened, or if the existing file ends with a
+    /// partial fixed-width record.
+    pub fn open(path: impl Into<PathBuf>) -> Result<Self, PersistFileArtifactIndexError> {
+        let path = path.into();
+        ensure_file_artifact_index_file(&path)?;
+        Ok(Self { path })
+    }
+
+    /// Returns this index file's filesystem path.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Appends one file-artifact index entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the index cannot be opened,
+    /// validated, written, or flushed.
+    pub fn append_entry(
+        &self,
+        entry: PersistFileArtifactIndexEntry,
+    ) -> Result<(), PersistFileArtifactIndexError> {
+        ensure_file_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(|source| PersistFileArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        file.write_all(&entry.encode_index_entry())
+            .and_then(|()| file.flush())
+            .map_err(|source| PersistFileArtifactIndexError::Write {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    /// Looks up the newest file-artifact value for `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the index cannot be opened,
+    /// read, or decoded.
+    pub fn lookup(
+        &self,
+        key: PersistFileArtifactKey,
+    ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
+        ensure_file_artifact_index_file(&self.path)?;
+        let mut file = OpenOptions::new()
+            .read(true)
+            .open(&self.path)
+            .map_err(|source| PersistFileArtifactIndexError::Open {
+                path: self.path.clone(),
+                source,
+            })?;
+        let len = file
+            .metadata()
+            .map_err(|source| PersistFileArtifactIndexError::Metadata {
+                path: self.path.clone(),
+                source,
+            })?
+            .len();
+        validate_file_artifact_index_len(&self.path, len)?;
+
+        let mut found = None;
+        let records = len / PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+        let mut encoded = [0; PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN];
+        for _ in 0..records {
+            file.read_exact(&mut encoded).map_err(|source| {
+                PersistFileArtifactIndexError::Read {
+                    path: self.path.clone(),
+                    source,
+                }
+            })?;
+            let entry =
+                PersistFileArtifactIndexEntry::decode_index_entry(&encoded).map_err(|source| {
+                    PersistFileArtifactIndexError::Format {
+                        path: self.path.clone(),
+                        source,
+                    }
+                })?;
+            if entry.key() == key {
+                found = Some(entry.value());
+            }
+        }
+        Ok(found)
+    }
+}
+
 impl MaterializationReuse {
     /// Encodes the counters as stable persistent metadata.
     ///
@@ -828,6 +936,11 @@ impl PersistLayout {
     /// Returns the fixed-record hash-to-offset index path for blobs in `store`.
     pub fn blob_index_path(&self, store: PersistBlobStore) -> PathBuf {
         self.blob_store_dir(store).join("index.blob")
+    }
+
+    /// Returns the fixed-record file-artifact mapping index path.
+    pub fn file_artifact_index_path(&self) -> PathBuf {
+        self.nodes_dir().join("file-artifacts.index")
     }
 
     /// Returns the append-only packfile path for serialized value blobs.
@@ -1052,6 +1165,7 @@ pub struct PersistCache {
     file_pack: PersistBlobPack,
     value_index: PersistBlobIndex,
     file_index: PersistBlobIndex,
+    file_artifact_index: PersistFileArtifactIndex,
 }
 
 impl PersistCache {
@@ -1111,12 +1225,19 @@ impl PersistCache {
                 source,
             }
         })?;
+        let file_artifact_index_path = layout.file_artifact_index_path();
+        let file_artifact_index = PersistFileArtifactIndex::open(file_artifact_index_path.clone())
+            .map_err(|source| PersistError::OpenFileArtifactIndex {
+                path: file_artifact_index_path,
+                source,
+            })?;
         Ok(Self {
             layout,
             value_pack,
             file_pack,
             value_index,
             file_index,
+            file_artifact_index,
         })
     }
 
@@ -1143,6 +1264,11 @@ impl PersistCache {
     /// Returns the fixed-record blob index for serialized file blobs.
     pub const fn file_index(&self) -> &PersistBlobIndex {
         &self.file_index
+    }
+
+    /// Returns the fixed-record index for durable file-artifact mappings.
+    pub const fn file_artifact_index(&self) -> &PersistFileArtifactIndex {
+        &self.file_artifact_index
     }
 
     /// Returns the fixed-record blob index for `store`.
@@ -1189,6 +1315,34 @@ impl PersistCache {
         location: PersistBlobLocation,
     ) -> Result<Vec<u8>, PersistBlobPackError> {
         self.blob_pack(key.store()).read_blob(location, key.hash())
+    }
+
+    /// Appends a durable file-artifact mapping entry to the sidecar index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
+    /// opened, validated, written, or flushed.
+    pub fn record_file_artifact(
+        &self,
+        entry: PersistFileArtifactIndexEntry,
+    ) -> Result<(), PersistFileArtifactIndexError> {
+        self.file_artifact_index.append_entry(entry)
+    }
+
+    /// Looks up a durable file-artifact mapping through the sidecar index.
+    ///
+    /// Missing index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactIndexError`] if the sidecar index cannot be
+    /// opened, read, or decoded.
+    pub fn lookup_file_artifact(
+        &self,
+        key: PersistFileArtifactKey,
+    ) -> Result<Option<PersistFileArtifactIndexValue>, PersistFileArtifactIndexError> {
+        self.file_artifact_index.lookup(key)
     }
 
     /// Looks up a blob location through the sidecar index selected by `key`.
@@ -1754,6 +1908,59 @@ pub enum PersistBlobIndexError {
     },
 }
 
+/// Fixed-record file-artifact index file IO failed.
+#[derive(Debug, Error)]
+pub enum PersistFileArtifactIndexError {
+    /// The index parent directory could not be created.
+    #[error("failed to create persistent file artifact index parent {path:?}")]
+    CreateParent {
+        /// The parent directory path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be opened.
+    #[error("failed to open persistent file artifact index {path:?}")]
+    Open {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// Index file metadata could not be read.
+    #[error("failed to read persistent file artifact index metadata {path:?}")]
+    Metadata {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be read.
+    #[error("failed to read persistent file artifact index {path:?}")]
+    Read {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file could not be written.
+    #[error("failed to write persistent file artifact index {path:?}")]
+    Write {
+        /// The index file path.
+        path: PathBuf,
+        /// The underlying filesystem error.
+        source: io::Error,
+    },
+    /// The index file has malformed fixed-record bytes.
+    #[error("persistent file artifact index {path:?} has invalid format: {source}")]
+    Format {
+        /// The index file path.
+        path: PathBuf,
+        /// The format error.
+        source: PersistPackFormatError,
+    },
+}
+
 /// Indexed blob append failed.
 #[derive(Debug, Error)]
 pub enum PersistBlobIndexedWriteError {
@@ -2050,6 +2257,14 @@ pub enum PersistError {
         /// The underlying index error.
         source: PersistBlobIndexError,
     },
+    /// The file-artifact mapping index file could not be initialized.
+    #[error("failed to initialize persistent file artifact index {path}")]
+    OpenFileArtifactIndex {
+        /// The file-artifact index file path.
+        path: PathBuf,
+        /// The underlying index error.
+        source: PersistFileArtifactIndexError,
+    },
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {
@@ -2112,6 +2327,57 @@ fn validate_blob_index_len(path: &Path, len: u64) -> Result<(), PersistBlobIndex
         path: path.to_path_buf(),
         source: PersistPackFormatError::ShortBlobIndexEntry {
             expected: PERSIST_BLOB_INDEX_ENTRY_LEN,
+            actual: remainder as usize,
+        },
+    })
+}
+
+fn ensure_file_artifact_index_file(path: &Path) -> Result<(), PersistFileArtifactIndexError> {
+    ensure_file_artifact_index_parent(path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(path)
+        .map_err(|source| PersistFileArtifactIndexError::Open {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let len = file
+        .metadata()
+        .map_err(|source| PersistFileArtifactIndexError::Metadata {
+            path: path.to_path_buf(),
+            source,
+        })?
+        .len();
+    validate_file_artifact_index_len(path, len)
+}
+
+fn ensure_file_artifact_index_parent(path: &Path) -> Result<(), PersistFileArtifactIndexError> {
+    let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|source| PersistFileArtifactIndexError::CreateParent {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+fn validate_file_artifact_index_len(
+    path: &Path,
+    len: u64,
+) -> Result<(), PersistFileArtifactIndexError> {
+    let remainder = len % PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64;
+    if remainder == 0 {
+        return Ok(());
+    }
+    Err(PersistFileArtifactIndexError::Format {
+        path: path.to_path_buf(),
+        source: PersistPackFormatError::ShortFileArtifactIndexEntry {
+            expected: PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
             actual: remainder as usize,
         },
     })
@@ -2404,7 +2670,12 @@ mod tests {
             layout.file_index_path(),
             layout.files_dir().join("index.blob")
         );
+        assert_eq!(
+            layout.file_artifact_index_path(),
+            layout.nodes_dir().join("file-artifacts.index")
+        );
         assert_ne!(layout.value_index_path(), layout.file_index_path());
+        assert_ne!(layout.file_artifact_index_path(), layout.file_index_path());
     }
 
     #[test]
@@ -2697,6 +2968,117 @@ mod tests {
                 store: PersistBlobStore::Values,
             }
         );
+    }
+
+    #[test]
+    fn file_artifact_index_appends_and_finds_latest_matching_entry() {
+        let root = temp_root();
+        let index_path = root.join("nodes").join("file-artifacts.index");
+        let index = PersistFileArtifactIndex::open(&index_path).expect("index opens");
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let other_key = PersistFileArtifactKey::for_realpath_bytes(
+            b"/src/other.nix",
+            file_key.content_hash(),
+            parse_key,
+        );
+        let first = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"first artifact"),
+            PersistBlobLocation::new(123, 456),
+        );
+        let other = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"other artifact"),
+            PersistBlobLocation::new(789, 10),
+        );
+        let latest = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"latest artifact"),
+            PersistBlobLocation::new(999, 11),
+        );
+
+        assert_eq!(index.path(), index_path.as_path());
+        assert_eq!(index.lookup(key).expect("empty lookup succeeds"), None);
+
+        index
+            .append_entry(PersistFileArtifactIndexEntry::new(key, first))
+            .expect("first entry appends");
+        index
+            .append_entry(PersistFileArtifactIndexEntry::new(other_key, other))
+            .expect("other entry appends");
+        index
+            .append_entry(PersistFileArtifactIndexEntry::new(key, latest))
+            .expect("latest entry appends");
+
+        assert_eq!(
+            index.lookup(key).expect("key lookup succeeds"),
+            Some(latest)
+        );
+        assert_eq!(
+            index.lookup(other_key).expect("other lookup succeeds"),
+            Some(other)
+        );
+        assert_eq!(
+            fs::metadata(index.path()).expect("index metadata").len(),
+            (PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN * 3) as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_artifact_index_open_rejects_truncated_records() {
+        let root = temp_root();
+        let index_path = root.join("nodes").join("file-artifacts.index");
+        fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+        fs::write(&index_path, b"partial").expect("partial index writes");
+
+        let error =
+            PersistFileArtifactIndex::open(&index_path).expect_err("truncated index errors");
+
+        assert!(matches!(
+            error,
+            PersistFileArtifactIndexError::Format {
+                source: PersistPackFormatError::ShortFileArtifactIndexEntry {
+                    expected: PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN,
+                    actual: 7,
+                },
+                ..
+            }
+        ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn file_artifact_index_lookup_rejects_malformed_records() {
+        let root = temp_root();
+        let index_path = root.join("nodes").join("file-artifacts.index");
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let value = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+            PersistBlobLocation::new(123, 456),
+        );
+        let mut encoded = PersistFileArtifactIndexEntry::new(key, value).encode_index_entry();
+        encoded[0] = 99;
+        fs::create_dir_all(index_path.parent().expect("index parent")).expect("parent creates");
+        fs::write(&index_path, encoded).expect("malformed index writes");
+        let index = PersistFileArtifactIndex::open(&index_path).expect("index opens by length");
+
+        let error = index.lookup(key).expect_err("malformed record errors");
+
+        assert!(matches!(
+            error,
+            PersistFileArtifactIndexError::Format {
+                source: PersistPackFormatError::InvalidFileArtifactIndexTag { tag: 99 },
+                ..
+            }
+        ));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3202,6 +3584,10 @@ mod tests {
         assert_eq!(cache.value_index().path(), layout.value_index_path());
         assert_eq!(cache.file_index().path(), layout.file_index_path());
         assert_eq!(
+            cache.file_artifact_index().path(),
+            layout.file_artifact_index_path()
+        );
+        assert_eq!(
             cache.blob_pack(PersistBlobStore::Values).path(),
             layout.value_packfile_path()
         );
@@ -3238,6 +3624,12 @@ mod tests {
         assert_eq!(
             fs::metadata(layout.file_index_path())
                 .expect("file index metadata")
+                .len(),
+            0
+        );
+        assert_eq!(
+            fs::metadata(layout.file_artifact_index_path())
+                .expect("file artifact index metadata")
                 .len(),
             0
         );
@@ -3299,6 +3691,36 @@ mod tests {
         ));
         assert_eq!(
             fs::read(layout.value_index_path())
+                .expect("corrupt index reads")
+                .as_slice(),
+            b"partial"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_file_artifact_index_errors_without_rewriting() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let layout = cache.layout().clone();
+        fs::write(layout.file_artifact_index_path(), b"partial")
+            .expect("file artifact index corrupts");
+
+        let error = PersistCache::open(&root).expect_err("corrupt file artifact index errors");
+
+        assert!(matches!(
+            error,
+            PersistError::OpenFileArtifactIndex {
+                source: PersistFileArtifactIndexError::Format {
+                    source: PersistPackFormatError::ShortFileArtifactIndexEntry { actual: 7, .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(layout.file_artifact_index_path())
                 .expect("corrupt index reads")
                 .as_slice(),
             b"partial"
@@ -3478,6 +3900,50 @@ mod tests {
             error,
             PersistBlobPackError::PayloadHashMismatch { .. }
         ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_file_artifact_index_records_and_looks_up_entries() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let other_key = PersistFileArtifactKey::for_realpath_bytes(
+            b"/src/other.nix",
+            file_key.content_hash(),
+            parse_key,
+        );
+        let value = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"serialized IR artifact"),
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 22),
+        );
+
+        cache
+            .record_file_artifact(PersistFileArtifactIndexEntry::new(key, value))
+            .expect("file artifact index entry records");
+
+        assert_eq!(
+            cache
+                .lookup_file_artifact(key)
+                .expect("file artifact lookup succeeds"),
+            Some(value)
+        );
+        assert_eq!(
+            cache
+                .lookup_file_artifact(other_key)
+                .expect("file artifact miss succeeds"),
+            None
+        );
+        assert_eq!(
+            fs::metadata(cache.file_artifact_index().path())
+                .expect("file artifact index metadata")
+                .len(),
+            PERSIST_FILE_ARTIFACT_INDEX_ENTRY_LEN as u64
+        );
 
         let _ = fs::remove_dir_all(root);
     }
