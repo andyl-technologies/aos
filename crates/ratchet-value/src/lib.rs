@@ -12,6 +12,11 @@
 //! representation arrives.
 #![forbid(unsafe_code)]
 
+// Re-exported so the moved `attrs` module's `crate::syntax::Symbol` path keeps
+// resolving without rewriting it (attrs needs the interned-symbol type).
+pub use aos_nix_syntax as syntax;
+
+pub mod attrs;
 pub mod heap;
 pub mod list;
 pub mod value;

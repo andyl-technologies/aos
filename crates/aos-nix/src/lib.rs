@@ -49,7 +49,7 @@ compile_error!("aos-nix supports only x86-64 and AArch64 host architectures");
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("aos-nix supports only Linux and Darwin host operating systems");
 
-pub mod attrs;
+pub use ratchet_value::attrs;
 pub mod cache;
 pub use ratchet_core as compile;
 pub mod diagnostic;
