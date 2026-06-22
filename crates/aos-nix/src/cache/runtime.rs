@@ -6,8 +6,9 @@
 
 use super::{
     CacheExprIdentity, DemandGraph, DemandGraphError, DemandNodeId, DurableBlake3Hash,
-    ImpureInputFingerprint, ImpureTraceObservation, ValueHash,
+    ImpureInputFingerprint, ImpureTraceObservation, Reconsideration, ValueHash,
 };
+use crate::value::Value;
 
 /// A source of evaluator-observed impure input trace entries.
 pub trait ImpureInputTraceSource {
@@ -124,6 +125,23 @@ impl EvalCache {
             source.impure_input_trace(),
             source.impure_input_trace_complete(),
         )
+    }
+
+    /// Reconsiders one node from a recomputed inline scalar value.
+    ///
+    /// This delegates to [`DemandGraph::reconsider_inline_value_node`]. It does
+    /// not implement heap-backed canonical value hashing or memo lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`DemandGraphError`] if inline value hashing fails or if the
+    /// node is unknown.
+    pub fn reconsider_inline_value_node(
+        &mut self,
+        id: DemandNodeId,
+        value: Value,
+    ) -> Result<Reconsideration, DemandGraphError> {
+        self.graph.reconsider_inline_value_node(id, value)
     }
 }
 
@@ -292,6 +310,31 @@ mod tests {
                 .expect("dependent exists")
                 .dependencies()
                 .contains(&dependency)
+        );
+    }
+
+    #[test]
+    fn eval_cache_reconsiders_expression_node_from_inline_value() {
+        let mut cache = EvalCache::new();
+        let node = cache
+            .get_or_insert_expression_node(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(ValueHash::from_inline_value(Value::int(1)).expect("inline value hashes")),
+            )
+            .expect("expression node inserts");
+
+        let reconsideration = cache
+            .reconsider_inline_value_node(node, Value::int(2))
+            .expect("node reconsiders");
+
+        assert_eq!(
+            reconsideration.decision(),
+            crate::cache::CutoffDecision::Propagate
+        );
+        assert_eq!(
+            cache.graph().node(node).expect("node exists").value_hash(),
+            Some(ValueHash::from_inline_value(Value::int(2)).expect("inline value hashes"))
         );
     }
 

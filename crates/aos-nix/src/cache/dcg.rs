@@ -12,7 +12,9 @@ use thiserror::Error;
 use super::{
     CacheExprIdentity, CacheKeyError, CacheableInputFingerprint, CutoffDecision, DemandCacheKey,
     DurableBlake3Hash, EarlyCutoff, ImpureInputFingerprint, UncacheableInput, ValueHash,
+    ValueHashError,
 };
+use crate::value::Value;
 
 /// A stable id for one node in a [`DemandGraph`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -501,6 +503,27 @@ impl DemandGraph {
         Ok(Reconsideration::new(id, decision, dirtied_dependents))
     }
 
+    /// Reconsiders one node with a recomputed inline scalar value.
+    ///
+    /// This hashes the inline value before mutating graph state, then delegates
+    /// to [`Self::reconsider_node`]. It is an inline-value adapter only and does
+    /// not implement heap-backed canonical value hashing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::ValueHash`] if `value` is not supported by
+    /// [`ValueHash::from_inline_value`]. Returns
+    /// [`DemandGraphError::UnknownNode`] if `id` does not belong to this graph.
+    pub fn reconsider_inline_value_node(
+        &mut self,
+        id: DemandNodeId,
+        value: Value,
+    ) -> Result<Reconsideration, DemandGraphError> {
+        let recomputed = ValueHash::from_inline_value(value)
+            .map_err(|source| DemandGraphError::ValueHash { source })?;
+        self.reconsider_node(id, recomputed)
+    }
+
     fn node_mut(&mut self, id: DemandNodeId) -> Result<&mut DemandNode, DemandGraphError> {
         self.nodes
             .get_mut(id.index())
@@ -532,6 +555,12 @@ pub enum DemandGraphError {
         /// The cache-key construction failure.
         source: CacheKeyError,
     },
+    /// An inline value could not be hashed.
+    #[error("demand graph failed to hash value: {source}")]
+    ValueHash {
+        /// The value-hash construction failure.
+        source: ValueHashError,
+    },
     /// Trace observation storage could not reserve capacity.
     #[error("demand graph failed to reserve {observations} trace observations")]
     TraceObservationAllocationFailed {
@@ -559,9 +588,15 @@ mod tests {
         CacheExprIdentity, DurableBlake3Hash, ImpureInputFingerprint, UncacheableInput,
     };
     use crate::compile::IrId;
+    use crate::value::{HeapObject, Value, ValueTag};
+    use std::ptr::NonNull;
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
+    fn inline_value_hash(value: Value) -> ValueHash {
+        ValueHash::from_inline_value(value).expect("inline value hashes")
     }
 
     fn durable_hash(bytes: &[u8]) -> DurableBlake3Hash {
@@ -1203,6 +1238,87 @@ mod tests {
             graph.node(dependent).expect("dependent exists").freshness(),
             NodeFreshness::Clean
         );
+    }
+
+    #[test]
+    fn unchanged_inline_value_cuts_off_without_dirtying_dependents() {
+        let mut graph = DemandGraph::new();
+        let dependency = graph
+            .get_or_insert_node(key(1, b"inline"), Some(inline_value_hash(Value::int(7))))
+            .expect("dependency inserts");
+        let dependent = node_with_hash(&mut graph, 2, b"dependent");
+        graph
+            .add_dependency(dependent, dependency)
+            .expect("edge records");
+
+        let result = graph
+            .reconsider_inline_value_node(dependency, Value::int(7))
+            .expect("node reconsiders");
+
+        assert_eq!(result.decision(), CutoffDecision::CutOff);
+        assert!(result.dirtied_dependents().is_empty());
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Clean
+        );
+    }
+
+    #[test]
+    fn changed_inline_value_dirties_direct_dependents() {
+        let mut graph = DemandGraph::new();
+        let dependency = graph
+            .get_or_insert_node(key(1, b"inline"), Some(inline_value_hash(Value::int(1))))
+            .expect("dependency inserts");
+        let dependent = node_with_hash(&mut graph, 2, b"dependent");
+        graph
+            .add_dependency(dependent, dependency)
+            .expect("edge records");
+
+        let result = graph
+            .reconsider_inline_value_node(dependency, Value::int(2))
+            .expect("node reconsiders");
+
+        assert_eq!(result.decision(), CutoffDecision::Propagate);
+        assert_eq!(result.dirtied_dependents(), &[dependent]);
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
+        assert_eq!(
+            graph
+                .node(dependency)
+                .expect("dependency exists")
+                .value_hash(),
+            Some(inline_value_hash(Value::int(2)))
+        );
+    }
+
+    #[test]
+    fn unsupported_inline_value_reconsideration_does_not_mutate_node() {
+        let mut graph = DemandGraph::new();
+        let prior = value_hash(b"prior");
+        let node = graph
+            .get_or_insert_node(key(1, b"inline"), Some(prior))
+            .expect("node inserts");
+        graph.mark_dirty(node).expect("node dirties");
+        let heap_value =
+            Value::string(NonNull::<HeapObject>::dangling()).expect("heap representation builds");
+
+        let error = graph
+            .reconsider_inline_value_node(node, heap_value)
+            .expect_err("heap values are unsupported");
+
+        assert!(matches!(
+            error,
+            DemandGraphError::ValueHash {
+                source: ValueHashError::UnsupportedTag {
+                    tag: ValueTag::String
+                }
+            }
+        ));
+        let node = graph.node(node).expect("node exists");
+        assert_eq!(node.value_hash(), Some(prior));
+        assert_eq!(node.freshness(), NodeFreshness::Dirty);
     }
 
     #[test]

@@ -422,6 +422,15 @@ alone (`M-1`/`Q-A`).
       strings/paths/lists/attrs canonical serialization, functions/thunks
       cacheability policy, generic hash-cons value fields, `force_memoized`
       integration, persistence, and harness proof remain open (`S-14`/`S-15`).
+- [x] Current inline-value early-cutoff adapter:
+      `DemandGraph::reconsider_inline_value_node` and
+      `EvalCache::reconsider_inline_value_node` hash a recomputed inline scalar
+      before applying ordinary node reconsideration; unsupported heap values
+      fail before mutating node state. This is an inline adapter only;
+      heap/composite canonical hashing, functions/thunks policy, real evaluator
+      value-hash production, `force_memoized`, evaluator node lifecycle,
+      automatic `NixNative` use, persistence, and harness proof remain open
+      (`S-14`/`S-15`).
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.
