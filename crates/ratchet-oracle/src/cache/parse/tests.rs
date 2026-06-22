@@ -6,8 +6,9 @@ use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
-use crate::compile::resolve;
+use crate::compile::{lower, resolve};
 use crate::syntax::parse_str;
+use aos_nix_dialect::nix_lower;
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -956,8 +957,8 @@ fn lowered_ir_artifacts_roundtrip_through_entry_files() {
         }
     "#;
     let resolved = resolve(parse_str(source).expect("source parses")).expect("scope resolves");
-    let expected =
-        lower(file_local_resolved(&resolved).expect("symbols remap")).expect("resolved AST lowers");
+    let expected = nix_lower(file_local_resolved(&resolved).expect("symbols remap"))
+        .expect("resolved AST lowers");
     let entry = cache.entry_for_source(source.as_bytes());
     let meta = ParseCacheMeta::new(
         cache.schema_version(),

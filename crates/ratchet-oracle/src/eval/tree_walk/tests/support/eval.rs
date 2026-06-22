@@ -4,13 +4,17 @@ use super::super::*;
 use super::*;
 
 pub(crate) fn lower(source: &str) -> Ir {
-    lower_ir(resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"))
-        .expect("source lowers")
+    aos_nix_dialect::nix_lower(
+        resolve_ast(parse_str(source).expect("source parses")).expect("source resolves"),
+    )
+    .expect("source lowers")
 }
 
 pub(crate) fn lower_bytes(source: &[u8]) -> Ir {
-    lower_ir(resolve_ast(parse_bytes(source).expect("source parses")).expect("source resolves"))
-        .expect("source lowers")
+    aos_nix_dialect::nix_lower(
+        resolve_ast(parse_bytes(source).expect("source parses")).expect("source resolves"),
+    )
+    .expect("source lowers")
 }
 
 pub(crate) fn eval(source: &str) -> Value {

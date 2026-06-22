@@ -19,7 +19,7 @@ use anyhow::Result;
 use crate::cache::EvalCache;
 use crate::cache::{EvalCacheRuntime, ParseCache, ParseCacheError};
 use crate::compile::{
-    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, lower, resolve,
+    EffectClass, Ir, IrAttrPathId, IrAttrPathSegment, IrData, IrId, IrKind, resolve,
 };
 use crate::drv_materialize::materialize_drv;
 use crate::error::NativeEvalError;
@@ -35,6 +35,7 @@ use crate::runtime::builtins::{
 };
 use crate::syntax::{Span, parse_bytes};
 use crate::value::{Value, ValueTag};
+use aos_nix_dialect::nix_lower;
 
 /// In-process RFC-0007 evaluator handle.
 #[derive(Debug, Clone)]
@@ -429,7 +430,7 @@ impl NixNative {
             .map_err(|source| unsupported_parse_error(source, source_map, diagnostic_source))?;
         let resolved = resolve(parsed)
             .map_err(|source| unsupported_scope_error(source, source_map, diagnostic_source))?;
-        lower(resolved)
+        nix_lower(resolved)
             .map_err(|source| unsupported_ir_error(source, source_map, diagnostic_source).into())
     }
 

@@ -247,7 +247,7 @@ fn lowers_direct_derivation_strict_to_effectful_boundary() {
         "derivationStrict { name = \"x\"; }",
         "builtins.derivationStrict { name = \"x\"; }",
     ] {
-        let ir = lowered(source);
+        let ir = lowered_nix(source);
         let root = root_node(&ir);
         assert_eq!(root.kind, IrKind::DerivationStrict);
         assert_eq!(root.effect, EffectClass::Effectful);
@@ -286,7 +286,7 @@ fn shadowed_builtins_derivation_strict_stays_a_select_application() {
 
 #[test]
 fn with_shadowed_derivation_strict_lowers_to_effectful_boundary() {
-    let ir = lowered("with { derivationStrict = x: x; }; derivationStrict 1");
+    let ir = lowered_nix("with { derivationStrict = x: x; }; derivationStrict 1");
     let IrData::Pair { second: body, .. } = root_node(&ir).data else {
         panic!("with payload expected");
     };

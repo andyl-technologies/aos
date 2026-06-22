@@ -12,6 +12,27 @@ pub(super) fn lowered(source: &str) -> Ir {
         .expect("IR lowers")
 }
 
+/// A Nix-style effect classifier mirroring the production `NixDialect` so
+/// ratchet-core's own tests can exercise the dialect-supplied effect routing
+/// without depending on a dialect crate.
+fn nix_effect_of(kind: IrKind) -> EffectClass {
+    match kind {
+        IrKind::DerivationStrict => EffectClass::Effectful,
+        _ => EffectClass::Pure,
+    }
+}
+
+/// Lowers `source` with the Nix-style effect classifier installed, so
+/// derivation nodes carry [`EffectClass::Effectful`].
+pub(super) fn lowered_nix(source: &str) -> Ir {
+    let resolved = resolve(parse_str(source).expect("source parses")).expect("source resolves");
+    lower_with_options(
+        resolved,
+        IrLowerOptions::new().with_effect_of(nix_effect_of),
+    )
+    .expect("IR lowers")
+}
+
 pub(super) fn node(ir: &Ir, id: IrId) -> &IrNode {
     ir.arena.node(id).expect("IR node exists")
 }

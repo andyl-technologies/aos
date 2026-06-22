@@ -56,7 +56,7 @@ use crate::cache::{
 use crate::compile::{
     FrameId, Ir, IrArena, IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice,
     IrData, IrId, IrKind, IrLowerOptions, IrNode, IrShape, IrShapeId, ResolverOptions,
-    ScopeResolver, lower, lower_with_options, resolve,
+    ScopeResolver, resolve,
 };
 use crate::drv_materialize::materialize_drv;
 use crate::list::{NixList, NixListError};
@@ -64,6 +64,7 @@ use crate::runtime::builtins::*;
 use crate::string::{ContextElement, ContextKind, NixString, NixStringError, StringContext};
 use crate::syntax::{BinOpKind, Span, Symbol, SymbolTable, UnaryOpKind, parse_bytes_with_symbols};
 use crate::value::{Value, ValueTag};
+use aos_nix_dialect::{nix_lower, nix_lower_with_options};
 
 mod builtins;
 

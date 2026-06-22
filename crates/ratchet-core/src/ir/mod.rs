@@ -36,17 +36,55 @@ pub fn lower_with_options(resolved: ResolvedAst, options: IrLowerOptions) -> Res
     IrLowerer::new(resolved, options).lower()
 }
 
+/// The language-agnostic default effect classifier.
+///
+/// The engine has no built-in knowledge of which node kinds are effectful;
+/// absent a dialect-supplied classifier, every node is [`EffectClass::Pure`].
+/// A language dialect overrides this via [`IrLowerOptions::with_effect_of`] (see
+/// the `Dialect` trait in `ratchet-dialect`).
+pub fn all_pure(_kind: IrKind) -> EffectClass {
+    EffectClass::Pure
+}
+
 /// Configuration for IR lowering.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug)]
 pub struct IrLowerOptions {
     dynamic_builtin_scope: bool,
+    /// The classifier mapping each node kind to its effect class.
+    ///
+    /// Defaults to [`all_pure`]; a language dialect installs its own
+    /// classifier so that, e.g., derivation construction is effectful.
+    effect_of: fn(IrKind) -> EffectClass,
+}
+
+impl PartialEq for IrLowerOptions {
+    /// Compares lowering options by their flags and the address of the
+    /// installed effect classifier.
+    ///
+    /// Function pointers have no meaningful identity guarantee, so the
+    /// classifier is compared only by raw address; two options carrying
+    /// distinct-but-equivalent classifiers may therefore compare unequal.
+    fn eq(&self, other: &Self) -> bool {
+        self.dynamic_builtin_scope == other.dynamic_builtin_scope
+            && std::ptr::fn_addr_eq(self.effect_of, other.effect_of)
+    }
+}
+
+impl Eq for IrLowerOptions {}
+
+impl Default for IrLowerOptions {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IrLowerOptions {
-    /// Creates default IR lowering options.
+    /// Creates default IR lowering options with the language-agnostic
+    /// [`all_pure`] effect classifier.
     pub const fn new() -> Self {
         Self {
             dynamic_builtin_scope: false,
+            effect_of: all_pure,
         }
     }
 
@@ -54,12 +92,29 @@ impl IrLowerOptions {
     pub const fn with_dynamic_builtin_scope() -> Self {
         Self {
             dynamic_builtin_scope: true,
+            effect_of: all_pure,
         }
+    }
+
+    /// Returns a copy of these options with the given effect classifier
+    /// installed.
+    ///
+    /// A language dialect uses this to supply its effect classification (e.g.
+    /// classifying derivation nodes as effectful) without the engine carrying
+    /// any language-specific knowledge.
+    pub const fn with_effect_of(mut self, effect_of: fn(IrKind) -> EffectClass) -> Self {
+        self.effect_of = effect_of;
+        self
     }
 
     /// Returns whether builtin references must remain dynamic runtime lookups.
     pub const fn dynamic_builtin_scope(&self) -> bool {
         self.dynamic_builtin_scope
+    }
+
+    /// Returns the effect classifier installed in these options.
+    pub const fn effect_of(&self) -> fn(IrKind) -> EffectClass {
+        self.effect_of
     }
 }
 
@@ -455,12 +510,47 @@ pub enum IrData {
 }
 
 /// Whether evaluating an IR node can perform externally observable work.
+///
+/// [`EffectClass`] is the engine's concrete effect lattice. It is the type a
+/// language dialect classifies its IR node kinds into (see the `Dialect` trait
+/// in `ratchet-dialect`), the value carried by every [`IrNode::effect`], and a
+/// serialized parity surface in the parse cache codec — its variants and their
+/// numeric encoding are a stable contract and must not change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EffectClass {
     /// The node is pure and may be speculated by later passes.
     Pure,
     /// The node is effectful and is a speculation barrier.
     Effectful,
+}
+
+/// An effect lattice consumed by the engine's speculation and caching passes.
+///
+/// The engine is generic over the concrete effect type it carries: it only
+/// needs to know whether a node may be speculated and a stable key for cache
+/// encoding. [`EffectClass`] is the built-in implementation, but a dialect or
+/// later analysis layer can substitute a richer lattice without touching the
+/// force path.
+pub trait Effect {
+    /// Returns whether a node carrying this effect may be speculated by later
+    /// passes (i.e. it performs no externally observable work).
+    fn is_speculable(&self) -> bool;
+
+    /// Returns a stable numeric key identifying this effect for cache encoding.
+    fn effect_key(&self) -> u8;
+}
+
+impl Effect for EffectClass {
+    fn is_speculable(&self) -> bool {
+        matches!(self, EffectClass::Pure)
+    }
+
+    fn effect_key(&self) -> u8 {
+        match self {
+            EffectClass::Pure => 0,
+            EffectClass::Effectful => 1,
+        }
+    }
 }
 
 /// A lowered attribute path segment.
@@ -626,13 +716,6 @@ mod primops;
 enum LazySecond {
     Yes,
     No,
-}
-
-fn effect_for(kind: IrKind) -> EffectClass {
-    match kind {
-        IrKind::DerivationStrict => EffectClass::Effectful,
-        _ => EffectClass::Pure,
-    }
 }
 
 fn is_trivial_value(kind: IrKind) -> bool {

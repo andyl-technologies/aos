@@ -32,13 +32,14 @@ use crate::compile::{
     EffectClass, FrameId, FrameInfo, InheritGroupId, InheritResolution, InheritSource, Ir, IrArena,
     IrAttrPathId, IrAttrPathSegment, IrBinding, IrBindingSlice, IrChildSlice, IrData, IrError,
     IrId, IrInlineCacheSiteId, IrKind, IrNode, IrShape, IrShapeId, IrWithChain, ResolvedAst,
-    ScopeError, ScopeTables, Upvalue, WithChain, lower, resolve,
+    ScopeError, ScopeTables, Upvalue, WithChain, resolve,
 };
 use crate::runtime::builtins::{BuiltinDirect, BuiltinEffect, direct_builtin};
 use crate::syntax::{
     AstArena, BinOpKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParseError, Span, Symbol,
     SymbolTable, UnaryOpKind, parse_bytes,
 };
+use aos_nix_dialect::nix_lower;
 
 /// The schema version included in every parse-cache key and metadata file.
 pub const PARSE_CACHE_SCHEMA_VERSION: u32 = 6;
@@ -353,8 +354,8 @@ impl ParseCache {
         let parsed = parse_bytes(source).map_err(|source| ParseCacheError::Parse { source })?;
         let resolved = resolve(parsed).map_err(|source| ParseCacheError::Scope { source })?;
         let cached_resolved = file_local_resolved(&resolved)?;
-        let ir =
-            lower(cached_resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
+        let ir = nix_lower(cached_resolved.clone())
+            .map_err(|source| ParseCacheError::LowerIr { source })?;
         let meta = ParseCacheMeta::new(self.schema_version, source_hint, 0, 0);
         let stored = entry.write_resolved(&resolved, &meta).is_ok();
         Ok(CachedParse {

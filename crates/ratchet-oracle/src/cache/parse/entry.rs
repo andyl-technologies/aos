@@ -92,7 +92,8 @@ impl ParseCacheEntry {
     ) -> Result<(), ParseCacheError> {
         self.ensure_dir()?;
         let resolved = file_local_resolved(resolved)?;
-        let ir = lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
+        let ir =
+            nix_lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
         let meta = ParseCacheMeta::for_serialized_resolved(
             meta.schema_version,
             meta.source_hint.clone(),

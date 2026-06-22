@@ -6,6 +6,8 @@ members = [
     "aos-nix",
     "aos-nix-syntax",
     "ratchet-core",
+    "ratchet-dialect",
+    "aos-nix-dialect",
     "ratchet-value",
     "ratchet-oracle",
     "aos-net",
@@ -116,6 +118,8 @@ aos-core = { path = "aos-core" }
 aos-nix = { path = "aos-nix" }
 aos-nix-syntax = { path = "aos-nix-syntax" }
 ratchet-core = { path = "ratchet-core" }
+ratchet-dialect = { path = "ratchet-dialect" }
+aos-nix-dialect = { path = "aos-nix-dialect" }
 ratchet-value = { path = "ratchet-value" }
 ratchet-oracle = { path = "ratchet-oracle" }
 aos-net = { path = "aos-net" }

@@ -10,6 +10,7 @@ default = []
 anyhow = { workspace = true }
 aos-nix-syntax = { workspace = true }
 ratchet-core = { workspace = true }
+aos-nix-dialect = { workspace = true }
 ratchet-value = { workspace = true }
 ratchet-oracle = { workspace = true }
 base64 = { workspace = true }

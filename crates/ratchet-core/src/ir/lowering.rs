@@ -774,7 +774,8 @@ impl IrLowerer {
     }
 
     pub(super) fn push(&mut self, kind: IrKind, span: Span, data: IrData) -> Result<IrId, IrError> {
-        self.arena.push_node(kind, span, effect_for(kind), data)
+        let effect = (self.options.effect_of())(kind);
+        self.arena.push_node(kind, span, effect, data)
     }
 
     pub(super) fn push_with_effect(

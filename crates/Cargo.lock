@@ -246,6 +246,7 @@ name = "aos-nix"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-nix-dialect",
  "aos-nix-syntax",
  "base64",
  "blake3",
@@ -272,6 +273,14 @@ dependencies = [
  "xxhash-rust",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "aos-nix-dialect"
+version = "0.1.0"
+dependencies = [
+ "ratchet-core",
+ "ratchet-dialect",
 ]
 
 [[package]]
@@ -3671,10 +3680,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ratchet-dialect"
+version = "0.1.0"
+dependencies = [
+ "ratchet-core",
+]
+
+[[package]]
 name = "ratchet-oracle"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-nix-dialect",
  "aos-nix-syntax",
  "base64",
  "blake3",

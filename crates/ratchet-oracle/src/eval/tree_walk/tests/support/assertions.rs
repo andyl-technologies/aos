@@ -81,7 +81,7 @@ fn tree_walk_eval_failure_class(source: &str) -> EvalErrorClass {
         Err(_) => return EvalErrorClass::Parse,
     };
     let resolved = resolve_ast(parsed).expect("source resolves");
-    let ir = lower_ir(resolved).expect("source lowers");
+    let ir = aos_nix_dialect::nix_lower(resolved).expect("source lowers");
     let error = eval_whnf_owned(&ir).expect_err("tree-walk rejects expression");
     match error.kind() {
         TreeWalkErrorKind::Type { .. } => EvalErrorClass::Type,
@@ -282,7 +282,7 @@ pub(crate) fn assert_cpp_nix_parse_and_aos_frontend_reject_expression(oracle: &s
         return;
     };
     assert!(
-        lower_ir(resolved).is_err(),
+        aos_nix_dialect::nix_lower(resolved).is_err(),
         "AOS frontend unexpectedly accepted {source:?}"
     );
 }

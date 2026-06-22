@@ -21,7 +21,7 @@ use crate::cache::{
 };
 use crate::compile::{
     EffectClass, FrameId, FrameInfo, IrArena, IrBinding, IrData, IrInlineCacheSiteId, IrNode,
-    IrShape, IrWithChain, lower as lower_ir, resolve as resolve_ast,
+    IrShape, IrWithChain, resolve as resolve_ast,
 };
 use crate::runtime::builtins::{BUILTINS, Builtin, BuiltinDirect, BuiltinEffect, direct_builtin};
 use crate::string::{ContextElement, StringContext};

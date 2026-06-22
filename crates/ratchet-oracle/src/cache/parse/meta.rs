@@ -43,7 +43,8 @@ impl ParseCacheMeta {
         resolved: &ResolvedAst,
     ) -> Result<Self, ParseCacheError> {
         let resolved = file_local_resolved(resolved)?;
-        let ir = lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
+        let ir =
+            nix_lower(resolved.clone()).map_err(|source| ParseCacheError::LowerIr { source })?;
         Self::for_serialized_resolved(schema_version, source_hint, &resolved, &ir)
     }
 

@@ -142,9 +142,9 @@ impl TreeWalk {
             .with_source(EvalErrorSource::new(path.to_vec(), source.to_vec()))
         })?;
         let ir = if global_scope.is_scoped() {
-            lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
+            nix_lower_with_options(resolved, IrLowerOptions::with_dynamic_builtin_scope())
         } else {
-            lower(resolved)
+            nix_lower(resolved)
         }
         .map_err(|error| {
             let span = error.span();
