@@ -603,8 +603,11 @@ in
             memory=512M
             accelerator=tcg,thread=single
             smp=1
+            smp_vcpus=1
             icount=shift=0,sleep=off,align=off
             rtc=base=2026-01-01T00:00:00,clock=vm
+            timers=virtual-clock-driven
+            interrupt_timing=icount-tb-boundaries
             qemu_seed=1097729
             qemu_seed_controls=guest-random,glib-global-prng,rng-builtin
             scenario_seed=1097729
@@ -614,6 +617,10 @@ in
             guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0
             guest_entropy_host_sources=disabled
             virtual_time_ns=icount<<shift
+            tsc_source=icount
+            machine_reset=deterministic-zeroed-ram-fixed-devices
+            ram_reset=zeroed-fresh-anonymous-memory
+            input_policy=no-interactive-input
             RESULT
           '';
         }

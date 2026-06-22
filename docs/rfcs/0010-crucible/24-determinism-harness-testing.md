@@ -865,7 +865,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   [HARN-15], [HARN-17]; spec §3.
 - [ ] **T-HARN-4** Implement the double↔real-plugin host-observable-schedule
   cross-check suite. — satisfies [HARN-16]; spec §3.2.
-- [ ] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
+- [x] **T-HARN-5** Implement the L0 determinism suite and `gate:layer0-determinism`
   (twice-reduce digest compare + scheduler-ordering and decision-RNG-stability
   property tests). — satisfies [HARN-3], [HARN-31]; spec §2, §4.5.
 - [ ] **T-HARN-6** Implement the execution fingerprint (icount + register +

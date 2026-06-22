@@ -17,21 +17,21 @@
       package = "crucible-sim";
       testTarget = "gate_layer0_determinism";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:layer0-determinism";
       package = "crucible-assert";
       testTarget = "gate_layer0_determinism";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:layer0-determinism";
       package = "crucible";
       testTarget = "gate_layer0_determinism";
       requiredFeatures = ["test-double"];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
@@ -372,7 +372,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=27
+            placeholder_targets=24
             RESULT
           '';
         }

@@ -4,6 +4,7 @@
 }: let
   simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
   contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
   simCargo = builtins.readFile ../../crates/crucible-sim/Cargo.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -101,6 +102,8 @@
         label = "run fingerprint";
         needle = "fn run_fingerprint";
       }
+    ]
+    ++ failuresFor "crates/crucible-sim/tests/contract_a.rs" contractATests [
       {
         label = "identical replay test marker";
         needle = "contract_a_driver_replays_recorded_inputs_identically";
@@ -197,6 +200,8 @@ in
             driver=crucible-sim::contract_a::ContractADriver
             inputs=icount-stamped-recorded-list
             live_scheduler_transport=false
+            rr_vcpu_cursor=fixed-content-addressed
+            recorded_inputs_enforced=monotonic-within-run
             status=contract-a-isolated-single-vm-model
             RESULT
           '';
