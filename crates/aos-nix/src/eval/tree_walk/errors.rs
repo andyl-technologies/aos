@@ -27,6 +27,7 @@ pub struct TreeWalkError {
     pub(crate) kind: TreeWalkErrorKind,
     pub(crate) span: Span,
     pub(crate) contexts: Vec<EvalErrorContext>,
+    pub(crate) labels: Vec<EvalErrorLabel>,
 }
 
 impl TreeWalkError {
@@ -36,6 +37,7 @@ impl TreeWalkError {
             kind,
             span,
             contexts: Vec::new(),
+            labels: Vec::new(),
         }
     }
 
@@ -54,9 +56,24 @@ impl TreeWalkError {
         self
     }
 
+    pub(crate) fn with_label(mut self, span: Span, label: &'static str) -> Self {
+        self.labels.push(EvalErrorLabel { span, label });
+        self
+    }
+
+    pub(crate) fn with_labels(mut self, labels: Vec<EvalErrorLabel>) -> Self {
+        self.labels = labels;
+        self
+    }
+
     /// Returns diagnostic context messages from outermost to innermost.
     pub fn contexts(&self) -> &[EvalErrorContext] {
         &self.contexts
+    }
+
+    /// Returns additional source labels relevant to this error.
+    pub fn labels(&self) -> &[EvalErrorLabel] {
+        &self.labels
     }
 
     pub(crate) fn try_prepend_context(
@@ -93,6 +110,25 @@ impl fmt::Display for TreeWalkError {
 }
 
 impl std::error::Error for TreeWalkError {}
+
+/// A secondary source label attached to a tree-walk evaluation error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EvalErrorLabel {
+    pub(crate) span: Span,
+    pub(crate) label: &'static str,
+}
+
+impl EvalErrorLabel {
+    /// Returns the byte span covered by this label.
+    pub const fn span(&self) -> Span {
+        self.span
+    }
+
+    /// Returns the human-readable label text.
+    pub const fn label(&self) -> &'static str {
+        self.label
+    }
+}
 
 /// A diagnostic context attached to a tree-walk evaluation error.
 #[derive(Clone, Debug, PartialEq, Eq)]

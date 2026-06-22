@@ -400,6 +400,8 @@ impl TreeWalk {
                     second.id(),
                     second.span(),
                     right,
+                    first.span(),
+                    second.span(),
                 )
             }
             StrictBinaryPrimOp::All => {

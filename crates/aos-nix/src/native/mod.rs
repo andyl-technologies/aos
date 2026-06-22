@@ -19,8 +19,8 @@ use crate::compile::{
 use crate::drv_materialize::materialize_drv;
 use crate::error::{NativeEvalError, SrcSpan};
 use crate::eval::{
-    EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind, TreeWalkOptions,
-    eval_instantiation_attr_path_owned_with_options_and_realizer,
+    EvalErrorLabel, EvalMode, EvalOutcome, IfdRealizer, TreeWalkError, TreeWalkErrorKind,
+    TreeWalkOptions, eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_whnf_owned_with_options_and_realizer,
 };
 use crate::runtime::builtins::{

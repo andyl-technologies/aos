@@ -241,8 +241,39 @@ fn rendered_eval_diagnostic(
         return None;
     }
 
-    let diagnostic = EvalDiagnostic::new(source.name, source.source, error.clone().with_span(span));
+    let error = eval_error_for_source(error, span, source.source_map)?;
+    if !error
+        .labels()
+        .iter()
+        .all(|label| span_fits_source(label.span(), source.source))
+    {
+        return None;
+    }
+
+    let diagnostic = EvalDiagnostic::new(source.name, source.source, error);
     render_fancy_report(&diagnostic).ok()
+}
+
+fn eval_error_for_source(
+    error: &TreeWalkError,
+    span: Span,
+    source_map: Option<WrappedSourceMap>,
+) -> Option<TreeWalkError> {
+    let error = error.clone().with_span(span);
+    let Some(source_map) = source_map else {
+        return Some(error);
+    };
+    let labels = error
+        .labels()
+        .iter()
+        .map(|label| {
+            Some(EvalErrorLabel {
+                span: wrapped_source_span(label.span(), source_map)?,
+                label: label.label(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(error.with_labels(labels))
 }
 
 fn span_fits_source(span: Span, source: &str) -> bool {

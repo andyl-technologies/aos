@@ -363,8 +363,12 @@ impl TreeWalk {
             ValueTag::Int | ValueTag::Float if !forced_break_left => {
                 let rhs_span = self.node(rhs)?.span;
                 let right = self.eval_node(rhs)?;
-                let left = self.expect_number(lhs, left, lhs_span)?;
-                let right = self.expect_number(rhs, right, rhs_span)?;
+                let left = self
+                    .expect_number(lhs, left, lhs_span)
+                    .map_err(|error| self.label_binary_operand_error(error, lhs_span, rhs_span))?;
+                let right = self
+                    .expect_number(rhs, right, rhs_span)
+                    .map_err(|error| self.label_binary_operand_error(error, lhs_span, rhs_span))?;
                 self.eval_numeric_values(id, node, BinaryArithmeticOp::Add, left, right)
             }
             ValueTag::String => {
@@ -376,14 +380,19 @@ impl TreeWalk {
             }
             ValueTag::Path => self.eval_path_add(id, node, lhs, lhs_span, left, rhs),
             ValueTag::Attrs => self.eval_attrs_add(id, node, lhs, lhs_span, left, rhs),
-            actual => Err(TreeWalkError::new(
-                TreeWalkErrorKind::Type {
-                    id: lhs,
-                    expected: "number, string, or path",
-                    actual,
-                },
-                lhs_span,
-            )),
+            actual => {
+                let rhs_span = self.node(rhs)?.span;
+                Err(TreeWalkError::new(
+                    TreeWalkErrorKind::Type {
+                        id: lhs,
+                        expected: "number, string, or path",
+                        actual,
+                    },
+                    lhs_span,
+                )
+                .with_label(lhs_span, "left operand")
+                .with_label(rhs_span, "right operand"))
+            }
         }
     }
 
@@ -732,8 +741,12 @@ impl TreeWalk {
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
         let right = self.force_demanded_value(rhs, rhs_span, right)?;
-        let left = self.expect_number(lhs, left, lhs_span)?;
-        let right = self.expect_number(rhs, right, rhs_span)?;
+        let left = self
+            .expect_number(lhs, left, lhs_span)
+            .map_err(|error| self.label_binary_operand_error(error, lhs_span, rhs_span))?;
+        let right = self
+            .expect_number(rhs, right, rhs_span)
+            .map_err(|error| self.label_binary_operand_error(error, lhs_span, rhs_span))?;
         self.eval_numeric_values(id, node, op, left, right)
     }
 
@@ -942,10 +955,10 @@ impl TreeWalk {
         rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         match op {
-            ComparisonOp::Lt => self.eval_less_than_comparison(id, node, lhs, rhs, false),
-            ComparisonOp::Gt => self.eval_less_than_comparison(id, node, rhs, lhs, false),
-            ComparisonOp::Le => self.eval_less_than_comparison(id, node, rhs, lhs, true),
-            ComparisonOp::Ge => self.eval_less_than_comparison(id, node, lhs, rhs, true),
+            ComparisonOp::Lt => self.eval_less_than_comparison(id, node, lhs, rhs, false, lhs, rhs),
+            ComparisonOp::Gt => self.eval_less_than_comparison(id, node, rhs, lhs, false, lhs, rhs),
+            ComparisonOp::Le => self.eval_less_than_comparison(id, node, rhs, lhs, true, lhs, rhs),
+            ComparisonOp::Ge => self.eval_less_than_comparison(id, node, lhs, rhs, true, lhs, rhs),
         }
     }
 
@@ -956,11 +969,15 @@ impl TreeWalk {
         lhs: IrId,
         rhs: IrId,
         invert: bool,
+        source_lhs: IrId,
+        source_rhs: IrId,
     ) -> Result<Value, TreeWalkError> {
         let lhs_span = self.node(lhs)?.span;
         let left = self.eval_node(lhs)?;
         let rhs_span = self.node(rhs)?.span;
         let right = self.eval_node(rhs)?;
+        let source_lhs_span = self.node(source_lhs)?.span;
+        let source_rhs_span = self.node(source_rhs)?.span;
         let value = self.eval_comparison_values(
             id,
             node,
@@ -971,6 +988,8 @@ impl TreeWalk {
             rhs,
             rhs_span,
             right,
+            source_lhs_span,
+            source_rhs_span,
         )?;
         if invert {
             Ok(Value::bool(!self.expect_bool(id, value, node.span)?))

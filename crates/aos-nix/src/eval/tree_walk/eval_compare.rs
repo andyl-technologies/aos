@@ -14,11 +14,17 @@ impl TreeWalk {
         rhs: IrId,
         rhs_span: Span,
         right: Value,
+        source_lhs_span: Span,
+        source_rhs_span: Span,
     ) -> Result<Value, TreeWalkError> {
         match left.tag() {
             ValueTag::Int | ValueTag::Float => {
-                let left = self.expect_number(lhs, left, lhs_span)?;
-                let right = self.expect_number(rhs, right, rhs_span)?;
+                let left = self.expect_number(lhs, left, lhs_span).map_err(|error| {
+                    self.label_binary_operand_error(error, source_lhs_span, source_rhs_span)
+                })?;
+                let right = self.expect_number(rhs, right, rhs_span).map_err(|error| {
+                    self.label_binary_operand_error(error, source_lhs_span, source_rhs_span)
+                })?;
                 Ok(Value::bool(compare_numbers(op, left, right)))
             }
             ValueTag::String => {
@@ -30,7 +36,9 @@ impl TreeWalk {
                             actual: right.tag(),
                         },
                         rhs_span,
-                    ));
+                    )
+                    .with_label(source_lhs_span, "left operand")
+                    .with_label(source_rhs_span, "right operand"));
                 }
                 self.compare_strings(id, node, op, left, right)
             }
@@ -43,7 +51,9 @@ impl TreeWalk {
                             actual: right.tag(),
                         },
                         rhs_span,
-                    ));
+                    )
+                    .with_label(source_lhs_span, "left operand")
+                    .with_label(source_rhs_span, "right operand"));
                 }
                 self.compare_paths(id, node, op, left, right)
             }
@@ -56,7 +66,9 @@ impl TreeWalk {
                             actual: right.tag(),
                         },
                         rhs_span,
-                    ));
+                    )
+                    .with_label(source_lhs_span, "left operand")
+                    .with_label(source_rhs_span, "right operand"));
                 }
                 self.compare_lists(id, node, op, left, right)
                     .map(Value::bool)
@@ -68,7 +80,9 @@ impl TreeWalk {
                     actual,
                 },
                 lhs_span,
-            )),
+            )
+            .with_label(source_lhs_span, "left operand")
+            .with_label(source_rhs_span, "right operand")),
         }
     }
 
@@ -552,6 +566,17 @@ impl TreeWalk {
                 span,
             )),
         }
+    }
+
+    pub(super) fn label_binary_operand_error(
+        &self,
+        error: TreeWalkError,
+        lhs_span: Span,
+        rhs_span: Span,
+    ) -> TreeWalkError {
+        error
+            .with_label(lhs_span, "left operand")
+            .with_label(rhs_span, "right operand")
     }
 
     pub(super) fn expect_int(

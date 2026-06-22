@@ -146,10 +146,7 @@ impl Diagnostic for EvalDiagnostic {
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        Some(Box::new(std::iter::once(label_for_span(
-            self.error.span(),
-            "evaluation error",
-        ))))
+        Some(eval_error_labels(&self.error))
     }
 }
 
@@ -246,6 +243,21 @@ fn parse_error_labels(
         ),
         _ => Box::new(std::iter::once(label_for_span(primary_span, "parse error"))),
     }
+}
+
+fn eval_error_labels(error: &TreeWalkError) -> Box<dyn Iterator<Item = LabeledSpan> + '_> {
+    if error.labels().is_empty() {
+        return Box::new(std::iter::once(label_for_span(
+            error.span(),
+            "evaluation error",
+        )));
+    }
+    Box::new(
+        error
+            .labels()
+            .iter()
+            .map(|label| label_for_span(label.span(), label.label())),
+    )
 }
 
 fn span_range(span: Span) -> Range<usize> {
@@ -558,6 +570,31 @@ mod tests {
             report.contains("Use a value with the type expected here."),
             "{report}"
         );
+    }
+
+    #[test]
+    fn eval_diagnostic_reports_operand_type_spans() {
+        assert_eval_operand_labels("1 + \"x\"", "1", "\"x\"");
+        assert_eval_operand_labels("1 > \"x\"", "1", "\"x\"");
+        assert_eval_operand_labels("1 <= \"x\"", "1", "\"x\"");
+    }
+
+    fn assert_eval_operand_labels(source: &str, left: &str, right: &str) {
+        let ir = lower(resolve(parse_str(source).unwrap()).unwrap()).unwrap();
+        let error = eval_whnf_owned(&ir).expect_err("type mismatch should fail");
+        let diagnostic = EvalDiagnostic::new("expr.nix", source, error);
+
+        let labels = diagnostic
+            .labels()
+            .expect("type diagnostic has operand labels")
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].label(), Some("left operand"));
+        assert_eq!(labels[0].offset(), source.find(left).unwrap());
+        assert_eq!(labels[0].len(), left.len());
+        assert_eq!(labels[1].label(), Some("right operand"));
+        assert_eq!(labels[1].offset(), source.find(right).unwrap());
+        assert_eq!(labels[1].len(), right.len());
     }
 
     #[test]

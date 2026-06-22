@@ -253,8 +253,8 @@ pub use api::{
     eval_whnf_owned_with_options_and_realizer, eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
-pub use errors::TreeWalkError;
 pub(crate) use errors::{ArithmeticOp, EvalErrorContext};
+pub use errors::{EvalErrorLabel, TreeWalkError};
 pub(crate) use op_types::*;
 pub use options::TreeWalkOptionsError;
 pub(crate) use options::{
