@@ -847,7 +847,7 @@ information that cannot be recomputed.
 > the tasks whose primary area is this file ([PLAN-3]); they are kept in
 > sync with the master plan's order/digest by the doc lint ([`28-engineering-standards.md`](28-engineering-standards.md)).
 
-- [ ] **T-EXEC-1** Define `ScenarioDef`, `Configuration`, `Schedule`, and
+- [x] **T-EXEC-1** Define `ScenarioDef`, `Configuration`, `Schedule`, and
   `Decision` types with content-addressed `Configuration::id()` and the genesis
   constructor; property-test that equal `(def, schedule)` ⇒ equal id and unequal
   schedule ⇒ unequal id. — satisfies [EXEC-1], [EXEC-2], [EXEC-3], [EXEC-4],

@@ -60,6 +60,7 @@ in {
     determinismReview = import ./phase1-determinism-review.nix {inherit pkgs lib;};
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
+    executionModelCore = import ./phase1-execution-model-core.nix {inherit pkgs lib;};
     executionFingerprintDefinition = import ./phase1-execution-fingerprint-definition.nix {inherit pkgs lib;};
     gateCatalog = import ./phase1-gate-catalog.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};

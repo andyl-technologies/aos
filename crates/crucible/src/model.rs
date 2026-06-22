@@ -82,6 +82,15 @@ impl Configuration {
     pub fn content_hash(&self) -> ContentHash {
         canonical::configuration_hash(self)
     }
+
+    /// Computes the RFC-named content-addressed configuration id.
+    ///
+    /// This is an alias for [`Configuration::content_hash`]. It exists so the
+    /// execution model exposes the `Configuration::id()` API named in RFC-0010.
+    #[must_use]
+    pub fn id(&self) -> ContentHash {
+        self.content_hash()
+    }
 }
 
 /// One resolved nondeterministic choice at a scheduling point.

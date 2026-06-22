@@ -111,6 +111,99 @@ mod tests {
     }
 
     #[test]
+    fn configuration_id_is_content_addressed_by_def_and_schedule() {
+        let scenario =
+            ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
+        let same_scenario =
+            ScenarioDef::from_canonical_material("crucible.test.configuration", "node=a\nseed=1");
+        let base_schedule = Schedule::empty().appended(Decision::RngDraw(RngDecision {
+            stream: RngStreamId {
+                name: String::from("node-a/faults"),
+            },
+            value: 7,
+        }));
+        let same = Configuration {
+            def: same_scenario,
+            schedule: base_schedule.clone(),
+        };
+        let changed_schedule = Configuration {
+            def: scenario.clone(),
+            schedule: base_schedule.appended(Decision::FaultFires(FaultDecision {
+                at: VirtualTime { ticks: 1 },
+                fault: FaultId {
+                    name: String::from("link-drop"),
+                },
+                fired: true,
+            })),
+        };
+        let base = Configuration {
+            def: scenario,
+            schedule: same.schedule.clone(),
+        };
+
+        assert_eq!(base, same);
+        assert_eq!(base.id(), same.id());
+        assert_eq!(base.id(), base.content_hash());
+        assert_ne!(base.schedule, changed_schedule.schedule);
+        assert_ne!(base.id(), changed_schedule.id());
+    }
+
+    #[test]
+    fn configuration_id_property_covers_generated_def_schedule_pairs() {
+        let mut checked_cases = 0;
+
+        for seed in 0..64 {
+            let def = generated_scenario(seed);
+            let schedule = generated_schedule(seed, 6);
+            let base = Configuration {
+                def: def.clone(),
+                schedule: schedule.clone(),
+            };
+            let same = Configuration {
+                def: generated_scenario(seed),
+                schedule: schedule.clone(),
+            };
+            let changed_schedule = Configuration {
+                def: def.clone(),
+                schedule: schedule.appended(generated_decision(seed, 99)),
+            };
+            let same_length_changed_schedule = Configuration {
+                def: def.clone(),
+                schedule: generated_schedule(seed + 10_000, 6),
+            };
+            let reordered_schedule = Configuration {
+                def: def.clone(),
+                schedule: swap_first_two_decisions(&base.schedule),
+            };
+            let changed_def = Configuration {
+                def: generated_scenario(seed + 1_000),
+                schedule: base.schedule.clone(),
+            };
+
+            assert_eq!(base, same);
+            assert_eq!(base.id(), same.id());
+            assert_eq!(base.id(), base.content_hash());
+            assert_ne!(base.schedule, changed_schedule.schedule);
+            assert_ne!(base.id(), changed_schedule.id());
+            assert_eq!(
+                base.schedule.len(),
+                same_length_changed_schedule.schedule.len()
+            );
+            assert_ne!(base.schedule, same_length_changed_schedule.schedule);
+            assert_ne!(base.id(), same_length_changed_schedule.id());
+            assert_eq!(base.schedule.len(), reordered_schedule.schedule.len());
+            assert_ne!(base.schedule, reordered_schedule.schedule);
+            assert_ne!(base.id(), reordered_schedule.id());
+            assert_ne!(base.def, changed_def.def);
+            assert_ne!(base.id(), changed_def.id());
+
+            checked_cases += 1;
+        }
+
+        assert_eq!(checked_cases, 64);
+    }
+
+    #[test]
     fn reduce_is_pure_over_scenario_and_schedule() {
         let scenario =
             ScenarioDef::from_canonical_material("crucible.test.reduce", "node=a\nseed=1");
@@ -259,5 +352,99 @@ mod tests {
             "backend operation snapshot is not implemented yet"
         );
         assert_eq!(backend_rejected.to_string(), "stable rejection");
+    }
+
+    fn generated_scenario(seed: u64) -> ScenarioDef {
+        ScenarioDef::from_canonical_material(
+            "crucible.test.configuration.generated",
+            &format!("node=a\nseed={seed}\nimage=generated-{seed:04}"),
+        )
+    }
+
+    fn generated_schedule(seed: u64, len: u64) -> Schedule {
+        let mut schedule = Schedule::empty();
+        for index in 0..len {
+            schedule = schedule.appended(generated_decision(seed, index));
+        }
+        schedule
+    }
+
+    fn swap_first_two_decisions(schedule: &Schedule) -> Schedule {
+        let decisions = schedule.decisions();
+        let mut swapped = Schedule::empty();
+
+        if decisions.len() < 2 {
+            return schedule.clone();
+        }
+
+        swapped = swapped.appended(decisions[1].clone());
+        swapped = swapped.appended(decisions[0].clone());
+        for decision in &decisions[2..] {
+            swapped = swapped.appended(decision.clone());
+        }
+
+        swapped
+    }
+
+    fn generated_decision(seed: u64, index: u64) -> Decision {
+        match (seed + index) % 6 {
+            0 => Decision::DeliveryOrder(DeliveryOrderDecision {
+                at: VirtualTime {
+                    ticks: seed + index,
+                },
+                order: vec![
+                    EventKey { sequence: index },
+                    EventKey {
+                        sequence: index + 1,
+                    },
+                ],
+            }),
+            1 => Decision::FaultFires(FaultDecision {
+                at: VirtualTime {
+                    ticks: seed.saturating_mul(2) + index,
+                },
+                fault: FaultId {
+                    name: format!("fault-{seed}-{index}"),
+                },
+                fired: index.is_multiple_of(2),
+            }),
+            2 => Decision::RngDraw(RngDecision {
+                stream: RngStreamId {
+                    name: format!("node-{seed}/stream-{index}"),
+                },
+                value: seed.rotate_left((index % 31) as u32) ^ index,
+            }),
+            3 => Decision::Override(OverrideDecision {
+                point: SchedulingPoint {
+                    key: format!("point-{seed}-{index}"),
+                },
+                choice: ChoiceTag {
+                    name: format!("choice-{index}"),
+                },
+            }),
+            4 => Decision::Preemption(PreemptionDecision {
+                node: NodeId {
+                    name: format!("node-{seed}"),
+                },
+                at: Icount {
+                    retired: seed + index + 1,
+                },
+                kind: PreemptionKind::VcpuSwitch {
+                    from_vcpu: VcpuId { index: 0 },
+                    to_vcpu: VcpuId { index: 1 },
+                },
+            }),
+            _ => Decision::AppRandom(AppRandomDecision {
+                node: NodeId {
+                    name: format!("node-{seed}"),
+                },
+                stream: RngStreamId {
+                    name: format!("app-random-{index}"),
+                },
+                request_id: index,
+                width: 32,
+                value: seed.wrapping_mul(0x9e37_79b9) ^ index,
+            }),
+        }
     }
 }
