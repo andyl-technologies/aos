@@ -436,11 +436,50 @@ input[type="search"]::-webkit-search-cancel-button {
 /* Producer console: the no-JS tier is the floor, so every mutation is a
  * plain form + redirect. Layout only — the control styling is global. */
 form.console { margin: 0.9rem 0 1.8rem; }
-form.console label { display: block; margin: 0.6rem 0; }
-form.console input[type="text"],
-form.console input[type="email"],
-form.console input[type="password"],
-form.console select { min-width: 18rem; }
+/* Label + control as a two-column grid: the label text occupies a fixed-width
+ * first column and the control the second, so every control shares one left
+ * edge regardless of label length. (The old `display:block` put each input
+ * inline right after its own label text, leaving the column of inputs ragged.)
+ * Each label is its own grid, but they all share the same label-column width,
+ * so the controls line up across the whole form. */
+form.console label {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  align-items: baseline;
+  column-gap: 0.7rem;
+  row-gap: 0.2rem;
+  margin: 0.5rem 0;
+  max-width: 42rem;
+}
+/* The control fills the second column. */
+form.console label input[type="text"],
+form.console label input[type="email"],
+form.console label input[type="password"],
+form.console label input[type="search"],
+form.console label select,
+form.console label textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+/* A terse field hint (e.g. "optional", "permanent") sits in the control column,
+ * just under its input — not floating after a ragged input. */
+form.console label > span.dim {
+  grid-column: 2;
+  justify-self: start;
+  font-size: 0.85rem;
+}
+/* A textarea aligns its top edge with the label rather than its baseline. */
+form.console label:has(textarea) { align-items: start; }
+/* Checkbox / radio rows read control-first and inline — the control belongs
+ * next to its text, not pushed into the label column. */
+form.console label:has(> input[type="checkbox"]),
+form.console label:has(> input[type="radio"]) {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 42rem;
+}
 
 /* A standalone field caption (used where a tall control would baseline-align
  * an inline <label> to its bottom edge). Matches the table-header treatment. */
