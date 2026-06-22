@@ -342,6 +342,28 @@ fn from_toml_primop_checks_argument_and_toml() {
 }
 
 #[test]
+fn from_toml_primop_accepts_timestamps_when_experimental_feature_is_enabled() {
+    let options = TreeWalkOptions::with_parse_toml_timestamps(true);
+
+    assert!(options.parse_toml_timestamps());
+    assert_eq!(
+        eval_json_bytes_with_options(
+            r#"builtins.fromTOML ''
+                    date = 1979-05-27
+                    local = 1979-05-27T07:32:00
+                    offset = 1979-05-27T00:32:00-07:00
+                    offset_fraction = 1979-05-27T00:32:00.999999-07:00
+                    previous_day = 1979-05-27T00:32:00+02:00
+                    space = 1979-05-27 07:32:00Z
+                    time = 07:32:00
+                ''"#,
+            options,
+        ),
+        br#"{"date":{"_type":"timestamp","value":"1979-05-27"},"local":{"_type":"timestamp","value":"1979-05-27T07:32:00"},"offset":{"_type":"timestamp","value":"1979-05-27T00:32:00-07:00"},"offset_fraction":{"_type":"timestamp","value":"1979-05-27T00:32:00.999999-07:00"},"previous_day":{"_type":"timestamp","value":"1979-05-27T00:32:00+02:00"},"space":{"_type":"timestamp","value":"1979-05-27T07:32:00Z"},"time":{"_type":"timestamp","value":"07:32:00"}}"#
+    );
+}
+
+#[test]
 fn from_toml_primop_rejects_string_context() {
     let ir = lower("builtins.fromTOML \"a = 1\"");
     let root = *ir.arena.node(ir.root).expect("root exists");

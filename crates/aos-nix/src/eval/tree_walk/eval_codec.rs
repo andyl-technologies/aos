@@ -424,13 +424,19 @@ impl TreeWalk {
             TomlValue::Integer(value) => Ok(Value::int(value)),
             TomlValue::Float(value) => Ok(Value::float(value)),
             TomlValue::Boolean(value) => Ok(Value::bool(value)),
-            TomlValue::Datetime(_) => Err(TreeWalkError::new(
-                TreeWalkErrorKind::TomlUnsupportedValue {
-                    id,
-                    kind: "datetime",
-                },
-                span,
-            )),
+            TomlValue::Datetime(value) => {
+                if self.options.parse_toml_timestamps() {
+                    self.alloc_toml_timestamp_value(id, span, value)
+                } else {
+                    Err(TreeWalkError::new(
+                        TreeWalkErrorKind::TomlUnsupportedValue {
+                            id,
+                            kind: "datetime",
+                        },
+                        span,
+                    ))
+                }
+            }
             TomlValue::Array(values) => {
                 let mut elements = Vec::new();
                 elements.try_reserve_exact(values.len()).map_err(|_| {
@@ -485,6 +491,49 @@ impl TreeWalk {
                 })
             }
         }
+    }
+
+    fn alloc_toml_timestamp_value(
+        &mut self,
+        id: IrId,
+        span: Span,
+        timestamp: TomlDatetime,
+    ) -> Result<Value, TreeWalkError> {
+        let type_symbol = self
+            .symbols
+            .intern(TOML_TIMESTAMP_TYPE_ATTR)
+            .map_err(|source| {
+                TreeWalkError::new(
+                    TreeWalkErrorKind::SymbolIntern {
+                        id,
+                        source: source.kind().clone(),
+                    },
+                    span,
+                )
+            })?;
+        let value_symbol = self.symbols.intern(VALUE_ATTR).map_err(|source| {
+            TreeWalkError::new(
+                TreeWalkErrorKind::SymbolIntern {
+                    id,
+                    source: source.kind().clone(),
+                },
+                span,
+            )
+        })?;
+        let timestamp_type = self.alloc_static_string(id, span, TOML_TIMESTAMP_TYPE_VALUE)?;
+        let timestamp_value = timestamp.to_string();
+        let timestamp_value = self.alloc_static_string(id, span, timestamp_value.as_bytes())?;
+        let attrs = FlatAttrs::new(
+            vec![
+                AttrEntry::new(type_symbol, timestamp_type),
+                AttrEntry::new(value_symbol, timestamp_value),
+            ],
+            &self.symbols,
+        )
+        .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Attr { id, source }, span))?;
+        self.heap
+            .alloc_attrs(0, attrs)
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
     }
 
     pub(super) fn eval_to_string_primop(

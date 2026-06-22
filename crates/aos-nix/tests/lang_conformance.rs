@@ -201,6 +201,16 @@ fn eval_okay_options(
                 };
                 add_search_path_entry(&mut options, entry, flags)?;
             }
+            "--extra-experimental-features" => {
+                index += 1;
+                let Some(feature) = flags.get(index) else {
+                    return Err(unsupported_flags_message(flags));
+                };
+                match feature.as_str() {
+                    "parse-toml-timestamps" => options.set_parse_toml_timestamps(true),
+                    _ => return Err(unsupported_flags_message(flags)),
+                }
+            }
             _ => return Err(unsupported_flags_message(flags)),
         }
         index += 1;
@@ -342,6 +352,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
         ]
     );
     assert!(
@@ -379,6 +390,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
                 "eval-okay-disabled",
                 CaseOutcome::Skipped("disabled by .exp-disabled".to_owned())
             ),
+            ("eval-okay-fromTOML-timestamps", CaseOutcome::Passed),
             ("eval-okay-number", CaseOutcome::Passed),
             ("eval-okay-primop-app", CaseOutcome::Passed),
             ("eval-okay-recursive", CaseOutcome::Passed),
@@ -489,6 +501,47 @@ fn lang_sh_search_path_flags_configure_eval_okay() {
         path_bytes(&lang_dir.parent().unwrap())
     );
     assert_eq!(options.nix_path().len(), 5);
+}
+
+#[test]
+fn lang_sh_experimental_feature_flags_configure_eval_okay() {
+    let lang_dir = fixture_lang_dir();
+    let timestamp_flags = ["--extra-experimental-features", "parse-toml-timestamps"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let unsupported_feature_flags = ["--extra-experimental-features", "flakes"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let missing_feature_flags = ["--extra-experimental-features"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let options = lang_case_options(LangCategory::EvalOkay, &timestamp_flags, &lang_dir)
+        .expect("parse-toml-timestamps should be supported");
+    assert!(options.parse_toml_timestamps());
+    assert_eq!(options.nix_path().len(), 2);
+    assert_eq!(
+        lang_case_options(
+            LangCategory::EvalOkay,
+            &unsupported_feature_flags,
+            &lang_dir
+        ),
+        Err("case carries unsupported flags: --extra-experimental-features flakes".to_owned())
+    );
+    assert_eq!(
+        lang_case_options(LangCategory::EvalOkay, &missing_feature_flags, &lang_dir),
+        Err("case carries unsupported flags: --extra-experimental-features".to_owned())
+    );
+    assert_eq!(
+        lang_case_options(LangCategory::ParseOkay, &timestamp_flags, &lang_dir),
+        Err(
+            "case carries unsupported flags: --extra-experimental-features parse-toml-timestamps"
+                .to_owned()
+        )
+    );
 }
 
 #[test]

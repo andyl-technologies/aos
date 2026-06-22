@@ -149,6 +149,13 @@ impl TreeWalkOptions {
         options
     }
 
+    /// Creates evaluator options with experimental TOML timestamp parsing configured.
+    pub fn with_parse_toml_timestamps(parse_toml_timestamps: bool) -> Self {
+        let mut options = Self::default();
+        options.set_parse_toml_timestamps(parse_toml_timestamps);
+        options
+    }
+
     /// Creates evaluator options with a configured parse-cache root directory.
     ///
     /// The tree-walk evaluator uses this cache for ordinary filesystem-backed
@@ -393,6 +400,11 @@ impl TreeWalkOptions {
         self.max_call_depth = max_call_depth;
     }
 
+    /// Enables or disables experimental TOML timestamp parsing.
+    pub fn set_parse_toml_timestamps(&mut self, parse_toml_timestamps: bool) {
+        self.parse_toml_timestamps = parse_toml_timestamps;
+    }
+
     /// Replaces a configured environment variable.
     ///
     /// Only variables inserted into these options are visible to
@@ -545,6 +557,11 @@ impl TreeWalkOptions {
     /// Returns the configured maximum nested call depth.
     pub const fn max_call_depth(&self) -> usize {
         self.max_call_depth
+    }
+
+    /// Returns whether experimental TOML timestamp parsing is enabled.
+    pub const fn parse_toml_timestamps(&self) -> bool {
+        self.parse_toml_timestamps
     }
 
     /// Returns the configured value for an environment variable.

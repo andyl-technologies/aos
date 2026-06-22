@@ -36,7 +36,7 @@ use serde_json::{Number as JsonNumber, Value as JsonValue};
 use sha1::{Digest as _, Sha1};
 use sha2::{Sha256, Sha512};
 use thiserror::Error;
-use toml::Value as TomlValue;
+use toml::{Value as TomlValue, value::Datetime as TomlDatetime};
 use url::Url;
 use xz2::read::XzDecoder;
 
@@ -110,6 +110,8 @@ const LAST_MODIFIED_DATE_ATTR: &[u8] = b"lastModifiedDate";
 const NAR_HASH_ATTR: &[u8] = b"narHash";
 const PREFIX_ATTR: &[u8] = b"prefix";
 const VALUE_ATTR: &[u8] = b"value";
+const TOML_TIMESTAMP_TYPE_ATTR: &[u8] = b"_type";
+const TOML_TIMESTAMP_TYPE_VALUE: &[u8] = b"timestamp";
 const KEY_ATTR: &[u8] = b"key";
 const FILE_ATTR: &[u8] = b"file";
 const LINE_ATTR: &[u8] = b"line";
@@ -293,6 +295,7 @@ pub struct TreeWalkOptions {
     trace_verbose: bool,
     abort_on_warn: bool,
     max_call_depth: usize,
+    parse_toml_timestamps: bool,
     env_vars: BTreeMap<Vec<u8>, Vec<u8>>,
     nix_path: Vec<NixSearchPathEntry>,
     reject_ambient_search_path: bool,
@@ -317,6 +320,7 @@ impl Default for TreeWalkOptions {
             trace_verbose: false,
             abort_on_warn: false,
             max_call_depth: DEFAULT_MAX_CALL_DEPTH,
+            parse_toml_timestamps: false,
             env_vars: BTreeMap::new(),
             nix_path: Vec::new(),
             reject_ambient_search_path: false,
