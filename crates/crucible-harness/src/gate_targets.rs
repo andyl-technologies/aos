@@ -76,14 +76,14 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-device",
         test_target: "gate_layer1_injection",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:layer1-injection",
         package: "crucible-protocol",
         test_target: "gate_layer1_injection",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:layer1-injection",

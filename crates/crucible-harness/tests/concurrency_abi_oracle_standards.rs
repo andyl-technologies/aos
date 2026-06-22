@@ -19,6 +19,7 @@ use support::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum AdvancedTestKind {
     SpscConcurrency,
+    InjectionDeterminism,
     BoundaryAbi,
     WireFuzzing,
     ReplayOracle,
@@ -90,12 +91,13 @@ const PROTOCOL_CODEC_FUZZ_MARKERS: &[&str] = &[
     "regression_corpus",
 ];
 
-const DEVICE_WIRE_FUZZ_MARKERS: &[&str] = &[
-    "assert_device_wire_fuzz_corpus(",
-    "assert_ninep_wire_handler_fuzz_corpus(",
-    "assert_block_wire_handler_fuzz_corpus(",
-    "assert_clean_reject_or_deterministic_decode(",
-    "regression_corpus",
+const DEVICE_INJECTION_MARKERS: &[&str] = &[
+    "run_two_vm_injection",
+    "struct ObservedInjection",
+    "producer_host_tick",
+    "HostStep::Observe",
+    "assert_eq!(producer_skewed, consumer_skewed);",
+    "assert_ne!(producer_skewed, consumer_skewed);",
 ];
 
 const REPLAY_ORACLE_MARKERS: &[&str] = &[
@@ -162,13 +164,13 @@ const ADVANCED_TEST_STANDARDS: &[AdvancedTestStandard] = &[
         required_markers: PROTOCOL_CODEC_FUZZ_MARKERS,
     },
     AdvancedTestStandard {
-        id: "device-wire-fuzzing",
+        id: "device-injection-determinism",
         gate: "gate:layer1-injection",
         package: "crucible-device",
         test_target: "gate_layer1_injection",
         required_features: &[],
-        kind: AdvancedTestKind::WireFuzzing,
-        required_markers: DEVICE_WIRE_FUZZ_MARKERS,
+        kind: AdvancedTestKind::InjectionDeterminism,
+        required_markers: DEVICE_INJECTION_MARKERS,
     },
     AdvancedTestStandard {
         id: "replay-oracle-two-mode",
@@ -226,6 +228,7 @@ fn standards_cover_the_required_abi_and_oracle_surface() {
         modes,
         BTreeSet::from([
             AdvancedTestKind::SpscConcurrency,
+            AdvancedTestKind::InjectionDeterminism,
             AdvancedTestKind::BoundaryAbi,
             AdvancedTestKind::WireFuzzing,
             AdvancedTestKind::ReplayOracle,

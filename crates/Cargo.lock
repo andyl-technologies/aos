@@ -1533,6 +1533,7 @@ dependencies = [
 name = "crucible-device"
 version = "0.1.0"
 dependencies = [
+ "crucible-shmem",
  "thiserror",
 ]
 

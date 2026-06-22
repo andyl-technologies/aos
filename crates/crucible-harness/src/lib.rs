@@ -144,7 +144,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:layer1-injection",
         phase: GatePhase::Phase3,
         owner: "crucible-device",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:content-address",

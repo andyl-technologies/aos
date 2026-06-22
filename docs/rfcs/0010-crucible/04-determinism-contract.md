@@ -693,7 +693,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-13** Implement the deterministic tie-break for same-icount inputs
   using `(virtual_time, node_id, sequence)`. — satisfies [DET-14], routes
   [INV-3]; spec §4.4.
-- [ ] **T-DET-14** Implement `gate:layer1-injection`: two-VM run-twice-and-diff
+- [x] **T-DET-14** Implement `gate:layer1-injection`: two-VM run-twice-and-diff
   asserting each delivery's consumer icount is identical under artificially
   skewed producer timing. — satisfies [DET-6], [DET-7], [DET-34]; spec §4.2.2,
   §4.4, §4.11.

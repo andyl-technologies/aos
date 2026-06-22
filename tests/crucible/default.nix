@@ -66,6 +66,7 @@ in {
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
     layer0Determinism = import ./phase1-layer0-determinism.nix {inherit pkgs lib;};
+    layer1Injection = import ./phase1-layer1-injection.nix {inherit pkgs lib;};
     lookaheadGate = import ./phase1-lookahead-gate.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
     qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
@@ -177,13 +178,10 @@ in {
   };
   phase3 = {
     gates = {
-      layer1Injection = redGate {
+      layer1Injection = import ./phase1-layer1-injection.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase3.gates.layer1Injection";
-        gateName = "gate:layer1-injection";
-        owner = "crucible-device";
-        phase = "phase3";
-        taskIds = ["T-PLAN-3" "T-HARN-8"];
-        reason = "cross-VM injection determinism gate is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-8" "T-DET-11" "T-DET-12" "T-DET-13" "T-DET-14"];
       };
       schedulerLiveness = redGate {
         attrPath = "checks.crucible.phase3.gates.schedulerLiveness";

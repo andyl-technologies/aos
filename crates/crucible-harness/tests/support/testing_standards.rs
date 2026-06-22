@@ -156,10 +156,6 @@ pub(super) fn source_shape_failures(
     if target.placeholder {
         return Vec::new();
     }
-    if target.package == "crucible-shmem" && target.gate == "gate:layer1-injection" {
-        return Vec::new();
-    }
-
     let code = scrub_comments_and_strings(content);
     let lower = code.to_ascii_lowercase();
     let mut failures = Vec::new();
@@ -170,6 +166,45 @@ pub(super) fn source_shape_failures(
             "{}:{} must call {TWICE_REDUCE_HELPER} to drive twice and compare canonical digests",
             target.package, target.test_target,
         ));
+    }
+
+    if standard.shape == TestShape::ObservedInjectionIcountVectors
+        && target.package == "crucible-protocol"
+    {
+        for required in [
+            "RUNTIME_DATA_PLANE_CONTRACT",
+            "control_channel_carries_runtime_frames",
+            "control_channel_carries_delivery_icounts",
+            "control_channel_silent_between_setup_ack_and_quit",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must prove runtime injection data stays out of the control protocol",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
+    }
+
+    if standard.shape == TestShape::ObservedInjectionIcountVectors
+        && target.package != "crucible-protocol"
+    {
+        for required in [
+            "run_two_vm_injection",
+            "struct ObservedInjection",
+            "producer_host_tick",
+            "assert_eq!(producer_skewed, consumer_skewed);",
+            "assert_ne!(producer_skewed, consumer_skewed);",
+        ] {
+            if !code.contains(required) {
+                failures.push(format!(
+                    "{}:{} must compare observed injection icount vectors across host interleavings with a host-timing negative control",
+                    target.package, target.test_target,
+                ));
+                break;
+            }
+        }
     }
 
     if DUMP_COMPARE_PATTERNS

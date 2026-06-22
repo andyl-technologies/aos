@@ -59,14 +59,14 @@
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
       package = "crucible-protocol";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:layer1-injection";
@@ -372,7 +372,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=24
+            placeholder_targets=22
             RESULT
           '';
         }

@@ -874,7 +874,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-7** Implement `gate:single-vm-fingerprint` (Contract A: boot one
   unmodified guest twice, compare fingerprint streams; on mismatch emit streams +
   bisection result). — satisfies [HARN-5]; spec §4.3.
-- [ ] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
+- [x] **T-HARN-8** Implement `gate:layer1-injection` (Contract B: identical
   observed-injection-icount vectors across host interleavings, against the
   double). — satisfies [HARN-8]; spec §4.4.
 - [ ] **T-HARN-9** Implement the divergence-bisection tool (coarse fingerprint
