@@ -203,11 +203,20 @@ hold invariant.
       → re-layered in Phase 1b ([28](28-generalization-and-language-dialects.md) §10):
       the context bitset + union-on-concat semantics move out of `ratchet-value`
       into `aos-nix-dialect`.
-- [ ] The gate: `aos nix-diff` (and/or a Rust test) asserting **byte-identical
-      `.drv`** from `NixNative` vs `nix-instantiate` over the full AOS package
-      set ([15](15-differential-testing-and-benchmarking.md)); baseline capture
-      of `nix-instantiate` wall-clock + `NIX_SHOW_STATS`; differential parser
-      tests vs the rnix oracle; seed the `cargo fuzz` differential fuzzer.
+- [x] Gate tooling/scaffolds: `diff_closure` plus `aos nix-diff` path, byte, and
+      structural modes, closure traversal, root-vs-contaminated localization,
+      direct node reruns, `--all`/`--systems`/toolchain/lang-corpus enumeration,
+      binary corpus failure semantics, `NixCli::instantiate_with_stats`,
+      `aos nix-diff --oracle-stats`, `aos nix-bench` with byte-parity guard
+      before recording, `cargo-fuzz` `internal_diff_raw`/`parity_json` seeds,
+      the configured C++ Nix lang corpus runner, and `proptest` invariant
+      coverage are in place.
+- [ ] Full acceptance gate still open: byte-identical `.drv` output from
+      `NixNative` vs pinned C++ `nix-instantiate` over the full AOS closure,
+      committed full-closure wall-clock + `NIX_SHOW_STATS` baseline, rnix parser
+      differential oracle unless superseded by a later RFC/doc decision,
+      automatic fuzz-corpus population, full parity-fuzzer budget/quiescence, and
+      full conformance diff-green.
 
 **Conformance — FULL parity is a Phase-1 requirement.**
 

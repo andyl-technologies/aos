@@ -559,14 +559,31 @@ AOS package set. Build it in this order.
 
 **The gate ([15](15-differential-testing-and-benchmarking.md)) — the deliverable.**
 
-- [ ] `aos nix-diff` (or a Rust test) that walks the closure and asserts
-      **byte-identical `.drv`** from `NixNative` vs `nix-instantiate`, against the
-      single pinned C++ Nix version, over the full AOS package set.
-- [ ] Capture the baseline: `nix-instantiate` wall-clock + `NIX_SHOW_STATS`
-      (thunks, fn calls, gc) for the AOS closure — this is the number that sets
-      C3's target and answers whether eval is even the bottleneck (Q-B).
-- [ ] Differential parser tests against the rnix oracle; seed the
-      `cargo fuzz` differential fuzzer.
+- [x] Current `.drv` diff harness core/tooling: `diff_closure` and
+      `aos nix-diff` compare path, byte, and structural modes; traverse
+      input-derivation closures; classify root vs. contaminated divergences;
+      emit direct node reruns through file-backed pairs or closure bundles; build
+      `--all` package, `--systems` toplevel, explicit toolchain, and optional
+      lang-conformance corpora; and fail corpus runs with binary all-or-nothing
+      semantics.
+- [ ] Full `.drv` acceptance gate still open: the harness must be byte-green
+      from `NixNative` vs the pinned C++ `nix-instantiate` over the full AOS
+      closure and must block regressions through the default-off, shadow, and
+      default-on rollout gates.
+- [x] Baseline/stat capture tooling: `NixCli::instantiate_with_stats`,
+      `aos nix-diff --oracle-stats`, `aos nix-bench`, benchmark corpus discovery,
+      stats aggregation, and the byte-parity guard before recording are in place.
+- [ ] Recorded baseline still open: capture and commit the actual full AOS
+      closure `nix-instantiate` wall-clock + `NIX_SHOW_STATS` (thunks, fn calls,
+      gc); this is the number that sets C3's target and answers Q-B.
+- [x] Current fuzz/conformance scaffolds: `cargo-fuzz` targets and seed corpora
+      for `internal_diff_raw` and `parity_json`, source-seed passthrough,
+      structure-aware valid-expression generation, the configured C++ Nix lang
+      corpus runner, and `proptest` invariant coverage are in place.
+- [ ] Parser/fuzz hardening still open: the rnix parser differential oracle
+      remains open unless superseded by a later RFC/doc decision; full
+      parity-fuzzer budget/quiescence, automatic fuzz-corpus population from the
+      full §2.7 corpus, and full conformance diff-green remain acceptance gates.
 
 **Phase-1 exit criteria.** The `.drv`-diff harness is byte-green on the full AOS
 closure under the tree-walk oracle; the baseline eval-time and `NIX_SHOW_STATS`
