@@ -492,10 +492,11 @@ impl Pager {
 /// Timestamps in the future (clock skew) render as "0s ago".
 #[must_use]
 pub fn ago(unix: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    // Use the cross-platform clock: `std::time::SystemTime::now()` PANICS on the
+    // Worker (wasm32 has no system clock), which would crash every page that
+    // renders a relative time (e.g. the audit feed calls this per row). See
+    // `crate::clock`.
+    let now = crate::clock::now_unix_secs();
     let delta = (now - unix).max(0);
     if delta < 60 {
         format!("{delta}s ago")
