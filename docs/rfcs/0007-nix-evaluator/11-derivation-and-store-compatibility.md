@@ -826,7 +826,8 @@ harness, never cut for scope.
 
 ### Hashing policy
 
-- [ ] Type-enforced three-hash split: SHA-256 only where Nix observes bytes; blake3 durable cache; xxh3 in-process — store-path hashing flows exclusively through `nix-compat` SHA-256 APIs ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2, `S-15`; gate: leak-invariant harness.
+- [x] Current three-hash routing substrate: Nix-observable `.drv`/store/fetcher/hash-builtin paths use SHA-256 (`sha2` plus `nix-compat` store/nixhash APIs where applicable), durable parse/import cache keys use BLAKE3, and evaluator-local string/path cons-table structural hashes use xxh3 with equality confirmation and no Nix-observable role ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2, `S-15`; gate: derivation/hash builtin, parse-cache key, and heap/string structural-hash tests.
+- [ ] Type-enforced leak-invariant remains: introduce APIs/tests that prevent BLAKE3/xxh3 digests from reaching Nix-observed store-path/hash constructors, tighten store-path hashing behind the `nix-compat` adapter boundary where applicable, and run a leak-invariant harness across `.drv`/store/fetch/hash builtin surfaces ([§9](#9-hashing-policy-three-hashes-three-jobs)) — P1/P2, `S-15`; gate: leak-invariant harness.
 
 ### Acceptance gate and RFC-0005/0006 tie-in
 
