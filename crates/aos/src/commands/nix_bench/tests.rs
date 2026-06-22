@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use aos_core::nix::{DrvClosure, NixEval};
 
 use super::corpus;
 use super::*;
@@ -38,8 +41,22 @@ fn record_with_context(
         category: "test".to_string(),
         temperature: "cold".to_string(),
         context,
+        parity: matched_parity("aos-nix"),
         summary: summarize_samples(&samples),
         samples,
+    }
+}
+
+fn matched_parity(candidate: &str) -> BenchmarkParity {
+    BenchmarkParity {
+        mode: "byte".to_string(),
+        candidate: candidate.to_string(),
+        matched: true,
+        oracle_root: Some("/nix/store/example.drv".to_string()),
+        candidate_root: Some("/nix/store/example.drv".to_string()),
+        divergence_count: 0,
+        root_divergence_count: 0,
+        contaminated_divergence_count: 0,
     }
 }
 
@@ -72,6 +89,62 @@ fn context_with_env(
     context.eval_env_sha256 = eval_env_fingerprint(std::iter::once((name, value)));
     context.eval_env_count = 1;
     context
+}
+
+struct FakeEval {
+    name: &'static str,
+    root: PathBuf,
+    closure: DrvClosure,
+}
+
+impl FakeEval {
+    fn new(name: &'static str, root: PathBuf, bytes: Vec<u8>) -> Self {
+        let mut drvs = BTreeMap::new();
+        drvs.insert(root.clone(), bytes);
+        Self {
+            name,
+            root: root.clone(),
+            closure: DrvClosure::new(root, drvs),
+        }
+    }
+}
+
+impl NixEval for FakeEval {
+    fn instantiate(&self, _file: &Path, _attr: &str) -> Result<PathBuf> {
+        Ok(self.root.clone())
+    }
+
+    fn instantiate_expr(&self, _expr: &str) -> Result<PathBuf> {
+        Ok(self.root.clone())
+    }
+
+    fn instantiate_closure(&self, _file: &Path, _attr: &str) -> Result<Option<DrvClosure>> {
+        Ok(Some(self.closure.clone()))
+    }
+
+    fn eval_expr(&self, _expr: &str) -> Result<String> {
+        Ok("null".to_string())
+    }
+
+    fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+fn drv_bytes(name: &str) -> Vec<u8> {
+    let output = format!("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-{name}-out");
+    let builder = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-bash";
+    format!(
+        r#"Derive([("out","{output}","","")],[],[],"x86_64-linux","{builder}",[],[("builder","{builder}"),("name","{name}"),("out","{output}"),("system","x86_64-linux")])"#
+    )
+    .into_bytes()
+}
+
+fn parity_spec() -> corpus::BenchmarkSpec {
+    corpus::explicit_benchmark_specs(Path::new("/repo/default.nix"), &["pkgs.zlib".into()])
+        .into_iter()
+        .next()
+        .expect("explicit benchmark spec is present")
 }
 
 #[test]
@@ -241,6 +314,61 @@ fn previous_benchmark_requires_matching_eval_environment_context() {
 }
 
 #[test]
+fn previous_benchmark_requires_matching_parity_context() {
+    let mut previous = record("eval:pkgs.zlib", vec![sample(0.9, 0.4, 9)]);
+    previous.parity = BenchmarkParity::legacy_missing();
+    let history = vec![BenchmarkRunRecord {
+        version: BENCH_HISTORY_VERSION,
+        commit: "older".to_string(),
+        timestamp_unix_ms: 1,
+        file: "/repo/default.nix".to_string(),
+        benchmarks: vec![previous],
+    }];
+    let current = record("eval:pkgs.zlib", vec![sample(1.0, 0.5, 10)]);
+
+    let found = previous_benchmark(&history, &current, "current");
+
+    assert!(found.is_none());
+}
+
+#[test]
+fn parity_gate_records_matching_byte_diff() {
+    let root = PathBuf::from("/nix/store/cccccccccccccccccccccccccccccccc-root.drv");
+    let oracle = FakeEval::new("oracle", root.clone(), drv_bytes("same"));
+    let candidate = FakeEval::new("native-test", root.clone(), drv_bytes("same"));
+    let spec = parity_spec();
+
+    let parity = run_parity_gate(&oracle, &candidate, candidate.name(), &spec)
+        .expect("matching closures pass parity gate");
+
+    assert!(parity.matched);
+    assert_eq!(parity.mode, "byte");
+    assert_eq!(parity.candidate, "native-test");
+    assert_eq!(
+        parity.oracle_root.as_deref(),
+        Some("/nix/store/cccccccccccccccccccccccccccccccc-root.drv")
+    );
+    assert_eq!(parity.divergence_count, 0);
+}
+
+#[test]
+fn parity_gate_blocks_divergent_byte_diff() {
+    let root = PathBuf::from("/nix/store/cccccccccccccccccccccccccccccccc-root.drv");
+    let oracle = FakeEval::new("oracle", root.clone(), drv_bytes("oracle"));
+    let candidate = FakeEval::new("native-test", root, drv_bytes("candidate"));
+    let spec = parity_spec();
+
+    let error = run_parity_gate(&oracle, &candidate, candidate.name(), &spec)
+        .expect_err("divergent closures fail parity gate");
+
+    assert!(
+        error
+            .to_string()
+            .contains("nix benchmark parity gate failed for explicit:cold:pkgs.zlib")
+    );
+}
+
+#[test]
 fn read_history_accepts_legacy_run_context_records() {
     let temp = tempfile::tempdir().expect("temporary directory is created");
     let path = temp.path().join("nix-eval.jsonl");
@@ -268,6 +396,7 @@ fn read_history_accepts_legacy_run_context_records() {
     assert_eq!(records[0].benchmarks[0].category, "legacy");
     assert_eq!(records[0].benchmarks[0].temperature, "cold");
     assert_eq!(records[0].benchmarks[0].context.file, "/repo/default.nix");
+    assert_eq!(records[0].benchmarks[0].parity.mode, "legacy-missing");
 }
 
 #[test]

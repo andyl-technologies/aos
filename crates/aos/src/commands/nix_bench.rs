@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use aos_core::error::AosError;
-use aos_core::nix::{NixCli, NixEvalConfig, NixEvalMode, NixRunner};
+use aos_core::nix::diff::{DiffMode, DrvDiffReport, diff_closure};
+use aos_core::nix::{
+    NixCli, NixEval, NixEvalConfig, NixEvalMode, NixRunner,
+    select_native_diff_candidate_with_config,
+};
 use aos_core::output::{OutputMode, Printer};
 
 use corpus::{BenchmarkSpec, benchmark_specs};
@@ -58,18 +62,51 @@ impl std::fmt::Display for NixBenchRegressionFailure {
 
 impl std::error::Error for NixBenchRegressionFailure {}
 
+/// Error returned when the benchmark parity gate finds a `.drv` divergence.
+#[derive(Debug, Clone)]
+pub struct NixBenchParityFailure {
+    message: String,
+}
+
+impl NixBenchParityFailure {
+    fn new(spec: &BenchmarkSpec, candidate_name: &str, report: &DrvDiffReport) -> Self {
+        let plural = if report.divergences.len() == 1 {
+            ""
+        } else {
+            "s"
+        };
+        Self {
+            message: format!(
+                "nix benchmark parity gate failed for {} against {candidate_name}: {} divergence{plural}",
+                spec.name,
+                report.divergences.len()
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for NixBenchParityFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for NixBenchParityFailure {}
+
 /// Runs the per-commit Nix evaluation benchmark scaffold.
 ///
 /// # Errors
 ///
 /// Returns an error if the benchmark arguments are invalid, Git cannot provide
-/// the current commit SHA, Nix cannot instantiate a selected attribute with
-/// `NIX_SHOW_STATS`, history cannot be read or written, or `fail_on_regression`
-/// is set and a significant regression is detected.
+/// the current commit SHA, the native `.drv` parity candidate cannot be
+/// initialized, a selected benchmark diverges at the parity gate, Nix cannot
+/// instantiate a selected attribute with `NIX_SHOW_STATS`, history cannot be
+/// read or written, or `fail_on_regression` is set and a significant
+/// regression is detected.
 pub fn run(
     printer: &Printer,
     verbose: u8,
-    eval_config: NixEvalConfig,
+    mut eval_config: NixEvalConfig,
     file: Option<&Path>,
     attrs: &[String],
     samples: usize,
@@ -80,6 +117,12 @@ pub fn run(
 ) -> Result<()> {
     validate_args(samples, regression_threshold)?;
     NixRunner::ensure_nix_instantiate_available()?;
+    if eval_config.eval_mode() == NixEvalMode::Ambient {
+        eval_config.set_eval_mode(NixEvalMode::Impure);
+    }
+    let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())
+        .context("initializing nix-bench .drv parity gate")?;
+    let candidate_name = candidate.name().to_string();
 
     let root = NixRunner::find_root()?;
     let file = file
@@ -101,7 +144,14 @@ pub fn run(
 
     let mut outcomes = Vec::with_capacity(specs.len());
     for spec in specs {
-        let record = run_one_benchmark(&oracle, &spec, &eval_config, samples)?;
+        let record = run_one_benchmark(
+            &oracle,
+            candidate.as_ref(),
+            &candidate_name,
+            &spec,
+            &eval_config,
+            samples,
+        )?;
         let comparison = previous_benchmark(&previous_runs, &record, &commit)
             .map(|previous| compare_benchmarks(&record, previous, regression_threshold));
         outcomes.push(BenchmarkOutcome { record, comparison });
@@ -346,8 +396,55 @@ struct BenchmarkRecord {
     category: String,
     temperature: String,
     context: BenchmarkContext,
+    parity: BenchmarkParity,
     samples: Vec<BenchmarkSample>,
     summary: BenchmarkSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BenchmarkParity {
+    mode: String,
+    candidate: String,
+    matched: bool,
+    oracle_root: Option<String>,
+    candidate_root: Option<String>,
+    divergence_count: usize,
+    root_divergence_count: usize,
+    contaminated_divergence_count: usize,
+}
+
+impl BenchmarkParity {
+    fn matched(candidate_name: &str, report: &DrvDiffReport) -> Self {
+        Self {
+            mode: "byte".to_string(),
+            candidate: candidate_name.to_string(),
+            matched: true,
+            oracle_root: report
+                .oracle_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            candidate_root: report
+                .candidate_root
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            divergence_count: report.divergences.len(),
+            root_divergence_count: report.root_divergences.len(),
+            contaminated_divergence_count: report.contaminated_divergences.len(),
+        }
+    }
+
+    fn legacy_missing() -> Self {
+        Self {
+            mode: "legacy-missing".to_string(),
+            candidate: "legacy-missing".to_string(),
+            matched: false,
+            oracle_root: None,
+            candidate_root: None,
+            divergence_count: 0,
+            root_divergence_count: 0,
+            contaminated_divergence_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -362,6 +459,8 @@ struct HistoryBenchmarkRecord {
     temperature: Option<String>,
     #[serde(default)]
     context: Option<BenchmarkContext>,
+    #[serde(default)]
+    parity: Option<BenchmarkParity>,
     samples: Vec<BenchmarkSample>,
     summary: BenchmarkSummary,
 }
@@ -386,6 +485,7 @@ impl HistoryBenchmarkRecord {
             category: self.category.unwrap_or_else(|| "legacy".to_string()),
             temperature: self.temperature.unwrap_or_else(|| "cold".to_string()),
             context,
+            parity: self.parity.unwrap_or_else(BenchmarkParity::legacy_missing),
             samples: self.samples,
             summary: self.summary,
         }
@@ -434,10 +534,13 @@ struct StatsDelta {
 
 fn run_one_benchmark(
     oracle: &NixCli,
+    candidate: &dyn NixEval,
+    candidate_name: &str,
     spec: &BenchmarkSpec,
     eval_config: &NixEvalConfig,
     samples: usize,
 ) -> Result<BenchmarkRecord> {
+    let parity = run_parity_gate(oracle, candidate, candidate_name, spec)?;
     let mut records = Vec::with_capacity(samples);
     for _ in 0..samples {
         let stats = oracle
@@ -458,9 +561,24 @@ fn run_one_benchmark(
         category: spec.category.clone(),
         temperature: spec.temperature.clone(),
         context: BenchmarkContext::from_eval_config(&spec.file, eval_config),
+        parity,
         summary: summarize_samples(&records),
         samples: records,
     })
+}
+
+fn run_parity_gate(
+    oracle: &dyn NixEval,
+    candidate: &dyn NixEval,
+    candidate_name: &str,
+    spec: &BenchmarkSpec,
+) -> Result<BenchmarkParity> {
+    let report = diff_closure(oracle, candidate, &spec.file, &spec.attr, DiffMode::Byte)
+        .with_context(|| format!("checking .drv parity for {}", spec.name))?;
+    if !report.divergences.is_empty() {
+        return Err(NixBenchParityFailure::new(spec, candidate_name, &report).into());
+    }
+    Ok(BenchmarkParity::matched(candidate_name, &report))
 }
 
 fn summarize_samples(samples: &[BenchmarkSample]) -> BenchmarkSummary {
@@ -626,12 +744,23 @@ fn previous_benchmark<'a>(
         }
         run.benchmarks
             .iter()
-            .find(|record| record.name == current.name && record.context == current.context)
+            .find(|record| {
+                record.name == current.name
+                    && record.context == current.context
+                    && parity_context_matches(&record.parity, &current.parity)
+            })
             .map(|record| PreviousBenchmark {
                 commit: run.commit.as_str(),
                 record,
             })
     })
+}
+
+fn parity_context_matches(previous: &BenchmarkParity, current: &BenchmarkParity) -> bool {
+    previous.matched
+        && current.matched
+        && previous.mode == current.mode
+        && previous.candidate == current.candidate
 }
 
 fn read_history(path: &Path) -> Result<Vec<BenchmarkRunRecord>> {
@@ -706,6 +835,7 @@ fn outcome_json(outcome: &BenchmarkOutcome) -> serde_json::Value {
         "category": &outcome.record.category,
         "temperature": &outcome.record.temperature,
         "context": &outcome.record.context,
+        "parity": &outcome.record.parity,
         "samples": &outcome.record.samples,
         "summary": &outcome.record.summary,
         "comparison": &outcome.comparison,
@@ -751,8 +881,13 @@ fn render_human_report(
 fn render_outcome(printer: &Printer, outcome: &BenchmarkOutcome) {
     let summary = &outcome.record.summary;
     let mut line = format!(
-        "  - {} mean={:.6}s stddev={:.6}s samples={}",
-        outcome.record.name, summary.mean_seconds, summary.stddev_seconds, summary.samples
+        "  - {} mean={:.6}s stddev={:.6}s samples={} parity={}:{}",
+        outcome.record.name,
+        summary.mean_seconds,
+        summary.stddev_seconds,
+        summary.samples,
+        outcome.record.parity.mode,
+        outcome.record.parity.candidate
     );
     if let Some(comparison) = &outcome.comparison {
         line.push_str(&format!(
