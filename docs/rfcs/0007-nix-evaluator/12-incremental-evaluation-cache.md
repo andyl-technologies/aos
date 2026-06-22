@@ -901,7 +901,8 @@ harness, never cut for scope.
 
 ### Hashing policy and the leak invariant
 
-- [ ] Three-hash split: xxh3 in-process keys, blake3 durable value-hashes / CA-store keys, SHA-256 only Nix-observed ([§5](#5-hashing-policy)) — P2, `S-15`.
+- [x] Current hash-routing substrate: evaluator-local string/path cons tables use xxh3 structural hashes with equality confirmation; durable frontend parse-cache keys use BLAKE3 over source bytes plus schema/flags, and file parse memo keys pair canonical realpath with BLAKE3(file bytes); Nix-observed `.drv`/store-path surfaces use SHA-256 while hash/fetch builtins use their requested Nix hash algorithms rather than evaluator-local xxh3/BLAKE3 digests. This covers the current parse/import cache and evaluator substrate only, not durable BLAKE3 value-hashes or CA-store value keys. ([§5](#5-hashing-policy)) — P1/P2 precursor, `S-15`; gate: parse-cache key, heap/string structural-hash, derivation/store-path, and hash/fetch builtin tests.
+- [ ] Full P2 cache hashing remains: xxh3 demand-graph/in-process cache keys, BLAKE3 durable value-hashes and CA-store keys for persisted values/files, type-enforced leak-invariant boundaries, and harness coverage proving xxh3/BLAKE3 cannot reach SHA-256 store-path or `.drv` hashes ([§5](#5-hashing-policy), [§5.2](#52-the-leak-invariant)) — P2, `S-15`.
 - [ ] **Leak invariant**: no xxh3/blake3 output ever reaches a SHA-256 store-path/`.drv` hash; type-enforced ([§5.2](#52-the-leak-invariant)) — P2, `S-15`; gate: differential `.drv` harness.
 
 ### Storage engine (the durable CA store)
