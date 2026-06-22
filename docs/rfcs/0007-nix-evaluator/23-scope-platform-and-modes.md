@@ -167,9 +167,14 @@ the manual's enumeration:
       search-path entries invisible to `builtins.nixPath` and `<...>` lookup;
       explicit `builtins.findFile [ ... ]` lists remain expression data, with
       subsequent filesystem reads still checked by pure-mode path policy.
-- [ ] **Fetchers require pinning** — `fetchGit`/`fetchMercurial` require a
-      revision, `fetchurl`/`fetchTarball` require a `sha256`; and no file-system
-      access is permitted outside the paths returned by the fetchers.
+- [x] **Fetchers require pinning** — `fetchGit`/`fetchMercurial` require a
+      revision, `fetchurl`/`fetchTarball` require a `sha256`; and ordinary
+      filesystem reads after fetch/path resolution still pass through pure-mode
+      path policy. The tree-walk evaluator rejects unpinned `fetchurl`,
+      `fetchTarball`, and `fetchGit` before URL/repository access; preflights
+      `fetchMercurial` argument shape and rejects unpinned pure calls before its
+      explicit fallback boundary; and applies the same locked-input rule to the
+      implemented `fetchTree` subsets.
 
 aos-nix must reproduce each of these *as a behavior*, not merely as a flag it
 accepts. If C++ Nix throws on `builtins.currentSystem` under `--pure-eval` and
@@ -506,8 +511,8 @@ These are **P1** parity decisions: each draws the box around what aos-nix evalua
 
 ### Restricted / pure-eval modes and allowed-paths (§2)
 
-- [ ] `--pure-eval` semantics matching the pinned C++ Nix *as behaviors*: `currentTime`/`currentSystem` unavailable, `storePath` visible but rejected when called, `getEnv` not reading the ambient env, `exec` disabled, `$NIX_PATH`/`-I` ignored, fetchers require pinning with no FS access outside fetched paths (§2.1) — **P1**, `C-23`; harness catches a divergent branch as a `.drv` byte diff or an error-outcome mismatch.
-- [ ] `restrict-eval` / `allowed-paths` / `allowed-uris` mediating the three eval-time operations (`readFile`/path-coercion, `import`, fetchers) with the *same* admit/refuse decisions C++ Nix makes — match, never innovate; error-class parity on forbidden reads (§2.2) — **P1**, `C-23`.
+- [x] `--pure-eval` semantics matching the pinned C++ Nix *as behaviors*: `currentTime`/`currentSystem` unavailable, `storePath` visible but rejected when called, `getEnv` not reading the ambient env, `exec` disabled, `$NIX_PATH`/`-I` ignored, and fetchers requiring pinned inputs before external access (§2.1) — **P1**, `C-23`. Implemented in `TreeWalkOptions`/builtin availability and the path/fetcher evaluators: pure mode hides configured impure constants, keeps `storePath` enumerable while rejecting direct and first-class calls, returns an empty string from `getEnv` without reading ambient env, keeps absent escape-hatch builtins absent, hides configured Nix search-path entries from `builtins.nixPath`/angle lookup, rejects later pure filesystem reads through `check_filesystem_path_access`, requires `sha256` for `fetchurl`/`fetchTarball`, requires `rev` for `fetchGit`, preflights `fetchMercurial` before its fallback boundary, and applies locked-input checks to implemented `fetchTree` subsets. Covered by focused tree-walk mode tests plus C++ command/native-option mapping tests; the differential harness still catches downstream branch/output divergence.
+- [x] `restrict-eval` / `allowed-paths` / `allowed-uris` mediating the three eval-time operations (`readFile`/path-coercion, `import`, fetchers) with the *same* admit/refuse decisions C++ Nix makes — match, never innovate; error-class parity on forbidden reads (§2.2) — **P1**, `C-23`. `NixEvalConfig` renders `pure-eval=false`, `restrict-eval=true`, `allowed-impure-host-deps`, and `allowed-uris` for C++ Nix and maps the same paths/URIs into native `TreeWalkOptions`; native `check_filesystem_path_access` normalizes and canonicalizes allowed roots before reads, path coercion, and import realpath resolution; `fetchurl`/`fetchTarball` file URLs are admitted by allowed path or allowed URI, HTTP(S) fetches require an allowed URI prefix, and `fetchGit`/`fetchTree` use canonical URI allowlist checks before repository/archive access. Covered by CLI rendering/native-option tests and focused tree-walk filesystem, import/IFD, fetchurl, fetchTarball, fetchGit, and fetchTree restricted-mode tests.
 - [ ] The allowed-paths/allowed-uris check as the single eval-time I/O choke point: a forbidden read refused *before* it becomes an awaited fiber I/O future, and every *permitted* impure read folded into the incremental-cache key so a cached result cannot outlive its input (§2.3) — co-designed with the fiber/tokio model ([13](13-parallel-evaluation.md) §5.5, **P3.5**) and impure-read cache keying ([12](12-incremental-evaluation-cache.md), **P2**), `C-23`/`R-10`.
 
 ### Multi-arch portability and the host-independence invariant (§3)
