@@ -537,14 +537,14 @@ fn validate_recorded_inputs(
 
     let mut previous = None;
     for (index, input) in inputs.iter().enumerate() {
-        if let Some(previous_icount) = previous {
-            if input.delivery_icount < previous_icount {
-                return Err(ContractAError::RecordedInputOrder {
-                    index,
-                    delivery_icount: input.delivery_icount,
-                    previous_icount,
-                });
-            }
+        if let Some(previous_icount) = previous
+            && input.delivery_icount < previous_icount
+        {
+            return Err(ContractAError::RecordedInputOrder {
+                index,
+                delivery_icount: input.delivery_icount,
+                previous_icount,
+            });
         }
         if input.delivery_icount >= retired_instruction_count {
             return Err(ContractAError::RecordedInputOutsideRun {

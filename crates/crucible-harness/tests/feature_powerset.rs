@@ -50,7 +50,7 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
         "crucible",
         &[
             ("default", &[][..]),
-            ("test-double", &["dep:crucible-sim"][..]),
+            ("test-double", &[][..]),
             ("qemu-backend", &[][..]),
         ],
     );

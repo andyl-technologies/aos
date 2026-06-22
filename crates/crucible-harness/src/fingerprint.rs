@@ -7,9 +7,9 @@
 //! host-side observation boundary used to obtain register, memory, device, and
 //! RR-scheduler state from a backend.
 //!
-//! Module map: [`definition`] owns the versioned content-addressed definition,
-//! [`observation`] owns host-side sampling and sample construction, [`stream`]
-//! owns stream comparison, and [`hasher`] owns the local stable byte accumulator.
+//! Module map: `definition` owns the versioned content-addressed definition,
+//! `observation` owns host-side sampling and sample construction, `stream` owns
+//! stream comparison, and `hasher` owns the local stable byte accumulator.
 
 mod definition;
 mod hasher;

@@ -5,11 +5,18 @@
 //! QEMU; it validates and serializes the deterministic argument subset that
 //! later supervision code will pass to the child process.
 
-use std::fmt;
-use std::fs;
-use std::path::{Path, PathBuf};
+mod entropy;
+mod validation;
 
-use thiserror::Error;
+use std::fmt;
+
+use entropy::{GUEST_ENTROPY_FW_CFG_NAME, GUEST_ENTROPY_RNG_ID, GUEST_ENTROPY_SEED_FILE_NAME};
+pub use entropy::{GuestEntropySeed, GuestEntropySeedFile};
+pub use validation::LaunchProfileError;
+use validation::{
+    canonical_cpu_model, reject_kernel_cmdline_key, require_kernel_bare_flag_once,
+    require_kernel_random_trust_off, validate_accelerator, validate_fixed_text,
+};
 
 const DEFAULT_CPU_MODEL: &str = "qemu64,-rdrand,-rdseed";
 const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
@@ -19,10 +26,6 @@ const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
-const GUEST_ENTROPY_FW_CFG_NAME: &str = "opt/crucible/seed";
-const GUEST_ENTROPY_SEED_FILE_NAME: &str = "crucible-guest-entropy-seed.bin";
-const GUEST_ENTROPY_RNG_ID: &str = "crucible-rng0";
-const GUEST_ENTROPY_SEED_BYTES: usize = 32;
 const MAX_ICOUNT_SHIFT: u8 = 62;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -281,79 +284,6 @@ impl LaunchProfileCandidate {
     }
 }
 
-/// A deterministic seed delivered to the guest through QEMU firmware config.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GuestEntropySeed {
-    bytes: [u8; GUEST_ENTROPY_SEED_BYTES],
-}
-
-impl GuestEntropySeed {
-    /// Derives guest entropy from a scenario seed.
-    #[must_use]
-    pub fn from_scenario_seed(scenario_seed: u64) -> Self {
-        let mut bytes = [0; GUEST_ENTROPY_SEED_BYTES];
-        let mut state = scenario_seed ^ 0x4352_5543_4942_4c45;
-
-        for (index, chunk) in bytes.chunks_exact_mut(8).enumerate() {
-            state = state
-                .wrapping_add(0x9e37_79b9_7f4a_7c15)
-                .wrapping_add(index as u64);
-            chunk.copy_from_slice(&splitmix64(state).to_le_bytes());
-        }
-
-        Self { bytes }
-    }
-
-    /// Returns the seed bytes as delivered to the guest entropy boundary.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8; GUEST_ENTROPY_SEED_BYTES] {
-        &self.bytes
-    }
-
-    /// Returns the seed bytes as lowercase hexadecimal text.
-    #[must_use]
-    pub fn to_lower_hex(&self) -> String {
-        let mut hex = String::with_capacity(GUEST_ENTROPY_SEED_BYTES * 2);
-        for byte in self.bytes {
-            hex.push(nibble_to_hex(byte >> 4));
-            hex.push(nibble_to_hex(byte & 0x0f));
-        }
-        hex
-    }
-}
-
-/// A deterministic fw_cfg seed file required by a launch profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GuestEntropySeedFile {
-    file_name: &'static str,
-    bytes: [u8; GUEST_ENTROPY_SEED_BYTES],
-}
-
-impl GuestEntropySeedFile {
-    /// Returns the file name referenced by the canonical QEMU `-fw_cfg` argument.
-    #[must_use]
-    pub fn file_name(&self) -> &'static str {
-        self.file_name
-    }
-
-    /// Returns the exact bytes that must be written to the fw_cfg seed file.
-    #[must_use]
-    pub fn bytes(&self) -> &[u8; GUEST_ENTROPY_SEED_BYTES] {
-        &self.bytes
-    }
-
-    /// Writes the deterministic seed file into a QEMU working directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns any filesystem error reported while writing the seed file.
-    pub fn write_to_dir(&self, dir: impl AsRef<Path>) -> std::io::Result<PathBuf> {
-        let path = dir.as_ref().join(self.file_name);
-        fs::write(&path, self.bytes.as_slice())?;
-        Ok(path)
-    }
-}
-
 /// A validated QEMU launch profile for Contract-A hermeticity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeterministicLaunchProfile {
@@ -535,126 +465,6 @@ pub enum InputPolicy {
     HostInteractive,
 }
 
-/// A deterministic launch-profile validation error.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum LaunchProfileError {
-    /// The CPU model was empty.
-    #[error("CPU model must be a fixed non-empty QEMU model")]
-    EmptyCpuModel,
-    /// The CPU model inherited host CPU features.
-    #[error("CPU model must be fixed and must not be `host`")]
-    CpuModelUsesHost,
-    /// The CPU model enabled hardware entropy instructions.
-    #[error("CPU model enables host entropy feature `{feature}`")]
-    CpuEntropyFeatureEnabled {
-        /// The feature that would expose host entropy.
-        feature: &'static str,
-    },
-    /// The accelerator was not single-threaded TCG.
-    #[error("accelerator must be `tcg,thread=single`, got `{accelerator}`")]
-    AcceleratorNotSingleThreadTcg {
-        /// The rejected accelerator string.
-        accelerator: String,
-    },
-    /// The launch requested more than one vCPU before the RR-TCG profile lands.
-    #[error("T-DET-1 launch profile requires `-smp 1`, got {requested}")]
-    SmpNotSingleVcpu {
-        /// The requested vCPU count.
-        requested: u16,
-    },
-    /// The launch requested adaptive host-speed icount.
-    #[error("icount shift must be fixed; `shift=auto` is forbidden")]
-    IcountShiftAuto,
-    /// The fixed icount shift was too large for checked virtual-time math.
-    #[error("icount shift {shift} exceeds maximum {MAX_ICOUNT_SHIFT}")]
-    IcountShiftTooLarge {
-        /// The rejected shift.
-        shift: u8,
-    },
-    /// The fixed RAM size was zero.
-    #[error("memory size must be a fixed non-zero number of MiB")]
-    MemorySizeZero,
-    /// Text that must be content-addressed was empty or ambiguous.
-    #[error("{field} must be fixed non-empty text without newlines or NUL bytes")]
-    InvalidFixedText {
-        /// The invalid field.
-        field: &'static str,
-    },
-    /// The RTC clock mode was not virtual-clock driven.
-    #[error("RTC clock must be `vm`, got `{clock}`")]
-    RtcClockNotVm {
-        /// The rejected RTC clock mode.
-        clock: String,
-    },
-    /// The kernel command line trusts host CPU randomness.
-    #[error("kernel command line must not enable `random.trust_cpu`")]
-    KernelTrustsHostCpuRandom,
-    /// The kernel command line did not explicitly distrust CPU randomness.
-    #[error("kernel command line must include `random.trust_cpu=off`")]
-    KernelCpuRandomTrustNotDisabled,
-    /// The kernel command line specified CPU random trust more than once.
-    #[error("kernel command line must specify `random.trust_cpu=off` exactly once")]
-    KernelCpuRandomTrustAmbiguous,
-    /// The kernel command line trusts bootloader-provided randomness.
-    #[error("kernel command line must not enable `random.trust_bootloader`")]
-    KernelTrustsBootloaderRandom,
-    /// The kernel command line did not explicitly distrust bootloader randomness.
-    #[error("kernel command line must include `random.trust_bootloader=off`")]
-    KernelBootloaderRandomTrustNotDisabled,
-    /// The kernel command line specified bootloader random trust more than once.
-    #[error("kernel command line must specify `random.trust_bootloader=off` exactly once")]
-    KernelBootloaderRandomTrustAmbiguous,
-    /// The kernel command line explicitly enabled kernel address randomization.
-    #[error("kernel command line must not include `kaslr`")]
-    KernelKaslrExplicitlyEnabled,
-    /// The kernel command line did not disable kernel address randomization.
-    #[error("kernel command line must include `nokaslr` exactly once")]
-    KernelKaslrNotDisabled,
-    /// The kernel command line specified the KASLR disable flag ambiguously.
-    #[error("kernel command line must include bare `nokaslr` exactly once")]
-    KernelKaslrFlagAmbiguous,
-    /// The kernel command line did not disable userspace address randomization.
-    #[error("kernel command line must include `norandmaps` exactly once")]
-    UserspaceAslrNotDisabled,
-    /// The kernel command line specified the userspace ASLR disable flag ambiguously.
-    #[error("kernel command line must include bare `norandmaps` exactly once")]
-    UserspaceAslrFlagAmbiguous,
-    /// The deterministic QEMU run seed diverged from the scenario seed.
-    #[error("QEMU run seed {run_seed} must equal scenario seed {scenario_seed}")]
-    RunSeedDiffersFromScenarioSeed {
-        /// The scenario seed used for guest entropy.
-        scenario_seed: u64,
-        /// The QEMU run seed used for QEMU internal entropy.
-        run_seed: u64,
-    },
-    /// Machine reset state was not deterministic.
-    #[error("machine reset must be deterministic, got `{mode}`")]
-    MachineResetNotDeterministic {
-        /// The rejected reset mode.
-        mode: MachineResetMode,
-    },
-    /// Guest writes could mutate the backing image.
-    #[error("disk image mode must be copy-on-write, got `{mode}`")]
-    DiskImageMutatesBacking {
-        /// The rejected disk mode.
-        mode: DiskImageMode,
-    },
-    /// Host interactive input was enabled.
-    #[error("host interactive input must be disabled, got `{policy}`")]
-    InteractiveInputEnabled {
-        /// The rejected input policy.
-        policy: InputPolicy,
-    },
-    /// Virtual-time conversion overflowed.
-    #[error("virtual time overflow for icount {icount} with shift {shift}")]
-    VirtualTimeOverflow {
-        /// The input instruction count.
-        icount: u64,
-        /// The fixed shift.
-        shift: u8,
-    },
-}
-
 impl fmt::Display for MachineResetMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -679,151 +489,5 @@ impl fmt::Display for InputPolicy {
             Self::NoInteractiveInput => f.write_str("no-interactive-input"),
             Self::HostInteractive => f.write_str("host-interactive"),
         }
-    }
-}
-
-fn canonical_cpu_model(cpu_model: &str) -> Result<String, LaunchProfileError> {
-    validate_fixed_text("cpu_model", cpu_model)?;
-    let lower = cpu_model.to_ascii_lowercase();
-    let base = lower.split(',').next().unwrap_or_default();
-    if base == "host" {
-        return Err(LaunchProfileError::CpuModelUsesHost);
-    }
-    reject_enabled_entropy_feature(&lower, "rdrand")?;
-    reject_enabled_entropy_feature(&lower, "rdseed")?;
-
-    let mut canonical = cpu_model.to_owned();
-    if !feature_is_disabled(&lower, "rdrand") {
-        canonical.push_str(",-rdrand");
-    }
-    if !feature_is_disabled(&lower, "rdseed") {
-        canonical.push_str(",-rdseed");
-    }
-
-    Ok(canonical)
-}
-
-fn reject_enabled_entropy_feature(
-    lower_cpu_model: &str,
-    feature: &'static str,
-) -> Result<(), LaunchProfileError> {
-    let enabled = lower_cpu_model.split(',').any(|part| {
-        let part = part.trim();
-        part == feature || part == format!("+{feature}") || part == format!("{feature}=on")
-    });
-    if enabled {
-        Err(LaunchProfileError::CpuEntropyFeatureEnabled { feature })
-    } else {
-        Ok(())
-    }
-}
-
-fn feature_is_disabled(lower_cpu_model: &str, feature: &str) -> bool {
-    lower_cpu_model.split(',').any(|part| {
-        let part = part.trim();
-        part == format!("-{feature}") || part == format!("{feature}=off")
-    })
-}
-
-fn validate_accelerator(accelerator: &str) -> Result<(), LaunchProfileError> {
-    if accelerator == DEFAULT_ACCEL {
-        Ok(())
-    } else {
-        Err(LaunchProfileError::AcceleratorNotSingleThreadTcg {
-            accelerator: accelerator.to_owned(),
-        })
-    }
-}
-
-fn validate_fixed_text(field: &'static str, value: &str) -> Result<(), LaunchProfileError> {
-    if value.is_empty() || value.contains('\n') || value.contains('\0') {
-        Err(LaunchProfileError::InvalidFixedText { field })
-    } else {
-        Ok(())
-    }
-}
-
-fn require_kernel_random_trust_off(
-    cmdline: &str,
-    key: &'static str,
-    missing: LaunchProfileError,
-    enabled: LaunchProfileError,
-    ambiguous: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Single("off") => Ok(()),
-        KernelCmdlineValue::Single(_) => Err(enabled),
-        KernelCmdlineValue::Duplicate => Err(ambiguous),
-        KernelCmdlineValue::Missing => Err(missing),
-    }
-}
-
-fn require_kernel_bare_flag_once(
-    cmdline: &str,
-    key: &str,
-    missing: LaunchProfileError,
-    ambiguous: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Single("") => Ok(()),
-        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(ambiguous),
-        KernelCmdlineValue::Missing => Err(missing),
-    }
-}
-
-fn reject_kernel_cmdline_key(
-    cmdline: &str,
-    key: &str,
-    error: LaunchProfileError,
-) -> Result<(), LaunchProfileError> {
-    match kernel_cmdline_value(cmdline, key) {
-        KernelCmdlineValue::Missing => Ok(()),
-        KernelCmdlineValue::Single(_) | KernelCmdlineValue::Duplicate => Err(error),
-    }
-}
-
-enum KernelCmdlineValue<'a> {
-    Missing,
-    Single(&'a str),
-    Duplicate,
-}
-
-fn kernel_cmdline_value<'a>(cmdline: &'a str, key: &str) -> KernelCmdlineValue<'a> {
-    let mut value = None;
-
-    for argument in cmdline.split_ascii_whitespace() {
-        let candidate = if argument == key {
-            Some("")
-        } else {
-            argument
-                .strip_prefix(key)
-                .and_then(|remainder| remainder.strip_prefix('='))
-        };
-
-        if let Some(candidate) = candidate {
-            if value.is_some() {
-                return KernelCmdlineValue::Duplicate;
-            }
-            value = Some(candidate);
-        }
-    }
-
-    match value {
-        Some(value) => KernelCmdlineValue::Single(value),
-        None => KernelCmdlineValue::Missing,
-    }
-}
-
-fn splitmix64(mut value: u64) -> u64 {
-    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-    value ^ (value >> 31)
-}
-
-fn nibble_to_hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'a' + (nibble - 10)) as char,
-        _ => unreachable!("nibble is masked to four bits"),
     }
 }

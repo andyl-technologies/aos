@@ -28,7 +28,7 @@ fn gate_layer0_determinism_assertion_ids_are_canonical() {
 #[test]
 fn gate_layer0_determinism_assertion_order_is_stable() {
     let ordered_ids = assert_twice_reduce_canonical_digest(|| {
-        let mut specs = vec![
+        let mut specs = [
             assertion(AssertionKind::TotalOrderStability, "scheduler.event-key"),
             assertion(AssertionKind::DecisionStreamStability, "rng.node-a"),
             assertion(AssertionKind::DigestEquality, "reduce.fixed-schedule"),

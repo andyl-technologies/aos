@@ -209,13 +209,13 @@ pub fn authorize_advance_ceiling(
         });
     }
 
-    if let Some(earliest_possible_delivery_icount) = earliest_possible_delivery_icount {
-        if max_advance_icount >= earliest_possible_delivery_icount {
-            return Err(LookaheadGateError::AdvanceReachesPossibleDelivery {
-                max_advance_icount,
-                earliest_possible_delivery_icount,
-            });
-        }
+    if let Some(earliest_possible_delivery_icount) = earliest_possible_delivery_icount
+        && max_advance_icount >= earliest_possible_delivery_icount
+    {
+        return Err(LookaheadGateError::AdvanceReachesPossibleDelivery {
+            max_advance_icount,
+            earliest_possible_delivery_icount,
+        });
     }
 
     Ok(AdvanceCeiling {

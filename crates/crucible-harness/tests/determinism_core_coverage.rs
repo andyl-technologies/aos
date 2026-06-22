@@ -70,6 +70,11 @@ const REPLAY_ORACLE_MARKERS: &[&str] = &[
 ];
 
 const DECISION_RNG_MARKERS: &[&str] = &[
+    "decision_recorder_records_rng_draws_and_fault_outcomes",
+    "decision_recorder_keeps_per_entity_streams_stable",
+    "decision_recorder_records_app_random_after_rng_draw",
+    "decision_recorder_rejects_invalid_app_random_widths",
+    "decision_recorder_resumes_stream_positions_from_existing_schedule",
     "assert_decision_rng_branch_coverage(",
     "assert_per_entity_rng_forking_coverage(",
 ];
@@ -89,8 +94,6 @@ const REPRO_ARTIFACT_MARKERS: &[&str] = &[
     "assert_reproduction_artifact_error_variant_coverage(",
 ];
 
-const DECISION_RNG_ACTIVATION_MARKERS: &[&str] =
-    &["DecisionRng", "fork_rng", "fork_stream", "per_entity_rng"];
 const SPSC_RING_ACTIVATION_MARKERS: &[&str] = &[
     "Atomic",
     "compare_exchange",
@@ -174,13 +177,13 @@ const DETERMINISM_CORE_COVERAGE_FLOOR: &[CoverageSurface] = &[
     },
     CoverageSurface {
         id: "decision-rng-and-forking",
-        source_path: "crates/crucible/src/lib.rs",
-        test_path: "crates/crucible/tests/gate_layer0_determinism.rs",
-        status: CoverageStatus::Planned,
+        source_path: "crates/crucible/src/decision.rs",
+        test_path: "crates/crucible/src/decision.rs",
+        status: CoverageStatus::Active,
         instrumentation: COVERAGE_MEASUREMENT_MODE,
         required_test_markers: DECISION_RNG_MARKERS,
-        activation_markers: DECISION_RNG_ACTIVATION_MARKERS,
-        activation_source_roots: &["crates/crucible/src"],
+        activation_markers: &[],
+        activation_source_roots: &[],
     },
     CoverageSurface {
         id: "spsc-ring",
