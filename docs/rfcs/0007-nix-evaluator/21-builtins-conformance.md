@@ -635,9 +635,13 @@ eval (network access is disabled unless explicitly allowed).
         ref fetches for tag refs, recursive submodule checkout, and dirty local
         worktree export with `dirtyRev`/`dirtyShortRev` metadata while ignoring
         untracked files.
-- [ ] `fetchTree` (input) — the generic flake-style fetcher dispatching on a
-      `type` (`"github"`, `"git"`, `"tarball"`, `"path"`, …). Returns a tree
-      attrset with `outPath` and lock metadata.
+- [x] `fetchTree` (input) conditional native subset — the generic flake-style
+      fetcher dispatches on supported attrset `type` values (`"path"`, `"file"`,
+      `"tarball"`, `"git"`) plus supported URL-style string refs through
+      `parseFlakeRef`; rev-pinned forge refs lower to provider archive URLs, and
+      GitHub/GitLab ref resolution is covered through configured test URL
+      responses. Returns tree attrsets with `outPath` and lock metadata for the
+      native subset.
       - Stabilized as non-experimental in Nix ≥ 2.19 (was experimental before).
         Tied to the flakes machinery; treat as **conditional scope** — implement
         only if the pinned AOS package set / flake inputs require it, else stub
@@ -652,9 +656,15 @@ eval (network access is disabled unless explicitly allowed).
         git string refs without re-rooting the materialized tree, matching the
         pinned C++ Nix behavior; file refs reject it. Rev-pinned forge fetchers
         (`github`, `gitlab`, `sourcehut`) lower to the pinned provider archive
-        URLs with canonical flake-ref restricted-mode gating. Registry/indirect
-        refs, provider ref resolution, and forge `dir` metadata remain pending,
-        so the full builtin stays open.
+        URLs with canonical flake-ref restricted-mode gating. The native subset
+        is covered by focused `fetchTree` tests for local inputs, string refs,
+        git metadata, forge archive lowering, configured GitHub/GitLab
+        resolution, lock gates, and invalid-shape rejection.
+- [ ] Full `fetchTree` flake fetcher remains — registry/indirect refs, live
+      provider ref-resolution parity across supported forges, SourceHut
+      unresolved-ref coverage, remaining forge `dir`/metadata parity, full
+      flakes integration, and any pinned C++ Nix edge cases outside the native
+      conditional subset stay open.
 - [x] `fetchClosure` (args) — substitute an entire store-path closure from a
       binary cache by content address (`{ fromStore; fromPath; toPath ? …; }`).
       Experimental (`fetch-closure`). **Out of scope / stubbed** unless the
@@ -968,11 +978,16 @@ requires them:
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
-- [ ] `fetchTree` (input) — flake fetcher; **conditional** (§11). Local attrset
-      inputs and URL-style string refs for native path/file/tarball/git inputs
-      are native; rev-pinned forge refs are native; bare absolute path strings
-      are rejected for parity, while registry/indirect refs, provider ref
-      resolution, and forge `dir` metadata remain pending.
+- [x] `fetchTree` (input) — flake fetcher; **conditional subset only** (§11).
+      Local attrset inputs and URL-style string refs for native
+      path/file/tarball/git inputs are native; rev-pinned forge archive lowering
+      is native; configured GitHub/GitLab ref-resolution test hooks are covered;
+      bare absolute path strings are rejected for parity. Full `fetchTree`
+      remains open in §11 and the next row.
+- [ ] Full `fetchTree` flake layer remains scoped/open for registry/indirect
+      refs, live provider resolution across forges, remaining forge
+      `dir`/metadata parity, lock-file graph semantics, and full flakes
+      integration.
 - [x] `fetchClosure` (args) — `fetch-closure`; absent from the pinned C++ Nix
       2.24.12 flakes builtin surface, so aos-nix keeps it absent (§11).
 - [x] `outputOf` (…) — `dynamic-derivations`; absent from the pinned C++ Nix
