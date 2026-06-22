@@ -535,16 +535,24 @@ AOS package set. Build it in this order.
 
 **Compatibility core ([11](11-derivation-and-store-compatibility.md)).**
 
-- [ ] `store/derivation.rs` — `derivationStrict`: collect the string env in
-      deterministic attr order → `nix-compat` `Derivation` → ATerm `.drv` →
-      output-path hashing (SHA-256). Delegate hashing to `nix-compat`; do not
-      reimplement `compressHash`. **Scope: input-addressed *and*
-      content-addressed** derivations from the start (C-11) — floating + fixed CA
-      outputs, with CA fixtures + the [RFC-0005](../0005-ca-trust-map.md) graph in
-      the harness ([02](02-compatibility-constraints.md) §8,
-      [11](11-derivation-and-store-compatibility.md) §5.4).
-- [ ] `store/context.rs` — string contexts as interned COW bitsets, unioned
-      through string ops, read by `derivationStrict`.
+- [x] Current tree-walk `derivationStrict` compatibility core: collect the
+      string env in deterministic attr order, populate
+      `nix_compat::derivation::Derivation`, emit explicit local ATerm bytes,
+      construct local SHA-256 fingerprints for text-path and
+      hash-derivation-modulo inputs, use `nix_compat::store_path` for
+      `compress_hash`/final store-path validation, and materialize `.drv` bytes
+      safely. Input-addressed, fixed-output, floating CA, and impure derivation
+      output modes are implemented in the tree-walk builder.
+- [ ] Compatibility hardening still open: pin/vendor `nix-compat` behind an
+      adapter, type-enforce the three-hash split, and add the full transitive
+      `.drv`/drv-path/output-path parity gate with CA fixtures plus the
+      [RFC-0005](../0005-ca-trust-map.md) graph ([02](02-compatibility-constraints.md)
+      §8, [11](11-derivation-and-store-compatibility.md) §5.4).
+- [x] Current string-context semantic core: context element kinds, sorted and
+      deduplicated immutable contexts, union through string ops, reflection and
+      discard/update primops, and `derivationStrict` input partitioning.
+- [ ] Future string-context representation: interned COW bitsets/sorted sets
+      and deriving-path intern ids.
       → re-layered in Phase 1b ([28](28-generalization-and-language-dialects.md) §10):
       the context bitset + union-on-concat semantics move out of `ratchet-value`
       into `aos-nix-dialect`.

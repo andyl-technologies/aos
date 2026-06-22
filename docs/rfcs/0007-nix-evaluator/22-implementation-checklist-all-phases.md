@@ -189,11 +189,17 @@ hold invariant.
       (`S-12`), excluding `scopedImport` and text-store parse-cache paths. Full
       primop semantics remain tracked by [10](10-primops-and-runtime-abi.md)'s
       open full-surface row and the conformance gates.
-- [ ] Compatibility core: `store/derivation.rs` (`derivationStrict` →
-      `nix-compat` `Derivation` → ATerm → SHA-256 output paths; never reimplement
-      `compressHash`; **IA *and* CA** derivations from the start — floating +
-      fixed CA outputs, `C-11`/`S-13`) and `store/context.rs` (string
-      contexts as interned COW bitsets).
+- [x] Compatibility core semantics: current tree-walk `derivationStrict`
+      populates `nix_compat::derivation::Derivation`, emits explicit ATerm
+      bytes, uses local SHA-256 fingerprint construction plus
+      `nix_compat::store_path` for `compress_hash`/final store-path validation,
+      supports input-addressed, fixed-output, floating CA, and impure output
+      modes, materializes `.drv` bytes safely, and consumes sorted immutable
+      string contexts for input partitioning.
+- [ ] Compatibility hardening still open: `nix-compat` pin/adapter,
+      type-enforced three-hash split, interned COW string-context
+      representation, full transitive `.drv`/drv-path/output-path parity, and
+      RFC-0005 deriving-path/CA graph gates.
       → re-layered in Phase 1b ([28](28-generalization-and-language-dialects.md) §10):
       the context bitset + union-on-concat semantics move out of `ratchet-value`
       into `aos-nix-dialect`.
