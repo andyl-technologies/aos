@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use aos_nix::compile::{lower, resolve};
-use aos_nix::eval::{eval_raw_bytes, eval_whnf_owned};
+use aos_nix::eval::{TreeWalkOptions, eval_raw_bytes_with_options, eval_whnf_owned_with_options};
 use aos_nix::syntax::parse_bytes;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -109,9 +109,10 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
     }
-    if let Some(reason) = unsupported_flags_message(case.category, &case.flags) {
-        return Ok(CaseOutcome::Skipped(reason));
-    }
+    let options = match lang_case_options(case.category, &case.flags) {
+        Ok(options) => options,
+        Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
+    };
 
     let source =
         fs::read(&case.source).with_context(|| format!("reading {}", case.source.display()))?;
@@ -127,7 +128,7 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             Ok(CaseOutcome::Passed)
         }
         LangCategory::EvalFail => {
-            if eval_case(&source).is_ok() {
+            if eval_case(&source, options).is_ok() {
                 bail!("{} evaluated but should fail", case.name);
             }
             Ok(CaseOutcome::Passed)
@@ -139,7 +140,7 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
                 .ok_or_else(|| anyhow!("{} has no expected output path", case.name))?;
             let expected = fs::read(expected_path)
                 .with_context(|| format!("reading {}", expected_path.display()))?;
-            let actual = eval_raw_case(&source)
+            let actual = eval_raw_case(&source, options)
                 .with_context(|| format!("{} should evaluate as a raw value", case.name))?;
             if actual != expected {
                 bail!(
@@ -154,48 +155,83 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     }
 }
 
-fn unsupported_flags_message(category: LangCategory, flags: &[String]) -> Option<String> {
-    if flags.is_empty() || supports_noop_lang_flags(category, flags) {
-        None
-    } else {
-        Some(format!(
-            "case carries unsupported flags: {}",
-            flags.join(" ")
-        ))
+fn lang_case_options(
+    category: LangCategory,
+    flags: &[String],
+) -> std::result::Result<TreeWalkOptions, String> {
+    if flags.is_empty() {
+        return Ok(TreeWalkOptions::default());
     }
-}
 
-fn supports_noop_lang_flags(category: LangCategory, flags: &[String]) -> bool {
+    if matches!(category, LangCategory::ParseFail | LangCategory::ParseOkay) {
+        return Err(unsupported_flags_message(flags));
+    }
+
     match category {
-        LangCategory::EvalOkay => flags.iter().all(|flag| is_strict_eval_flag(flag)),
-        LangCategory::EvalFail => {
-            flags.iter().all(|flag| {
-                is_strict_eval_flag(flag)
-                    || matches!(flag.as_str(), "--show-trace" | "--no-show-trace")
-            }) && flags.iter().any(|flag| flag == "--eval")
-                && flags.iter().any(|flag| flag == "--strict")
-        }
-        LangCategory::ParseFail | LangCategory::ParseOkay => false,
+        LangCategory::EvalOkay => eval_okay_options(flags),
+        LangCategory::EvalFail => eval_fail_options(flags),
+        LangCategory::ParseFail | LangCategory::ParseOkay => unreachable!(),
     }
 }
 
-fn is_strict_eval_flag(flag: &str) -> bool {
-    matches!(flag, "--eval" | "--strict")
+fn eval_okay_options(flags: &[String]) -> std::result::Result<TreeWalkOptions, String> {
+    if flags
+        .iter()
+        .all(|flag| matches!(flag.as_str(), "--eval" | "--strict"))
+    {
+        Ok(TreeWalkOptions::default())
+    } else {
+        Err(unsupported_flags_message(flags))
+    }
 }
 
-fn eval_case(source: &[u8]) -> Result<()> {
+fn eval_fail_options(flags: &[String]) -> std::result::Result<TreeWalkOptions, String> {
+    if flags.len() == 2 && flags[0] == "--max-call-depth" {
+        let max_call_depth = parse_max_call_depth_flag(&flags[1], flags)?;
+        let mut options = TreeWalkOptions::default();
+        options.set_max_call_depth(max_call_depth);
+        return Ok(options);
+    }
+
+    let mut saw_eval = false;
+    let mut saw_strict = false;
+    for flag in flags {
+        match flag.as_str() {
+            "--eval" => saw_eval = true,
+            "--strict" => saw_strict = true,
+            "--show-trace" | "--no-show-trace" => {}
+            _ => return Err(unsupported_flags_message(flags)),
+        }
+    }
+
+    if saw_eval && saw_strict {
+        Ok(TreeWalkOptions::default())
+    } else {
+        Err(unsupported_flags_message(flags))
+    }
+}
+
+fn parse_max_call_depth_flag(value: &str, flags: &[String]) -> std::result::Result<usize, String> {
+    value.parse().map_err(|_| unsupported_flags_message(flags))
+}
+
+fn unsupported_flags_message(flags: &[String]) -> String {
+    format!("case carries unsupported flags: {}", flags.join(" "))
+}
+
+fn eval_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    eval_whnf_owned(&ir).context("evaluating expression")?;
+    eval_whnf_owned_with_options(&ir, options).context("evaluating expression")?;
     Ok(())
 }
 
-fn eval_raw_case(source: &[u8]) -> Result<Vec<u8>> {
+fn eval_raw_case(source: &[u8], options: TreeWalkOptions) -> Result<Vec<u8>> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    let mut bytes = eval_raw_bytes(&ir).context("evaluating raw value")?;
+    let mut bytes = eval_raw_bytes_with_options(&ir, options).context("evaluating raw value")?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -216,6 +252,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
         vec![
             LangCategory::ParseFail,
             LangCategory::ParseOkay,
+            LangCategory::EvalFail,
             LangCategory::EvalFail,
             LangCategory::EvalFail,
             LangCategory::EvalOkay,
@@ -259,6 +296,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
         vec![
             ("parse-fail-missing-then", CaseOutcome::Passed),
             ("parse-okay-simple", CaseOutcome::Passed),
+            ("eval-fail-max-call-depth", CaseOutcome::Passed),
             ("eval-fail-type", CaseOutcome::Passed),
             ("eval-fail-with-flags", CaseOutcome::Passed),
             ("eval-okay-attrs", CaseOutcome::Passed),
@@ -284,8 +322,11 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
 
 #[test]
 fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
-    assert!(eval_case(b"x: x").is_ok());
-    assert_eq!(eval_raw_case(b"x: x")?, b"<LAMBDA>\n");
+    assert!(eval_case(b"x: x", TreeWalkOptions::default()).is_ok());
+    assert_eq!(
+        eval_raw_case(b"x: x", TreeWalkOptions::default())?,
+        b"<LAMBDA>\n"
+    );
 
     Ok(())
 }
@@ -305,21 +346,43 @@ fn lang_sh_noop_eval_flags_are_supported() {
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
+    assert!(lang_case_options(LangCategory::EvalOkay, &strict_eval_flags).is_ok());
+    assert!(lang_case_options(LangCategory::EvalFail, &eval_fail_no_trace_flags).is_ok());
     assert_eq!(
-        unsupported_flags_message(LangCategory::EvalOkay, &strict_eval_flags),
-        None
+        lang_case_options(LangCategory::EvalFail, &trace_only_flags),
+        Err("case carries unsupported flags: --no-show-trace".to_owned())
     );
     assert_eq!(
-        unsupported_flags_message(LangCategory::EvalFail, &eval_fail_no_trace_flags),
-        None
+        lang_case_options(LangCategory::ParseOkay, &strict_eval_flags),
+        Err("case carries unsupported flags: --eval --strict".to_owned())
+    );
+}
+
+#[test]
+fn lang_sh_max_call_depth_flag_configures_eval() {
+    let max_call_depth_flags = ["--max-call-depth", "3"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let max_call_depth_with_trace_flags = ["--max-call-depth", "3", "--no-show-trace"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let max_call_depth_with_eval_flags = ["--max-call-depth", "3", "--eval", "--strict"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+
+    let options = lang_case_options(LangCategory::EvalFail, &max_call_depth_flags)
+        .expect("max-call-depth flag should be supported");
+    assert_eq!(options.max_call_depth(), 3);
+    assert_eq!(
+        lang_case_options(LangCategory::EvalFail, &max_call_depth_with_trace_flags),
+        Err("case carries unsupported flags: --max-call-depth 3 --no-show-trace".to_owned())
     );
     assert_eq!(
-        unsupported_flags_message(LangCategory::EvalFail, &trace_only_flags),
-        Some("case carries unsupported flags: --no-show-trace".to_owned())
-    );
-    assert_eq!(
-        unsupported_flags_message(LangCategory::ParseOkay, &strict_eval_flags),
-        Some("case carries unsupported flags: --eval --strict".to_owned())
+        lang_case_options(LangCategory::EvalFail, &max_call_depth_with_eval_flags),
+        Err("case carries unsupported flags: --max-call-depth 3 --eval --strict".to_owned())
     );
 }
 
@@ -340,8 +403,8 @@ fn lang_sh_capability_flags_remain_skipped() {
     .collect::<Vec<_>>();
 
     assert_eq!(
-        unsupported_flags_message(LangCategory::EvalOkay, &autoarg_flags),
-        Some(
+        lang_case_options(LangCategory::EvalOkay, &autoarg_flags),
+        Err(
             "case carries unsupported flags: --arg lib import(lang/lib.nix) --argstr xyzzy xyzzy! -A result"
                 .to_owned()
         )
