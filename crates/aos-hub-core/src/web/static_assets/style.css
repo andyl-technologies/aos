@@ -27,9 +27,12 @@
   --ink: #1f1d18;
   --rule: #d8d4c8;
   /* A fainter rule for in-table data-row separators, so a table reads as a data
-   * grid and never as a run of section dividers (`--rule` is the section/heading
-   * weight). Derived from `--rule`+`--paper`, so it tracks the theme. */
+   * grid and never as a run of section dividers. Derived from `--rule`+`--paper`,
+   * so it tracks the theme. */
   --rule-faint: color-mix(in srgb, var(--rule) 50%, var(--paper));
+  /* A stronger, darker rule reserved for section-heading underlines — clearly
+   * distinct from every (light) table rule. ~half ink over paper. */
+  --rule-strong: color-mix(in srgb, var(--ink) 45%, var(--paper));
   --dim: #6e6a5e;
   --ok: #1c6f4a;
   --warn: #9c5a00;
@@ -104,7 +107,11 @@ h1, h2 {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  border-bottom: 1px solid var(--rule);
+  /* A heavier, darker rule than any table line (`--rule-strong` ~half ink, 2px)
+   * so a section divider never reads as a table header/row separator — the
+   * three weights are: heading (2px, dark) > table header (1px, --rule) >
+   * data row (1px, --rule-faint). */
+  border-bottom: 2px solid var(--rule-strong);
   padding-bottom: 0.4rem;
   margin: 2.4rem 0 1rem;
 }
