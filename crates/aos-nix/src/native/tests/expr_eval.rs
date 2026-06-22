@@ -92,6 +92,34 @@ fn native_expression_parse_error_uses_source_report() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn native_expression_duplicate_attr_reports_multiple_labels() -> Result<()> {
+    let native = NixNative::new(0)?;
+    for source in ["{ a = 1; a = 2; }", "{ a.b = 1; a.b = 2; }"] {
+        let err = native
+            .eval_expr(source)
+            .expect_err("duplicate attr paths should stay fallback-eligible");
+
+        let Some(NativeEvalError::Unsupported {
+            feature,
+            span: Some(_),
+        }) = err.downcast_ref::<NativeEvalError>()
+        else {
+            panic!("duplicate attr paths should stay unsupported fallback errors: {err:?}");
+        };
+        assert!(
+            feature.contains("aos_nix::parse::duplicate_attribute"),
+            "{feature}"
+        );
+        assert!(feature.contains("first definition"), "{feature}");
+        assert!(feature.contains("duplicate definition"), "{feature}");
+        assert!(feature.contains(source), "{feature}");
+        assert!(!feature.contains("OutOfBounds"), "{feature}");
+        assert!(!feature.contains("builtins.toJSON"), "{feature}");
+    }
+    Ok(())
+}
+
 fn assert_parse_source_report(err: &anyhow::Error) {
     let Some(NativeEvalError::Unsupported {
         feature,

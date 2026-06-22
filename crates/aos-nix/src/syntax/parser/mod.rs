@@ -669,7 +669,12 @@ pub enum ParseErrorKind {
     PathTrailingSlash,
     /// Two bindings define the same non-mergeable attribute.
     #[error("attribute already defined")]
-    DuplicateAttribute,
+    DuplicateAttribute {
+        /// The earlier binding for this attribute.
+        first: Span,
+        /// The conflicting later binding for this attribute.
+        second: Span,
+    },
     /// A formal argument pattern violates Nix's shape restrictions.
     #[error("invalid formal argument pattern: {reason}")]
     InvalidFormalPattern {

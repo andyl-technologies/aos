@@ -179,7 +179,7 @@ impl<'a> Parser<'a> {
         let value = if tail.is_empty() {
             value
         } else {
-            let nested = self.nested_binding(tail, value, None)?;
+            let nested = self.nested_binding(tail, value, span_override)?;
             let children = self.push_child_slice(&[nested])?;
             let span = self.join_span(self.node_span(tail[0])?, self.node_span(value)?);
             self.push(NodeKind::AttrSet, span, NodeData::Children(children))?
@@ -214,8 +214,12 @@ impl<'a> Parser<'a> {
             return Ok(incoming);
         };
 
-        let value =
-            self.merge_binding_values(existing_value, incoming_value, incoming_node.span)?;
+        let value = self.merge_binding_values(
+            existing_value,
+            incoming_value,
+            existing_node.span,
+            incoming_node.span,
+        )?;
         self.push(
             NodeKind::Binding,
             self.join_span(existing_node.span, incoming_node.span),
@@ -227,13 +231,20 @@ impl<'a> Parser<'a> {
         &mut self,
         existing: NodeId,
         incoming: NodeId,
-        conflict_span: Span,
+        existing_binding_span: Span,
+        incoming_binding_span: Span,
     ) -> Result<NodeId, ParseError> {
         let existing_node = self.node(existing)?;
         let incoming_node = self.node(incoming)?;
         if !Self::is_attrset_kind(existing_node.kind) || !Self::is_attrset_kind(incoming_node.kind)
         {
-            return Err(self.error_at(conflict_span, ParseErrorKind::DuplicateAttribute));
+            return Err(self.error_at(
+                incoming_binding_span,
+                ParseErrorKind::DuplicateAttribute {
+                    first: existing_binding_span,
+                    second: incoming_binding_span,
+                },
+            ));
         }
 
         let NodeData::Children(existing_bindings) = existing_node.data else {

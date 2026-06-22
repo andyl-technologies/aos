@@ -91,10 +91,7 @@ impl Diagnostic for ParseDiagnostic {
     }
 
     fn labels(&self) -> Option<Box<dyn Iterator<Item = LabeledSpan> + '_>> {
-        Some(Box::new(std::iter::once(label_for_span(
-            self.error.span(),
-            "parse error",
-        ))))
+        Some(parse_error_labels(self.error.kind(), self.error.span()))
     }
 }
 
@@ -235,6 +232,22 @@ fn label_for_span(span: Span, label: &'static str) -> LabeledSpan {
     LabeledSpan::new_with_span(Some(label.to_owned()), range)
 }
 
+fn parse_error_labels(
+    kind: &ParseErrorKind,
+    primary_span: Span,
+) -> Box<dyn Iterator<Item = LabeledSpan>> {
+    match kind {
+        ParseErrorKind::DuplicateAttribute { first, second } => Box::new(
+            [
+                label_for_span(*first, "first definition"),
+                label_for_span(*second, "duplicate definition"),
+            ]
+            .into_iter(),
+        ),
+        _ => Box::new(std::iter::once(label_for_span(primary_span, "parse error"))),
+    }
+}
+
 fn span_range(span: Span) -> Range<usize> {
     let start = span.start as usize;
     let end = span.end.max(span.start.saturating_add(1)) as usize;
@@ -277,7 +290,7 @@ fn parse_error_code(kind: &ParseErrorKind) -> &'static str {
         ParseErrorKind::NonAssociativeOperator { .. } => "aos_nix::parse::non_associative_operator",
         ParseErrorKind::InvalidBindingPath => "aos_nix::parse::invalid_binding_path",
         ParseErrorKind::PathTrailingSlash => "aos_nix::parse::path_trailing_slash",
-        ParseErrorKind::DuplicateAttribute => "aos_nix::parse::duplicate_attribute",
+        ParseErrorKind::DuplicateAttribute { .. } => "aos_nix::parse::duplicate_attribute",
         ParseErrorKind::InvalidFormalPattern { .. } => "aos_nix::parse::invalid_formal_pattern",
     }
 }
@@ -291,7 +304,9 @@ fn parse_error_help(kind: &ParseErrorKind) -> Option<&'static str> {
             Some("Add parentheses to make the intended grouping explicit.")
         }
         ParseErrorKind::PathTrailingSlash => Some("Remove the trailing slash or quote the path."),
-        ParseErrorKind::DuplicateAttribute => Some("Keep one binding or make the path mergeable."),
+        ParseErrorKind::DuplicateAttribute { .. } => {
+            Some("Keep one binding or make the path mergeable.")
+        }
         ParseErrorKind::InvalidFormalPattern { .. } => Some("Use a valid Nix function pattern."),
         ParseErrorKind::Ast(_)
         | ParseErrorKind::InvalidUtf8Literal
@@ -468,6 +483,33 @@ mod tests {
             .expect("parse diagnostic has a label")
             .collect::<Vec<_>>();
         assert_eq!(labels.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_attr_parse_diagnostic_reports_both_spans() {
+        assert_duplicate_attr_labels("{ a = 1; a = 2; }", "a = 1;", "a = 2;");
+        assert_duplicate_attr_labels("{ a.b = 1; a.b = 2; }", "a.b = 1;", "a.b = 2;");
+    }
+
+    fn assert_duplicate_attr_labels(source: &str, first: &str, second: &str) {
+        let error = parse_str(source).expect_err("duplicate attr path should fail");
+        let diagnostic = ParseDiagnostic::new("expr.nix", source, error);
+
+        assert_eq!(
+            diagnostic.code().map(|code| code.to_string()),
+            Some("aos_nix::parse::duplicate_attribute".to_string())
+        );
+        let labels = diagnostic
+            .labels()
+            .expect("duplicate attribute diagnostic has labels")
+            .collect::<Vec<_>>();
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels[0].label(), Some("first definition"));
+        assert_eq!(labels[0].offset(), source.find(first).unwrap());
+        assert_eq!(labels[0].len(), first.len());
+        assert_eq!(labels[1].label(), Some("duplicate definition"));
+        assert_eq!(labels[1].offset(), source.find(second).unwrap());
+        assert_eq!(labels[1].len(), second.len());
     }
 
     #[test]

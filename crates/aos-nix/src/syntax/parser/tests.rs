@@ -555,7 +555,10 @@ fn duplicate_static_attr_paths_are_parse_errors() {
         "let inherit (src) x; x = 1; in x",
     ] {
         let error = parse_str(source).expect_err("duplicate attr path errors");
-        assert_eq!(error.kind(), &ParseErrorKind::DuplicateAttribute);
+        assert!(matches!(
+            error.kind(),
+            ParseErrorKind::DuplicateAttribute { .. }
+        ));
     }
 }
 

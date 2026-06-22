@@ -11,7 +11,7 @@ use crate::compile::{IrError, ScopeError};
 use crate::diagnostic::{
     EvalDiagnostic, IrDiagnostic, ParseDiagnostic, ScopeDiagnostic, render_fancy_report,
 };
-use crate::syntax::ParseError;
+use crate::syntax::{ParseError, ParseErrorKind};
 
 #[derive(Clone, Copy)]
 pub(super) struct NativeDiagnosticSource<'a> {
@@ -126,16 +126,28 @@ fn rendered_parse_diagnostic(
         Some(source_map) => wrapped_source_span(error.span(), source_map)?,
         None => error.span(),
     };
+    let kind = parse_error_kind_for_source(error.kind(), source.source_map)?;
     if !span_fits_source(span, source.source) {
         return None;
     }
 
-    let diagnostic = ParseDiagnostic::new(
-        source.name,
-        source.source,
-        ParseError::new(error.kind().clone(), span),
-    );
+    let diagnostic = ParseDiagnostic::new(source.name, source.source, ParseError::new(kind, span));
     render_fancy_report(&diagnostic).ok()
+}
+
+fn parse_error_kind_for_source(
+    kind: &ParseErrorKind,
+    source_map: Option<WrappedSourceMap>,
+) -> Option<ParseErrorKind> {
+    match (kind, source_map) {
+        (ParseErrorKind::DuplicateAttribute { first, second }, Some(source_map)) => {
+            Some(ParseErrorKind::DuplicateAttribute {
+                first: wrapped_source_span(*first, source_map)?,
+                second: wrapped_source_span(*second, source_map)?,
+            })
+        }
+        _ => Some(kind.clone()),
+    }
 }
 
 fn rendered_scope_diagnostic(
