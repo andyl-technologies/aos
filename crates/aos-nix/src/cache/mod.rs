@@ -31,11 +31,11 @@ pub use parse::{
     ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,
 };
 pub use persist::{
-    PERSIST_BLOB_PACK_HEADER_LEN, PERSIST_BLOB_PACK_MAGIC, PERSIST_BLOB_PACK_VERSION,
-    PERSIST_BLOB_RECORD_HEADER_LEN, PERSIST_CACHE_FORMAT, PERSIST_CACHE_SCHEMA_VERSION,
-    PersistBlobKey, PersistBlobLocation, PersistBlobPack, PersistBlobPackError,
-    PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore, PersistCache, PersistError,
-    PersistLayout, PersistPackFormatError,
+    PERSIST_BLOB_INDEX_VALUE_LEN, PERSIST_BLOB_PACK_HEADER_LEN, PERSIST_BLOB_PACK_MAGIC,
+    PERSIST_BLOB_PACK_VERSION, PERSIST_BLOB_RECORD_HEADER_LEN, PERSIST_CACHE_FORMAT,
+    PERSIST_CACHE_SCHEMA_VERSION, PersistBlobKey, PersistBlobLocation, PersistBlobPack,
+    PersistBlobPackError, PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore,
+    PersistCache, PersistError, PersistLayout, PersistPackFormatError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,

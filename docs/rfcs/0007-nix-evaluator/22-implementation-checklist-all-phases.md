@@ -493,6 +493,12 @@ alone (`M-1`/`Q-A`).
       verification. This is ordinary `std::fs` IO only; mmap zero-copy reads,
       LMDB/redb index integration, batched writing, crash-durability policy,
       GC/repack, Attic transport, and harness proof remain open (`C-13`).
+- [x] Current hash-to-offset index value codec substrate: `PersistBlobKey`
+      supplies domain-separated index keys, and `PersistBlobLocation` round-trips
+      record offset plus payload length as stable little-endian index metadata.
+      This is codec-only; LMDB/redb environments, tables, transactions, index
+      writes/reads, mmap pointer reads, GC/repack, and harness proof remain open
+      (`C-13`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

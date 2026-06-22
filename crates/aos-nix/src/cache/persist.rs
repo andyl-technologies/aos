@@ -25,6 +25,8 @@ pub const PERSIST_BLOB_PACK_VERSION: u32 = 1;
 pub const PERSIST_BLOB_PACK_HEADER_LEN: usize = 24;
 /// The encoded length of an immutable blob record header.
 pub const PERSIST_BLOB_RECORD_HEADER_LEN: usize = 40;
+/// The encoded length of a hash-to-offset index value.
+pub const PERSIST_BLOB_INDEX_VALUE_LEN: usize = 16;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -215,6 +217,8 @@ impl PersistBlobRecordHeader {
 }
 
 /// A byte range for one immutable blob record in a packfile.
+///
+/// This is the value stored by the future hash-to-offset index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PersistBlobLocation {
     record_offset: u64,
@@ -238,6 +242,33 @@ impl PersistBlobLocation {
     /// Returns the number of payload bytes following this blob's record header.
     pub const fn payload_len(self) -> u64 {
         self.payload_len
+    }
+
+    /// Encodes this location as a stable hash-to-offset index value.
+    pub fn encode_index_value(self) -> [u8; PERSIST_BLOB_INDEX_VALUE_LEN] {
+        let mut bytes = [0; PERSIST_BLOB_INDEX_VALUE_LEN];
+        bytes[..8].copy_from_slice(&self.record_offset.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.payload_len.to_le_bytes());
+        bytes
+    }
+
+    /// Decodes a hash-to-offset index value prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError::ShortIndexValue`] if `bytes` is
+    /// shorter than [`PERSIST_BLOB_INDEX_VALUE_LEN`].
+    pub fn decode_index_value(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_BLOB_INDEX_VALUE_LEN {
+            return Err(PersistPackFormatError::ShortIndexValue {
+                expected: PERSIST_BLOB_INDEX_VALUE_LEN,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self {
+            record_offset: read_u64(&bytes[..8]),
+            payload_len: read_u64(&bytes[8..16]),
+        })
     }
 }
 
@@ -567,6 +598,14 @@ pub enum PersistPackFormatError {
     #[error("persistent blob record header has {actual} bytes, expected at least {expected}")]
     ShortRecordHeader {
         /// The required fixed record header length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// An index value was shorter than the fixed encoded location length.
+    #[error("persistent blob index value has {actual} bytes, expected at least {expected}")]
+    ShortIndexValue {
+        /// The required fixed index value length.
         expected: usize,
         /// The available bytes.
         actual: usize,
@@ -1038,6 +1077,47 @@ mod tests {
         assert_eq!(first_key.hash(), first);
         assert_eq!(first_key.index_bytes(), first_key_again.index_bytes());
         assert_ne!(first_key.index_bytes(), second_key.index_bytes());
+    }
+
+    #[test]
+    fn blob_index_values_round_trip_locations() {
+        let location = PersistBlobLocation::new(123, 456);
+        let encoded = location.encode_index_value();
+
+        assert_eq!(encoded.len(), PERSIST_BLOB_INDEX_VALUE_LEN);
+        assert_eq!(&encoded[..8], 123u64.to_le_bytes().as_slice());
+        assert_eq!(&encoded[8..16], 456u64.to_le_bytes().as_slice());
+        assert_eq!(
+            PersistBlobLocation::decode_index_value(&encoded).expect("index value decodes"),
+            location
+        );
+    }
+
+    #[test]
+    fn blob_index_values_decode_from_prefix() {
+        let location = PersistBlobLocation::new(123, 456);
+        let mut encoded = location.encode_index_value().to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(
+            PersistBlobLocation::decode_index_value(&encoded)
+                .expect("index value decodes from prefix"),
+            location
+        );
+    }
+
+    #[test]
+    fn blob_index_values_reject_short_prefix() {
+        let error =
+            PersistBlobLocation::decode_index_value(&[0; 8]).expect_err("short index value errors");
+
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortIndexValue {
+                expected: PERSIST_BLOB_INDEX_VALUE_LEN,
+                actual: 8,
+            }
+        );
     }
 
     #[test]
