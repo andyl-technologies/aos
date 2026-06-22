@@ -243,6 +243,7 @@ mod hash;
 mod numeric;
 mod options;
 mod parse;
+mod properties;
 mod regex;
 mod search_path;
 mod stats;

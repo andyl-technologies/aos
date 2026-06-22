@@ -29,3 +29,6 @@ url = { workspace = true }
 xxhash-rust = { workspace = true }
 xz2 = { workspace = true }
 zstd = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
