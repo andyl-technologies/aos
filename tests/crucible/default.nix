@@ -62,6 +62,7 @@ in {
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
     guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
+    icountStampedInjection = import ./phase1-icount-stamped-injection.nix {inherit pkgs lib;};
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix {inherit pkgs lib;};
     layer0Determinism = import ./phase1-layer0-determinism.nix {inherit pkgs lib;};
