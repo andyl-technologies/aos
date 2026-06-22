@@ -103,13 +103,10 @@ in {
           "T-DET-10"
         ];
       };
-      contentAddress = redGate {
+      contentAddress = import ./phase1-content-address.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.contentAddress";
-        gateName = "gate:content-address";
-        owner = "crucible";
-        phase = "phase1";
         taskIds = ["T-PLAN-3" "T-HARN-11"];
-        reason = "content-address gate is intentionally pending";
       };
       replayOracle = import ./phase1-replay-oracle.nix {
         inherit pkgs lib;

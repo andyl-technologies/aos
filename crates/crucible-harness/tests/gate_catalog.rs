@@ -42,7 +42,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:adversarial-determinism",
         "gate:any-guest",
         "gate:campaign-continuity",
-        "gate:content-address",
         "gate:control-responsive",
         "gate:divergence-bisect",
         "gate:e2e-determinism",
@@ -75,6 +74,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:layer1-injection").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:content-address").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(

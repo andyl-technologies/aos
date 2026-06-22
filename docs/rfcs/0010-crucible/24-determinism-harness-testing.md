@@ -883,7 +883,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 - [ ] **T-HARN-10** Implement `gate:divergence-bisect` (seed a known divergence;
   assert the tool localizes exactly that icount/node, deterministically). —
   satisfies [HARN-10]; spec §5.1.
-- [ ] **T-HARN-11** Implement `gate:content-address` (hash stability, equal
+- [x] **T-HARN-11** Implement `gate:content-address` (hash stability, equal
   content ⇒ equal id, single-byte change ⇒ different id, collision sampling). —
   satisfies [HARN-11]; spec §1.2.
 - [x] **T-HARN-12** Implement the replay oracle and `gate:replay-oracle`
