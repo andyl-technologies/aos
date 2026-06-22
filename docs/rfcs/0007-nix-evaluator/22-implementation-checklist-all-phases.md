@@ -619,6 +619,13 @@ alone (`M-1`/`Q-A`).
       hashes, value memoization, currentTime taint propagation through memoized
       nodes, persistence, and edge-exactness harness coverage remain open
       (`R-10`/`S-14`).
+- [x] Current expression cacheability status substrate:
+      `ExpressionTraceObservation::cacheability` exposes a typed memoization
+      gate that distinguishes cacheable expression nodes, incomplete traces,
+      and uncacheable inputs such as `currentTime`. This is a status surface
+      only; evaluator memo lookup, automatic taint propagation through
+      already-memoized dependents, persistence, and edge-exactness harness
+      coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

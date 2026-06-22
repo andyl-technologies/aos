@@ -6,7 +6,8 @@
 
 use super::{
     CacheExprIdentity, DemandGraph, DemandGraphError, DemandNodeId, DurableBlake3Hash,
-    ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus, Reconsideration, ValueHash,
+    ImpureInputFingerprint, ImpureTraceObservation, ImpureTraceStatus, Reconsideration,
+    UncacheableInput, ValueHash,
 };
 use crate::value::Value;
 
@@ -17,6 +18,17 @@ pub trait ImpureInputTraceSource {
 
     /// Returns whether the trace is complete enough to be cache-usable.
     fn impure_input_trace_complete(&self) -> bool;
+}
+
+/// Whether an observed expression evaluation is eligible for memoization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpressionCacheability {
+    /// The expression is cacheable and has a demand-graph node.
+    Cacheable(DemandNodeId),
+    /// The evaluator could not produce a complete dependency trace.
+    Incomplete,
+    /// The expression observed an input that makes memoization unsound.
+    Uncacheable(UncacheableInput),
 }
 
 /// The result of observing one expression evaluation's impure-input trace.
@@ -39,6 +51,18 @@ impl ExpressionTraceObservation {
     /// Returns the observed impure trace cacheability and leaves.
     pub const fn trace(&self) -> &ImpureTraceObservation {
         &self.trace
+    }
+
+    /// Returns whether this expression evaluation can be memoized.
+    pub fn cacheability(&self) -> ExpressionCacheability {
+        match self.trace.status() {
+            ImpureTraceStatus::Cacheable => self
+                .node
+                .map(ExpressionCacheability::Cacheable)
+                .unwrap_or(ExpressionCacheability::Incomplete),
+            ImpureTraceStatus::Incomplete => ExpressionCacheability::Incomplete,
+            ImpureTraceStatus::Uncacheable(input) => ExpressionCacheability::Uncacheable(input),
+        }
     }
 
     /// Consumes this observation into its node and trace parts.
@@ -619,6 +643,10 @@ mod tests {
 
         assert_eq!(observation.trace().status(), ImpureTraceStatus::Cacheable);
         let node = observation.node().expect("cacheable trace creates node");
+        assert_eq!(
+            observation.cacheability(),
+            ExpressionCacheability::Cacheable(node)
+        );
         let dependency = observation.trace().leaves()[0].node();
         assert!(
             cache
@@ -656,6 +684,36 @@ mod tests {
             ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
         );
         assert_eq!(observation.node(), None);
+        assert_eq!(
+            observation.cacheability(),
+            ExpressionCacheability::Uncacheable(UncacheableInput::CurrentTime)
+        );
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn eval_cache_expression_trace_adapter_marks_incomplete_trace_not_memoizable() {
+        let source = TraceSource {
+            trace: vec![read_file_trace(b"/tmp/version", b"1")],
+            complete: false,
+        };
+        let mut cache = EvalCache::new();
+
+        let observation = cache
+            .observe_expression_impure_inputs(
+                identity(b"source", 7),
+                [durable_hash(b"free-var")],
+                Some(value_hash(b"value")),
+                &source,
+            )
+            .expect("expression trace observes");
+
+        assert_eq!(observation.trace().status(), ImpureTraceStatus::Incomplete);
+        assert_eq!(observation.node(), None);
+        assert_eq!(
+            observation.cacheability(),
+            ExpressionCacheability::Incomplete
+        );
         assert!(cache.is_empty());
     }
 

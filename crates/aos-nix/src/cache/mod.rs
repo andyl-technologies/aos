@@ -42,5 +42,6 @@ pub use policy::{
     MemoizationDecision, MemoizationSignals, MemoizationSubject,
 };
 pub use runtime::{
-    EvalCache, EvalCacheRuntime, ExpressionTraceObservation, ImpureInputTraceSource,
+    EvalCache, EvalCacheRuntime, ExpressionCacheability, ExpressionTraceObservation,
+    ImpureInputTraceSource,
 };
