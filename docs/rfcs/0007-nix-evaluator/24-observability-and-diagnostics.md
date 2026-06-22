@@ -539,7 +539,23 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### Internal instrumentation: the `tracing` crate (§7)
 
-- [ ] Use `tracing` (already a workspace dep, runtime-agnostic) for all internal spans/events/counters — orthogonal to miette — carrying the aos-nix statistics counters (`thunks_forced`/`allocated`/`elided`, `inline_cache_hits`/`misses`, `shape_transitions`, `tier_promotions`, `deopts`, `cache_hits`/`early_cutoffs`) and the `NixEval`-seam counters (native successes/fallbacks/shadow divergences), named to parallel `NIX_SHOW_STATS` for a field-by-field diff (§7.1): the `NixEval` seam now exposes grouped native success/fallback/shadow/verify counters, logs top-level evaluator selection, records fallback evaluator pair/reasons/counts, and carries operation plus file/attr context on shadow/verify `.drv` divergence events when available. Remaining before completion: add the later aos-nix subsystem counters as cache/shapes/tiers land and promote divergence events into the full report surface — counters land as each subsystem does (cache **P2**, shapes **P5**, tiers **P6/P7**); `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
+- [x] Current `aos-core` `NixEval` seam instrumentation uses `tracing`
+      orthogonally to miette: `NixRunner` logs evaluator name plus file/attr
+      context for top-level eval/instantiate operations; `aos-core` exposes
+      grouped native success/fallback/shadow/verify counters; observer paths
+      record native success counts, fallback evaluator pair/reason/count,
+      shadow outcomes, verify outcomes, and `.drv` divergence events with
+      operation plus file/attr/drv context when available (§7.1) — `D-OBS-4`;
+      gate today: `aos-core` eval/runner instrumentation tests, including the
+      `native-eval` feature-gated counter and divergence-context tests.
+- [ ] All-internal and `aos-nix` subsystem instrumentation remains: add
+      statistics counters for thunks forced/allocated/elided, inline-cache
+      hits/misses, shape transitions, tier promotions, deopts, cache
+      hits/early-cutoffs, and any other cache/shape/tier counters as those
+      subsystems land; align fields with `NIX_SHOW_STATS` where relevant; and
+      promote divergence events into the full self-contained report surface
+      (§7.1) — counters land as each subsystem does (cache **P2**, shapes
+      **P5**, tiers **P6/P7**); `D-OBS-4` ([15](15-differential-testing-and-benchmarking.md) §4.2).
 - [x] Current `builtins.trace` / `builtins.traceVerbose` user-facing output
       path stays out of internal `tracing`: tree-walk emits `trace: ...` to
       its stderr sink, records `EvalTraceOutput`, and returns the second
