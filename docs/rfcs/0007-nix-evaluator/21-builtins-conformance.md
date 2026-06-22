@@ -971,10 +971,16 @@ from-source set), full flake-layer behavior remains out of scope while explicit
 builtin subsets are implemented and tested where the pinned builtin surface
 requires them:
 
-- [ ] `getFlake` (args) — fetch and evaluate a flake. Full flake support remains
-      scoped; native evaluation covers the narrow local-inputless path, with
-      declared inputs, registry/indirect resolution, lock-file graph semantics,
-      and the general flake protocol still open.
+- [x] `getFlake` (args) — **conditional subset only**. Native evaluation covers
+      local/inputless flakes through the native `fetchTree` subset: it imports
+      `flake.nix`, evaluates `outputs` with `self`, returns `_type = "flake"`,
+      empty `inputs`, `outputs`, `sourceInfo`, `outPath`, and lock metadata, and
+      rejects declared inputs. Argument preflight, string-context rejection,
+      pure-mode locking, and declared-input rejection are covered by focused
+      `getFlake` tests.
+- [ ] Full `getFlake` flake protocol remains scoped/open: declared-input
+      resolution, registry/indirect refs, lock-file graph semantics, full input
+      graph evaluation, and general flake protocol parity.
 - [x] `parseFlakeRef` (flake-ref) / `flakeRefToString` (attrs) — flake-ref
       string ↔ attrset. Native for indirect refs, forge refs, git URLs, path
       refs, and curl-backed file/tarball refs; `getFlake` remains scoped.
