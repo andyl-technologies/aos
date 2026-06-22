@@ -1191,6 +1191,68 @@ impl PersistCache {
         self.blob_pack(key.store()).read_blob(location, key.hash())
     }
 
+    /// Looks up a blob location through the sidecar index selected by `key`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexError`] if the selected index cannot be
+    /// opened, read, or decoded.
+    pub fn lookup_blob_location(
+        &self,
+        key: PersistBlobKey,
+    ) -> Result<Option<PersistBlobLocation>, PersistBlobIndexError> {
+        self.blob_index(key.store()).lookup(key)
+    }
+
+    /// Appends a blob and records its location in the sidecar index.
+    ///
+    /// This helper is explicit and non-transactional: if the pack append
+    /// succeeds but the sidecar index write fails, the blob bytes remain in the
+    /// pack without a corresponding durable index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedWriteError`] if the selected packfile cannot
+    /// append/verify the payload, or if the selected sidecar index cannot write
+    /// the resulting hash-to-offset record.
+    pub fn append_blob_indexed(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+    ) -> Result<PersistBlobIndexEntry, PersistBlobIndexedWriteError> {
+        let location = self
+            .append_blob(key, payload)
+            .map_err(|source| PersistBlobIndexedWriteError::Append { source })?;
+        let entry = PersistBlobIndexEntry::new(key, location);
+        self.blob_index(key.store())
+            .append_entry(entry)
+            .map_err(|source| PersistBlobIndexedWriteError::Index { source })?;
+        Ok(entry)
+    }
+
+    /// Reads a blob through the sidecar index selected by `key`.
+    ///
+    /// Missing index entries return `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedReadError`] if the selected index cannot be
+    /// read/decoded or if the indexed pack location cannot be read and verified.
+    pub fn read_blob_indexed(
+        &self,
+        key: PersistBlobKey,
+    ) -> Result<Option<Vec<u8>>, PersistBlobIndexedReadError> {
+        let Some(location) = self
+            .lookup_blob_location(key)
+            .map_err(|source| PersistBlobIndexedReadError::Lookup { source })?
+        else {
+            return Ok(None);
+        };
+        self.read_blob(key, location)
+            .map(Some)
+            .map_err(|source| PersistBlobIndexedReadError::Read { source })
+    }
+
     /// Applies `decision` to `payload` in the packfile selected by `key`.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns
@@ -1637,6 +1699,40 @@ pub enum PersistBlobIndexError {
         path: PathBuf,
         /// The format error.
         source: PersistPackFormatError,
+    },
+}
+
+/// Indexed blob append failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexedWriteError {
+    /// The blob could not be appended to its selected packfile.
+    #[error("failed to append indexed persistent blob")]
+    Append {
+        /// The underlying packfile error.
+        source: PersistBlobPackError,
+    },
+    /// The appended blob location could not be recorded in the sidecar index.
+    #[error("failed to record indexed persistent blob location")]
+    Index {
+        /// The underlying index error.
+        source: PersistBlobIndexError,
+    },
+}
+
+/// Indexed blob read failed.
+#[derive(Debug, Error)]
+pub enum PersistBlobIndexedReadError {
+    /// The sidecar index lookup failed.
+    #[error("failed to look up indexed persistent blob")]
+    Lookup {
+        /// The underlying index error.
+        source: PersistBlobIndexError,
+    },
+    /// The indexed packfile location could not be read and verified.
+    #[error("failed to read indexed persistent blob")]
+    Read {
+        /// The underlying packfile error.
+        source: PersistBlobPackError,
     },
 }
 
@@ -3212,6 +3308,105 @@ mod tests {
             PERSIST_BLOB_PACK_HEADER_LEN as u64
                 + PERSIST_BLOB_RECORD_HEADER_LEN as u64
                 + payload.len() as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_blob_indexed_io_updates_index_and_reads_by_key() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"indexed payload";
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+        let same_hash_file_key = PersistBlobKey::for_file(key.hash());
+
+        let entry = cache
+            .append_blob_indexed(key, payload)
+            .expect("indexed blob appends");
+
+        assert_eq!(entry.key(), key);
+        assert_eq!(
+            entry.location().record_offset(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            cache
+                .lookup_blob_location(key)
+                .expect("indexed lookup succeeds"),
+            Some(entry.location())
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(key)
+                .expect("indexed read succeeds")
+                .expect("indexed blob exists")
+                .as_slice(),
+            payload
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(same_hash_file_key)
+                .expect("other store lookup succeeds"),
+            None
+        );
+        assert_eq!(
+            fs::metadata(cache.value_index().path())
+                .expect("value index metadata")
+                .len(),
+            PERSIST_BLOB_INDEX_ENTRY_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_blob_indexed_read_returns_none_on_miss() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"missing"));
+
+        assert_eq!(
+            cache
+                .lookup_blob_location(key)
+                .expect("lookup miss succeeds"),
+            None
+        );
+        assert_eq!(
+            cache.read_blob_indexed(key).expect("read miss succeeds"),
+            None
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_blob_indexed_append_rejects_hash_mismatch_before_index_write() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+
+        let error = cache
+            .append_blob_indexed(key, b"payload")
+            .expect_err("hash mismatch errors");
+
+        assert!(matches!(
+            error,
+            PersistBlobIndexedWriteError::Append {
+                source: PersistBlobPackError::PayloadHashMismatch { .. },
+            }
+        ));
+        assert_eq!(
+            fs::metadata(cache.value_pack().path())
+                .expect("value pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            fs::metadata(cache.value_index().path())
+                .expect("value index metadata")
+                .len(),
+            0
         );
 
         let _ = fs::remove_dir_all(root);

@@ -511,9 +511,9 @@ alone (`M-1`/`Q-A`).
       `PersistBlobIndexEntry` records, rejects truncated record tails on open,
       and linearly scans records to return the newest matching hash-to-offset
       location. This is a simple durable sidecar only; LMDB/redb MVCC tables,
-      transactions, writer batching/locking, integration with
-      `PersistCache::append_blob`/`read_blob`, mmap pointer reads, GC/repack, and
-      harness proof remain open (`C-13`).
+      transactions, writer batching/locking, automatic integration with
+      low-level `PersistCache::append_blob`/`read_blob`, mmap pointer reads,
+      GC/repack, and harness proof remain open (`C-13`).
 - [x] Current file-artifact mapping codec substrate:
       `PersistFileArtifactKey` derives a stable `files/` index key from
       canonical realpath bytes, source content hash, and the
@@ -579,9 +579,18 @@ alone (`M-1`/`Q-A`).
 - [x] Current key-routed blob IO substrate: `PersistCache::append_blob` and
       `read_blob` route a `PersistBlobKey` to the value or file pack, preserving
       namespace separation for identical payload hashes while reusing pack-level
-      hash and record verification. Durable index lookup/update, node metadata,
-      mmap reads, writer batching, GC/repack, Attic transport, and harness proof
-      remain open (`C-13`/`R-14`).
+      hash and record verification. Automatic durable index lookup/update from
+      these raw helpers, node metadata, mmap reads, writer batching, GC/repack,
+      Attic transport, and harness proof remain open (`C-13`/`R-14`).
+- [x] Current explicit indexed blob IO helpers:
+      `PersistCache::append_blob_indexed` appends through the key-routed pack and
+      records the returned location in the selected `PersistBlobIndex`, while
+      `lookup_blob_location`/`read_blob_indexed` scan the sidecar index and
+      read/verify the indexed pack record, returning `None` for misses. This is
+      explicit non-transactional sidecar integration only; automatic low-level
+      append/read indexing, file-artifact/materialization index updates, node
+      metadata linkage, mmap reads, writer batching/locking, GC/repack, Attic
+      transport, and harness proof remain open (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and
