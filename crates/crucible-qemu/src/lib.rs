@@ -23,6 +23,6 @@
 mod launch;
 
 pub use launch::{
-    DeterministicLaunchProfile, DiskImageMode, IcountShiftSetting, InputPolicy,
-    LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
+    DeterministicLaunchProfile, DiskImageMode, GuestEntropySeed, GuestEntropySeedFile,
+    IcountShiftSetting, InputPolicy, LaunchProfileCandidate, LaunchProfileError, MachineResetMode,
 };

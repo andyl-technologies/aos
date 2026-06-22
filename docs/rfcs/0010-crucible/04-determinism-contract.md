@@ -661,7 +661,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
 - [x] **T-DET-4** Seed QEMU-internal entropy deterministically (guest-random and
   glib PRNG) from the run seed so device MACs/IDs and internal draws are
   reproducible in `T`. — satisfies [DET-21], [DET-18] (E9); spec §4.6 (E9).
-- [ ] **T-DET-5** Seed guest entropy deterministically via firmware
+- [x] **T-DET-5** Seed guest entropy deterministically via firmware
   (`fw_cfg` random-seed) / controlled RDRAND as a pure function of the scenario
   seed; verify no path seeds the guest CSPRNG from host entropy. — satisfies
   [DET-22], [DET-18] (E8); spec §4.6 (E8).
