@@ -2062,6 +2062,8 @@ fn native_with_ifd_realizer(native: NixNative, verbose: u8, config: NixEvalConfi
 fn warn_native_cli_fallback(error: &anyhow::Error, reason: NativeCliFallbackReason) {
     let count = record_native_cli_fallback(reason);
     tracing::warn!(
+        evaluator = "aos-nix",
+        fallback_evaluator = "nix-cli",
         error = %error,
         fallback_reason = ?reason,
         fallback_count = count,
@@ -3329,6 +3331,8 @@ mod tests {
             "{logged}"
         );
         assert!(logged.contains("error=native Nix evaluator does not yet support missing primop"));
+        assert!(logged.contains("evaluator=aos-nix"), "{logged}");
+        assert!(logged.contains("fallback_evaluator=nix-cli"), "{logged}");
         assert!(logged.contains("fallback_reason=Unsupported"), "{logged}");
         assert!(logged.contains("fallback_count="), "{logged}");
     }
