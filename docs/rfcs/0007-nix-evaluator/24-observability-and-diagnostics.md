@@ -468,7 +468,27 @@ The governing rule binds every item: **presentation is not parity.** How an erro
 
 ### Error reporting: miette as the diagnostic framework (§2)
 
-- [ ] Adopt `miette` as the `Diagnostic`-trait error *framework* for all user-facing parse/eval errors: `aos-nix::diagnostic` now wraps `LexError`, `ParseError`, `ScopeError`, `IrError`, and `TreeWalkError` in `SourceDiagnostic` with `NamedSource`, stable codes, severity, help, diagnostic help URLs, single- and multi-span `LabeledSpan`s, and a `render_fancy_report` seam over miette's built-in graphical renderer; `miette` is pinned in `Cargo.lock`, raw `NixNative::eval_expr`/`instantiate_expr`/`instantiate_expr_closure` tree-walk semantic failures render through this wrapper against the user's expression bytes rather than the internal JSON or `.drvPath` wrappers, file-backed `NixNative::instantiate` root parse/eval failures, imported-module tree-walk eval failures, and imported parse/scope/lowering failures render against the evaluated file bytes, raw-expression parser/resolver/lowering failures now carry the same source-backed reports while preserving unsupported/fallback taxonomy, duplicate-attribute parse errors label both definitions, binary operand type errors can label both operands, and `addErrorContext` logical contexts render as source-mapped evaluation-context labels. Remaining before completion: route the broader CLI/user-facing parse/eval surfaces through the wrapper (§2.1–§2.3) — **P1**, `C-26`/`D-OBS-1`.
+- [x] Current `miette` diagnostic substrate and native-evaluator routing:
+      `aos_nix::diagnostic` wraps `LexError`, `ParseError`, `ScopeError`,
+      `IrError`, and `TreeWalkError` in `SourceDiagnostic` with `NamedSource`,
+      stable `aos_nix::...` diagnostic codes, severity, help, diagnostic help
+      URLs, single- and multi-span `LabeledSpan`s, and a `render_fancy_report`
+      seam over miette's built-in graphical renderer; `miette` is pinned in
+      `crates/Cargo.lock`, and the native evaluator renders source-backed
+      reports for raw-expression parser/resolver/lowering/tree-walk failures,
+      file-backed root failures, and imported frontend/tree-walk failures when
+      the source text is renderable and every span fits the selected source
+      while preserving unsupported/fallback taxonomy. Duplicate-attribute parse
+      errors label both definitions, binary operand type errors can label both
+      operands, and `addErrorContext` logical contexts render as source-mapped
+      evaluation-context labels (§2.1–§2.3) — **P1**, `C-26`/`D-OBS-1`; gate
+      today: focused diagnostic and native-error tests.
+- [ ] Broader diagnostic adoption remains: route every remaining
+      CLI/user-facing parse/eval surface through the wrapper, keep full
+      summarized/full `--show-trace` parity open, and finish any
+      C++-Nix-exact renderer, REPL, or debugger integration once those surfaces
+      are in real use (§2.1–§2.3, §5, §6, §9 open questions 2-3) — **P1**,
+      `C-26`/`D-OBS-1`/`D-OBS-2`/`D-OBS-3`.
 
 ### The presentation-vs-parity separation (§3)
 
