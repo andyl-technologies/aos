@@ -11,13 +11,16 @@
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
 //! surface.
 //!
-//! Module map: the crate root owns [`StableHasher`], [`StableDigest`], and the
-//! named content-addressing integration boundary; future modules will split
+//! Module map: [`contract_a`] owns the isolated single-VM Contract A driver; the
+//! crate root owns [`StableHasher`], [`StableDigest`], and the named
+//! content-addressing integration boundary; future modules will split
 //! deterministic streams, ordered selection, and virtual-time arithmetic.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
+
+pub mod contract_a;
 
 /// Marks the future RFC-0007 integration boundary for content-addressing code.
 ///
