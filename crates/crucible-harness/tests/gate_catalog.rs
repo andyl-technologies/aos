@@ -43,7 +43,6 @@ fn architecture_red_placeholder_gates_are_wired() {
         "gate:any-guest",
         "gate:campaign-continuity",
         "gate:control-responsive",
-        "gate:divergence-bisect",
         "gate:e2e-determinism",
         "gate:fleet-equivalence",
         "gate:patch-microtests",
@@ -82,6 +81,10 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:replay-oracle").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
+        find_gate("gate:divergence-bisect").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
 

@@ -202,7 +202,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-harness",
         test_target: "gate_divergence_bisect",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:adversarial-determinism",
