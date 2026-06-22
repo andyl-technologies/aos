@@ -383,6 +383,12 @@ The `eval-okay` cases compare the *rendered value* (the `--eval` output),
 complementing the `.drv`-diff gate which compares the *derivation*. The
 `parse-*` cases pin the [frontend](04-frontend-parser-and-ir.md) independent of
 evaluation, catching grammar regressions before they can produce a wrong value.
+The first runner slice lives in `crates/aos-nix/tests/lang_conformance.rs`: it
+discovers the upstream `lang.sh` filename categories, parses `.flags`, honors
+`.exp-disabled`, and exercises a local fixture corpus across all four
+categories. Executable `eval-okay` assertions are currently limited to numeric
+raw-output cases through `eval_number_raw_bytes`; full upstream execution still
+needs the complete raw value renderer plus `lang.sh` flags/postprocess support.
 
 ### 3.3 Error parity: class, not (yet) bytes
 
@@ -968,7 +974,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 
 ### Conformance-suite reuse (§3)
 
-- [ ] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2) — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
+- [ ] Reuse the C++ Nix `tests/functional/lang/` corpus as Tvix/Snix does: reimplement `lang.sh` discovery + version-reactive skip logic, in all four categories `eval-okay`/`eval-fail`/`parse-okay`/`parse-fail` (§3.1, §3.2). Current status: `crates/aos-nix/tests/lang_conformance.rs` discovers the upstream category prefixes, parses `.flags`, honors `.exp-disabled`, exposes an `AOS_NIX_LANG_TESTS` discovery smoke path for an unpacked upstream corpus, and runs a local fixture covering all four categories with numeric raw `eval-okay` output. Remaining before completion: full raw `--eval` value rendering, `lang.sh` flags/postprocess semantics, version-reactive upstream skips, and gating the full pinned C++ Nix corpus — **P1**, criterion **C2**; owned jointly with [20](20-nix-language-conformance.md)/[21](21-builtins-conformance.md).
 - [x] Error-**class** parity (type stays type, `throw` stays `throw`, assert stays assert): `cpp_nix_error_classes_match_tree_walk` is a pinned-oracle/configured conformance gate for representative parse-fail, type-error, `throw`, assert, and `abort` failures, while error-**text** parity remains a non-goal for the first gate (§3.3, §3.4) — **P1**; the basis for the `EvalError`-vs-`Unsupported` fallback ([14](14-integration-with-aos.md) §6). Full upstream `tests/functional/lang` reuse remains tracked by the preceding corpus row.
 
 ### The tree-walk oracle and the fuzzers (§7)
