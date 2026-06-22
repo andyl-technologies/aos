@@ -854,7 +854,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   per gate name in §1.1) and wire them into the phase plan; add the doc-lint that
   fails on any referenced-but-undefined or defined-but-unreferenced gate. —
   satisfies [HARN-1], [HARN-2]; spec §1.
-- [ ] **T-HARN-2** Implement `gate:harness-lint`: the custom static analysis +
+- [x] **T-HARN-2** Implement `gate:harness-lint`: the custom static analysis +
   curated lint set banning unordered map iteration on ordered paths, host
   wall-clock/thread-RNG in the engine, and unordered `select`; enforce on all
   `crucible-*` crates on every PR. — satisfies [HARN-24], [HARN-25], [HARN-26];

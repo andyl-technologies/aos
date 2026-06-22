@@ -6,20 +6,33 @@
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
+  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  defaultChecks = builtins.readFile ./default.nix;
+  harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
+  harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
   harnessLintRust =
-    builtins.concatStringsSep "\n"
-    (map builtins.readFile [
-      ../../crates/crucible-harness/tests/harness_lint.rs
-      ../../crates/crucible-harness/tests/harness_lint_annotations.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/common.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/scan.rs
-    ]);
+    builtins.concatStringsSep "\n" (
+      [
+        harnessLintMainRust
+      ]
+      ++ (map builtins.readFile [
+        ../../crates/crucible-harness/tests/harness_lint_annotations.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/common.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
+        ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
+      ])
+      ++ [
+        harnessLintScanRust
+      ]
+    );
+  harnessLintMainCode = normalize harnessLintMainRust;
+  harnessLintScanCode = normalize harnessLintScanRust;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
+  defaultChecksCode = normalize defaultChecks;
 
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -616,6 +629,12 @@
 
   scanContent = scanDenyPatterns denyPatterns;
 
+  missingFindingNeedles = findings: needles:
+    builtins.filter (
+      needle: !(builtins.any (finding: hasInfix needle finding) findings)
+    )
+    needles;
+
   scanProductionContent = label: content:
     scanDenyPatterns productionDenyPatterns label content;
 
@@ -1030,11 +1049,17 @@
         tokio::select! { _ = async {} => {} }
       }
     '';
+    missing = missingFindingNeedles findings [
+      "host wall-clock"
+      "thread/global RNG"
+      "unordered map/set"
+      "nondeterministic select"
+    ];
   in
-    if builtins.length findings >= 4
+    if missing == []
     then []
     else [
-      "harness-lint regression expected wall-clock, RNG, unordered-map, and select findings"
+      "harness-lint regression missing expected findings: ${builtins.concatStringsSep ", " missing}"
     ];
 
   spacedPathRegressionFailures = let
@@ -1052,11 +1077,18 @@
         tokio::select ! { _ = async {} => {} }
       }
     '';
+    missing = missingFindingNeedles findings [
+      "host wall-clock"
+      "host monotonic time"
+      "thread/global RNG"
+      "unordered map/set"
+      "nondeterministic select"
+    ];
   in
-    if builtins.length findings >= 5
+    if missing == []
     then []
     else [
-      "harness-lint regression failed to reject spaced paths and grouped imports"
+      "harness-lint regression failed to reject spaced paths and grouped imports: ${builtins.concatStringsSep ", " missing}"
     ];
 
   scrubRegressionFailures = let
@@ -1295,7 +1327,98 @@
       "harness-lint confinement regression failed to reject workspace engine alias"
     ];
 
-  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures;
+  tDet17CompletionFailures = let
+    requiredHarnessCode = [
+      "fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>>"
+      "for package in REDUCTION_PATH_PACKAGES"
+      "findings.extend(scan_content(&source, &content));"
+      "fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn Error>>"
+      "workspace_confinement_findings(&root, &workspace_dependencies)"
+      "fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>>"
+      "clippy_tier_failures("
+      "fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dyn Error>>"
+      "for spec in crate_spec_index()"
+      "custom_static_analysis_failures(&source, &content)"
+      "fn harness_lint_rejects_banned_code_patterns()"
+      "fn harness_lint_rejects_spaced_paths_and_grouped_imports()"
+      "hash_container_iteration_failures"
+      "unordered_select_failures"
+      "select_macro_is_unordered"
+      "HASH_ITERATION_METHODS"
+    ];
+    requiredDenyCoverage = [
+      {
+        reason = "host wall-clock";
+        rule = "host-wall-clock";
+      }
+      {
+        reason = "thread/global RNG";
+        rule = "thread-global-rng";
+      }
+      {
+        reason = "unordered map/set";
+        rule = "unordered-map-set";
+      }
+      {
+        reason = "nondeterministic select";
+        rule = "nondeterministic-select";
+      }
+    ];
+    requiredDefaultCheckBlocks = [
+      {
+        label = "phase0 gate:harness-lint";
+        text = ''
+          harnessLint = import ./phase1-harness-lint.nix {
+            inherit pkgs lib;
+            attrPath = "checks.crucible.phase0.gates.harnessLint";
+          };
+        '';
+      }
+      {
+        label = "phase1 gate:harness-lint";
+        text = ''
+          harnessLint = import ./phase1-harness-lint.nix {
+            inherit pkgs lib;
+            attrPath = "checks.crucible.phase1.gates.harnessLint";
+          };
+        '';
+      }
+    ];
+    harnessFailures =
+      lib.concatMap (
+        required:
+          lib.optionals (!(hasInfix (normalize required) harnessLintMainCode || hasInfix (normalize required) harnessLintScanCode)) [
+            "crates/crucible-harness/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
+          ]
+      )
+      requiredHarnessCode;
+    denyCoverageFailures =
+      lib.concatMap (
+        required:
+          lib.optionals (!(builtins.any (deny: deny.reason == required.reason && deny.rule == required.rule) denyPatterns)) [
+            "tests/crucible/phase1-harness-lint.nix: missing deny-pattern coverage for `${required.rule}`"
+          ]
+      )
+      requiredDenyCoverage;
+    docFailures =
+      lib.optionals (!(hasInfix "- [x] **T-DET-17**" determinismContract)) [
+        "docs/rfcs/0010-crucible/04-determinism-contract.md: T-DET-17 checklist is not complete"
+      ]
+      ++ lib.optionals (!(hasInfix "- [x] **T-HARN-2**" harnessTesting)) [
+        "docs/rfcs/0010-crucible/24-determinism-harness-testing.md: T-HARN-2 checklist is not complete"
+      ];
+    phaseWiringFailures =
+      lib.concatMap (
+        required:
+          lib.optionals (!(hasInfix (normalize required.text) defaultChecksCode)) [
+            "tests/crucible/default.nix: ${required.label} wiring is missing"
+          ]
+      )
+      requiredDefaultCheckBlocks;
+  in
+    harnessFailures ++ denyCoverageFailures ++ docFailures ++ phaseWiringFailures;
+
+  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures ++ tDet17CompletionFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -1317,7 +1440,7 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
+            tasks=T-DET-17,T-HARN-2,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
             nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
