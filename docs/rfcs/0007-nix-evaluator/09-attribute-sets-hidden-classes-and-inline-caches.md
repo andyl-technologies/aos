@@ -741,7 +741,18 @@ harness, never cut for scope.
 - [ ] `InlineCache` state machine `Uninitialized → Monomorphic → Polymorphic → Megamorphic`, cap `N` (default 4), no invalidation protocol (immutability) ([§5.1](#51-the-mechanism)) — P5, `S-10`; gate: differential `.drv` harness.
 - [ ] Monomorphic fast path: shape guard + constant-offset load, slow path widens the IC ([§5.2](#52-what-the-baseline-tier-emits)) — P5.
 - [ ] Slow-path edge doubles as the deopt / uncommon-trap edge in the optimized tier ([§5.2](#52-what-the-baseline-tier-emits), [08 §3](08-execution-tiers-and-cranelift.md)) — P7, `S-5`.
-- [ ] `select_slow` general resolver dispatching on representation (binary search for `Flat`, HAMT `get` for `Hamt`) ([§5.1](#51-the-mechanism), [§6.4](#64-interaction-with-inline-caches)) — P5.
+- [x] Current P1 direct flat selection substrate: the tree-walk
+      `Select`/`HasAttr` path evaluates receivers, attr-path segments, and
+      select defaults where present under the checked semantics in
+      [25](25-intermediate-representation.md) §4, then performs direct checked
+      lookup through `FlatAttrs::get` / `get_entry` binary search over
+      symbol-sorted entries. This claims no `InlineCache`, shape guard,
+      constant-offset load, `aos_select_ic`, `select_slow` runtime helper, HAMT
+      dispatch, PIC widening, or deopt/uncommon-trap edge.
+- [ ] Future P5 `select_slow` / IC resolver: representation-dispatching
+      runtime helper for `Flat` binary search and `Hamt` lookup, reached from
+      the PIC miss/slow path and native `aos_select_ic` machinery
+      ([§5.1](#51-the-mechanism), [§6.4](#64-interaction-with-inline-caches)) — P5.
 
 ### The update operator `//`
 
