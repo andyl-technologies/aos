@@ -713,7 +713,19 @@ harness, never cut for scope.
 
 ### Symbol interning (foundation)
 
-- [ ] Global append-only `SymbolTable` interning attribute names to dense `u32` `Symbol` at parse time; spelling + lexicographic sort rank retained ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1, `S-10`; gate: conformance 20-21.
+- [x] Current dense-symbol substrate: file-local or explicitly threaded
+      `SymbolTable`s intern attribute names and other symbol-bearing frontend
+      bytes to dense `u32` `Symbol`s, retain the original byte spelling through
+      `resolve`, and flow through parsed AST, resolved AST, IR, and the
+      tree-walk evaluator. Runtime-created/dynamic attr keys are interned into
+      the active evaluator symbol table, cached import IR remaps file-local
+      symbols into that active table, and `FlatAttrs` consumes the same symbol
+      universe for symbol-id lookup while computing observable lexicographic
+      order from retained bytes. This does not claim a global/shared table,
+      lock-free reads, or cached lexicographic sort ranks ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1 current substrate, `S-10`; gate: conformance 20-21.
+- [ ] Global append-only/shared `SymbolTable` with cached lexicographic sort
+      ranks and integration with future process-wide shape/HAMT tables remains
+      open; parallel read behavior is tracked by the next row ([§3](#3-symbol-interning-attribute-names-are-u32)) — P1/P5, `S-10`; gate: conformance 20-21.
 - [ ] Lock-free / unsynchronized shared read access for parallel forcing workers (append-only ⇒ no reader lock) ([§3](#3-symbol-interning-attribute-names-are-u32), [13](13-parallel-evaluation.md)) — P3.5, `C-12`; gate: loom.
 
 ### Hidden classes (shapes) and the transition tree
