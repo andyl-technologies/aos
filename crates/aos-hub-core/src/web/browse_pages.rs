@@ -191,6 +191,9 @@ pub fn instance_home(
             let (state, class) = match status.as_ref().map(|s| s.state.as_str()) {
                 Some("fresh") => ("fresh", "ok"),
                 Some("failed") => ("failed", "bad"),
+                // A successfully-indexed empty registry: nothing published yet,
+                // not a problem — neutral, not a warning.
+                Some("empty") => ("empty", "dim"),
                 Some(other) => (other, "warn"),
                 None => ("unregistered", "dim"),
             };
@@ -315,8 +318,10 @@ pub fn registry_home(
                 );
             }
             // A freshly-created registry with no surface published yet, or one
-            // still awaiting its first index pass — not an error.
-            "pending" | "indexing" => {
+            // still awaiting its first index pass — not an error. `empty` is the
+            // terminal "indexed, nothing published" state; `pending`/`indexing`
+            // are its transient cousins. All read the same to a visitor.
+            "empty" | "pending" | "indexing" => {
                 body.push_str(
                     "<p class=\"dim\">No releases published to this registry yet.</p>\n",
                 );

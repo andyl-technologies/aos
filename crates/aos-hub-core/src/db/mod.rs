@@ -2829,6 +2829,35 @@ impl Database {
         Ok(())
     }
 
+    /// Mark a registry's index `empty`: it was indexed successfully and there is
+    /// nothing published yet (no `info/refs` surface).
+    ///
+    /// This is a *terminal success* state — the index ran to completion and
+    /// found no content — distinct from `pending` (a transient backend hiccup
+    /// awaiting retry) and from `failed` (a real error). `indexed_at` is stamped
+    /// so the registry reads as "checked, nothing here" rather than "never
+    /// indexed", and the last-commit / refs-digest are cleared so the next pass
+    /// (once something is published) takes the full index path, not the
+    /// unchanged-refs fast path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn mark_index_empty(&self, registry_id: i64) -> Result<()> {
+        self.backend
+            .execute(
+                "INSERT INTO registry_index (registry_id, state, error, indexed_at)
+             VALUES (?1, 'empty', NULL, ?2)
+             ON CONFLICT(registry_id) DO UPDATE SET
+                 state = 'empty', error = NULL,
+                 last_indexed_commit = NULL, refs_digest = NULL,
+                 indexed_at = excluded.indexed_at",
+                &vals![registry_id, unix_now()],
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Mark a registry's index stale (surface unreachable), keeping the
     /// last good index.
     ///
