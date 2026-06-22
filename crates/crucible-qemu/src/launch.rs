@@ -6,6 +6,8 @@
 //! later supervision code will pass to the child process.
 
 use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -14,8 +16,14 @@ const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "tcg,thread=single";
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
-const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off";
+const DEFAULT_KERNEL_CMDLINE: &str =
+    "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off";
+const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
 const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
+const GUEST_ENTROPY_FW_CFG_NAME: &str = "opt/crucible/seed";
+const GUEST_ENTROPY_SEED_FILE_NAME: &str = "crucible-guest-entropy-seed.bin";
+const GUEST_ENTROPY_RNG_ID: &str = "crucible-rng0";
+const GUEST_ENTROPY_SEED_BYTES: usize = 32;
 const MAX_ICOUNT_SHIFT: u8 = 62;
 
 /// A candidate QEMU launch profile before determinism validation.
@@ -39,6 +47,8 @@ pub struct LaunchProfileCandidate {
     pub rtc_clock: String,
     /// The guest kernel command line.
     pub kernel_cmdline: String,
+    /// The scenario seed used to derive guest-visible firmware entropy.
+    pub scenario_seed: u64,
     /// The run seed passed to QEMU's deterministic random path.
     pub run_seed: u64,
     /// The reset discipline for RAM and emulated devices.
@@ -61,6 +71,7 @@ impl Default for LaunchProfileCandidate {
             rtc_epoch_utc: DEFAULT_RTC_EPOCH_UTC.to_owned(),
             rtc_clock: "vm".to_owned(),
             kernel_cmdline: DEFAULT_KERNEL_CMDLINE.to_owned(),
+            scenario_seed: DEFAULT_SCENARIO_SEED,
             run_seed: DEFAULT_RUN_SEED,
             machine_reset: MachineResetMode::Deterministic,
             disk_image_mode: DiskImageMode::CopyOnWriteOverlay,
@@ -133,10 +144,19 @@ impl LaunchProfileCandidate {
         self
     }
 
+    /// Returns a candidate with a different scenario seed.
+    #[must_use]
+    pub fn with_scenario_seed(mut self, scenario_seed: u64) -> Self {
+        self.scenario_seed = scenario_seed;
+        self.run_seed = scenario_seed;
+        self
+    }
+
     /// Returns a candidate with a different deterministic run seed.
     #[must_use]
     pub fn with_run_seed(mut self, run_seed: u64) -> Self {
         self.run_seed = run_seed;
+        self.scenario_seed = run_seed;
         self
     }
 
@@ -195,8 +215,25 @@ impl LaunchProfileCandidate {
                 clock: self.rtc_clock,
             });
         }
-        if self.kernel_cmdline.contains("random.trust_cpu=on") {
-            return Err(LaunchProfileError::KernelTrustsHostCpuRandom);
+        require_kernel_random_trust_off(
+            &self.kernel_cmdline,
+            "random.trust_cpu",
+            LaunchProfileError::KernelCpuRandomTrustNotDisabled,
+            LaunchProfileError::KernelTrustsHostCpuRandom,
+            LaunchProfileError::KernelCpuRandomTrustAmbiguous,
+        )?;
+        require_kernel_random_trust_off(
+            &self.kernel_cmdline,
+            "random.trust_bootloader",
+            LaunchProfileError::KernelBootloaderRandomTrustNotDisabled,
+            LaunchProfileError::KernelTrustsBootloaderRandom,
+            LaunchProfileError::KernelBootloaderRandomTrustAmbiguous,
+        )?;
+        if self.run_seed != self.scenario_seed {
+            return Err(LaunchProfileError::RunSeedDiffersFromScenarioSeed {
+                scenario_seed: self.scenario_seed,
+                run_seed: self.run_seed,
+            });
         }
         if self.machine_reset != MachineResetMode::Deterministic {
             return Err(LaunchProfileError::MachineResetNotDeterministic {
@@ -221,8 +258,83 @@ impl LaunchProfileCandidate {
             icount_shift,
             rtc_epoch_utc: self.rtc_epoch_utc,
             kernel_cmdline: self.kernel_cmdline,
+            scenario_seed: self.scenario_seed,
             run_seed: self.run_seed,
+            guest_entropy_seed: GuestEntropySeed::from_scenario_seed(self.scenario_seed),
         })
+    }
+}
+
+/// A deterministic seed delivered to the guest through QEMU firmware config.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestEntropySeed {
+    bytes: [u8; GUEST_ENTROPY_SEED_BYTES],
+}
+
+impl GuestEntropySeed {
+    /// Derives guest entropy from a scenario seed.
+    #[must_use]
+    pub fn from_scenario_seed(scenario_seed: u64) -> Self {
+        let mut bytes = [0; GUEST_ENTROPY_SEED_BYTES];
+        let mut state = scenario_seed ^ 0x4352_5543_4942_4c45;
+
+        for (index, chunk) in bytes.chunks_exact_mut(8).enumerate() {
+            state = state
+                .wrapping_add(0x9e37_79b9_7f4a_7c15)
+                .wrapping_add(index as u64);
+            chunk.copy_from_slice(&splitmix64(state).to_le_bytes());
+        }
+
+        Self { bytes }
+    }
+
+    /// Returns the seed bytes as delivered to the guest entropy boundary.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8; GUEST_ENTROPY_SEED_BYTES] {
+        &self.bytes
+    }
+
+    /// Returns the seed bytes as lowercase hexadecimal text.
+    #[must_use]
+    pub fn to_lower_hex(&self) -> String {
+        let mut hex = String::with_capacity(GUEST_ENTROPY_SEED_BYTES * 2);
+        for byte in self.bytes {
+            hex.push(nibble_to_hex(byte >> 4));
+            hex.push(nibble_to_hex(byte & 0x0f));
+        }
+        hex
+    }
+}
+
+/// A deterministic fw_cfg seed file required by a launch profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestEntropySeedFile {
+    file_name: &'static str,
+    bytes: [u8; GUEST_ENTROPY_SEED_BYTES],
+}
+
+impl GuestEntropySeedFile {
+    /// Returns the file name referenced by the canonical QEMU `-fw_cfg` argument.
+    #[must_use]
+    pub fn file_name(&self) -> &'static str {
+        self.file_name
+    }
+
+    /// Returns the exact bytes that must be written to the fw_cfg seed file.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8; GUEST_ENTROPY_SEED_BYTES] {
+        &self.bytes
+    }
+
+    /// Writes the deterministic seed file into a QEMU working directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns any filesystem error reported while writing the seed file.
+    pub fn write_to_dir(&self, dir: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+        let path = dir.as_ref().join(self.file_name);
+        fs::write(&path, self.bytes.as_slice())?;
+        Ok(path)
     }
 }
 
@@ -235,7 +347,9 @@ pub struct DeterministicLaunchProfile {
     icount_shift: u8,
     rtc_epoch_utc: String,
     kernel_cmdline: String,
+    scenario_seed: u64,
     run_seed: u64,
+    guest_entropy_seed: GuestEntropySeed,
 }
 
 impl DeterministicLaunchProfile {
@@ -252,6 +366,8 @@ impl DeterministicLaunchProfile {
     /// Returns the QEMU arguments that pin the deterministic launch surface.
     #[must_use]
     pub fn canonical_qemu_args(&self) -> Vec<String> {
+        let seed_file = self.guest_entropy_seed_file();
+
         vec![
             "-nodefaults".to_owned(),
             "-no-user-config".to_owned(),
@@ -279,6 +395,15 @@ impl DeterministicLaunchProfile {
             format!("base={},clock=vm", self.rtc_epoch_utc),
             "-seed".to_owned(),
             self.run_seed.to_string(),
+            "-fw_cfg".to_owned(),
+            format!(
+                "name={GUEST_ENTROPY_FW_CFG_NAME},file={}",
+                seed_file.file_name()
+            ),
+            "-object".to_owned(),
+            format!("rng-builtin,id={GUEST_ENTROPY_RNG_ID}"),
+            "-device".to_owned(),
+            format!("virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}"),
             "-append".to_owned(),
             self.kernel_cmdline.clone(),
         ]
@@ -302,11 +427,43 @@ impl DeterministicLaunchProfile {
             "ram_reset=zeroed-fresh-anonymous-memory".to_owned(),
             "disk_image_mode=copy-on-write-overlay".to_owned(),
             "input_policy=no-interactive-input".to_owned(),
+            format!("scenario_seed={}", self.scenario_seed),
             format!("qemu_run_seed={}", self.run_seed),
-            "qemu_run_seed_controls=guest-random,glib-global-prng".to_owned(),
+            "qemu_run_seed_controls=guest-random,glib-global-prng,rng-builtin".to_owned(),
+            format!("guest_entropy_fw_cfg_name={GUEST_ENTROPY_FW_CFG_NAME}"),
+            format!("guest_entropy_seed_file_name={GUEST_ENTROPY_SEED_FILE_NAME}"),
+            "guest_entropy_seed_source=scenario-seed".to_owned(),
+            format!(
+                "guest_entropy_seed_hex={}",
+                self.guest_entropy_seed.to_lower_hex()
+            ),
+            format!("guest_entropy_rng_object=rng-builtin,id={GUEST_ENTROPY_RNG_ID}"),
+            format!("guest_entropy_rng_device=virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}"),
+            "guest_entropy_host_sources=disabled".to_owned(),
             format!("kernel_cmdline={}", self.kernel_cmdline),
         ]
         .join("\n")
+    }
+
+    /// Returns the scenario seed used for guest entropy derivation.
+    #[must_use]
+    pub fn scenario_seed(&self) -> u64 {
+        self.scenario_seed
+    }
+
+    /// Returns the deterministic firmware seed supplied to guest entropy.
+    #[must_use]
+    pub fn guest_entropy_seed(&self) -> GuestEntropySeed {
+        self.guest_entropy_seed
+    }
+
+    /// Returns the seed-file artifact that must be materialized for QEMU.
+    #[must_use]
+    pub fn guest_entropy_seed_file(&self) -> GuestEntropySeedFile {
+        GuestEntropySeedFile {
+            file_name: GUEST_ENTROPY_SEED_FILE_NAME,
+            bytes: *self.guest_entropy_seed.bytes(),
+        }
     }
 
     /// Converts an instruction count to virtual nanoseconds.
@@ -414,8 +571,31 @@ pub enum LaunchProfileError {
         clock: String,
     },
     /// The kernel command line trusts host CPU randomness.
-    #[error("kernel command line must not enable `random.trust_cpu=on`")]
+    #[error("kernel command line must not enable `random.trust_cpu`")]
     KernelTrustsHostCpuRandom,
+    /// The kernel command line did not explicitly distrust CPU randomness.
+    #[error("kernel command line must include `random.trust_cpu=off`")]
+    KernelCpuRandomTrustNotDisabled,
+    /// The kernel command line specified CPU random trust more than once.
+    #[error("kernel command line must specify `random.trust_cpu=off` exactly once")]
+    KernelCpuRandomTrustAmbiguous,
+    /// The kernel command line trusts bootloader-provided randomness.
+    #[error("kernel command line must not enable `random.trust_bootloader`")]
+    KernelTrustsBootloaderRandom,
+    /// The kernel command line did not explicitly distrust bootloader randomness.
+    #[error("kernel command line must include `random.trust_bootloader=off`")]
+    KernelBootloaderRandomTrustNotDisabled,
+    /// The kernel command line specified bootloader random trust more than once.
+    #[error("kernel command line must specify `random.trust_bootloader=off` exactly once")]
+    KernelBootloaderRandomTrustAmbiguous,
+    /// The deterministic QEMU run seed diverged from the scenario seed.
+    #[error("QEMU run seed {run_seed} must equal scenario seed {scenario_seed}")]
+    RunSeedDiffersFromScenarioSeed {
+        /// The scenario seed used for guest entropy.
+        scenario_seed: u64,
+        /// The QEMU run seed used for QEMU internal entropy.
+        run_seed: u64,
+    },
     /// Machine reset state was not deterministic.
     #[error("machine reset must be deterministic, got `{mode}`")]
     MachineResetNotDeterministic {
@@ -529,5 +709,66 @@ fn validate_fixed_text(field: &'static str, value: &str) -> Result<(), LaunchPro
         Err(LaunchProfileError::InvalidFixedText { field })
     } else {
         Ok(())
+    }
+}
+
+fn require_kernel_random_trust_off(
+    cmdline: &str,
+    key: &'static str,
+    missing: LaunchProfileError,
+    enabled: LaunchProfileError,
+    ambiguous: LaunchProfileError,
+) -> Result<(), LaunchProfileError> {
+    match kernel_cmdline_value(cmdline, key) {
+        KernelCmdlineValue::Single("off") => Ok(()),
+        KernelCmdlineValue::Single(_) => Err(enabled),
+        KernelCmdlineValue::Duplicate => Err(ambiguous),
+        KernelCmdlineValue::Missing => Err(missing),
+    }
+}
+
+enum KernelCmdlineValue<'a> {
+    Missing,
+    Single(&'a str),
+    Duplicate,
+}
+
+fn kernel_cmdline_value<'a>(cmdline: &'a str, key: &str) -> KernelCmdlineValue<'a> {
+    let mut value = None;
+
+    for argument in cmdline.split_ascii_whitespace() {
+        let candidate = if argument == key {
+            Some("on")
+        } else {
+            argument
+                .strip_prefix(key)
+                .and_then(|remainder| remainder.strip_prefix('='))
+        };
+
+        if let Some(candidate) = candidate {
+            if value.is_some() {
+                return KernelCmdlineValue::Duplicate;
+            }
+            value = Some(candidate);
+        }
+    }
+
+    match value {
+        Some(value) => KernelCmdlineValue::Single(value),
+        None => KernelCmdlineValue::Missing,
+    }
+}
+
+fn splitmix64(mut value: u64) -> u64 {
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn nibble_to_hex(nibble: u8) -> char {
+    match nibble {
+        0..=9 => (b'0' + nibble) as char,
+        10..=15 => (b'a' + (nibble - 10)) as char,
+        _ => unreachable!("nibble is masked to four bits"),
     }
 }

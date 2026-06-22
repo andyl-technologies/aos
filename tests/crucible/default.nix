@@ -58,6 +58,7 @@ in {
     documentationHygiene = import ./phase1-documentation-hygiene.nix {inherit pkgs lib;};
     engineeringHygiene = import ./phase1-engineering-hygiene.nix {inherit pkgs lib;};
     gateTargetMapping = import ./phase1-gate-target-mapping.nix {inherit pkgs lib;};
+    guestEntropyLaunch = import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;};
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
@@ -78,8 +79,13 @@ in {
         gateName = "gate:layer0-determinism";
         owner = "crucible-sim";
         phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-5"];
-        reason = "L0 determinism suite is intentionally pending";
+        taskIds = ["T-PLAN-3" "T-HARN-5" "T-DET-1" "T-DET-4" "T-DET-5"];
+        dependencies = [
+          (import ./phase1-deterministic-launch.nix {inherit pkgs lib;})
+          (import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;})
+          (import ./phase1-guest-entropy-launch.nix {inherit pkgs lib;})
+        ];
+        reason = "L0 aggregate suite is intentionally pending after completed launch and entropy leaf checks";
       };
       contentAddress = redGate {
         attrPath = "checks.crucible.phase1.gates.contentAddress";

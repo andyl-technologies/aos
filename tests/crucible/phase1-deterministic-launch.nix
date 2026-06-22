@@ -58,8 +58,40 @@
       needle = "const DEFAULT_RUN_SEED: u64 = 0x0010_c001;";
     }
     {
+      label = "fixed default scenario seed";
+      needle = "const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;";
+    }
+    {
+      label = "guest entropy fw_cfg name";
+      needle = "const GUEST_ENTROPY_FW_CFG_NAME: &str = \"opt/crucible/seed\";";
+    }
+    {
+      label = "guest entropy deterministic rng id";
+      needle = "const GUEST_ENTROPY_RNG_ID: &str = \"crucible-rng0\";";
+    }
+    {
+      label = "guest entropy seed filename";
+      needle = "const GUEST_ENTROPY_SEED_FILE_NAME: &str = \"crucible-guest-entropy-seed.bin\";";
+    }
+    {
+      label = "guest entropy seed size";
+      needle = "const GUEST_ENTROPY_SEED_BYTES: usize = 32;";
+    }
+    {
+      label = "guest entropy seed file artifact";
+      needle = "pub struct GuestEntropySeedFile";
+    }
+    {
+      label = "seed file materialization helper";
+      needle = "pub fn write_to_dir(&self, dir: impl AsRef<Path>) -> std::io::Result<PathBuf>";
+    }
+    {
       label = "guest refuses CPU randomness";
       needle = "random.trust_cpu=off";
+    }
+    {
+      label = "guest refuses bootloader randomness";
+      needle = "random.trust_bootloader=off";
     }
     {
       label = "single vCPU default";
@@ -127,7 +159,47 @@
     }
     {
       label = "host CPU random trust rejection";
-      needle = "random.trust_cpu=on";
+      needle = "KernelTrustsHostCpuRandom";
+    }
+    {
+      label = "host CPU random trust must be disabled";
+      needle = "KernelCpuRandomTrustNotDisabled";
+    }
+    {
+      label = "duplicate CPU random trust rejection";
+      needle = "KernelCpuRandomTrustAmbiguous";
+    }
+    {
+      label = "exact random.trust_cpu off validation";
+      needle = "require_kernel_random_trust_off(";
+    }
+    {
+      label = "bootloader random trust rejection";
+      needle = "KernelTrustsBootloaderRandom";
+    }
+    {
+      label = "bootloader random trust must be disabled";
+      needle = "KernelBootloaderRandomTrustNotDisabled";
+    }
+    {
+      label = "duplicate bootloader random trust rejection";
+      needle = "KernelBootloaderRandomTrustAmbiguous";
+    }
+    {
+      label = "kernel cmdline exact value parser";
+      needle = "fn kernel_cmdline_value";
+    }
+    {
+      label = "run seed scenario seed unification";
+      needle = "RunSeedDiffersFromScenarioSeed";
+    }
+    {
+      label = "scenario seed setter updates run seed";
+      needle = "self.run_seed = scenario_seed;";
+    }
+    {
+      label = "run seed setter updates scenario seed";
+      needle = "self.scenario_seed = run_seed;";
     }
     {
       label = "nodefaults launch flag";
@@ -160,6 +232,26 @@
     {
       label = "QEMU deterministic seed argument";
       needle = "self.run_seed.to_string(),";
+    }
+    {
+      label = "guest entropy fw_cfg launch flag";
+      needle = "\"-fw_cfg\".to_owned(),";
+    }
+    {
+      label = "guest entropy fw_cfg seed argument";
+      needle = "seed_file.file_name()";
+    }
+    {
+      label = "guest entropy seed file accessor";
+      needle = "pub fn guest_entropy_seed_file(&self) -> GuestEntropySeedFile";
+    }
+    {
+      label = "deterministic virtio rng object";
+      needle = "format!(\"rng-builtin,id={GUEST_ENTROPY_RNG_ID}\")";
+    }
+    {
+      label = "deterministic virtio rng device";
+      needle = "format!(\"virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}\")";
     }
     {
       label = "launch hash version";
@@ -198,16 +290,44 @@
       needle = "\"ram_reset=zeroed-fresh-anonymous-memory\".to_owned(),";
     }
     {
+      label = "scenario seed in hash material";
+      needle = "format!(\"scenario_seed={}\", self.scenario_seed),";
+    }
+    {
       label = "QEMU run seed in hash material";
       needle = "format!(\"qemu_run_seed={}\", self.run_seed),";
     }
     {
       label = "QEMU run seed entropy scope in hash material";
-      needle = "\"qemu_run_seed_controls=guest-random,glib-global-prng\".to_owned(),";
+      needle = "\"qemu_run_seed_controls=guest-random,glib-global-prng,rng-builtin\".to_owned(),";
+    }
+    {
+      label = "guest entropy fw_cfg name in hash material";
+      needle = "format!(\"guest_entropy_fw_cfg_name={GUEST_ENTROPY_FW_CFG_NAME}\"),";
+    }
+    {
+      label = "guest entropy seed source in hash material";
+      needle = "\"guest_entropy_seed_source=scenario-seed\".to_owned(),";
+    }
+    {
+      label = "guest entropy seed in hash material";
+      needle = "format!(\n                \"guest_entropy_seed_hex={}\",";
+    }
+    {
+      label = "guest entropy host source ban in hash material";
+      needle = "\"guest_entropy_host_sources=disabled\".to_owned(),";
     }
     {
       label = "checked virtual time conversion";
       needle = ".checked_mul(scale)";
+    }
+    {
+      label = "guest entropy seed derivation";
+      needle = "GuestEntropySeed::from_scenario_seed(self.scenario_seed)";
+    }
+    {
+      label = "guest entropy splitmix derivation";
+      needle = "fn splitmix64(mut value: u64) -> u64";
     }
   ];
 
@@ -253,6 +373,46 @@
       needle = "[\"-seed\", \"1097729\"]";
     }
     {
+      label = "fw_cfg seed assertion";
+      needle = "name=opt/crucible/seed,file=crucible-guest-entropy-seed.bin";
+    }
+    {
+      label = "fw_cfg seed file binding assertion";
+      needle = "launch_profile_binds_fw_cfg_file_to_guest_entropy_seed";
+    }
+    {
+      label = "seed file write assertion";
+      needle = "seed_file.write_to_dir(&dir)";
+    }
+    {
+      label = "rng-builtin assertion";
+      needle = "[\"-object\", \"rng-builtin,id=crucible-rng0\"]";
+    }
+    {
+      label = "virtio-rng assertion";
+      needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
+    }
+    {
+      label = "missing random.trust_cpu rejection assertion";
+      needle = "LaunchProfileError::KernelCpuRandomTrustNotDisabled";
+    }
+    {
+      label = "missing random.trust_bootloader rejection assertion";
+      needle = "LaunchProfileError::KernelBootloaderRandomTrustNotDisabled";
+    }
+    {
+      label = "duplicate random.trust_cpu rejection assertion";
+      needle = "LaunchProfileError::KernelCpuRandomTrustAmbiguous";
+    }
+    {
+      label = "duplicate random.trust_bootloader rejection assertion";
+      needle = "LaunchProfileError::KernelBootloaderRandomTrustAmbiguous";
+    }
+    {
+      label = "split seed rejection assertion";
+      needle = "LaunchProfileError::RunSeedDiffersFromScenarioSeed";
+    }
+    {
       label = "zero memory rejection assertion";
       needle = "LaunchProfileError::MemorySizeZero";
     }
@@ -269,8 +429,32 @@
       needle = "qemu_run_seed=1097729";
     }
     {
+      label = "scenario seed hash material assertion";
+      needle = "scenario_seed=1097729";
+    }
+    {
+      label = "guest entropy seed hash material assertion";
+      needle = "guest_entropy_seed_hex=";
+    }
+    {
+      label = "guest entropy source assertion";
+      needle = "guest_entropy_seed_source=scenario-seed";
+    }
+    {
+      label = "guest entropy host-source ban assertion";
+      needle = "guest_entropy_host_sources=disabled";
+    }
+    {
+      label = "guest entropy seed derivation test";
+      needle = "guest_entropy_seed_is_scenario_seed_derived";
+    }
+    {
       label = "run seed drift assertion";
       needle = "with_run_seed(0x1234)";
+    }
+    {
+      label = "scenario seed drift assertion";
+      needle = "with_scenario_seed(0x1234)";
     }
     {
       label = "launch material scenario identity test";
@@ -370,7 +554,13 @@ in
             icount=shift=0,sleep=off,align=off
             rtc=base=2026-01-01T00:00:00,clock=vm
             qemu_seed=1097729
-            qemu_seed_controls=guest-random,glib-global-prng
+            qemu_seed_controls=guest-random,glib-global-prng,rng-builtin
+            scenario_seed=1097729
+            guest_entropy_fw_cfg=opt/crucible/seed
+            guest_entropy_seed_source=scenario-seed
+            guest_entropy_rng_object=rng-builtin,id=crucible-rng0
+            guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0
+            guest_entropy_host_sources=disabled
             virtual_time_ns=icount<<shift
             RESULT
           '';

@@ -50,6 +50,18 @@ fn default_launch_profile_pins_contract_a_arguments() {
             .any(|window| window == ["-rtc", "base=2026-01-01T00:00:00,clock=vm"])
     );
     assert!(args.windows(2).any(|window| window == ["-seed", "1097729"]));
+    assert!(args.windows(2).any(|window| {
+        window[0] == "-fw_cfg"
+            && window[1] == "name=opt/crucible/seed,file=crucible-guest-entropy-seed.bin"
+    }));
+    assert!(
+        args.windows(2)
+            .any(|window| window == ["-object", "rng-builtin,id=crucible-rng0"])
+    );
+    assert!(
+        args.windows(2)
+            .any(|window| window == ["-device", "virtio-rng-pci,rng=crucible-rng0"])
+    );
     assert!(args.iter().any(|arg| arg == "-nodefaults"));
     assert!(args.iter().any(|arg| arg == "-no-user-config"));
 }
@@ -86,6 +98,61 @@ fn launch_profile_rejects_host_entropy_and_host_timing() {
             .try_into_deterministic(),
         Err(LaunchProfileError::RtcClockNotVm { .. })
     ));
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet")
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelCpuRandomTrustNotDisabled)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off")
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelBootloaderRandomTrustNotDisabled)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=on",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelTrustsBootloaderRandom)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_cpu=1 random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelCpuRandomTrustAmbiguous)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=1 random.trust_bootloader=off",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelTrustsHostCpuRandom)
+    );
+    assert_eq!(
+        LaunchProfileCandidate::default()
+            .with_kernel_cmdline(
+                "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off random.trust_bootloader=1",
+            )
+            .try_into_deterministic(),
+        Err(LaunchProfileError::KernelBootloaderRandomTrustAmbiguous)
+    );
+    assert_eq!(
+        LaunchProfileCandidate {
+            run_seed: 0x1234,
+            ..LaunchProfileCandidate::default()
+        }
+        .try_into_deterministic(),
+        Err(LaunchProfileError::RunSeedDiffersFromScenarioSeed {
+            scenario_seed: 0x0010_c001,
+            run_seed: 0x1234,
+        })
+    );
 }
 
 #[test]
@@ -147,12 +214,28 @@ fn launch_hash_material_records_every_determinism_field() {
         "ram_reset=zeroed-fresh-anonymous-memory",
         "disk_image_mode=copy-on-write-overlay",
         "input_policy=no-interactive-input",
+        "scenario_seed=1097729",
         "qemu_run_seed=1097729",
-        "qemu_run_seed_controls=guest-random,glib-global-prng",
-        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off",
+        "qemu_run_seed_controls=guest-random,glib-global-prng,rng-builtin",
+        "guest_entropy_fw_cfg_name=opt/crucible/seed",
+        "guest_entropy_seed_file_name=crucible-guest-entropy-seed.bin",
+        "guest_entropy_seed_source=scenario-seed",
+        "guest_entropy_rng_object=rng-builtin,id=crucible-rng0",
+        "guest_entropy_rng_device=virtio-rng-pci,rng=crucible-rng0",
+        "guest_entropy_host_sources=disabled",
+        "kernel_cmdline=console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off",
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
+    let seed_hex_line = material
+        .lines()
+        .find(|line| line.starts_with("guest_entropy_seed_hex="))
+        .unwrap_or_default();
+    assert_eq!(
+        seed_hex_line.len(),
+        "guest_entropy_seed_hex=".len() + 64,
+        "guest entropy seed must be 32 bytes of lowercase hex"
+    );
 
     let shifted = deterministic(
         LaunchProfileCandidate::default().with_icount_shift(IcountShiftSetting::Fixed(1)),
@@ -165,11 +248,12 @@ fn launch_hash_material_records_every_determinism_field() {
     let epoch =
         deterministic(LaunchProfileCandidate::default().with_rtc_epoch_utc("2026-01-02T00:00:00"))
             .scenario_hash_material();
-    let cmdline = deterministic(
-        LaunchProfileCandidate::default()
-            .with_kernel_cmdline("console=ttyS0 reboot=k panic=1 quiet"),
-    )
+    let cmdline = deterministic(LaunchProfileCandidate::default().with_kernel_cmdline(
+        "console=ttyS0 reboot=k panic=1 quiet random.trust_cpu=off random.trust_bootloader=off net.ifnames=0",
+    ))
     .scenario_hash_material();
+    let scenario_seed = deterministic(LaunchProfileCandidate::default().with_scenario_seed(0x1234))
+        .scenario_hash_material();
     let run_seed = deterministic(LaunchProfileCandidate::default().with_run_seed(0x1234))
         .scenario_hash_material();
 
@@ -178,7 +262,64 @@ fn launch_hash_material_records_every_determinism_field() {
     assert_ne!(material, memory);
     assert_ne!(material, epoch);
     assert_ne!(material, cmdline);
+    assert_ne!(material, scenario_seed);
     assert_ne!(material, run_seed);
+}
+
+#[test]
+fn launch_profile_binds_fw_cfg_file_to_guest_entropy_seed() {
+    let profile = default_profile();
+    let seed_file = profile.guest_entropy_seed_file();
+
+    assert_eq!(seed_file.file_name(), "crucible-guest-entropy-seed.bin");
+    assert_eq!(seed_file.bytes(), profile.guest_entropy_seed().bytes());
+    assert!(profile.canonical_qemu_args().windows(2).any(|window| {
+        window[0] == "-fw_cfg"
+            && window[1] == format!("name=opt/crucible/seed,file={}", seed_file.file_name())
+    }));
+
+    let mut dir = std::env::temp_dir();
+    dir.push(format!("crucible-qemu-seed-file-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap_or_else(|error| {
+        panic!("failed to create temporary seed-file directory {dir:?}: {error}");
+    });
+
+    let path = seed_file.write_to_dir(&dir).unwrap_or_else(|error| {
+        panic!("failed to write deterministic seed file into {dir:?}: {error}");
+    });
+    let written = std::fs::read(&path).unwrap_or_else(|error| {
+        panic!("failed to read deterministic seed file {path:?}: {error}");
+    });
+    assert_eq!(written.as_slice(), seed_file.bytes());
+
+    std::fs::remove_dir_all(&dir).unwrap_or_else(|error| {
+        panic!("failed to remove temporary seed-file directory {dir:?}: {error}");
+    });
+}
+
+#[test]
+fn guest_entropy_seed_is_scenario_seed_derived() {
+    let first = default_profile();
+    let repeated = default_profile();
+    let changed_scenario_seed =
+        deterministic(LaunchProfileCandidate::default().with_scenario_seed(0x1234));
+    let changed_run_seed = deterministic(LaunchProfileCandidate::default().with_run_seed(0x1234));
+
+    assert_eq!(first.guest_entropy_seed(), repeated.guest_entropy_seed());
+    assert_eq!(first.guest_entropy_seed().bytes().len(), 32);
+    assert_ne!(
+        first.guest_entropy_seed(),
+        changed_scenario_seed.guest_entropy_seed()
+    );
+    assert_ne!(
+        first.guest_entropy_seed(),
+        changed_run_seed.guest_entropy_seed(),
+        "the QEMU internal seed is unified with the guest CSPRNG scenario seed"
+    );
+    assert_eq!(first.scenario_seed(), 0x0010_c001);
+    assert_eq!(changed_scenario_seed.scenario_seed(), 0x1234);
+    assert_eq!(changed_run_seed.scenario_seed(), 0x1234);
 }
 
 #[test]

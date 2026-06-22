@@ -7,6 +7,7 @@
   phase,
   reason,
   taskIds,
+  dependencies ? [],
 }: let
   gateSlug = builtins.replaceStrings [":"] ["-"] gateName;
 in
@@ -15,7 +16,7 @@ in
     version = "0";
     src = null;
 
-    buildDeps = [pkgs.coreutils];
+    buildDeps = [pkgs.coreutils] ++ dependencies;
 
     phases = [
       {
