@@ -214,6 +214,41 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
 }
 
 #[test]
+fn artifact_bundle_hydrates_entry_files() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let hydrated = ParseCacheEntry::new(root.join("hydrated-entry"));
+
+    hydrated
+        .write_artifact_bundle(&bundle)
+        .expect("artifact bundle hydrates");
+
+    assert!(hydrated.is_complete());
+    assert_eq!(
+        hydrated
+            .read_artifact_bundle()
+            .expect("hydrated bundle reads"),
+        bundle
+    );
+    let resolved = hydrated
+        .read_resolved()
+        .expect("hydrated resolved artifact reads");
+    assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
+    let ir = hydrated.read_ir().expect("hydrated IR artifact reads");
+    assert!(lowered_ir_matches(&ir, &parsed.ir));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn artifact_bundle_rejects_invalid_payloads() {
     let short = ParseArtifactBundle::decode(b"bad").expect_err("short bundle errors");
     assert!(matches!(

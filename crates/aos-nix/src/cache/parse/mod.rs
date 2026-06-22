@@ -654,6 +654,53 @@ impl ParseCacheEntry {
         Ok(ParseArtifactBundle::new(resolved, ir, symbols, meta_toml))
     }
 
+    /// Writes a raw parse-cache artifact bundle into this entry.
+    ///
+    /// The metadata file is removed before payload files are written and
+    /// rewritten last, so incomplete bundle hydration does not look like a
+    /// complete cache entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the entry directory cannot be created or
+    /// any bundled artifact file cannot be written.
+    pub fn write_artifact_bundle(
+        &self,
+        bundle: &ParseArtifactBundle,
+    ) -> Result<(), ParseCacheError> {
+        self.ensure_dir()?;
+        let resolved_path = self.resolved_path();
+        let ir_path = self.ir_path();
+        let symbols_path = self.symbols_path();
+        let meta_path = self.meta_path();
+
+        let _ = fs::remove_file(&meta_path);
+        write_cache_file_atomic(&resolved_path, bundle.resolved_bytes()).map_err(|source| {
+            ParseCacheError::WriteArtifact {
+                path: resolved_path,
+                source,
+            }
+        })?;
+        write_cache_file_atomic(&ir_path, bundle.ir_bytes()).map_err(|source| {
+            ParseCacheError::WriteArtifact {
+                path: ir_path,
+                source,
+            }
+        })?;
+        write_cache_file_atomic(&symbols_path, bundle.symbols_bytes()).map_err(|source| {
+            ParseCacheError::WriteArtifact {
+                path: symbols_path,
+                source,
+            }
+        })?;
+        write_cache_file_atomic(&meta_path, bundle.meta_toml_bytes()).map_err(|source| {
+            ParseCacheError::WriteMeta {
+                path: meta_path,
+                source,
+            }
+        })
+    }
+
     /// Reads a resolved AST artifact from this cache entry.
     ///
     /// # Errors

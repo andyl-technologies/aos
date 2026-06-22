@@ -514,6 +514,13 @@ alone (`M-1`/`Q-A`).
       bundle. This is payload-format substrate only; automatic file-artifact
       materialization, durable index updates, lookup, bundle-to-entry hydration,
       mmap reads, and harness proof remain open (`C-13`).
+- [x] Current parse-artifact bundle hydration adapter:
+      `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
+      entry, clearing `meta.toml` before payload writes and committing metadata
+      last so partial hydration is not treated as complete. This is explicit
+      entry hydration only; durable index lookup, automatic file-artifact
+      materialization, semantic validation before write, mmap reads, cache-hit
+      integration, and harness proof remain open (`C-13`).
 - [x] Current cache-level blob pack initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` handles after schema validation and owned-directory
