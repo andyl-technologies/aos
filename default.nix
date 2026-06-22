@@ -150,6 +150,28 @@
       else acc
   ) {} (builtins.attrNames pkgs);
 
+  packagesWithExpose =
+    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
+
+  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
+    inherit pkgs lib mkSystem testing;
+  };
+  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
+    inherit pkgs mkSystem testing;
+  };
+  packagePresetCheck = import ./lib/testing/package-preset.nix {
+    inherit pkgs mkSystem testing;
+  };
+  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
+    inherit pkgs lib mkSystem testing;
+  };
+  apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
+    inherit pkgs mkSystem testing;
+  };
+  selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
+    inherit pkgs mkSystem testing;
+  };
+
   # Stdenv cross-cutting integration check
   stdenvChecks = {
     cross-cutting-c-pipeline = testing.mkVMTest {
@@ -204,10 +226,16 @@
     ) (builtins.attrNames entries);
 
     loadSpec = filename: let
-      raw = (import (./tests/fleet + "/${filename}")) {
-        inherit lib pkgs;
+      specModule = import (./tests/fleet + "/${filename}");
+      availableArgs = {
+        inherit lib pkgs mkSystem;
+        inherit (testing) dataUrl;
         systems = discoverSystems;
       };
+      raw = specModule (
+        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+        availableArgs
+      );
       eval = lib.evalModules {
         modules = [
           {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
@@ -225,7 +253,7 @@
       fleetFiles
     );
 in {
-  inherit lib pkgs stdenv modules mkSystem;
+  inherit lib pkgs stdenv modules mkSystem packagesWithExpose;
 
   # Auto-discovered golden image systems.
   # Each system has .config, .options, .build, and .checks.
@@ -233,24 +261,26 @@ in {
 
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
-  checks = {
+  checks = rec {
     eval = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem;
+      inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
+      systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
     in {
-      inherit critical-pkgs hardening-probe kernel-config;
+      inherit critical-pkgs hardening-probe kernel-config package-root-image systemd-verity;
       # Single target that pulls in the whole build-check group.
       all = pkgs.mkDerivation {
         pname = "aos-build-checks-all";
         version = "0";
         src = null;
         buildDeps =
-          [critical-pkgs kernel-config]
+          [critical-pkgs kernel-config package-root-image systemd-verity]
           ++ builtins.attrValues hardening-probe;
         phases = [
           {
@@ -271,11 +301,27 @@ in {
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
+    systemd-verity = build.systemd-verity;
+    package-expose = import ./lib/testing/package-expose.nix {
+      inherit pkgs lib mkSystem packagesWithExpose;
+    };
+    package-firewall-reload = packageFirewallReloadCheck;
+    package-expose-lifecycle = packageExposeLifecycleCheck;
+    package-preset = packagePresetCheck;
+    package-test-http-server = packageTestHttpServerCheck;
+    selinux-base = selinuxBaseCheck;
+    apm-install-at-boot = apmInstallAtBootCheck;
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverSystem.config.system.build.checks
       // {
         apm = apmTests;
+        apm-install-at-boot = apmInstallAtBootCheck;
+        package-expose-lifecycle = packageExposeLifecycleCheck;
+        package-preset = packagePresetCheck;
+        package-test-http-server = packageTestHttpServerCheck;
+        selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = discoverFleetTests;

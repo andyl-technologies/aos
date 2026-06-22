@@ -1,0 +1,36 @@
+--- i/lib/libdevmapper.c
++++ w/lib/libdevmapper.c
+@@ -1398,6 +1398,11 @@ static int _dm_create_device(struct crypt_device *cd, const char *name, const ch
+ 		if (r == -ENOKEY || r == -EKEYREVOKED || r == -EKEYEXPIRED) {
+ 			/* propagate DM errors around key management as such */
+ 			r = -ENOKEY;
++			/* A rejected dm-verity root-hash signature can leave an
++			 * inactive mapper behind. Remove it now so callers cannot
++			 * mistake the leftover name for a reusable active device.
++			 */
++			(void)_dm_remove(name, 1, 0);
+ 			goto out;
+ 		}
+ 
+--- i/lib/verity/verity.c
++++ w/lib/verity/verity.c
+@@ -378,8 +378,18 @@ int VERITY_activate(struct crypt_device *cd,
+ 	r = dm_status_verity_ok(cd, name);
+ 	if (r < 0)
+ 		goto out;
+ 
+-	if (!r)
++	if (!r) {
+ 		log_err(cd, _("Verity device detected corruption after activation."));
++		if (signature) {
++			/* Signed activation must fail closed when the kernel
++			 * reports an unusable verity target immediately after
++			 * creation.
++			 */
++			(void)dm_remove_device(cd, name, 0);
++			r = -ENOKEY;
++			goto out;
++		}
++	}
+ 
+ 	r = 0;

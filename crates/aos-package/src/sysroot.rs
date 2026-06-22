@@ -62,6 +62,7 @@ use crate::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     fetch_narinfos, resolve_mirror,
 };
+use crate::policy::admit_package_roots;
 use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
@@ -149,12 +150,16 @@ pub async fn install_system(
     printer.step(1, 8, "Loading registries...");
     let registries = load_registries(config)?;
     let closures = resolve_multiple(&registries, packages, registry_filter)?;
+    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
 
     if closures.is_empty() {
         bail!("package '{pkg_name}' not found");
     }
 
-    let closure = &closures[0];
+    let closure = closures
+        .iter()
+        .find(|closure| closure.root.name == *pkg_name)
+        .ok_or_else(|| anyhow::anyhow!("resolved closure missing requested sysroot package"))?;
     let toplevel_meta = closure
         .closure
         .iter()
@@ -2230,6 +2235,10 @@ mod tests {
             sb_signer_cert_sha256: Some(signer.into()),
             sbat: sb_sbat(sbat),
             expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
         }
     }
 
@@ -2347,6 +2356,10 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: vec![],
             expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
         }];
         // No catalog written, no facts on the image: no-op success.
         assert!(

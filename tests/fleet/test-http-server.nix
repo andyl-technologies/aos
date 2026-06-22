@@ -5,7 +5,7 @@
   machines = {
     server = {
       system = systems.server;
-      roles = ["test-http-server"];
+      packages = ["test-http-server"];
     };
 
     client = {
@@ -16,11 +16,23 @@
   };
 
   testScript = ''
+    server.wait_for_unit("aos-seed-baked-packages.service", timeout=120)
     server.wait_until_succeeds(
-        "systemctl is-active test-http-server.service", timeout=60
+        "systemctl is-active aos-pkg-test-http-server.target", timeout=60
+    )
+    server.wait_until_succeeds(
+        "systemctl is-active test-http-server.socket", timeout=60
+    )
+    server.succeed("test -L /var/lib/profiles/system-packages/current")
+    server.succeed("test -L /etc/systemd/system.attached/aos-pkg-test-http-server.target")
+    server.succeed(
+        "grep -qx 'enable aos-pkg-test-http-server.target' /etc/systemd/system-preset/30-aos-apm.preset"
     )
 
     client.wait_until_succeeds("curl -sf http://server:8000/", timeout=60)
+    server.wait_until_succeeds(
+        "systemctl is-active test-http-server.service", timeout=60
+    )
 
     assert "Directory listing" in client.succeed("curl -s http://server:8000/")
   '';

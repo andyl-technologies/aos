@@ -83,7 +83,7 @@ from) the test.
 
 A two-node fleet test modeled on `tests/fleet/apm-registry-upgrade.nix`:
 
-- **Node A** (existing boot path): runs the `aos-registry-server` role,
+- **Node A** (existing boot path): runs the `aos-registry-server` package,
   publishing a package and a newer system generation to a registry +
   binary cache reachable over the fleet L2.
 - **Node B** (new boot path): boots the raw server image under OVMF —
@@ -203,8 +203,8 @@ What the build-out surfaced (decisions and discovered bugs):
   per attempt and keeps the first connection that proves a quiet 1:1
   stream.
 - **No merged `/usr/bin` on the image**: production images resolve
-  tools by store path, so role units must carry an explicit
-  `Environment=PATH=` (see `modules/roles/aos-test-agent.nix`) and the
+  tools by store path, so exposed package units must carry an explicit
+  `Environment=PATH=` (see `pkgs/tests/aos-test-agent.nix`) and the
   shared agent script appends the inherited PATH after the FHS dirs.
 - **`/dev/console` is tty0 on the image** (`console=tty0` is last on
   the UKI cmdline) — anything that wants to be seen on the serial

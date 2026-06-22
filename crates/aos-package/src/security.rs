@@ -6,7 +6,9 @@
 //! any CLI commands itself.
 
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -592,6 +594,103 @@ pub fn verify_tag_signature(repo_path: &Path, tag: &str, trusted_keys: &[String]
         .output()
         .context("running git verify-tag")?;
 
+    Ok(output.status.success())
+}
+
+/// Sign an arbitrary payload with an OpenSSH Ed25519 private key.
+///
+/// The payload is signed with `ssh-keygen -Y sign` under `namespace`, which
+/// keeps registry metadata signatures in the same OpenSSH format as the
+/// git commit and tag signatures verified elsewhere in this module.
+///
+/// # Errors
+///
+/// Returns an error when the temporary payload cannot be written, the
+/// signer cannot be executed, signing fails, or the generated signature
+/// cannot be read as UTF-8 text.
+pub fn sign_payload_signature(key_path: &Path, namespace: &str, payload: &[u8]) -> Result<String> {
+    let tmp = tempfile::TempDir::new().context("creating temporary signing directory")?;
+    let payload_path = tmp.path().join("payload");
+    fs::write(&payload_path, payload)
+        .with_context(|| format!("writing temporary payload {}", payload_path.display()))?;
+
+    let output = crate::gitcmd::ssh_keygen()
+        .arg("-Y")
+        .arg("sign")
+        .arg("-f")
+        .arg(key_path)
+        .arg("-n")
+        .arg(namespace)
+        .arg(&payload_path)
+        .output()
+        .with_context(|| format!("running ssh-keygen -Y sign with {}", key_path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "ssh-keygen -Y sign failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    let signature_path = payload_path.with_extension("sig");
+    fs::read_to_string(&signature_path)
+        .with_context(|| format!("reading signature {}", signature_path.display()))
+}
+
+/// Verify an OpenSSH detached signature over an arbitrary payload.
+///
+/// `trusted_key` uses the normal `registry:Ed25519:<base64>` trust-line
+/// format. Verification succeeds only when `signature` validates over
+/// `payload` in `namespace` for that exact key.
+///
+/// # Errors
+///
+/// Returns an error when the trusted key is malformed, temporary files
+/// cannot be written, or `ssh-keygen -Y verify` cannot be executed.
+pub fn verify_payload_signature(
+    payload: &[u8],
+    signature: &str,
+    trusted_key: &str,
+    namespace: &str,
+) -> Result<bool> {
+    let (registry, _algorithm, public_key) = parse_signing_key(trusted_key)?;
+    let mut signers_file =
+        tempfile::NamedTempFile::new().context("creating temporary allowed-signers file")?;
+    writeln!(signers_file, "{registry} ssh-ed25519 {public_key}")
+        .context("writing temporary allowed-signers file")?;
+
+    let mut signature_file =
+        tempfile::NamedTempFile::new().context("creating temporary SSH signature file")?;
+    signature_file
+        .write_all(signature.as_bytes())
+        .context("writing temporary SSH signature file")?;
+
+    let mut child = crate::gitcmd::ssh_keygen()
+        .arg("-Y")
+        .arg("verify")
+        .arg("-f")
+        .arg(signers_file.path())
+        .arg("-I")
+        .arg(&registry)
+        .arg("-n")
+        .arg(namespace)
+        .arg("-s")
+        .arg(signature_file.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("running ssh-keygen -Y verify")?;
+    let Some(mut stdin) = child.stdin.take() else {
+        bail!("ssh-keygen -Y verify stdin was not piped");
+    };
+    stdin
+        .write_all(payload)
+        .context("writing payload to ssh-keygen -Y verify")?;
+    drop(stdin);
+
+    let output = child
+        .wait_with_output()
+        .context("waiting for ssh-keygen -Y verify")?;
     Ok(output.status.success())
 }
 

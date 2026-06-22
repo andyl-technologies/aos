@@ -31,7 +31,7 @@
 #      upgrade --system` validates clean and switches to gen-2.
 #
 # Machines (lexicographic: registry=192.168.50.10, target=192.168.50.11):
-#   registry: aos-registry-server (gitd :9418) + test-http-server (:8000),
+#   registry: aos-registry-server (gitd :9418) + static-cache package (:8000),
 #             with the signed server-secureboot toplevel + its UKI staged in
 #             store (extraClosures) and the publish-time SB toolchain
 #             (sbsigntools/binutils/systemd) reachable by store path.
@@ -47,29 +47,28 @@
   sbUki = systems.server-secureboot.config.system.build.uki;
 in {
   name = "registry-sb-catalog";
-  # Two boots + role activation + full-closure static cache + one ~270 MiB
-  # cross-VM NAR transfer (the first refused upgrade still downloads) + two
-  # further validation passes over the cached closure + three catalog
-  # re-syncs. Budgeted like install-from-image.
+  # Two boots + registry/static-cache package activation + full-closure
+  # static cache + one ~270 MiB cross-VM NAR transfer (the first refused
+  # upgrade still downloads) + two further validation passes over the cached
+  # closure + three catalog re-syncs. Budgeted like install-from-image.
   timeout = 2700;
 
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       # The producer owns the signed toplevel AND the standalone UKI it
       # publishes as an image; both must resolve in the registry's store.
       extraClosures = [sbTop sbUki pkgs.sbsigntools pkgs.binutils pkgs.systemd];
       # `apr cache generate` writes a zstd static cache of the full
       # server-secureboot closure PLUS the standalone signed UKI image
-      # (~300 MiB nar of its own) under /var/lib — larger than the plain
+      # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
       # server-2 fixture, so size /var generously.
       varSizeMiB = 4096;
     };
 
     target = {
       system = systems.server;
-      roles = ["test-http-server"];
       # The download lands twice on /var: the NAR cache under
       # /var/lib/apm/cache and the imported store paths (the /nix overlay
       # upper lives on the var partition) — the full sysroot closure.
@@ -83,16 +82,22 @@ in {
       import json
       import textwrap
 
-      # ════ 0. Both machines up; registry roles active ══════════════════
+      # ════ 0. Both machines up; registry packages active ═══════════════
       registry.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
-      )
-      target.wait_until_succeeds(
-          "systemctl is-active test-http-server.service", timeout=120
       )
 
       # Target precondition: fresh gen-1, the signed toplevel absent.

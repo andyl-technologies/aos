@@ -85,6 +85,7 @@ in {
       system = systems.server-secureboot-lockdown;
       bootMode = "image";
       imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;
@@ -113,7 +114,7 @@ in {
           target.succeed(f"{eu} -f {keys}/{var}.auth {var} 2>&1")
       assert efivar_byte("SetupMode") == 0, "PK enrollment should exit Setup Mode"
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
 
       # ════ 2. Lockdown engaged in confidentiality mode ════════════════

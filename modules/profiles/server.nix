@@ -14,6 +14,7 @@
   ...
 }: let
   cfg = config.aos.profiles.server;
+  k3sCommon = import ../../pkgs/kubernetes/_k3s-common.nix {inherit lib pkgs;};
 in {
   options.aos.profiles.server = {
     enable = lib.mkOption {
@@ -43,25 +44,85 @@ in {
     # Remote access (SSH module opens its own firewall port)
     aos.services.ssh.enable = lib.mkDefault true;
 
+    aos.users.users.aos-gitd = {
+      uid = 800;
+      group = "aos-gitd";
+      home = "/var/lib/aos-registry-server/registries";
+      shell = "/sbin/nologin";
+      description = "AOS registry server";
+      extraGroups = [];
+    };
+    aos.users.groups.aos-gitd = {
+      gid = 800;
+      members = [];
+    };
+
     # Security: standard level (SELinux enforcing, audit, firewall)
     aos.security.level = lib.mkDefault "standard";
 
     # System packages for server administration
-    environment.systemPackages = [
-      pkgs.procps-ng
-      pkgs.lsof
-      pkgs.iproute2
-      pkgs.ethtool
-      pkgs.curl
-      pkgs.jq
-    ];
+    environment.systemPackages =
+      [
+        pkgs.procps-ng
+        pkgs.lsof
+        pkgs.iproute2
+        pkgs.ethtool
+        pkgs.curl
+        pkgs.jq
+        pkgs.git
+        pkgs.socat
+        pkgs.sqlite
+        pkgs.zstd
+        pkgs.nix
+      ]
+      ++ k3sCommon.runtimePath;
 
-    aos.roles.aos-registry-server.bundle = true;
-    aos.roles.k3s-control-plane.bundle = true;
-    aos.roles.k3s-worker.bundle = true;
-    aos.roles.k3s-combined.bundle = true;
-    aos.roles.test-http-server.bundle = true;
-    aos.roles.apm-systemd-client-test.bundle = true;
-    aos.roles.aos-test-agent.bundle = true;
+    aos.packages.aos-registry-server = {
+      package = pkgs.aos-registry-server;
+      bundle = true;
+      preset = false;
+    };
+
+    aos.packages.aos-test-agent = {
+      package = pkgs.aos-test-agent;
+      bundle = true;
+      preset = false;
+    };
+
+    aos.packages.k3s-control-plane = {
+      package = lib.mkDefault pkgs.k3s-control-plane;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
+
+    aos.packages.k3s-worker = {
+      package = lib.mkDefault pkgs.k3s-worker;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
+
+    aos.packages.k3s-combined = {
+      package = lib.mkDefault pkgs.k3s-combined;
+      bundle = lib.mkDefault true;
+      preset = lib.mkDefault false;
+    };
+
+    aos.packages.test-http-server = {
+      package = pkgs.test-http-server;
+      bundle = true;
+      preset = false;
+    };
+
+    aos.packages.test-static-cache-server = {
+      package = pkgs.test-static-cache-server;
+      bundle = true;
+      preset = false;
+    };
+
+    aos.packages.apm-systemd-client-test = {
+      package = pkgs.apm-systemd-client-test;
+      bundle = true;
+      preset = false;
+    };
   };
 }

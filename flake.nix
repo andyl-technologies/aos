@@ -99,6 +99,7 @@
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
+          aos.pkgs.systemd
           aos.pkgs.tar
           aos.pkgs.zstd
           aos.pkgs.which

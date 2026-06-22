@@ -149,6 +149,10 @@
       # an sd-boot random seed, so mask it rather than leave a failed unit
       # on every UEFI boot (RFC-0006).
       "systemd.mask=systemd-boot-random-seed.service"
+      # Same immutable-ESP rationale: the image builder owns sd-boot and
+      # UKI placement, so the guest must not attempt a runtime bootloader
+      # update and leave systemd-boot-update.service failed.
+      "systemd.mask=systemd-boot-update.service"
     ];
 
     # systemd-initrd kernel modules configuration.

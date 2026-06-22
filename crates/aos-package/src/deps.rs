@@ -1226,6 +1226,11 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1265,6 +1270,11 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
 
@@ -1292,6 +1302,11 @@ references = ["llllllllllllllllllllllllllllllll"]
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }];
         let high_candidate = PackageMeta {
@@ -1313,6 +1328,13 @@ references = ["llllllllllllllllllllllllllllllll"]
             images: Vec::new(),
             sysroot: false,
             previous: None,
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         };
         let low_candidate = PackageMeta {
             name: "same-version-tool".into(),
@@ -1333,6 +1355,13 @@ references = ["llllllllllllllllllllllllllllllll"]
             images: Vec::new(),
             sysroot: false,
             previous: None,
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         };
 
         assert_eq!(
@@ -1396,6 +1425,11 @@ references = []
                     held: false,
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    expose: None,
+                    expose_artifact: None,
+                    permissions: Default::default(),
+                    bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
             InstalledMeta {
@@ -1415,6 +1449,11 @@ references = []
                     held: false,
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    expose: None,
+                    expose_artifact: None,
+                    permissions: Default::default(),
+                    bpf_lsm: None,
+                    attestation: Default::default(),
                 }),
             },
         ];

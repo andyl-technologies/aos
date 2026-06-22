@@ -16,7 +16,8 @@
 //!   (the committed `keys.toml` trust roster), [`fetch`] and [`pack`]
 //!   (delta/full-pack object transfer), [`objectstore`] and [`static_upload`]
 //!   (the producer-side static dumb-HTTP origin), [`nixcache`] (static Nix
-//!   binary-cache generation), and [`state`] (persisted sync state).
+//!   binary-cache generation), [`tuf`] (release metadata thresholds and
+//!   timestamping), and [`state`] (persisted sync state).
 
 pub mod channel;
 pub mod fetch;
@@ -31,6 +32,7 @@ pub mod sb_certs;
 pub mod state;
 pub mod static_upload;
 pub mod store;
+pub mod tuf;
 pub mod verify;
 
 use std::collections::HashMap;
@@ -53,6 +55,9 @@ pub struct Registry {
     /// Reverse index from store path hash to the exact package version that
     /// produced it (covers all versions, not just the newest).
     hash_index: HashMap<String, PackageMeta>,
+    /// Every package-version entry loaded for this platform and tracking
+    /// mode, including entries that share a store-path hash.
+    versions: Vec<PackageMeta>,
     /// The registry's `store/` realisation graph: dependency shape, blessed
     /// NAR bytes, and content addresses, keyed by IA store-path hash.
     store: StoreMap,
@@ -77,7 +82,7 @@ impl Registry {
             TrackingMode::Version(req) => Some(req),
             _ => None,
         };
-        let (mut packages, mut hash_index) =
+        let (mut packages, mut hash_index, mut versions) =
             parse_registry_matching(&registry_dir, platform, version_req.as_ref()).with_context(
                 || {
                     format!(
@@ -98,7 +103,11 @@ impl Registry {
         // graph is the single authority. Backfill the in-memory metas from a
         // root realisation so display/verify consumers keep working; legacy
         // registries still populate them from the TOML.
-        for meta in packages.values_mut().chain(hash_index.values_mut()) {
+        for meta in packages
+            .values_mut()
+            .chain(hash_index.values_mut())
+            .chain(versions.iter_mut())
+        {
             enrich_meta_from_store(meta, &store);
         }
 
@@ -106,6 +115,7 @@ impl Registry {
             config: config.clone(),
             packages,
             hash_index,
+            versions,
             store,
         })
     }
@@ -113,6 +123,11 @@ impl Registry {
     /// Returns the registry's `store/` realisation graph.
     pub fn store_map(&self) -> &StoreMap {
         &self.store
+    }
+
+    /// Returns all loaded package-version entries for this registry.
+    pub fn package_versions(&self) -> impl Iterator<Item = &PackageMeta> {
+        self.versions.iter()
     }
 
     /// Looks up the newest version of a package by name.
@@ -523,6 +538,24 @@ pub(crate) mod tests {
         assert_eq!(versions.len(), 2);
         assert_eq!(versions[0].0.config.name, "aos-core");
         assert_eq!(versions[1].0.config.name, "aos-extra");
+    }
+
+    #[test]
+    fn registry_package_versions_keeps_same_store_hash_versions() {
+        let tmp = TempDir::new().unwrap();
+        let content = MULTI_VERSION_TOML.replace(
+            "/var/lib/store/newhash222222-tool-2.0.0",
+            "/var/lib/store/oldhash111111-tool-1.0.0",
+        );
+        let reg = make_registry(&tmp, "aos-core", 500, &[("tool", &content)]);
+        let mut versions = reg
+            .package_versions()
+            .map(|meta| meta.version.as_str())
+            .collect::<Vec<_>>();
+        versions.sort_unstable();
+
+        assert_eq!(versions, vec!["1.0.0", "2.0.0"]);
+        assert_eq!(reg.hash_index.len(), 1);
     }
 
     #[test]

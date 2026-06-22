@@ -29,10 +29,12 @@
   in
     {
       compiler = crossCompiler;
-      buildDeps = [
-        crossGccStage2
-        crossBinutils
-      ] ++ userBuildDeps;
+      buildDeps =
+        [
+          crossGccStage2
+          crossBinutils
+        ]
+        ++ userBuildDeps;
       gccVersion = "8.5.0";
       cc = "${crossGccStage2}/bin/${hostPlatform.config}-gcc";
       cxx = "${crossGccStage2}/bin/${hostPlatform.config}-g++";
@@ -67,16 +69,18 @@
 
         ${userConfigureEnv}
       '';
-      meta = {
-        build = {
-          os = "linux";
-          cpu = [buildPlatform.parsed.cpu.name];
-        };
-        execute = {
-          os = "linux";
-          cpu = [hostPlatform.parsed.cpu.name];
-        };
-      } // userMeta;
+      meta =
+        {
+          build = {
+            os = "linux";
+            cpu = [buildPlatform.parsed.cpu.name];
+          };
+          execute = {
+            os = "linux";
+            cpu = [hostPlatform.parsed.cpu.name];
+          };
+        }
+        // userMeta;
     }
     // passthruAttrs;
 
@@ -125,10 +129,10 @@ in {
         support/Makefile
     '';
     postFreeze = ''
-      sed -i '/^int lastpipe_opt = 0;/a\
-#if !defined (JOB_CONTROL)\
-#  define job_control 0\
-#endif' execute_cmd.c
+            sed -i '/^int lastpipe_opt = 0;/a\
+      #if !defined (JOB_CONTROL)\
+      #  define job_control 0\
+      #endif' execute_cmd.c
     '';
     buildScript = ''
       make -j1 ${autotoolsVars}
@@ -267,19 +271,19 @@ in {
       make install-exec ${autotoolsVars}
     '';
     postUnpack = ''
-      if [ -f man/help2man ]; then
-        printf '#!%s\nexit 0\n' "$AOS_BASH" > man/help2man
-        chmod +x man/help2man
-        find . -name '*.1' -exec touch {} + 2>/dev/null || true
-      fi
-      sed -i '/# define optopt __GETOPT_ID (optopt)/a\
-# ifdef _GETOPT_CORE_H\
-#  undef _GETOPT_CORE_H\
-# endif' lib/getopt-pfx-core.h
-      sed -i '/# define option __GETOPT_ID (option)/a\
-# ifdef _GETOPT_EXT_H\
-#  undef _GETOPT_EXT_H\
-# endif' lib/getopt-pfx-ext.h
+            if [ -f man/help2man ]; then
+              printf '#!%s\nexit 0\n' "$AOS_BASH" > man/help2man
+              chmod +x man/help2man
+              find . -name '*.1' -exec touch {} + 2>/dev/null || true
+            fi
+            sed -i '/# define optopt __GETOPT_ID (optopt)/a\
+      # ifdef _GETOPT_CORE_H\
+      #  undef _GETOPT_CORE_H\
+      # endif' lib/getopt-pfx-core.h
+            sed -i '/# define option __GETOPT_ID (option)/a\
+      # ifdef _GETOPT_EXT_H\
+      #  undef _GETOPT_EXT_H\
+      # endif' lib/getopt-pfx-ext.h
     '';
     postInstall = ''
       test -x "$out/bin/diff" || { echo "FATAL: diff not installed"; exit 1; }

@@ -2,15 +2,16 @@
 # the k3s-combined + k3s-worker pair.
 #
 # Topology:
-#   combined: aos.roles.k3s-combined (k3s server, no --disable-agent)
-#   worker:   aos.roles.k3s-worker   (k3s agent)
+#   combined: pkgs.k3s-combined (k3s server, no --disable-agent)
+#   worker:   pkgs.k3s-worker   (k3s agent)
 #
 # Combined plays both control-plane and worker; worker joins
-# pointing at combined's hostname. Functionally a 2-node cluster
-# where one node also runs the API server.
+# pointing at combined's harness-assigned IP. Functionally a
+# 2-node cluster where one node also runs the API server.
 {
+  dataUrl,
+  mkSystem,
   pkgs,
-  systems,
   ...
 }: let
   # k3s's token parser (`pkg/clientaccess/token.go:251`) accepts:
@@ -29,16 +30,11 @@
   # NormalizeToken takes the password.
   testToken = "aoscombinedfleettoken1";
 
-  uriEncode =
-    builtins.replaceStrings
-    ["%" "\n" " " "&" "+" "=" "[" "]" "#" "?"]
-    ["%25" "%0A" "%20" "%26" "%2B" "%3D" "%5B" "%5D" "%23" "%3F"];
-
   envFile = body: {
     path = "/etc/rancher/k3s/k3s.env";
     mode = 384;
     overwrite = true;
-    contents.source = "data:," + uriEncode body;
+    contents.source = dataUrl body;
   };
 
   # /etc/rancher/k3s/config.yaml is k3s's default config-file
@@ -58,13 +54,33 @@
     path = "/etc/rancher/k3s/config.yaml";
     mode = 420; # 0644
     overwrite = true;
-    contents.source =
-      "data:,"
-      + uriEncode ''
-        node-ip: ${ip}
-        flannel-iface: eth0
-      '';
+    contents.source = dataUrl ''
+      node-ip: ${ip}
+      flannel-iface: eth0
+    '';
   };
+
+  combinedSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.k3s-combined = {
+        package = pkgs.k3s-combined;
+        bundle = true;
+        preset = false;
+      };
+    }
+  ];
+
+  workerSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.packages.k3s-worker = {
+        package = pkgs.k3s-worker;
+        bundle = true;
+        preset = false;
+      };
+    }
+  ];
 in {
   name = "k3s-combined-worker";
   timeout = 360;
@@ -77,30 +93,71 @@ in {
   # names — `combined` < `worker`, so combined→.10, worker→.11.
   machines = {
     combined = {
-      system = systems.server;
-      roles = ["k3s-combined"];
-      instanceMetadata.config.storage.files = [
-        (envFile ''
-          K3S_TOKEN=${testToken}
-        '')
-        (configFile "192.168.50.10")
-      ];
+      system = combinedSystem;
+      packages = ["k3s-combined"];
+      instanceMetadata.config.storage = {
+        files = [
+          (envFile ''
+            K3S_TOKEN=${testToken}
+          '')
+          (configFile "192.168.50.10")
+        ];
+      };
     };
 
     worker = {
-      system = systems.server;
-      roles = ["k3s-worker"];
-      instanceMetadata.config.storage.files = [
-        (envFile ''
-          K3S_TOKEN=${testToken}
-          K3S_URL=https://combined:6443
-        '')
-        (configFile "192.168.50.11")
-      ];
+      system = workerSystem;
+      packages = ["k3s-worker"];
+      instanceMetadata.config.storage = {
+        files = [
+          (envFile ''
+            K3S_TOKEN=${testToken}
+            K3S_URL=https://192.168.50.10:6443
+          '')
+          (configFile "192.168.50.11")
+        ];
+      };
     };
   };
 
   testScript = ''
+    def dump_unit(machine, unit):
+        print(f"--- {machine.name}: systemctl status {unit} ---")
+        print(
+            machine.succeed(
+                f"systemctl status --no-pager -l {unit} 2>&1 || true",
+                timeout=30,
+            )
+        )
+        print(f"--- {machine.name}: journalctl -u {unit} ---")
+        print(
+            machine.succeed(
+                f"journalctl -u {unit} --no-pager -n 200 2>&1 || true",
+                timeout=30,
+            )
+        )
+
+    def wait_unit_active(machine, unit, timeout):
+        try:
+            machine.wait_until_succeeds(
+                f"systemctl is-active {unit}", timeout=timeout
+            )
+        except Exception:
+            dump_unit(machine, unit)
+            print(f"--- {machine.name}: failed units ---")
+            print(machine.succeed("systemctl --failed --no-pager 2>&1 || true"))
+            print(f"--- {machine.name}: pending jobs ---")
+            print(machine.succeed("systemctl list-jobs --no-pager 2>&1 || true"))
+            raise
+
+    # ── Package activation targets ─────────────────────────────────
+    combined.wait_until_succeeds(
+        "systemctl is-active aos-pkg-k3s-combined.target", timeout=60
+    )
+    worker.wait_until_succeeds(
+        "systemctl is-active aos-pkg-k3s-worker.target", timeout=60
+    )
+
     # ── Pre-flight ─────────────────────────────────────────────────
     combined.wait_until_succeeds(
         "systemctl is-active k3s-preflight.service", timeout=60
@@ -109,17 +166,15 @@ in {
         "systemctl is-active k3s-preflight.service", timeout=60
     )
 
-    # ── k3s.service active on both ─────────────────────────────────
+    # ── Combined server active ──────────────────────────────────────
     # `Type=notify` on combined waits for apiserver+kubelet+node-
     # registration (not just apiserver, like the --disable-agent
     # case in k3s-control-plane-worker.nix), so 240s gives the same
     # slack we used there.
-    combined.wait_until_succeeds(
-        "systemctl is-active k3s.service", timeout=240
-    )
-    worker.wait_until_succeeds(
-        "systemctl is-active k3s.service", timeout=240
-    )
+    wait_unit_active(combined, "k3s.service", timeout=240)
+
+    # ── Worker service active ───────────────────────────────────────
+    wait_unit_active(worker, "k3s.service", timeout=240)
 
     # ── Both nodes Ready ───────────────────────────────────────────
     # `grep -Fxq True` (fixed-string, full-line, quiet) requires

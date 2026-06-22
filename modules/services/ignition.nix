@@ -340,7 +340,7 @@ in {
         # so a `storage.links.path = "/etc/foo"` write lands at
         # `$ign/etc/foo`. The per-gen subtree is created by the
         # ExecStartPre below; etc-overlay-setup mounts it as the
-        # role lowerdir in the three-layer /etc overlay.
+        # per-generation lowerdir in the three-layer /etc overlay.
         #
         # `--root` and the ExecStartPre target the initrd's own
         # /run/etc/... (not /sysroot/run/etc/...) so the per-gen
@@ -369,8 +369,8 @@ in {
       # the [Install] symlinks now ride in the system EROFS image
       # (via environment.etc."systemd/system" and the composefs dump
       # script's directory recursion at spec v12 §5.2) and in the
-      # per-gen ignition lower (via render-role.nix's predicted
-      # storage.links, spec v12 §5.6). The runtime preset-walker is
+      # per-gen ignition lower (via generated storage.links,
+      # spec v12 §5.6). The runtime preset-walker is
       # redundant.
 
       # Mount the /var partition created by ignition-disks so that
@@ -433,9 +433,8 @@ in {
       #
       #   lowerdir+=/var/etc                      — host-persistent allowlist
       #                                             (machine-id, ssh host keys)
-      #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen role lower
-      #                                             (ignition's storage.links
-      #                                             from render-role.nix)
+      #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen ignition lower
+      #                                             (ignition storage.links)
       #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
       #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
       #                                              entries (metacopy)
