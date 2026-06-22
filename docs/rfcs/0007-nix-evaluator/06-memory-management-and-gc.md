@@ -820,7 +820,17 @@ GC must be observationally invisible (§8): every item is gated by the different
 
 ### The `alloc-via-symbols` ABI (§2)
 
-- [ ] The frozen allocation ABI — `aos_alloc_thunk` / `aos_alloc_attrs` / `aos_alloc_cons` / `aos_alloc_string` / `aos_alloc_raw` — that every tier and primop allocates through; allocator vtable chosen at startup (§2) — **M0** (within **P3**), `S-8`; ABI in place from P1's oracle so the collector is swappable without recompiling JIT code.
+- [x] Current P1 safe allocation substrate: the tree-walk `EvalHeap` routes heap
+      object creation through `BumpArena` `aos_alloc_*` entry-point-shaped Rust
+      helpers (`thunk`, `attrs`, `cons`/`list`, `string`, `raw`, plus lambda),
+      reserves opaque aligned `HeapObject` handles in never-free owned chunks,
+      registers typed side-table records, and exposes arena accounting for tests.
+- [ ] Frozen runtime allocation ABI still open: actual exported
+      `unsafe extern "C"` `aos_alloc_thunk` / `aos_alloc_attrs` /
+      `aos_alloc_cons` / `aos_alloc_string` / `aos_alloc_raw` symbols, startup
+      allocator vtable selection, every-tier/every-primop routing through those
+      symbols, and collector/JIT swapping without caller recompilation (§2) —
+      **M0** (within **P3**), `S-8`.
 - [ ] Centralized allocation safepoints and the single write-barrier wall behind these symbols (§2) — **P3**, `S-8`.
 
 ### Tier A — bump-pointer one-shot arena (§3)
