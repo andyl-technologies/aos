@@ -539,6 +539,15 @@ alone (`M-1`/`Q-A`).
       `Materialize`. Cost measurement, reuse metadata, evaluator value
       serialization, durable index updates, mmap reads, GC/repack, and AOS
       tuning remain open (`C-14`).
+- [x] Current explicit file-artifact materialization adapter:
+      `PersistCache::materialize_file_artifact` derives the file-artifact
+      mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips
+      without payload hashing or writing on `KeepInMemory`, and on
+      `Materialize` appends the payload to the `files/` pack and returns the
+      typed index value a future durable index would store. Parse-artifact
+      payload format, automatic parse-cache integration, durable index updates,
+      lookup, mmap reads, GC/repack, and harness proof remain open
+      (`C-13`/`C-14`).
 - [x] Current `cache/input.rs` impure-input fingerprint substrate: typed
       identities and deterministic durable observation hashes for
       `import`/`readFile`/`readDir`/`readFileType`/`pathExists`/`getEnv`, plus

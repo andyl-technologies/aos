@@ -37,7 +37,8 @@ pub use persist::{
     PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN, PersistBlobKey, PersistBlobLocation, PersistBlobPack,
     PersistBlobPackError, PersistBlobPackHeader, PersistBlobRecordHeader, PersistBlobStore,
     PersistCache, PersistError, PersistFileArtifactIndexValue, PersistFileArtifactKey,
-    PersistLayout, PersistMaterialization, PersistPackFormatError,
+    PersistFileArtifactMaterialization, PersistLayout, PersistMaterialization,
+    PersistPackFormatError,
 };
 pub use policy::{
     MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,
