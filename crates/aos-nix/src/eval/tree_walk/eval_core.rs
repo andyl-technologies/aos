@@ -25,16 +25,17 @@ impl TreeWalk {
             with_scopes: Vec::new(),
             scoped_globals: Vec::new(),
             options,
+            stats: EvalStats::default(),
             trace_output: Vec::new(),
             warning_output: Vec::new(),
             stderr: EvalStderr::default(),
             find_file_cache: BTreeMap::new(),
+            find_file_cache_hits: 0,
+            find_file_cache_misses: 0,
             known_derivations: BTreeMap::new(),
             import_cache: BTreeMap::new(),
             parse_cache,
-            #[cfg(test)]
             import_parse_cache_hits: 0,
-            #[cfg(test)]
             import_parse_cache_misses: 0,
             text_store: BTreeMap::new(),
             ifd_realizer: None,
@@ -76,6 +77,11 @@ impl TreeWalk {
     /// Returns user-facing warning output emitted so far.
     pub fn warning_output(&self) -> &[EvalWarningOutput] {
         &self.warning_output
+    }
+
+    /// Returns a snapshot of mirrored evaluator counters.
+    pub fn stats(&self) -> EvalStats {
+        self.stats_snapshot()
     }
 
     /// Installs the callback used to realize derivation outputs for IFD.

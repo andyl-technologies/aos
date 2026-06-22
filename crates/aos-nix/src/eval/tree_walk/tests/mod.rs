@@ -245,6 +245,7 @@ mod options;
 mod parse;
 mod regex;
 mod search_path;
+mod stats;
 mod strings_1;
 mod strings_2;
 mod strings_3;

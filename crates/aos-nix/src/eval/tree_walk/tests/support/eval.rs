@@ -33,9 +33,12 @@ pub(crate) fn eval_owned_with_source(source_name: &[u8], source: &str) -> EvalOu
     let derivations = evaluator
         .derivation_snapshot()
         .expect("derivation snapshot succeeds");
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
     EvalOutcome {
         value,
         heap: evaluator.heap,
+        stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
         derivations,

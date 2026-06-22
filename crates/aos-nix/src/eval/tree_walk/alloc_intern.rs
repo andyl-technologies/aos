@@ -602,7 +602,8 @@ impl TreeWalk {
         let env = self.capture_env(id, span)?;
         let with_env = self.capture_with_env(id, span)?;
         let scoped_globals = self.capture_scoped_global_env(id, span)?;
-        self.heap
+        let value = self
+            .heap
             .alloc_thunk(EvalThunk::with_captures(
                 self.current_module,
                 body,
@@ -610,7 +611,9 @@ impl TreeWalk {
                 with_env,
                 scoped_globals,
             ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.increment_thunks_allocated();
+        Ok(value)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -624,7 +627,8 @@ impl TreeWalk {
         argument_id: IrId,
         argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        self.heap
+        let value = self
+            .heap
             .alloc_thunk(EvalThunk::apply(
                 self.current_module,
                 function_id,
@@ -634,7 +638,9 @@ impl TreeWalk {
                 argument_id,
                 argument,
             ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.increment_thunks_allocated();
+        Ok(value)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -651,7 +657,8 @@ impl TreeWalk {
         second_argument_id: IrId,
         second_argument: Value,
     ) -> Result<Value, TreeWalkError> {
-        self.heap
+        let value = self
+            .heap
             .alloc_thunk(EvalThunk::apply2(
                 self.current_module,
                 function_id,
@@ -665,7 +672,9 @@ impl TreeWalk {
                 second_argument_id,
                 second_argument,
             ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.increment_thunks_allocated();
+        Ok(value)
     }
 
     pub(super) fn alloc_select_thunk(
@@ -676,14 +685,17 @@ impl TreeWalk {
         receiver: Value,
         path: IrAttrPathId,
     ) -> Result<Value, TreeWalkError> {
-        self.heap
+        let value = self
+            .heap
             .alloc_thunk(EvalThunk::select(
                 self.current_module,
                 select_id,
                 receiver,
                 path,
             ))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.increment_thunks_allocated();
+        Ok(value)
     }
 
     pub(super) fn alloc_builtin_attr_thunk(
@@ -693,9 +705,12 @@ impl TreeWalk {
         symbol: Symbol,
         builtin: Builtin,
     ) -> Result<Value, TreeWalkError> {
-        self.heap
+        let value = self
+            .heap
             .alloc_thunk(EvalThunk::builtin_attr(symbol, builtin))
-            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))
+            .map_err(|source| TreeWalkError::new(TreeWalkErrorKind::Heap { id, source }, span))?;
+        self.increment_thunks_allocated();
+        Ok(value)
     }
 
     pub(super) fn force_value(
@@ -719,9 +734,11 @@ impl TreeWalk {
         {
             ForceClaim::AlreadyForced(value) => {
                 self.lazy_identity_thunks.remove(&forced_payload);
+                self.increment_thunk_cache_hits();
                 Ok(value)
             }
             ForceClaim::Claimed(guard) => {
+                self.increment_thunks_forced();
                 let result = match thunk.kind() {
                     EvalThunkKind::Node {
                         body,

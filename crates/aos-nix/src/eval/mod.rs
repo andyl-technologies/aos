@@ -16,9 +16,9 @@ pub use heap::{EvalHeap, EvalHeapError, EvalLambda, EvalThunk};
 pub use module::{EvalModuleId, EvalNodeRef};
 pub use thunk::{ForceClaim, ForceError, ForceGuard, ThunkCell, ThunkState};
 pub use tree_walk::{
-    EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, IfdErrorDetail,
-    IfdRealization, IfdRealizationError, IfdRealizer, TreeWalk, TreeWalkError, TreeWalkErrorKind,
-    TreeWalkOptions, TreeWalkOptionsError,
+    EvalDerivation, EvalErrorLabel, EvalErrorSource, EvalMode, EvalOutcome, EvalStats,
+    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer, TreeWalk, TreeWalkError,
+    TreeWalkErrorKind, TreeWalkOptions, TreeWalkOptionsError,
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer, eval_number_raw_bytes,
     eval_number_raw_bytes_with_options, eval_raw_bytes, eval_raw_bytes_with_options, eval_whnf,

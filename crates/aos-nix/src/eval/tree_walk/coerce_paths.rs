@@ -422,8 +422,10 @@ impl TreeWalk {
     ) -> Result<Value, TreeWalkError> {
         let cache_key = FindFileCacheKey::new(self.options.search_path_base(), entries, lookup);
         if let Some(cached) = self.find_file_cache.get(&cache_key).cloned() {
+            self.find_file_cache_hits = self.find_file_cache_hits.saturating_add(1);
             return self.find_file_cached_result(id, span, cached, lookup, origin);
         }
+        self.find_file_cache_misses = self.find_file_cache_misses.saturating_add(1);
 
         for entry in entries {
             let Some(suffix) = search_path_suffix(entry.prefix.as_slice(), lookup) else {

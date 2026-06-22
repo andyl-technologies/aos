@@ -268,8 +268,8 @@ pub(crate) use options::{
     search_path_suffix, store_path_root,
 };
 pub use outcome::{
-    EvalDerivation, EvalOutcome, EvalTraceKind, EvalTraceOutput, EvalWarningOutput, IfdErrorDetail,
-    IfdRealization, IfdRealizationError, IfdRealizer,
+    EvalDerivation, EvalOutcome, EvalStats, EvalTraceKind, EvalTraceOutput, EvalWarningOutput,
+    IfdErrorDetail, IfdRealization, IfdRealizationError, IfdRealizer,
 };
 pub(crate) use toml_normalize::normalize_toml_numeric_overflows;
 pub(crate) use version::{
@@ -624,16 +624,17 @@ pub struct TreeWalk {
     with_scopes: Vec<EvalWithScope>,
     scoped_globals: Vec<Value>,
     options: TreeWalkOptions,
+    stats: EvalStats,
     trace_output: Vec<EvalTraceOutput>,
     warning_output: Vec<EvalWarningOutput>,
     stderr: EvalStderr,
     find_file_cache: BTreeMap<FindFileCacheKey, FindFileCacheEntry>,
+    find_file_cache_hits: usize,
+    find_file_cache_misses: usize,
     known_derivations: BTreeMap<nix_compat::store_path::StorePath<String>, KnownDerivation>,
     import_cache: BTreeMap<PathBuf, ImportCacheEntry>,
     parse_cache: Option<ParseCache>,
-    #[cfg(test)]
     import_parse_cache_hits: usize,
-    #[cfg(test)]
     import_parse_cache_misses: usize,
     text_store: BTreeMap<Vec<u8>, TextStoreEntry>,
     ifd_realizer: Option<IfdRealizer>,
@@ -741,6 +742,7 @@ mod eval_raw;
 mod eval_regex;
 mod eval_sort;
 mod eval_source;
+mod eval_stats;
 mod eval_trace;
 mod fetch_git_clone;
 mod fetch_git_tree;

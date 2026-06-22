@@ -937,7 +937,6 @@ impl TreeWalk {
             &source,
             global_scope,
         )? {
-            #[cfg(test)]
             if cached.hit {
                 self.import_parse_cache_hits += 1;
             } else {

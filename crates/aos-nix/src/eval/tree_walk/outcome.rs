@@ -1,4 +1,4 @@
-//! Evaluation outcome, derivation, trace, IFD-realization, and warning types.
+//! Evaluation outcome, derivation, statistics, trace, IFD-realization, and warning types.
 
 use super::*;
 
@@ -7,6 +7,7 @@ use super::*;
 pub struct EvalOutcome {
     pub(crate) value: Value,
     pub(crate) heap: EvalHeap,
+    pub(crate) stats: EvalStats,
     pub(crate) trace_output: Vec<EvalTraceOutput>,
     pub(crate) warning_output: Vec<EvalWarningOutput>,
     pub(crate) derivations: Vec<EvalDerivation>,
@@ -21,6 +22,11 @@ impl EvalOutcome {
     /// Returns the heap that owns heap-backed values in this result.
     pub const fn heap(&self) -> &EvalHeap {
         &self.heap
+    }
+
+    /// Returns mirrored evaluator counters captured at the end of evaluation.
+    pub const fn stats(&self) -> &EvalStats {
+        &self.stats
     }
 
     /// Returns user-facing trace output emitted during evaluation.
@@ -43,6 +49,11 @@ impl EvalOutcome {
         (self.value, self.heap)
     }
 
+    /// Consumes the outcome into its value, heap, and evaluation statistics.
+    pub fn into_parts_with_stats(self) -> (Value, EvalHeap, EvalStats) {
+        (self.value, self.heap, self.stats)
+    }
+
     /// Consumes the outcome into its value, heap, and user-facing trace output.
     pub fn into_full_parts(self) -> (Value, EvalHeap, Vec<EvalTraceOutput>) {
         (self.value, self.heap, self.trace_output)
@@ -63,6 +74,120 @@ impl EvalOutcome {
             self.trace_output,
             self.warning_output,
         )
+    }
+}
+
+/// Mirrored native-evaluator counters aligned with the RFC-0007 stats schema.
+///
+/// Phase-1 fields that have no implementation yet stay present and zero so
+/// downstream tracing consumers can rely on stable field names while later
+/// tiers add inline caches, shape transitions, GC, promotions, deopts, and
+/// early-cutoff cache behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EvalStats {
+    pub(crate) thunks_forced: u64,
+    pub(crate) thunks_allocated: u64,
+    pub(crate) thunks_elided: u64,
+    pub(crate) thunk_cache_hits: u64,
+    pub(crate) inline_cache_hits: u64,
+    pub(crate) inline_cache_misses: u64,
+    pub(crate) shape_transitions: u64,
+    pub(crate) gc_bytes: u64,
+    pub(crate) gc_pause_us: u64,
+    pub(crate) tier_promotions: u64,
+    pub(crate) deopts: u64,
+    pub(crate) cache_hits: u64,
+    pub(crate) cache_misses: u64,
+    pub(crate) early_cutoffs: u64,
+    pub(crate) heap_chunks: u64,
+    pub(crate) heap_reserved_bytes: u64,
+    pub(crate) heap_used_bytes: u64,
+}
+
+impl EvalStats {
+    /// Returns the number of thunks that performed suspended work.
+    pub const fn thunks_forced(&self) -> u64 {
+        self.thunks_forced
+    }
+
+    /// Returns the number of suspended thunk heap records allocated.
+    pub const fn thunks_allocated(&self) -> u64 {
+        self.thunks_allocated
+    }
+
+    /// Returns the number of planned thunk allocations elided by later tiers.
+    pub const fn thunks_elided(&self) -> u64 {
+        self.thunks_elided
+    }
+
+    /// Returns the number of already-forced thunk cell reuses.
+    pub const fn thunk_cache_hits(&self) -> u64 {
+        self.thunk_cache_hits
+    }
+
+    /// Returns the number of inline-cache hits reported by optimized tiers.
+    pub const fn inline_cache_hits(&self) -> u64 {
+        self.inline_cache_hits
+    }
+
+    /// Returns the number of inline-cache misses reported by optimized tiers.
+    pub const fn inline_cache_misses(&self) -> u64 {
+        self.inline_cache_misses
+    }
+
+    /// Returns the number of object-shape transitions reported by optimized tiers.
+    pub const fn shape_transitions(&self) -> u64 {
+        self.shape_transitions
+    }
+
+    /// Returns bytes reclaimed or scanned by a future GC subsystem.
+    pub const fn gc_bytes(&self) -> u64 {
+        self.gc_bytes
+    }
+
+    /// Returns microseconds spent in a future GC subsystem.
+    pub const fn gc_pause_us(&self) -> u64 {
+        self.gc_pause_us
+    }
+
+    /// Returns the number of promotions into optimized evaluator tiers.
+    pub const fn tier_promotions(&self) -> u64 {
+        self.tier_promotions
+    }
+
+    /// Returns the number of optimized-tier deoptimizations.
+    pub const fn deopts(&self) -> u64 {
+        self.deopts
+    }
+
+    /// Returns the number of evaluator cache hits.
+    pub const fn cache_hits(&self) -> u64 {
+        self.cache_hits
+    }
+
+    /// Returns the number of evaluator cache misses.
+    pub const fn cache_misses(&self) -> u64 {
+        self.cache_misses
+    }
+
+    /// Returns the number of incremental-cache early cutoffs.
+    pub const fn early_cutoffs(&self) -> u64 {
+        self.early_cutoffs
+    }
+
+    /// Returns the number of bump-arena chunks allocated by the evaluator heap.
+    pub const fn heap_chunks(&self) -> u64 {
+        self.heap_chunks
+    }
+
+    /// Returns bytes reserved by evaluator heap chunks.
+    pub const fn heap_reserved_bytes(&self) -> u64 {
+        self.heap_reserved_bytes
+    }
+
+    /// Returns bytes consumed by evaluator heap allocations.
+    pub const fn heap_used_bytes(&self) -> u64 {
+        self.heap_used_bytes
     }
 }
 

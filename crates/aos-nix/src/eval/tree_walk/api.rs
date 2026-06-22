@@ -82,9 +82,12 @@ pub fn eval_whnf_owned_with_options_and_realizer(
     }
     let value = evaluator.eval_root()?;
     let derivations = evaluator.derivation_snapshot()?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
+        stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
         derivations,
@@ -148,9 +151,12 @@ fn eval_instantiation_attr_path_with_evaluator(
     let span = evaluator.node(ir.root)?.span;
     let value = evaluator.eval_instantiation_attr_path(ir.root, span, root, attr_path)?;
     let derivations = evaluator.derivation_snapshot()?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
     Ok(EvalOutcome {
         value,
         heap: evaluator.heap,
+        stats,
         trace_output: evaluator.trace_output,
         warning_output: evaluator.warning_output,
         derivations,
@@ -217,6 +223,8 @@ pub fn eval_raw_bytes_with_options(
     let mut out = Vec::new();
     let mut visited = Vec::new();
     evaluator.write_raw_value(ir.root, span, ir.root, span, value, &mut out, &mut visited)?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
     Ok(out)
 }
 
@@ -246,5 +254,8 @@ pub fn eval_number_raw_bytes_with_options(
     let mut evaluator = TreeWalk::with_options(ir, options);
     let value = evaluator.eval_root()?;
     let span = evaluator.node(ir.root)?.span;
-    TreeWalk::raw_number_bytes(ir.root, span, value)
+    let bytes = TreeWalk::raw_number_bytes(ir.root, span, value)?;
+    let stats = evaluator.stats_snapshot();
+    TreeWalk::emit_stats_trace(&stats);
+    Ok(bytes)
 }
