@@ -46,6 +46,10 @@ in
             -c ${./aos-ebpf-lsm-policy.bpf.c} \
             -o $out/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o
 
+          # clang -g emits BTF (for CO-RE) but also DWARF embedding the
+          # kernel-headers path. Strip DWARF; .BTF is retained, CO-RE works.
+          ${llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-lsm-task-audit.bpf.o
+
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \
             -o $out/bin/aos-ebpf-lsm-policy \

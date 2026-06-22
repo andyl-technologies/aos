@@ -46,6 +46,12 @@ in
             -c ${./aos-ebpf-net-policy.bpf.c} \
             -o $out/lib/bpf/aos-ebpf-net-policy.bpf.o
 
+          # clang -g is required to emit BTF (for CO-RE), but it also writes
+          # DWARF that embeds the kernel-headers include path, pinning
+          # linux-headers into the runtime closure. Strip DWARF debug sections;
+          # .BTF (not a debug section) is retained, so CO-RE still works.
+          ${llvm}/bin/llvm-strip -g $out/lib/bpf/aos-ebpf-net-policy.bpf.o
+
           $CC -O2 -Wall -Wextra -Werror \
             -I${linux-headers}/include \
             -o $out/bin/aos-ebpf-net-policy \

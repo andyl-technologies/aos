@@ -92,11 +92,14 @@ in
       python3
       gperf
       getent
+      # Kernel UAPI headers are compile-time only. Keeping them out of
+      # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
+      # shared library) and keeps the 7 MiB header tree out of the closure.
+      linux-headers
     ];
     runtimeDeps = [
       util-linux
       kmod
-      linux-headers
       zlib
       xz
       lz4
