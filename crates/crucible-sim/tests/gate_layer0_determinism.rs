@@ -5,7 +5,7 @@
 use crucible_sim::contract_a::{
     ContractAConfig, ContractADriver, HashingContractAVm, RecordedInput,
 };
-use crucible_sim::{StableDigest, StableHasher};
+use crucible_sim::{DecisionRng, StableDigest, StableHasher, stable_name_hash};
 
 #[test]
 fn gate_layer0_determinism_reduces_fixed_contract_a_twice() {
@@ -65,6 +65,10 @@ fn gate_layer0_determinism_keeps_named_streams_stable_under_entity_addition() {
 
     assert_eq!(before, after);
     assert_ne!(before, added_entity);
+    assert_eq!(
+        DecisionRng::new(0x0010_c001).stream_seed("node-a"),
+        0x0010_c001 ^ stable_name_hash("node-a")
+    );
 }
 
 #[test]
@@ -113,13 +117,13 @@ fn run_contract_a(
     }
 }
 
-fn named_decision(entity: &str, request_id: u64, root_seed: u64) -> StableDigest {
-    let mut hasher = StableHasher::new();
-    hasher.write_tag("crucible.layer0.named-decision-stream.v1");
-    hasher.write_u64(root_seed);
-    hasher.write_bytes(entity.as_bytes());
-    hasher.write_u64(request_id);
-    hasher.finish()
+fn named_decision(entity: &str, request_id: u64, root_seed: u64) -> u64 {
+    let mut stream = DecisionRng::new(root_seed).fork(entity);
+    let mut draw = 0;
+    for _ in 0..=request_id {
+        draw = stream.next_u64();
+    }
+    draw
 }
 
 fn image_digest() -> StableDigest {

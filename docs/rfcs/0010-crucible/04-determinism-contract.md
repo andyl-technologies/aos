@@ -697,7 +697,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   asserting each delivery's consumer icount is identical under artificially
   skewed producer timing. — satisfies [DET-6], [DET-7], [DET-34]; spec §4.2.2,
   §4.4, §4.11.
-- [ ] **T-DET-15** Implement the single seeded decision RNG with name-hash
+- [x] **T-DET-15** Implement the single seeded decision RNG with name-hash
   forking (`seed XOR stable_hash(name)`) using a fixed cross-platform PRNG and a
   fixed stable hash. — satisfies [DET-24], [DET-25], [DET-26]; spec §4.7.
 - [ ] **T-DET-16** Route every probabilistic decision through a decision stream

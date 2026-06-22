@@ -2,9 +2,9 @@
 //!
 //! Spec index: RFC-0010 files 04, 08, 09.
 //!
-//! This L0 crate is the future home for seeded decision streams, ordered
-//! collections, deterministic selection, virtual-time arithmetic, and the
-//! content-addressing seam described by the indexed RFC-0010 files.
+//! This L0 crate owns seeded decision streams, ordered collections,
+//! deterministic selection, virtual-time arithmetic, and the content-addressing
+//! seam described by the indexed RFC-0010 files.
 //! The current content-addressing primitives are intentionally local to this
 //! crate; [`FUTURE_RATCHET_INTEGRATION_SEAM`] marks the only candidate boundary
 //! for any later RFC-0007 integration.
@@ -12,15 +12,23 @@
 //! surface.
 //!
 //! Module map: [`contract_a`] owns the isolated single-VM Contract A driver; the
-//! crate root owns [`StableHasher`], [`StableDigest`], and the named
-//! content-addressing integration boundary; future modules will split
-//! deterministic streams, ordered selection, and virtual-time arithmetic.
+//! crate root owns [`StableHasher`], [`StableDigest`], [`DecisionRng`],
+//! [`DecisionStream`], and the named content-addressing integration boundary;
+//! future modules will split ordered selection and virtual-time arithmetic.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod contract_a;
+
+const SPLITMIX64_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// The fixed PRNG algorithm used by [`DecisionStream`].
+pub const DECISION_RNG_ALGORITHM: &str = "splitmix64-v1";
+
+/// The stable hash domain used for decision-stream name forking.
+pub const DECISION_RNG_NAME_HASH_DOMAIN: &str = "crucible.decision-rng.name-hash.v1";
 
 /// Marks the future RFC-0007 integration boundary for content-addressing code.
 ///
@@ -46,6 +54,93 @@ pub struct StableDigest {
 pub struct StableHasher {
     lanes: [u64; 4],
     bytes_written: u64,
+}
+
+/// The single seeded source for intended nondeterministic choices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionRng {
+    seed: u64,
+}
+
+impl DecisionRng {
+    /// Builds a decision RNG from the scenario root seed.
+    #[must_use]
+    pub fn new(seed: u64) -> Self {
+        Self { seed }
+    }
+
+    /// Returns the scenario root seed.
+    #[must_use]
+    pub fn root_seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Returns the fork seed for `entity_name`.
+    ///
+    /// The seed is computed as `root_seed XOR stable_name_hash(entity_name)`,
+    /// so constructing unrelated streams never consumes from the root and never
+    /// perturbs any existing stream.
+    #[must_use]
+    pub fn stream_seed(&self, entity_name: &str) -> u64 {
+        self.seed ^ stable_name_hash(entity_name)
+    }
+
+    /// Forks a deterministic decision stream for `entity_name`.
+    #[must_use]
+    pub fn fork(&self, entity_name: &str) -> DecisionStream {
+        DecisionStream::from_seed(self.stream_seed(entity_name))
+    }
+}
+
+/// A named deterministic stream forked from [`DecisionRng`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecisionStream {
+    seed: u64,
+    state: u64,
+    draws: u64,
+}
+
+impl DecisionStream {
+    /// Builds a stream from a fixed stream seed.
+    #[must_use]
+    fn from_seed(seed: u64) -> Self {
+        Self {
+            seed,
+            state: seed,
+            draws: 0,
+        }
+    }
+
+    /// Returns the seed used to initialize this stream.
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// Returns the number of values drawn from this stream.
+    #[must_use]
+    pub fn draws(&self) -> u64 {
+        self.draws
+    }
+
+    /// Draws the next deterministic `u64`.
+    pub fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(SPLITMIX64_GAMMA);
+        self.draws = self.draws.wrapping_add(1);
+        splitmix64(self.state)
+    }
+}
+
+/// Returns a stable cross-platform hash for a decision-stream name.
+#[must_use]
+pub fn stable_name_hash(entity_name: &str) -> u64 {
+    let mut hasher = StableHasher::new();
+    hasher.write_tag(DECISION_RNG_NAME_HASH_DOMAIN);
+    hasher.write_bytes(entity_name.as_bytes());
+    let digest = hasher.finish();
+    let mut seed_bytes = [0; 8];
+    seed_bytes.copy_from_slice(&digest.bytes[..8]);
+    u64::from_le_bytes(seed_bytes)
 }
 
 impl Default for StableHasher {
@@ -145,6 +240,12 @@ fn finalize_word(mut word: u64) -> u64 {
     word ^ (word >> 31)
 }
 
+fn splitmix64(mut word: u64) -> u64 {
+    word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    word ^ (word >> 31)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +292,28 @@ mod tests {
 
         assert_ne!(with_full_chunk.finish(), with_remainder.finish());
         assert_ne!(with_full_chunk.finish(), with_false.finish());
+    }
+
+    #[test]
+    fn decision_rng_forks_stream_seed_by_name_hash() {
+        let rng = DecisionRng::new(0x0010_c001);
+
+        assert_eq!(rng.root_seed(), 0x0010_c001);
+        assert_eq!(
+            rng.stream_seed("node-a"),
+            0x0010_c001 ^ stable_name_hash("node-a")
+        );
+        assert_ne!(rng.stream_seed("node-a"), rng.stream_seed("node-b"));
+    }
+
+    #[test]
+    fn decision_stream_is_repeatable_and_counts_draws() {
+        let mut first = DecisionRng::new(0x0010_c001).fork("fault/node-a");
+        let mut second = DecisionRng::new(0x0010_c001).fork("fault/node-a");
+
+        assert_eq!(first.next_u64(), second.next_u64());
+        assert_eq!(first.next_u64(), second.next_u64());
+        assert_eq!(first.draws(), 2);
+        assert_eq!(second.draws(), 2);
     }
 }
