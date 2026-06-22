@@ -22,6 +22,7 @@ struct LangCase {
     category: LangCategory,
     source: PathBuf,
     expected: Option<PathBuf>,
+    postprocess: Option<PathBuf>,
     flags: Vec<String>,
     disabled: bool,
 }
@@ -43,6 +44,17 @@ struct LangEvalConfig {
 enum LangAutoArg {
     Expr { name: String, expr: String },
     Str { name: String, value: String },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LangPostprocess {
+    target: LangOutput,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LangOutput {
+    Out,
+    Err,
 }
 
 fn discover_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
@@ -68,6 +80,7 @@ fn discover_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
             category,
             source: path,
             expected: expected_path(lang_dir, &stem, category),
+            postprocess: postprocess_path(lang_dir, &stem),
             flags: read_flags(lang_dir, &stem)?,
             disabled: lang_dir.join(format!("{stem}.exp-disabled")).exists(),
         });
@@ -105,6 +118,11 @@ fn expected_path(lang_dir: &Path, stem: &str, category: LangCategory) -> Option<
     }
 }
 
+fn postprocess_path(lang_dir: &Path, stem: &str) -> Option<PathBuf> {
+    let path = lang_dir.join(format!("{stem}.postprocess"));
+    path.exists().then_some(path)
+}
+
 fn read_flags(lang_dir: &Path, stem: &str) -> Result<Vec<String>> {
     let path = lang_dir.join(format!("{stem}.flags"));
     if !path.exists() {
@@ -131,6 +149,10 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
         Ok(config) => config,
         Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
     };
+    let postprocess = match lang_case_postprocess(case) {
+        Ok(postprocess) => postprocess,
+        Err(reason) => return Ok(CaseOutcome::Skipped(reason)),
+    };
 
     let source =
         fs::read(&case.source).with_context(|| format!("reading {}", case.source.display()))?;
@@ -145,12 +167,14 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             parse_bytes(&source).with_context(|| format!("{} should parse", case.name))?;
             Ok(CaseOutcome::Passed)
         }
-        LangCategory::EvalFail => {
-            if eval_case(&source, config.options).is_ok() {
-                bail!("{} evaluated but should fail", case.name);
+        LangCategory::EvalFail => match eval_case(&source, config.options) {
+            Ok(()) => bail!("{} evaluated but should fail", case.name),
+            Err(error) => {
+                let mut err = format!("{error}\n").into_bytes();
+                apply_lang_postprocess(&mut err, LangOutput::Err, postprocess);
+                Ok(CaseOutcome::Passed)
             }
-            Ok(CaseOutcome::Passed)
-        }
+        },
         LangCategory::EvalOkay => {
             let expected_path = case
                 .expected
@@ -158,8 +182,9 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
                 .ok_or_else(|| anyhow!("{} has no expected output path", case.name))?;
             let expected = fs::read(expected_path)
                 .with_context(|| format!("reading {}", expected_path.display()))?;
-            let actual = eval_raw_case(&source, lang_dir, &config, &case.flags)
+            let mut actual = eval_raw_case(&source, lang_dir, &config, &case.flags)
                 .with_context(|| format!("{} should evaluate as a raw value", case.name))?;
+            apply_lang_postprocess(&mut actual, LangOutput::Out, postprocess);
             if actual != expected {
                 bail!(
                     "{} output diverged:\nexpected: {}\nactual: {}",
@@ -171,6 +196,103 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             Ok(CaseOutcome::Passed)
         }
     }
+}
+
+fn lang_case_postprocess(case: &LangCase) -> std::result::Result<Option<LangPostprocess>, String> {
+    let Some(path) = &case.postprocess else {
+        return Ok(None);
+    };
+    let script = fs::read_to_string(path)
+        .map_err(|_| unsupported_postprocess_message(case.name.as_str()))?;
+    parse_lang_postprocess(&script).map(Some).map_err(|_| {
+        unsupported_postprocess_message(
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or(case.name.as_str()),
+        )
+    })
+}
+
+fn parse_lang_postprocess(script: &str) -> std::result::Result<LangPostprocess, ()> {
+    let normalized = script.replace("\r\n", "\n");
+    let lines = normalized.lines().collect::<Vec<_>>();
+    for (target, suffix) in [(LangOutput::Out, "out"), (LangOutput::Err, "err")] {
+        if digit_normalizer_postprocess_lines(suffix) == lines {
+            return Ok(LangPostprocess { target });
+        }
+    }
+    Err(())
+}
+
+fn digit_normalizer_postprocess_lines(suffix: &str) -> Vec<String> {
+    vec![
+        "# shellcheck shell=bash".to_owned(),
+        "set -euo pipefail".to_owned(),
+        "testcaseBasename=$1".to_owned(),
+        String::new(),
+        "# Line numbers change when derivation.nix docs are updated.".to_owned(),
+        format!("sed -i \"$testcaseBasename.{suffix}\" \\"),
+        "  -e 's/[0-9 ][0-9 ][0-9 ][0-9 ][0-9 ][0-9 ][0-9 ][0-9]\\([^0-9]\\)/<number>\\1/g' \\"
+            .to_owned(),
+        "  -e 's/[0-9][0-9]*/<number>/g' \\".to_owned(),
+        "  ;".to_owned(),
+    ]
+}
+
+fn apply_lang_postprocess(
+    output: &mut Vec<u8>,
+    output_kind: LangOutput,
+    postprocess: Option<LangPostprocess>,
+) {
+    if postprocess.is_some_and(|postprocess| postprocess.target == output_kind) {
+        *output = normalize_decimal_runs(output);
+    }
+}
+
+fn normalize_decimal_runs(bytes: &[u8]) -> Vec<u8> {
+    let first_pass = normalize_padded_decimal_fields(bytes);
+    normalize_decimal_sequences(&first_pass)
+}
+
+fn normalize_padded_decimal_fields(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes.get(index..index + 8).is_some_and(|field| {
+            field
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || *byte == b' ')
+        }) && bytes
+            .get(index + 8)
+            .is_some_and(|byte| !byte.is_ascii_digit())
+        {
+            out.extend_from_slice(b"<number>");
+            out.push(bytes[index + 8]);
+            index += 9;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    out
+}
+
+fn normalize_decimal_sequences(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_digit() {
+            out.extend_from_slice(b"<number>");
+            index += 1;
+            while bytes.get(index).is_some_and(u8::is_ascii_digit) {
+                index += 1;
+            }
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    out
 }
 
 fn lang_case_options(
@@ -408,6 +530,10 @@ fn unsupported_flags_message(flags: &[String]) -> String {
     format!("case carries unsupported flags: {}", flags.join(" "))
 }
 
+fn unsupported_postprocess_message(name: &str) -> String {
+    format!("case carries unsupported postprocess: {name}")
+}
+
 fn eval_case(source: &[u8], options: TreeWalkOptions) -> Result<()> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
@@ -575,6 +701,7 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
         ]
     );
     assert!(
@@ -615,6 +742,7 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ),
             ("eval-okay-fromTOML-timestamps", CaseOutcome::Passed),
             ("eval-okay-number", CaseOutcome::Passed),
+            ("eval-okay-postprocess", CaseOutcome::Passed),
             ("eval-okay-primop-app", CaseOutcome::Passed),
             ("eval-okay-recursive", CaseOutcome::Passed),
             ("eval-okay-recursive-list", CaseOutcome::Passed),
@@ -837,6 +965,36 @@ fn lang_sh_autoarg_flags_configure_eval_okay() {
         lang_case_config(LangCategory::EvalOkay, &unsupported_attr_flags, &lang_dir),
         Err("case carries unsupported flags: -A \"quoted.attr\"".to_owned())
     );
+}
+
+#[test]
+fn lang_sh_digit_normalizer_postprocess_is_supported() -> Result<()> {
+    let lang_dir = fixture_lang_dir();
+    let case = discover_lang_cases(&lang_dir)?
+        .into_iter()
+        .find(|case| case.name == "eval-okay-postprocess")
+        .expect("postprocess fixture exists");
+    assert_eq!(
+        lang_case_postprocess(&case),
+        Ok(Some(LangPostprocess {
+            target: LangOutput::Out
+        }))
+    );
+    let err_script = format!("{}\n", digit_normalizer_postprocess_lines("err").join("\n"));
+    assert_eq!(
+        parse_lang_postprocess(&err_script),
+        Ok(LangPostprocess {
+            target: LangOutput::Err
+        })
+    );
+
+    let mut output = b"       9| value 1234\n".to_vec();
+    let postprocess = lang_case_postprocess(&case).map_err(anyhow::Error::msg)?;
+    apply_lang_postprocess(&mut output, LangOutput::Out, postprocess);
+    assert_eq!(output, b"<number>| value <number>\n");
+    assert_eq!(parse_lang_postprocess("echo unsupported"), Err(()));
+
+    Ok(())
 }
 
 #[test]
