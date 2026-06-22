@@ -529,6 +529,13 @@ alone (`M-1`/`Q-A`).
       bundle. This is payload-format substrate only; automatic file-artifact
       materialization, durable index updates, lookup, bundle-to-entry hydration,
       mmap reads, and harness proof remain open (`C-13`).
+- [x] Current parse metadata decoder substrate:
+      `ParseCacheMeta::from_toml` and `ParseArtifactBundle::decode_meta` parse
+      bundled `meta.toml` into typed schema/node/symbol counts plus the
+      diagnostic source hint, rejecting malformed TOML, missing fields, wrong
+      types, and out-of-range integers. This is metadata validation only;
+      artifact semantic validation, keyed hydration enforcement, durable index
+      lookup, cache-hit integration, and harness proof remain open (`C-13`).
 - [x] Current parse-artifact bundle hydration adapter:
       `ParseCacheEntry::write_artifact_bundle` writes a raw bundle back into an
       entry, clearing `meta.toml` before payload writes and committing metadata

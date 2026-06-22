@@ -433,6 +433,20 @@ impl ParseArtifactBundle {
         &self.meta_toml
     }
 
+    /// Decodes the bundled diagnostic metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if `meta.toml` is not UTF-8 or does not
+    /// match the parse-cache metadata schema.
+    pub fn decode_meta(&self) -> Result<ParseCacheMeta, ParseCacheError> {
+        let text =
+            std::str::from_utf8(&self.meta_toml).map_err(|source| ParseCacheError::DecodeMeta {
+                message: format!("metadata is not UTF-8: {source}"),
+            })?;
+        ParseCacheMeta::from_toml(text)
+    }
+
     /// Encodes this bundle as one stable little-endian payload.
     ///
     /// # Errors
@@ -835,6 +849,44 @@ impl ParseCacheMeta {
         out.push_str(&format!("symbol_count = {}\n", self.symbol_count));
         out
     }
+
+    /// Parses diagnostic metadata from TOML text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the TOML is malformed, required fields
+    /// are missing, fields have the wrong type, or integer fields do not fit in
+    /// `u32`.
+    pub fn from_toml(text: &str) -> Result<Self, ParseCacheError> {
+        let value = text
+            .parse::<toml::Value>()
+            .map_err(|source| ParseCacheError::DecodeMeta {
+                message: source.to_string(),
+            })?;
+        let table = value
+            .as_table()
+            .ok_or_else(|| ParseCacheError::DecodeMeta {
+                message: "metadata root is not a table".to_owned(),
+            })?;
+        let schema_version = decode_meta_u32(table, "schema_version")?;
+        let node_count = decode_meta_u32(table, "node_count")?;
+        let symbol_count = decode_meta_u32(table, "symbol_count")?;
+        let source_hint = match table.get("source_hint") {
+            Some(value) => {
+                let hint = value.as_str().ok_or_else(|| ParseCacheError::DecodeMeta {
+                    message: "source_hint must be a string".to_owned(),
+                })?;
+                Some(hint.to_owned())
+            }
+            None => None,
+        };
+        Ok(Self::new(
+            schema_version,
+            source_hint,
+            node_count,
+            symbol_count,
+        ))
+    }
 }
 
 /// A parse-cache or file-memoization failure.
@@ -920,6 +972,12 @@ pub enum ParseCacheError {
         /// The decode failure.
         message: String,
     },
+    /// Parse-cache diagnostic metadata could not be decoded.
+    #[error("failed to decode parse-cache metadata: {message}")]
+    DecodeMeta {
+        /// The decode failure.
+        message: String,
+    },
     /// A resolved artifact could not be encoded.
     #[error("failed to encode parse-cache artifact: {0}")]
     EncodeArtifact(String),
@@ -990,6 +1048,21 @@ fn push_toml_string(value: &str, out: &mut String) {
             character => out.push(character),
         }
     }
+}
+
+fn decode_meta_u32(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<u32, ParseCacheError> {
+    let integer = table
+        .get(field)
+        .and_then(toml::Value::as_integer)
+        .ok_or_else(|| ParseCacheError::DecodeMeta {
+            message: format!("{field} must be an integer"),
+        })?;
+    u32::try_from(integer).map_err(|_| ParseCacheError::DecodeMeta {
+        message: format!("{field} value {integer} is outside u32 range"),
+    })
 }
 
 mod codec;

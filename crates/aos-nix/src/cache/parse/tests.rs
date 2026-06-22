@@ -102,6 +102,49 @@ fn metadata_is_diagnostic_and_escaped_toml() {
         meta.to_toml(),
         "schema_version = 7\nsource_hint = \"pkgs/foo\\\"bar\\n\\u0007baz.nix\"\nnode_count = 12\nsymbol_count = 3\n"
     );
+    assert_eq!(
+        ParseCacheMeta::from_toml(&meta.to_toml()).expect("metadata decodes"),
+        meta
+    );
+    assert_eq!(
+        ParseCacheMeta::from_toml("schema_version = 7\nnode_count = 12\nsymbol_count = 3\n")
+            .expect("metadata without source hint decodes"),
+        ParseCacheMeta::new(7, None, 12, 3)
+    );
+}
+
+#[test]
+fn metadata_rejects_invalid_toml_schema() {
+    let malformed =
+        ParseCacheMeta::from_toml("schema_version =").expect_err("malformed metadata errors");
+    assert!(matches!(
+        malformed,
+        ParseCacheError::DecodeMeta { message } if !message.is_empty()
+    ));
+
+    let missing = ParseCacheMeta::from_toml("schema_version = 7\nsymbol_count = 3\n")
+        .expect_err("missing metadata field errors");
+    assert!(matches!(
+        missing,
+        ParseCacheError::DecodeMeta { message } if message.contains("node_count")
+    ));
+
+    let wrong_type = ParseCacheMeta::from_toml(
+        "schema_version = 7\nsource_hint = 1\nnode_count = 12\nsymbol_count = 3\n",
+    )
+    .expect_err("wrong source hint type errors");
+    assert!(matches!(
+        wrong_type,
+        ParseCacheError::DecodeMeta { message } if message.contains("source_hint")
+    ));
+
+    let out_of_range =
+        ParseCacheMeta::from_toml("schema_version = -1\nnode_count = 12\nsymbol_count = 3\n")
+            .expect_err("negative metadata integer errors");
+    assert!(matches!(
+        out_of_range,
+        ParseCacheError::DecodeMeta { message } if message.contains("schema_version")
+    ));
 }
 
 #[test]
@@ -199,6 +242,9 @@ fn artifact_bundle_round_trips_complete_entry_payloads() {
 
     assert_eq!(decoded, bundle);
     assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 6"));
+    let meta = decoded.decode_meta().expect("bundle metadata decodes");
+    assert_eq!(meta.schema_version, cache.schema_version());
+    assert_eq!(meta.source_hint.as_deref(), Some("expr.nix"));
 
     let resolved_symbols =
         decode_symbols(decoded.symbols_bytes()).expect("resolved symbols decode");
