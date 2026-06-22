@@ -740,8 +740,7 @@ fn reproduction_args(
         args.push("--trace-verbose".to_string());
     }
     if let Some(current_system) = eval_config.current_system() {
-        args.push("--eval-system".to_string());
-        args.push(current_system.to_string());
+        args.push(format!("--eval-system={current_system}"));
     }
     match eval_config.eval_mode() {
         NixEvalMode::Ambient => {}
@@ -750,21 +749,17 @@ fn reproduction_args(
         NixEvalMode::Restricted => {
             args.push("--restrict-eval".to_string());
             for path in eval_config.allowed_paths() {
-                args.push("--eval-allow-path".to_string());
-                args.push(path.clone());
+                args.push(format!("--eval-allow-path={path}"));
             }
             for uri in eval_config.allowed_uris() {
-                args.push("--eval-allow-uri".to_string());
-                args.push(uri.clone());
+                args.push(format!("--eval-allow-uri={uri}"));
             }
         }
     }
     args.extend([
         "nix-diff".to_string(),
-        "--attr".to_string(),
-        attr.to_string(),
-        "--mode".to_string(),
-        mode_name(mode).to_string(),
+        format!("--attr={attr}"),
+        format!("--mode={}", mode_name(mode)),
         "--".to_string(),
         file.to_string_lossy().into_owned(),
     ]);
@@ -1039,7 +1034,7 @@ mod tests {
         assert_eq!(value["attr"], "pkgs.hello");
         assert_eq!(
             value["reproduce"],
-            "aos --impure-eval nix-diff --attr pkgs.hello --mode byte -- default.nix"
+            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte -- default.nix"
         );
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
@@ -1220,18 +1215,13 @@ mod tests {
             [
                 "aos",
                 "--trace-verbose",
-                "--eval-system",
-                "aos-test-target",
+                "--eval-system=aos-test-target",
                 "--restrict-eval",
-                "--eval-allow-path",
-                "/aos/src",
-                "--eval-allow-uri",
-                "https://cache.example/",
+                "--eval-allow-path=/aos/src",
+                "--eval-allow-uri=https://cache.example/",
                 "nix-diff",
-                "--attr",
-                "pkgs.o'clock",
-                "--mode",
-                "structural",
+                "--attr=pkgs.o'clock",
+                "--mode=structural",
                 "--",
                 "path with spaces/default.nix",
             ]
@@ -1244,7 +1234,7 @@ mod tests {
                 "pkgs.o'clock",
                 DiffMode::Structural,
             ),
-            "aos --trace-verbose --eval-system aos-test-target --restrict-eval --eval-allow-path /aos/src --eval-allow-uri https://cache.example/ nix-diff --attr 'pkgs.o'\\''clock' --mode structural -- 'path with spaces/default.nix'"
+            "aos --trace-verbose --eval-system=aos-test-target --restrict-eval --eval-allow-path=/aos/src --eval-allow-uri=https://cache.example/ nix-diff '--attr=pkgs.o'\\''clock' --mode=structural -- 'path with spaces/default.nix'"
         );
         Ok(())
     }
@@ -1443,7 +1433,7 @@ mod tests {
         assert_eq!(value["reports"][0]["candidate"], "native-test");
         assert_eq!(
             value["reports"][0]["reproduce"],
-            "aos --impure-eval nix-diff --attr pkgs.hello --mode byte -- default.nix"
+            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte -- default.nix"
         );
         assert_eq!(value["reports"][0]["divergences"][0]["kind"], "bytes");
         assert!(value.get("oracle_stats_summary").is_none());
@@ -1503,7 +1493,7 @@ mod tests {
         assert_eq!(value["reports"][0]["mode"], "structural");
         assert_eq!(
             value["reports"][0]["reproduce"],
-            "aos --impure-eval nix-diff --attr pkgs.bad --mode structural -- default.nix"
+            "aos --impure-eval nix-diff --attr=pkgs.bad --mode=structural -- default.nix"
         );
         assert!(value["reports"][0].get("oracle_stats").is_none());
         assert_eq!(
