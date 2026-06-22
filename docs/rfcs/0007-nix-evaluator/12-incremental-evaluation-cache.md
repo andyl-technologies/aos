@@ -938,7 +938,8 @@ harness, never cut for scope.
 ### Correctness backstops (in-process counterpart)
 
 - [ ] In-process CAS single-flight on the node table for concurrent same-key misses ([§8.4](#84-open-questions-collected), [13](13-parallel-evaluation.md)) — P3.5, `R-4`; gate: loom.
-- [ ] `AOS_NIX_CACHE=0` bypass + periodic cold full-closure re-validation in CI ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-14`; gate: differential `.drv` harness (cached vs uncached byte-identical).
+- [x] Current parse-cache kill switch: through the AOS `NixEvalConfig` env/config path, blank `AOS_NIX_CACHE` or `AOS_NIX_CACHE=0` clears `native_cache_root`; only a valid absolute root maps to `TreeWalkOptions::parse_cache_root = <root>/parse`; native frontend lowering constructs `ParseCache` only when that option is present and otherwise lowers source bytes uncached. This covers only the current durable frontend parse/IR artifact cache, not the future incremental value/demand-graph cache or in-process import result memoization. ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P1/P2, `S-14`; gate: `eval_config_parses_aos_nix_cache_env_values`, `eval_config_maps_native_cache_root_to_parse_cache_options`, native/tree-walk parse-cache tests.
+- [ ] Full cache-off/cold-validation safety net remains: `AOS_NIX_CACHE=0` must bypass the future incremental persistence/value memoization layer, and CI must periodically compare cached vs uncached cold full-closure `.drv` results with the differential harness. ([§8.3](#83-correctness-anxiety-and-the-safety-net)) — P2, `S-14`.
 
 ## References
 
