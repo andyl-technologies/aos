@@ -19,7 +19,7 @@ use std::convert::TryFrom;
 
 use thiserror::Error;
 
-use crate::compile::builtins::{is_known_builtin_attr, is_unshadowable_global_name};
+use crate::builtins::{is_known_builtin_attr, is_unshadowable_global_name};
 use crate::syntax::{
     AstArena, AstError, AstErrorKind, ChildSlice, Node, NodeData, NodeId, NodeKind, ParsedAst,
     Span, Symbol, SymbolTable,
@@ -149,7 +149,7 @@ pub struct ScopeTables {
 
 impl ScopeTables {
     /// Creates scope tables from already-decoded raw storage.
-    pub(crate) fn from_raw_parts(
+    pub fn from_raw_parts(
         frames: Vec<FrameInfo>,
         node_frames: Vec<Option<FrameId>>,
         with_chains: Vec<WithChain>,
@@ -171,7 +171,7 @@ impl ScopeTables {
     }
 
     /// Returns frame ids attached to arena nodes.
-    pub(crate) fn node_frames(&self) -> &[Option<FrameId>] {
+    pub fn node_frames(&self) -> &[Option<FrameId>] {
         &self.node_frames
     }
 
@@ -196,7 +196,7 @@ impl ScopeTables {
     }
 
     /// Returns inherit-group ids attached to arena nodes.
-    pub(crate) fn node_inherits(&self) -> &[Option<InheritGroupId>] {
+    pub fn node_inherits(&self) -> &[Option<InheritGroupId>] {
         &self.node_inherits
     }
 

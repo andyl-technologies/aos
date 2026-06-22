@@ -1,0 +1,13 @@
+[package]
+name = "ratchet-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# Exposes test-only constructors (e.g. `Builtin::test_with_call_arities`) to
+# downstream crates' test builds. Not enabled in production.
+test-util = []
+
+[dependencies]
+thiserror = { workspace = true }
+aos-nix-syntax = { workspace = true }

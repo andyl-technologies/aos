@@ -51,7 +51,7 @@ compile_error!("aos-nix supports only Linux and Darwin host operating systems");
 
 pub mod attrs;
 pub mod cache;
-pub mod compile;
+pub use ratchet_core as compile;
 pub mod diagnostic;
 mod drv_materialize;
 pub mod error;

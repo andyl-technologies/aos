@@ -4,8 +4,8 @@
 //! [`lowering_tests`] and [`primop_tests`] submodules.
 
 use super::*;
-use crate::compile::{ScopeTables, resolve};
 use crate::syntax::{AstArena, parse_str};
+use crate::{ScopeTables, resolve};
 
 pub(super) fn lowered(source: &str) -> Ir {
     lower(resolve(parse_str(source).expect("source parses")).expect("source resolves"))

@@ -256,6 +256,7 @@ dependencies = [
  "miette",
  "nix-compat",
  "proptest",
+ "ratchet-core",
  "ratchet-value",
  "regex",
  "reqwest",
@@ -3658,6 +3659,14 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "ratchet-core"
+version = "0.1.0"
+dependencies = [
+ "aos-nix-syntax",
+ "thiserror",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 
 use super::super::*;
 use super::*;
-use crate::compile::resolve;
+use crate::resolve;
 use crate::syntax::parse_str;
 
 #[test]

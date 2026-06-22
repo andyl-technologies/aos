@@ -16,8 +16,8 @@
 //! - `docs` — the short user-facing documentation values.
 //! - `lookup` — the compile-time perfect-hash name lookup table.
 
-pub(super) use crate::compile::{IrId, IrNode};
 pub(super) use crate::syntax::{Span, Symbol};
+pub(super) use crate::{IrId, IrNode};
 
 #[macro_use]
 mod macros;
@@ -32,11 +32,11 @@ mod tests;
 #[cfg(test)]
 mod tests_metadata;
 
-pub(crate) use declarations::{BUILTINS, BuiltinKind, BuiltinLookup};
-pub(crate) use docs::*;
-pub(crate) use lookup::BuiltinLookupTable;
-pub(crate) use types::BuiltinDefinition;
-pub(crate) use types::{
+pub use declarations::{BUILTINS, BuiltinKind, BuiltinLookup};
+pub use docs::*;
+pub use lookup::BuiltinLookupTable;
+pub use types::BuiltinDefinition;
+pub use types::{
     Builtin, BuiltinAvailability, BuiltinCall, BuiltinDirect, BuiltinEffect, BuiltinExecution,
     BuiltinExecutor, BuiltinNameScope, BuiltinRegistry, DirectBinaryPrimOp,
     NativeCliFallbackFeature, StrictBinaryPrimOp, StrictTernaryPrimOp, StrictUnaryPrimOp,
@@ -44,27 +44,27 @@ pub(crate) use types::{
 };
 
 /// The C++ Nix version whose observable builtin surface this evaluator targets.
-pub(crate) const PINNED_NIX_VERSION: &[u8] = b"2.24.12";
+pub const PINNED_NIX_VERSION: &[u8] = b"2.24.12";
 
 /// The Nix language version reported by the pinned C++ Nix evaluator.
-pub(crate) const PINNED_NIX_LANG_VERSION: i64 = 6;
+pub const PINNED_NIX_LANG_VERSION: i64 = 6;
 
 /// Returns direct lowering behavior for a builtin name.
-pub(crate) fn direct_builtin(name: &[u8]) -> Option<BuiltinDirect> {
+pub fn direct_builtin(name: &[u8]) -> Option<BuiltinDirect> {
     BUILTINS.direct(name)
 }
 
 /// Returns the declaration for a builtin name.
-pub(crate) fn lookup_builtin(name: &[u8]) -> Option<Builtin> {
+pub fn lookup_builtin(name: &[u8]) -> Option<Builtin> {
     BUILTINS.lookup(name)
 }
 
 /// Returns whether `name` is a builtin attribute known to this evaluator.
-pub(crate) fn is_known_builtin_attr(name: &[u8]) -> bool {
+pub fn is_known_builtin_attr(name: &[u8]) -> bool {
     BUILTINS.is_known_attr(name)
 }
 
 /// Returns whether `name` is a top-level Nix name that active `with` scopes cannot shadow.
-pub(crate) fn is_unshadowable_global_name(name: &[u8]) -> bool {
+pub fn is_unshadowable_global_name(name: &[u8]) -> bool {
     BUILTINS.is_unshadowable_global_name(name)
 }

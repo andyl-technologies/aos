@@ -6,7 +6,7 @@ use super::*;
 
 /// The observable effect class for a direct builtin boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinEffect {
+pub enum BuiltinEffect {
     /// The builtin is pure for IR speculation and caching.
     Pure,
     /// The builtin can observe the filesystem, environment, or evaluator state.
@@ -15,7 +15,7 @@ pub(crate) enum BuiltinEffect {
 
 /// Direct lowering behavior for a builtin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinDirect {
+pub enum BuiltinDirect {
     /// The builtin lowers to the derivation boundary IR node.
     DerivationStrict,
     /// The builtin lowers after one strict argument.
@@ -36,7 +36,7 @@ pub(crate) enum BuiltinDirect {
 
 impl BuiltinDirect {
     /// Returns the number of arguments consumed by a direct-lowered call.
-    pub(crate) const fn arity(self) -> usize {
+    pub const fn arity(self) -> usize {
         match self {
             Self::DerivationStrict | Self::StrictUnary { .. } | Self::LazyUnary { .. } => 1,
             Self::StrictBinary { .. }
@@ -50,7 +50,7 @@ impl BuiltinDirect {
 
 /// Runtime execution strategy attached to a concrete builtin declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinExecution {
+pub enum BuiltinExecution {
     /// The builtin parses and evaluates another Nix file.
     Import,
     /// The builtin parses another Nix file with an injected global scope.
@@ -377,7 +377,7 @@ impl BuiltinExecution {
 
 /// User-facing native evaluator fallback classes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NativeCliFallbackFeature {
+pub enum NativeCliFallbackFeature {
     /// Evaluation must defer because the builtin can observe CLI/runtime state.
     CliSensitiveBuiltinEvaluation,
     /// Evaluation must defer because the builtin belongs to flake evaluation.
@@ -386,7 +386,7 @@ pub(crate) enum NativeCliFallbackFeature {
 
 impl NativeCliFallbackFeature {
     /// Returns the diagnostic feature label for this fallback class.
-    pub(crate) const fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::CliSensitiveBuiltinEvaluation => "CLI-sensitive builtin evaluation",
             Self::Flakes => "flakes",
@@ -396,7 +396,7 @@ impl NativeCliFallbackFeature {
 
 /// Contextual availability of a builtin in the reified `builtins` attrset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinAvailability {
+pub enum BuiltinAvailability {
     /// The builtin is always present.
     Always,
     /// The builtin is present only in impure mode when `currentSystem` is set.
@@ -407,7 +407,7 @@ pub(crate) enum BuiltinAvailability {
 
 /// Output mode for trace-like builtins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TraceMode {
+pub enum TraceMode {
     /// `builtins.trace` always emits its message.
     Always,
     /// `builtins.traceVerbose` emits only when verbose tracing is enabled.
@@ -416,7 +416,7 @@ pub(crate) enum TraceMode {
 
 /// Strict unary primitive operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StrictUnaryPrimOp {
+pub enum StrictUnaryPrimOp {
     Abort,
     IsAttrs,
     IsList,
@@ -463,7 +463,7 @@ pub(crate) enum StrictUnaryPrimOp {
 
 /// Strict ternary primitive operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StrictTernaryPrimOp {
+pub enum StrictTernaryPrimOp {
     FoldlStrict,
     ReplaceStrings,
     Substring,
@@ -471,7 +471,7 @@ pub(crate) enum StrictTernaryPrimOp {
 
 /// Strict binary primitive operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StrictBinaryPrimOp {
+pub enum StrictBinaryPrimOp {
     AppendContext,
     Add,
     Sub,
@@ -499,7 +499,7 @@ pub(crate) enum StrictBinaryPrimOp {
 
 /// Direct-only binary primitive operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DirectBinaryPrimOp {
+pub enum DirectBinaryPrimOp {
     GetAttr,
     HasAttr,
     UnsafeGetAttrPos,
@@ -514,7 +514,7 @@ pub(crate) enum DirectBinaryPrimOp {
 
 /// How a builtin's spelling participates in top-level name resolution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum BuiltinNameScope {
+pub enum BuiltinNameScope {
     /// The builtin is reachable through the `builtins` attribute set.
     BuiltinsAttrOnly,
     /// The builtin is also a top-level name that active `with` scopes cannot shadow.
@@ -523,25 +523,25 @@ pub(crate) enum BuiltinNameScope {
 
 /// Source location and symbol metadata for one builtin call site.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct BuiltinCall {
+pub struct BuiltinCall {
     /// The IR node that performs the call.
-    pub(crate) id: IrId,
+    pub id: IrId,
     /// The source span reported for call-level diagnostics.
-    pub(crate) span: Span,
+    pub span: Span,
     /// The source symbol used for builtin diagnostics.
-    pub(crate) symbol: Symbol,
+    pub symbol: Symbol,
 }
 
 impl BuiltinCall {
     /// Creates builtin call metadata from a lowered call site.
-    pub(crate) const fn new(id: IrId, span: Span, symbol: Symbol) -> Self {
+    pub const fn new(id: IrId, span: Span, symbol: Symbol) -> Self {
         Self { id, span, symbol }
     }
 }
 
 /// A builtin declaration shared by resolution, lowering, and execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Builtin {
+pub struct Builtin {
     pub(crate) kind: BuiltinKind,
     name: &'static [u8],
     execution: BuiltinExecution,
@@ -580,28 +580,28 @@ impl Builtin {
     }
 
     /// Returns the byte-oriented builtin attribute name.
-    pub(crate) const fn name(&self) -> &'static [u8] {
+    pub const fn name(&self) -> &'static [u8] {
         self.name
     }
 
     /// Returns the runtime execution strategy for the builtin.
-    pub(crate) const fn execution(&self) -> BuiltinExecution {
+    pub const fn execution(&self) -> BuiltinExecution {
         self.execution
     }
 
     /// Returns direct-lowering behavior for the builtin, if any.
-    pub(crate) const fn direct(&self) -> Option<BuiltinDirect> {
+    pub const fn direct(&self) -> Option<BuiltinDirect> {
         self.direct
     }
 
     /// Returns the arity exposed when the builtin is selected as a first-class value.
-    pub(crate) const fn first_class_arity(&self) -> Option<usize> {
+    pub const fn first_class_arity(&self) -> Option<usize> {
         self.first_class_arity
     }
 
     /// Creates a test-only builtin with explicit direct and first-class arity metadata.
-    #[cfg(test)]
-    pub(crate) const fn test_with_call_arities(
+    #[cfg(any(test, feature = "test-util"))]
+    pub const fn test_with_call_arities(
         direct: Option<BuiltinDirect>,
         first_class_arity: Option<usize>,
     ) -> Self {
@@ -633,12 +633,12 @@ impl Builtin {
     }
 
     /// Returns when this builtin is visible through the reified `builtins` attrset.
-    pub(crate) const fn availability(&self) -> BuiltinAvailability {
+    pub const fn availability(&self) -> BuiltinAvailability {
         self.availability
     }
 
     /// Returns the diagnostic feature label when native JSON evaluation must fall back.
-    pub(crate) const fn native_cli_fallback_feature(&self) -> Option<&'static str> {
+    pub const fn native_cli_fallback_feature(&self) -> Option<&'static str> {
         match self.native_cli_fallback_feature_kind() {
             Some(feature) => Some(feature.label()),
             None => None,
@@ -652,13 +652,13 @@ impl Builtin {
 
     /// Returns the static documentation attached to the builtin.
     #[allow(dead_code)]
-    pub(crate) const fn docs(&self) -> &'static BuiltinDocs {
+    pub const fn docs(&self) -> &'static BuiltinDocs {
         self.docs
     }
 }
 
 /// Adapter implemented by concrete evaluators that execute builtin strategies.
-pub(crate) trait BuiltinExecutor {
+pub trait BuiltinExecutor {
     /// Value type returned by the executor.
     type Value;
 
@@ -719,7 +719,7 @@ pub(crate) trait BuiltinExecutor {
 
 /// Registry of builtin declarations known to the evaluator.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct BuiltinRegistry {
+pub struct BuiltinRegistry {
     declarations: &'static [Builtin],
     lookup: &'static BuiltinLookup,
 }
@@ -737,17 +737,17 @@ impl BuiltinRegistry {
     }
 
     /// Returns the number of builtin declarations.
-    pub(crate) const fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.declarations.len()
     }
 
     /// Returns an iterator over builtin declarations.
-    pub(crate) fn iter(&self) -> std::slice::Iter<'static, Builtin> {
+    pub fn iter(&self) -> std::slice::Iter<'static, Builtin> {
         self.declarations.iter()
     }
 
     /// Returns the declaration for a builtin name.
-    pub(crate) fn lookup(&self, name: &[u8]) -> Option<Builtin> {
+    pub fn lookup(&self, name: &[u8]) -> Option<Builtin> {
         let index = self.lookup.candidate_index(name)?;
         let builtin = self.declarations.get(index).copied()?;
         (builtin.name() == name).then_some(builtin)
@@ -771,7 +771,7 @@ impl BuiltinRegistry {
 }
 
 /// Provides the single static declaration for a concrete builtin marker type.
-pub(crate) trait BuiltinDefinition {
+pub trait BuiltinDefinition {
     /// Generated kind tag tying runtime dispatch to this marker type.
     const KIND: BuiltinKind;
 

@@ -1,3 +1,6 @@
+//! `ratchet-core` — the core IR, scope resolver, and builtin metadata for the
+//! AOS Nix evaluator (RFC-0007 §1.1 Phase 1b).
+//!
 //! Compilation passes from parsed AST to evaluator IR.
 //!
 //! The compile layer starts with scope resolution: it rewrites expression
@@ -11,7 +14,13 @@
 //! tiers (the tree-walk oracle) implement the executor trait and supply the
 //! builtin *execution* behavior, so the dependency runs runtime -> compile.
 
-pub(crate) mod builtins;
+#![forbid(unsafe_code)]
+
+/// Re-export of the parser/AST crate so the moved compile sources can keep
+/// resolving their `crate::syntax::…` paths after the crate split.
+pub use aos_nix_syntax as syntax;
+
+pub mod builtins;
 pub mod ir;
 pub mod scope;
 

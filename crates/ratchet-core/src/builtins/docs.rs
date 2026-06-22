@@ -2,19 +2,19 @@
 
 /// Short user-facing documentation for a builtin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BuiltinDocs {
+pub struct BuiltinDocs {
     pub(super) summary: &'static str,
 }
 
 impl BuiltinDocs {
     /// Returns the one-line summary for the builtin.
     #[allow(dead_code)]
-    pub(crate) const fn summary(&self) -> &'static str {
+    pub const fn summary(&self) -> &'static str {
         self.summary
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub(super) static TEST_BUILTIN_DOCS: BuiltinDocs = BuiltinDocs {
     summary: "Test builtin declaration.",
 };

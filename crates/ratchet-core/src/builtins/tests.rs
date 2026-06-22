@@ -106,7 +106,7 @@ fn builtin_lookup_distinguishes_top_level_names_from_attrs() {
 
 #[test]
 fn pinned_nix_version_matches_packaged_cpp_nix() {
-    let package = include_str!("../../../../../pkgs/tools/nix.nix");
+    let package = include_str!("../../../../pkgs/tools/nix.nix");
     let version = package
         .lines()
         .find_map(|line| {

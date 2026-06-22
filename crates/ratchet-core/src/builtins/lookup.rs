@@ -7,7 +7,7 @@ const BUILTIN_LOOKUP_SECONDARY_SEED: u32 = 0x9e37_79b9;
 pub(crate) const BUILTIN_LOOKUP_EMPTY_SLOT: u16 = u16::MAX;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct BuiltinLookupTable<const N: usize> {
+pub struct BuiltinLookupTable<const N: usize> {
     pub(super) displacements: [u16; N],
     pub(super) slots: [u16; N],
 }

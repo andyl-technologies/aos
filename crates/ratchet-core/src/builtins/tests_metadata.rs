@@ -283,7 +283,7 @@ impl BuiltinExecutor for RecordingExecutor {
 
 #[test]
 fn generated_builtin_dispatch_reaches_generic_executor_with_selected_declaration() {
-    use crate::compile::{EffectClass, IrData, IrKind};
+    use crate::{EffectClass, IrData, IrKind};
 
     let length = BUILTINS
         .lookup(b"length")

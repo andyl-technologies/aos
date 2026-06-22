@@ -10,17 +10,17 @@ macro_rules! builtin_registry {
             $ty:ident,
         )*
     ) => {
-        pub(crate) const BUILTIN_DECLARATIONS: &[Builtin] = &[
+        pub const BUILTIN_DECLARATIONS: &[Builtin] = &[
             $(
                 <$ty as BuiltinDefinition>::DECLARATION,
             )*
         ];
-        pub(crate) const BUILTIN_LOOKUP_LEN: usize = BUILTIN_DECLARATIONS.len();
-        pub(crate) type BuiltinLookup = BuiltinLookupTable<BUILTIN_LOOKUP_LEN>;
-        pub(crate) const BUILTIN_LOOKUP: BuiltinLookup = BuiltinLookupTable::build(BUILTIN_DECLARATIONS);
+        pub const BUILTIN_LOOKUP_LEN: usize = BUILTIN_DECLARATIONS.len();
+        pub type BuiltinLookup = BuiltinLookupTable<BUILTIN_LOOKUP_LEN>;
+        pub const BUILTIN_LOOKUP: BuiltinLookup = BuiltinLookupTable::build(BUILTIN_DECLARATIONS);
 
         /// Builtin declarations recognized by the resolver and evaluator.
-        pub(crate) const BUILTINS: BuiltinRegistry =
+        pub const BUILTINS: BuiltinRegistry =
             BuiltinRegistry::new(BUILTIN_DECLARATIONS, &BUILTIN_LOOKUP);
     };
 }
@@ -35,14 +35,14 @@ macro_rules! define_builtins {
         )*
     ) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub(crate) enum BuiltinKind {
+        pub enum BuiltinKind {
             $(
                 $ty,
             )*
         }
 
         $(
-            pub(crate) struct $ty;
+            pub struct $ty;
             impl BuiltinDefinition for $impl_ty {
                 const KIND: BuiltinKind = BuiltinKind::$ty;
                 $($body)*
@@ -51,7 +51,7 @@ macro_rules! define_builtins {
 
         impl Builtin {
             /// Returns whether this builtin is visible in the current evaluator options.
-            pub(crate) fn is_available<E>(self, eval: &E) -> bool
+            pub fn is_available<E>(self, eval: &E) -> bool
             where
                 E: BuiltinExecutor,
             {
@@ -68,7 +68,7 @@ macro_rules! define_builtins {
             ///
             /// Returns an evaluator error when selecting the builtin requires unsupported
             /// ambient state or heap allocation fails.
-            pub(crate) fn select<E>(
+            pub fn select<E>(
                 self,
                 eval: &mut E,
                 id: IrId,
@@ -96,7 +96,7 @@ macro_rules! define_builtins {
             ///
             /// Returns an evaluator error when arity validation fails, argument forcing
             /// fails, or the builtin implementation reports a runtime diagnostic.
-            pub(crate) fn apply_direct<E>(
+            pub fn apply_direct<E>(
                 self,
                 eval: &mut E,
                 call: BuiltinCall,
@@ -124,7 +124,7 @@ macro_rules! define_builtins {
             ///
             /// Returns an evaluator error when arity validation fails, argument forcing
             /// fails, or the builtin implementation reports a runtime diagnostic.
-            pub(crate) fn apply<E>(
+            pub fn apply<E>(
                 self,
                 eval: &mut E,
                 call: BuiltinCall,
