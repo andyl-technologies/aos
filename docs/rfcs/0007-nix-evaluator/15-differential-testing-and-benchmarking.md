@@ -891,10 +891,20 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       representative real AOS workload benchmark gate and show aos-nix at or below
       C++ Nix wall-clock with green `.drv` parity and explanatory counters; a
       correct-but-slower evaluator does not cut over (§5, §8.1).
-- [ ] **Fallback retained permanently.** `NixCli` remains a wired, exercised
-      fallback path **after** cutover — not removed, not bit-rotted — with the
-      `AOS_NIX_NATIVE_VERIFY` sampling canary (§8, D→E) kept on. The cutover flips
-      the *default*; it never deletes the escape hatch.
+- [x] **Fallback/verify substrate wired.** `NixCli` implements `NixEval` and
+      remains the default/off-mode evaluator; native `On` mode owns a `NixCli`
+      fallback through `NativeFallbackEval` for `Unsupported`/`Internal` native
+      errors while semantic `EvalError` surfaces; native-control env vars are
+      stripped from C++ Nix subprocesses; and `AOS_NIX_NATIVE_VERIFY` can compare
+      native file/expression results against `NixCli` while recording
+      match/divergence/incomplete counters ([14 §4-§7](14-integration-with-aos.md#the-nixeval-trait-and-nixcli-fallback-24)).
+      This keeps the fallback path wired today but does not prove post-cutover
+      permanence.
+- [ ] **Post-cutover fallback-retention result remains.** After the default
+      flips, keep `NixCli` as an exercised runtime escape hatch and oracle, keep
+      `AOS_NIX_NATIVE_VERIFY` sampling/canary coverage enabled per the D→E
+      rollout, and verify the fallback path has not been removed or bit-rotted.
+      The cutover flips the *default*; it never deletes the escape hatch.
 
 The thresholds are deliberately illustrative — 1,000 CPU-hours, 4 weeks, 10,000
 evals are tunable knobs the team sets against observed flakiness and fleet size.
