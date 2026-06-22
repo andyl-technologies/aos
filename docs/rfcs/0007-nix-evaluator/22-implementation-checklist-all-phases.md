@@ -499,6 +499,12 @@ alone (`M-1`/`Q-A`).
       This is codec-only; LMDB/redb environments, tables, transactions, index
       writes/reads, mmap pointer reads, GC/repack, and harness proof remain open
       (`C-13`).
+- [x] Current cache-level blob pack initialization substrate:
+      `PersistCache::open` initializes and exposes separate value/file
+      `PersistBlobPack` handles after schema validation and owned-directory
+      setup, and reports corrupt non-empty packfiles instead of replacing them.
+      Durable index integration, node metadata, mmap reads, writer batching,
+      GC/repack, Attic transport, and harness proof remain open (`C-13`/`R-14`).
 - [ ] Full P2 persistence remains: custom mmap packfile for immutable
       `values`/`files`, LMDB/redb mutable `nodes` metadata and indexes,
       serialized node/value/file records, Attic transport, GC/repack, and

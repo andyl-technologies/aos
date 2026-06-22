@@ -526,6 +526,8 @@ impl PersistBlobPack {
 #[derive(Clone, Debug)]
 pub struct PersistCache {
     layout: PersistLayout,
+    value_pack: PersistBlobPack,
+    file_pack: PersistBlobPack,
 }
 
 impl PersistCache {
@@ -539,7 +541,8 @@ impl PersistCache {
     /// # Errors
     ///
     /// Returns [`PersistError`] if schema metadata cannot be read, parsed,
-    /// written, or if cache directories cannot be created or discarded.
+    /// written, if cache directories cannot be created or discarded, or if blob
+    /// packfiles cannot be initialized.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let layout = PersistLayout::new(root);
         match read_schema_version(&layout)? {
@@ -556,12 +559,48 @@ impl PersistCache {
                 write_schema(&layout)?;
             }
         }
-        Ok(Self { layout })
+        let value_pack_path = layout.value_packfile_path();
+        let value_pack = PersistBlobPack::open(value_pack_path.clone()).map_err(|source| {
+            PersistError::OpenBlobPack {
+                path: value_pack_path,
+                source,
+            }
+        })?;
+        let file_pack_path = layout.file_packfile_path();
+        let file_pack = PersistBlobPack::open(file_pack_path.clone()).map_err(|source| {
+            PersistError::OpenBlobPack {
+                path: file_pack_path,
+                source,
+            }
+        })?;
+        Ok(Self {
+            layout,
+            value_pack,
+            file_pack,
+        })
     }
 
     /// Returns this cache's filesystem layout.
     pub const fn layout(&self) -> &PersistLayout {
         &self.layout
+    }
+
+    /// Returns the immutable value blob packfile.
+    pub const fn value_pack(&self) -> &PersistBlobPack {
+        &self.value_pack
+    }
+
+    /// Returns the immutable file/frontend artifact blob packfile.
+    pub const fn file_pack(&self) -> &PersistBlobPack {
+        &self.file_pack
+    }
+
+    /// Returns the immutable blob packfile for `store`.
+    pub fn blob_pack(&self, store: PersistBlobStore) -> &PersistBlobPack {
+        match store {
+            PersistBlobStore::Values => &self.value_pack,
+            PersistBlobStore::Files => &self.file_pack,
+        }
     }
 }
 
@@ -797,6 +836,14 @@ pub enum PersistError {
         path: PathBuf,
         /// The underlying filesystem error.
         source: io::Error,
+    },
+    /// A value/file blob packfile could not be initialized.
+    #[error("failed to initialize persistent blob pack {path}")]
+    OpenBlobPack {
+        /// The blob packfile path.
+        path: PathBuf,
+        /// The underlying packfile error.
+        source: PersistBlobPackError,
     },
 }
 
@@ -1448,9 +1495,60 @@ mod tests {
         assert!(layout.nodes_dir().is_dir());
         assert!(layout.values_dir().is_dir());
         assert!(layout.files_dir().is_dir());
+        assert_eq!(cache.value_pack().path(), layout.value_packfile_path());
+        assert_eq!(cache.file_pack().path(), layout.file_packfile_path());
+        assert_eq!(
+            cache.blob_pack(PersistBlobStore::Values).path(),
+            layout.value_packfile_path()
+        );
+        assert_eq!(
+            cache.blob_pack(PersistBlobStore::Files).path(),
+            layout.file_packfile_path()
+        );
+        assert_eq!(
+            fs::read(layout.value_packfile_path())
+                .expect("value pack header reads")
+                .as_slice(),
+            PersistBlobPackHeader::current().encode().as_slice()
+        );
+        assert_eq!(
+            fs::read(layout.file_packfile_path())
+                .expect("file pack header reads")
+                .as_slice(),
+            PersistBlobPackHeader::current().encode().as_slice()
+        );
         assert_eq!(
             fs::read_to_string(layout.schema_path()).expect("schema reads"),
             "format = \"aos-nix-eval-cache\"\nschema_version = 1\n"
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_blob_pack_errors_without_rewriting() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let layout = cache.layout().clone();
+        fs::write(layout.value_packfile_path(), b"bad").expect("value pack corrupts");
+
+        let error = PersistCache::open(&root).expect_err("corrupt value pack errors");
+
+        assert!(matches!(
+            error,
+            PersistError::OpenBlobPack {
+                source: PersistBlobPackError::Format {
+                    source: PersistPackFormatError::ShortPackHeader { actual: 3, .. },
+                    ..
+                },
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(layout.value_packfile_path())
+                .expect("corrupt pack reads")
+                .as_slice(),
+            b"bad"
         );
 
         let _ = fs::remove_dir_all(root);
