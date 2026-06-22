@@ -870,10 +870,16 @@ The cutover is permitted **iff all** of the following are simultaneously true:
       optimized tiers that exist, and keep property tests green before default-on
       (§7.1-§7.3). "Zero new divergences" resets the clock on any evaluator
       change — a late fix re-arms the fuzzing budget.
-- [ ] **Shadow mode silent.** At least **4 weeks** of shadow mode (§2.6) across at
-      least **10,000** real CI evaluations with **zero** divergences reported —
-      real traffic, not the enumerated corpus, so it covers the configurations the
-      corpus never thought to name.
+- [x] **Shadow-mode implementation substrate wired.** `AOS_NIX_NATIVE=shadow`
+      selects `ShadowEval`; `NixCli` remains authoritative, the same file/raw
+      expression is evaluated through `NixNative`, `.drv` closures or strict JSON
+      values are compared, and match/divergence/incomplete counters are recorded
+      without returning native output or materializing it into the store on the
+      shadow path (§2.6; [14 §5.1](14-integration-with-aos.md#51-why-shadow-mode-is-the-rollout-workhorse)).
+- [ ] **Shadow-mode soak remains.** Run shadow mode for at least **4 weeks**
+      across at least **10,000** real CI/fleet evaluations with **zero**
+      divergences reported before rollout credit/default-on progression; real
+      traffic, not the enumerated corpus (§2.6, §8.1).
 - [x] **Benchmark/measurement substrate wired.** `aos nix-bench` records
       parity-gated cold samples over the P1 real-workload corpus plus diagnostic
       microbenchmarks, with `NIX_SHOW_STATS` deltas, commit-keyed history,
