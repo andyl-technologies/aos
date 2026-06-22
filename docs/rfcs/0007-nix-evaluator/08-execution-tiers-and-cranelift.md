@@ -861,10 +861,19 @@ harness, never cut for scope.
 
 ### Tier 0 — the tree-walk oracle (foundation)
 
-- [ ] Recursive IR interpreter in **safe Rust** (no `unsafe`, no raw function
-      pointers), the permanent correctness oracle and deopt target ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1, `S-3`/`S-5`; gate: differential `.drv` harness + miri/sanitizer on the safe tree.
-- [ ] Thunk state machine `Suspended → Blackhole → Forced` with *infinite
-      recursion encountered* on a forced black hole ([§1.2](#12-the-execution-unit-thunk-and-lambda)) — P1, `C-12` (atomic thunk word from day 1); gate: conformance 20-21.
+- [x] Current Tier-0 safe tree-walk oracle core: recursive evaluator over the
+      lowered IR in `aos_nix::eval::TreeWalk`, `aos-nix` fenced with
+      `#![forbid(unsafe_code)]`, no raw function pointers or JIT path, and
+      internal-diff hooks for future tier comparison ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1, `S-3`/`S-5`; gate today: focused tree-walk/thunk tests.
+- [ ] Future deopt-target integration: optimized tiers must carry enough deopt
+      metadata and resume state to land failed speculation back in the tree-walk
+      oracle ([§2.1](#21-tier-0--the-tree-walk-oracle), [§5](#5-deoptimization-and-osr)) — P6/P7, `S-3`/`S-5`; gate: differential identity vs tier-0 oracle.
+- [x] Current serial thunk machine `Suspended → Blackhole → Forced` with
+      *infinite recursion encountered* on a forced black hole, backed by the P1
+      atomic thunk state word ([§1.2](#12-the-execution-unit-thunk-and-lambda)) — P1, `C-12`; gate today: focused thunk lifecycle tests.
+- [ ] Parallel thunk superset (`Pending`/`Awaited`/`Failed` states, waiters,
+      cross-thread publication, and loom/Miri/TSan proof) layered over the serial
+      state machine ([§1.2](#12-the-execution-unit-thunk-and-lambda), [13 §3.5](13-parallelism-and-concurrency.md#35-thunks-in-parallel)) — P3.5, `C-12`; gate: conformance 20-21 plus concurrency tests.
 - [ ] Degenerate per-site inline cache on tier-0 select nodes (optional, toggleable off for cross-checking) ([§4](#4-the-compilation-pipeline), [09 §5.3](09-attribute-sets-hidden-classes-and-inline-caches.md)) — P5.
 - [ ] Source-span-carrying evaluation traces / stepping for `.drv`-divergence debugging ([§2.1](#21-tier-0--the-tree-walk-oracle)) — P1.
 
