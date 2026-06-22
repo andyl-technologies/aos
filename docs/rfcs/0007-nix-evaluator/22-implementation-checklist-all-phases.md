@@ -629,8 +629,8 @@ alone (`M-1`/`Q-A`).
       `MaterializationDecision`, skips without hashing/writing on
       `KeepInMemory`, and appends through the key-routed blob pack on
       `Materialize`. Cost measurement, reuse metadata, evaluator value
-      serialization, durable index updates, mmap reads, GC/repack, and AOS
-      tuning remain open (`C-14`).
+      serialization, automatic durable index updates, mmap reads, GC/repack, and
+      AOS tuning remain open (`C-14`).
 - [x] Current materialized blob index-entry accessor:
       `PersistMaterialization::index_entry` returns the complete
       `PersistBlobIndexEntry` only when a blob was materialized, binding the
@@ -644,8 +644,17 @@ alone (`M-1`/`Q-A`).
       skip-without-hash/write behavior when the threshold fails, and delegates
       passing signals to the key-routed blob pack append path. This is
       adapter-only; cost measurement, reuse metadata production, evaluator
-      value serialization, durable index updates, mmap reads, GC/repack, and
-      AOS tuning remain open (`C-14`).
+      value serialization, automatic durable index updates, mmap reads,
+      GC/repack, and AOS tuning remain open (`C-14`).
+- [x] Current explicit indexed materialization adapters:
+      `PersistCache::materialize_blob_indexed` and
+      `materialize_blob_indexed_with_signals` preserve skip-without-hash/write
+      behavior, and on `Materialize` append through `append_blob_indexed` so
+      successful materialization records a sidecar hash-to-offset entry. This is
+      explicit non-transactional indexed materialization only; cost measurement,
+      reuse metadata production, evaluator value serialization, automatic raw
+      materialization indexing, file-artifact/materialization index updates,
+      mmap reads, GC/repack, and AOS tuning remain open (`C-13`/`C-14`).
 - [x] Current explicit file-artifact materialization adapter:
       `PersistCache::materialize_file_artifact` derives the file-artifact
       mapping key from a caller-supplied `ParseFileKey`/`ParseCacheKey`, skips

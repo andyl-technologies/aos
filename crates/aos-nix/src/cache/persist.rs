@@ -1280,6 +1280,38 @@ impl PersistCache {
         }
     }
 
+    /// Applies `decision` to `payload` and records materialized blobs in the
+    /// sidecar index.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns
+    /// [`PersistMaterialization::Skipped`] without hashing or writing
+    /// `payload`. [`MaterializationDecision::Materialize`] appends the payload
+    /// through [`Self::append_blob_indexed`].
+    ///
+    /// This helper is explicit and non-transactional: if the pack append
+    /// succeeds but the sidecar index write fails, the blob bytes remain in the
+    /// pack without a corresponding durable index record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedWriteError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
+    /// append/verify the payload, or when the selected sidecar index cannot
+    /// write the resulting hash-to-offset record.
+    pub fn materialize_blob_indexed(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+        decision: MaterializationDecision,
+    ) -> Result<PersistMaterialization, PersistBlobIndexedWriteError> {
+        match decision {
+            MaterializationDecision::Materialize => self
+                .append_blob_indexed(key, payload)
+                .map(|entry| PersistMaterialization::Materialized(entry.location())),
+            MaterializationDecision::KeepInMemory => Ok(PersistMaterialization::Skipped),
+        }
+    }
+
     /// Applies materialization threshold signals to `payload`.
     ///
     /// The signals are evaluated with [`MaterializationSignals::decide`] and
@@ -1298,6 +1330,26 @@ impl PersistCache {
         signals: MaterializationSignals,
     ) -> Result<PersistMaterialization, PersistBlobPackError> {
         self.materialize_blob(key, payload, signals.decide())
+    }
+
+    /// Applies materialization threshold signals to indexed blob materialization.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_blob_indexed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobIndexedWriteError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the selected packfile cannot
+    /// append/verify the payload, or when the selected sidecar index cannot
+    /// write the resulting hash-to-offset record.
+    pub fn materialize_blob_indexed_with_signals(
+        &self,
+        key: PersistBlobKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistMaterialization, PersistBlobIndexedWriteError> {
+        self.materialize_blob_indexed(key, payload, signals.decide())
     }
 
     /// Applies `decision` to a frontend file artifact payload.
@@ -3486,6 +3538,70 @@ mod tests {
     }
 
     #[test]
+    fn cache_indexed_materialization_decision_can_skip_without_writing() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
+
+        let result = cache
+            .materialize_blob_indexed(key, b"payload", MaterializationDecision::KeepInMemory)
+            .expect("skip succeeds");
+
+        assert_eq!(result, PersistMaterialization::Skipped);
+        assert_eq!(result.index_entry(key), None);
+        assert_eq!(
+            fs::metadata(cache.value_pack().path())
+                .expect("value pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+        assert_eq!(
+            fs::metadata(cache.value_index().path())
+                .expect("value index metadata")
+                .len(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_indexed_materialization_decision_appends_and_indexes_when_requested() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"payload";
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+
+        let result = cache
+            .materialize_blob_indexed(key, payload, MaterializationDecision::Materialize)
+            .expect("indexed materialization succeeds");
+
+        let PersistMaterialization::Materialized(location) = result else {
+            panic!("materialization should append");
+        };
+        assert_eq!(
+            result.index_entry(key),
+            Some(PersistBlobIndexEntry::new(key, location))
+        );
+        assert_eq!(
+            cache
+                .lookup_blob_location(key)
+                .expect("indexed lookup succeeds"),
+            Some(location)
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(key)
+                .expect("indexed read succeeds")
+                .expect("indexed blob exists")
+                .as_slice(),
+            payload
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cache_materialization_decision_propagates_append_errors() {
         let root = temp_root();
         let cache = PersistCache::open(&root).expect("cache opens");
@@ -3499,6 +3615,42 @@ mod tests {
             error,
             PersistBlobPackError::PayloadHashMismatch { .. }
         ));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_indexed_materialization_signals_append_when_threshold_passes() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let payload = b"payload";
+        let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
+
+        let result = cache
+            .materialize_blob_indexed_with_signals(
+                key,
+                payload,
+                profitable_materialization_signals(true),
+            )
+            .expect("indexed materialization succeeds");
+
+        let PersistMaterialization::Materialized(location) = result else {
+            panic!("materialization should append");
+        };
+        assert_eq!(
+            cache
+                .lookup_blob_location(key)
+                .expect("indexed lookup succeeds"),
+            Some(location)
+        );
+        assert_eq!(
+            cache
+                .read_blob_indexed(key)
+                .expect("indexed read succeeds")
+                .expect("indexed blob exists")
+                .as_slice(),
+            payload
+        );
 
         let _ = fs::remove_dir_all(root);
     }
