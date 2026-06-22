@@ -912,8 +912,20 @@ harness, never cut for scope.
 
 ### The persistent demand graph and Attic integration
 
+- [x] Current P1 frontend artifact cache (`files/` precursor):
+      `cache::parse::ParseCache` keys resolved/lowered frontend artifacts by
+      BLAKE3(source bytes + schema version + parse flags), stores owned
+      `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` under `parse/<key>/`,
+      validates/decodes artifacts, reparses corrupt/incomplete entries, treats
+      write failures as cache misses, and ordinary filesystem `import` consumes
+      it when configured while scoped/text-store imports bypass it. `FileParseMemo`
+      exists as an in-process `(canonical realpath, content hash)` helper, but
+      full demand-graph `files/` integration remains future.
 - [ ] Materialization (disk-tier) threshold: two-conjunct rule `eval_cost > hash+serialize+IO` **and** likely re-demanded across runs ([§3.4](#34-the-materialization-threshold-when-a-memoized-result-hits-disk)) — P2, `C-14`; gate: AOS traces.
-- [ ] Content-addressed persistence: verifying traces in `nodes/`, constructive store in `values/`, durable parse/compile cache in `files/`; global dedup via hash-consing ([§6.1](#61-the-persistent-value-store)–[§6.2](#62-why-content-addressing-is-the-right-shape-here)) — P2, `S-14`.
+- [ ] Full P2 content-addressed persistence remains: verifying traces in
+      `nodes/`, constructive store in `values/`, demand-graph integrated
+      durable parse/compile cache in `files/`, and global dedup via hash-consing
+      ([§6.1](#61-the-persistent-value-store)–[§6.2](#62-why-content-addressing-is-the-right-shape-here)) — P2, `S-14`.
 - [ ] `import`/`readFile`/`readDir`/`pathExists` reads reified as content-hashed leaves of the demand graph ([§6.3](#63-treating-importreadfile-reads-as-hashed-inputs)) — P2, `R-10`; gate: harness (edge-exactness research-grade).
 - [ ] Cross-machine sharing in a dedicated `andyl-os` eval-cache Attic namespace; blake3 self-verifying fetch; advisory-never-authoritative; layered GC ([§6.2](#62-why-content-addressing-is-the-right-shape-here), [§6.4](#64-cache-poisoning-and-the-trust-model)) — P2, `C-3`.
 - [ ] Persistent-store single-flight (CAS) for two machines missing the same key ([§8.4](#84-open-questions-collected)) — P3.5, `R-4`; gate: loom.
