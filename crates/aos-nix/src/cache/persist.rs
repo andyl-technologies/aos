@@ -1040,6 +1040,36 @@ impl PersistCache {
             .map_err(|source| PersistFileArtifactHydrationError::Write { source })
     }
 
+    /// Reads a keyed parse-artifact bundle into a parse-cache entry.
+    ///
+    /// The supplied `artifact_key` must match the key derived from `file_key`
+    /// and `parse_key` before the `files/` pack is read. This adapter still
+    /// relies on its caller to perform the durable index lookup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistFileArtifactHydrationError`] if `artifact_key` does not
+    /// match `file_key`/`parse_key`, if the artifact cannot be read from the
+    /// `files/` pack, if the payload is not a valid [`ParseArtifactBundle`], or
+    /// if the target entry cannot be written.
+    pub fn hydrate_file_artifact_bundle_for_key(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        artifact_key: PersistFileArtifactKey,
+        index_value: PersistFileArtifactIndexValue,
+        entry: &ParseCacheEntry,
+    ) -> Result<(), PersistFileArtifactHydrationError> {
+        let expected = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        if artifact_key != expected {
+            return Err(PersistFileArtifactHydrationError::KeyMismatch {
+                expected,
+                actual: artifact_key,
+            });
+        }
+        self.hydrate_file_artifact_bundle(index_value, entry)
+    }
+
     /// Applies `decision` to an existing parse-cache artifact entry.
     ///
     /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
@@ -1324,6 +1354,14 @@ pub enum PersistBlobPackError {
 /// Persistent file-artifact hydration failed.
 #[derive(Debug, Error)]
 pub enum PersistFileArtifactHydrationError {
+    /// The supplied artifact key does not match the requested source identity.
+    #[error("persistent file artifact key mismatch: expected {expected:?}, got {actual:?}")]
+    KeyMismatch {
+        /// The key derived from the requested file and parse identities.
+        expected: PersistFileArtifactKey,
+        /// The key supplied by the caller's artifact lookup.
+        actual: PersistFileArtifactKey,
+    },
     /// The materialized artifact payload could not be read from the `files/` pack.
     #[error("failed to read persistent file artifact")]
     Read {
@@ -2759,6 +2797,103 @@ mod tests {
             .read_resolved()
             .expect("hydrated resolved artifact reads");
         assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_file_artifact_hydration_rejects_key_mismatch_before_read() {
+        let root = temp_root();
+        let persist = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let expected = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let actual = PersistFileArtifactKey::for_realpath_bytes(
+            b"/src/other.nix",
+            file_key.content_hash(),
+            parse_key,
+        );
+        let index_value = PersistFileArtifactIndexValue::new(
+            DurableBlake3Hash::for_bytes(b"missing artifact"),
+            PersistBlobLocation::new(PERSIST_BLOB_PACK_HEADER_LEN as u64, 0),
+        );
+        let target = ParseCacheEntry::new(root.join("target-entry"));
+
+        let error = persist
+            .hydrate_file_artifact_bundle_for_key(
+                &file_key,
+                parse_key,
+                actual,
+                index_value,
+                &target,
+            )
+            .expect_err("key mismatch errors before read");
+
+        assert!(matches!(
+            error,
+            PersistFileArtifactHydrationError::KeyMismatch {
+                expected: observed_expected,
+                actual: observed_actual,
+            } if observed_expected == expected && observed_actual == actual
+        ));
+        assert_eq!(
+            fs::metadata(persist.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_file_artifact_hydrates_parse_entry_after_key_match() {
+        use crate::cache::parse::ParseCache;
+
+        let root = temp_root();
+        let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+        let parse_cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+        let parsed = parse_cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses");
+        let bundle = parsed
+            .entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads");
+        let payload = bundle.encode().expect("bundle encodes");
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let materialized = persist
+            .materialize_file_artifact(
+                &file_key,
+                parsed.key,
+                &payload,
+                MaterializationDecision::Materialize,
+            )
+            .expect("bundle materializes");
+        let Some(index_value) = materialized.index_value() else {
+            panic!("bundle should materialize");
+        };
+        let hydrated = ParseCacheEntry::new(root.join("hydrated-keyed-entry"));
+
+        persist
+            .hydrate_file_artifact_bundle_for_key(
+                &file_key,
+                parsed.key,
+                materialized.artifact_key(),
+                index_value,
+                &hydrated,
+            )
+            .expect("keyed bundle hydrates");
+
+        assert!(hydrated.is_complete());
+        assert_eq!(
+            hydrated
+                .read_artifact_bundle()
+                .expect("hydrated bundle reads"),
+            bundle
+        );
 
         let _ = fs::remove_dir_all(root);
     }
