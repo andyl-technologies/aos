@@ -729,7 +729,7 @@ The IR is the **P1** contract (decision `S-19`): the single arena IR every tier 
 
 - [ ] Serialize the resolved IR arena + side tables + file-local symbol table by near-`memcpy`; `mmap` zero-copy load; `ir.bin`/`symbols.bin`/`meta.toml` layout (§7.1) — **P1**, `S-19`/`S-11`.
 - [ ] `blake3` content-addressed cache key over file content + `evaluator_schema_version` + lex/parse flags; wholesale invalidation on schema bump; advisory function-table semantics (§7.2) — **P1**, `S-15`.
-- [ ] File-local `Symbol` remapping for load-order-independent IR hash (precondition for stable cross-run/cross-machine early cutoff) (§7.3) — **P1**, `S-14` enabler.
+- [x] File-local `Symbol` remapping for load-order-independent IR hash (precondition for stable cross-run/cross-machine early cutoff) (§7.3) — **P1**, `S-14` enabler. Implemented by `cache::parse::file_local_resolved` and `SymbolRemapper`, which rebuild serialized artifacts against a deterministic file-local `SymbolTable` and remap symbol-bearing node data plus inherit-resolution targets before writing `symbols.bin`/`resolved.bin`/lowered `ir.bin`. Covered by `serialization_remaps_symbols_to_file_local_ids`, `lowered_ir_artifacts_roundtrip_through_entry_files`, and corrupt/duplicate symbol rejection tests. The future zero-copy `mmap` artifact layout remains tracked by the separate serialization row.
 
 ## References
 
