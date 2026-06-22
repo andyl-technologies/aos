@@ -194,7 +194,7 @@ mod entry {
     /// - the producer-console router ([`console_router`]) built from a
     ///   [`ConsoleDeps`], over the Worker's console ports
     ///   ([`crate::consoleports`]): the logging [`WorkerMailer`], the Fetch-API
-    ///   [`WorkerHttpClient`], the Cron-deferring [`WorkerReindexer`] (over which
+    ///   [`WorkerHttpClient`], the inline [`WorkerReindexer`] (over which
     ///   a hosted-key channel advance runs the shared
     ///   [`advance_channel`](aos_hub_core::signing::advance_channel)), and
     ///   the shared AES-GCM sealer from `HUB_SEAL_KEY`.
@@ -290,15 +290,21 @@ mod entry {
                 Arc::clone(&sealer),
             ));
 
-        // The cross-isolate publish lease and the deferred reindexer back the
+        // The cross-isolate publish lease and the inline reindexer back the
         // shared facade-write handler on the Worker. The lease lives in D1 (a
         // process-local lease cannot serialize across isolates); the reindexer
-        // defers to the Cron-trigger indexer.
+        // re-indexes the published registry inline (event-driven), so a publish
+        // is browse-visible the instant its final pointer write returns. The
+        // `*/15` Cron remains the backstop for non-publish surface changes.
         let lease: Arc<dyn aos_hub_core::lease::PublishLease> =
             Arc::new(crate::workerlease::D1PublishLease::new(
                 crate::d1backend::D1Backend::new(env.d1(crate::handlers::bindings::D1)?),
             ));
-        let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer);
+        let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(WorkerReindexer::new(
+            env.bucket(crate::handlers::bindings::R2)?,
+            Arc::clone(&db),
+            Arc::clone(&sealer),
+        ));
 
         let service = Arc::new(
             RpcService::new(

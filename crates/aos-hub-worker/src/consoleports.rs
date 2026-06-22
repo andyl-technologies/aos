@@ -21,12 +21,13 @@
 //!   response). Unlike the native hub it cannot run a connect-time validating
 //!   resolver, so *hostname*-based SSRF is delegated to Cloudflare's egress
 //!   policy rather than blocked in code (see [`WorkerHttpClient`]).
-//! - [`WorkerReindexer`] — the [`Reindexer`] a hosted-key channel advance runs
-//!   after its signed partitions land. A channel advance is no longer a port:
-//!   the shared [`advance_channel`](aos_hub_core::signing::advance_channel)
-//!   signs the partitions with the D1-sealed hosted key and writes them to R2
-//!   through the [`SurfaceWriteProvider`](aos_hub_core::surface_write::SurfaceWriteProvider),
-//!   then defers the re-index to Cron through this no-op reindexer.
+//! - [`WorkerReindexer`] — the [`Reindexer`] the shared facade-write handler
+//!   runs when a publish-completing pointer lands (and a hosted-key channel
+//!   advance after its signed partitions are written through the
+//!   [`SurfaceWriteProvider`](aos_hub_core::surface_write::SurfaceWriteProvider)).
+//!   It re-indexes that one registry inline through the shared core indexer, so
+//!   a Worker publish is browse-visible the instant its final `PUT` returns;
+//!   the `*/15` Cron indexer is the backstop for non-publish surface changes.
 //!
 //! The at-rest [`SecretSealer`](aos_hub_core::auth::seal::SecretSealer) the
 //! console's OIDC token exchange needs is the shared pure-Rust AES-256-GCM
@@ -36,8 +37,9 @@
 
 use aos_hub_core::auth::magic::Mailer;
 use aos_hub_core::auth::seal::{parse_key, AesGcmSealer, SecretSealer};
-use aos_hub_core::db::RegistryRecord;
+use aos_hub_core::db::{Database, RegistryRecord};
 use aos_hub_core::email::EmailContent;
+use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::url_guard;
 use aos_hub_core::reindex::Reindexer;
 use aos_hub_core::web::console::ports::HttpClient;
@@ -47,7 +49,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use futures_util::StreamExt;
 use wasm_bindgen::{JsCast, JsValue};
-use worker::{Fetch, Headers, Method, Request, RequestInit};
+use worker::{Bucket, Fetch, Headers, Method, Request, RequestInit};
 
 /// Maximum response-body size for an OIDC outbound call: 1 MiB.
 ///
@@ -330,40 +332,60 @@ impl HttpClient for WorkerHttpClient {
     }
 }
 
-/// The Worker's [`Reindexer`]: defers re-indexing to the Cron-trigger indexer.
+/// The Worker's [`Reindexer`]: re-indexes the published registry inline, the
+/// same as the native hub.
 ///
-/// The shared facade-write handler re-indexes a registry inline when a
-/// publish-completing pointer (`info/refs`/`nix-cache-info`) lands, so the native
-/// hub's browse pages are consistent the instant the final `PUT` returns. On the
-/// Worker, running a full R2 re-index inline on every per-request console advance
-/// would risk the isolate's per-request CPU/time limit on a large registry, so
-/// this impl is a logged no-op: the Worker's Cron-trigger indexer
-/// ([`crate::indexer::index_all`]) re-walks every public registry's R2 surface on
-/// a schedule through the *shared* core indexer
-/// ([`aos_hub_core::indexer::index_and_record`]), reconciling the D1 index
-/// after the publish. The synchronous anti-rollback floor raise in
-/// [`advance_channel`](aos_hub_core::signing::advance_channel) makes the
-/// deferral safe, and because the Cron now runs the same indexer as the native
-/// hub, the Worker's eventual index is byte-identical to the hub's.
+/// The shared facade-write handler calls this when a publish-completing pointer
+/// (`info/refs`/`nix-cache-info`) lands, so the browse pages and release/channel
+/// listings are consistent the instant the final `PUT` returns — no
+/// up-to-the-Cron-pass lag. It re-walks **one** registry's R2 surface through
+/// the *shared* core indexer ([`index_and_record`](aos_hub_core::indexer::index_and_record)),
+/// the exact orchestration the native hub and the Cron-trigger indexer
+/// ([`crate::indexer::index_all`]) run, so the index is byte-identical across
+/// all three.
 ///
-/// **Consistency implication:** a Worker publish becomes browse-visible only at
-/// the next Cron run, not synchronously on the final `PUT`. The read *facade* is
-/// unaffected — it streams the new bytes straight from R2 — so only the derived
-/// D1 index (the browse pages, release/channel listings) lags until the Cron
-/// indexer runs.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WorkerReindexer;
+/// **Why inline is safe on the Worker:** this indexes a *single* registry, far
+/// less work than the all-public-registry sweep `index_all` already completes in
+/// one Cron invocation, so it sits comfortably inside the isolate's per-request
+/// budget. A reindex failure is logged by the facade-write caller and does not
+/// fail the publish (the bytes are already written); the Cron pass reconciles
+/// the index on its next run.
+///
+/// The `*/15` Cron remains the **backstop** — it still re-walks every public
+/// registry, catching surface changes that did not flow through a hub publish
+/// (mirror syncs, `stale`/`failed` retries) and running cache GC.
+pub struct WorkerReindexer {
+    bucket: Bucket,
+    db: Arc<Database>,
+    sealer: Arc<dyn SecretSealer>,
+}
+
+impl WorkerReindexer {
+    /// Build a reindexer over the hub R2 bucket, the shared D1 [`Database`], and
+    /// the [`SecretSealer`] used to resolve a registry's external storage
+    /// binding (matching the surface provider the read path and Cron use).
+    #[must_use]
+    pub fn new(bucket: Bucket, db: Arc<Database>, sealer: Arc<dyn SecretSealer>) -> WorkerReindexer {
+        WorkerReindexer { bucket, db, sealer }
+    }
+}
 
 #[async_trait(?Send)]
 impl Reindexer for WorkerReindexer {
     async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
-        worker::console_log!(
-            "reindex of '{}' deferred to the Cron-trigger indexer",
-            registry.slug
+        // Resolve the registry's surface exactly as the Cron indexer does — the
+        // hub R2 bucket by prefix, or its external S3/R2 binding — then run the
+        // shared single-registry index.
+        let provider = crate::surface::R2SurfaceProvider::new(
+            self.bucket.clone(),
+            Arc::clone(&self.db),
+            Arc::clone(&self.sealer),
         );
-        // No inline index commit: the Cron indexer reconciles the D1 index
-        // later, so a hosted-key advance's audit row carries no index commit
-        // cross-reference on the Worker.
-        Ok(None)
+        let fetch = provider.fetcher(registry).await?;
+        let outcome =
+            aos_hub_core::indexer::index_and_record(&self.db, fetch.as_ref(), registry).await?;
+        // Return the indexed commit (when the run wasn't an empty/pending no-op)
+        // so a hosted-key channel advance can cross-reference it in its audit row.
+        Ok((!outcome.commit.is_empty()).then(|| outcome.commit))
     }
 }
