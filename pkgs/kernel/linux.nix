@@ -18,6 +18,7 @@
   gcc-libs,
   dwarves,
   python3,
+  zstd,
   # Optional: extra kernel config fragment text to merge after the base
   # config fragments. Like NixOS structuredExtraConfig but as raw kconfig text.
   extraConfig ? "",
@@ -56,6 +57,7 @@ in
       binutils
       dwarves
       python3
+      zstd
     ];
     runtimeDeps = [kmod];
     propagatedDeps = [];
