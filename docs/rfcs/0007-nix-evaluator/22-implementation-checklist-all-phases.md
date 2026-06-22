@@ -487,6 +487,16 @@ alone (`M-1`/`Q-A`).
       persistence, `AOS_NIX_CACHE=0` control over this runtime state,
       allowed-path/IFD/fetch trace coverage, and edge-exactness harness coverage
       remain open (`R-10`/`S-14`).
+- [x] Current graph-side impure input edge substrate:
+      `DemandGraph::observe_impure_trace_for_node` wires complete cacheable
+      input leaves to a caller-supplied existing node, so later changed input
+      observations dirty that node through ordinary dependency propagation;
+      incomplete and uncacheable traces add no leaves or edges. This is
+      graph-side edge wiring only; automatic demand/evaluating-node creation,
+      cache-key integration for evaluator nodes, automatic `NixNative`
+      ownership/use, value memoization, currentTime taint propagation through
+      memoized nodes, persistence, allowed-path/IFD/fetch trace coverage, and
+      edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
       demand-graph inputs; `currentTime` taints dependent memos as uncacheable

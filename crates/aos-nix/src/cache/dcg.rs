@@ -355,6 +355,50 @@ impl DemandGraph {
         Ok(ImpureTraceObservation::cacheable(leaves))
     }
 
+    /// Observes an impure-input trace and wires cacheable leaves to a node.
+    ///
+    /// `dependent` must be an existing caller-supplied evaluating node. This
+    /// method does not create demand nodes for evaluator computations. Complete
+    /// cacheable traces add dependencies from `dependent` to every observed
+    /// input leaf, so later changed input observations dirty `dependent`.
+    /// Incomplete and uncacheable traces return their cacheability status
+    /// without adding leaves or edges.
+    ///
+    /// Successful leaf observations are not rolled back if later edge wiring
+    /// fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DemandGraphError::UnknownNode`] if `dependent` does not belong
+    /// to this graph. Returns [`DemandGraphError::SelfDependency`] if
+    /// `dependent` is itself one of the observed input leaves. Returns other
+    /// [`DemandGraphError`] values from trace observation or edge insertion.
+    pub fn observe_impure_trace_for_node(
+        &mut self,
+        dependent: DemandNodeId,
+        trace: &[ImpureInputFingerprint],
+        complete: bool,
+    ) -> Result<ImpureTraceObservation, DemandGraphError> {
+        self.node(dependent)?;
+        let observation = self.observe_impure_trace(trace, complete)?;
+        if observation.status() != ImpureTraceStatus::Cacheable {
+            return Ok(observation);
+        }
+
+        if observation
+            .leaves()
+            .iter()
+            .any(|leaf| leaf.node() == dependent)
+        {
+            return Err(DemandGraphError::SelfDependency { id: dependent });
+        }
+
+        for leaf in observation.leaves() {
+            self.add_dependency(dependent, leaf.node())?;
+        }
+        Ok(observation)
+    }
+
     /// Records that `dependent` reads `dependency`.
     ///
     /// # Errors
@@ -640,6 +684,165 @@ mod tests {
         assert_eq!(
             graph.node(dependent).expect("dependent exists").freshness(),
             NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn cacheable_impure_trace_for_node_records_input_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let trace = [
+            read_file_trace(b"/tmp/one", b"same"),
+            read_file_trace(b"/tmp/two", b"same"),
+        ];
+
+        let observation = graph
+            .observe_impure_trace_for_node(dependent, &trace, true)
+            .expect("trace observes and wires");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        assert_eq!(observation.leaves().len(), 2);
+        for leaf in observation.leaves() {
+            let dependency = leaf.node();
+            assert!(
+                graph
+                    .node(dependent)
+                    .expect("dependent exists")
+                    .dependencies()
+                    .contains(&dependency)
+            );
+            assert!(
+                graph
+                    .node(dependency)
+                    .expect("dependency exists")
+                    .dependents()
+                    .contains(&dependent)
+            );
+        }
+        assert_eq!(graph.len(), 3);
+    }
+
+    #[test]
+    fn changed_wired_impure_input_dirties_dependent_node() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let first = [read_file_trace(b"/tmp/version", b"1")];
+        graph
+            .observe_impure_trace_for_node(dependent, &first, true)
+            .expect("trace observes and wires");
+
+        let changed = [read_file_trace(b"/tmp/version", b"2")];
+        let observation = graph
+            .observe_impure_trace(&changed, true)
+            .expect("changed trace observes");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Cacheable);
+        let [ImpureInputObservation::Reconsidered(reconsideration)] = observation.leaves() else {
+            panic!("changed trace reconsiders its existing leaf");
+        };
+        assert_eq!(reconsideration.decision(), CutoffDecision::Propagate);
+        assert_eq!(reconsideration.dirtied_dependents(), &[dependent]);
+        assert_eq!(
+            graph.node(dependent).expect("dependent exists").freshness(),
+            NodeFreshness::Dirty
+        );
+    }
+
+    #[test]
+    fn incomplete_impure_trace_for_node_does_not_add_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let trace = [read_file_trace(b"/tmp/version", b"1")];
+
+        let observation = graph
+            .observe_impure_trace_for_node(dependent, &trace, false)
+            .expect("trace observes");
+
+        assert_eq!(observation.status(), ImpureTraceStatus::Incomplete);
+        assert!(observation.leaves().is_empty());
+        assert_eq!(graph.len(), 1);
+        assert!(
+            graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn uncacheable_impure_trace_for_node_does_not_add_edges() {
+        let mut graph = DemandGraph::new();
+        let dependent = node_with_hash(&mut graph, 7, b"dependent");
+        let trace = [
+            read_file_trace(b"/tmp/version", b"1"),
+            ImpureInputFingerprint::current_time(),
+        ];
+
+        let observation = graph
+            .observe_impure_trace_for_node(dependent, &trace, true)
+            .expect("trace observes");
+
+        assert_eq!(
+            observation.status(),
+            ImpureTraceStatus::Uncacheable(UncacheableInput::CurrentTime)
+        );
+        assert!(observation.leaves().is_empty());
+        assert_eq!(graph.len(), 1);
+        assert!(
+            graph
+                .node(dependent)
+                .expect("dependent exists")
+                .dependencies()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn impure_trace_for_unknown_node_errors_before_leaf_mutation() {
+        let mut graph = DemandGraph::new();
+        let unknown = DemandNodeId::new(99);
+        let trace = [read_file_trace(b"/tmp/version", b"1")];
+
+        let error = graph
+            .observe_impure_trace_for_node(unknown, &trace, true)
+            .expect_err("unknown dependent is rejected");
+
+        assert!(matches!(error, DemandGraphError::UnknownNode { id } if id == unknown));
+        assert!(graph.is_empty());
+    }
+
+    #[test]
+    fn impure_trace_for_node_rejects_self_dependency_before_edge_mutation() {
+        let mut graph = DemandGraph::new();
+        let trace = [read_file_trace(b"/tmp/version", b"1")];
+        let input = graph
+            .observe_impure_trace(&trace, true)
+            .expect("input leaf observes")
+            .leaves()[0]
+            .node();
+
+        let error = graph
+            .observe_impure_trace_for_node(input, &trace, true)
+            .expect_err("self dependency is rejected");
+
+        assert!(matches!(
+            error,
+            DemandGraphError::SelfDependency { id } if id == input
+        ));
+        assert!(
+            graph
+                .node(input)
+                .expect("input exists")
+                .dependencies()
+                .is_empty()
+        );
+        assert!(
+            graph
+                .node(input)
+                .expect("input exists")
+                .dependents()
+                .is_empty()
         );
     }
 
