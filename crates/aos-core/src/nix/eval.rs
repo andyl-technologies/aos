@@ -1513,6 +1513,8 @@ impl NixEval for ShadowEval {
             &fallback,
             self.native.instantiate_closure(&file, attr),
             "file instantiation",
+            Some(&file),
+            Some(attr),
         );
         Ok(Some(fallback))
     }
@@ -1555,6 +1557,8 @@ fn compare_shadow_file_drv_closure(native: &NixNative, file: &Path, attr: &str, 
         fallback,
         native.instantiate_closure(file, attr),
         "file instantiation",
+        Some(file),
+        Some(attr),
     );
 }
 
@@ -1564,6 +1568,8 @@ fn compare_shadow_expr_drv_closure(native: &NixNative, expr: &str, fallback: &Pa
         fallback,
         native.instantiate_expr_closure(expr),
         "expression instantiation",
+        None,
+        None,
     );
 }
 
@@ -1572,6 +1578,8 @@ fn compare_shadow_drv_closure_from_fallback_root(
     fallback_root: &Path,
     native: Result<NativeDrvClosure>,
     operation: &'static str,
+    file: Option<&Path>,
+    attr: Option<&str>,
 ) {
     let fallback = match read_drv_closure(fallback_root.to_path_buf()) {
         Ok(fallback) => fallback,
@@ -1584,13 +1592,15 @@ fn compare_shadow_drv_closure_from_fallback_root(
                 error = %error,
                 fallback = %fallback_root.display(),
                 operation,
+                file = ?file.map(tracing_path),
+                attr,
                 "shadow nix-cli drv closure could not be read"
             );
             return;
         }
     };
 
-    compare_shadow_native_drv_closure(&fallback, native, operation);
+    compare_shadow_native_drv_closure(&fallback, native, operation, file, attr);
 }
 
 #[cfg(feature = "native-eval")]
@@ -1598,18 +1608,25 @@ fn compare_shadow_native_drv_closure(
     fallback: &DrvClosure,
     native: Result<NativeDrvClosure>,
     operation: &'static str,
+    file: Option<&Path>,
+    attr: Option<&str>,
 ) {
     match native {
         Ok(native) => {
             let (root, drvs) = native.into_parts();
             let native = DrvClosure::new(root, drvs);
-            let divergences = compare_shadow_drv_closure(fallback, &native);
+            let divergences = compare_shadow_drv_closure(fallback, &native, operation, file, attr);
             if divergences == 0 {
                 observe_native_shadow_result(
                     NativeShadowOperation::DrvClosure,
                     NativeShadowOutcome::Match,
                 );
-                tracing::debug!(operation, "shadow native eval drv closure matched nix-cli");
+                tracing::debug!(
+                    operation,
+                    file = ?file.map(tracing_path),
+                    attr,
+                    "shadow native eval drv closure matched nix-cli"
+                );
             } else {
                 observe_native_shadow_result(
                     NativeShadowOperation::DrvClosure,
@@ -1625,6 +1642,8 @@ fn compare_shadow_native_drv_closure(
             tracing::warn!(
                 error = %error,
                 operation,
+                file = ?file.map(tracing_path),
+                attr,
                 "shadow native eval drv closure did not complete"
             );
         }
@@ -1632,13 +1651,22 @@ fn compare_shadow_native_drv_closure(
 }
 
 #[cfg(feature = "native-eval")]
-fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usize {
+fn compare_shadow_drv_closure(
+    fallback: &DrvClosure,
+    native: &DrvClosure,
+    operation: &'static str,
+    file: Option<&Path>,
+    attr: Option<&str>,
+) -> usize {
     let mut divergences = 0;
     if fallback.root() != native.root() {
         divergences += 1;
         tracing::error!(
             fallback = %fallback.root().display(),
             native = %native.root().display(),
+            operation,
+            file = ?file.map(tracing_path),
+            attr,
             "shadow native eval drv closure root diverged from nix-cli"
         );
     }
@@ -1650,6 +1678,9 @@ fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usi
                 divergences += 1;
                 tracing::error!(
                     drv = %path.display(),
+                    operation,
+                    file = ?file.map(tracing_path),
+                    attr,
                     "shadow native eval drv bytes diverged from nix-cli"
                 );
             }
@@ -1657,6 +1688,9 @@ fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usi
                 divergences += 1;
                 tracing::error!(
                     drv = %path.display(),
+                    operation,
+                    file = ?file.map(tracing_path),
+                    attr,
                     "shadow native eval omitted nix-cli drv from closure"
                 );
             }
@@ -1668,6 +1702,9 @@ fn compare_shadow_drv_closure(fallback: &DrvClosure, native: &DrvClosure) -> usi
             divergences += 1;
             tracing::error!(
                 drv = %path.display(),
+                operation,
+                file = ?file.map(tracing_path),
+                attr,
                 "shadow native eval produced extra drv outside nix-cli closure"
             );
         }
@@ -3312,7 +3349,10 @@ mod tests {
             drvs
         });
         let matching = DrvClosure::new(root.clone(), fallback.drvs().clone());
-        assert_eq!(compare_shadow_drv_closure(&fallback, &matching), 0);
+        assert_eq!(
+            compare_shadow_drv_closure(&fallback, &matching, "file instantiation", None, None),
+            0
+        );
 
         let native = DrvClosure::new(
             PathBuf::from("/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-root.drv"),
@@ -3325,6 +3365,59 @@ mod tests {
             },
         );
 
-        assert_eq!(compare_shadow_drv_closure(&fallback, &native), 4);
+        assert_eq!(
+            compare_shadow_drv_closure(&fallback, &native, "file instantiation", None, None),
+            4
+        );
+    }
+
+    #[cfg(feature = "native-eval")]
+    #[test]
+    fn shadow_drv_closure_divergence_logs_request_context() {
+        let root = PathBuf::from("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root.drv");
+        let fallback = DrvClosure::new(root.clone(), {
+            let mut drvs = BTreeMap::new();
+            drvs.insert(root.clone(), b"fallback".to_vec());
+            drvs
+        });
+        let native = DrvClosure::new(root.clone(), {
+            let mut drvs = BTreeMap::new();
+            drvs.insert(root.clone(), b"native".to_vec());
+            drvs
+        });
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = FallbackWarningSubscriber {
+            events: Arc::clone(&events),
+        };
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            assert_eq!(
+                compare_shadow_drv_closure(
+                    &fallback,
+                    &native,
+                    "file instantiation",
+                    Some(Path::new("/aos/default.nix")),
+                    Some("pkgs.hello"),
+                ),
+                1
+            );
+        });
+
+        let events = events.lock().expect("recorded shadow events lock");
+        assert!(events.iter().any(|(level, _)| *level == Level::ERROR));
+        let logged = events
+            .iter()
+            .map(|(_, event)| event.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            logged.contains("shadow native eval drv bytes diverged from nix-cli"),
+            "{logged}"
+        );
+        assert!(logged.contains("operation=file instantiation"), "{logged}");
+        assert!(logged.contains("/aos/default.nix"), "{logged}");
+        assert!(logged.contains("pkgs.hello"), "{logged}");
+        assert!(logged.contains("drv=/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root.drv"));
     }
 }
