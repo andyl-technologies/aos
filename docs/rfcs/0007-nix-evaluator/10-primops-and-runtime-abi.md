@@ -760,7 +760,24 @@ harness, never cut for scope.
 
 ### The ~120 builtins
 
-- [ ] Full primop surface as plain Rust obeying the §2 ABI; authoritative set validated against `builtins.attrNames builtins` of the pinned Nix ([§5.1](#51-inventory-and-structure)) — P1, `S-12`/`C-9`; gate: conformance 21.
+- [x] Current tree-walk builtin inventory and dispatch substrate for §5.1: the
+      §4 registry/perfect-table rows above provide the frozen declaration set,
+      while `define_builtins!` records each builtin's execution strategy, direct
+      lowering class, first-class arity, name scope, contextual availability, and
+      native fallback feature. The safe `BuiltinExecutor` boundary routes direct
+      and first-class tree-walk applications through typed primop enums and
+      custom handlers, and pinned-oracle tests validate surface
+      membership/order/availability plus present unimplemented stubs against
+      `builtins.attrNames builtins`. This checkoff covers the current substrate
+      and the doc 21 checked catalog rows only; `nix.builtin.*` runtime symbols,
+      Cranelift/JIT wrappers, runtime PHF speculation, and the remaining full
+      flake/fetchTree/getFlake protocol rows stay open ([§5.1](#51-inventory-and-structure)) — P1 complete / P6-P7 pending, `S-12`/`C-9`; gate: conformance 21.
+- [ ] Full primop surface as §2 runtime/JIT ABI symbols: every completed
+      builtin exposed as a `nix.builtin.*` `unsafe extern "C"` wrapper,
+      registered through the runtime symbol table, and validated after the
+      remaining doc 21 full-protocol rows close ([§2](#2-the-uniform-runtime-abi),
+      [§3.1](#31-what-lives-in-it), [§5.1](#51-inventory-and-structure)) — P6,
+      `S-12`/`C-9`; gate: conformance 21.
 - [x] Compatibility-critical primops with adversarial coverage: `derivationStrict` is covered by the checked doc 11 wire-format/algorithm rows and the doc 21 builtin row; string-context primops and context-unioning are covered by configured C++ oracle tests plus focused coercion/string tests; `hashString`/`hashFile`/`toJSON` have configured C++ oracle coverage for bytes, key order, escapes, algorithms, and float formatting; `sort` matches C++ Nix's libc++ stable-sort/tie behavior with configured oracle and order-specific tests. The full transitive `.drv` closure gate remains tracked separately ([§5.2](#52-the-compatibility-critical-primops)) — P1, `S-13`; gate: differential `.drv` harness.
 - [ ] `foldl'` worker/wrapper payoff: unboxed accumulator, no per-step thunk ([§5.3](#53-strict-fold-and-the-workerwrapper-payoff), [07](07-laziness-and-whole-program-analyses.md)) — P4, `S-9`.
 - [x] `tryEval`/`throw`/`abort` tree-walk error model: `throw` and failed `assert` are catchable, `abort` and non-catchable evaluator errors propagate, `tryEval` is shallow, failed thunks reset and retry, and first-class `throw`/`abort` preserve the same classes. Implemented through the tree-walk `Result` boundary and covered by doc 20/doc 21 checked rows, focused control tests, and configured C++ control-flow/error-semantics oracle tests. The JIT catch-frame ABI (`aos_try_begin`/`aos_try_end`) remains future P6 work, not claimed here ([§5.4](#54-tryeval-throw-and-the-error-model)) — P1 complete / P6 pending; gate: conformance 21 (hazard #9).
