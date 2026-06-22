@@ -385,8 +385,18 @@ alone (`M-1`/`Q-A`).
       free-variable combiner hashed once, **never bare XOR** (`C-1`).
 - [ ] `cache/cutoff.rs` — early-cutoff: stop propagation when a recomputed
       value-hash equals its prior value-hash.
-- [ ] `value/hashcons.rs` — hash-consing / maximal sharing of immutable values
-      (O(1) equality; turns value-hashing into a field load — `S-7`).
+- [x] Current value-consing precursor outside future `value/hashcons.rs`: the P1
+      evaluator heap already conses heap strings and path values in separate
+      evaluator-local tables using `NixString::structural_hash_xxh3()` plus
+      equality confirmation, preserving context-sensitive identity so identical
+      bytes with different contexts do not collapse. This is limited string/path
+      consing, not generic immutable-value hash-consing, composite value maximal
+      sharing, O(1) equality for all values, durable value hashes, or field-load
+      value-hash support.
+- [ ] `value/hashcons.rs` — full hash-consing / maximal sharing of immutable
+      values: generic post-force interning for composite values, O(1) equality,
+      cached value hashes that make value-hashing a field load, and integration
+      with the demand graph/early cutoff (`S-7`).
 - [x] Current hash-routing precursor outside the future `cache/hashing.rs`:
       evaluator-local string/path cons tables use xxh3 structural hashes with
       equality confirmation; durable frontend parse-cache keys use BLAKE3 over
