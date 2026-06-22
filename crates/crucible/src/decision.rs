@@ -195,6 +195,44 @@ mod tests {
     }
 
     #[test]
+    fn decision_recorder_does_not_perturb_streams_for_unrelated_world_edits() {
+        let baseline_config = Configuration::genesis(scenario_from_world_material(
+            "world.nodes=node-a\nworld.links=\nseed=7",
+        ));
+        let edited_config = Configuration::genesis(scenario_from_world_material(
+            "world.nodes=node-a,node-z\nworld.links=\nseed=7",
+        ));
+        let seed = 0x0010_c001;
+        let stable_stream = rng_stream("node-a/faults");
+        let unrelated_stream = rng_stream("node-z/faults");
+
+        assert_ne!(baseline_config.def, edited_config.def);
+
+        let mut baseline = DecisionRecorder::new(baseline_config, seed);
+        let mut edited = DecisionRecorder::new(edited_config, seed);
+
+        let baseline_draw = baseline.draw_u64(stable_stream.clone());
+        let _unrelated_draw = edited.draw_u64(unrelated_stream.clone());
+        let edited_draw = edited.draw_u64(stable_stream.clone());
+
+        assert_eq!(baseline_draw, edited_draw);
+        assert!(matches!(
+            baseline.schedule().decisions().first(),
+            Some(Decision::RngDraw(RngDecision { stream, value }))
+                if stream == &stable_stream && *value == baseline_draw
+        ));
+        assert!(matches!(
+            edited.schedule().decisions().first(),
+            Some(Decision::RngDraw(RngDecision { stream, .. })) if stream == &unrelated_stream
+        ));
+        assert!(matches!(
+            edited.schedule().decisions().get(1),
+            Some(Decision::RngDraw(RngDecision { stream, value }))
+                if stream == &stable_stream && *value == edited_draw
+        ));
+    }
+
+    #[test]
     fn decision_recorder_records_app_random_after_rng_draw() {
         let config = Configuration::genesis(ScenarioDef {
             id: ContentHash::default(),
@@ -336,6 +374,10 @@ mod tests {
         RngStreamId {
             name: name.to_owned(),
         }
+    }
+
+    fn scenario_from_world_material(material: &str) -> ScenarioDef {
+        ScenarioDef::from_canonical_material("crucible.test.world", material)
     }
 
     fn node(name: &str) -> NodeId {
