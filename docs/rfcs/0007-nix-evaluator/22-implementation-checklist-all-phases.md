@@ -482,11 +482,11 @@ alone (`M-1`/`Q-A`).
       abstracts evaluator trace providers, and `EvalOutcome` implements that
       trait so completed tree-walk evaluations can be manually observed by the
       cache layer. This is an observation adapter only; automatic `NixNative`
-      ownership/use, demand/evaluating-node creation, edges from evaluator nodes
-      to input leaves, currentTime taint propagation through memoized nodes,
-      persistence, `AOS_NIX_CACHE=0` control over this runtime state,
-      allowed-path/IFD/fetch trace coverage, and edge-exactness harness coverage
-      remain open (`R-10`/`S-14`).
+      ownership/use, demand/evaluating-node creation, automatic edges from
+      evaluator-created nodes to input leaves, currentTime taint propagation
+      through memoized nodes, persistence, `AOS_NIX_CACHE=0` control over this
+      runtime state, allowed-path/IFD/fetch trace coverage, and edge-exactness
+      harness coverage remain open (`R-10`/`S-14`).
 - [x] Current graph-side impure input edge substrate:
       `DemandGraph::observe_impure_trace_for_node` wires complete cacheable
       input leaves to a caller-supplied existing node, so later changed input
@@ -496,6 +496,16 @@ alone (`M-1`/`Q-A`).
       cache-key integration for evaluator nodes, automatic `NixNative`
       ownership/use, value memoization, currentTime taint propagation through
       memoized nodes, persistence, allowed-path/IFD/fetch trace coverage, and
+      edge-exactness harness coverage remain open (`R-10`/`S-14`).
+- [x] Current EvalCache trace-to-node edge adapter:
+      `EvalCache::from_graph` wraps a prebuilt demand graph and
+      `EvalCache::observe_impure_inputs_for_node` delegates an
+      `ImpureInputTraceSource` to `DemandGraph::observe_impure_trace_for_node`
+      for a caller-supplied existing node. This is an explicit adapter only;
+      automatic demand/evaluating-node creation, evaluator-node cache-key
+      integration, automatic `NixNative` ownership/use, value memoization,
+      currentTime taint propagation through memoized nodes, persistence,
+      `AOS_NIX_CACHE=0` policy, allowed-path/IFD/fetch trace coverage, and
       edge-exactness harness coverage remain open (`R-10`/`S-14`).
 - [ ] Full impure-input edges remain: `import`/`readFile`/`readDir`/
       `readFileType`/`pathExists`/`getEnv` keyed as explicit content-hash
