@@ -553,6 +553,13 @@ alone (`M-1`/`Q-A`).
       vocabulary only; durable counter storage, run-boundary rollover,
       evaluator demand accounting, cost measurement, packfile writes, and AOS
       tuning remain open (`C-14`).
+- [x] Current materialization reuse metadata codec:
+      `MaterializationReuse::encode_persist_metadata`/`decode_persist_metadata`
+      define a stable 16-byte little-endian payload for previous-run and
+      current-run demand counters, with short-prefix validation through
+      `PersistPackFormatError`. This is codec-only; node metadata index,
+      durable counter storage, run-boundary rollover, evaluator demand
+      accounting, cost measurement, and AOS tuning remain open (`C-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

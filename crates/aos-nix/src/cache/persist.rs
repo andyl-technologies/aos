@@ -15,7 +15,7 @@ use thiserror::Error;
 use super::parse::{
     ParseArtifactBundle, ParseCacheEntry, ParseCacheError, ParseCacheKey, ParseFileKey,
 };
-use super::{DurableBlake3Hash, MaterializationDecision};
+use super::{DurableBlake3Hash, MaterializationDecision, MaterializationReuse};
 
 /// The persistent eval-cache schema format marker.
 pub const PERSIST_CACHE_FORMAT: &str = "aos-nix-eval-cache";
@@ -38,6 +38,8 @@ pub const PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN: usize = 33;
 /// The encoded length of a file-artifact index value.
 pub const PERSIST_FILE_ARTIFACT_INDEX_VALUE_LEN: usize =
     PERSIST_BLOB_INDEX_KEY_LEN + PERSIST_BLOB_INDEX_VALUE_LEN;
+/// The encoded length of durable materialization reuse metadata.
+pub const PERSIST_MATERIALIZATION_REUSE_LEN: usize = 16;
 
 static SCHEMA_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 const PERSIST_FILE_ARTIFACT_INDEX_TAG: u8 = 3;
@@ -427,6 +429,36 @@ impl PersistFileArtifactIndexValue {
         let location =
             PersistBlobLocation::decode_index_value(&bytes[PERSIST_BLOB_INDEX_KEY_LEN..])?;
         Ok(Self::new(blob_key.hash(), location))
+    }
+}
+
+impl MaterializationReuse {
+    /// Encodes the counters as stable persistent metadata.
+    ///
+    /// The first little-endian `u64` is the previous-run demand count; the
+    /// second is the current-run demand count. This only defines the record
+    /// payload a future node-metadata index can store.
+    pub fn encode_persist_metadata(self) -> [u8; PERSIST_MATERIALIZATION_REUSE_LEN] {
+        let mut bytes = [0; PERSIST_MATERIALIZATION_REUSE_LEN];
+        bytes[..8].copy_from_slice(&self.previous_run_demands().to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.current_run_demands().to_le_bytes());
+        bytes
+    }
+
+    /// Decodes materialization reuse counters from stable persistent metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError::ShortMaterializationReuseMetadata`]
+    /// if `bytes` is shorter than [`PERSIST_MATERIALIZATION_REUSE_LEN`].
+    pub fn decode_persist_metadata(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_MATERIALIZATION_REUSE_LEN {
+            return Err(PersistPackFormatError::ShortMaterializationReuseMetadata {
+                expected: PERSIST_MATERIALIZATION_REUSE_LEN,
+                actual: bytes.len(),
+            });
+        }
+        Ok(Self::new(read_u64(&bytes[..8]), read_u64(&bytes[8..16])))
     }
 }
 
@@ -1060,6 +1092,16 @@ pub enum PersistPackFormatError {
     InvalidFileArtifactBlobStore {
         /// The decoded blob store.
         store: PersistBlobStore,
+    },
+    /// Materialization reuse metadata was shorter than the fixed encoded length.
+    #[error(
+        "persistent materialization reuse metadata has {actual} bytes, expected at least {expected}"
+    )]
+    ShortMaterializationReuseMetadata {
+        /// The required fixed reuse metadata length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
     },
 }
 
@@ -1750,6 +1792,37 @@ mod tests {
             error,
             PersistPackFormatError::InvalidFileArtifactBlobStore {
                 store: PersistBlobStore::Values,
+            }
+        );
+    }
+
+    #[test]
+    fn materialization_reuse_metadata_round_trips_counters() {
+        let reuse = MaterializationReuse::new(2, 3);
+        let encoded = reuse.encode_persist_metadata();
+        let mut prefixed = encoded.to_vec();
+        prefixed.extend_from_slice(b"trailing metadata bytes");
+
+        assert_eq!(encoded.len(), PERSIST_MATERIALIZATION_REUSE_LEN);
+        assert_eq!(&encoded[..8], 2u64.to_le_bytes().as_slice());
+        assert_eq!(&encoded[8..16], 3u64.to_le_bytes().as_slice());
+        assert_eq!(
+            MaterializationReuse::decode_persist_metadata(&prefixed)
+                .expect("reuse metadata decodes"),
+            reuse
+        );
+    }
+
+    #[test]
+    fn materialization_reuse_metadata_rejects_short_prefix() {
+        let error = MaterializationReuse::decode_persist_metadata(&[0; 8])
+            .expect_err("short reuse metadata errors");
+
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortMaterializationReuseMetadata {
+                expected: PERSIST_MATERIALIZATION_REUSE_LEN,
+                actual: 8,
             }
         );
     }
