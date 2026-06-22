@@ -26,10 +26,19 @@
 # (JWT, NAR_HASH, etc.) stay in scope across the dance.
 {
   lib,
+  mkSystem,
   pkgs,
   systems,
 }: let
   tomlFmt = lib.formats.toml {inherit lib pkgs;};
+
+  # The server profile keeps aos-registry-server out of the production image
+  # (bundle = mkDefault false); re-bundle it for the registry machine so the
+  # fleet seed can activate it at runtime (modules/profiles/server.nix).
+  serverWithRegistry = mkSystem [
+    ../../systems/server.nix
+    {aos.packages.aos-registry-server.bundle = true;}
+  ];
 
   # Stable test values. The 32-char store hash is fixed so the
   # resulting store path is predictable across runs and stable for
@@ -114,7 +123,7 @@ in {
     };
 
     server = {
-      system = systems.server;
+      system = serverWithRegistry;
       packages = ["aos-registry-server"];
     };
   };
