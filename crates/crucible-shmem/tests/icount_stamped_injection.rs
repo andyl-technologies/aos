@@ -70,6 +70,29 @@ fn deliverability_depends_on_consumer_icount_not_arrival_order() {
 }
 
 #[test]
+fn same_icount_frames_resolve_by_source_node_then_sequence() {
+    let frames = vec![
+        frame(12, 7, 2, b"source-b-second"),
+        frame(12, 4, 3, b"source-a-third"),
+        frame(12, 4, 1, b"source-a-first"),
+    ];
+
+    let visible = deliverable_frames_at(&frames, 12);
+
+    assert_eq!(
+        visible
+            .iter()
+            .map(|frame| payload(frame))
+            .collect::<Vec<_>>(),
+        vec![
+            b"source-a-first".as_slice(),
+            b"source-a-third".as_slice(),
+            b"source-b-second".as_slice(),
+        ]
+    );
+}
+
+#[test]
 fn frame_entry_rejects_oversized_payload() {
     let payload = vec![0xa5; MAX_FRAME_DATA + 1];
 

@@ -125,6 +125,16 @@ pub struct ScheduledEvent {
     pub payload: ScheduledEventPayload,
 }
 
+/// Returns scheduled events in the canonical deterministic resolution order.
+#[must_use]
+pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEvent> {
+    let mut ordered = events.iter().collect::<Vec<_>>();
+
+    ordered.sort_by(|left, right| left.key.cmp(&right.key));
+
+    ordered
+}
+
 /// Payload carried by a scheduler-resolved event.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ScheduledEventPayload {
@@ -277,6 +287,50 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_events_resolve_by_key_not_arrival_order() {
+        let vm_a = scheduler_node("a", SchedulingNodeKind::Vm);
+        let vm_b = scheduler_node("b", SchedulingNodeKind::Vm);
+        let disk_a = scheduler_node("a", SchedulingNodeKind::Disk);
+        let network_a = scheduler_node("a", SchedulingNodeKind::Network);
+        let mut events = vec![
+            event(1, &vm_b, &disk_a, 0, b"third"),
+            event(2, &vm_a, &disk_a, 0, b"fourth"),
+            event(1, &vm_a, &network_a, 1, b"second"),
+            event(1, &vm_a, &disk_a, 7, b"first"),
+        ];
+
+        let payloads = ordered_scheduled_events(&events)
+            .iter()
+            .map(|event| match &event.payload {
+                ScheduledEventPayload::BackendInput(input) => input.payload.clone(),
+                _ => panic!("test event should carry a backend input"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            payloads,
+            [
+                b"first".to_vec(),
+                b"second".to_vec(),
+                b"third".to_vec(),
+                b"fourth".to_vec(),
+            ]
+        );
+
+        events.reverse();
+
+        let reversed_payloads = ordered_scheduled_events(&events)
+            .iter()
+            .map(|event| match &event.payload {
+                ScheduledEventPayload::BackendInput(input) => input.payload.clone(),
+                _ => panic!("test event should carry a backend input"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(reversed_payloads, payloads);
+    }
+
+    #[test]
     fn quantum_outcome_carries_step_decisions() {
         let config = Configuration::genesis(ScenarioDef {
             id: ContentHash::default(),
@@ -342,6 +396,22 @@ mod tests {
             consumer: consumer.clone(),
             producer: producer.clone(),
             sequence,
+        }
+    }
+
+    fn event(
+        virtual_time: u64,
+        consumer: &SchedulerNodeId,
+        producer: &SchedulerNodeId,
+        sequence: u64,
+        payload: &[u8],
+    ) -> ScheduledEvent {
+        ScheduledEvent {
+            key: event_key(virtual_time, consumer, producer, sequence),
+            payload: ScheduledEventPayload::BackendInput(BackendInput {
+                node: consumer.node.clone(),
+                payload: payload.to_vec(),
+            }),
         }
     }
 }
