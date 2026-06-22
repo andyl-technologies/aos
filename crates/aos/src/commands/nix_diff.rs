@@ -84,7 +84,7 @@ pub fn run(
     }
     let candidate = select_native_diff_candidate_with_config(verbose, eval_config.clone())?;
     NixRunner::ensure_nix_instantiate_available()?;
-    let oracle = NixCli::with_eval_config(verbose, eval_config);
+    let oracle = NixCli::with_eval_config(verbose, eval_config.clone());
     let candidate_name = candidate.name();
 
     if all || systems {
@@ -93,6 +93,7 @@ pub fn run(
             &oracle,
             candidate.as_ref(),
             candidate_name,
+            &eval_config,
             file,
             all,
             systems,
@@ -120,6 +121,9 @@ pub fn run(
     if printer.json_if_active(&report_json(
         &report,
         candidate_name,
+        &eval_config,
+        file,
+        attr,
         failure.as_ref(),
         oracle_stats.as_ref(),
     )) {
@@ -151,6 +155,7 @@ pub fn run(
         for divergence in &report.divergences {
             printer.plain(&format!("  - {}", render_diff(divergence)));
         }
+        render_reproduction_hint(printer, &eval_config, file, attr, mode, "  ");
         render_divergence_classes(printer, &report, "  ");
         render_single_oracle_stats(printer, oracle_stats.as_ref());
     }
@@ -162,6 +167,7 @@ fn run_all(
     oracle: &NixCli,
     candidate: &dyn NixEval,
     candidate_name: &str,
+    eval_config: &NixEvalConfig,
     file: &Path,
     include_packages: bool,
     include_systems: bool,
@@ -230,6 +236,8 @@ fn run_all(
     if printer.json_if_active(&corpus_json(
         &reports,
         candidate_name,
+        &eval_config,
+        file,
         mode,
         failure.as_ref(),
     )) {
@@ -267,6 +275,14 @@ fn run_all(
                 .map(ToString::to_string)
                 .unwrap_or_else(|| "drv diff failed".to_string());
             printer.plain(&format!("  - {}: {failure}", attr_report.attr));
+            render_reproduction_hint(
+                printer,
+                &eval_config,
+                file,
+                &attr_report.attr,
+                mode,
+                "      ",
+            );
             if let Some(report) = &attr_report.report {
                 for divergence in &report.divergences {
                     printer.plain(&format!("      - {}", render_diff(divergence)));
@@ -447,6 +463,9 @@ fn report_failure(report: &DrvDiffReport) -> Option<NixDiffReportedFailure> {
 fn report_json(
     report: &DrvDiffReport,
     candidate_name: &str,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
     failure: Option<&NixDiffReportedFailure>,
     oracle_stats: Option<&NixInstantiateStats>,
 ) -> serde_json::Value {
@@ -454,6 +473,9 @@ fn report_json(
         "mode": mode_name(report.mode),
         "oracle": "nix-cli",
         "candidate": candidate_name,
+        "file": file.to_string_lossy(),
+        "attr": attr,
+        "reproduce": reproduction_command(eval_config, file, attr, report.mode),
         "matched": failure.is_none(),
         "error": failure.map(ToString::to_string),
         "oracle_root": report.oracle_root.as_ref().map(|path| path.to_string_lossy().to_string()),
@@ -469,6 +491,8 @@ fn report_json(
 fn corpus_json(
     reports: &[AttrDiffReport],
     candidate_name: &str,
+    eval_config: &NixEvalConfig,
+    file: &Path,
     mode: DiffMode,
     failure: Option<&NixDiffReportedFailure>,
 ) -> serde_json::Value {
@@ -486,12 +510,13 @@ fn corpus_json(
         "mode": mode_name(mode),
         "oracle": "nix-cli",
         "candidate": candidate_name,
+        "file": file.to_string_lossy(),
         "matched": failure.is_none(),
         "error": failure.map(ToString::to_string),
         "attrs_checked": reports.len(),
         "attrs_failed": failed_attrs,
         "divergence_count": divergence_count,
-        "reports": reports.iter().map(|report| attr_report_json(report, candidate_name, mode)).collect::<Vec<_>>(),
+        "reports": reports.iter().map(|report| attr_report_json(report, candidate_name, eval_config, file, mode)).collect::<Vec<_>>(),
     });
     if let (serde_json::Value::Object(object), Some(summary)) =
         (&mut value, corpus_oracle_stats_aggregate(reports))
@@ -504,6 +529,8 @@ fn corpus_json(
 fn attr_report_json(
     report: &AttrDiffReport,
     candidate_name: &str,
+    eval_config: &NixEvalConfig,
+    file: &Path,
     mode: DiffMode,
 ) -> serde_json::Value {
     let Some(diff_report) = &report.report else {
@@ -512,6 +539,8 @@ fn attr_report_json(
             "mode": mode_name(mode),
             "oracle": "nix-cli",
             "candidate": candidate_name,
+            "file": file.to_string_lossy(),
+            "reproduce": reproduction_command(eval_config, file, &report.attr, mode),
             "matched": false,
             "error": report.failure.as_ref().map(ToString::to_string),
             "oracle_root": null,
@@ -527,6 +556,9 @@ fn attr_report_json(
     let mut value = report_json(
         diff_report,
         candidate_name,
+        eval_config,
+        file,
+        &report.attr,
         report.failure.as_ref(),
         report.oracle_stats.as_ref(),
     );
@@ -534,6 +566,10 @@ fn attr_report_json(
         object.insert(
             "attr".to_string(),
             serde_json::Value::String(report.attr.clone()),
+        );
+        object.insert(
+            "reproduce".to_string(),
+            serde_json::Value::String(reproduction_command(eval_config, file, &report.attr, mode)),
         );
     }
     value
@@ -664,6 +700,114 @@ fn render_divergence_classes(printer: &Printer, report: &DrvDiffReport, indent: 
             ));
         }
     }
+}
+
+fn render_reproduction_hint(
+    printer: &Printer,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+    indent: &str,
+) {
+    printer.plain(&format!(
+        "{indent}reproduce: {}",
+        reproduction_command(eval_config, file, attr, mode)
+    ));
+}
+
+fn reproduction_command(
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> String {
+    reproduction_args(eval_config, file, attr, mode)
+        .iter()
+        .map(|arg| shell_word(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn reproduction_args(
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    mode: DiffMode,
+) -> Vec<String> {
+    let mut args = vec!["aos".to_string()];
+    if eval_config.trace_verbose() {
+        args.push("--trace-verbose".to_string());
+    }
+    if let Some(current_system) = eval_config.current_system() {
+        args.push("--eval-system".to_string());
+        args.push(current_system.to_string());
+    }
+    match eval_config.eval_mode() {
+        NixEvalMode::Ambient => {}
+        NixEvalMode::Impure => args.push("--impure-eval".to_string()),
+        NixEvalMode::Pure => args.push("--pure-eval".to_string()),
+        NixEvalMode::Restricted => {
+            args.push("--restrict-eval".to_string());
+            for path in eval_config.allowed_paths() {
+                args.push("--eval-allow-path".to_string());
+                args.push(path.clone());
+            }
+            for uri in eval_config.allowed_uris() {
+                args.push("--eval-allow-uri".to_string());
+                args.push(uri.clone());
+            }
+        }
+    }
+    args.extend([
+        "nix-diff".to_string(),
+        "--attr".to_string(),
+        attr.to_string(),
+        "--mode".to_string(),
+        mode_name(mode).to_string(),
+        "--".to_string(),
+        file.to_string_lossy().into_owned(),
+    ]);
+    args
+}
+
+fn shell_word(value: &str) -> String {
+    if is_shell_bare_word(value) {
+        return value.to_string();
+    }
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(ch);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+fn is_shell_bare_word(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            matches!(
+                byte,
+                b'A'..=b'Z'
+                    | b'a'..=b'z'
+                    | b'0'..=b'9'
+                    | b'_'
+                    | b'-'
+                    | b'.'
+                    | b'/'
+                    | b':'
+                    | b','
+                    | b'='
+                    | b'+'
+                    | b'@'
+                    | b'%'
+            )
+        })
 }
 
 fn render_single_oracle_stats(printer: &Printer, stats: Option<&NixInstantiateStats>) {
@@ -848,7 +992,17 @@ const fn side_name(side: DiffSide) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    fn repro_config() -> NixEvalConfig {
+        let mut config = NixEvalConfig::new();
+        config.set_eval_mode(NixEvalMode::Impure);
+        config.clear_current_system();
+        config.clear_allowed_paths();
+        config.clear_allowed_uris();
+        config.set_trace_verbose(false);
+        config
+    }
 
     #[test]
     fn report_json_renders_divergence_details() {
@@ -868,11 +1022,25 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            failure.as_ref(),
+            None,
+        );
 
         assert_eq!(value["mode"], "byte");
         assert_eq!(value["oracle"], "nix-cli");
         assert_eq!(value["candidate"], "aos-nix");
+        assert_eq!(value["file"], "default.nix");
+        assert_eq!(value["attr"], "pkgs.hello");
+        assert_eq!(
+            value["reproduce"],
+            "aos --impure-eval nix-diff --attr pkgs.hello --mode byte -- default.nix"
+        );
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
         assert!(value.get("oracle_stats").is_none());
@@ -909,7 +1077,15 @@ mod tests {
             elapsed: std::time::Duration::from_millis(1500),
         };
 
-        let value = report_json(&report, "aos-nix", None, Some(&stats));
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            None,
+            Some(&stats),
+        );
 
         assert_eq!(value["oracle_stats"]["drv_path"], "/nix/store/stats.drv");
         assert_eq!(value["oracle_stats"]["elapsed"]["seconds"], 1.5);
@@ -987,8 +1163,16 @@ mod tests {
             },
         ];
 
-        let value = corpus_json(&reports, "native-test", DiffMode::Byte, None);
+        let value = corpus_json(
+            &reports,
+            "native-test",
+            &repro_config(),
+            Path::new("default.nix"),
+            DiffMode::Byte,
+            None,
+        );
 
+        assert_eq!(value["file"], "default.nix");
         assert_eq!(value["oracle_stats_summary"]["captured"], 2);
         assert_eq!(
             value["oracle_stats_summary"]["elapsed"]["total_seconds"],
@@ -1016,6 +1200,56 @@ mod tests {
     }
 
     #[test]
+    fn reproduction_command_preserves_eval_config_and_quotes_shell_words() -> Result<()> {
+        let mut config = repro_config();
+        config.set_eval_mode(NixEvalMode::Restricted);
+        config.set_current_system("aos-test-target")?;
+        config.add_allowed_path("/aos/src")?;
+        config.add_allowed_uri("https://cache.example/")?;
+        config.set_trace_verbose(true);
+
+        let args = reproduction_args(
+            &config,
+            Path::new("path with spaces/default.nix"),
+            "pkgs.o'clock",
+            DiffMode::Structural,
+        );
+        let args_as_str = args.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(
+            args_as_str,
+            [
+                "aos",
+                "--trace-verbose",
+                "--eval-system",
+                "aos-test-target",
+                "--restrict-eval",
+                "--eval-allow-path",
+                "/aos/src",
+                "--eval-allow-uri",
+                "https://cache.example/",
+                "nix-diff",
+                "--attr",
+                "pkgs.o'clock",
+                "--mode",
+                "structural",
+                "--",
+                "path with spaces/default.nix",
+            ]
+        );
+
+        assert_eq!(
+            reproduction_command(
+                &config,
+                Path::new("path with spaces/default.nix"),
+                "pkgs.o'clock",
+                DiffMode::Structural,
+            ),
+            "aos --trace-verbose --eval-system aos-test-target --restrict-eval --eval-allow-path /aos/src --eval-allow-uri https://cache.example/ nix-diff --attr 'pkgs.o'\\''clock' --mode structural -- 'path with spaces/default.nix'"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn report_json_renders_structural_divergence_details() {
         let report = DrvDiffReport {
             mode: DiffMode::Structural,
@@ -1031,7 +1265,15 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            failure.as_ref(),
+            None,
+        );
 
         assert_eq!(value["mode"], "structural");
         assert_eq!(value["divergences"][0]["kind"], "structural");
@@ -1054,7 +1296,15 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            failure.as_ref(),
+            None,
+        );
 
         assert_eq!(value["divergences"][0]["kind"], "structural_parse");
         assert_eq!(value["divergences"][0]["side"], "candidate");
@@ -1076,7 +1326,15 @@ mod tests {
         };
 
         let failure = report_failure(&report);
-        let value = report_json(&report, "aos-nix", failure.as_ref(), None);
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            failure.as_ref(),
+            None,
+        );
 
         assert_eq!(value["matched"], false);
         assert_eq!(value["error"], "drv diff found 1 divergence(s)");
@@ -1100,7 +1358,15 @@ mod tests {
         };
 
         let failure = report_failure(&report).expect("empty comparison should fail");
-        let value = report_json(&report, "aos-nix", Some(&failure), None);
+        let value = report_json(
+            &report,
+            "aos-nix",
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            Some(&failure),
+            None,
+        );
 
         assert_eq!(
             failure.to_string(),
@@ -1154,18 +1420,31 @@ mod tests {
         let reports = vec![attr_report];
         let failure = corpus_failure(&reports);
 
-        let value = corpus_json(&reports, "native-test", DiffMode::Byte, failure.as_ref());
+        let value = corpus_json(
+            &reports,
+            "native-test",
+            &repro_config(),
+            Path::new("default.nix"),
+            DiffMode::Byte,
+            failure.as_ref(),
+        );
 
         assert_eq!(value["matched"], false);
         assert_eq!(value["attrs_checked"], 1);
         assert_eq!(value["attrs_failed"], 1);
         assert_eq!(value["divergence_count"], 1);
+        assert_eq!(value["file"], "default.nix");
         assert_eq!(
             value["error"],
             "drv diff failed for 1 attribute(s) with 1 divergence(s)"
         );
         assert_eq!(value["reports"][0]["attr"], "pkgs.hello");
+        assert_eq!(value["reports"][0]["file"], "default.nix");
         assert_eq!(value["reports"][0]["candidate"], "native-test");
+        assert_eq!(
+            value["reports"][0]["reproduce"],
+            "aos --impure-eval nix-diff --attr pkgs.hello --mode byte -- default.nix"
+        );
         assert_eq!(value["reports"][0]["divergences"][0]["kind"], "bytes");
         assert!(value.get("oracle_stats_summary").is_none());
     }
@@ -1208,6 +1487,8 @@ mod tests {
         let value = corpus_json(
             &reports,
             "native-test",
+            &repro_config(),
+            Path::new("default.nix"),
             DiffMode::Structural,
             failure.as_ref(),
         );
@@ -1218,7 +1499,12 @@ mod tests {
         assert_eq!(value["divergence_count"], 0);
         assert_eq!(value["error"], "drv diff failed for 1 attribute(s)");
         assert_eq!(value["reports"][0]["attr"], "pkgs.bad");
+        assert_eq!(value["reports"][0]["file"], "default.nix");
         assert_eq!(value["reports"][0]["mode"], "structural");
+        assert_eq!(
+            value["reports"][0]["reproduce"],
+            "aos --impure-eval nix-diff --attr pkgs.bad --mode structural -- default.nix"
+        );
         assert!(value["reports"][0].get("oracle_stats").is_none());
         assert_eq!(
             value["reports"][0]["error"],

@@ -498,6 +498,47 @@ mod tests {
     }
 
     #[test]
+    fn nix_diff_reproduction_shape_preserves_eval_flags_and_separator() {
+        let cli = parse_cli([
+            "aos",
+            "--trace-verbose",
+            "--eval-system",
+            "aos-test-target",
+            "--restrict-eval",
+            "--eval-allow-path",
+            "/aos/src",
+            "--eval-allow-uri",
+            "https://cache.example/",
+            "nix-diff",
+            "--attr",
+            "pkgs.o'clock",
+            "--mode",
+            "structural",
+            "--",
+            "path with spaces/default.nix",
+        ]);
+
+        assert!(cli.trace_verbose);
+        assert_eq!(cli.eval_system.as_deref(), Some("aos-test-target"));
+        assert!(cli.restrict_eval);
+        assert_eq!(cli.eval_allowed_paths, ["/aos/src"]);
+        assert_eq!(cli.eval_allowed_uris, ["https://cache.example/"]);
+        match cli.command {
+            Commands::NixDiff {
+                attr, file, mode, ..
+            } => {
+                assert_eq!(attr.as_deref(), Some("pkgs.o'clock"));
+                assert_eq!(
+                    file,
+                    Some(std::path::PathBuf::from("path with spaces/default.nix"))
+                );
+                assert_eq!(mode, NixDiffMode::Structural);
+            }
+            _ => panic!("expected nix-diff command"),
+        }
+    }
+
+    #[test]
     fn global_pure_eval_conflicts_with_restricted_eval() {
         let err = parse_cli_error([
             "aos",
