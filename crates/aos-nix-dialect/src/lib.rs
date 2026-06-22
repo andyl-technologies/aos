@@ -10,8 +10,15 @@
 //! Callers that want Nix semantics lower through [`nix_lower`] (or
 //! [`nix_lower_with_options`]) rather than [`ratchet_core::lower`], which would
 //! otherwise apply the engine's all-pure default and miss the effect boundary.
+//!
+//! The dialect also owns the Nix string *context* ([`string_context`]): the set
+//! of store-path dependencies a string carries and unions on concatenation. The
+//! context is Nix-language-specific and feeds `.drv` input edges, so it belongs
+//! to the dialect; the engine layers the generic string value on top of it.
 
 #![forbid(unsafe_code)]
+
+pub mod string_context;
 
 use ratchet_core::{EffectClass, Ir, IrError, IrKind, IrLowerOptions, ResolvedAst};
 use ratchet_dialect::Dialect;

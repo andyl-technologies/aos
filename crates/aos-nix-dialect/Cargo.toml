@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 ratchet-core = { workspace = true }
 ratchet-dialect = { workspace = true }
+thiserror = { workspace = true }

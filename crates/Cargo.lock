@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "ratchet-core",
  "ratchet-dialect",
+ "thiserror",
 ]
 
 [[package]]
