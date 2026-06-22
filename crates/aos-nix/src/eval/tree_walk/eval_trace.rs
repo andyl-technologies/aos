@@ -1,4 +1,4 @@
-//! Trace/warning emission, `tryEval`, deep forcing, and trace-output writers.
+//! Trace/warning emission, `tryEval`, deep forcing, and value-output writers.
 
 use super::*;
 
@@ -422,15 +422,22 @@ impl TreeWalk {
         out: &mut Vec<u8>,
     ) -> Result<(), TreeWalkError> {
         Self::extend_bytes_for_node(id, span, out, b"\"")?;
-        for byte in bytes {
-            match *byte {
+        let mut index = 0;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            match byte {
                 b'"' => Self::extend_bytes_for_node(id, span, out, b"\\\"")?,
                 b'\\' => Self::extend_bytes_for_node(id, span, out, b"\\\\")?,
                 b'\n' => Self::extend_bytes_for_node(id, span, out, b"\\n")?,
                 b'\r' => Self::extend_bytes_for_node(id, span, out, b"\\r")?,
                 b'\t' => Self::extend_bytes_for_node(id, span, out, b"\\t")?,
+                b'$' if bytes.get(index + 1) == Some(&b'{') => {
+                    Self::extend_bytes_for_node(id, span, out, b"\\${")?;
+                    index += 1;
+                }
                 byte => Self::extend_bytes_for_node(id, span, out, &[byte])?,
             }
+            index += 1;
         }
         Self::extend_bytes_for_node(id, span, out, b"\"")
     }

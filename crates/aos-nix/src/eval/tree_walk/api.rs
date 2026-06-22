@@ -187,12 +187,43 @@ pub(crate) fn parse_attr_path_list_index_diagnostic(segment: &[u8]) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// Evaluates an IR root and renders it like raw `nix-instantiate --eval --strict`.
+///
+/// The renderer forces list elements and attribute values while printing Nix's
+/// raw value syntax: quoted strings, lexicographic attribute keys,
+/// `<LAMBDA>`/`<PRIMOP>` placeholders, and `«repeated»` for recursive values.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation, nested forcing, or value
+/// rendering fails.
+pub fn eval_raw_bytes(ir: &Ir) -> Result<Vec<u8>, TreeWalkError> {
+    eval_raw_bytes_with_options(ir, TreeWalkOptions::default())
+}
+
+/// Evaluates an IR root with explicit options and renders raw strict output.
+///
+/// # Errors
+///
+/// Returns [`TreeWalkError`] if root evaluation, nested forcing, or value
+/// rendering fails.
+pub fn eval_raw_bytes_with_options(
+    ir: &Ir,
+    options: TreeWalkOptions,
+) -> Result<Vec<u8>, TreeWalkError> {
+    let mut evaluator = TreeWalk::with_options(ir, options);
+    let value = evaluator.eval_root()?;
+    let span = evaluator.node(ir.root)?.span;
+    let mut out = Vec::new();
+    let mut visited = Vec::new();
+    evaluator.write_raw_value(ir.root, span, ir.root, span, value, &mut out, &mut visited)?;
+    Ok(out)
+}
+
 /// Evaluates an IR root and renders a numeric value like raw `nix-instantiate --eval`.
 ///
-/// This renderer is intentionally number-scoped. The native integration
-/// currently exposes strict JSON evaluation, while raw rendering for strings,
-/// paths, lists, attribute sets, functions, and thunks is pinned separately by
-/// the surfaces that already need them.
+/// Prefer [`eval_raw_bytes`] when the caller needs Nix's complete raw strict
+/// value syntax.
 ///
 /// # Errors
 ///

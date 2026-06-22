@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use aos_nix::compile::{lower, resolve};
-use aos_nix::eval::{eval_number_raw_bytes, eval_whnf_owned};
+use aos_nix::eval::{eval_raw_bytes, eval_whnf_owned};
 use aos_nix::syntax::parse_bytes;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -142,8 +142,8 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
                 .ok_or_else(|| anyhow!("{} has no expected output path", case.name))?;
             let expected = fs::read(expected_path)
                 .with_context(|| format!("reading {}", expected_path.display()))?;
-            let actual = eval_numeric_case(&source)
-                .with_context(|| format!("{} should evaluate as a raw number", case.name))?;
+            let actual = eval_raw_case(&source)
+                .with_context(|| format!("{} should evaluate as a raw value", case.name))?;
             if actual != expected {
                 bail!(
                     "{} output diverged:\nexpected: {}\nactual: {}",
@@ -165,11 +165,11 @@ fn eval_case(source: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn eval_numeric_case(source: &[u8]) -> Result<Vec<u8>> {
+fn eval_raw_case(source: &[u8]) -> Result<Vec<u8>> {
     let parsed = parse_bytes(source).context("parsing expression")?;
     let resolved = resolve(parsed).context("resolving expression")?;
     let ir = lower(resolved).context("lowering expression")?;
-    let mut bytes = eval_number_raw_bytes(&ir).context("evaluating raw number")?;
+    let mut bytes = eval_raw_bytes(&ir).context("evaluating raw value")?;
     bytes.push(b'\n');
     Ok(bytes)
 }
@@ -191,6 +191,15 @@ fn discovers_lang_sh_categories_flags_and_disabled_cases() -> Result<()> {
             LangCategory::ParseFail,
             LangCategory::ParseOkay,
             LangCategory::EvalFail,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
+            LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
             LangCategory::EvalOkay,
@@ -224,11 +233,20 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
             ("parse-fail-missing-then", CaseOutcome::Passed),
             ("parse-okay-simple", CaseOutcome::Passed),
             ("eval-fail-type", CaseOutcome::Passed),
+            ("eval-okay-attrs", CaseOutcome::Passed),
             (
                 "eval-okay-disabled",
                 CaseOutcome::Skipped("disabled by .exp-disabled".to_owned())
             ),
             ("eval-okay-number", CaseOutcome::Passed),
+            ("eval-okay-primop-app", CaseOutcome::Passed),
+            ("eval-okay-recursive", CaseOutcome::Passed),
+            ("eval-okay-recursive-list", CaseOutcome::Passed),
+            ("eval-okay-recursive-list-long", CaseOutcome::Passed),
+            ("eval-okay-recursive-list-nested", CaseOutcome::Passed),
+            ("eval-okay-recursive-list-siblings", CaseOutcome::Passed),
+            ("eval-okay-string", CaseOutcome::Passed),
+            ("eval-okay-string-interpolation", CaseOutcome::Passed),
             (
                 "eval-okay-with-flags",
                 CaseOutcome::Skipped("case carries unsupported flags: --eval --strict".to_owned())
@@ -240,9 +258,9 @@ fn fixture_lang_conformance_runs_all_four_categories() -> Result<()> {
 }
 
 #[test]
-fn eval_fail_detection_rejects_successful_non_numeric_values() -> Result<()> {
+fn eval_fail_detection_allows_successful_non_numeric_values() -> Result<()> {
     assert!(eval_case(b"x: x").is_ok());
-    assert!(eval_numeric_case(b"x: x").is_err());
+    assert_eq!(eval_raw_case(b"x: x")?, b"<LAMBDA>\n");
 
     Ok(())
 }

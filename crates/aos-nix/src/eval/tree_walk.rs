@@ -250,8 +250,9 @@ pub(crate) use api::{
 pub use api::{
     eval_instantiation_attr_path_owned_with_options_and_realizer,
     eval_instantiation_attr_path_owned_with_options_source_and_realizer, eval_number_raw_bytes,
-    eval_number_raw_bytes_with_options, eval_whnf, eval_whnf_owned, eval_whnf_owned_with_options,
-    eval_whnf_owned_with_options_and_realizer, eval_whnf_with_options,
+    eval_number_raw_bytes_with_options, eval_raw_bytes, eval_raw_bytes_with_options, eval_whnf,
+    eval_whnf_owned, eval_whnf_owned_with_options, eval_whnf_owned_with_options_and_realizer,
+    eval_whnf_with_options,
 };
 pub use error_kind::TreeWalkErrorKind;
 pub(crate) use errors::{ArithmeticOp, EvalErrorContext};
@@ -732,6 +733,7 @@ mod eval_numeric;
 mod eval_path_ops;
 mod eval_primop_apply;
 mod eval_primop_bind;
+mod eval_raw;
 mod eval_regex;
 mod eval_sort;
 mod eval_source;
