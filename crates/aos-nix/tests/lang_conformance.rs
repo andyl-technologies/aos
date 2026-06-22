@@ -57,6 +57,81 @@ enum LangOutput {
     Err,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct LangVersion {
+    major: u16,
+    minor: u16,
+    patch: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LangVersionRange {
+    min_inclusive: Option<LangVersion>,
+    max_exclusive: Option<LangVersion>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LangVersionSkipRule {
+    name: &'static str,
+    active: LangVersionRange,
+    reason: &'static str,
+}
+
+const PINNED_LANG_CPP_NIX_VERSION: LangVersion = LangVersion::new(2, 24, 12);
+const LANG_VERSION_SKIP_RULES: &[LangVersionSkipRule] = &[];
+
+impl LangVersion {
+    const fn new(major: u16, minor: u16, patch: u16) -> Self {
+        Self {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    fn parse(input: &str) -> Option<Self> {
+        let mut parts = input.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            major,
+            minor,
+            patch,
+        })
+    }
+}
+
+impl std::fmt::Display for LangVersion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+impl LangVersionRange {
+    const fn before(max_exclusive: LangVersion) -> Self {
+        Self {
+            min_inclusive: None,
+            max_exclusive: Some(max_exclusive),
+        }
+    }
+
+    const fn since(min_inclusive: LangVersion) -> Self {
+        Self {
+            min_inclusive: Some(min_inclusive),
+            max_exclusive: None,
+        }
+    }
+
+    fn contains(self, version: LangVersion) -> bool {
+        self.min_inclusive.is_none_or(|min| version >= min)
+            && self.max_exclusive.is_none_or(|max| version < max)
+    }
+}
+
 fn discover_lang_cases(lang_dir: &Path) -> Result<Vec<LangCase>> {
     let mut cases = Vec::new();
     for entry in fs::read_dir(lang_dir)
@@ -141,6 +216,9 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
     if case.disabled {
         return Ok(CaseOutcome::Skipped("disabled by .exp-disabled".to_owned()));
     }
+    if let Some(reason) = version_reactive_skip(&case.name) {
+        return Ok(CaseOutcome::Skipped(reason));
+    }
     let lang_dir = case
         .source
         .parent()
@@ -196,6 +274,21 @@ fn run_lang_case(case: &LangCase) -> Result<CaseOutcome> {
             Ok(CaseOutcome::Passed)
         }
     }
+}
+
+fn version_reactive_skip(name: &str) -> Option<String> {
+    version_reactive_skip_with_rules(name, PINNED_LANG_CPP_NIX_VERSION, LANG_VERSION_SKIP_RULES)
+}
+
+fn version_reactive_skip_with_rules(
+    name: &str,
+    version: LangVersion,
+    rules: &[LangVersionSkipRule],
+) -> Option<String> {
+    rules
+        .iter()
+        .find(|rule| rule.name == name && rule.active.contains(version))
+        .map(|rule| format!("{} (C++ Nix {version})", rule.reason))
 }
 
 fn lang_case_postprocess(case: &LangCase) -> std::result::Result<Option<LangPostprocess>, String> {
@@ -994,6 +1087,63 @@ fn lang_sh_digit_normalizer_postprocess_is_supported() -> Result<()> {
     assert_eq!(output, b"<number>| value <number>\n");
     assert_eq!(parse_lang_postprocess("echo unsupported"), Err(()));
 
+    Ok(())
+}
+
+#[test]
+fn lang_version_skip_rules_react_to_pinned_version() {
+    let rules = [
+        LangVersionSkipRule {
+            name: "eval-okay-future",
+            active: LangVersionRange::before(LangVersion::new(2, 25, 0)),
+            reason: "requires C++ Nix >= 2.25.0",
+        },
+        LangVersionSkipRule {
+            name: "eval-okay-retired",
+            active: LangVersionRange::since(LangVersion::new(2, 25, 0)),
+            reason: "covered only before C++ Nix 2.25.0",
+        },
+    ];
+
+    assert_eq!(
+        version_reactive_skip_with_rules("eval-okay-future", PINNED_LANG_CPP_NIX_VERSION, &rules),
+        Some("requires C++ Nix >= 2.25.0 (C++ Nix 2.24.12)".to_owned())
+    );
+    assert_eq!(
+        version_reactive_skip_with_rules("eval-okay-future", LangVersion::new(2, 25, 0), &rules),
+        None
+    );
+    assert_eq!(
+        version_reactive_skip_with_rules("eval-okay-retired", LangVersion::new(2, 25, 0), &rules),
+        Some("covered only before C++ Nix 2.25.0 (C++ Nix 2.25.0)".to_owned())
+    );
+    assert_eq!(
+        version_reactive_skip_with_rules("eval-okay-other", PINNED_LANG_CPP_NIX_VERSION, &rules),
+        None
+    );
+}
+
+#[test]
+fn pinned_lang_version_matches_packaged_cpp_nix() -> Result<()> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| anyhow!("{} has no repo root parent", manifest_dir.display()))?;
+    let package = fs::read_to_string(repo_root.join("pkgs/tools/nix.nix"))
+        .context("reading packaged C++ Nix derivation")?;
+    let version = package
+        .lines()
+        .find_map(|line| {
+            let version = line.trim().strip_prefix("version = \"")?;
+            version.strip_suffix("\";")
+        })
+        .ok_or_else(|| anyhow!("pkgs/tools/nix.nix does not declare a version"))?;
+
+    assert_eq!(
+        LangVersion::parse(version),
+        Some(PINNED_LANG_CPP_NIX_VERSION)
+    );
     Ok(())
 }
 
