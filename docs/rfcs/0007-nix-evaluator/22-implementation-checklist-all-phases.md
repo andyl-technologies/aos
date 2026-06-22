@@ -387,8 +387,18 @@ alone (`M-1`/`Q-A`).
       value-hash equals its prior value-hash.
 - [ ] `value/hashcons.rs` — hash-consing / maximal sharing of immutable values
       (O(1) equality; turns value-hashing into a field load — `S-7`).
-- [ ] `cache/hashing.rs` — the hashing split: xxh3 in-process, blake3
-      durable/shared, SHA-256 *only* for Nix-observed hashes (`S-15`).
+- [x] Current hash-routing precursor outside the future `cache/hashing.rs`:
+      evaluator-local string/path cons tables use xxh3 structural hashes with
+      equality confirmation; durable frontend parse-cache keys use BLAKE3 over
+      source bytes plus schema/flags, with file memo keys pairing canonical
+      realpath and BLAKE3(file bytes); Nix-observed `.drv`/store-path surfaces
+      use SHA-256 and hash/fetch builtins use their requested Nix hash APIs
+      rather than evaluator-local xxh3/BLAKE3 digests. This is the current
+      substrate only, not the full P2 cache hashing layer (`S-15`).
+- [ ] `cache/hashing.rs` full P2 hashing split remains: demand-graph xxh3 keys,
+      BLAKE3 durable/shared value and file CA keys, type-enforced leak-invariant
+      boundaries, and CI/harness proof that internal xxh3/BLAKE3 digests cannot
+      reach Nix-observed store-path or `.drv` SHA-256 inputs (`S-15`).
 - [ ] `cache/persist.rs` — versioned on-disk `nodes/values/files` schema with a
       schema-version field and discard-on-mismatch (`R-14`); transport stays
       **beside** `NixEval`, on the Attic content-addressed path (`C-3`).
