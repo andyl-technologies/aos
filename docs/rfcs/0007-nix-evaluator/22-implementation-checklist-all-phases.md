@@ -507,6 +507,14 @@ alone (`M-1`/`Q-A`).
       location. This is codec-only; durable index engines, parse-artifact pack
       payloads, lookup/write integration, mmap reads, GC/repack, Attic
       transport, and harness proof remain open (`C-13`/`R-10`).
+- [x] Current file-artifact index key decoder:
+      `PersistFileArtifactKey::decode_index_bytes` round-trips the 33-byte
+      tagged file-artifact mapping key, accepts longer index-key prefixes
+      consistently with other fixed codecs, and rejects short or wrong-tag keys
+      through `PersistPackFormatError`. This is codec-only; durable index
+      engines, lookup/write integration, parse-artifact payload validation,
+      mmap reads, GC/repack, Attic transport, and harness proof remain open
+      (`C-13`).
 - [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
       the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
       bytes as one versioned little-endian payload, and

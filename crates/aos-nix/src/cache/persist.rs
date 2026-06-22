@@ -363,6 +363,30 @@ impl PersistFileArtifactKey {
         bytes[1..].copy_from_slice(&self.hash.as_bytes());
         bytes
     }
+
+    /// Decodes the stable binary key for the future file-artifact index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistPackFormatError`] if `bytes` is shorter than
+    /// [`PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN`] or carries an unexpected index
+    /// tag.
+    pub fn decode_index_bytes(bytes: &[u8]) -> Result<Self, PersistPackFormatError> {
+        if bytes.len() < PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN {
+            return Err(PersistPackFormatError::ShortFileArtifactIndexKey {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN,
+                actual: bytes.len(),
+            });
+        }
+        if bytes[0] != PERSIST_FILE_ARTIFACT_INDEX_TAG {
+            return Err(PersistPackFormatError::InvalidFileArtifactIndexTag { tag: bytes[0] });
+        }
+        let mut hash = [0; 32];
+        hash.copy_from_slice(&bytes[1..PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN]);
+        Ok(Self {
+            hash: DurableBlake3Hash::from_bytes(hash),
+        })
+    }
 }
 
 /// A stable index value for a durable frontend file artifact.
@@ -1098,6 +1122,20 @@ pub enum PersistPackFormatError {
         /// The unknown store tag.
         tag: u8,
     },
+    /// A file-artifact index key was shorter than the fixed encoded key length.
+    #[error("persistent file artifact index key has {actual} bytes, expected at least {expected}")]
+    ShortFileArtifactIndexKey {
+        /// The required fixed file-artifact index key length.
+        expected: usize,
+        /// The available bytes.
+        actual: usize,
+    },
+    /// A file-artifact index key carried an unexpected index tag.
+    #[error("persistent file artifact index key has invalid tag {tag}")]
+    InvalidFileArtifactIndexTag {
+        /// The unexpected index tag.
+        tag: u8,
+    },
     /// The packfile header was shorter than the fixed header length.
     #[error("persistent blob pack header has {actual} bytes, expected at least {expected}")]
     ShortPackHeader {
@@ -1814,6 +1852,41 @@ mod tests {
         assert_ne!(key, other_path);
         assert_ne!(key, changed_content);
         assert_ne!(key, changed_parse_identity);
+    }
+
+    #[test]
+    fn file_artifact_index_keys_decode_and_reject_invalid_prefixes() {
+        let source = b"let x = 1; in x";
+        let parse_key = test_parse_key(source);
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+        let mut encoded = key.index_bytes().to_vec();
+        encoded.extend_from_slice(b"trailing index bytes");
+
+        assert_eq!(
+            PersistFileArtifactKey::decode_index_bytes(&encoded)
+                .expect("file artifact key decodes"),
+            key
+        );
+
+        let error = PersistFileArtifactKey::decode_index_bytes(&[0; 8])
+            .expect_err("short file artifact key errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::ShortFileArtifactIndexKey {
+                expected: PERSIST_FILE_ARTIFACT_INDEX_KEY_LEN,
+                actual: 8,
+            }
+        );
+
+        let mut invalid_tag = key.index_bytes();
+        invalid_tag[0] = 99;
+        let error = PersistFileArtifactKey::decode_index_bytes(&invalid_tag)
+            .expect_err("bad file artifact tag errors");
+        assert_eq!(
+            error,
+            PersistPackFormatError::InvalidFileArtifactIndexTag { tag: 99 }
+        );
     }
 
     #[test]
