@@ -59,23 +59,25 @@ path; flakes are not on the hot loop we are optimizing.
 ### 1.2 Why flakes are a deliberately excluded *large surface*
 
 Flakes are not "a few more builtins." They are a parallel evaluation
-subsystem with its own schema, file formats, reference grammar, and cache:
+subsystem with its own schema, file formats, reference grammar, and cache. The
+checked boxes in this subsection mean these full-flake surfaces are recorded as
+explicitly excluded from the evaluator-core completion claim, not implemented:
 
-- [ ] **The `flake.nix` schema** — a constrained top-level attrset
+- [x] **Excluded: the `flake.nix` schema** — a constrained top-level attrset
       (`inputs`, `outputs`, `nixConfig`) with its own well-formedness rules and
       `outputs` function-application protocol.
-- [ ] **Lock files** — `flake.lock`, a JSON graph of pinned, content-addressed
+- [x] **Excluded: lock files** — `flake.lock`, a JSON graph of pinned, content-addressed
       input nodes with its own node-deduplication and `follows` resolution
       semantics that feed directly into store-path identity.
-- [ ] **Flake references** — the `flakeref` grammar (`github:owner/repo/ref`,
+- [x] **Excluded: full flake references** — the `flakeref` grammar (`github:owner/repo/ref`,
       `git+https://…`, `path:…`, indirect registry refs) parsed by
       `parseFlakeRef` and re-serialized by `flakeRefToString`, plus the
       flake *registry* indirection layer.
-- [ ] **The flake eval cache** — Nix's on-disk evaluation cache keyed by locked
+- [x] **Excluded: the flake eval cache** — Nix's on-disk evaluation cache keyed by locked
       flake refs, a second caching system entirely distinct from the in-process
       incremental cache in
       [incremental evaluation cache](12-incremental-evaluation-cache.md).
-- [ ] **`getFlake` impurity rules** — `builtins.getFlake` requires the flake
+- [x] **Excluded: full `getFlake` impurity rules** — `builtins.getFlake` requires the flake
       reference to be *locked* (contain a Git revision or content hash) unless
       `--impure` is set, tying it to fetcher and lock-file semantics that the
       non-flake path never touches.
