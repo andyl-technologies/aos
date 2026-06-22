@@ -562,6 +562,14 @@ alone (`M-1`/`Q-A`).
       payload format, automatic parse-cache integration, durable index updates,
       lookup, mmap reads, GC/repack, and harness proof remain open
       (`C-13`/`C-14`).
+- [x] Current explicit parse-entry materialization adapter:
+      `PersistCache::materialize_parse_artifact_entry` consumes a caller-supplied
+      `ParseFileKey`/`ParseCacheKey` plus source `ParseCacheEntry`, skips without
+      reading or encoding the entry on `KeepInMemory`, and on `Materialize`
+      bundles the existing parse artifacts and appends that payload through the
+      file-artifact materialization adapter. Automatic parse-cache integration,
+      durable index updates, lookup, source/key equality proof, mmap reads,
+      GC/repack, and harness proof remain open (`C-13`/`C-14`).
 - [x] Current explicit file-artifact read adapter:
       `PersistCache::read_file_artifact` consumes a typed
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload

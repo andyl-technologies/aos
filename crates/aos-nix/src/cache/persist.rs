@@ -941,6 +941,49 @@ impl PersistCache {
             .write_artifact_bundle(&bundle)
             .map_err(|source| PersistFileArtifactHydrationError::Write { source })
     }
+
+    /// Applies `decision` to an existing parse-cache artifact entry.
+    ///
+    /// [`MaterializationDecision::KeepInMemory`] returns a skipped result
+    /// without reading or encoding `entry`. [`MaterializationDecision::Materialize`]
+    /// reads the entry as a [`ParseArtifactBundle`], encodes it as one payload,
+    /// and appends it through [`Self::materialize_file_artifact`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when `decision` is
+    /// [`MaterializationDecision::Materialize`] and the source entry cannot be
+    /// read, the bundle payload cannot be encoded, or the `files/` pack cannot
+    /// be written.
+    pub fn materialize_parse_artifact_entry(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        decision: MaterializationDecision,
+    ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(file_key, parse_key);
+        match decision {
+            MaterializationDecision::KeepInMemory => {
+                Ok(PersistFileArtifactMaterialization::Skipped { artifact_key })
+            }
+            MaterializationDecision::Materialize => {
+                let bundle = entry.read_artifact_bundle().map_err(|source| {
+                    PersistParseArtifactMaterializationError::ReadBundle { source }
+                })?;
+                let payload = bundle.encode().map_err(|source| {
+                    PersistParseArtifactMaterializationError::EncodeBundle { source }
+                })?;
+                self.materialize_file_artifact(
+                    file_key,
+                    parse_key,
+                    &payload,
+                    MaterializationDecision::Materialize,
+                )
+                .map_err(|source| PersistParseArtifactMaterializationError::Write { source })
+            }
+        }
+    }
 }
 
 /// Immutable blob packfile metadata could not be decoded.
@@ -1155,6 +1198,29 @@ pub enum PersistFileArtifactHydrationError {
     Write {
         /// The underlying parse-cache write error.
         source: ParseCacheError,
+    },
+}
+
+/// Persistent parse-artifact materialization failed.
+#[derive(Debug, Error)]
+pub enum PersistParseArtifactMaterializationError {
+    /// The source parse-cache entry could not be read as an artifact bundle.
+    #[error("failed to read parse-cache artifact bundle for persistent materialization")]
+    ReadBundle {
+        /// The underlying parse-cache read error.
+        source: ParseCacheError,
+    },
+    /// The parse-cache artifact bundle could not be encoded as one payload.
+    #[error("failed to encode parse-cache artifact bundle for persistent materialization")]
+    EncodeBundle {
+        /// The underlying bundle encode error.
+        source: ParseCacheError,
+    },
+    /// The encoded artifact payload could not be written to the `files/` pack.
+    #[error("failed to write parse-cache artifact bundle to persistent files pack")]
+    Write {
+        /// The underlying packfile write error.
+        source: PersistBlobPackError,
     },
 }
 
@@ -2360,6 +2426,77 @@ mod tests {
             .read_resolved()
             .expect("hydrated resolved artifact reads");
         assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_parse_artifact_entry_materialization_can_skip_missing_entry() {
+        let root = temp_root();
+        let persist = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let missing_entry = ParseCacheEntry::new(root.join("missing-entry"));
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+
+        let result = persist
+            .materialize_parse_artifact_entry(
+                &file_key,
+                parse_key,
+                &missing_entry,
+                MaterializationDecision::KeepInMemory,
+            )
+            .expect("skip does not read missing entry");
+
+        assert_eq!(
+            result,
+            PersistFileArtifactMaterialization::Skipped { artifact_key }
+        );
+        assert_eq!(
+            fs::metadata(persist.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_parse_artifact_entry_materialization_appends_bundle_payload() {
+        use crate::cache::parse::ParseCache;
+
+        let root = temp_root();
+        let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+        let parse_cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+        let parsed = parse_cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses");
+        let bundle = parsed
+            .entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads");
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+
+        let result = persist
+            .materialize_parse_artifact_entry(
+                &file_key,
+                parsed.key,
+                &parsed.entry,
+                MaterializationDecision::Materialize,
+            )
+            .expect("entry materializes");
+
+        let Some(index_value) = result.index_value() else {
+            panic!("entry should materialize");
+        };
+        let payload = persist
+            .read_file_artifact(index_value)
+            .expect("materialized entry reads");
+        let decoded = ParseArtifactBundle::decode(&payload).expect("bundle decodes");
+        assert_eq!(decoded, bundle);
 
         let _ = fs::remove_dir_all(root);
     }
