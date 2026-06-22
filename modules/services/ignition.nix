@@ -340,7 +340,7 @@ in {
         # so a `storage.links.path = "/etc/foo"` write lands at
         # `$ign/etc/foo`. The per-gen subtree is created by the
         # ExecStartPre below; etc-overlay-setup mounts it as the
-        # role lowerdir in the three-layer /etc overlay.
+        # per-generation lowerdir in the three-layer /etc overlay.
         #
         # `--root` and the ExecStartPre target the initrd's own
         # /run/etc/... (not /sysroot/run/etc/...) so the per-gen
@@ -369,8 +369,8 @@ in {
       # the [Install] symlinks now ride in the system EROFS image
       # (via environment.etc."systemd/system" and the composefs dump
       # script's directory recursion at spec v12 §5.2) and in the
-      # per-gen ignition lower (via render-role.nix's predicted
-      # storage.links, spec v12 §5.6). The runtime preset-walker is
+      # per-gen ignition lower (via generated storage.links,
+      # spec v12 §5.6). The runtime preset-walker is
       # redundant.
 
       # Mount the /var partition created by ignition-disks so that
@@ -433,13 +433,12 @@ in {
       #
       #   lowerdir+=/var/etc                      — host-persistent allowlist
       #                                             (machine-id, ssh host keys)
-      #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen role lower
-      #                                             (ignition's storage.links
-      #                                             from render-role.nix)
+      #   lowerdir+=/run/etc/ignition-<gen>/etc   — per-gen ignition lower
+      #                                             (ignition storage.links)
       #   lowerdir+=/run/etc/system-<gen>/metadata — system EROFS (composefs)
       #   datadir+= /run/etc/system-<gen>/content  — basedir for octal-mode
       #                                              entries (metacopy)
-      #   upperdir = /run/etc/upper-<gen>/upper    — tmpfs, runtime writes
+      #   upperdir = /run/etc/upper-<gen>/dir      — runtime writes (tmpfs-backed)
       #
       # The active toplevel is read at runtime by
       # `readlink /sysroot/var/lib/profiles/system/current/toplevel`;
@@ -501,7 +500,7 @@ in {
           upper_root=/run/etc/upper-$gen
 
           mkdir -p "$sys/metadata" "$sys/content" \
-                   "$upper_root/upper" "$upper_root/work"
+                   "$upper_root/dir" "$upper_root/work"
           # $ign/etc already exists from ignition-files.service's
           # ExecStartPre.
 
@@ -529,7 +528,7 @@ in {
           # vfsmount refs at mount time, so the literal source string
           # in the option line never gets re-resolved post-pivot.
           ${pkgs.util-linux}/bin/mount -t overlay overlay -o \
-            nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/upper,workdir=$upper_root/work \
+            nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$ign/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
             /sysroot/etc
 
           # Inspection symlinks (relative targets so they survive
@@ -538,6 +537,10 @@ in {
           ln -sfn system-$gen   /run/etc/system
           ln -sfn ignition-$gen /run/etc/ignition
           ln -sfn upper-$gen    /run/etc/upper
+
+          # Both readers have run; drop the gen-handoff file so it
+          # doesn't ride mount --move into stage-2 with a stale value.
+          rm -f /run/aos-profile-gen.env
         '';
       };
 
@@ -691,7 +694,8 @@ in {
       # Mount a tmpfs on /run/etc once, before anything else writes
       # under it. ignition-files writes its per-gen
       # /run/etc/ignition-<gen>/ subtree here, and etc-overlay-setup
-      # later creates the system/upper mountpoints alongside.
+      # later creates the system-<gen> mount points and the upper-<gen>
+      # dir (a plain directory, not its own mount) alongside.
       #
       # Why the initrd's /run rather than /sysroot/run:
       # systemd-initrd-switch-root does `mount --move /run

@@ -69,6 +69,10 @@ pub trait CacheBackend: Send + Sync {
     /// On the AOS server this is a no-op: narinfo is synthesised
     /// server-side from the paths registered by NAR/pack uploads.
     ///
+    /// HTTP-served backends (`http`, `s3`) tag the upload with
+    /// [`MUTABLE_CACHE_CONTROL`], since a narinfo can be rewritten in place
+    /// (e.g. re-signed) and must not be cached as immutable.
+    ///
     /// # Errors
     ///
     /// Returns an error if the upload fails.
@@ -85,6 +89,10 @@ pub trait CacheBackend: Send + Sync {
     async fn get_nar(&self, url: &str) -> Result<Vec<u8>>;
 
     /// Uploads a NAR file under `nar/<filename>`.
+    ///
+    /// HTTP-served backends (`http`, `s3`) tag the upload with
+    /// [`IMMUTABLE_CACHE_CONTROL`]: the filename embeds the NAR hash, so the
+    /// bytes behind a URL never change.
     ///
     /// # Errors
     ///
@@ -111,6 +119,10 @@ pub trait CacheBackend: Send + Sync {
 
     /// Uploads an exact `nix-cache-info` body, overwriting any existing
     /// one.
+    ///
+    /// HTTP-served backends (`http`, `s3`) tag the upload with
+    /// [`MUTABLE_CACHE_CONTROL`], since the marker is rewritten in place
+    /// (e.g. on a `Priority` change).
     ///
     /// # Errors
     ///
@@ -158,6 +170,25 @@ pub trait CacheBackend: Send + Sync {
         anyhow::bail!("pack upload not supported by this backend")
     }
 }
+
+/// `Cache-Control` for content-addressed payloads that never change in
+/// place: NAR archives, git loose objects, and release packs. The one-year
+/// `max-age` plus `immutable` lets CDNs and browsers serve them without
+/// revalidating, which is safe because the serving URL changes whenever the
+/// bytes do.
+///
+/// This is the single source of truth for the registry's "immutable" caching
+/// policy: the binary-cache backends apply it to NAR uploads, and the
+/// git-origin uploader applies it to content-addressed objects and packs.
+pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
+
+/// `Cache-Control` for small files that are rewritten in place across
+/// publishes: git ref pointers (`HEAD`, `info/refs`, `objects/info/*`,
+/// channel partitions), narinfos (which can be re-signed), and
+/// `nix-cache-info`. The short `max-age` with `must-revalidate` bounds how
+/// long a stale copy may be served — the freshness contract a CDN origin must
+/// honor for a release to become visible promptly.
+pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
 /// Appends optional `Content-Type` / `Cache-Control` headers to a static
 /// file upload request. Shared by all backends' `put_static_file`.

@@ -1,11 +1,11 @@
-##! lib/modules/ignition/systemd.nix — typed role systemd inputs.
+##! lib/modules/ignition/systemd.nix — typed ignition systemd inputs.
 ##!
 ##! `ignition<Type>` per-unit-type submodule constructors used by
-##! `modules/roles/default.nix` for `aos.roles.<name>.systemd.*`. Each
-##! composes the stage-2 body options + `unitConfig` (which lifts
-##! `requires` / `wants` / `description` into `unitConfig`) + the
-##! bare `*Config` mixin from the systemd lib (which sets `name =
-##! "${name}.<ext>"` and per-type body bridges).
+##! renderers that need systemd units projected into ignition-style
+##! storage links. Each composes the stage-2 body options + `unitConfig`
+##! (which lifts `requires` / `wants` / `description` into `unitConfig`)
+##! + the bare `*Config` mixin from the systemd lib (which sets
+##! `name = "${name}.<ext>"` and per-type body bridges).
 ##!
 ##! Notes:
 ##!
@@ -13,12 +13,12 @@
 ##!   from the systemd lib (they only touch body fields, so
 ##!   install-model-agnostic). Stage 2's `stage2ServiceConfig` —
 ##!   which adds the coreutils/grep/sed default PATH — is NOT used
-##!   here: role-shipped services run with absolute store paths in
+##!   here: generated services run with absolute store paths in
 ##!   `ExecStart`, no implicit PATH default.
 ##!
 ##! - The three ignition-native install fields (`enabled`, `mask`,
 ##!   `dropins`) and the `toIgnitionUnit` projection were removed in
-##!   spec v12 §5.6.4: under the composefs `/etc` model the role's
+##!   spec v12 §5.6.4: under the composefs `/etc` model generated
 ##!   `[Install]` symlinks ride in the EROFS image (via the dump
 ##!   recursion) and in the per-gen ignition lower (via the
 ##!   `render-role.nix` helper's predicted `storage.links`), and

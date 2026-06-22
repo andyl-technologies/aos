@@ -231,6 +231,8 @@
     then throw "lib.formats.toml: top-level value must be an attrset, got ${builtins.typeOf root}"
     else renderBody [] root;
 in {
+  inherit toTOML;
+
   type = tomlValue;
   generate = name: value:
     pkgs.mkDerivation {

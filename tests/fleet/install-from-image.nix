@@ -22,9 +22,9 @@
 #                 the new generation.
 #
 # The target machine is the production server image plus the bundled
-# aos-test-agent role (modules/roles/aos-test-agent.nix) — the boot and
-# provisioning path is fully stock; only the package set carries the
-# test agent that lets the harness drive the machine.
+# aos-test-agent package — the boot and provisioning path is fully stock;
+# only the package set carries the test agent that lets the harness drive
+# the machine.
 #
 # Machines (lexicographic order: registry=192.168.50.10, target=.11):
 #   registry: kernel-boot peer publishing the registry + static cache
@@ -55,20 +55,20 @@ in {
   machines = {
     registry = {
       system = systems.server;
-      roles = ["aos-registry-server" "test-http-server"];
+      packages = ["aos-registry-server" "test-static-cache-server"];
       extraClosures = [server2Top pkgs.bc];
-      # Static cache of the full closure lands under /var/lib. The server-2
-      # closure has grown past the old 1536 MiB margin (the zstd cache now
-      # overflows it mid-generation: "No space left on device"), so give
-      # /var more room.
-      varSizeMiB = 3072;
+      # Static cache of the full closure lands under /var/lib/sysreg-cache, and
+      # publish/cache generation stages rewritten store paths in the /nix
+      # overlay upper on /var. Keep this aligned with apm-registry-upgrade's
+      # producer headroom as the server closure grows.
+      varSizeMiB = 4096;
     };
 
     target = {
       system = systems.server;
       bootMode = "image";
       imageDiskMiB = diskSizeMiB;
-      roles = ["aos-test-agent"];
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = {
@@ -135,7 +135,7 @@ in {
       # handshake + system-ready gate ran against a machine that booted
       # the stock raw image via OVMF/sd-boot/UKI, whose ignition (qemu
       # platform, fw_cfg channel) partitioned and formatted the disk and
-      # merged the aos-test-agent role fragment at first boot.
+      # activated the aos-test-agent package at first boot.
       target.succeed("systemctl is-active multi-user.target")
 
       # The declared install layout exists.
@@ -177,7 +177,16 @@ in {
       # Same producer block as apm-registry-upgrade.nix, plus a regular
       # (non-sysroot) bc package for the `apm install` leg.
       registry.wait_for_unit("aos-registry-server-gitd.service", timeout=120)
-      registry.wait_for_unit("test-http-server.service", timeout=120)
+      registry.wait_for_unit("aos-pkg-aos-registry-server-firewall.service", timeout=120)
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-aos-registry-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active aos-pkg-test-static-cache-server.target", timeout=120
+      )
+      registry.wait_until_succeeds(
+          "systemctl is-active test-static-cache-server.socket", timeout=120
+      )
       registry.wait_until_succeeds(
           "systemctl is-active aos-nix-db.service", timeout=120
       )
@@ -328,7 +337,7 @@ in {
       # Reboot through the full UEFI path. The upgraded generation and
       # the user-installed package live on /var and must survive.
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
 
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-2", f"generation reverted across reboot: {gen!r}"
@@ -340,6 +349,16 @@ in {
           "/var/lib/profiles/per-user/root/current/bin/bc --version"
       )
       failed = target.succeed("systemctl --failed --no-legend").strip()
+      if failed:
+          print("--- failed units after reboot ---")
+          print(failed)
+          for line in failed.splitlines():
+              fields = line.split()
+              unit = fields[1] if fields and fields[0] == "*" else fields[0]
+              print(f"--- journalctl -u {unit} -b ---")
+              print(target.succeed(
+                  f"journalctl -u {unit} -b --no-pager -n 120 2>&1 || true"
+              ))
       assert not failed, f"failed units after reboot: {failed!r}"
     '';
 }

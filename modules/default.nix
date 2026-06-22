@@ -13,7 +13,6 @@ let
     ./monitoring
     ./image
     ./profiles
-    ./roles
     ./systemd
     ./tests
   ];
@@ -21,7 +20,7 @@ let
   # Discover all .nix files in a directory tree (recursive).
   # Skips _-prefixed files and directories — by convention those are
   # internal helpers that other modules `import` directly (e.g.
-  # `modules/roles/kubernetes/_k3s-common.nix`), not auto-loaded
+  # `pkgs/kubernetes/_k3s-common.nix`), not auto-loaded
   # NixOS-style modules. Mirrors `pkgs/default.nix`'s
   # `discoverPackages` so the two halves of the tree behave the same.
   discoverModules = dir: let
@@ -53,4 +52,4 @@ let
   in
     here ++ nested;
 in
-  builtins.concatMap discoverModules moduleDirs
+  [./packages.nix] ++ builtins.concatMap discoverModules moduleDirs

@@ -456,6 +456,13 @@ mod tests {
             sysroot: false,
             previous: None,
             images: vec![],
+            min_format: None,
+            requires_features: Vec::new(),
+            expose: None,
+            expose_artifact: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
         }
     }
 

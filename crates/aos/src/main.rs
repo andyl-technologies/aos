@@ -195,7 +195,13 @@ async fn run(cli: &Cli) -> Result<()> {
             dependency,
         } => commands::why_depends::run(&nix, &printer, package, dependency),
         Commands::Profile { command } => commands::profile::run(&nix, &printer, command),
-        Commands::Describe => commands::describe::run(&nix, &printer),
+        Commands::Describe { package } => {
+            if let Some(package) = package {
+                commands::show::run(&nix, &printer, package)
+            } else {
+                commands::describe::run(&nix, &printer)
+            }
+        }
         Commands::Prefetch {
             package,
             all,

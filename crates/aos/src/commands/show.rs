@@ -1,9 +1,10 @@
 //! `aos show` — display a package's metadata.
 //!
-//! Evaluates `pkgs.<package>.meta` (no build) and pretty-prints the
-//! common fields: name, version, description, license (handling both
-//! string and attrset forms), homepage, platforms, and maintainers.
-//! With `--json` the raw meta attrset is emitted instead.
+//! Evaluates `pkgs.<package>.meta` and, when the expose manifest is complete at
+//! evaluation time, the package expose manifest passthru data. It pretty-prints
+//! common package fields plus the RFC-0001 expose target, confinement label,
+//! and permission summary. With `--json`, expose packages include an
+//! `exposeManifest` field next to the raw meta attrset.
 
 use anyhow::{Context, Result};
 
@@ -18,14 +19,32 @@ use aos_core::output::{Printer, create_spinner};
 /// (e.g. the package does not exist).
 pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
     let attr = format!("pkgs.{package}.meta");
+    let package_name =
+        serde_json::to_string(package).context("serializing package name for Nix expression")?;
+    let expose_manifest_expr = format!(
+        "let root = import {}/default.nix {{}}; pkg = builtins.getAttr {} root.pkgs; in if pkg ? expose then pkg.expose.passthru.manifest else null",
+        nix.root().display(),
+        package_name
+    );
 
     printer.info(&format!("Fetching metadata for '{package}'..."));
 
     let spinner = create_spinner(&format!("evaluating {package}.meta"));
-    let meta = nix
+    let mut meta = nix
         .eval_json(&attr)
         .with_context(|| format!("evaluating metadata for '{package}'"))?;
+    let expose_manifest = match nix
+        .eval_expr_json(&expose_manifest_expr)
+        .with_context(|| format!("evaluating expose manifest for '{package}'"))?
+    {
+        serde_json::Value::Null => None,
+        value => Some(value),
+    };
     spinner.finish_and_clear();
+
+    if let (Some(object), Some(manifest)) = (meta.as_object_mut(), expose_manifest.as_ref()) {
+        object.insert("exposeManifest".to_string(), manifest.clone());
+    }
 
     if printer.json_if_active(&meta) {
         return Ok(());
@@ -78,6 +97,25 @@ pub fn run(nix: &NixRunner, printer: &Printer, package: &str) -> Result<()> {
             .collect();
         if !names.is_empty() {
             printer.kv("Maintainers", &names.join(", "));
+        }
+    }
+    if let Some(manifest) = expose_manifest.as_ref() {
+        if let Some(target) = manifest
+            .pointer("/expose/target")
+            .and_then(|value| value.as_str())
+        {
+            printer.kv("Expose target", target);
+        }
+        if let Some(label) = manifest
+            .pointer("/confinement/label")
+            .and_then(|value| value.as_str())
+        {
+            printer.kv("Confinement", label);
+        }
+        if let Some(permissions) = manifest.get("permissions") {
+            let rendered =
+                serde_json::to_string(permissions).context("serializing expose permissions")?;
+            printer.kv("Permissions", &rendered);
         }
     }
 
