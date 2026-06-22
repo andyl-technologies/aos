@@ -123,6 +123,28 @@ fn rfc_consistency_rules_reject_duplicate_requirements() {
 }
 
 #[test]
+fn rfc_consistency_rules_reject_undefined_and_unreferenced_gates() {
+    let gate_catalog = BTreeSet::from([
+        "gate:defined-but-unreferenced".to_string(),
+        "gate:referenced".to_string(),
+    ]);
+    let referenced_gates = BTreeSet::from([
+        "gate:referenced".to_string(),
+        "gate:referenced-but-undefined".to_string(),
+    ]);
+
+    let failures = gate_reference_failures(&gate_catalog, &referenced_gates);
+
+    assert_contains(&failures, "gate:referenced-but-undefined");
+    assert_contains(&failures, "referenced gate is absent from file 24 catalog");
+    assert_contains(&failures, "gate:defined-but-unreferenced");
+    assert_contains(
+        &failures,
+        "catalog gate is not referenced outside the catalog table",
+    );
+}
+
+#[test]
 fn banned_name_scan_rejects_configured_terms() {
     let findings = scan_banned_names(
         Path::new("synthetic.md"),

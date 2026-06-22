@@ -850,7 +850,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
 > whose primary area is this file, tracked by [PLAN-3]. They are
 > **Phase-1-and-earlier foundation tasks**: the harness comes first.
 
-- [ ] **T-HARN-1** Define the canonical gate catalog as CI targets (one target
+- [x] **T-HARN-1** Define the canonical gate catalog as CI targets (one target
   per gate name in §1.1) and wire them into the phase plan; add the doc-lint that
   fails on any referenced-but-undefined or defined-but-unreferenced gate. —
   satisfies [HARN-1], [HARN-2]; spec §1.
