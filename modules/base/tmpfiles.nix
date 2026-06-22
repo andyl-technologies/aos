@@ -8,10 +8,7 @@
 ##! this, ${pkgs.cryptsetup}/lib/tmpfiles.d/cryptsetup.conf is invisible
 ##! to systemd, which only scans /etc, /run, and
 ##! ${pkgs.systemd}/lib/tmpfiles.d/.
-{
-  pkgs,
-  ...
-}: {
+{pkgs, ...}: {
   config = {
     # Base runtime directories and stale-lock cleanup.
     environment.etc."tmpfiles.d/aos-base.conf" = {
