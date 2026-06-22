@@ -187,6 +187,19 @@ impl RuntimeKind {
             RuntimeKind::Worker => "Cloudflare R2 (this deployment)",
         }
     }
+
+    /// Returns the backend kind string of this runtime's default storage —
+    /// `local_fs` for the native hub's default storage root, `r2` for the
+    /// Worker's deployment bucket.
+    ///
+    /// Used to render the always-present default storage as a row in the
+    /// bindings table, alongside any custom bindings.
+    pub fn default_storage_kind(&self) -> &'static str {
+        match self {
+            RuntimeKind::Native => "local_fs",
+            RuntimeKind::Worker => "r2",
+        }
+    }
 }
 
 #[cfg(test)]
