@@ -345,12 +345,16 @@ AOS expressions derive that platform from `builtins.currentSystem`. So:
       derivations. `builtins.system` is not in the pinned C++ Nix 2.24.12
       builtin surface, so aos-nix keeps it absent/defaultable instead of adding
       a compatibility alias.
-- [ ] Because `currentSystem` is configurable/overridable (and is *unavailable*
+- [x] Because `currentSystem` is configurable/overridable (and is *unavailable*
       under `--pure-eval`, §2.1), aos-nix takes its value from the same
       configuration channel C++ Nix does (the `system` setting / override), so
       that the host an evaluation happens to run on is invisible to the `.drv`.
-      The cross-host identity invariant of §3.3 is, restated, exactly the claim
-      that fixing this one string fixes the whole output regardless of host.
+      `NixEvalConfig` renders `--option system <target>` for C++ Nix and maps
+      the same configured value into native `TreeWalkOptions`; tests cover
+      configured `builtins.currentSystem`, pure-mode absence, empty-value
+      rejection, and `builtins.system` staying absent. The cross-host identity
+      invariant of §3.3 remains the later harness claim; this row only closes
+      the config-channel parity surface.
 
 ---
 
@@ -439,11 +443,15 @@ invisible until it changes a branch, then catastrophic.
 
 ### 4.2 Spoofing is the correct, principled choice
 
-- [ ] aos-nix **is** an implementation of the pinned C++ Nix language, by
+- [x] aos-nix **is** an implementation of the pinned C++ Nix language, by
       construction ([compatibility constraints](02-compatibility-constraints.md)
       commits to bug-for-bug parity with one *pinned* version, constraint C-9).
       Reporting that version is *truthful about the contract*: it asserts "I
-      behave as Nix 2.x," exactly the property the gate enforces.
+      behave as the pinned Nix," exactly the property the gate enforces.
+      `PINNED_NIX_VERSION`, `PINNED_NIX_LANG_VERSION`, the configured C++ oracle
+      guard, doc 19 decision C-25, and doc 21 builtin-surface status now agree;
+      full `.drv` closure revalidation remains owned by the differential
+      harness checklist.
 - [x] The pinned version is a single source of truth for the reported constants
       and oracle-version guard. `PINNED_NIX_VERSION` drives
       `builtins.nixVersion` and the configured C++ oracle version check; the
