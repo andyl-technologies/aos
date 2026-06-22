@@ -12,8 +12,8 @@
 //! the child's stderr streams live to the terminal, at `verbose >= 3`
 //! the exact command line is echoed, and otherwise stderr is captured
 //! and replayed only on failure (suppressed entirely in quiet mode). Evaluation
-//! commands also stream stderr when `builtins.traceVerbose` output is explicitly
-//! enabled, so successful trace output remains user-visible. Failures are
+//! commands stream stderr so successful `builtins.trace` output remains
+//! user-visible. Failures are
 //! reported as [`AosError::NixBuild`] /
 //! [`AosError::NixNotFound`] / [`AosError::RootNotFound`] so callers
 //! can map them to the standard exit codes.
@@ -455,10 +455,12 @@ impl NixRunner {
         Ok(())
     }
 
-    /// Core runner: spawn a Nix subprocess and capture its output.  When
-    /// `verbose >= 2` or trace-verbose output is enabled for an eval command,
-    /// the child's stderr is streamed to the terminal in real time; otherwise
-    /// it is captured and only shown on failure.
+    /// Core runner: spawn a Nix subprocess and capture its output.
+    ///
+    /// Evaluation commands stream the child's stderr so successful
+    /// `builtins.trace` output remains user-visible. Non-evaluation commands
+    /// stream stderr only at `verbose >= 2`; otherwise stderr is captured and
+    /// shown on failure.
     fn run_nix(&self, cmd: &str, args: &[String]) -> Result<Output> {
         let args = self.args_with_eval_options(cmd, args);
         if self.verbose >= 3 {
@@ -533,7 +535,7 @@ impl NixRunner {
     }
 
     fn should_stream_stderr(&self, cmd: &str) -> bool {
-        self.verbose >= 2 || (self.eval_config.trace_verbose() && command_accepts_eval_options(cmd))
+        self.verbose >= 2 || command_accepts_eval_options(cmd)
     }
 
     fn repl_args(&self, nix_file: &Path) -> Vec<OsString> {
@@ -854,10 +856,8 @@ mod tests {
     }
 
     #[test]
-    fn runner_streams_successful_eval_stderr_when_trace_verbose_is_enabled() {
-        let mut config = NixEvalConfig::new();
-        config.set_trace_verbose(true);
-        let runner = runner_with_config(config);
+    fn runner_streams_successful_eval_stderr_for_eval_commands() {
+        let runner = runner_with_config(NixEvalConfig::default());
 
         assert!(runner.should_stream_stderr("nix-instantiate"));
         assert!(runner.should_stream_stderr("nix-build"));
@@ -873,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn run_nix_inherits_successful_eval_stderr_when_trace_verbose_is_enabled() -> Result<()> {
+    fn run_nix_inherits_successful_eval_stderr_for_eval_commands() -> Result<()> {
         let _lock = path_env_lock().lock().expect("PATH env test lock");
         let temp = tempfile::tempdir()?;
         let bin_dir = temp.path().join("bin");
@@ -892,7 +892,10 @@ mod tests {
             ..runner_with_config(NixEvalConfig::default())
         };
         let output = runner.run_nix("nix-instantiate", &args)?;
-        assert!(String::from_utf8_lossy(&output.stderr).contains("trace: visible\n"));
+        assert!(
+            output.stderr.is_empty(),
+            "eval stderr should inherit instead of being captured"
+        );
 
         let mut config = NixEvalConfig::new();
         config.set_trace_verbose(true);
