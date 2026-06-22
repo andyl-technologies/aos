@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 #[test]
-#[ignore = "T-HARN-22 implements gate:adversarial-determinism"]
+#[ignore = "T-CRATE-8/T-HARN-22 implement gate:adversarial-determinism"]
 fn gate_adversarial_determinism_is_mapped() {
-    panic!("gate:adversarial-determinism implementation is pending T-HARN-22");
+    panic!("gate:adversarial-determinism implementation is pending T-CRATE-8/T-HARN-22");
 }

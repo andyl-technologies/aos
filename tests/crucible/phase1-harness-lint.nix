@@ -6,7 +6,19 @@
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
-  harnessLintRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
+  harnessLintRust =
+    builtins.concatStringsSep "\n"
+    (map builtins.readFile [
+      ../../crates/crucible-harness/tests/harness_lint.rs
+      ../../crates/crucible-harness/tests/harness_lint_annotations.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/common.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
+      ../../crates/crucible-harness/tests/support/harness_lint/scan.rs
+    ]);
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
 
   hasInfix = needle: haystack: let
@@ -154,8 +166,140 @@
     "crucible-device"
     "crucible-session"
   ];
+  nondeterministicBoundaryPackages = ["crucible-daemon" "crucible-cli" "crucible-qemu"];
   binaryPackages = ["crucible-cli"];
   libraryPackages = builtins.filter (package: !(builtins.elem package binaryPackages)) allPackages;
+  stateInfluencePatterns = [
+    {
+      pattern = "State";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "RuntimeState";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "Configuration";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "ScenarioDef";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "Schedule";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "Decision";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "QuantumRequest";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "QuantumOutcome";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "QuantumLoop";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "Backend";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "BackendInput";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "ExecutionHorizon";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "reduce";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "step";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "instantiate";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+    {
+      pattern = "drive_quantum";
+      reason = "host nondeterminism reaching State";
+      rule = "host-nondeterminism-state";
+    }
+  ];
+  stateRoutePatterns =
+    (map (deny:
+      deny
+      // {
+        reason = "host nondeterminism reaches API/session route";
+      })
+    stateInfluencePatterns)
+    ++ [
+      {
+        pattern = "crucible_api";
+        reason = "host nondeterminism reaches API/session route";
+        rule = "host-nondeterminism-state";
+      }
+      {
+        pattern = "crucible_session";
+        reason = "host nondeterminism reaches API/session route";
+        rule = "host-nondeterminism-state";
+      }
+      {
+        pattern = "ControlClient";
+        reason = "host nondeterminism reaches API/session route";
+        rule = "host-nondeterminism-state";
+      }
+      {
+        pattern = "SessionDriver";
+        reason = "host nondeterminism reaches API/session route";
+        rule = "host-nondeterminism-state";
+      }
+    ];
+  publicExportNeedles = [
+    "pubfn"
+    "pubstruct"
+    "pubenum"
+    "pubtrait"
+    "pubtype"
+    "pubconst"
+    "pubstatic"
+    "pubmod"
+    "pubuse"
+    "pub(crate)fn"
+    "pub(crate)struct"
+    "pub(crate)enum"
+    "pub(crate)trait"
+    "pub(crate)type"
+    "pub(crate)const"
+    "pub(crate)static"
+    "pub(crate)mod"
+    "pub(crate)use"
+  ];
   requiredClippyMethods = [
     "std::time::Instant::now"
     "std::time::Instant::elapsed"
@@ -510,6 +654,23 @@
     scanDenyPatterns productionDenyPatterns label content
     ++ lib.optionals (!isBinaryBoundary) (scanLibraryContent label content);
 
+  scanStateInfluenceContent = label: content:
+    scanDenyPatterns stateInfluencePatterns label content;
+
+  scanBoundaryRouteContent = label: content:
+    scanDenyPatterns stateRoutePatterns label content;
+
+  scanPublicExportContent = label: content: let
+    normalizedContent = normalize (scrubRustContent content);
+  in
+    lib.concatMap (
+      needle:
+        lib.optionals (hasInfix needle normalizedContent) [
+          "${label}: banned public export from nondeterministic boundary source pattern `${needle}`"
+        ]
+    )
+    publicExportNeedles;
+
   isBinaryBoundarySource = package: path:
     package == "crucible-cli" && toString path == toString (../../crates + "/crucible-cli/src/main.rs");
 
@@ -552,21 +713,158 @@
     (builtins.readFile (../../crates + "/${package}/Cargo.toml"))
     sourceContents;
 
+  readManifest = package: builtins.fromTOML (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+
+  workspaceManifestToml = builtins.fromTOML workspaceManifest;
+  workspaceDependencies =
+    if workspaceManifestToml ? workspace && workspaceManifestToml.workspace ? dependencies
+    then workspaceManifestToml.workspace.dependencies
+    else {};
+
+  dependencyPackageName = workspaceDeps: name: value:
+    if builtins.isAttrs value && value ? workspace && value.workspace == true
+    then
+      if builtins.hasAttr name workspaceDeps && builtins.isAttrs workspaceDeps.${name} && workspaceDeps.${name} ? package
+      then workspaceDeps.${name}.package
+      else name
+    else if builtins.isAttrs value && value ? package
+    then value.package
+    else name;
+
+  dependencySpecs = workspaceDeps: manifest: let
+    dependencyTableSpecs = scope: dependencies:
+      lib.mapAttrsToList (name: value: {
+        inherit name scope;
+        package = dependencyPackageName workspaceDeps name value;
+      })
+      dependencies;
+    direct =
+      if manifest ? dependencies
+      then dependencyTableSpecs "dependencies" manifest.dependencies
+      else [];
+    target =
+      if manifest ? target
+      then
+        lib.concatMap (
+          targetName: let
+            targetSpec = manifest.target.${targetName};
+          in
+            if targetSpec ? dependencies
+            then dependencyTableSpecs "target.${targetName}.dependencies" targetSpec.dependencies
+            else []
+        ) (builtins.attrNames manifest.target)
+      else [];
+  in
+    direct ++ target;
+
+  boundaryManifestFailuresFor = workspaceDeps: package: manifest:
+    lib.concatMap (
+      dependency:
+        lib.optionals (dependency.package == "crucible") [
+          "${package}: dependency `${dependency.name}` in ${dependency.scope} may route host nondeterminism directly into engine State"
+        ]
+    )
+    (dependencySpecs workspaceDeps manifest);
+
   normalize = builtins.replaceStrings [" " "\t" "\n" "\r"] ["" "" "" ""];
 
-  sourceFiles =
-    lib.concatMap (
-      package:
-        listRustFiles (../../crates + "/${package}/src")
-    )
-    reductionPackages;
+  strictDeterministicPackages = builtins.filter (package: !(builtins.elem package nondeterministicBoundaryPackages)) allPackages;
+
+  relativeSourcePath = package: path: let
+    prefix = toString (../../crates + "/${package}/");
+    full = toString path;
+  in
+    builtins.substring (builtins.stringLength prefix) (builtins.stringLength full - builtins.stringLength prefix) full;
+
+  packageSourceEntries = package:
+    map (path: {
+      inherit package path;
+      relative = relativeSourcePath package path;
+      label = toString path;
+      content = builtins.readFile path;
+    })
+    (listRustFiles (../../crates + "/${package}/src"));
+
+  relativeIsUnder = relative: prefix:
+    relative == "${prefix}.rs" || lib.hasPrefix "${prefix}/" relative;
+
+  boundarySourceAllowsHostNondeterminism = package: relative:
+    if package == "crucible-cli"
+    then
+      relative == "src/main.rs"
+      || relativeIsUnder relative "src/diagnostics"
+      || relativeIsUnder relative "src/output"
+      || relativeIsUnder relative "src/progress"
+    else if package == "crucible-daemon"
+    then
+      relativeIsUnder relative "src/diagnostics"
+      || relativeIsUnder relative "src/supervision"
+      || relativeIsUnder relative "src/transport"
+    else if package == "crucible-qemu"
+    then
+      relativeIsUnder relative "src/diagnostics"
+      || relativeIsUnder relative "src/process"
+      || relativeIsUnder relative "src/supervision"
+    else false;
+
+  nonBoundarySourceFailures = source:
+    map (finding: "${finding}; package `${source.package}` is not a host-nondeterminism boundary")
+    (scanContent source.label source.content);
+
+  boundaryPackageSourceFailures = package: sources: let
+    nondeterministicSources = builtins.filter (source: scanContent source.label source.content != []) sources;
+    hasNondeterminism = nondeterministicSources != [];
+    pathFailures =
+      lib.concatMap (
+        source:
+          lib.optionals (!(boundarySourceAllowsHostNondeterminism package source.relative))
+          (map (finding: "${finding}; host nondeterminism outside supervision/diagnostics path")
+            (scanContent source.label source.content))
+      )
+      nondeterministicSources;
+    exportFailures =
+      lib.concatMap (
+        source:
+          scanPublicExportContent source.label source.content
+      )
+      nondeterministicSources;
+    routeFailures =
+      lib.optionals hasNondeterminism
+      (lib.concatMap (
+          source:
+            scanBoundaryRouteContent source.label source.content
+        )
+        sources);
+    stateFailures =
+      lib.optionals hasNondeterminism
+      (lib.concatMap (
+          source:
+            scanStateInfluenceContent source.label source.content
+        )
+        sources);
+  in
+    pathFailures ++ exportFailures ++ routeFailures ++ stateFailures;
 
   sourceFailures =
     lib.concatMap (
-      path:
-        scanContent (toString path) (builtins.readFile path)
+      package:
+        lib.concatMap nonBoundarySourceFailures (packageSourceEntries package)
     )
-    sourceFiles;
+    strictDeterministicPackages;
+
+  boundarySourceFailures =
+    lib.concatMap (
+      package:
+        boundaryPackageSourceFailures package (packageSourceEntries package)
+    )
+    nondeterministicBoundaryPackages;
+
+  boundaryManifestFailures =
+    lib.concatMap (
+      package:
+        boundaryManifestFailuresFor workspaceDependencies package (readManifest package)
+    )
+    nondeterministicBoundaryPackages;
 
   productionSourceFailures =
     lib.concatMap (
@@ -689,6 +987,24 @@
       "malformed crucible-lint allow"
       "unannotated allow"
       "#[allow(clippy::disallowed_types)]"
+      "host_boundary_nondeterminism_is_confined_from_state"
+      "harness_lint_rejects_host_boundary_state_leaks"
+      "workspace_confinement_findings"
+      "package_source_confinement_findings"
+      "confinement_regression_failures"
+      "non_boundary_source_findings"
+      "boundary_source_allows_host_nondeterminism"
+      "public_export_findings"
+      "route_ingress_findings"
+      "boundary_manifest_findings"
+      "NONDETERMINISTIC_BOUNDARY_PACKAGES"
+      "STATE_INFLUENCE_IDENTIFIERS"
+      "STATE_ROUTE_IDENTIFIERS"
+      "host-nondeterminism-state"
+      "may not route host nondeterminism"
+      "not a host-nondeterminism boundary"
+      "outside supervision/diagnostics path"
+      "public export from nondeterministic boundary source"
     ];
     rustTierFailures =
       lib.concatMap (
@@ -877,7 +1193,109 @@
       "harness-lint regression failed to enforce annotated exception policy"
     ];
 
-  failures = sourceFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures;
+  confinementRegressionFailures = let
+    source = package: relative: content: {
+      inherit package relative content;
+      label = "${package}/${relative}";
+    };
+    sameFileFindings = boundaryPackageSourceFailures "crucible-cli" [
+      (source "crucible-cli" "src/main.rs" ''
+        use crucible::State;
+
+        fn bad() {
+          let stamp = std::time::SystemTime::now();
+          let _state: Option<State> = None;
+          consume(stamp);
+        }
+      '')
+    ];
+    splitModuleFindings = boundaryPackageSourceFailures "crucible-cli" [
+      (source "crucible-cli" "src/main.rs" ''
+        fn host_stamp() {
+          let stamp = std::time::SystemTime::now();
+          consume(stamp);
+        }
+      '')
+      (source "crucible-cli" "src/session.rs" ''
+        use crucible_session::SessionDriver;
+        use crucible_api::ControlClient;
+
+        fn route(client: ControlClient, driver: SessionDriver<()>) {
+          submit(client, driver);
+        }
+      '')
+    ];
+    apiFindings = nonBoundarySourceFailures (source "crucible-api" "src/lib.rs" ''
+      fn bad() {
+        let stamp = std::time::SystemTime::now();
+        consume(stamp);
+      }
+    '');
+    qemuBackendFindings = boundaryPackageSourceFailures "crucible-qemu" [
+      (source "crucible-qemu" "src/backend.rs" ''
+        fn bad() {
+          let stamp = std::time::SystemTime::now();
+          consume(stamp);
+        }
+      '')
+    ];
+    qemuSupervisionFindings = boundaryPackageSourceFailures "crucible-qemu" [
+      (source "crucible-qemu" "src/supervision/process.rs" ''
+        fn diagnostic_timestamp() {
+          let stamp = std::time::SystemTime::now();
+          eprintln!("{stamp:?}");
+        }
+      '')
+    ];
+    publicExportFindings = boundaryPackageSourceFailures "crucible-daemon" [
+      (source "crucible-daemon" "src/supervision.rs" ''
+        pub(crate) fn host_timestamp() {
+          let stamp = std::time::SystemTime::now();
+          consume(stamp);
+        }
+      '')
+    ];
+    directManifestFindings = boundaryManifestFailuresFor {} "crucible-qemu" {
+      dependencies.engine = {
+        package = "crucible";
+      };
+    };
+    workspaceManifestFindings = boundaryManifestFailuresFor {
+      engine = {
+        package = "crucible";
+      };
+    } "crucible-daemon" {
+      dependencies.engine = {
+        workspace = true;
+      };
+    };
+  in
+    lib.optionals (sameFileFindings == []) [
+      "harness-lint confinement regression failed to reject same-file State ingress"
+    ]
+    ++ lib.optionals (splitModuleFindings == []) [
+      "harness-lint confinement regression failed to reject split-module State ingress"
+    ]
+    ++ lib.optionals (apiFindings == []) [
+      "harness-lint confinement regression failed to reject nondeterminism outside boundary crates"
+    ]
+    ++ lib.optionals (qemuBackendFindings == []) [
+      "harness-lint confinement regression failed to reject qemu reduction-path nondeterminism"
+    ]
+    ++ lib.optionals (qemuSupervisionFindings != []) [
+      "harness-lint confinement regression incorrectly rejected qemu supervision diagnostics"
+    ]
+    ++ lib.optionals (publicExportFindings == []) [
+      "harness-lint confinement regression failed to reject exported host values"
+    ]
+    ++ lib.optionals (directManifestFindings == []) [
+      "harness-lint confinement regression failed to reject direct engine dependency"
+    ]
+    ++ lib.optionals (workspaceManifestFindings == []) [
+      "harness-lint confinement regression failed to reject workspace engine alias"
+    ];
+
+  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -899,9 +1317,10 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=T-CRATE-7,T-STD-3,T-STD-4,T-STD-5,T-STD-6
+            tasks=T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6
             rust_test=crucible-harness::harness_lint
             reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
+            nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
             error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
             clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
             custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,unordered-select,immediate-safety-comments

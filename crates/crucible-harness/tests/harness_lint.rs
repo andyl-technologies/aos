@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crucible_harness::spec_index::crate_spec_index;
+use toml::Value;
 
 #[path = "support/harness_lint/allow.rs"]
 mod allow;
@@ -13,6 +14,8 @@ mod allow;
 mod clippy;
 #[path = "support/harness_lint/common.rs"]
 mod common;
+#[path = "support/harness_lint/confinement.rs"]
+mod confinement;
 #[path = "support/harness_lint/error_logging.rs"]
 mod error_logging;
 #[path = "support/harness_lint/lex.rs"]
@@ -23,6 +26,7 @@ mod scan;
 use allow::*;
 use clippy::*;
 use common::*;
+use confinement::*;
 use error_logging::*;
 use lex::*;
 use scan::*;
@@ -41,6 +45,22 @@ fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn 
     assert!(
         findings.is_empty(),
         "gate:harness-lint findings:\n{}",
+        findings.join("\n")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn Error>> {
+    let root = workspace_root();
+    let workspace_manifest: Value = fs::read_to_string(root.join("Cargo.toml"))?.parse()?;
+    let workspace_dependencies = workspace_dependency_table(&workspace_manifest);
+    let findings = workspace_confinement_findings(&root, &workspace_dependencies)?;
+
+    assert!(
+        findings.is_empty(),
+        "host-boundary nondeterminism confinement findings:\n{}",
         findings.join("\n")
     );
 
@@ -181,6 +201,18 @@ fn harness_lint_rejects_banned_code_patterns() {
     assert_contains(&findings, "thread/global RNG");
     assert_contains(&findings, "unordered map/set");
     assert_contains(&findings, "nondeterministic select");
+}
+
+#[test]
+fn harness_lint_rejects_host_boundary_state_leaks() -> Result<(), Box<dyn Error>> {
+    let failures = confinement_regression_failures()?;
+    assert!(
+        failures.is_empty(),
+        "harness-lint confinement regression failures:\n{}",
+        failures.join("\n")
+    );
+
+    Ok(())
 }
 
 #[test]
