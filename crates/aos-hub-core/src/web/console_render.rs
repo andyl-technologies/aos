@@ -823,20 +823,27 @@ pub fn passkeys_page(
     if creds.is_empty() {
         body.push_str("<p class=\"dim\">No passkeys registered yet.</p>\n");
     } else {
+        // The WebAuthn signature counter is deliberately not shown: synced
+        // passkeys (iCloud Keychain, Google Password Manager, …) report it as 0
+        // by spec, so it is meaningless to a human. The useful facts are the
+        // label, when it was added, and when it last signed you in.
         let rows: Vec<Vec<String>> = creds
             .iter()
             .map(|c| {
                 let label = c.label.as_deref().unwrap_or("passkey");
                 let last = c.last_used_at.map_or_else(|| "never".to_string(), ago);
-                vec![
-                    escape(label),
-                    ago(c.created_at),
-                    escape(&last),
-                    c.sign_count.to_string(),
-                ]
+                let remove = format!(
+                    "<form class=\"console\" method=\"post\" \
+                     action=\"/account/passkeys/remove\" style=\"display:inline\">{csrf}\
+                     <input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"danger\">remove</button></form>",
+                    csrf = csrf_field(csrf),
+                    id = c.id,
+                );
+                vec![escape(label), ago(c.created_at), escape(&last), remove]
             })
             .collect();
-        body.push_str(&table(&["label", "added", "last used", "counter"], &rows));
+        body.push_str(&table(&["label", "added", "last used", ""], &rows));
     }
 
     // The add-passkey control. The CSRF token and label are read by the inline

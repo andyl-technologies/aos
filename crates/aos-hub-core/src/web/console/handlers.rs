@@ -1009,6 +1009,42 @@ pub(crate) async fn passkeys(
     passkey_html_response(html, &nonce)
 }
 
+/// A `POST /account/passkeys/remove` body: a CSRF token and the passkey id.
+#[derive(serde::Deserialize)]
+pub(crate) struct PasskeyRemoveForm {
+    #[serde(default)]
+    csrf: String,
+    id: i64,
+}
+
+/// `POST /account/passkeys/remove` — delete one of the signed-in user's
+/// passkeys, then return to the passkeys page.
+///
+/// Scoped to the session user, so a request can only remove the caller's own
+/// credential. Removing a passkey never locks the account out — email
+/// magic-link sign-in remains available.
+pub(crate) async fn passkeys_remove(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<PasskeyRemoveForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(s) => s,
+        Err(resp) => return *resp,
+    };
+    if let Err(resp) = check_csrf(&session, &form.csrf) {
+        return *resp;
+    }
+    match deps
+        .db
+        .delete_webauthn_credential(session.auth.user_id, form.id)
+        .await
+    {
+        Ok(_) => Redirect::to("/account/passkeys").into_response(),
+        Err(err) => internal(err),
+    }
+}
+
 /// Build an `Html` response carrying the per-request passkey CSP.
 fn passkey_html_response(html: String, nonce: &str) -> Response {
     let csp = format!("default-src 'self'; script-src 'self' 'nonce-{nonce}'");

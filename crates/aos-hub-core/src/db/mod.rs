@@ -8938,6 +8938,26 @@ impl Database {
             .collect()
     }
 
+    /// Delete one of a user's passkeys by its row id.
+    ///
+    /// Scoped to `user_id` so a caller can only remove their own credential.
+    /// Returns `false` when no matching credential exists (already gone, or not
+    /// owned by the user).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_webauthn_credential(&self, user_id: i64, id: i64) -> Result<bool> {
+        let n = self
+            .backend
+            .execute(
+                "DELETE FROM webauthn_credentials WHERE id = ?1 AND user_id = ?2",
+                &vals![id, user_id],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
     /// Update a credential's stored signature counter.
     ///
     /// Called after a successful assertion to advance the monotonic counter the
