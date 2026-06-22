@@ -273,7 +273,7 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
         if let Some(surface) = s3_surface_for(
             &self.db,
             self.sealer.as_ref(),
-            Some(cache.storage_binding_id),
+            cache.storage_binding_id,
             &cache.prefix,
         )
         .await?
@@ -359,7 +359,7 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
         if let Some(surface) = s3_surface_for(
             &self.db,
             self.sealer.as_ref(),
-            Some(cache.storage_binding_id),
+            cache.storage_binding_id,
             &cache.prefix,
         )
         .await?

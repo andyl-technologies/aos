@@ -77,7 +77,12 @@ async fn cache_s3_surface(
     sealer: &dyn SecretSealer,
     cache: &Cache,
 ) -> Result<Option<S3Surface>> {
-    let Some(binding) = db.storage_binding(cache.storage_binding_id).await? else {
+    // A binding-less (default-storage) cache has no external origin — it is
+    // served from the deployment R2 bucket by prefix (the fallthrough path).
+    let Some(binding_id) = cache.storage_binding_id else {
+        return Ok(None);
+    };
+    let Some(binding) = db.storage_binding(binding_id).await? else {
         return Ok(None);
     };
     S3Surface::from_binding(&binding, &cache.prefix, sealer)
