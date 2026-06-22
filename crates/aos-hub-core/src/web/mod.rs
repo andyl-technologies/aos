@@ -49,6 +49,7 @@ pub mod browse_pages;
 pub mod console;
 pub mod console_render;
 pub mod csrf;
+pub mod help;
 pub mod render;
 pub mod session;
 

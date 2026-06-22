@@ -609,3 +609,71 @@ p.confirm {
   background: color-mix(in srgb, var(--bad) 5%, var(--paper));
   word-break: break-all;
 }
+
+/* -- Attached help (web/help.rs) ------------------------------------------
+ * Level 1: a small dim glance one-liner placed after a control. In a console
+ * form grid it sits in the control column under its input. */
+.hint { color: var(--dim); font-size: 0.85rem; }
+form.console label > .hint { grid-column: 2; justify-self: start; }
+
+/* Level 2: a `?` affordance that opens a segmented detail card. The card is
+ * shown by `app.js` (adds `.open` + sets fixed coordinates); without JS the
+ * affordance still carries a `title` tooltip with the summary. */
+.help { position: relative; display: inline-block; margin-left: 0.3rem; }
+.help-mark {
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  border: 1px solid var(--rule-strong);
+  border-radius: 50%;
+  background: var(--paper);
+  color: var(--dim);
+  cursor: help;
+  vertical-align: middle;
+}
+.help-mark:hover,
+.help-mark:focus { color: var(--ink); border-color: var(--ink); }
+.help-card {
+  display: none;
+  position: fixed;
+  z-index: 50;
+  width: 22rem;
+  max-width: calc(100vw - 1rem);
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  box-shadow: 0 2px 0 var(--rule);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  text-transform: none;       /* never inherit a heading's uppercase */
+  letter-spacing: normal;
+  font-weight: 400;
+  color: var(--ink);
+  white-space: normal;
+}
+.help-card.open { display: block; }
+.help-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-weight: 700;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--rule);
+}
+.help-tag {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.help-sum { display: block; margin: 0.4rem 0; }
+.help-seg {
+  display: block;
+  padding: 0.3rem 0;
+  border-top: 1px solid var(--rule-faint);
+}
+.help-seg b { color: var(--ink); }
