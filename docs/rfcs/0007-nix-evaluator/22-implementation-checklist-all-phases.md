@@ -546,6 +546,13 @@ alone (`M-1`/`Q-A`).
       cross-run reuse. This is a pure threshold decision only; cost measurement,
       reuse metadata, RAM-tier promotion, packfile writes, persistence
       integration, GC/repack, and AOS tuning remain open (`C-14`).
+- [x] Current materialization reuse-counter signal substrate:
+      `MaterializationReuse` carries prior-run and current-run demand counters,
+      saturates current-run increments, and converts prior-run demand into the
+      existing `MaterializationSignals` cross-run reuse bit. This is policy
+      vocabulary only; durable counter storage, run-boundary rollover,
+      evaluator demand accounting, cost measurement, packfile writes, and AOS
+      tuning remain open (`C-14`).
 - [x] Current explicit materialization-to-pack adapter:
       `PersistCache::materialize_blob` consumes a caller-supplied
       `MaterializationDecision`, skips without hashing/writing on

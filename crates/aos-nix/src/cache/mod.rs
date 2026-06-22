@@ -42,8 +42,8 @@ pub use persist::{
     PersistMaterialization, PersistPackFormatError, PersistParseArtifactMaterializationError,
 };
 pub use policy::{
-    MaterializationCosts, MaterializationDecision, MaterializationSignals, MemoizationClass,
-    MemoizationDecision, MemoizationSignals, MemoizationSubject,
+    MaterializationCosts, MaterializationDecision, MaterializationReuse, MaterializationSignals,
+    MemoizationClass, MemoizationDecision, MemoizationSignals, MemoizationSubject,
 };
 pub use runtime::{
     EvalCache, EvalCacheRuntime, ExpressionCacheability, ExpressionTraceObservation,

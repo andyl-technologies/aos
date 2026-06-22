@@ -92,6 +92,56 @@ pub enum MemoizationDecision {
     Bypass,
 }
 
+/// Cross-run reuse counters for durable materialization policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MaterializationReuse {
+    previous_run_demands: u64,
+    current_run_demands: u64,
+}
+
+impl MaterializationReuse {
+    /// Creates reuse counters from prior and current run demand observations.
+    pub const fn new(previous_run_demands: u64, current_run_demands: u64) -> Self {
+        Self {
+            previous_run_demands,
+            current_run_demands,
+        }
+    }
+
+    /// Creates reuse counters with prior-run demand and no current observations.
+    pub const fn from_previous_run(previous_run_demands: u64) -> Self {
+        Self::new(previous_run_demands, 0)
+    }
+
+    /// Returns the demand count carried forward from previous runs.
+    pub const fn previous_run_demands(self) -> u64 {
+        self.previous_run_demands
+    }
+
+    /// Returns the demand count observed in this run.
+    pub const fn current_run_demands(self) -> u64 {
+        self.current_run_demands
+    }
+
+    /// Returns counters with one more current-run demand, saturating on overflow.
+    pub const fn record_current_demand(self) -> Self {
+        Self {
+            previous_run_demands: self.previous_run_demands,
+            current_run_demands: self.current_run_demands.saturating_add(1),
+        }
+    }
+
+    /// Returns whether prior metadata predicts cross-run reuse.
+    pub const fn likely_redemanded_across_runs(self) -> bool {
+        self.previous_run_demands > 0
+    }
+
+    /// Combines these reuse counters with measured costs for materialization.
+    pub const fn signals(self, costs: MaterializationCosts) -> MaterializationSignals {
+        MaterializationSignals::new(costs, self.likely_redemanded_across_runs())
+    }
+}
+
 /// Caller-measured costs for the durable materialization threshold.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MaterializationCosts {
@@ -247,6 +297,43 @@ mod tests {
         assert_eq!(
             class.decide(MemoizationSignals::new(true, true)),
             MemoizationDecision::Admit
+        );
+    }
+
+    #[test]
+    fn materialization_reuse_tracks_prior_and_current_demand() {
+        let reuse = MaterializationReuse::new(2, 3);
+
+        assert_eq!(reuse.previous_run_demands(), 2);
+        assert_eq!(reuse.current_run_demands(), 3);
+        assert!(reuse.likely_redemanded_across_runs());
+        assert!(!MaterializationReuse::from_previous_run(0).likely_redemanded_across_runs());
+    }
+
+    #[test]
+    fn materialization_reuse_current_demand_saturates() {
+        let reuse = MaterializationReuse::new(1, u64::MAX).record_current_demand();
+
+        assert_eq!(reuse.previous_run_demands(), 1);
+        assert_eq!(reuse.current_run_demands(), u64::MAX);
+    }
+
+    #[test]
+    fn materialization_reuse_builds_policy_signals_from_prior_runs() {
+        let profitable = MaterializationCosts::new(100, 10, 20, 30);
+
+        assert_eq!(
+            MaterializationReuse::from_previous_run(1)
+                .signals(profitable)
+                .decide(),
+            MaterializationDecision::Materialize
+        );
+        assert_eq!(
+            MaterializationReuse::from_previous_run(0)
+                .record_current_demand()
+                .signals(profitable)
+                .decide(),
+            MaterializationDecision::KeepInMemory
         );
     }
 
