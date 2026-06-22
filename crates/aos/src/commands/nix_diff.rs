@@ -156,7 +156,7 @@ pub fn run(
             printer.plain(&format!("  - {}", render_diff(divergence)));
         }
         render_reproduction_hint(printer, &eval_config, file, attr, mode, "  ");
-        render_divergence_classes(printer, &report, "  ");
+        render_divergence_classes(printer, &eval_config, file, attr, &report, "  ");
         render_single_oracle_stats(printer, oracle_stats.as_ref());
     }
     Err(failure.into())
@@ -287,7 +287,14 @@ fn run_all(
                 for divergence in &report.divergences {
                     printer.plain(&format!("      - {}", render_diff(divergence)));
                 }
-                render_divergence_classes(printer, report, "      ");
+                render_divergence_classes(
+                    printer,
+                    eval_config,
+                    file,
+                    &attr_report.attr,
+                    report,
+                    "      ",
+                );
             }
         }
         render_corpus_oracle_stats_summary(printer, &reports);
@@ -482,6 +489,7 @@ fn report_json(
         "candidate_root": report.candidate_root.as_ref().map(|path| path.to_string_lossy().to_string()),
         "root_divergences": report.root_divergences.iter().map(pair_json).collect::<Vec<_>>(),
         "contaminated_divergences": report.contaminated_divergences.iter().map(pair_json).collect::<Vec<_>>(),
+        "root_reports": root_reports_json(report, eval_config, file, attr),
         "divergences": report.divergences.iter().map(diff_json).collect::<Vec<_>>(),
     });
     insert_oracle_stats(&mut value, oracle_stats);
@@ -547,6 +555,7 @@ fn attr_report_json(
             "candidate_root": null,
             "root_divergences": [],
             "contaminated_divergences": [],
+            "root_reports": [],
             "divergences": [],
         });
         insert_oracle_stats(&mut value, report.oracle_stats.as_ref());
@@ -611,6 +620,67 @@ fn pair_json(pair: &DrvDiffPair) -> serde_json::Value {
     })
 }
 
+fn root_reports_json(
+    report: &DrvDiffReport,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+) -> Vec<serde_json::Value> {
+    report
+        .root_divergences
+        .iter()
+        .map(|pair| root_report_json(report, eval_config, file, attr, pair))
+        .collect()
+}
+
+fn root_report_json(
+    report: &DrvDiffReport,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    pair: &DrvDiffPair,
+) -> serde_json::Value {
+    serde_json::json!({
+        "file": file.to_string_lossy(),
+        "attr": attr,
+        "mode": mode_name(report.mode),
+        "reproduce": reproduction_command(eval_config, file, attr, report.mode),
+        "oracle": pair.oracle.to_string_lossy(),
+        "candidate": pair.candidate.to_string_lossy(),
+        "divergences": pair_divergences(report, pair).map(diff_json).collect::<Vec<_>>(),
+    })
+}
+
+fn pair_divergences<'a>(
+    report: &'a DrvDiffReport,
+    pair: &'a DrvDiffPair,
+) -> impl Iterator<Item = &'a DrvDiff> {
+    report
+        .divergences
+        .iter()
+        .filter(move |diff| diff_matches_pair(diff, pair))
+}
+
+fn diff_matches_pair(diff: &DrvDiff, pair: &DrvDiffPair) -> bool {
+    match diff {
+        DrvDiff::RootPath { oracle, candidate }
+        | DrvDiff::Bytes { oracle, candidate }
+        | DrvDiff::Structural {
+            oracle, candidate, ..
+        }
+        | DrvDiff::InputCount {
+            oracle, candidate, ..
+        } => oracle == &pair.oracle && candidate == &pair.candidate,
+        DrvDiff::InputOutputs {
+            parent_oracle,
+            parent_candidate,
+            ..
+        } => parent_oracle == &pair.oracle && parent_candidate == &pair.candidate,
+        DrvDiff::StructuralParse { path, .. } => path == &pair.oracle || path == &pair.candidate,
+        DrvDiff::Evaluation { .. } | DrvDiff::EvaluationMismatch { .. } => false,
+    }
+}
+
 fn diff_json(diff: &DrvDiff) -> serde_json::Value {
     match diff {
         DrvDiff::RootPath { oracle, candidate } => serde_json::json!({
@@ -665,12 +735,16 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
             "candidate_count": candidate_count,
         }),
         DrvDiff::InputOutputs {
+            parent_oracle,
+            parent_candidate,
             oracle,
             candidate,
             oracle_outputs,
             candidate_outputs,
         } => serde_json::json!({
             "kind": "input_outputs",
+            "parent_oracle": parent_oracle.to_string_lossy(),
+            "parent_candidate": parent_candidate.to_string_lossy(),
             "oracle": oracle.to_string_lossy(),
             "candidate": candidate.to_string_lossy(),
             "oracle_outputs": oracle_outputs,
@@ -679,15 +753,36 @@ fn diff_json(diff: &DrvDiff) -> serde_json::Value {
     }
 }
 
-fn render_divergence_classes(printer: &Printer, report: &DrvDiffReport, indent: &str) {
+fn render_divergence_classes(
+    printer: &Printer,
+    eval_config: &NixEvalConfig,
+    file: &Path,
+    attr: &str,
+    report: &DrvDiffReport,
+    indent: &str,
+) {
     if !report.root_divergences.is_empty() {
-        printer.plain(&format!("{indent}root divergence nodes:"));
+        printer.plain(&format!("{indent}root divergence reports:"));
         for pair in &report.root_divergences {
             printer.plain(&format!(
                 "{indent}  - oracle={} candidate={}",
                 pair.oracle.display(),
                 pair.candidate.display()
             ));
+            printer.plain(&format!(
+                "{indent}    reproduce: {}",
+                reproduction_command(eval_config, file, attr, report.mode)
+            ));
+            let mut rendered = false;
+            for divergence in pair_divergences(report, pair) {
+                rendered = true;
+                printer.plain(&format!("{indent}    - {}", render_diff(divergence)));
+            }
+            if !rendered {
+                printer.plain(&format!(
+                    "{indent}    - no pair-local byte or structural detail recorded"
+                ));
+            }
         }
     }
     if !report.contaminated_divergences.is_empty() {
@@ -955,12 +1050,16 @@ fn render_diff(diff: &DrvDiff) -> String {
             candidate.display()
         ),
         DrvDiff::InputOutputs {
+            parent_oracle,
+            parent_candidate,
             oracle,
             candidate,
             oracle_outputs,
             candidate_outputs,
         } => format!(
-            "input outputs: oracle={} {:?} candidate={} {:?}",
+            "input outputs: parent_oracle={} parent_candidate={} oracle={} {:?} candidate={} {:?}",
+            parent_oracle.display(),
+            parent_candidate.display(),
             oracle.display(),
             oracle_outputs,
             candidate.display(),
@@ -1005,10 +1104,16 @@ mod tests {
             mode: DiffMode::Byte,
             oracle_root: Some(PathBuf::from("/nix/store/oracle.drv")),
             candidate_root: Some(PathBuf::from("/nix/store/candidate.drv")),
-            divergences: vec![DrvDiff::RootPath {
-                oracle: PathBuf::from("/nix/store/oracle.drv"),
-                candidate: PathBuf::from("/nix/store/candidate.drv"),
-            }],
+            divergences: vec![
+                DrvDiff::RootPath {
+                    oracle: PathBuf::from("/nix/store/oracle.drv"),
+                    candidate: PathBuf::from("/nix/store/candidate.drv"),
+                },
+                DrvDiff::Bytes {
+                    oracle: PathBuf::from("/nix/store/oracle.drv"),
+                    candidate: PathBuf::from("/nix/store/candidate.drv"),
+                },
+            ],
             root_divergences: vec![DrvDiffPair {
                 oracle: PathBuf::from("/nix/store/oracle.drv"),
                 candidate: PathBuf::from("/nix/store/candidate.drv"),
@@ -1037,13 +1142,31 @@ mod tests {
             "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte -- default.nix"
         );
         assert_eq!(value["matched"], false);
-        assert_eq!(value["error"], "drv diff found 1 divergence(s)");
+        assert_eq!(value["error"], "drv diff found 2 divergence(s)");
         assert!(value.get("oracle_stats").is_none());
         assert_eq!(value["divergences"][0]["kind"], "root_path");
+        assert_eq!(value["divergences"][1]["kind"], "bytes");
         assert_eq!(
             value["root_divergences"][0]["oracle"],
             "/nix/store/oracle.drv"
         );
+        assert_eq!(value["root_reports"][0]["file"], "default.nix");
+        assert_eq!(value["root_reports"][0]["attr"], "pkgs.hello");
+        assert_eq!(value["root_reports"][0]["mode"], "byte");
+        assert_eq!(
+            value["root_reports"][0]["reproduce"],
+            "aos --impure-eval nix-diff --attr=pkgs.hello --mode=byte -- default.nix"
+        );
+        assert_eq!(value["root_reports"][0]["oracle"], "/nix/store/oracle.drv");
+        assert_eq!(
+            value["root_reports"][0]["candidate"],
+            "/nix/store/candidate.drv"
+        );
+        assert_eq!(
+            value["root_reports"][0]["divergences"][0]["kind"],
+            "root_path"
+        );
+        assert_eq!(value["root_reports"][0]["divergences"][1]["kind"], "bytes");
         assert!(
             value["contaminated_divergences"]
                 .as_array()
@@ -1299,6 +1422,128 @@ mod tests {
         assert_eq!(value["divergences"][0]["kind"], "structural_parse");
         assert_eq!(value["divergences"][0]["side"], "candidate");
         assert_eq!(value["divergences"][0]["error"], "parse failed");
+    }
+
+    #[test]
+    fn pair_divergences_match_pair_local_context() {
+        let pair = DrvDiffPair {
+            oracle: PathBuf::from("/nix/store/oracle.drv"),
+            candidate: PathBuf::from("/nix/store/candidate.drv"),
+        };
+        let report = DrvDiffReport {
+            mode: DiffMode::Structural,
+            oracle_root: Some(pair.oracle.clone()),
+            candidate_root: Some(pair.candidate.clone()),
+            divergences: vec![
+                DrvDiff::Structural {
+                    oracle: pair.oracle.clone(),
+                    candidate: pair.candidate.clone(),
+                    field: "environment".to_string(),
+                },
+                DrvDiff::StructuralParse {
+                    side: DiffSide::Candidate,
+                    path: pair.candidate.clone(),
+                    error: "parse failed".to_string(),
+                },
+                DrvDiff::InputOutputs {
+                    parent_oracle: pair.oracle.clone(),
+                    parent_candidate: pair.candidate.clone(),
+                    oracle: PathBuf::from("/nix/store/input-oracle.drv"),
+                    candidate: PathBuf::from("/nix/store/input-candidate.drv"),
+                    oracle_outputs: vec!["out".to_string()],
+                    candidate_outputs: vec!["dev".to_string()],
+                },
+                DrvDiff::Bytes {
+                    oracle: PathBuf::from("/nix/store/other-oracle.drv"),
+                    candidate: PathBuf::from("/nix/store/other-candidate.drv"),
+                },
+                DrvDiff::Evaluation {
+                    side: DiffSide::Candidate,
+                    error: "unsupported".to_string(),
+                },
+            ],
+            root_divergences: vec![pair.clone()],
+            contaminated_divergences: Vec::new(),
+        };
+
+        let kinds = pair_divergences(&report, &pair)
+            .map(diff_json)
+            .map(|value| value["kind"].clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            kinds,
+            [
+                serde_json::Value::String("structural".to_string()),
+                serde_json::Value::String("structural_parse".to_string()),
+                serde_json::Value::String("input_outputs".to_string()),
+            ]
+        );
+
+        let root_report = root_report_json(
+            &report,
+            &repro_config(),
+            Path::new("default.nix"),
+            "pkgs.hello",
+            &pair,
+        );
+        assert_eq!(
+            root_report["divergences"][2]["parent_oracle"],
+            "/nix/store/oracle.drv"
+        );
+        assert_eq!(
+            root_report["divergences"][2]["parent_candidate"],
+            "/nix/store/candidate.drv"
+        );
+        assert_eq!(
+            root_report["divergences"][2]["oracle"],
+            "/nix/store/input-oracle.drv"
+        );
+        assert_eq!(
+            root_report["divergences"][2]["candidate"],
+            "/nix/store/input-candidate.drv"
+        );
+    }
+
+    #[test]
+    fn pair_divergences_keep_parent_edge_context_off_child_roots() {
+        let parent = DrvDiffPair {
+            oracle: PathBuf::from("/nix/store/parent-oracle.drv"),
+            candidate: PathBuf::from("/nix/store/parent-candidate.drv"),
+        };
+        let child = DrvDiffPair {
+            oracle: PathBuf::from("/nix/store/child-oracle.drv"),
+            candidate: PathBuf::from("/nix/store/child-candidate.drv"),
+        };
+        let report = DrvDiffReport {
+            mode: DiffMode::Structural,
+            oracle_root: Some(parent.oracle.clone()),
+            candidate_root: Some(parent.candidate.clone()),
+            divergences: vec![
+                DrvDiff::InputOutputs {
+                    parent_oracle: parent.oracle.clone(),
+                    parent_candidate: parent.candidate.clone(),
+                    oracle: child.oracle.clone(),
+                    candidate: child.candidate.clone(),
+                    oracle_outputs: vec!["out".to_string()],
+                    candidate_outputs: vec!["dev".to_string()],
+                },
+                DrvDiff::Structural {
+                    oracle: child.oracle.clone(),
+                    candidate: child.candidate.clone(),
+                    field: "environment".to_string(),
+                },
+            ],
+            root_divergences: vec![child.clone()],
+            contaminated_divergences: vec![parent],
+        };
+
+        let kinds = pair_divergences(&report, &child)
+            .map(diff_json)
+            .map(|value| value["kind"].clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(kinds, [serde_json::Value::String("structural".to_string())]);
     }
 
     #[test]

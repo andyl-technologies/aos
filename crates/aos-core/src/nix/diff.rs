@@ -98,6 +98,10 @@ pub enum DrvDiff {
     },
     /// Paired input derivations disagree on the requested output names.
     InputOutputs {
+        /// Oracle-side parent `.drv` path whose input edge differs.
+        parent_oracle: PathBuf,
+        /// Candidate-side parent `.drv` path whose input edge differs.
+        parent_candidate: PathBuf,
         /// Oracle-side input derivation path.
         oracle: PathBuf,
         /// Candidate-side input derivation path.
@@ -486,6 +490,8 @@ fn compare_input_pair(
     if oracle.outputs != candidate.outputs {
         graph.record_divergence(parent.clone());
         report.divergences.push(DrvDiff::InputOutputs {
+            parent_oracle: parent.oracle.clone(),
+            parent_candidate: parent.candidate.clone(),
             oracle: oracle_path.clone(),
             candidate: candidate_path.clone(),
             oracle_outputs: oracle.outputs.clone(),
@@ -1089,10 +1095,19 @@ mod tests {
             DiffMode::Byte,
         )?;
 
-        assert!(report.divergences.iter().any(
-            |diff| matches!(diff, DrvDiff::InputOutputs { oracle, candidate, .. }
-                    if oracle == &input && candidate == &input)
-        ));
+        assert!(report.divergences.iter().any(|diff| matches!(
+            diff,
+            DrvDiff::InputOutputs {
+                parent_oracle,
+                parent_candidate,
+                oracle,
+                candidate,
+                ..
+            } if parent_oracle == &root
+                && parent_candidate == &root
+                && oracle == &input
+                && candidate == &input
+        )));
         assert_eq!(
             report.root_divergences,
             vec![DrvDiffPair {
