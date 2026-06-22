@@ -507,6 +507,13 @@ alone (`M-1`/`Q-A`).
       location. This is codec-only; durable index engines, parse-artifact pack
       payloads, lookup/write integration, mmap reads, GC/repack, Attic
       transport, and harness proof remain open (`C-13`/`R-10`).
+- [x] Current parse-artifact bundle payload codec: `ParseArtifactBundle` frames
+      the current `resolved.bin`/`ir.bin`/`symbols.bin`/`meta.toml` artifact
+      bytes as one versioned little-endian payload, and
+      `ParseCacheEntry::read_artifact_bundle` reads complete entries into that
+      bundle. This is payload-format substrate only; automatic file-artifact
+      materialization, durable index updates, lookup, bundle-to-entry hydration,
+      mmap reads, and harness proof remain open (`C-13`).
 - [x] Current cache-level blob pack initialization substrate:
       `PersistCache::open` initializes and exposes separate value/file
       `PersistBlobPack` handles after schema validation and owned-directory

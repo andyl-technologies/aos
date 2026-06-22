@@ -60,6 +60,7 @@ pub(super) fn parse_cache_frontend_error(
         | ParseCacheError::WriteArtifact { .. }
         | ParseCacheError::ReadArtifact { .. }
         | ParseCacheError::DecodeArtifact { .. }
+        | ParseCacheError::DecodeArtifactBundle { .. }
         | ParseCacheError::EncodeArtifact(_) => None,
     }
 }

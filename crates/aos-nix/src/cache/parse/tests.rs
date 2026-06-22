@@ -182,6 +182,70 @@ fn load_or_parse_writes_then_hits_by_source_content() {
 }
 
 #[test]
+fn artifact_bundle_round_trips_complete_entry_payloads() {
+    let root = temp_root();
+    let cache = ParseCache::new(root.join("parse"));
+    let source = b"let x = 1; in x";
+    let parsed = cache
+        .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+        .expect("source parses on miss");
+
+    let bundle = parsed
+        .entry
+        .read_artifact_bundle()
+        .expect("artifact bundle reads");
+    let encoded = bundle.encode().expect("artifact bundle encodes");
+    let decoded = ParseArtifactBundle::decode(&encoded).expect("artifact bundle decodes");
+
+    assert_eq!(decoded, bundle);
+    assert!(String::from_utf8_lossy(decoded.meta_toml_bytes()).contains("schema_version = 6"));
+
+    let resolved_symbols =
+        decode_symbols(decoded.symbols_bytes()).expect("resolved symbols decode");
+    let resolved = decode_resolved_ir(decoded.resolved_bytes(), resolved_symbols)
+        .expect("resolved artifact decodes");
+    assert_eq!(resolved.arena.nodes(), parsed.resolved.arena.nodes());
+
+    let ir_symbols = decode_symbols(decoded.symbols_bytes()).expect("IR symbols decode");
+    let ir = decode_lowered_ir(decoded.ir_bytes(), ir_symbols).expect("IR artifact decodes");
+    assert!(lowered_ir_matches(&ir, &parsed.ir));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn artifact_bundle_rejects_invalid_payloads() {
+    let short = ParseArtifactBundle::decode(b"bad").expect_err("short bundle errors");
+    assert!(matches!(
+        short,
+        ParseCacheError::DecodeArtifactBundle { message } if message.contains("unexpected end")
+    ));
+
+    let mut unsupported_version = Vec::new();
+    unsupported_version.extend_from_slice(BUNDLE_MAGIC);
+    write_u32(&mut unsupported_version, ARTIFACT_VERSION + 1);
+    let version_error =
+        ParseArtifactBundle::decode(&unsupported_version).expect_err("bad version errors");
+    assert!(matches!(
+        version_error,
+        ParseCacheError::DecodeArtifactBundle { message }
+            if message.contains("unsupported parse artifact bundle version")
+    ));
+
+    let mut truncated_section = Vec::new();
+    truncated_section.extend_from_slice(BUNDLE_MAGIC);
+    write_u32(&mut truncated_section, ARTIFACT_VERSION);
+    write_u32(&mut truncated_section, 4);
+    truncated_section.extend_from_slice(b"ir");
+    let section_error =
+        ParseArtifactBundle::decode(&truncated_section).expect_err("short section errors");
+    assert!(matches!(
+        section_error,
+        ParseCacheError::DecodeArtifactBundle { message } if message.contains("unexpected end")
+    ));
+}
+
+#[test]
 fn load_or_parse_recovers_from_corrupt_artifact() {
     let root = temp_root();
     let cache = ParseCache::new(root.join("parse"));

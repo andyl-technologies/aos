@@ -48,6 +48,7 @@ const FLAG_ENCODING_VERSION: u8 = 1;
 const IR_MAGIC: &[u8; 8] = b"AOSNIXIR";
 const RESOLVED_MAGIC: &[u8; 8] = b"AOSNIXRS";
 const SYMBOL_MAGIC: &[u8; 8] = b"AOSNIXSY";
+const BUNDLE_MAGIC: &[u8; 8] = b"AOSNIXAF";
 const ARTIFACT_VERSION: u32 = 1;
 static ATOMIC_WRITE_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -384,6 +385,110 @@ pub struct CachedParse {
     pub stored: bool,
 }
 
+/// Raw bytes for one complete parse-cache artifact bundle.
+///
+/// The bundle frames the same payloads that [`ParseCacheEntry`] stores as
+/// separate files: `resolved.bin`, `ir.bin`, `symbols.bin`, and `meta.toml`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseArtifactBundle {
+    resolved: Vec<u8>,
+    ir: Vec<u8>,
+    symbols: Vec<u8>,
+    meta_toml: Vec<u8>,
+}
+
+impl ParseArtifactBundle {
+    /// Creates a bundle from raw parse-cache artifact bytes.
+    pub fn new(
+        resolved: impl Into<Vec<u8>>,
+        ir: impl Into<Vec<u8>>,
+        symbols: impl Into<Vec<u8>>,
+        meta_toml: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            resolved: resolved.into(),
+            ir: ir.into(),
+            symbols: symbols.into(),
+            meta_toml: meta_toml.into(),
+        }
+    }
+
+    /// Returns the serialized resolved AST bytes.
+    pub fn resolved_bytes(&self) -> &[u8] {
+        &self.resolved
+    }
+
+    /// Returns the serialized lowered IR bytes.
+    pub fn ir_bytes(&self) -> &[u8] {
+        &self.ir
+    }
+
+    /// Returns the file-local symbol table bytes.
+    pub fn symbols_bytes(&self) -> &[u8] {
+        &self.symbols
+    }
+
+    /// Returns the diagnostic metadata TOML bytes.
+    pub fn meta_toml_bytes(&self) -> &[u8] {
+        &self.meta_toml
+    }
+
+    /// Encodes this bundle as one stable little-endian payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if any section length does not fit in the
+    /// bundle's fixed `u32` length fields.
+    pub fn encode(&self) -> Result<Vec<u8>, ParseCacheError> {
+        let mut out = Vec::new();
+        out.extend_from_slice(BUNDLE_MAGIC);
+        write_u32(&mut out, ARTIFACT_VERSION);
+        encode_bundle_section(&mut out, &self.resolved, "resolved artifact byte count")?;
+        encode_bundle_section(&mut out, &self.ir, "IR artifact byte count")?;
+        encode_bundle_section(&mut out, &self.symbols, "symbol artifact byte count")?;
+        encode_bundle_section(&mut out, &self.meta_toml, "metadata byte count")?;
+        Ok(out)
+    }
+
+    /// Decodes one stable parse-cache artifact bundle payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if the bundle has invalid magic/version
+    /// metadata, truncated sections, or trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ParseCacheError> {
+        let mut reader = BinaryReader::new(bytes);
+        reader
+            .expect_magic(BUNDLE_MAGIC)
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        let version = reader
+            .read_u32()
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        if version != ARTIFACT_VERSION {
+            return Err(ParseCacheError::DecodeArtifactBundle {
+                message: format!("unsupported parse artifact bundle version {version}"),
+            });
+        }
+        let resolved = decode_bundle_section(&mut reader, "resolved artifact byte count")
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        let ir = decode_bundle_section(&mut reader, "IR artifact byte count")
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        let symbols = decode_bundle_section(&mut reader, "symbol artifact byte count")
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        let meta_toml = decode_bundle_section(&mut reader, "metadata byte count")
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        reader
+            .expect_eof()
+            .map_err(|message| ParseCacheError::DecodeArtifactBundle { message })?;
+        Ok(Self {
+            resolved,
+            ir,
+            symbols,
+            meta_toml,
+        })
+    }
+}
+
 /// Filesystem paths for one parse-cache entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseCacheEntry {
@@ -515,6 +620,38 @@ impl ParseCacheEntry {
                 source,
             }
         })
+    }
+
+    /// Reads the raw bytes for a complete parse-cache artifact bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseCacheError`] if any mandatory artifact file cannot be
+    /// read. The returned bundle is raw bytes; callers that need semantic
+    /// validation should decode the individual sections.
+    pub fn read_artifact_bundle(&self) -> Result<ParseArtifactBundle, ParseCacheError> {
+        let resolved_path = self.resolved_path();
+        let ir_path = self.ir_path();
+        let symbols_path = self.symbols_path();
+        let meta_path = self.meta_path();
+        let resolved =
+            fs::read(&resolved_path).map_err(|source| ParseCacheError::ReadArtifact {
+                path: resolved_path,
+                source,
+            })?;
+        let ir = fs::read(&ir_path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: ir_path,
+            source,
+        })?;
+        let symbols = fs::read(&symbols_path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: symbols_path,
+            source,
+        })?;
+        let meta_toml = fs::read(&meta_path).map_err(|source| ParseCacheError::ReadArtifact {
+            path: meta_path,
+            source,
+        })?;
+        Ok(ParseArtifactBundle::new(resolved, ir, symbols, meta_toml))
     }
 
     /// Reads a resolved AST artifact from this cache entry.
@@ -730,6 +867,12 @@ pub enum ParseCacheError {
         /// The decode failure.
         message: String,
     },
+    /// A raw parse-cache artifact bundle could not be decoded.
+    #[error("failed to decode parse-cache artifact bundle: {message}")]
+    DecodeArtifactBundle {
+        /// The decode failure.
+        message: String,
+    },
     /// A resolved artifact could not be encoded.
     #[error("failed to encode parse-cache artifact: {0}")]
     EncodeArtifact(String),
@@ -737,6 +880,29 @@ pub enum ParseCacheError {
 
 fn file_content_hash(source: &[u8]) -> DurableBlake3Hash {
     DurableBlake3Hash::for_bytes(source)
+}
+
+fn encode_bundle_section(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    what: &'static str,
+) -> Result<(), ParseCacheError> {
+    write_len(out, bytes.len(), what)?;
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn decode_bundle_section(
+    reader: &mut BinaryReader<'_>,
+    what: &'static str,
+) -> Result<Vec<u8>, String> {
+    let len = reader.read_len(what)?;
+    let bytes = reader.read_bytes(len)?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(len)
+        .map_err(|_| format!("{what} is too large"))?;
+    out.extend_from_slice(bytes);
+    Ok(out)
 }
 
 fn write_cache_file_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {

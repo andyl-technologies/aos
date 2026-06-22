@@ -27,8 +27,9 @@ pub use input::{
 };
 pub use key::{CacheExprIdentity, CacheKeyError, DemandCacheKey};
 pub use parse::{
-    CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseCache,
-    ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta, ParseFileKey,
+    CachedFileParse, CachedParse, FileParseMemo, PARSE_CACHE_SCHEMA_VERSION, ParseArtifactBundle,
+    ParseCache, ParseCacheEntry, ParseCacheError, ParseCacheFlags, ParseCacheKey, ParseCacheMeta,
+    ParseFileKey,
 };
 pub use persist::{
     PERSIST_BLOB_INDEX_KEY_LEN, PERSIST_BLOB_INDEX_VALUE_LEN, PERSIST_BLOB_PACK_HEADER_LEN,
