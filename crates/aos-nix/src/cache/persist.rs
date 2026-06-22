@@ -953,6 +953,26 @@ impl PersistCache {
         }
     }
 
+    /// Applies materialization threshold signals to a frontend file artifact.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_file_artifact`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistBlobPackError`] when the signals choose
+    /// [`MaterializationDecision::Materialize`] and the `files/` pack cannot be
+    /// opened, validated, or written.
+    pub fn materialize_file_artifact_with_signals(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        payload: &[u8],
+        signals: MaterializationSignals,
+    ) -> Result<PersistFileArtifactMaterialization, PersistBlobPackError> {
+        self.materialize_file_artifact(file_key, parse_key, payload, signals.decide())
+    }
+
     /// Reads and verifies a materialized frontend file artifact.
     ///
     /// This is a typed wrapper over [`Self::read_blob`] for values decoded from
@@ -1037,6 +1057,27 @@ impl PersistCache {
                 .map_err(|source| PersistParseArtifactMaterializationError::Write { source })
             }
         }
+    }
+
+    /// Applies materialization threshold signals to an existing parse-cache entry.
+    ///
+    /// The signals are evaluated with [`MaterializationSignals::decide`] and
+    /// then applied through [`Self::materialize_parse_artifact_entry`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersistParseArtifactMaterializationError`] when the signals
+    /// choose [`MaterializationDecision::Materialize`] and the source entry
+    /// cannot be read, the bundle payload cannot be encoded, or the `files/`
+    /// pack cannot be written.
+    pub fn materialize_parse_artifact_entry_with_signals(
+        &self,
+        file_key: &ParseFileKey,
+        parse_key: ParseCacheKey,
+        entry: &ParseCacheEntry,
+        signals: MaterializationSignals,
+    ) -> Result<PersistFileArtifactMaterialization, PersistParseArtifactMaterializationError> {
+        self.materialize_parse_artifact_entry(file_key, parse_key, entry, signals.decide())
     }
 }
 
@@ -1607,6 +1648,15 @@ mod tests {
         use crate::cache::parse::{PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags};
 
         ParseCacheKey::for_source(source, PARSE_CACHE_SCHEMA_VERSION, ParseCacheFlags::new())
+    }
+
+    fn profitable_materialization_signals(
+        likely_redemanded_across_runs: bool,
+    ) -> MaterializationSignals {
+        MaterializationSignals::new(
+            MaterializationCosts::new(100, 10, 20, 30),
+            likely_redemanded_across_runs,
+        )
     }
 
     #[test]
@@ -2386,11 +2436,13 @@ mod tests {
         let root = temp_root();
         let cache = PersistCache::open(&root).expect("cache opens");
         let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(b"other payload"));
-        let signals =
-            MaterializationSignals::new(MaterializationCosts::new(100, 10, 20, 30), false);
 
         let result = cache
-            .materialize_blob_with_signals(key, b"payload", signals)
+            .materialize_blob_with_signals(
+                key,
+                b"payload",
+                profitable_materialization_signals(false),
+            )
             .expect("skip succeeds");
 
         assert_eq!(result, PersistMaterialization::Skipped);
@@ -2410,10 +2462,9 @@ mod tests {
         let cache = PersistCache::open(&root).expect("cache opens");
         let payload = b"payload";
         let key = PersistBlobKey::for_value(DurableBlake3Hash::for_bytes(payload));
-        let signals = MaterializationSignals::new(MaterializationCosts::new(100, 10, 20, 30), true);
 
         let result = cache
-            .materialize_blob_with_signals(key, payload, signals)
+            .materialize_blob_with_signals(key, payload, profitable_materialization_signals(true))
             .expect("materialization succeeds");
 
         let PersistMaterialization::Materialized(location) = result else {
@@ -2527,6 +2578,70 @@ mod tests {
     }
 
     #[test]
+    fn cache_file_artifact_materialization_signals_can_skip_without_writing() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+
+        let result = cache
+            .materialize_file_artifact_with_signals(
+                &file_key,
+                parse_key,
+                b"serialized IR artifact",
+                profitable_materialization_signals(false),
+            )
+            .expect("file artifact skip succeeds");
+
+        assert_eq!(
+            result,
+            PersistFileArtifactMaterialization::Skipped { artifact_key }
+        );
+        assert_eq!(
+            fs::metadata(cache.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_file_artifact_materialization_signals_append_when_threshold_passes() {
+        let root = temp_root();
+        let cache = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let payload = b"serialized IR artifact";
+
+        let result = cache
+            .materialize_file_artifact_with_signals(
+                &file_key,
+                parse_key,
+                payload,
+                profitable_materialization_signals(true),
+            )
+            .expect("file artifact materializes");
+
+        let Some(index_value) = result.index_value() else {
+            panic!("file artifact should materialize");
+        };
+        assert_eq!(
+            cache
+                .read_file_artifact(index_value)
+                .expect("file artifact blob reads")
+                .as_slice(),
+            payload
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn cache_file_artifact_hydrates_parse_entry_from_materialized_bundle() {
         use crate::cache::parse::ParseCache;
 
@@ -2631,6 +2746,77 @@ mod tests {
                 parsed.key,
                 &parsed.entry,
                 MaterializationDecision::Materialize,
+            )
+            .expect("entry materializes");
+
+        let Some(index_value) = result.index_value() else {
+            panic!("entry should materialize");
+        };
+        let payload = persist
+            .read_file_artifact(index_value)
+            .expect("materialized entry reads");
+        let decoded = ParseArtifactBundle::decode(&payload).expect("bundle decodes");
+        assert_eq!(decoded, bundle);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_parse_artifact_entry_materialization_signals_can_skip_missing_entry() {
+        let root = temp_root();
+        let persist = PersistCache::open(&root).expect("cache opens");
+        let source = b"let x = 1; in x";
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+        let parse_key = test_parse_key(source);
+        let missing_entry = ParseCacheEntry::new(root.join("missing-entry"));
+        let artifact_key = PersistFileArtifactKey::from_parse_file_key(&file_key, parse_key);
+
+        let result = persist
+            .materialize_parse_artifact_entry_with_signals(
+                &file_key,
+                parse_key,
+                &missing_entry,
+                profitable_materialization_signals(false),
+            )
+            .expect("skip does not read missing entry");
+
+        assert_eq!(
+            result,
+            PersistFileArtifactMaterialization::Skipped { artifact_key }
+        );
+        assert_eq!(
+            fs::metadata(persist.file_pack().path())
+                .expect("file pack metadata")
+                .len(),
+            PERSIST_BLOB_PACK_HEADER_LEN as u64
+        );
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_parse_artifact_entry_materialization_signals_append_when_threshold_passes() {
+        use crate::cache::parse::ParseCache;
+
+        let root = temp_root();
+        let persist = PersistCache::open(root.join("persist")).expect("cache opens");
+        let parse_cache = ParseCache::new(root.join("parse"));
+        let source = b"let x = 1; in x";
+        let parsed = parse_cache
+            .load_or_parse_bytes(source, Some("expr.nix".to_owned()))
+            .expect("source parses");
+        let bundle = parsed
+            .entry
+            .read_artifact_bundle()
+            .expect("artifact bundle reads");
+        let file_key = ParseFileKey::for_source("/src/default.nix", source);
+
+        let result = persist
+            .materialize_parse_artifact_entry_with_signals(
+                &file_key,
+                parsed.key,
+                &parsed.entry,
+                profitable_materialization_signals(true),
             )
             .expect("entry materializes");
 

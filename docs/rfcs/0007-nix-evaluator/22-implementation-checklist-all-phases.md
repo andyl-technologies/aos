@@ -598,6 +598,14 @@ alone (`M-1`/`Q-A`).
       file-artifact materialization adapter. Automatic parse-cache integration,
       durable index updates, lookup, source/key equality proof, mmap reads,
       GC/repack, and harness proof remain open (`C-13`/`C-14`).
+- [x] Current file/parse threshold signal adapters:
+      `PersistCache::materialize_file_artifact_with_signals` and
+      `materialize_parse_artifact_entry_with_signals` evaluate caller-supplied
+      `MaterializationSignals` before delegating to the existing decision-based
+      adapters, preserving skip-without-payload-read/write behavior when the
+      threshold fails. Automatic parse-cache integration, durable index updates,
+      lookup, source/key equality proof, mmap reads, GC/repack, and harness
+      proof remain open (`C-13`/`C-14`).
 - [x] Current explicit file-artifact read adapter:
       `PersistCache::read_file_artifact` consumes a typed
       `PersistFileArtifactIndexValue` and reads/verifies the referenced payload
