@@ -111,13 +111,15 @@ in {
         taskIds = ["T-PLAN-3" "T-HARN-11"];
         reason = "content-address gate is intentionally pending";
       };
-      replayOracle = redGate {
+      replayOracle = import ./phase1-replay-oracle.nix {
+        inherit pkgs lib;
         attrPath = "checks.crucible.phase1.gates.replayOracle";
-        gateName = "gate:replay-oracle";
-        owner = "crucible";
-        phase = "phase1";
-        taskIds = ["T-PLAN-3" "T-HARN-12"];
-        reason = "replay oracle over the test double is intentionally pending";
+        taskIds = [
+          "T-PLAN-3"
+          "T-DET-18"
+          "T-HARN-12"
+          "T-EXEC-4"
+        ];
       };
       singleVmFingerprint = import ./phase1-single-vm-fingerprint-gate.nix {
         inherit pkgs lib;

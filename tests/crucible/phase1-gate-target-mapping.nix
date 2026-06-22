@@ -108,7 +108,7 @@
       package = "crucible";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:content-address";
@@ -372,7 +372,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=22
+            placeholder_targets=21
             RESULT
           '';
         }

@@ -859,7 +859,7 @@ information that cannot be recomputed.
 - [ ] **T-EXEC-3** Implement `step` as the pure temporal-graph edge constructor
   and prove (test) it performs no I/O, boot, or materialization. — satisfies
   [EXEC-10]; spec §3.
-- [ ] **T-EXEC-4** Implement `reduce` as the pure reduction and the prefix-closure
+- [x] **T-EXEC-4** Implement `reduce` as the pure reduction and the prefix-closure
   property; add a `gate:harness-lint` check that `reduce` reads no host
   nondeterminism. — satisfies [EXEC-11], [EXEC-12]; spec §4.
 - [ ] **T-EXEC-5** Prove resume+continue ≡ uninterrupted run by fingerprint over a

@@ -190,7 +190,7 @@
       }
       {
         label = "updated placeholder count";
-        needle = "placeholder_targets=22";
+        needle = "placeholder_targets=21";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

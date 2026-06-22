@@ -16,6 +16,9 @@ workspace = true
 crucible-sim = { path = "../crucible-sim" }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+crucible-harness = { path = "../crucible-harness" }
+
 [[test]]
 name = "gate_layer0_determinism"
 path = "tests/gate_layer0_determinism.rs"

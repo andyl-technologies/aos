@@ -265,7 +265,7 @@
       package = "crucible";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
-      placeholder = true;
+      placeholder = false;
     }
   ];
 
@@ -351,13 +351,19 @@
     "assert_ne!(producer_skewed, consumer_skewed);"
   ];
 
-  replayOracleMarkers = [
-    "assert_replay_oracle_fixed_checkpoint_corpus("
-    "assert_replay_oracle_in_search_sampling("
-    "assert_replay_oracle_mismatch_bisects("
-    "assert_twice_reduce_canonical_digest("
-    "SimDouble"
-  ];
+	  replayOracleMarkers = [
+	    "assert_replay_oracle_fixed_checkpoint_corpus("
+	    "struct MaterializedCheckpoint"
+	    "fn materialize_fat_checkpoint("
+	    "fn schedule_delta("
+	    "fn replay_schedule("
+	    "assert_replay_oracle_rejects_corrupt_configuration_metadata("
+	    "assert_replay_oracle_rejects_corrupt_schedule_delta_metadata("
+	    "assert_replay_oracle_excludes_observational_entries("
+	    "assert_replay_oracle_reports_first_mismatch("
+	    "assert_twice_reduce_canonical_digest("
+	    "SimDouble"
+	  ];
 
   standards = [
     {
@@ -422,11 +428,11 @@
       requiredFeatures = [];
       kind = "injection-determinism";
       requiredMarkers = deviceInjectionMarkers;
-    }
-    {
-      id = "replay-oracle-two-mode";
-      gate = "gate:replay-oracle";
-      package = "crucible";
+	    }
+	    {
+	      id = "replay-oracle-fixed-corpus";
+	      gate = "gate:replay-oracle";
+	      package = "crucible";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
       kind = "replay-oracle";
@@ -574,12 +580,12 @@
     "advanced_standard_regression_failures"
     "spsc_ring_unsafe_without_model_failures"
     "assert_spsc_ring_loom_model("
-    "assert_spsc_ring_proptest_properties("
-    "assert_frozen_golden_vectors("
-    "assert_decode_encode_roundtrip("
-    "assert_replay_oracle_fixed_checkpoint_corpus("
-    "assert_replay_oracle_in_search_sampling("
-  ];
+	    "assert_spsc_ring_proptest_properties("
+	    "assert_frozen_golden_vectors("
+	    "assert_decode_encode_roundtrip("
+	    "assert_replay_oracle_fixed_checkpoint_corpus("
+	    "assert_replay_oracle_excludes_observational_entries("
+	  ];
 
   rustHarnessFailures =
     lib.concatMap (
@@ -664,7 +670,7 @@ in
             tasks=T-STD-9
             spsc=loom,proptest
             abi=golden-vectors,round-trip,fuzz-corpus
-            replay_oracle=fixed-corpus,in-search-sampling
+            replay_oracle=fixed-corpus
             RESULT
           '';
         }

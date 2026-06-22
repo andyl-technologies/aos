@@ -504,7 +504,7 @@
             "crucible-harness/src/replay_oracle.rs" \
             "crucible-harness/src/replay_oracle.rs" \
             1 \
-            "return Err(ReplayOracleMismatch {" \
+            "checkpoint_id: checkpoint_id.to_owned()," \
             "replay oracle mismatch branch"
           require_line_marker \
             "crucible-harness/src/replay_oracle.rs" \
