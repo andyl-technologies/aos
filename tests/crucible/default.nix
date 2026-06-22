@@ -61,6 +61,7 @@ in {
     harnessComponents = import ./phase1-harness-components.nix {inherit pkgs lib;};
     icountNoRealtime = import ./phase1-icount-no-realtime.nix {inherit pkgs lib;};
     noWarpWithPlugin = import ./phase1-no-warp-with-plugin.nix {inherit pkgs lib;};
+    qemuDeterministicEntropy = import ./phase1-qemu-deterministic-entropy.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
     rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};

@@ -59,6 +59,7 @@ in
           patch -p1 < ${./qemu-patches/0001-add-crucible-rr-fingerprint-helpers.patch}
           patch -p1 < ${./qemu-patches/0002-crucible-icount-no-realtime.patch}
           patch -p1 < ${./qemu-patches/0003-crucible-no-warp-with-plugin.patch}
+          patch -p1 < ${./qemu-patches/0004-crucible-deterministic-qemu-entropy.patch}
           # Patch Python shebangs for Nix sandbox
           find . -type f -name '*.py' | while read f; do
             if head -1 "$f" | grep -q '^#!'; then

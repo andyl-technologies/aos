@@ -54,6 +54,10 @@
       needle = "const DEFAULT_RTC_EPOCH_UTC: &str = \"2026-01-01T00:00:00\";";
     }
     {
+      label = "fixed deterministic run seed";
+      needle = "const DEFAULT_RUN_SEED: u64 = 0x0010_c001;";
+    }
+    {
       label = "guest refuses CPU randomness";
       needle = "random.trust_cpu=off";
     }
@@ -150,6 +154,14 @@
       needle = "format!(\"base={},clock=vm\", self.rtc_epoch_utc),";
     }
     {
+      label = "QEMU deterministic seed launch flag";
+      needle = "\"-seed\".to_owned(),";
+    }
+    {
+      label = "QEMU deterministic seed argument";
+      needle = "self.run_seed.to_string(),";
+    }
+    {
       label = "launch hash version";
       needle = "\"crucible.launch.v1\".to_owned(),";
     }
@@ -184,6 +196,14 @@
     {
       label = "RAM reset in hash material";
       needle = "\"ram_reset=zeroed-fresh-anonymous-memory\".to_owned(),";
+    }
+    {
+      label = "QEMU run seed in hash material";
+      needle = "format!(\"qemu_run_seed={}\", self.run_seed),";
+    }
+    {
+      label = "QEMU run seed entropy scope in hash material";
+      needle = "\"qemu_run_seed_controls=guest-random,glib-global-prng\".to_owned(),";
     }
     {
       label = "checked virtual time conversion";
@@ -229,6 +249,10 @@
       needle = "512M";
     }
     {
+      label = "deterministic seed assertion";
+      needle = "[\"-seed\", \"1097729\"]";
+    }
+    {
       label = "zero memory rejection assertion";
       needle = "LaunchProfileError::MemorySizeZero";
     }
@@ -239,6 +263,14 @@
     {
       label = "virtual-time overflow assertion";
       needle = "LaunchProfileError::VirtualTimeOverflow";
+    }
+    {
+      label = "run seed hash material assertion";
+      needle = "qemu_run_seed=1097729";
+    }
+    {
+      label = "run seed drift assertion";
+      needle = "with_run_seed(0x1234)";
     }
     {
       label = "launch material scenario identity test";
@@ -337,6 +369,8 @@ in
             smp=1
             icount=shift=0,sleep=off,align=off
             rtc=base=2026-01-01T00:00:00,clock=vm
+            qemu_seed=1097729
+            qemu_seed_controls=guest-random,glib-global-prng
             virtual_time_ns=icount<<shift
             RESULT
           '';
