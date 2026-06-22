@@ -139,8 +139,11 @@ pub enum Commands {
         /// Dependency to trace
         dependency: String,
     },
-    /// Show repository info
-    Describe,
+    /// Show repository or package info
+    Describe {
+        /// Package name
+        package: Option<String>,
+    },
     /// Prefetch source hashes (parallel downloads with mirror failover)
     Prefetch {
         /// Only prefetch specific packages (repeatable)

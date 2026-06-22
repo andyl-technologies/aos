@@ -398,6 +398,11 @@ pub fn rebuild_meta(
                     held: false,
                     source_drv: pkg.source_drv.clone(),
                     source_nar_hash: pkg.source_nar_hash.clone(),
+                    expose: pkg.expose.clone(),
+                    expose_artifact: pkg.expose_artifact.clone(),
+                    permissions: pkg.permissions.clone(),
+                    bpf_lsm: pkg.bpf_lsm.clone(),
+                    attestation: pkg.attestation.clone(),
                 }),
             }
         } else {
@@ -466,6 +471,11 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
+                expose: None,
+                expose_artifact: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         }
     }

@@ -3,18 +3,16 @@
 # Each spec file under `tests/fleet/` is a function of `{ lib, pkgs,
 # systems }` returning one attrset; the discoverer in `default.nix`
 # evaluates the attrset against `fleetSpecType` here so eval-time
-# mistakes (typos in field names, malformed ignition, role-name typos)
+# mistakes (typos in field names, malformed ignition, package-name typos)
 # surface as `evalModules` errors rather than runtime failures inside
 # the harness.
 #
-# `fleetMachineType.options.roles`'s `enum` is derived from this
-# machine's chosen `system.config.aos.roles`, filtered to roles where
-# `bundle = true` on that system — only bundled roles are listable,
-# since a role not bundled on the host has no ignition fragment at
-# `/etc/aos/ignition-roles/<name>` for the synthesised merge entry to
-# point at. The type is forced lazily — only when a `roles` value is
-# type-checked, by which time `config.system` has been merged from the
-# user's definition.
+# `fleetMachineType.options.packages` derives its enum from this machine's
+# chosen system config, filtered to entries where `bundle = true` on that
+# system. Only bundled packages are listable: the payload and rendered expose
+# artifact must already be baked into the machine image. The type is forced
+# lazily — only when a value is type-checked, by which time `config.system` has
+# been merged from the user's definition.
 {
   lib,
   pkgs,
@@ -56,38 +54,29 @@
         description = ''
           The evaluated system attrset (e.g. `systems.server` in the
           discovered top-level `systems` attrset). The harness reads
-          `.config.system.build.{kernel,initrd}` and `.config.aos.roles`
+          `.config.system.build.{kernel,initrd}` and `.config.aos.packages`
           off this value; passing anything else fails fast with a clear
           message at the use site.
         '';
       };
 
-      roles = mkOption {
-        # Type-level enum derived from this machine's chosen system,
-        # restricted to roles where `bundle = true` — only bundled
-        # roles have a fragment at `/etc/aos/ignition-roles/<name>` on
-        # the running host for the synthesised
-        # `ignition.config.merge` entry to resolve. `availableRoles`
-        # is forced lazily — only when a `roles` value is type-checked,
-        # by which time `config.system` has been merged from the
-        # user's definition.
+      packages = mkOption {
         type = let
-          availableRoles = builtins.attrNames (
+          availablePackages = builtins.attrNames (
             lib.filterAttrs
-            (_: role: role.bundle)
-            (config.system.config.aos.roles or {})
+            (_: package: package.bundle)
+            (config.system.config.aos.packages or {})
           );
         in
-          types.listOf (types.enum availableRoles);
+          types.listOf (types.enum availablePackages);
         default = [];
         description = ''
-          Names of `aos.roles.<name>` to activate at runtime on this
-          machine. Each name is converted into a
-          `{ source = "file:///etc/aos/ignition-roles/<name>"; }`
-          entry on the machine's `ignition.config.merge` list. The
-          listed roles must have `bundle = true` on the chosen system
-          — otherwise the fragment is not on disk and the merge would
-          fail at first boot.
+          Names of `aos.packages.<name>` to activate at runtime on this
+          machine. Each package must have `bundle = true` on the chosen
+          system so the package payload and rendered expose artifact are
+          already present in the image. The fleet harness seeds the
+          per-machine system package profile before stage 2, and APM
+          reconciliation attaches and presets the selected package target.
         '';
       };
 
@@ -154,7 +143,28 @@
           per-test state; raise it for machines that stage large payloads
           under /var, e.g. a registry peer generating a static binary
           cache of a full system closure (tests/fleet/
-          apm-registry-upgrade.nix).
+          apm-registry-upgrade.nix). With `varProvisioning = "baked"`
+          (the default) this sizes the partition baked into the shared
+          disk image; with `varProvisioning = "ignition"` it is the size
+          ignition grows the per-run disk by and formats /var to at first
+          boot — the disk image itself carries no /var partition, so the
+          size no longer forks the (deduplicated) base image.
+        '';
+      };
+
+      varProvisioning = mkOption {
+        type = types.enum ["baked" "ignition"];
+        default = "baked";
+        description = ''
+          How this machine's /var comes to exist (kernel-boot machines
+          only). `baked` (default) ships /var as a pre-formatted, seeded
+          partition inside the disk image. `ignition` ships no /var
+          partition at all: ignition creates and formats it on first boot
+          at `varSizeMiB` (mirroring production), so every machine shares
+          one base disk image regardless of its /var size. With no baked
+          /var seed the guest agent arrives via the `aos-test-agent` package's
+          ignition fragment instead — the harness adds that package automatically
+          (lib/testing/fleet.nix), so tests need not list it.
         '';
       };
 
@@ -183,10 +193,7 @@
         default = null;
         description = ''
           Raw ignition config delivered to this machine via the
-          `aos-metadata` ISO. If both `roles` and
-          `instanceMetadata.config.ignition.config.merge` are populated,
-          the harness prepends role merge entries to the
-          test-supplied merge list.
+          `aos-metadata` ISO.
         '';
       };
     };

@@ -17,7 +17,7 @@
 #      serial shows a firmware rejection.
 #
 # Single image-boot machine (server-secureboot: server + signed image +
-# the bundled aos-test-agent role). This is the first CI proof that the
+# the bundled aos-test-agent package). This is the first CI proof that the
 # sd-boot/UKI chain is signed AND that the firmware rejects tampering.
 {
   lib,
@@ -93,7 +93,7 @@ in {
       system = systems.server-secureboot;
       bootMode = "image";
       imageDiskMiB = 16384;
-      roles = ["aos-test-agent"];
+      packages = ["aos-test-agent"];
       instanceMetadata = {
         format = "ignition";
         config = diskProvision;
@@ -138,7 +138,7 @@ in {
 
       # ════ 3. Reboot into enforcing mode; signed UKI must load ═════════
       target.reboot()
-      target.succeed("systemctl is-active multi-user.target")
+      target.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
       assert efivar_byte("SecureBoot") == 1, "Secure Boot should be enforcing"
       assert efivar_byte("SetupMode") == 0, "should remain in User Mode"
       # bootctl status exits non-zero on benign warnings while still
@@ -153,6 +153,16 @@ in {
       # enforcement, the real proof). Remount /boot rw to tamper it;
       # `mount` needs util-linux on PATH (not on the agent PATH).
       mount = "${pkgs.util-linux}/bin/mount"
+      # Ensure the ESP is actually mounted before flipping it rw. /boot is a
+      # plain fstab vfat mount (modules/base/filesystems.nix) pulled by
+      # local-fs.target, NOT a hard dependency of multi-user.target — under
+      # load its fsck+mount can still be settling (or have transiently
+      # failed) once we reach here, so a bare `remount,rw` races and dies
+      # with "mount point not mounted". `systemctl start boot.mount` is
+      # synchronous and idempotent: it joins an in-flight mount job or
+      # re-drives a failed/inactive one, and surfaces a clear error if the
+      # ESP genuinely cannot mount.
+      target.succeed("systemctl start boot.mount")
       target.succeed(f"{mount} -o remount,rw /boot")
       uki = target.succeed("ls /boot/EFI/Linux/aos-*.efi | head -1").strip()
       print(f"UKI: {uki}")

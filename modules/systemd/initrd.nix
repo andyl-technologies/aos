@@ -245,7 +245,6 @@ in {
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
       inherit initrdNetworkDir;
       maskedUnits = cfg.maskedUnits;
-      ignitionRoles = config.system.build.ignitionRolesBundle;
     };
   };
 }

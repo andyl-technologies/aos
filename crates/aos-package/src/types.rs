@@ -29,6 +29,72 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+/// Current registry package metadata format understood by this crate.
+pub const PACKAGE_META_FORMAT: u32 = 1;
+
+/// Registry feature flag for the RFC-0001 `expose` metadata schema.
+pub const FEATURE_EXPOSE_V1: &str = "expose-v1";
+
+/// Registry feature flag for RFC-0001 rendered expose artifacts.
+pub const FEATURE_EXPOSE_ARTIFACT_V1: &str = "expose-artifact-v1";
+
+/// Registry feature flag for the RFC-0001 permission manifest schema.
+pub const FEATURE_PERMISSIONS_V1: &str = "permissions-v1";
+
+/// Registry feature flag for RFC-0001 name-based package requirements.
+pub const FEATURE_REQUIRES_V1: &str = "requires-v1";
+
+/// Registry feature flag for RFC-0001 package config metadata.
+pub const FEATURE_CONFIG_V1: &str = "config-v1";
+
+/// Registry feature flag for RFC-0001 package config reload metadata.
+pub const FEATURE_RELOAD_V1: &str = "reload-v1";
+
+/// Registry feature flag for RFC-0001 typed package capability routing.
+pub const FEATURE_CAPABILITY_ROUTES_V1: &str = "capability-routes-v1";
+
+/// Registry feature flag for RFC-0001 per-package network policy grants.
+pub const FEATURE_NETWORK_POLICY_V1: &str = "network-policy-v1";
+
+/// Registry feature flag for RFC-0001 generated MAC profile artifacts.
+pub const FEATURE_MAC_PROFILE_V1: &str = "mac-profile-v1";
+
+/// Registry feature flag for RFC-0001 generated eBPF network policy loaders.
+pub const FEATURE_EBPF_NET_POLICY_V1: &str = "ebpf-net-policy-v1";
+
+/// Registry feature flag for RFC-0001 fleet-managed BPF-LSM policy packages.
+pub const FEATURE_BPF_LSM_POLICY_V1: &str = "bpf-lsm-policy-v1";
+
+/// Registry feature flag for RFC-0001 package attestation metadata.
+pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
+
+const SUPPORTED_PACKAGE_FEATURES: &[&str] = &[
+    FEATURE_EXPOSE_V1,
+    FEATURE_EXPOSE_ARTIFACT_V1,
+    FEATURE_PERMISSIONS_V1,
+    FEATURE_REQUIRES_V1,
+    FEATURE_CONFIG_V1,
+    FEATURE_RELOAD_V1,
+    FEATURE_CAPABILITY_ROUTES_V1,
+    FEATURE_NETWORK_POLICY_V1,
+    FEATURE_MAC_PROFILE_V1,
+    FEATURE_EBPF_NET_POLICY_V1,
+    FEATURE_BPF_LSM_POLICY_V1,
+    FEATURE_ATTESTATION_V1,
+];
+
+const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
+    "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
+];
+const LANDLOCK_WRITABLE_TEMP_PREFIXES: &[&str] = &["/tmp", "/var/tmp"];
+const ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES: &[&str] = &[
+    "/usr/lib/credstore.encrypted",
+    "/etc/credstore.encrypted",
+    "/run/credstore.encrypted",
+];
+const PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES: &[&str] =
+    &["/usr/lib/credstore", "/etc/credstore", "/run/credstore"];
+
 // ---------------------------------------------------------------------------
 // Well-known paths
 // ---------------------------------------------------------------------------
@@ -483,6 +549,1568 @@ pub struct PackageMeta {
     /// Pre-compiled images (only for sysroot packages).
     #[serde(default)]
     pub images: Vec<SysrootImageEntry>,
+    /// Minimum package metadata format required to safely consume this entry.
+    #[serde(
+        default,
+        rename = "min-format",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub min_format: Option<u32>,
+    /// Feature flags a consumer must understand before installing this entry.
+    #[serde(
+        default,
+        rename = "requires-features",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub requires_features: Vec<String>,
+    /// Optional RFC-0001 service exposure metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// Signed RFC-0001 permission manifest.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
+    /// Signed fleet BPF-LSM policy artifact metadata.
+    #[serde(default, rename = "bpf_lsm", skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts for this package.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
+}
+
+/// RFC-0001 service exposure metadata carried by registry package metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeMeta {
+    /// Systemd target that is the package activation handle.
+    pub target: String,
+    /// Unit files rendered for this package and pulled in by the target.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Container/root artifacts attached to the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<SysrootImageEntry>,
+    /// Package names that must be installed atomically with this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
+    /// Package-scoped config declarations and hot-reload policy.
+    #[serde(default, skip_serializing_if = "ExposeConfigMeta::is_empty")]
+    pub config: ExposeConfigMeta,
+    /// Typed capabilities this package offers to other packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provides: Vec<ProvidedCapabilityMeta>,
+    /// Typed capabilities this package consumes from other packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<RequiredCapabilityMeta>,
+}
+
+/// RFC-0001 package config metadata signed with exposure metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeConfigMeta {
+    /// Structured config artifacts `apm` validates and materializes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ConfigArtifactMeta>,
+    /// TPM2/systemd credential declarations consumed by package units.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credentials: Vec<CredentialMeta>,
+}
+
+impl ExposeConfigMeta {
+    /// Returns whether the package declares no config inputs.
+    pub fn is_empty(&self) -> bool {
+        self.artifacts.is_empty() && self.credentials.is_empty()
+    }
+
+    /// Returns whether config metadata asks runtime reconciliation to touch units.
+    pub fn has_unit_reconciliation(&self) -> bool {
+        self.artifacts
+            .iter()
+            .any(|artifact| !artifact.units.is_empty())
+    }
+}
+
+/// Structured config artifact materialized from host desired-package config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigArtifactMeta {
+    /// Stable artifact name inside the package config namespace.
+    pub name: String,
+    /// Absolute `/etc` path where `apm` materializes the artifact.
+    pub path: String,
+    /// Serialization format for the materialized artifact.
+    pub format: ConfigArtifactFormat,
+    /// Field names that must be present in desired config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    /// Field names that may be present in desired config.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+    /// Service units whose config changes should reconcile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Whether changed content reloads, restarts, or leaves units untouched.
+    #[serde(default, skip_serializing_if = "ConfigReloadPolicy::is_default")]
+    pub reload: ConfigReloadPolicy,
+}
+
+/// Materialized config artifact serialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigArtifactFormat {
+    /// systemd-compatible `KEY=VALUE` environment file.
+    Env,
+    /// JSON object.
+    Json,
+    /// TOML table.
+    Toml,
+}
+
+/// Config-change reconciliation policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigReloadPolicy {
+    /// Restart affected units on content change.
+    #[default]
+    Restart,
+    /// Reload affected units on content change, falling back to restart if unsupported.
+    Reload,
+    /// Materialize the artifact without service reconciliation.
+    None,
+}
+
+impl ConfigReloadPolicy {
+    fn is_default(policy: &Self) -> bool {
+        *policy == Self::Restart
+    }
+}
+
+/// TPM2/systemd credential declaration for an exposed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialMeta {
+    /// systemd credential name.
+    pub name: String,
+    /// Optional host-side credstore source path for fail-closed loading.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Optional inline systemd encrypted credential payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ciphertext: Option<String>,
+    /// Service units expected to consume this credential.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub units: Vec<String>,
+    /// Whether the credential is expected to be TPM2/systemd encrypted.
+    #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
+    pub encrypted: bool,
+}
+
+/// Typed package capability kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CapabilityKind {
+    /// A provider-owned directory exposed read-only to consumers.
+    Directory,
+    /// A provider service namespace joined by consumer units.
+    Namespace,
+    /// Socket/fd-passing capability routed through generated systemd drop-ins.
+    Socket,
+}
+
+/// Capability a package exposes to other packages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvidedCapabilityMeta {
+    /// Capability name unique within the provider package.
+    pub name: String,
+    /// Capability materialization kind.
+    pub kind: CapabilityKind,
+    /// Provider path for [`CapabilityKind::Directory`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Provider unit for [`CapabilityKind::Namespace`] or future socket routes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+/// Capability a package consumes from another installed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredCapabilityMeta {
+    /// Provider package name.
+    pub provider: String,
+    /// Capability name on the provider package.
+    pub name: String,
+    /// Expected capability kind.
+    pub kind: CapabilityKind,
+    /// Consumer unit that receives the generated route drop-in.
+    pub unit: String,
+}
+
+/// Store metadata for rendered RFC-0001 exposure artifacts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExposeArtifactMeta {
+    /// Store path containing `units/` and `manifest.json`.
+    pub store_path: String,
+    /// NAR hash of the rendered expose artifact.
+    pub nar_hash: String,
+    /// Uncompressed NAR size of the rendered expose artifact in bytes.
+    pub nar_size: u64,
+}
+
+/// Signed metadata for fleet-managed BPF-LSM policy artifacts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BpfLsmPolicyMeta {
+    /// BPF-LSM policies carried by this package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<BpfLsmPolicyArtifactMeta>,
+}
+
+impl BpfLsmPolicyMeta {
+    /// Returns whether the package declares no BPF-LSM policies.
+    pub fn is_empty(&self) -> bool {
+        self.policies.is_empty()
+    }
+}
+
+/// Registry-published runtime integrity, attestation, and provenance facts.
+///
+/// These are catalog facts, not runtime authority. The registry distributes
+/// signed root hashes and provenance references, while dm-verity is enforced by
+/// the kernel against the platform keyring and TPM measurements are verified by
+/// a fleet verifier against the golden tuple.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationMeta {
+    /// Digest used as the package-root input to the TPM measurement tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_digest: Option<String>,
+    /// dm-verity Merkle root hash for the package root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash: Option<String>,
+    /// Registry-served PKCS#7 signature over [`AttestationMeta::root_hash`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash_sig: Option<String>,
+    /// Registry-served in-toto/SLSA provenance attestation reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<String>,
+    /// Golden package measurement tuple extended into the package-set PCR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<String>,
+}
+
+impl AttestationMeta {
+    /// Returns whether no attestation facts are declared.
+    pub fn is_empty(&self) -> bool {
+        self.root_digest.is_none()
+            && self.root_hash.is_none()
+            && self.root_hash_sig.is_none()
+            && self.provenance.is_none()
+            && self.measurement.is_none()
+    }
+}
+
+/// Returns whether package metadata must be backed by DSSE provenance.
+pub(crate) fn package_requires_provenance(meta: &PackageMeta) -> bool {
+    rfc0001_metadata_requires_provenance(
+        meta.expose.as_ref(),
+        meta.expose_artifact.as_ref(),
+        &meta.permissions,
+        meta.bpf_lsm.as_ref(),
+    )
+}
+
+/// Returns whether RFC-0001 metadata fields must be backed by DSSE provenance.
+pub(crate) fn rfc0001_metadata_requires_provenance(
+    expose: Option<&ExposeMeta>,
+    expose_artifact: Option<&ExposeArtifactMeta>,
+    permissions: &PermissionsMeta,
+    bpf_lsm: Option<&BpfLsmPolicyMeta>,
+) -> bool {
+    expose.is_some()
+        || expose_artifact.is_some()
+        || !permissions.is_empty()
+        || bpf_lsm.is_some_and(|bpf_lsm| !bpf_lsm.is_empty())
+}
+
+/// One BPF-LSM policy artifact carried by a signed package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BpfLsmPolicyArtifactMeta {
+    /// Stable policy name used for host policy selection and bpffs pins.
+    pub name: String,
+    /// Relative JSON policy path inside the package root.
+    pub policy: String,
+    /// Relative BPF object path inside the package root.
+    pub object: String,
+    /// BPF program names expected in the object and policy JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub programs: Vec<String>,
+}
+
+/// Signed RFC-0001 package permission manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PermissionsMeta {
+    /// Linux capabilities requested by the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    /// Package network mode; absent means the default private mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkPermission>,
+    /// TCP ports the package may bind under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-bind", skip_serializing_if = "Vec::is_empty")]
+    pub tcp_bind: Vec<u16>,
+    /// TCP ports the package may connect to under Landlock/eBPF network policy.
+    #[serde(default, rename = "tcp-connect", skip_serializing_if = "Vec::is_empty")]
+    pub tcp_connect: Vec<u16>,
+    /// Device nodes requested by the package.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<String>,
+    /// Host paths requested by the package.
+    #[serde(default, rename = "host-paths", skip_serializing_if = "Vec::is_empty")]
+    pub host_paths: Vec<HostPathPermission>,
+    /// Whether the package requests cgroup controller delegation.
+    #[serde(default, rename = "cgroup-delegate", skip_serializing_if = "is_false")]
+    pub cgroup_delegate: bool,
+    /// Whether the package requests host-root-equivalent users.
+    #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
+    pub privileged_users: bool,
+    /// Host-fulfilled kernel modules requested by the package.
+    #[serde(
+        default,
+        rename = "kernel-modules",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub kernel_modules: Vec<String>,
+    /// Named syscall profile requested by the package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub syscalls: Option<SyscallProfile>,
+    /// Generated SELinux/AppArmor label requested by the package.
+    #[serde(
+        default,
+        rename = "security-label",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub security_label: Option<String>,
+    /// Computed package confinement summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confinement: Option<ConfinementMeta>,
+}
+
+impl PermissionsMeta {
+    /// Returns whether the manifest carries no explicit permission requests.
+    pub fn is_empty(&self) -> bool {
+        self.capabilities.is_empty()
+            && self.network.is_none()
+            && self.tcp_bind.is_empty()
+            && self.tcp_connect.is_empty()
+            && self.devices.is_empty()
+            && self.host_paths.is_empty()
+            && !self.cgroup_delegate
+            && !self.privileged_users
+            && self.kernel_modules.is_empty()
+            && self.syscalls.is_none()
+            && self.security_label.is_none()
+            && self.confinement.is_none()
+    }
+
+    /// Returns whether the manifest requests host-policy-admitted grants.
+    pub fn requires_policy_admission(&self) -> bool {
+        self.network
+            .is_some_and(|network| network != NetworkPermission::Private)
+            || !self.tcp_bind.is_empty()
+            || !self.tcp_connect.is_empty()
+            || !self.capabilities.is_empty()
+            || !self.devices.is_empty()
+            || !self.host_paths.is_empty()
+            || self.cgroup_delegate
+            || self.privileged_users
+            || !self.kernel_modules.is_empty()
+            || self
+                .syscalls
+                .is_some_and(|syscalls| syscalls != SyscallProfile::Restricted)
+    }
+
+    /// Returns whether this manifest needs host policy for a package name.
+    pub fn requires_policy_admission_for_package(&self, package_name: &str) -> bool {
+        self.requires_policy_admission()
+            || self
+                .security_label
+                .as_ref()
+                .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
+    }
+
+    /// Returns whether this manifest carries explicit Landlock/eBPF policy.
+    pub fn has_network_policy(&self) -> bool {
+        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty() || !self.host_paths.is_empty()
+    }
+
+    /// Computes the RFC-0001 confinement summary from permission grants.
+    pub fn computed_confinement(&self) -> ConfinementMeta {
+        let network = self.network.unwrap_or(NetworkPermission::Private);
+        let syscall_profile = self.syscalls.unwrap_or(SyscallProfile::Restricted);
+        let mut holes = Vec::new();
+
+        if network != NetworkPermission::Private {
+            holes.push(format!("network:{}", network.as_manifest_str()));
+        }
+        holes.extend(self.tcp_bind.iter().map(|port| format!("tcp-bind:{port}")));
+        holes.extend(
+            self.tcp_connect
+                .iter()
+                .map(|port| format!("tcp-connect:{port}")),
+        );
+        holes.extend(
+            self.capabilities
+                .iter()
+                .map(|capability| format!("capability:{capability}")),
+        );
+        holes.extend(self.devices.iter().map(|device| format!("device:{device}")));
+        holes.extend(self.host_paths.iter().map(|host_path| {
+            format!(
+                "host-path:{}:{}",
+                host_path.mode.as_manifest_str(),
+                host_path.path
+            )
+        }));
+        if self.cgroup_delegate {
+            holes.push("cgroup-delegate".into());
+        }
+        if self.privileged_users {
+            holes.push("privileged-users".into());
+        }
+        if syscall_profile != SyscallProfile::Restricted {
+            holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
+        }
+
+        let root_equivalent = self
+            .capabilities
+            .iter()
+            .any(|capability| capability == "CAP_SYS_ADMIN")
+            || self.privileged_users
+            || self.host_paths.iter().any(|host_path| {
+                host_path.mode == HostPathMode::Rw && has_system_location_prefix(&host_path.path)
+            });
+
+        let class = if root_equivalent {
+            ConfinementClass::Unconfined
+        } else if holes.is_empty() {
+            ConfinementClass::Sandboxed
+        } else {
+            ConfinementClass::SandboxedWithHoles
+        };
+        let label = if class == ConfinementClass::SandboxedWithHoles {
+            format!("sandboxed-with-holes ({})", holes.join(", "))
+        } else {
+            class.as_manifest_str().to_string()
+        };
+
+        ConfinementMeta {
+            class,
+            label,
+            holes,
+        }
+    }
+}
+
+/// Computed RFC-0001 package confinement summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfinementMeta {
+    /// Coarse confinement class computed from generated unit permissions.
+    pub class: ConfinementClass,
+    /// Human-readable confinement label shown by package tools.
+    pub label: String,
+    /// Permission holes that prevent the package from being fully sandboxed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<String>,
+}
+
+/// Coarse RFC-0001 package confinement class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfinementClass {
+    /// Generated units have the default sandbox and no explicit holes.
+    Sandboxed,
+    /// Generated units keep the default sandbox but include explicit holes.
+    SandboxedWithHoles,
+    /// Generated units request root-equivalent or host-level privileges.
+    Unconfined,
+}
+
+impl ConfinementClass {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            ConfinementClass::Sandboxed => "sandboxed",
+            ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
+            ConfinementClass::Unconfined => "unconfined",
+        }
+    }
+}
+
+/// RFC-0001 package network mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NetworkPermission {
+    /// Inbound-only private namespace with host-owned socket activation.
+    Private,
+    /// Private namespace with an outbound veth path.
+    PrivateOutbound,
+    /// Host network namespace.
+    Host,
+}
+
+impl NetworkPermission {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            NetworkPermission::Private => "private",
+            NetworkPermission::PrivateOutbound => "private-outbound",
+            NetworkPermission::Host => "host",
+        }
+    }
+}
+
+/// Host path permission requested by a package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostPathPermission {
+    /// Absolute host path to bind into the package.
+    pub path: String,
+    /// Whether the bind is read-only or read-write.
+    pub mode: HostPathMode,
+}
+
+/// Host path access mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostPathMode {
+    /// Read-only host path bind.
+    ReadOnly,
+    /// Read-write host path bind.
+    Rw,
+}
+
+impl HostPathMode {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            HostPathMode::ReadOnly => "read-only",
+            HostPathMode::Rw => "rw",
+        }
+    }
+}
+
+/// Named syscall profile pinned to systemd syscall groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SyscallProfile {
+    /// Minimal syscall profile for tightly sandboxed services.
+    Restricted,
+    /// Systemd's `@system-service` syscall group profile.
+    SystemService,
+    /// Privileged syscall profile for infrastructure packages.
+    Privileged,
+}
+
+impl SyscallProfile {
+    fn as_manifest_str(self) -> &'static str {
+        match self {
+            SyscallProfile::Restricted => "restricted",
+            SyscallProfile::SystemService => "system-service",
+            SyscallProfile::Privileged => "privileged",
+        }
+    }
+}
+
+/// Named host policy tier for RFC-0001 permission admission.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyTier {
+    /// Tightest policy tier.
+    Restricted,
+    /// Default policy tier.
+    #[default]
+    Baseline,
+    /// Privileged policy tier.
+    Privileged,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Validate that a package metadata entry can be safely consumed.
+///
+/// # Errors
+///
+/// Returns an error when the entry requires a newer format, names an
+/// unsupported feature, uses RFC-0001 metadata without declaring its feature
+/// gate, names invalid package requirements, or requests `CAP_SYS_MODULE`
+/// inside the workload instead of using the host-fulfilled `kernel-modules`
+/// permission.
+pub fn validate_supported_package_meta(meta: &PackageMeta) -> Result<()> {
+    validate_supported_package_meta_with(meta, PACKAGE_META_FORMAT, SUPPORTED_PACKAGE_FEATURES)
+}
+
+/// Validate a package metadata entry against an explicit format/feature set.
+///
+/// This helper models older clients in tests: a client that supports the
+/// common gate fields but lacks the named feature must refuse the entry before
+/// it can silently ignore privilege metadata.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_supported_package_meta`] would reject the
+/// entry for the supplied capabilities.
+pub fn validate_supported_package_meta_with(
+    meta: &PackageMeta,
+    supported_format: u32,
+    supported_features: &[&str],
+) -> Result<()> {
+    if let Some(min_format) = meta.min_format {
+        if min_format > supported_format {
+            bail!(
+                "package '{}' requires package metadata format {min_format}, but this apm supports {supported_format}",
+                meta.name
+            );
+        }
+    }
+
+    for feature in &meta.requires_features {
+        if !supported_features.contains(&feature.as_str()) {
+            bail!(
+                "package '{}' requires unsupported registry feature '{feature}'",
+                meta.name
+            );
+        }
+    }
+
+    if meta.expose.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_V1)?;
+        require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
+    }
+    if meta.expose_artifact.is_some() {
+        require_feature(meta, FEATURE_EXPOSE_ARTIFACT_V1)?;
+    }
+    if !meta.permissions.is_empty() {
+        require_feature(meta, FEATURE_PERMISSIONS_V1)?;
+        if meta.permissions.has_network_policy() {
+            require_feature(meta, FEATURE_NETWORK_POLICY_V1)?;
+        }
+    }
+    if let Some(bpf_lsm) = &meta.bpf_lsm {
+        if !bpf_lsm.is_empty() {
+            require_feature(meta, FEATURE_BPF_LSM_POLICY_V1)?;
+            validate_bpf_lsm_policy_meta(bpf_lsm)
+                .with_context(|| format!("invalid BPF-LSM policy metadata for '{}'", meta.name))?;
+        }
+    }
+    if !meta.attestation.is_empty() {
+        require_feature(meta, FEATURE_ATTESTATION_V1)?;
+        validate_attestation_meta(&meta.attestation)
+            .with_context(|| format!("invalid attestation metadata for '{}'", meta.name))?;
+    }
+    if package_requires_provenance(meta) && meta.attestation.provenance.is_none() {
+        bail!(
+            "package '{}' uses RFC-0001 exposed or permission metadata without attestation provenance",
+            meta.name
+        );
+    }
+
+    if let Some(expose) = &meta.expose {
+        validate_expose_meta_for_package(&meta.name, expose)?;
+        validate_attestation_expose_consistency(meta)?;
+        if !expose.requires.is_empty() {
+            require_feature(meta, FEATURE_REQUIRES_V1)?;
+        }
+        if !expose.config.is_empty() {
+            require_feature(meta, FEATURE_CONFIG_V1)?;
+        }
+        if expose.config.has_unit_reconciliation() {
+            require_feature(meta, FEATURE_RELOAD_V1)?;
+        }
+        if !expose.provides.is_empty() || !expose.uses.is_empty() {
+            require_feature(meta, FEATURE_CAPABILITY_ROUTES_V1)?;
+        }
+        if expose_uses_ebpf_net_policy(&meta.name, expose) {
+            require_feature(meta, FEATURE_EBPF_NET_POLICY_V1)?;
+        }
+        if expose_uses_mac_profile(&meta.name, expose) {
+            require_feature(meta, FEATURE_MAC_PROFILE_V1)?;
+        }
+        for required in &expose.requires {
+            validate_package_name(required)
+                .with_context(|| format!("invalid requires entry in package '{}'", meta.name))?;
+        }
+    }
+    if let Some(artifact) = &meta.expose_artifact {
+        if meta.expose.is_none() {
+            bail!(
+                "package '{}' carries expose artifact metadata without expose metadata",
+                meta.name
+            );
+        }
+        validate_expose_artifact_meta(artifact)
+            .with_context(|| format!("invalid expose artifact for package '{}'", meta.name))?;
+    }
+
+    validate_permissions_meta(&meta.name, &meta.permissions)?;
+
+    Ok(())
+}
+
+fn require_feature(meta: &PackageMeta, feature: &str) -> Result<()> {
+    if meta
+        .requires_features
+        .iter()
+        .any(|declared| declared == feature)
+    {
+        return Ok(());
+    }
+
+    bail!(
+        "package '{}' uses registry feature '{feature}' without declaring it in requires-features",
+        meta.name
+    )
+}
+
+fn expose_uses_ebpf_net_policy(package_name: &str, expose: &ExposeMeta) -> bool {
+    let unit = format!("aos-pkg-{package_name}-ebpf.service");
+    expose.units.iter().any(|candidate| candidate == &unit)
+}
+
+fn expose_uses_mac_profile(package_name: &str, expose: &ExposeMeta) -> bool {
+    let unit = format!("aos-pkg-{package_name}-mac.service");
+    expose.units.iter().any(|candidate| candidate == &unit)
+}
+
+/// Validate an RFC-0001 exposure metadata block.
+///
+/// # Errors
+///
+/// Returns an error when the target/unit names, image metadata, or required
+/// package names are malformed.
+pub fn validate_expose_meta(expose: &ExposeMeta) -> Result<()> {
+    validate_target_name(&expose.target)?;
+    let mut unit_names = std::collections::BTreeSet::new();
+    for unit in &expose.units {
+        validate_unit_name(unit)?;
+        unit_names.insert(unit.as_str());
+    }
+    for image in &expose.images {
+        validate_image_entry(image)?;
+    }
+    for required in &expose.requires {
+        validate_package_name(required)?;
+    }
+    validate_expose_config_meta(&expose.config)?;
+    validate_capability_routes(expose)?;
+    validate_expose_unit_references(expose, &unit_names)?;
+    Ok(())
+}
+
+/// Validate an RFC-0001 exposure metadata block for a package.
+///
+/// # Errors
+///
+/// Returns an error when [`validate_expose_meta`] rejects the metadata or the
+/// target is not the package-owned `aos-pkg-<package>.target` activation unit.
+pub fn validate_expose_meta_for_package(package_name: &str, expose: &ExposeMeta) -> Result<()> {
+    validate_package_name(package_name)?;
+    validate_expose_meta(expose)?;
+    let expected = format!("aos-pkg-{package_name}.target");
+    if expose.target != expected {
+        bail!(
+            "expose target for package '{package_name}' must equal {expected}: {}",
+            expose.target
+        );
+    }
+    Ok(())
+}
+
+fn validate_expose_unit_references(
+    expose: &ExposeMeta,
+    unit_names: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    for artifact in &expose.config.artifacts {
+        for unit in &artifact.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "config artifact '{}' references unknown expose unit '{}'",
+                    artifact.name,
+                    unit
+                );
+            }
+        }
+    }
+    for credential in &expose.config.credentials {
+        for unit in &credential.units {
+            if !unit_names.contains(unit.as_str()) {
+                bail!(
+                    "credential '{}' references unknown expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
+        }
+    }
+    for provided in &expose.provides {
+        if let Some(unit) = &provided.unit
+            && !unit_names.contains(unit.as_str())
+        {
+            bail!(
+                "provided capability '{}' references unknown expose unit '{}'",
+                provided.name,
+                unit
+            );
+        }
+    }
+    for required in &expose.uses {
+        if !required.unit.ends_with(".service") {
+            bail!(
+                "required capability '{}.{}' references non-service expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+        if !unit_names.contains(required.unit.as_str()) {
+            bail!(
+                "required capability '{}.{}' references unknown expose unit '{}'",
+                required.provider,
+                required.name,
+                required.unit
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validate RFC-0001 package config metadata.
+///
+/// # Errors
+///
+/// Returns an error when an artifact, credential, field name, or target unit is
+/// malformed.
+pub fn validate_expose_config_meta(config: &ExposeConfigMeta) -> Result<()> {
+    let mut artifact_names = std::collections::BTreeSet::new();
+    let mut artifact_paths = std::collections::BTreeSet::new();
+    for artifact in &config.artifacts {
+        validate_config_artifact_name(&artifact.name)?;
+        if !artifact_names.insert(&artifact.name) {
+            bail!("duplicate config artifact name '{}'", artifact.name);
+        }
+        validate_config_artifact_path(&artifact.path)?;
+        if !artifact_paths.insert(&artifact.path) {
+            bail!("duplicate config artifact path '{}'", artifact.path);
+        }
+        let mut fields = std::collections::BTreeSet::new();
+        for field in artifact.required.iter().chain(&artifact.optional) {
+            validate_config_field_name(field)?;
+            if !fields.insert(field) {
+                bail!(
+                    "config artifact '{}' declares field '{}' more than once",
+                    artifact.name,
+                    field
+                );
+            }
+        }
+        for unit in &artifact.units {
+            validate_unit_name(unit)?;
+        }
+    }
+
+    let mut credential_names = std::collections::BTreeSet::new();
+    for credential in &config.credentials {
+        validate_credential_name(&credential.name)?;
+        if !credential_names.insert(&credential.name) {
+            bail!("duplicate credential name '{}'", credential.name);
+        }
+        if let Some(source) = &credential.source {
+            validate_credential_source_path(source, credential.encrypted)?;
+        }
+        if let Some(ciphertext) = &credential.ciphertext {
+            if !credential.encrypted {
+                bail!(
+                    "credential '{}' declares ciphertext but is not encrypted",
+                    credential.name
+                );
+            }
+            if credential.source.is_some() {
+                bail!(
+                    "credential '{}' must not declare both source and ciphertext",
+                    credential.name
+                );
+            }
+            validate_credential_ciphertext(ciphertext)?;
+        }
+        for unit in &credential.units {
+            validate_unit_name(unit)?;
+            if !unit.ends_with(".service") {
+                bail!(
+                    "credential '{}' references non-service expose unit '{}'",
+                    credential.name,
+                    unit
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate rendered RFC-0001 expose artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when the store path is not absolute or the recorded NAR
+/// fields are missing or malformed.
+pub fn validate_expose_artifact_meta(artifact: &ExposeArtifactMeta) -> Result<()> {
+    validate_absolute_path(&artifact.store_path, "expose artifact store path")?;
+    if store_path_hash_component(&artifact.store_path).is_none() {
+        bail!(
+            "expose artifact store path is not a Nix-style store path: {}",
+            artifact.store_path
+        );
+    }
+    if !artifact.nar_hash.starts_with("sha256:") && !artifact.nar_hash.starts_with("sha256-") {
+        bail!(
+            "expose artifact '{}' has invalid NAR hash",
+            artifact.store_path
+        );
+    }
+    if artifact.nar_size == 0 {
+        bail!(
+            "expose artifact '{}' must record a non-zero NAR size",
+            artifact.store_path
+        );
+    }
+    Ok(())
+}
+
+/// Validate signed BPF-LSM policy artifact metadata.
+///
+/// # Errors
+///
+/// Returns an error when names are malformed, artifact paths are not safe
+/// package-relative paths, or program names are not BPF C identifiers.
+pub fn validate_bpf_lsm_policy_meta(meta: &BpfLsmPolicyMeta) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for policy in &meta.policies {
+        validate_policy_artifact_name(&policy.name)?;
+        validate_relative_artifact_path("BPF-LSM policy", &policy.policy, ".json")?;
+        validate_relative_artifact_path("BPF-LSM object", &policy.object, ".bpf.o")?;
+        if !seen.insert(&policy.name) {
+            bail!("duplicate BPF-LSM policy '{}'", policy.name);
+        }
+        if policy.programs.is_empty() {
+            bail!(
+                "BPF-LSM policy '{}' must name at least one program",
+                policy.name
+            );
+        }
+        let mut programs = std::collections::BTreeSet::new();
+        for program in &policy.programs {
+            validate_bpf_program_name(program)?;
+            if !programs.insert(program) {
+                bail!(
+                    "BPF-LSM policy '{}' contains duplicate program '{}'",
+                    policy.name,
+                    program
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate runtime integrity, attestation, and provenance metadata.
+///
+/// # Errors
+///
+/// Returns an error when root-hash/signature fields are incomplete, hash fields
+/// are malformed SHA-256 digests, or registry-served artifact references are
+/// unsafe.
+pub fn validate_attestation_meta(meta: &AttestationMeta) -> Result<()> {
+    if meta.root_hash.is_some() != meta.root_hash_sig.is_some() {
+        bail!("attestation root_hash and root_hash_sig must be declared together");
+    }
+    if meta.measurement.is_some() && meta.root_digest.is_none() && meta.root_hash.is_none() {
+        bail!("attestation measurement requires root_digest or root_hash/root_hash_sig");
+    }
+    if let Some(root_digest) = &meta.root_digest {
+        validate_sha256_digest("attestation root_digest", root_digest)?;
+    }
+    if let Some(root_hash) = &meta.root_hash {
+        validate_sha256_digest("attestation root_hash", root_hash)?;
+    }
+    if let (Some(root_digest), Some(root_hash)) = (&meta.root_digest, &meta.root_hash)
+        && canonical_sha256_digest(root_digest) != canonical_sha256_digest(root_hash)
+    {
+        bail!("attestation root_digest must match root_hash when both are declared");
+    }
+    if let Some(measurement) = &meta.measurement {
+        validate_sha256_digest("attestation measurement", measurement)?;
+    }
+    if let Some(root_hash_sig) = &meta.root_hash_sig {
+        validate_relative_artifact_path("attestation root_hash_sig", root_hash_sig, ".p7s")?;
+    }
+    if let Some(provenance) = &meta.provenance {
+        validate_attestation_provenance_ref(provenance)?;
+    }
+    Ok(())
+}
+
+/// Validate a registry-hosted attestation provenance JSONL reference.
+///
+/// The package registry cache has reserved top-level trees for package
+/// metadata, store-graph records, transport state, and transparency metadata.
+/// Provenance statements may use the generated `provenance/` tree or a
+/// custom artifact directory, but must not masquerade as those cache-owned
+/// trees.
+///
+/// # Errors
+///
+/// Returns an error when `path` is not a safe relative `.jsonl` artifact path
+/// or targets a cache-owned registry subtree.
+pub fn validate_attestation_provenance_ref(path: &str) -> Result<()> {
+    validate_relative_artifact_path("attestation provenance", path, ".jsonl")?;
+    if matches!(
+        Path::new(path).components().next(),
+        Some(std::path::Component::Normal(part))
+            if matches!(
+                part.to_str(),
+                Some("packages" | "store" | "repo.git" | "transparency")
+            )
+    ) {
+        bail!("attestation provenance path '{path}' must not target a cache-owned subtree");
+    }
+    Ok(())
+}
+
+fn validate_attestation_expose_consistency(meta: &PackageMeta) -> Result<()> {
+    let (Some(root_hash), Some(root_hash_sig), Some(expose)) = (
+        meta.attestation.root_hash.as_deref(),
+        meta.attestation.root_hash_sig.as_deref(),
+        meta.expose.as_ref(),
+    ) else {
+        return Ok(());
+    };
+    let Some(attestation_root_hash) = canonical_sha256_digest(root_hash) else {
+        return Ok(());
+    };
+
+    let mut saw_verity_image = false;
+    for image in &expose.images {
+        if image.root_hash.is_none() && image.root_hash_sig.is_none() {
+            continue;
+        }
+        saw_verity_image = true;
+        let image_root_hash = image.root_hash.as_deref().and_then(canonical_sha256_digest);
+        if image_root_hash.as_deref() == Some(attestation_root_hash.as_str())
+            && image.root_hash_sig.as_deref() == Some(root_hash_sig)
+        {
+            return Ok(());
+        }
+    }
+
+    if saw_verity_image {
+        bail!(
+            "attestation root_hash/root_hash_sig for package '{}' must match a verity expose image",
+            meta.name
+        );
+    }
+    Ok(())
+}
+
+fn validate_sha256_digest(kind: &str, digest: &str) -> Result<()> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))
+        .with_context(|| format!("{kind} must start with sha256: or sha256-"))?;
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("{kind} must contain a 64-character SHA-256 digest");
+    }
+    Ok(())
+}
+
+fn canonical_sha256_digest(digest: &str) -> Option<String> {
+    let hex = digest
+        .strip_prefix("sha256:")
+        .or_else(|| digest.strip_prefix("sha256-"))?;
+    if hex.len() == 64 && hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Some(format!("sha256:{}", hex.to_ascii_lowercase()));
+    }
+    None
+}
+
+fn validate_policy_artifact_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        bail!("invalid BPF-LSM policy name '{name}'");
+    }
+    Ok(())
+}
+
+fn validate_relative_artifact_path(kind: &str, path: &str, suffix: &str) -> Result<()> {
+    if !path.ends_with(suffix) {
+        bail!("{kind} path '{path}' must be a relative *{suffix} path");
+    }
+    validate_relative_artifact_member_path(kind, path)
+}
+
+fn validate_relative_artifact_member_path(kind: &str, path: &str) -> Result<()> {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+        bail!("{kind} path '{path}' must be a relative artifact path");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '/' | '+' | '=' | '@' | '-')
+    }) {
+        bail!("{kind} path '{path}' contains unsupported characters");
+    }
+    for component in Path::new(path).components() {
+        match component {
+            std::path::Component::Normal(part) if !part.is_empty() => {}
+            _ => bail!("{kind} path '{path}' must not contain '.', '..', or prefixes"),
+        }
+    }
+    Ok(())
+}
+
+fn validate_bpf_program_name(program: &str) -> Result<()> {
+    let mut chars = program.chars();
+    let Some(first) = chars.next() else {
+        bail!("BPF program name must not be empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic())
+        || !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+    {
+        bail!("invalid BPF program name '{program}'");
+    }
+    Ok(())
+}
+
+/// Validate an RFC-0001 permission manifest.
+///
+/// # Errors
+///
+/// Returns an error when a manifest entry is malformed or asks for
+/// `CAP_SYS_MODULE` inside the workload.
+pub fn validate_permissions_meta(package_name: &str, permissions: &PermissionsMeta) -> Result<()> {
+    for capability in &permissions.capabilities {
+        validate_capability_name(capability)?;
+        if capability == "CAP_SYS_MODULE" {
+            bail!(
+                "package '{package_name}' requests CAP_SYS_MODULE; load modules through kernel-modules instead"
+            );
+        }
+    }
+    validate_tcp_ports("tcp-bind", &permissions.tcp_bind)?;
+    validate_tcp_ports("tcp-connect", &permissions.tcp_connect)?;
+    for device in &permissions.devices {
+        validate_absolute_path(device, "device")?;
+    }
+    for host_path in &permissions.host_paths {
+        validate_host_path_permission(host_path)?;
+    }
+    for module in &permissions.kernel_modules {
+        validate_kernel_module_name(module)?;
+    }
+    if let Some(label) = &permissions.security_label {
+        validate_security_label(label)?;
+    }
+    if let Some(confinement) = &permissions.confinement {
+        validate_confinement_meta(confinement)?;
+        let computed = permissions.computed_confinement();
+        if confinement != &computed {
+            bail!(
+                "package '{package_name}' permissions.confinement does not match computed confinement: expected class {:?}, label '{}', holes {:?}; got class {:?}, label '{}', holes {:?}",
+                computed.class,
+                computed.label,
+                computed.holes,
+                confinement.class,
+                confinement.label,
+                confinement.holes
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_tcp_ports(kind: &str, ports: &[u16]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for port in ports {
+        if *port == 0 {
+            bail!("{kind} contains invalid TCP port 0");
+        }
+        if !seen.insert(port) {
+            bail!("{kind} contains duplicate TCP port {port}");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_capability_name(capability: &str) -> Result<()> {
+    if capability.starts_with("CAP_")
+        && capability
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
+    {
+        return Ok(());
+    }
+    bail!("invalid capability name '{capability}'")
+}
+
+pub(crate) fn validate_kernel_module_name(module: &str) -> Result<()> {
+    if module.is_empty()
+        || !module
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid kernel module name '{module}'");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_absolute_path(path: &str, kind: &str) -> Result<()> {
+    if Path::new(path).is_absolute() {
+        return Ok(());
+    }
+    bail!("{kind} must be an absolute path: {path}")
+}
+
+fn validate_host_path_permission(host_path: &HostPathPermission) -> Result<()> {
+    validate_absolute_path(&host_path.path, "host path")?;
+    let path = Path::new(&host_path.path);
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("host path must not contain '..': {}", host_path.path);
+    }
+    if !host_path.path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!(
+            "host path contains unsupported characters: {:?}",
+            host_path.path
+        );
+    }
+    if host_path.mode == HostPathMode::ReadOnly
+        && LANDLOCK_WRITABLE_TEMP_PREFIXES
+            .iter()
+            .any(|prefix| path.starts_with(prefix))
+    {
+        bail!(
+            "read-only host paths under /tmp or /var/tmp would be writable through the package Landlock temp grants: {}",
+            host_path.path
+        );
+    }
+    Ok(())
+}
+
+fn validate_config_artifact_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+        && !name.contains("..")
+    {
+        return Ok(());
+    }
+    bail!("invalid config artifact name '{name}'")
+}
+
+fn validate_config_artifact_path(path: &str) -> Result<()> {
+    validate_absolute_path(path, "config artifact path")?;
+    let p = Path::new(path);
+    if p.starts_with("/etc/aos/packages") && p.components().all(|c| c.as_os_str() != "..") {
+        return Ok(());
+    }
+    bail!("config artifact path must be under /etc/aos/packages: {path}")
+}
+
+pub(crate) fn validate_config_field_name(field: &str) -> Result<()> {
+    if !field.is_empty()
+        && field.chars().enumerate().all(|(idx, ch)| {
+            ch == '_' || ch.is_ascii_alphanumeric() && (idx > 0 || !ch.is_ascii_digit())
+        })
+    {
+        return Ok(());
+    }
+    bail!("invalid config field name '{field}'")
+}
+
+pub(crate) fn validate_credential_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid credential name '{name}'")
+}
+
+fn validate_credential_source_path(path: &str, encrypted: bool) -> Result<()> {
+    validate_absolute_path(path, "credential source path")?;
+    let p = Path::new(path);
+    if p.components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        bail!("credential source path must not contain '..': {path}");
+    }
+    if !path.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '/' | '.' | '_' | '-' | '+' | '=' | '@')
+    }) {
+        bail!("credential source path contains unsupported characters: {path:?}");
+    }
+    let allowed = if encrypted {
+        ENCRYPTED_CREDENTIAL_SOURCE_PREFIXES
+    } else {
+        PLAINTEXT_CREDENTIAL_SOURCE_PREFIXES
+    };
+    if allowed
+        .iter()
+        .any(|prefix| path != *prefix && p.starts_with(prefix))
+    {
+        return Ok(());
+    }
+    if encrypted {
+        bail!(
+            "encrypted credential source path must be under /usr/lib/credstore.encrypted, /etc/credstore.encrypted, or /run/credstore.encrypted: {path}"
+        );
+    }
+    bail!(
+        "credential source path must be under /usr/lib/credstore, /etc/credstore, or /run/credstore: {path}"
+    )
+}
+
+pub(crate) fn validate_credential_ciphertext(ciphertext: &str) -> Result<()> {
+    if !ciphertext.is_empty()
+        && ciphertext
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '/' | '=' | '.' | '_' | '-'))
+    {
+        return Ok(());
+    }
+    bail!("credential ciphertext contains unsupported characters")
+}
+
+fn validate_capability_routes(expose: &ExposeMeta) -> Result<()> {
+    let mut provided_names = std::collections::BTreeSet::new();
+    for provided in &expose.provides {
+        validate_capability_route_name(&provided.name)?;
+        if !provided_names.insert(&provided.name) {
+            bail!("duplicate provided capability '{}'", provided.name);
+        }
+        match provided.kind {
+            CapabilityKind::Directory => {
+                let Some(path) = provided.path.as_ref() else {
+                    bail!(
+                        "directory capability '{}' must declare a path",
+                        provided.name
+                    );
+                };
+                validate_absolute_path(path, "provided directory capability path")?;
+                if provided.unit.is_some() {
+                    bail!(
+                        "directory capability '{}' must not declare a unit",
+                        provided.name
+                    );
+                }
+            }
+            CapabilityKind::Namespace | CapabilityKind::Socket => {
+                let Some(unit) = provided.unit.as_ref() else {
+                    bail!(
+                        "{:?} capability '{}' must declare a unit",
+                        provided.kind,
+                        provided.name
+                    );
+                };
+                validate_unit_name(unit)?;
+                if provided.path.is_some() {
+                    bail!(
+                        "{:?} capability '{}' must not declare a path",
+                        provided.kind,
+                        provided.name
+                    );
+                }
+            }
+        }
+    }
+
+    for required in &expose.uses {
+        validate_package_name(&required.provider)?;
+        validate_capability_route_name(&required.name)?;
+        validate_unit_name(&required.unit)?;
+    }
+
+    Ok(())
+}
+
+fn validate_capability_route_name(name: &str) -> Result<()> {
+    if !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Ok(());
+    }
+    bail!("invalid capability route name '{name}'")
+}
+
+fn validate_target_name(target: &str) -> Result<()> {
+    validate_unit_name(target)?;
+    if !target.starts_with("aos-pkg-") || !target.ends_with(".target") {
+        bail!("expose target must be named aos-pkg-<name>.target: {target}");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_unit_name(unit: &str) -> Result<()> {
+    let has_known_suffix = [
+        ".automount",
+        ".mount",
+        ".path",
+        ".service",
+        ".slice",
+        ".socket",
+        ".target",
+        ".timer",
+    ]
+    .iter()
+    .any(|suffix| unit.ends_with(suffix));
+
+    if unit.is_empty()
+        || unit.contains('/')
+        || unit.chars().any(char::is_whitespace)
+        || !has_known_suffix
+    {
+        bail!("invalid systemd unit name '{unit}'");
+    }
+    Ok(())
+}
+
+fn validate_image_entry(image: &SysrootImageEntry) -> Result<()> {
+    if image.format.is_empty()
+        || !image
+            .format
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        bail!("invalid image format '{}'", image.format);
+    }
+    validate_absolute_path(&image.store_path, "image store path")?;
+    if !(image.nar_hash.starts_with("sha256:") || image.nar_hash.starts_with("sha256-")) {
+        bail!("image '{}' has invalid NAR hash", image.store_path);
+    }
+    validate_image_verity_entry(image)?;
+    Ok(())
+}
+
+fn validate_image_verity_entry(image: &SysrootImageEntry) -> Result<()> {
+    let verity_field_count = [
+        image.root_image.as_ref(),
+        image.root_verity.as_ref(),
+        image.root_hash.as_ref(),
+        image.root_hash_sig.as_ref(),
+    ]
+    .iter()
+    .filter(|field| field.is_some())
+    .count();
+    let verity_format = matches!(image.format.as_str(), "ext4-verity" | "erofs-verity");
+
+    if verity_field_count == 0 && !verity_format {
+        return Ok(());
+    }
+
+    if !verity_format {
+        bail!(
+            "image '{}' declares dm-verity fields but format '{}' is not a verity root format",
+            image.store_path,
+            image.format
+        );
+    }
+    if verity_field_count != 4 {
+        bail!(
+            "image '{}' must declare root_image, root_verity, root_hash, and root_hash_sig together",
+            image.store_path
+        );
+    }
+
+    let root_image = image
+        .root_image
+        .as_ref()
+        .context("verity root_image missing after field-count validation")?;
+    let root_verity = image
+        .root_verity
+        .as_ref()
+        .context("verity root_verity missing after field-count validation")?;
+    let root_hash = image
+        .root_hash
+        .as_ref()
+        .context("verity root_hash missing after field-count validation")?;
+    let root_hash_sig = image
+        .root_hash_sig
+        .as_ref()
+        .context("verity root_hash_sig missing after field-count validation")?;
+
+    validate_relative_artifact_member_path("verity root_image", root_image)?;
+    validate_relative_artifact_path("verity root_verity", root_verity, ".verity")?;
+    validate_sha256_digest("verity root_hash", root_hash)?;
+    validate_relative_artifact_path("verity root_hash_sig", root_hash_sig, ".p7s")?;
+
+    Ok(())
+}
+
+fn store_path_hash_component(path: &str) -> Option<&str> {
+    let basename = path.rsplit('/').next()?;
+    let (hash, _) = basename.split_once('-')?;
+    if hash.len() >= 2 && hash.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        Some(hash)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_security_label(label: &str) -> Result<()> {
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        bail!("invalid security label '{label}'");
+    }
+    Ok(())
+}
+
+fn validate_confinement_meta(confinement: &ConfinementMeta) -> Result<()> {
+    validate_display_ascii("confinement label", &confinement.label)?;
+    for hole in &confinement.holes {
+        validate_display_ascii("confinement hole", hole)?;
+    }
+    Ok(())
+}
+
+fn validate_display_ascii(kind: &str, value: &str) -> Result<()> {
+    if value.is_empty() || !value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ') {
+        bail!("invalid {kind} '{value}'");
+    }
+    Ok(())
+}
+
+fn has_system_location_prefix(path: &str) -> bool {
+    SYSTEM_LOCATION_PREFIXES
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +2167,21 @@ pub struct ApmMeta {
     /// NAR hash for the source derivation.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub source_nar_hash: String,
+    /// RFC-0001 service exposure metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Rendered RFC-0001 expose artifact captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
+    /// RFC-0001 permission manifest captured at install time.
+    #[serde(default, skip_serializing_if = "PermissionsMeta::is_empty")]
+    pub permissions: PermissionsMeta,
+    /// Fleet BPF-LSM policy metadata captured at install time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
+    /// Runtime integrity, attestation, and provenance facts captured at install time.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
 }
 
 // ---------------------------------------------------------------------------
@@ -808,6 +2451,18 @@ pub struct RegistryState {
     /// ISO 8601 timestamp of the last successful sync.
     #[serde(default)]
     pub last_update: Option<String>,
+    /// Highest accepted TUF root metadata version.
+    #[serde(default)]
+    pub tuf_root_version: Option<u64>,
+    /// Highest accepted TUF targets metadata version.
+    #[serde(default)]
+    pub tuf_targets_version: Option<u64>,
+    /// Highest accepted TUF snapshot metadata version.
+    #[serde(default)]
+    pub tuf_snapshot_version: Option<u64>,
+    /// Highest accepted TUF timestamp metadata version.
+    #[serde(default)]
+    pub tuf_timestamp_version: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +2654,9 @@ pub struct ApmSettings {
     /// Automatically run gc after autoremove.
     #[serde(default)]
     pub auto_gc: bool,
+    /// PCR policy public key used for signed-PCR credential encryption.
+    #[serde(default)]
+    pub credential_pcr_public_key: Option<String>,
 }
 
 /// Serde default for [`ApmSettings::parallel_downloads`].
@@ -1013,6 +2671,7 @@ impl Default for ApmSettings {
             parallel_downloads: default_parallel(),
             auto_autoremove: false,
             auto_gc: false,
+            credential_pcr_public_key: None,
         }
     }
 }
@@ -1026,7 +2685,10 @@ impl Default for ApmSettings {
 pub enum ProfileScope {
     /// Per-user profile at `/var/lib/profiles/per-user/$USER/`.
     User,
-    /// System-wide profile at `/var/lib/profiles/system/` (requires root).
+    /// System-wide scope (requires root).
+    ///
+    /// Sysroot generations live at `/var/lib/profiles/system/`; runtime APM
+    /// package generations live at `/var/lib/profiles/system-packages/`.
     System,
 }
 
@@ -1066,6 +2728,20 @@ impl ProfileScope {
                 profiles_base().join("per-user").join(user)
             }
             ProfileScope::System => profiles_base().join("system"),
+        }
+    }
+
+    /// Base path for APM package-profile generations in this scope.
+    ///
+    /// The sysroot uses [`ProfileScope::profile_path`] for
+    /// `/var/lib/profiles/system/state.json`, whose schema is
+    /// [`SystemGenerationState`]. Runtime system packages use a separate
+    /// package-generation database so `apm install --system` cannot corrupt
+    /// or replace the sysroot generation pointer.
+    pub fn package_profile_path(&self) -> PathBuf {
+        match self {
+            ProfileScope::User => self.profile_path(),
+            ProfileScope::System => profiles_base().join("system-packages"),
         }
     }
 
@@ -1353,7 +3029,8 @@ pub struct SbatEntry {
 /// (see RFC-0006 phase 4). They are optional so that legacy and unsigned
 /// publishes continue to parse: an entry with none of them set is treated as
 /// "no Secure Boot claims recorded" and skips download-time SB validation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
     /// `apm install --image <FMT>`.
@@ -1380,6 +3057,21 @@ pub struct SysrootImageEntry {
     /// `None` when `systemd-measure` was unavailable at publish time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_pcr11: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the root
+    /// filesystem image consumed by `RootImage=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_image: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the separate
+    /// dm-verity hash tree consumed by `RootVerity=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_verity: Option<String>,
+    /// dm-verity root hash for [`SysrootImageEntry::root_image`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash: Option<String>,
+    /// Relative path inside [`SysrootImageEntry::store_path`] to the PKCS#7
+    /// signature consumed by `RootHashSignature=`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_hash_sig: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1422,6 +3114,20 @@ pub struct SystemGenerationState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_attestation() -> AttestationMeta {
+        AttestationMeta {
+            root_digest: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash: None,
+            root_hash_sig: None,
+            provenance: Some("attestation/test.provenance.jsonl".into()),
+            measurement: Some(
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            ),
+        }
+    }
 
     #[test]
     fn registry_name_validation_accepts_path_safe_names() {
@@ -1932,6 +3638,10 @@ mod tests {
             scope.profile_path(),
             PathBuf::from("/var/lib/profiles/system")
         );
+        assert_eq!(
+            scope.package_profile_path(),
+            PathBuf::from("/var/lib/profiles/system-packages")
+        );
         assert_eq!(scope.cache_path(), PathBuf::from("/var/lib/apm/remote"));
         assert_eq!(
             scope.registry_cache_path("core"),
@@ -1957,12 +3667,17 @@ assume_yes = true
 parallel_downloads = 8
 auto_autoremove = true
 auto_gc = false
+credential_pcr_public_key = "/etc/aos/pcr-sign.pem"
 "#;
         let conf: ApmConfFile = toml::from_str(toml_str).unwrap();
         assert!(conf.settings.assume_yes);
         assert_eq!(conf.settings.parallel_downloads, 8);
         assert!(conf.settings.auto_autoremove);
         assert!(!conf.settings.auto_gc);
+        assert_eq!(
+            conf.settings.credential_pcr_public_key.as_deref(),
+            Some("/etc/aos/pcr-sign.pem")
+        );
     }
 
     #[test]
@@ -2115,6 +3830,11 @@ last_update = "2026-02-13T10:30:00Z"
                 held: false,
                 source_drv: "/var/lib/store/src123-curl-8.5.0.drv".into(),
                 source_nar_hash: "sha256:source".into(),
+                expose: None,
+                expose_artifact: None,
+                permissions: Default::default(),
+                bpf_lsm: None,
+                attestation: Default::default(),
             }),
         };
         let json = serde_json::to_string_pretty(&meta).unwrap();
@@ -2147,6 +3867,1143 @@ last_update = "2026-02-13T10:30:00Z"
         let meta: InstalledMeta = serde_json::from_str(json).unwrap();
         assert!(meta.apm.is_none());
         assert_eq!(meta.access_count, 42);
+    }
+
+    #[test]
+    fn package_meta_round_trips_sandbox_schema() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_EXPOSE_ARTIFACT_V1.into(),
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_REQUIRES_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: vec![SysrootImageEntry {
+                    format: "dir".into(),
+                    store_path: "/var/lib/store/webapproot-webapp-root".into(),
+                    nar_hash: "sha256:root".into(),
+                    nar_size: 2048,
+                    sb_signer_cert_sha256: None,
+                    sbat: Vec::new(),
+                    expected_pcr11: None,
+                    root_image: None,
+                    root_verity: None,
+                    root_hash: None,
+                    root_hash_sig: None,
+                }],
+                requires: vec!["provider".into()],
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: Some(ExposeArtifactMeta {
+                store_path: "/var/lib/store/exposehash11-expose-webapp".into(),
+                nar_hash: "sha256:artifact".into(),
+                nar_size: 128,
+            }),
+            permissions: PermissionsMeta {
+                capabilities: vec!["CAP_NET_BIND_SERVICE".into()],
+                network: Some(NetworkPermission::PrivateOutbound),
+                host_paths: vec![HostPathPermission {
+                    path: "/srv/webapp".into(),
+                    mode: HostPathMode::ReadOnly,
+                }],
+                syscalls: Some(SyscallProfile::SystemService),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::SandboxedWithHoles,
+                    label: "sandboxed-with-holes (network:private-outbound, capability:CAP_NET_BIND_SERVICE, host-path:read-only:/srv/webapp, syscalls:system-service)"
+                        .into(),
+                    holes: vec![
+                        "network:private-outbound".into(),
+                        "capability:CAP_NET_BIND_SERVICE".into(),
+                        "host-path:read-only:/srv/webapp".into(),
+                        "syscalls:system-service".into(),
+                    ],
+                }),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        validate_supported_package_meta(&meta).unwrap();
+        let json = serde_json::to_string_pretty(&meta).unwrap();
+        let parsed: PackageMeta = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.requires_features, meta.requires_features);
+        assert_eq!(parsed.expose, meta.expose);
+        assert_eq!(parsed.expose_artifact, meta.expose_artifact);
+        assert_eq!(parsed.permissions, meta.permissions);
+    }
+
+    #[test]
+    fn permissions_reject_host_paths_with_unsupported_characters() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/srv/my data".into(),
+                mode: HostPathMode::Rw,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("host path contains unsupported characters"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn permissions_reject_read_only_temp_host_paths() {
+        let permissions = PermissionsMeta {
+            host_paths: vec![HostPathPermission {
+                path: "/tmp/package-cache".into(),
+                mode: HostPathMode::ReadOnly,
+            }],
+            ..PermissionsMeta::default()
+        };
+
+        let err = validate_permissions_meta("webapp", &permissions).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("read-only host paths under /tmp or /var/tmp"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn package_meta_requires_supported_feature_gate() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_PERMISSIONS_V1.into(), FEATURE_ATTESTATION_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err =
+            validate_supported_package_meta_with(&meta, PACKAGE_META_FORMAT, &[]).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_PERMISSIONS_V1));
+    }
+
+    #[test]
+    fn package_meta_requires_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                tcp_connect: vec![443],
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_network_policy_feature_gate_for_expose() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_EXPOSE_V1.into()],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_NETWORK_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_NETWORK_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_expose_target_bound_to_other_package() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-other.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must equal aos-pkg-webapp.target"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_network_policy_ports() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_PERMISSIONS_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                tcp_bind: vec![0],
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("invalid TCP port 0"));
+
+        meta.permissions.tcp_bind = vec![8080, 8080];
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("duplicate TCP port 8080"));
+    }
+
+    #[test]
+    fn package_meta_rejects_mismatched_confinement() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![FEATURE_ATTESTATION_V1.into(), FEATURE_PERMISSIONS_V1.into()],
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta {
+                network: Some(NetworkPermission::Host),
+                confinement: Some(ConfinementMeta {
+                    class: ConfinementClass::Sandboxed,
+                    label: "sandboxed".into(),
+                    holes: Vec::new(),
+                }),
+                ..PermissionsMeta::default()
+            },
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("permissions.confinement does not match computed confinement"),
+            "got: {err}"
+        );
+
+        meta.permissions.confinement = Some(meta.permissions.computed_confinement());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_config_and_reload_feature_gates() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["webapp.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_RELOAD_V1));
+
+        meta.requires_features.push(FEATURE_RELOAD_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_config_unit_references() {
+        let meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Exposed web app".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webapphash11-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+                FEATURE_CONFIG_V1.into(),
+                FEATURE_RELOAD_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec!["webapp.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: ExposeConfigMeta {
+                    artifacts: vec![ConfigArtifactMeta {
+                        name: "env".into(),
+                        path: "/etc/aos/packages/webapp/config.env".into(),
+                        format: ConfigArtifactFormat::Env,
+                        required: vec!["TOKEN".into()],
+                        optional: Vec::new(),
+                        units: vec!["missing.service".into()],
+                        reload: ConfigReloadPolicy::Reload,
+                    }],
+                    credentials: Vec::new(),
+                },
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_non_service_units() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: None,
+                units: vec!["webapp.socket".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_outside_credstore() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/etc/shadow".into()),
+                ciphertext: None,
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("encrypted credential source path must be under")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some(
+                    "/usr/lib/credstore.encrypted/join-token\nPrivateNetwork=false".into(),
+                ),
+                ciphertext: None,
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential source path contains unsupported characters")
+        );
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_without_encryption() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: false,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("is not encrypted"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_source_and_ciphertext() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: Some("/usr/lib/credstore.encrypted/join-token".into()),
+                ciphertext: Some("abcDEF0123+/=".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(err.to_string().contains("both source and ciphertext"));
+    }
+
+    #[test]
+    fn expose_config_rejects_credential_ciphertext_control_characters() {
+        let config = ExposeConfigMeta {
+            artifacts: Vec::new(),
+            credentials: vec![CredentialMeta {
+                name: "join-token".into(),
+                source: None,
+                ciphertext: Some("abc\nPrivateNetwork=false".into()),
+                units: vec!["webapp.service".into()],
+                encrypted: true,
+            }],
+        };
+
+        let err = validate_expose_config_meta(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("credential ciphertext contains unsupported characters")
+        );
+    }
+
+    #[test]
+    fn package_meta_requires_capability_route_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "consumer.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_CAPABILITY_ROUTES_V1));
+
+        meta.requires_features
+            .push(FEATURE_CAPABILITY_ROUTES_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_requires_ebpf_network_policy_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Web application".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-ebpf.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_EBPF_NET_POLICY_V1));
+
+        meta.requires_features
+            .push(FEATURE_EBPF_NET_POLICY_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    fn bpf_lsm_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "aos-ebpf-lsm-policy".into(),
+            version: "0".into(),
+            description: "Fleet BPF-LSM policy".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/bpflsmhash12-aos-ebpf-lsm-policy-0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: Some(BpfLsmPolicyMeta {
+                policies: vec![BpfLsmPolicyArtifactMeta {
+                    name: "aos-lsm-task-audit".into(),
+                    policy: "share/aos/ebpf-lsm/aos-task-audit.json".into(),
+                    object: "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o".into(),
+                    programs: vec!["aos_lsm_file_mprotect".into()],
+                }],
+            }),
+            attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash: None,
+                root_hash_sig: None,
+                provenance: Some("attestation/aos-ebpf-lsm-policy.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_bpf_lsm_policy_feature_gate() {
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_EBPF_NET_POLICY_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_BPF_LSM_POLICY_V1));
+
+        meta.requires_features = vec![
+            FEATURE_ATTESTATION_V1.into(),
+            FEATURE_BPF_LSM_POLICY_V1.into(),
+        ];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_bpf_lsm_artifacts() {
+        let mut meta =
+            bpf_lsm_package_meta(vec![FEATURE_ATTESTATION_V1, FEATURE_BPF_LSM_POLICY_V1]);
+        meta.bpf_lsm.as_mut().unwrap().policies[0].object = "../escape.bpf.o".into();
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("BPF-LSM object path"));
+    }
+
+    fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
+        PackageMeta {
+            name: "verity-app".into(),
+            version: "1.0.0".into(),
+            description: "Package root with verity attestation".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/verityhash12-verity-app-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: requires_features.into_iter().map(str::to_string).collect(),
+            expose: None,
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: AttestationMeta {
+                root_digest: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash: Some(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .into(),
+                ),
+                root_hash_sig: Some("attestation/verity-app.roothash.p7s".into()),
+                provenance: Some("attestation/verity-app.provenance.jsonl".into()),
+                measurement: Some(
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .into(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn package_meta_requires_attestation_feature_gate() {
+        let mut meta = attestation_package_meta(vec![FEATURE_PERMISSIONS_V1]);
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_ATTESTATION_V1));
+
+        meta.requires_features = vec![FEATURE_ATTESTATION_V1.into()];
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_incomplete_attestation_root_hash() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("root_hash and root_hash_sig"));
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_measurement_without_root_digest() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_digest = None;
+        meta.attestation.root_hash = None;
+        meta.attestation.root_hash_sig = None;
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("measurement requires root_digest"));
+    }
+
+    #[test]
+    fn package_meta_rejects_invalid_attestation_digest() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash = Some("sha256:not-a-digest".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("64-character SHA-256 digest"));
+    }
+
+    #[test]
+    fn package_meta_rejects_unsafe_attestation_artifact_paths() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.root_hash_sig = Some("../escape.p7s".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("attestation root_hash_sig path"));
+    }
+
+    #[test]
+    fn package_meta_rejects_cache_owned_provenance_path() {
+        let mut meta = attestation_package_meta(vec![FEATURE_ATTESTATION_V1]);
+        meta.attestation.provenance = Some("packages/w/web.provenance.jsonl".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("must not target a cache-owned subtree"),
+            "{err:#}",
+        );
+    }
+
+    #[test]
+    fn package_meta_accepts_attestation_matching_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash =
+            Some("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into());
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_attestation_that_diverges_from_expose_verity_image() {
+        let mut meta = attestation_package_meta(vec![
+            FEATURE_ATTESTATION_V1,
+            FEATURE_EXPOSE_V1,
+            FEATURE_NETWORK_POLICY_V1,
+        ]);
+        meta.attestation.root_hash_sig = Some("root.roothash.p7s".into());
+        meta.expose = Some(expose_meta_with_image(verity_image_entry()));
+        meta.attestation.root_hash =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+        meta.attestation.root_digest =
+            Some("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into());
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(format!("{err:#}").contains("must match a verity expose image"));
+    }
+
+    fn expose_meta_with_image(image: SysrootImageEntry) -> ExposeMeta {
+        ExposeMeta {
+            target: "aos-pkg-verity-app.target".into(),
+            units: vec!["verity-app.service".into()],
+            images: vec![image],
+            requires: Vec::new(),
+            config: Default::default(),
+            provides: Vec::new(),
+            uses: Vec::new(),
+        }
+    }
+
+    fn verity_image_entry() -> SysrootImageEntry {
+        SysrootImageEntry {
+            format: "ext4-verity".into(),
+            store_path: "/var/lib/store/verityimage-verity-app-root".into(),
+            nar_hash: "sha256:root".into(),
+            nar_size: 2048,
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: Some("root.img".into()),
+            root_verity: Some("root.verity".into()),
+            root_hash: Some(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            ),
+            root_hash_sig: Some("root.roothash.p7s".into()),
+        }
+    }
+
+    #[test]
+    fn expose_meta_accepts_complete_verity_image() {
+        let expose = expose_meta_with_image(verity_image_entry());
+
+        validate_expose_meta(&expose).unwrap();
+    }
+
+    #[test]
+    fn expose_meta_rejects_partial_verity_image() {
+        let mut image = verity_image_entry();
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_format_without_tuple() {
+        let mut image = verity_image_entry();
+        image.root_image = None;
+        image.root_verity = None;
+        image.root_hash = None;
+        image.root_hash_sig = None;
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("must declare root_image"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_verity_fields_on_plain_image_format() {
+        let mut image = verity_image_entry();
+        image.format = "dir".into();
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("is not a verity root format"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsafe_verity_member_path() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("../root.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("verity root_image path"));
+    }
+
+    #[test]
+    fn expose_meta_rejects_unsupported_verity_member_path_characters() {
+        let mut image = verity_image_entry();
+        image.root_image = Some("root image.img".into());
+        let expose = expose_meta_with_image(image);
+
+        let err = validate_expose_meta(&expose).unwrap_err();
+        assert!(format!("{err:#}").contains("unsupported characters"));
+    }
+
+    #[test]
+    fn package_meta_requires_mac_profile_feature_gate() {
+        let mut meta = PackageMeta {
+            name: "webapp".into(),
+            version: "1.0.0".into(),
+            description: "Web application".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/webhash-webapp-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-webapp.target".into(),
+                units: vec![
+                    "webapp.service".into(),
+                    "aos-pkg-webapp.slice".into(),
+                    "aos-pkg-webapp-mac.service".into(),
+                ],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: Vec::new(),
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains(FEATURE_MAC_PROFILE_V1));
+
+        meta.requires_features.push(FEATURE_MAC_PROFILE_V1.into());
+        validate_supported_package_meta(&meta).unwrap();
+    }
+
+    #[test]
+    fn package_meta_rejects_unknown_or_non_service_capability_units() {
+        let mut meta = PackageMeta {
+            name: "consumer".into(),
+            version: "1.0.0".into(),
+            description: "Consumer".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos-team".into(),
+            platform: "x86_64-linux".into(),
+            store_path: "/var/lib/store/consumerhash-consumer-1.0.0".into(),
+            nar_hash: "sha256:abc123".into(),
+            nar_size: 1024,
+            references: Vec::new(),
+            source_drv: String::new(),
+            source_nar_hash: String::new(),
+            closure_size: 1024,
+            sysroot: false,
+            previous: None,
+            images: Vec::new(),
+            min_format: Some(PACKAGE_META_FORMAT),
+            requires_features: vec![
+                FEATURE_ATTESTATION_V1.into(),
+                FEATURE_EXPOSE_V1.into(),
+                FEATURE_NETWORK_POLICY_V1.into(),
+                FEATURE_CAPABILITY_ROUTES_V1.into(),
+            ],
+            expose: Some(ExposeMeta {
+                target: "aos-pkg-consumer.target".into(),
+                units: vec!["consumer.service".into(), "consumer.target".into()],
+                images: Vec::new(),
+                requires: Vec::new(),
+                config: Default::default(),
+                provides: Vec::new(),
+                uses: vec![RequiredCapabilityMeta {
+                    provider: "provider".into(),
+                    name: "data".into(),
+                    kind: CapabilityKind::Directory,
+                    unit: "missing.service".into(),
+                }],
+            }),
+            expose_artifact: None,
+            permissions: PermissionsMeta::default(),
+            bpf_lsm: None,
+            attestation: test_attestation(),
+        };
+
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("unknown expose unit"));
+
+        let expose = meta.expose.as_mut().unwrap();
+        expose.uses[0].unit = "consumer.target".into();
+        let err = validate_supported_package_meta(&meta).unwrap_err();
+        assert!(err.to_string().contains("non-service expose unit"));
     }
 
     // -----------------------------------------------------------------------

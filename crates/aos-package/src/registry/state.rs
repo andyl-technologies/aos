@@ -389,6 +389,7 @@ public_key = "aos-core:Ed25519:base64keyhere"
             bucket: Some(183),
             retained: vec!["1.0.0".into(), "1.4.0".into(), "1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 
@@ -434,6 +435,7 @@ last_update = "2026-01-01T00:00:00Z"
             bucket: Some(183),
             retained: vec!["1.4.2".into()],
             last_update: Some("2026-02-16T12:00:00Z".into()),
+            ..RegistryState::default()
         };
         save_state(&path, &state).unwrap();
 

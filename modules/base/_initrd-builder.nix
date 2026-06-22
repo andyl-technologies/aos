@@ -45,7 +45,6 @@
   initrdExtraPackages ? [],
   initrdNetworkDir ? null,
   maskedUnits ? [],
-  ignitionRoles,
 }: let
   inherit
     (pkgs)
@@ -393,8 +392,6 @@ in
       ++ [
         "closure-initrd-units"
         initrdUnits
-        "closure-ignition-roles"
-        ignitionRoles
       ];
 
     phases = [
@@ -550,15 +547,6 @@ in
           mkdir -p root/etc/systemd/system/network-online.target.wants
           ln -sfn /lib/systemd/system/systemd-networkd-wait-online.service \
             root/etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
-
-          # ── 7b. Ignition role bundle ───────────────────────────────────
-          # Stable initrd path /etc/aos/ignition-roles → bundle drv. Userdata
-          # uses `file:///etc/aos/ignition-roles/<role-name>` as the merge
-          # source for first-boot. The bundle's contents (one entry per role)
-          # are walked at runtime by ignition's resource fetcher; we only
-          # install the top-level symlink here.
-          mkdir -p root/etc/aos
-          ln -sfn ${ignitionRoles} root/etc/aos/ignition-roles
 
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system
