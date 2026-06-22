@@ -451,9 +451,14 @@ and helps the oracle directly.
       symbols so the GC strategy swaps without touching callers (and, later, the
       JIT) ([03](03-architecture-overview.md) §4.5; `S-8`).
 - [ ] `heap/roots.rs` — precise root enumeration / stack maps for the collector.
-- [ ] `#![forbid(unsafe_code)]` preserved on the oracle/frontend/glue;
-      `#![deny(unsafe_op_in_unsafe_fn)]` + `// SAFETY:` per block in `heap/`;
-      `cargo fuzz` target on the GC (`S-17`, [14](14-integration-with-aos.md) §9.3).
+- [x] Current safe-crate prerequisite already in place: the monolithic
+      `aos-nix` oracle/frontend/glue crate carries `#![forbid(unsafe_code)]`
+      and checks/source scans show no Rust `unsafe` forms in the evaluator
+      crate (`S-17`, [14](14-integration-with-aos.md) §10).
+- [ ] Future heap/GC unsafe policy and tooling remain: `heap/` or later unsafe
+      crates under `#![deny(unsafe_op_in_unsafe_fn)]`, per-block `// SAFETY:`,
+      GC fuzz target, and miri/ASan/UBSan/TSan/loom CI as applicable (`S-17`,
+      [14](14-integration-with-aos.md) §9.3).
 
 **Conformance (hold parity).**
 
