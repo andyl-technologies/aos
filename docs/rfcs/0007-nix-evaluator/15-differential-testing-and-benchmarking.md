@@ -222,10 +222,12 @@ two audiences. Both are thin consumers of the `NixEval` trait from `aos-core`
 `NixCli` box and a `NixNative` box and comparing their outputs. The trait is
 what makes the harness trivial: it is just a third consumer of the same seam.
 
-**(a) As a Rust integration test** (`crates/aos-nix/tests/drv_diff.rs`), run in
-CI on every PR. It is parameterized over a corpus of `(file, attr)` pairs
-(§2.7) and fails the build on any divergence. This is the form that *gates
-merges*.
+**(a) As a Rust integration test** (`crates/aos-core/tests/drv_diff.rs`), run by
+the hermetic `pkgs.aos` test phase with `--features aos-core/native-eval` and
+therefore surfaced through flake `checks.aos`. The current test exercises a
+representative `(file, attr)` fixture through every diff mode and a real
+root-mutation localization case; the auto-derived corpus remains tracked in
+§2.7. This is the form that *gates merges* when the flake check set is enforced.
 
 **(b) As an `aos` subcommand** (`aos nix-diff`), for interactive debugging and
 ad-hoc closure sweeps. A developer chasing a divergence runs it directly,
@@ -953,7 +955,7 @@ This document *is* the gate. The differential `.drv`-diff harness is a **P1** de
 - [x] `diff_closure(oracle, cand, file, attr, mode)` over the `NixEval` trait, closure-complete (walks `inputDrvs` to the leaves), asserting store-path + ATerm-byte equality *and* error/no-error parity per node (§2.1) — **P1**, `S-2`/`C-18`; the harness is a third consumer of the `NixEval` seam ([14](14-integration-with-aos.md) §3).
 - [x] `DiffMode::{Path, Byte, Structural}` — Path for triage, Byte as the authoritative gate, Structural parsing both ATerms via `nix-compat` to localize the first differing field and disambiguate the bug class (§2.3) — **P1**, `S-13`.
 - [ ] Root-vs-contaminated bisection: topologically order the divergent set, report nodes with no divergent input as the roots, collapse the contaminated rest; per-root self-contained reproduction (§2.4): `DrvDiffReport` classifies root versus contaminated divergence nodes, `aos nix-diff` renders both classes, and human/JSON reports carry the Nix file, attr, mode, eval policy/system/allowlist flags, copyable full-comparison reproduction command, exact root oracle/candidate pair, and pair-local byte/structural/input-output diff context. File-backed root pairs also carry a direct `aos nix-diff --oracle-drv ... --candidate-drv ...` node-level rerun command. Remaining before completion: persist or bundle in-memory native closure bytes so root reports from the native diff path can always provide a runnable direct node-level artifact — **P1**, `C-18`.
-- [ ] Two incarnations over one implementation: the Rust integration test (`crates/aos-core/tests/drv_diff.rs`, gates merges once CI runs the `native-eval` feature) and the `aos nix-diff` subcommand (interactive localization) (§2.5) — **P1**, `S-2`.
+- [x] Two incarnations over one implementation: the Rust integration test (`crates/aos-core/tests/drv_diff.rs`) runs through the hermetic `pkgs.aos`/flake `checks.aos` path with `cargoTestFlags = "--workspace --features aos-core/native-eval"`, and the `aos nix-diff` subcommand provides interactive localization over the same `diff_closure` implementation (§2.5) — **P1**, `S-2`.
 - [ ] The auto-derived corpus from the AOS package set: all packages, all `systems/` toplevels, the toolchain closure explicitly (source bootstrap, `gcc3_4→gcc14`, mrustc→rustc, JDK 8→25, Bazel, LLVM), plus the conformance corpus — grows automatically as AOS gains packages (§2.7) — **P1**, `S-2`.
 - [ ] The binary all-or-nothing gate semantics: no "98% passing" unlocks default-on, because one foundational divergence is a full distribution rebuild (§2.2) — **P1**, `C-18`/`S-2`.
 
