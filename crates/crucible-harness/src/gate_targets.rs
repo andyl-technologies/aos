@@ -55,7 +55,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         package: "crucible-qemu",
         test_target: "gate_single_vm_fingerprint",
         required_features: &[],
-        placeholder: true,
+        placeholder: false,
     },
     GateTargetSpec {
         gate: "gate:single-vm-fingerprint",

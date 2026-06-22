@@ -1,9 +1,12 @@
 {
   pkgs,
   lib,
+  enableJitter ? true,
+  hostAdversary ? (if enableJitter then "jitter-load" else "none"),
+  sampleCount ? 32,
 }: let
   cadence = 100000000;
-  horizon = cadence * 32;
+  horizon = cadence * sampleCount;
 
   workload = pkgs.mkDerivation {
     pname = "crucible-phase0-s1-workload";
@@ -22,10 +25,12 @@
 
           enum {
             WORDS = 8192,
-            ITERS = 24000
+            ITERS = 24000,
+            SPIN_ITERS = 400000000
           };
 
           static uint64_t words[WORDS];
+          static volatile uint64_t sink;
 
           int main(void) {
             uint64_t state = 0x0010c0015eedf00dULL;
@@ -53,7 +58,22 @@
                 "CRUCIBLE_S1_DONE state=%016llx checksum=%016llx\n",
                 (unsigned long long)state,
                 (unsigned long long)checksum);
-            return checksum == 0 ? 1 : 0;
+            if (checksum == 0) {
+              printf("TEST_RESULT:FAIL\n");
+              return 1;
+            }
+
+            printf("TEST_RESULT:PASS\n");
+            fflush(stdout);
+
+            for (uint64_t i = 0; i < SPIN_ITERS; i++) {
+              state ^= i + 0x9e3779b97f4a7c15ULL;
+              state = (state << 13) | (state >> 51);
+              state *= 0xd6e8feb86659fd93ULL;
+            }
+
+            sink = state;
+            return sink == 0 ? 1 : 0;
           }
           S1_C
 
@@ -196,7 +216,6 @@
               echo 'TEST_RESULT:FAIL'
             fi
 
-            sync
             s1-spin
             poweroff
             INIT
@@ -240,6 +259,11 @@ in
     PLUGIN = "${pkgs.crucible-qemu-trace-plugin}/lib/qemu/plugins/crucible-qemu-trace-plugin.so";
     CADENCE = builtins.toString cadence;
     HORIZON = builtins.toString horizon;
+    ENABLE_JITTER =
+      if enableJitter
+      then "1"
+      else "0";
+    HOST_ADVERSARY = hostAdversary;
 
     phases = [
       {
@@ -438,17 +462,15 @@ in
               -machine q35 \
               -accel tcg,thread=single \
               -icount shift=0,sleep=off,align=off \
-              -cpu qemu64 \
+              -cpu qemu64,-rdrand,-rdseed \
               -m 256 \
               -smp 1 \
               -rtc base=2026-01-01T00:00:00,clock=vm \
               -seed 0x0010c001 \
               -fw_cfg name=opt/crucible/seed,file="$seed" \
-              -object rng-builtin,id=rng0 \
-              -device virtio-rng-pci,rng=rng0 \
               -kernel "$vmlinuz" \
               -initrd "$INITRAMFS" \
-              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
+              -append "console=ttyS0 reboot=k panic=1 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off random.trust_bootloader=off net.ifnames=0" \
               -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
               -serial chardev:serial0 \
               -qmp "unix:$qmp_socket,server=on,wait=off" \
@@ -475,7 +497,9 @@ in
           }
 
           run_one a
-          start_jitter
+          if [ "$ENABLE_JITTER" = 1 ]; then
+            start_jitter
+          fi
           run_one b
           stop_jitter
 
@@ -649,7 +673,7 @@ in
             echo vcpus=1
             echo cadence="$CADENCE"
             echo horizon_icount="$HORIZON"
-            echo host_adversary=jitter-load
+            echo host_adversary="$HOST_ADVERSARY"
             echo stop_request=plugin-requested-icount-pause
             echo extended_fingerprint_match=true
             echo aggregate_icount_stream_match=true

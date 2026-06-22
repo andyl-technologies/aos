@@ -38,7 +38,7 @@
       package = "crucible-qemu";
       testTarget = "gate_single_vm_fingerprint";
       requiredFeatures = [];
-      placeholder = true;
+      placeholder = false;
     }
     {
       gate = "gate:single-vm-fingerprint";
@@ -372,7 +372,7 @@ in
             check=checks.crucible.phase1.gateTargetMapping
             tasks=T-CRATE-12
             engine_features=test-double
-            placeholder_targets=28
+            placeholder_targets=27
             RESULT
           '';
         }
