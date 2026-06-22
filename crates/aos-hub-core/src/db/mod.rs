@@ -1250,6 +1250,41 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE registries ADD COLUMN crawl_policy TEXT NOT NULL DEFAULT 'allow_all';
     ALTER TABLE registries ADD COLUMN llms_txt_body TEXT;
     ",
+    // v27: a managed cache may use the deployment's DEFAULT storage instead of a
+    // custom storage binding, exactly as a registry does — so `storage_binding_id`
+    // becomes nullable (NULL = default storage; the surface roots on the
+    // deployment bucket / default storage root by the cache's prefix). SQLite
+    // cannot drop a column's NOT NULL in place, so the table is recreated (FK
+    // enforcement is off in this connection, so the child tables that reference
+    // caches(id) are undisturbed — they re-resolve to the renamed table by name).
+    "
+    CREATE TABLE caches_v27 (
+        id                 INTEGER PRIMARY KEY,
+        org_id             INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        slug               TEXT    NOT NULL UNIQUE,
+        name               TEXT    NOT NULL,
+        storage_binding_id INTEGER REFERENCES storage_bindings(id),
+        prefix             TEXT    NOT NULL,
+        hosted_key_id      INTEGER REFERENCES hosted_keys(id),
+        visibility         TEXT    NOT NULL,
+        priority           INTEGER NOT NULL DEFAULT 40,
+        compression        TEXT    NOT NULL DEFAULT 'zstd',
+        want_mass_query    INTEGER NOT NULL DEFAULT 1,
+        created_at         INTEGER NOT NULL,
+        deleted_at         INTEGER,
+        purge_after        INTEGER
+    );
+    INSERT INTO caches_v27
+        (id, org_id, slug, name, storage_binding_id, prefix, hosted_key_id,
+         visibility, priority, compression, want_mass_query, created_at,
+         deleted_at, purge_after)
+        SELECT id, org_id, slug, name, storage_binding_id, prefix, hosted_key_id,
+               visibility, priority, compression, want_mass_query, created_at,
+               deleted_at, purge_after
+        FROM caches;
+    DROP TABLE caches;
+    ALTER TABLE caches_v27 RENAME TO caches;
+    ",
 ];
 
 /// Returns every migration's individual SQL statements, in order.
@@ -3554,7 +3589,12 @@ impl Database {
         }
         if mode == "direct" {
             if let Some(cache) = self.cache_by_id(cache_id).await? {
-                if let Some(binding) = self.storage_binding(cache.storage_binding_id).await? {
+                // Default-storage (binding-less) caches have no private-binding
+                // constraint to check.
+                if let Some(binding) = match cache.storage_binding_id {
+                    Some(id) => self.storage_binding(id).await?,
+                    None => None,
+                } {
                     if binding.access == "private" {
                         bail!(
                             "cannot create a Direct frontend over private storage binding \
@@ -5267,9 +5307,14 @@ impl Database {
 
     /// Create a managed cache; returns its new id.
     ///
-    /// `org_id` is `None` for an instance-level standalone cache. The `prefix`
-    /// is validated like a registry prefix (relative, no `..`). Fails if a cache
-    /// already exists at `slug`.
+    /// `org_id` is `None` for an instance-level standalone cache.
+    /// `storage_binding_id` is `None` to use the deployment's **default
+    /// storage** (the binding-less path, exactly as for a registry): an empty
+    /// `prefix` then defaults to the `slug`, so the cache's surface is isolated
+    /// under `<default storage>/<slug>`. With a binding, an empty `prefix` roots
+    /// the surface directly at the binding root. The `prefix` is validated like a
+    /// registry prefix (relative, no `..`). Fails if a cache already exists at
+    /// `slug`.
     ///
     /// # Errors
     ///
@@ -5281,7 +5326,7 @@ impl Database {
         org_id: Option<i64>,
         slug: &str,
         name: &str,
-        storage_binding_id: i64,
+        storage_binding_id: Option<i64>,
         prefix: &str,
         hosted_key_id: Option<i64>,
         visibility: &str,
@@ -5289,6 +5334,18 @@ impl Database {
         compression: &str,
         want_mass_query: bool,
     ) -> Result<i64> {
+        // A binding-less (default-storage) cache isolates within the shared
+        // deployment bucket by its slug when no explicit prefix is given —
+        // mirroring `create_managed_registry`'s slug-derived prefix.
+        let derived_prefix;
+        let prefix = if !prefix.is_empty() {
+            prefix
+        } else if storage_binding_id.is_none() {
+            derived_prefix = slug.to_string();
+            &derived_prefix
+        } else {
+            prefix
+        };
         if !prefix.is_empty() {
             let rel = std::path::Path::new(prefix);
             if rel.is_absolute()
@@ -5864,16 +5921,20 @@ impl Database {
     /// Returns an error on database failure.
     pub async fn nar_refcount(
         &self,
-        storage_binding_id: i64,
+        storage_binding_id: Option<i64>,
         prefix: &str,
         file_hash: &str,
     ) -> Result<i64> {
+        // `IS` (not `=`) so a NULL binding (default-storage caches) matches other
+        // NULL-binding rows — `= NULL` is never true in SQL. Default-storage
+        // caches carry distinct (slug-derived) prefixes, so the count stays
+        // correctly scoped to physically-shared objects.
         let row = self
             .backend
             .query_opt(
                 "SELECT COUNT(*) FROM cache_objects o
                  JOIN caches c ON c.id = o.cache_id
-                 WHERE c.storage_binding_id = ?1 AND c.prefix = ?2 AND o.file_hash = ?3",
+                 WHERE c.storage_binding_id IS ?1 AND c.prefix = ?2 AND o.file_hash = ?3",
                 &vals![storage_binding_id, prefix, file_hash],
             )
             .await?;
@@ -6382,14 +6443,25 @@ impl Database {
         let Some(cache) = self.cache_by_id(cache_id).await? else {
             return Ok(None);
         };
+        // A binding-less cache roots on the deployment's default storage by its
+        // prefix — the same resolution a default-storage registry uses. Without a
+        // configured default root, there is no native surface (`None`); on the
+        // Worker the R2 provider serves it from the deployment bucket by prefix.
+        let Some(binding_id) = cache.storage_binding_id else {
+            let Some(root) = self.default_storage_root().await? else {
+                return Ok(None);
+            };
+            let mut path = PathBuf::from(root);
+            if !cache.prefix.is_empty() {
+                path.push(&cache.prefix);
+            }
+            return Ok(Some(path));
+        };
         let binding = self
-            .storage_binding(cache.storage_binding_id)
+            .storage_binding(binding_id)
             .await?
             .with_context(|| {
-                format!(
-                    "cache {cache_id} bound to missing storage binding {}",
-                    cache.storage_binding_id
-                )
+                format!("cache {cache_id} bound to missing storage binding {binding_id}")
             })?;
         let mut path = PathBuf::from(binding.root);
         if !cache.prefix.is_empty() {
@@ -9917,8 +9989,10 @@ pub struct Cache {
     pub slug: String,
     /// Human-readable display name.
     pub name: String,
-    /// Storage binding holding this cache's NAR/narinfo surface.
-    pub storage_binding_id: i64,
+    /// Storage binding holding this cache's NAR/narinfo surface, or `None` to
+    /// use the deployment's default storage (rooted by [`prefix`](Self::prefix)),
+    /// exactly as a binding-less registry does.
+    pub storage_binding_id: Option<i64>,
     /// Sub-path under the binding root where this cache's surface lives.
     pub prefix: String,
     /// Hosted Ed25519 key signing `.narinfo`, or `None` for an unsigned cache.
@@ -12271,7 +12345,7 @@ mod tests {
             .await
             .unwrap();
         let cache = db
-            .create_cache(Some(org), "acme-cache", "Cache", binding, "c", None, "public", 40, "zstd", true)
+            .create_cache(Some(org), "acme-cache", "Cache", Some(binding), "c", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         db.create_frontend(reg, "reg.example", "", "proxied", true, true, true, 100, true)
@@ -12344,7 +12418,7 @@ mod tests {
                 Some(org),
                 "acme-cache",
                 "Acme Cache",
-                binding,
+                Some(binding),
                 "caches/acme",
                 None,
                 "public",
@@ -12356,11 +12430,11 @@ mod tests {
             .unwrap();
         // Duplicate slug rejected; unsafe prefix rejected.
         assert!(db
-            .create_cache(None, "acme-cache", "x", binding, "", None, "public", 40, "zstd", true)
+            .create_cache(None, "acme-cache", "x", Some(binding), "", None, "public", 40, "zstd", true)
             .await
             .is_err());
         assert!(db
-            .create_cache(None, "bad", "x", binding, "../escape", None, "public", 40, "zstd", true)
+            .create_cache(None, "bad", "x", Some(binding), "../escape", None, "public", 40, "zstd", true)
             .await
             .is_err());
 
@@ -12372,7 +12446,7 @@ mod tests {
         assert_eq!(db.cache_by_id(id).await.unwrap().unwrap().slug, "acme-cache");
 
         // An instance-level standalone cache (no org).
-        db.create_cache(None, "standalone", "Standalone", binding, "caches/std", None, "public", 30, "xz", false)
+        db.create_cache(None, "standalone", "Standalone", Some(binding), "caches/std", None, "public", 30, "xz", false)
             .await
             .unwrap();
         assert_eq!(db.list_caches().await.unwrap().len(), 2);
@@ -12395,12 +12469,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_caches_excludes_soft_deleted_org() {
-        let (db, org, binding) = cache_fixture().await;
-        db.create_cache(Some(org), "owned", "Owned", binding, "p1", None, "public", 40, "zstd", true)
+    async fn binding_less_cache_rides_default_storage() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("acme", "Acme").await.unwrap();
+        db.set_default_storage_root("/srv/aos").await.unwrap();
+        // No binding: the cache uses the deployment's default storage and its
+        // prefix auto-derives from the slug (like a binding-less registry).
+        let id = db
+            .create_cache(Some(org), "build", "Build", None, "", None, "public", 40, "zstd", true)
             .await
             .unwrap();
-        db.create_cache(None, "standalone", "Standalone", binding, "p2", None, "public", 40, "zstd", true)
+        let c = db.cache_by_id(id).await.unwrap().unwrap();
+        assert_eq!(c.storage_binding_id, None);
+        assert_eq!(c.prefix, "build");
+        // The surface roots on the default storage root by that prefix.
+        assert_eq!(
+            db.cache_surface_root(id).await.unwrap().unwrap(),
+            std::path::PathBuf::from("/srv/aos/build")
+        );
+        // With no default storage root configured, a binding-less cache has no
+        // native surface (the Worker still serves it from R2 by prefix).
+        let db2 = Database::open_in_memory().await.unwrap();
+        let org2 = db2.create_org("b", "B").await.unwrap();
+        let id2 = db2
+            .create_cache(Some(org2), "c2", "C2", None, "", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        assert!(db2.cache_surface_root(id2).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn list_caches_excludes_soft_deleted_org() {
+        let (db, org, binding) = cache_fixture().await;
+        db.create_cache(Some(org), "owned", "Owned", Some(binding), "p1", None, "public", 40, "zstd", true)
+            .await
+            .unwrap();
+        db.create_cache(None, "standalone", "Standalone", Some(binding), "p2", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         assert_eq!(db.list_caches().await.unwrap().len(), 2);
@@ -12416,7 +12520,7 @@ mod tests {
     async fn cache_links_gc_policy_and_pins() {
         let (db, org, binding) = cache_fixture().await;
         let cache = db
-            .create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         let reg = db
@@ -12466,7 +12570,7 @@ mod tests {
     async fn cache_objects_search_refcount_and_usage() {
         let (db, org, binding) = cache_fixture().await;
         let cache = db
-            .create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         let obj = CacheObject {
@@ -12525,9 +12629,9 @@ mod tests {
         db.touch_cache_object(cache, "nope", 9_999).await.unwrap();
 
         // Content-addressed NAR refcount across the binding+prefix.
-        assert_eq!(db.nar_refcount(binding, "p", "ff").await.unwrap(), 1);
+        assert_eq!(db.nar_refcount(Some(binding), "p", "ff").await.unwrap(), 1);
         assert!(db.delete_cache_object(cache, "aaaa").await.unwrap());
-        assert_eq!(db.nar_refcount(binding, "p", "ff").await.unwrap(), 0);
+        assert_eq!(db.nar_refcount(Some(binding), "p", "ff").await.unwrap(), 0);
 
         // GC run lifecycle.
         let run = db.start_cache_gc_run(cache).await.unwrap();
@@ -12568,7 +12672,7 @@ mod tests {
             .await
             .unwrap();
         // A managed cache and a registry coexist without table collision.
-        db.create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+        db.create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         db.create_managed_registry(org, "", "reg", "public", Some(binding), "reg", &[], false)

@@ -797,16 +797,17 @@ enum BindingCommand {
 /// Manage hosted Nix binary caches — the substituter sibling of registries.
 #[derive(Subcommand)]
 enum CacheCommand {
-    /// Create an org-owned cache backed by a storage binding.
+    /// Create an org-owned cache backed by a storage binding (or the
+    /// deployment's default storage when `--binding` is omitted).
     Create {
         /// Globally-unique URL slug to serve the cache under.
         slug: String,
-        /// Owning org slug (its binding is used).
+        /// Owning org slug.
         #[arg(long)]
         org: String,
-        /// Storage binding name within the org.
+        /// Storage binding name within the org; omit to use default storage.
         #[arg(long)]
-        binding: String,
+        binding: Option<String>,
         /// Display name (defaults to the slug).
         #[arg(long)]
         name: Option<String>,
@@ -1705,11 +1706,16 @@ async fn main() -> Result<()> {
                         .org_by_slug(&org)
                         .await?
                         .with_context(|| format!("no org '{org}'"))?;
-                    let binding_id = db
-                        .storage_binding_by_name(org_record.id, &binding)
-                        .await?
-                        .with_context(|| format!("no binding '{org}/{binding}'"))?
-                        .id;
+                    // No `--binding` → the deployment's default storage.
+                    let binding_id = match &binding {
+                        Some(name) => Some(
+                            db.storage_binding_by_name(org_record.id, name)
+                                .await?
+                                .with_context(|| format!("no binding '{org}/{name}'"))?
+                                .id,
+                        ),
+                        None => None,
+                    };
                     let display = name.unwrap_or_else(|| slug.clone());
                     let prefix = prefix.unwrap_or_else(|| slug.clone());
                     let id = db
@@ -1726,7 +1732,8 @@ async fn main() -> Result<()> {
                             !no_mass_query,
                         )
                         .await?;
-                    println!("created cache '{slug}' (id {id}) under org '{org}' binding '{binding}'");
+                    let via = binding.as_deref().unwrap_or("default storage");
+                    println!("created cache '{slug}' (id {id}) under org '{org}' via '{via}'");
                 }
                 CacheCommand::List { org } => {
                     let caches = match org {
@@ -1763,7 +1770,12 @@ async fn main() -> Result<()> {
                             .map(|i| i.to_string())
                             .unwrap_or_else(|| "(instance)".into())
                     );
-                    println!("binding_id:  {}", c.storage_binding_id);
+                    println!(
+                        "binding_id:  {}",
+                        c.storage_binding_id
+                            .map(|i| i.to_string())
+                            .unwrap_or_else(|| "(default storage)".into())
+                    );
                     println!("prefix:      {}", c.prefix);
                     println!("visibility:  {}", c.visibility);
                     println!("priority:    {}", c.priority);

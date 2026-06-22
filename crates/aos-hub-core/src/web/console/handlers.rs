@@ -1677,12 +1677,15 @@ async fn render_cache_detail(
 ) -> Response {
     let result = async {
         let usage = deps.db.cache_usage(cache.id).await?;
-        let binding = deps
-            .db
-            .storage_binding(cache.storage_binding_id)
-            .await?
-            .map(|b| b.name)
-            .unwrap_or_default();
+        let binding = match cache.storage_binding_id {
+            Some(id) => deps
+                .db
+                .storage_binding(id)
+                .await?
+                .map(|b| b.name)
+                .unwrap_or_default(),
+            None => "default".to_string(),
+        };
         let org_registries: Vec<RegistryRecord> = deps
             .db
             .list_registries()
@@ -1823,12 +1826,19 @@ pub(crate) async fn org_create_cache(
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let Some(binding) = deps
-            .db
-            .storage_binding_by_name(org.id, form.binding.trim())
-            .await?
-        else {
-            return Ok(Some(Err("unknown storage binding".to_string())));
+        // An empty binding selects the deployment's default storage; otherwise
+        // resolve the named binding.
+        let binding_id = if form.binding.trim().is_empty() {
+            None
+        } else {
+            match deps
+                .db
+                .storage_binding_by_name(org.id, form.binding.trim())
+                .await?
+            {
+                Some(b) => Some(b.id),
+                None => return Ok(Some(Err("unknown storage binding".to_string()))),
+            }
         };
         let name = if form.name.trim().is_empty() {
             slug
@@ -1841,7 +1851,7 @@ pub(crate) async fn org_create_cache(
                 Some(org.id),
                 slug,
                 name,
-                binding.id,
+                binding_id,
                 "",
                 None,
                 visibility,

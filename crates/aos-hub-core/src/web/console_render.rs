@@ -1410,10 +1410,9 @@ pub fn org_dashboard(
         ));
     }
     if can_configure {
-        // A cache roots its NAR/narinfo surface on a storage binding, so one must
-        // exist first; the select is empty (and the create disabled in practice)
-        // until then.
-        let mut binding_options = String::new();
+        // A cache uses the deployment's default storage unless a custom binding
+        // is selected — the first option, mirroring the registry create form.
+        let mut binding_options = String::from("<option value=\"\">default storage</option>");
         for b in bindings {
             let _ = write!(
                 binding_options,
@@ -1421,36 +1420,30 @@ pub fn org_dashboard(
                 name = escape(&b.name),
             );
         }
-        if bindings.is_empty() {
-            body.push_str(
-                "<p class=\"dim\">Add a storage binding above to host a cache's objects.</p>\n",
-            );
-        } else {
-            body.push_str("<h3>Create a binary cache</h3>\n");
-            let _ = write!(
-                body,
-                "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
-                 <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
-                 <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
-                 <span class=\"dim\">optional</span></label>\n\
-                 <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
-                 <label>visibility <select name=\"visibility\">\
-                 <option value=\"private\">private</option>\
-                 <option value=\"internal\">internal</option>\
-                 <option value=\"public\">public</option></select></label>\n\
-                 <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
-                 <label>compression <select name=\"compression\">\
-                 <option value=\"zstd\">zstd</option>\
-                 <option value=\"xz\">xz</option>\
-                 <option value=\"none\">none</option></select></label>\n\
-                 <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
-                 advertise mass-query</label>\n\
-                 <button>create cache</button>\n</form>\n",
-                org = escape(slug),
-                csrf = csrf_field(csrf),
-                bindings = binding_options,
-            );
-        }
+        body.push_str("<h3>Create a binary cache</h3>\n");
+        let _ = write!(
+            body,
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches\">\n{csrf}\
+             <label>slug <input type=\"text\" name=\"slug\" required placeholder=\"cache\"></label>\n\
+             <label>name <input type=\"text\" name=\"name\" placeholder=\"Build cache\"> \
+             <span class=\"dim\">optional</span></label>\n\
+             <label>storage binding <select name=\"binding\">{bindings}</select></label>\n\
+             <label>visibility <select name=\"visibility\">\
+             <option value=\"private\">private</option>\
+             <option value=\"internal\">internal</option>\
+             <option value=\"public\">public</option></select></label>\n\
+             <label>priority <input type=\"number\" name=\"priority\" value=\"40\"></label>\n\
+             <label>compression <select name=\"compression\">\
+             <option value=\"zstd\">zstd</option>\
+             <option value=\"xz\">xz</option>\
+             <option value=\"none\">none</option></select></label>\n\
+             <label><input type=\"checkbox\" name=\"want_mass_query\" value=\"1\" checked> \
+             advertise mass-query</label>\n\
+             <button>create cache</button>\n</form>\n",
+            org = escape(slug),
+            csrf = csrf_field(csrf),
+            bindings = binding_options,
+        );
     }
 
     body.push_str("<h2>Members</h2>\n");
@@ -3381,7 +3374,7 @@ mod cache_render_tests {
             org_id: Some(1),
             slug: "build".into(),
             name: "Build cache".into(),
-            storage_binding_id: 1,
+            storage_binding_id: Some(1),
             prefix: String::new(),
             hosted_key_id: Some(7),
             visibility: "public".into(),

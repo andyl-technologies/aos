@@ -1831,13 +1831,18 @@ impl RpcService {
                 .unwrap_or_default(),
             None => String::new(),
         };
-        let binding_name = self
-            .db
-            .storage_binding(c.storage_binding_id)
-            .await
-            .map_err(RpcError::internal)?
-            .map(|b| b.name)
-            .unwrap_or_default();
+        // A binding-less cache uses the deployment's default storage; its wire
+        // `binding_name` is empty (the client renders it as "default").
+        let binding_name = match c.storage_binding_id {
+            Some(id) => self
+                .db
+                .storage_binding(id)
+                .await
+                .map_err(RpcError::internal)?
+                .map(|b| b.name)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
         let (used_bytes, object_count, link_count, root_count) = if stats {
             let u = self.db.cache_usage(c.id).await.map_err(RpcError::internal)?;
             let links = self
@@ -1877,9 +1882,12 @@ impl RpcService {
 
     /// `CacheService.CreateCache` — create an org-owned managed cache.
     ///
+    /// An empty `binding_name` uses the deployment's default storage (the
+    /// binding-less path); otherwise the named storage binding backs the cache.
+    ///
     /// # Errors
     ///
-    /// [`RpcError::InvalidArgument`] for a missing slug/org/binding or bad
+    /// [`RpcError::InvalidArgument`] for a missing slug/org or bad
     /// visibility, [`RpcError::NotFound`] for an unknown org/binding,
     /// [`RpcError::PermissionDenied`] without `registry.configure`,
     /// [`RpcError::AlreadyExists`] for a duplicate slug, [`RpcError::Internal`]
@@ -1895,9 +1903,8 @@ impl RpcService {
         if req.org_slug.is_empty() {
             return Err(RpcError::invalid("org_slug is required to create a cache"));
         }
-        if req.binding_name.is_empty() {
-            return Err(RpcError::invalid("binding_name is required"));
-        }
+        // An empty `binding_name` means the deployment's default storage (the
+        // binding-less path) — exactly as a registry with no binding.
         let visibility = match req.visibility.as_str() {
             "" => "private",
             v @ ("public" | "internal" | "private") => v,
@@ -1920,13 +1927,18 @@ impl RpcService {
         }
         let org = self.org_or_not_found(&req.org_slug).await?;
         self.require_cache_admin(auth, Some(org.id)).await?;
-        let binding_id = self
-            .db
-            .storage_binding_by_name(org.id, &req.binding_name)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("storage binding"))?
-            .id;
+        let binding_id = if req.binding_name.is_empty() {
+            None
+        } else {
+            Some(
+                self.db
+                    .storage_binding_by_name(org.id, &req.binding_name)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("storage binding"))?
+                    .id,
+            )
+        };
         let name = if req.name.is_empty() {
             &req.slug
         } else {
@@ -3340,7 +3352,12 @@ impl RpcService {
         let Some(sealer) = self.sealer.as_ref() else {
             return Ok(None);
         };
-        let Some(binding) = self.db.storage_binding(cache.storage_binding_id).await? else {
+        // A default-storage (binding-less) cache is never presigned — it is
+        // served from the deployment's own storage, not a private external origin.
+        let Some(binding_id) = cache.storage_binding_id else {
+            return Ok(None);
+        };
+        let Some(binding) = self.db.storage_binding(binding_id).await? else {
             return Ok(None);
         };
         if binding.access != "private" {

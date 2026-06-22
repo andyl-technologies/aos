@@ -266,7 +266,7 @@ mod tests {
             .await
             .unwrap();
         let cache = db
-            .create_cache(Some(org), "c", "C", binding, "p", None, "public", 40, "zstd", true)
+            .create_cache(Some(org), "c", "C", Some(binding), "p", None, "public", 40, "zstd", true)
             .await
             .unwrap();
         (db, cache)
