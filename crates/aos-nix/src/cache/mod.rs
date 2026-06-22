@@ -14,7 +14,7 @@ pub mod parse;
 pub mod persist;
 pub mod runtime;
 
-pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash};
+pub use cutoff::{CutoffDecision, EarlyCutoff, ValueHash, ValueHashError};
 pub use dcg::{
     DemandGraph, DemandGraphError, DemandNode, DemandNodeId, ImpureInputObservation,
     ImpureTraceObservation, ImpureTraceStatus, NodeFreshness, Reconsideration,

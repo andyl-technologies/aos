@@ -5,7 +5,12 @@
 //! produces the same value hash as the previous run, the caller can stop
 //! propagation at that node; otherwise the caller must propagate to consumers.
 
+use thiserror::Error;
+
 use super::hashing::DurableBlake3Hash;
+use crate::value::{Value, ValueError, ValueTag};
+
+const INLINE_VALUE_HASH_DOMAIN_VERSION: &[u8] = b"aos-nix-inline-value-hash-v1";
 
 /// A durable hash of a canonical evaluated value.
 ///
@@ -21,6 +26,63 @@ impl ValueHash {
         Self(hash)
     }
 
+    /// Hashes a validated inline WHNF scalar value.
+    ///
+    /// This is a precursor for the full `blake3(canonical(value))` layer. It
+    /// supports only inline value payloads and hashes floats by their raw IEEE
+    /// bit pattern, so it may over-propagate relative to future Nix numeric
+    /// canonicalization but cannot cut off different bit patterns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ValueHashError::InvalidValue`] if the value payload violates
+    /// its tag invariant. Returns [`ValueHashError::UnsupportedTag`] for
+    /// heap-backed values, including thunks.
+    pub fn from_inline_value(value: Value) -> Result<Self, ValueHashError> {
+        value
+            .validate_payload()
+            .map_err(|source| ValueHashError::InvalidValue { source })?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(INLINE_VALUE_HASH_DOMAIN_VERSION);
+        match value.tag() {
+            ValueTag::Int => {
+                hasher.update(b"int");
+                hasher.update(
+                    &value
+                        .as_int()
+                        .map_err(|source| ValueHashError::InvalidValue { source })?
+                        .to_le_bytes(),
+                );
+            }
+            ValueTag::Float => {
+                hasher.update(b"float");
+                hasher.update(
+                    &value
+                        .as_float()
+                        .map_err(|source| ValueHashError::InvalidValue { source })?
+                        .to_bits()
+                        .to_le_bytes(),
+                );
+            }
+            ValueTag::Bool => {
+                hasher.update(b"bool");
+                let byte = value
+                    .as_bool()
+                    .map_err(|source| ValueHashError::InvalidValue { source })?
+                    as u8;
+                hasher.update(&[byte]);
+            }
+            ValueTag::Null => {
+                value
+                    .as_null()
+                    .map_err(|source| ValueHashError::InvalidValue { source })?;
+                hasher.update(b"null");
+            }
+            tag => return Err(ValueHashError::UnsupportedTag { tag }),
+        }
+        Ok(Self(DurableBlake3Hash::from_hasher(hasher)))
+    }
+
     /// Wraps a durable BLAKE3 hash of an impure input observation.
     ///
     /// This constructor is for demand-graph leaf nodes whose "value" is an
@@ -28,6 +90,23 @@ impl ValueHash {
     pub const fn from_impure_input_observation_hash(hash: DurableBlake3Hash) -> Self {
         Self(hash)
     }
+}
+
+/// Inline value hashing failed.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum ValueHashError {
+    /// The value payload violated its tag invariant.
+    #[error("cannot hash invalid value payload: {source}")]
+    InvalidValue {
+        /// The invalid value payload error.
+        source: ValueError,
+    },
+    /// The value tag is outside the inline scalar precursor.
+    #[error("inline value hashing does not support {tag:?}")]
+    UnsupportedTag {
+        /// The unsupported value tag.
+        tag: ValueTag,
+    },
 }
 
 /// The propagation decision for one reconsidered cache node.
@@ -63,6 +142,8 @@ impl EarlyCutoff {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::HeapObject;
+    use std::ptr::NonNull;
 
     fn value_hash(bytes: &[u8]) -> ValueHash {
         ValueHash::from_canonical_value_hash(DurableBlake3Hash::for_bytes(bytes))
@@ -70,6 +151,56 @@ mod tests {
 
     fn input_hash(bytes: &[u8]) -> ValueHash {
         ValueHash::from_impure_input_observation_hash(DurableBlake3Hash::for_bytes(bytes))
+    }
+
+    fn inline_hash(value: Value) -> ValueHash {
+        ValueHash::from_inline_value(value).expect("inline value hashes")
+    }
+
+    #[test]
+    fn inline_value_hashes_are_stable_for_identical_values() {
+        assert_eq!(inline_hash(Value::int(7)), inline_hash(Value::int(7)));
+        assert_eq!(
+            inline_hash(Value::bool(true)),
+            inline_hash(Value::bool(true))
+        );
+        assert_eq!(inline_hash(Value::null()), inline_hash(Value::null()));
+        assert_eq!(
+            inline_hash(Value::float(13.25)),
+            inline_hash(Value::float(13.25))
+        );
+    }
+
+    #[test]
+    fn inline_value_hashes_include_type_and_payload() {
+        assert_ne!(inline_hash(Value::int(1)), inline_hash(Value::int(2)));
+        assert_ne!(inline_hash(Value::int(1)), inline_hash(Value::bool(true)));
+        assert_ne!(inline_hash(Value::null()), inline_hash(Value::bool(false)));
+        assert_ne!(
+            inline_hash(Value::float(0.0)),
+            inline_hash(Value::float(-0.0))
+        );
+    }
+
+    #[test]
+    fn inline_value_hashes_participate_in_cutoff_decisions() {
+        let hash = inline_hash(Value::int(7));
+        let decision = EarlyCutoff::decide(Some(hash), hash);
+
+        assert_eq!(decision, CutoffDecision::CutOff);
+    }
+
+    #[test]
+    fn heap_values_are_not_inline_hashable() {
+        let ptr = NonNull::<HeapObject>::dangling();
+        let value = Value::string(ptr).expect("string value builds");
+
+        assert_eq!(
+            ValueHash::from_inline_value(value),
+            Err(ValueHashError::UnsupportedTag {
+                tag: ValueTag::String
+            })
+        );
     }
 
     #[test]

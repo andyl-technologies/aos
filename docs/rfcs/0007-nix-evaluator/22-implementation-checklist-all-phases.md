@@ -413,6 +413,15 @@ alone (`M-1`/`Q-A`).
       `ValueHash` plus `EarlyCutoff::decide(previous, recomputed)` returns
       `CutOff` only when a prior value hash exists and equals the recomputed
       value hash; missing or changed prior hashes return `Propagate`.
+- [x] Current inline scalar value-hash substrate:
+      `ValueHash::from_inline_value` hashes validated inline WHNF
+      `int`/`bool`/`null`/`float` payloads in the durable BLAKE3 domain
+      `aos-nix-inline-value-hash-v1`; floats are hashed by raw IEEE bits, so
+      this may over-propagate relative to future Nix numeric canonicalization
+      but cannot cut off distinct bit patterns. Heap-backed values,
+      strings/paths/lists/attrs canonical serialization, functions/thunks
+      cacheability policy, generic hash-cons value fields, `force_memoized`
+      integration, persistence, and harness proof remain open (`S-14`/`S-15`).
 - [ ] Full Salsa/red-green early cutoff remains: recompute demand-graph nodes,
       produce canonical value hashes, compare old/new hashes, stop propagation
       through dependents on no-change, and prove cached/uncached `.drv` parity.
