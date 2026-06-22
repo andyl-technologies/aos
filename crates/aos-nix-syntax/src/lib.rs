@@ -3,6 +3,11 @@
 //! The frontend starts with a byte-oriented lexer and grows into the compact
 //! arena AST, recursive-descent parser, scope resolver, and parse cache required
 //! by RFC-0007 Phase 1.
+//!
+//! This is the `aos-nix-syntax` crate — the SAFE Nix-dialect frontend of the
+//! RFC-0007 §1.1 crate topology, extracted from the former `aos-nix::syntax`
+//! module (Phase 1b). It depends on no other workspace crate.
+#![forbid(unsafe_code)]
 
 pub mod ast;
 pub mod lexer;

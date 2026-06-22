@@ -454,7 +454,11 @@ impl AstArena {
     }
 
     /// Creates an arena from already-decoded raw storage.
-    pub(crate) fn from_raw_parts(nodes: Vec<Node>, children: Vec<NodeId>) -> Self {
+    ///
+    /// Exposed for the parse-cache hydration path in downstream crates
+    /// (`aos-nix`'s `cache::parse`), which reconstructs an arena from its
+    /// serialized node/child vectors.
+    pub fn from_raw_parts(nodes: Vec<Node>, children: Vec<NodeId>) -> Self {
         Self { nodes, children }
     }
 

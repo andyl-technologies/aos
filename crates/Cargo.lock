@@ -246,6 +246,7 @@ name = "aos-nix"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-nix-syntax",
  "base64",
  "blake3",
  "bzip2",
@@ -268,6 +269,13 @@ dependencies = [
  "xxhash-rust",
  "xz2",
  "zstd",
+]
+
+[[package]]
+name = "aos-nix-syntax"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
 ]
 
 [[package]]

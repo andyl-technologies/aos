@@ -4,6 +4,7 @@ members = [
     "aos",
     "aos-core",
     "aos-nix",
+    "aos-nix-syntax",
     "aos-net",
     "aos-proto",
     "aos-server",
@@ -110,6 +111,7 @@ rcgen = "0.14"
 # Internal crates
 aos-core = { path = "aos-core" }
 aos-nix = { path = "aos-nix" }
+aos-nix-syntax = { path = "aos-nix-syntax" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
 aos-server = { path = "aos-server" }

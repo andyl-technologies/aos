@@ -61,7 +61,7 @@ pub mod list;
 pub mod native;
 pub mod runtime;
 pub mod string;
-pub mod syntax;
+pub use aos_nix_syntax as syntax;
 pub mod value;
 
 pub use error::{NativeCliFallbackReason, NativeEvalError, SrcSpan};
