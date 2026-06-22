@@ -17,6 +17,7 @@ pub mod graph;
 pub mod lint;
 pub mod package;
 pub mod prefetch;
+pub mod profile;
 pub mod repl;
 pub mod serve;
 pub mod show;

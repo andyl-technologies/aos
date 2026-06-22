@@ -4,7 +4,7 @@
   mkCargoPackage,
   fetchCargoDeps,
   bash,
-  git,
+  git-minimal,
   gnupg,
   nix,
   openssh,
@@ -35,7 +35,8 @@
   # user-supplied commands (e.g. `apr keys register --key-command`, which
   # typically invokes a host secret manager) run with that PATH restored, while
   # every internal shell-out keeps the hermetic one. Tools:
-  #   git           registry, pack, and object-store operations
+  #   git-minimal   registry, pack, and object-store operations (interpreter-
+  #                 free git; apm/apr use only C builtins, no Perl/gitweb)
   #   gnupg         gpg: git shells out to it to create and verify OpenPGP
   #                 signatures on commits and tags; with the hermetic PATH set
   #                 here it must be present for those git operations to work
@@ -54,7 +55,7 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash git gnupg nix openssh systemd zstd tar which];
+  runtimeTools = [bash git-minimal gnupg nix openssh systemd zstd tar which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = builtins.path {
     path = ../../../crates;

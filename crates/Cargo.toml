@@ -10,6 +10,7 @@ members = [
     "aos-remote",
     "aos-doc",
     "aos-package",
+    "aos-profile",
     "aos-systemd",
 ]
 
@@ -103,4 +104,5 @@ aos-cache = { path = "aos-cache" }
 aos-remote = { path = "aos-remote" }
 aos-doc = { path = "aos-doc" }
 aos-package = { path = "aos-package" }
+aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }

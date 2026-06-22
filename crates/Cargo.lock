@@ -112,6 +112,7 @@ dependencies = [
  "aos-core",
  "aos-doc",
  "aos-package",
+ "aos-profile",
  "aos-remote",
  "aos-server",
  "atty",
@@ -263,6 +264,17 @@ dependencies = [
  "toml",
  "url",
  "zstd",
+]
+
+[[package]]
+name = "aos-profile"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
