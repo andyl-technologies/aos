@@ -178,7 +178,7 @@ in {
         gateName = "gate:adversarial-determinism";
         owner = "crucible-harness";
         phase = "phase3";
-        taskIds = ["T-PLAN-3" "T-HARN-22"];
+        taskIds = ["T-PLAN-3" "T-CRATE-8" "T-HARN-22"];
         reason = "two-VM adversarial determinism gate is intentionally pending";
       };
     };

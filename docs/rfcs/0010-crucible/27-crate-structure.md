@@ -642,7 +642,7 @@ Crucible needs and marks the seam.
 - [x] **T-CRATE-7** Wire `gate:harness-lint` over the reduction-path crates: deny
   host wall-clock, thread/global RNG, unordered-map iteration on ordering paths,
   and nondeterministic `select`. — satisfies [CRATE-11]; spec §5.
-- [ ] **T-CRATE-8** Confine nondeterminism to `crucible-daemon`, `crucible-cli`,
+- [x] **T-CRATE-8** Confine nondeterminism to `crucible-daemon`, `crucible-cli`,
   and `crucible-qemu` supervision code, with a check that no value from these
   reaches `State` except via the `crucible-sim` decision source. — satisfies
   [CRATE-12]; spec §5.
