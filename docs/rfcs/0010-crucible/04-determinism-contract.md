@@ -654,7 +654,7 @@ this RFC is an elaboration of how `reduce` is *made* pure and *kept* pure.
   from the icount budget in fixed-shift mode, with a micro-test that the
   instruction-per-TB count is host-speed-independent. — satisfies [DET-9],
   [DET-18] (E3); spec §4.6 (E3).
-- [ ] **T-DET-3** Port the QEMU patch suppressing wall-clock warp when a plugin
+- [x] **T-DET-3** Port the QEMU patch suppressing wall-clock warp when a plugin
   holds time control, preserving the clock-notify wakeup path; micro-test that
   the virtual clock advances only by icount and plugin-authorized jumps. —
   satisfies [DET-10], [DET-18] (E2); spec §4.6 (E2).
